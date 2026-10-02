@@ -72,7 +72,6 @@ import {
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
-import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
@@ -128,26 +127,6 @@ function testMirrorCandidate(
 }
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
-  it('recognizes the built-in Administrator SID and numeric UAC values', () => {
-    expect(parseWindowsStoreAppLaunchContext(
-      '{"sid":"S-1-5-21-2548096332-2102100343-2330258446-500","uacEnabled":0,"filterAdministratorToken":0}\n',
-    )).toEqual({
-      userSid: 'S-1-5-21-2548096332-2102100343-2330258446-500',
-      isBuiltInAdministrator: true,
-      uacEnabled: false,
-      filterAdministratorToken: false,
-    })
-  })
-
-  it('degrades malformed PowerShell output without exposing arbitrary text', () => {
-    expect(parseWindowsStoreAppLaunchContext('warning\nnot-json\n')).toEqual({
-      userSid: null,
-      isBuiltInAdministrator: false,
-      uacEnabled: null,
-      filterAdministratorToken: null,
-    })
-  })
-
   it('resets only the probed package, passing its name as a PowerShell literal', () => {
     const script = buildCodexDesktopResetScript("OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0'; Remove-Item C:\\")
     expect(script).toContain("Reset-AppxPackage -Package 'OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0''; Remove-Item C:\\'")
@@ -168,29 +147,8 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(slow).toContain('两分钟')
   })
 
-  it('tells a built-in Administrator user to sign in with an ordinary account', () => {
-    const message = describeCodexDesktopLaunchFailure({
-      userSid: 'S-1-5-21-1-2-3-500',
-      isBuiltInAdministrator: true,
-      uacEnabled: false,
-      filterAdministratorToken: false,
-    })
-    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(message).toContain('「Administrator」账户')
-    expect(message).toContain('换一个普通账户登录电脑')
-  })
-
-  it('names turned-off account control and otherwise gives the three steps a customer can take', () => {
-    const uacOff = describeCodexDesktopLaunchFailure({
-      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
-    })
-    expect(uacOff.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(uacOff).toContain('「用户账户控制」')
-    expect(uacOff).toContain('联系客服')
-
-    const generic = describeCodexDesktopLaunchFailure({
-      userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null,
-    })
+  it('gives the three steps a customer can take', () => {
+    const generic = describeCodexDesktopLaunchFailure()
     expect(generic.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
     expect(generic).toContain('点「重试」')
     expect(generic).toContain('开始菜单里搜「Codex」')
@@ -198,8 +156,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('says how long it waited and gives a start-menu check the customer can do alone', () => {
-    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
-    const noWindow = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 47, processSeen: true })
+    const noWindow = describeCodexDesktopLaunchFailure({ waitedSeconds: 47, processSeen: true })
     expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
     expect(noWindow).toContain('等了 47 秒')
     expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
@@ -207,22 +164,26 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
     expect(noWindow).toContain('联系客服')
 
-    const notStarted = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false })
+    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })
     expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
     expect(notStarted).not.toContain('窗口一直没出来')
   })
 
-  it('keeps the account-specific advice when the wait outcome is known', () => {
-    const message = describeCodexDesktopLaunchFailure(
-      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
-      { waitedSeconds: 45, processSeen: false },
-    )
-    expect(message).toContain('「Administrator」账户')
+  // Windows only refuses sandboxed store apps on these accounts; Codex Desktop
+  // is a full-trust package and opened on the built-in Administrator test
+  // machine. A failure there has the same causes as anywhere else.
+  it('never blames the Windows account for a failed launch', () => {
+    for (const message of [
+      describeCodexDesktopLaunchFailure(),
+      describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }),
+      describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: true }, '26.924.2738.0'),
+    ]) {
+      expect(message).not.toMatch(/Administrator|用户账户控制|普通账户/)
+    }
   })
 
   it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
-    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
-    const message = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
     expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
     expect(message).toContain('等了 51 秒，Codex 没有启动起来')
     expect(message).toContain('你装的这一版（26.924.2738.0）')
@@ -231,19 +192,11 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(message).not.toContain('开始菜单里搜「Codex」')
     expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
 
-    const noOutcome = describeCodexDesktopLaunchFailure(context, undefined, '26.924.2738.0')
+    const noOutcome = describeCodexDesktopLaunchFailure(undefined, '26.924.2738.0')
     expect(noOutcome).toContain('等了将近一分钟')
     expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
 
-    const admin = describeCodexDesktopLaunchFailure(
-      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
-      { waitedSeconds: 45, processSeen: false },
-      '26.924.2738.0',
-    )
-    expect(admin).toContain('「Administrator」账户')
-    expect(admin).not.toContain(codexDesktopKnownIssueMarker)
-
-    expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
@@ -279,17 +232,10 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('keeps Windows internals out of every sentence a customer can see', () => {
-    const contexts = [
-      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
-      { userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null },
-      { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null },
-    ]
-    for (const context of contexts) {
-      for (const processSeen of [true, false]) {
-        expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen })).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
-      }
-      expect(describeCodexDesktopLaunchFailure(context)).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+    for (const processSeen of [true, false]) {
+      expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen })).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
     }
+    expect(describeCodexDesktopLaunchFailure()).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
   })
 
   it('counts a process that refuses the liveness probe as still running', () => {
@@ -1492,8 +1438,6 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('catch { $startAppsError = $_.Exception.Message }')
     expect(combined).toContain('catch { $processesError = $_.Exception.Message }')
     expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
-    expect(combined).toContain('storeAppLaunch = $storeAppLaunchContext')
-    expect(combined).toContain('WindowsIdentity]::GetCurrent()')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
@@ -1662,27 +1606,6 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     })
     expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
     expect(probe.processes).toHaveLength(1)
-  })
-
-  it('flags an account that Windows will not let open store apps', () => {
-    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
-      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 0 },
-    })).storeAppLaunchBlock).toBe('builtInAdministrator')
-    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
-      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 0, filterAdministratorToken: null },
-    })).storeAppLaunchBlock).toBe('uacDisabled')
-  })
-
-  it('leaves the store-app flag out for ordinary accounts and missing segments', () => {
-    for (const storeAppLaunch of [
-      { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 1, filterAdministratorToken: null },
-      { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 1 },
-      null,
-      'garbage',
-    ]) {
-      expect(parseCodexDesktopCombinedProbeJson(combinedOutput({ storeAppLaunch }))).not.toHaveProperty('storeAppLaunchBlock')
-    }
-    expect(parseCodexDesktopCombinedProbeJson(combinedOutput())).not.toHaveProperty('storeAppLaunchBlock')
   })
 
   it('isolates a failed start-menu segment', () => {

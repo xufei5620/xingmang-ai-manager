@@ -85,15 +85,7 @@ import {
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
-import {
-  inspectWindowsStoreAppLaunchContext,
-  inspectWindowsStoreAvailability,
-  readWindowsStoreAppLaunchContext,
-  resolveStoreAppLaunchBlock,
-  windowsStoreAppLaunchContextStatements,
-  type StoreAppLaunchBlock,
-  type WindowsStoreAppLaunchContext,
-} from './windows-store-app-launch'
+import { inspectWindowsStoreAvailability } from './windows-store-app-launch'
 
 const execFileAsync = promisify(execFile)
 
@@ -165,9 +157,6 @@ export interface CodexDesktopLaunchPlan {
   windowsHide: boolean
 }
 
-// 判断本身在 windows-store-app-launch.ts，装之前的提醒（检查页、首页）用的是同一份。
-export type CodexDesktopWindowsLaunchContext = WindowsStoreAppLaunchContext
-
 // 客户会原样看到这几句话（失败对话框把后端原话放在最下面），所以只说他看得懂、
 // 做得到的事。以前这里写着 wsreset.exe、AppModel、AppX、UAC，客户既不知道那是
 // 什么，照着跑 wsreset 也几乎从来没用——它只清应用商店的缓存，不管已经装好的
@@ -186,21 +175,13 @@ export interface CodexDesktopLaunchWaitOutcome {
 }
 
 export function describeCodexDesktopLaunchFailure(
-  context: CodexDesktopWindowsLaunchContext,
   outcome?: CodexDesktopLaunchWaitOutcome,
   knownIssueVersion?: string | null,
 ): string {
-  const block = resolveStoreAppLaunchBlock(context)
-  if (block === 'builtInAdministrator') {
-    return `${codexDesktopNotStartedPrefix}：这台电脑正用 Windows 自带的「Administrator」账户登录，`
-      + 'Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。'
-  }
-  if (block === 'uacDisabled') {
-    return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
-      + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
-  }
+  // 这里不再按账户类型下结论（自带 Administrator、关了用户账户控制），原因见
+  // windows-store-app-launch.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
   // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
-  // 直接说清楚，并给命令行版这条路（第十九批 7）。账户设置那两种更具体，先说它们。
+  // 直接说清楚，并给命令行版这条路（第十九批 7）。
   if (knownIssueVersion) {
     const waited = outcome
       ? `等了 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已经启动，但它的窗口一直没出来' : 'Codex 没有启动起来'}。`
@@ -1617,7 +1598,6 @@ export function buildCodexDesktopPackageProbeScript(): string {
  */
 export const codexDesktopCombinedProbeModules = [
   'Microsoft.PowerShell.Utility',
-  'Microsoft.PowerShell.Management',
   'CimCmdlets',
   'StartLayout',
   'Appx',
@@ -1633,10 +1613,6 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$processes = $null',
     '$processesError = $null',
     `try { $processes = ${codexDesktopProcessQuery('roots')} } catch { $processesError = $_.Exception.Message }`,
-    // 装之前提醒「这个账户打不开商店应用」（第十九批 6）要的就是这几样，顺路读掉，
-    // 首页不必为它再起一次 PowerShell。只读当前身份和一条策略键。
-    '$storeAppLaunchContext = $null',
-    `try { ${windowsStoreAppLaunchContextStatements().join('; ')} } catch { $storeAppLaunchContext = $null }`,
     '$packageProbe = $null',
     '$packageError = $null',
     'try {',
@@ -1646,7 +1622,7 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '} catch { $packageError = $_.Exception.Message }',
-    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError; storeAppLaunch = $storeAppLaunchContext } | ConvertTo-Json -Compress -Depth 6',
+    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6',
   ].join('\n')
 }
 
@@ -1654,8 +1630,6 @@ export interface CodexDesktopCombinedProbe {
   match: StartAppEntry | null
   processes: WindowsProcessEntry[]
   packageProbe: CodexDesktopPackageProbe
-  /** 只在认出这个账户打不开商店应用时才有；没认出、没读到都不带。 */
-  storeAppLaunchBlock?: StoreAppLaunchBlock
 }
 
 function codexDesktopProbeSegmentError(value: unknown): string | null {
@@ -1712,9 +1686,7 @@ export function parseCodexDesktopCombinedProbeJson(output: string): CodexDesktop
   const startAppsError = codexDesktopProbeSegmentError(record.startAppsError)
   const processesError = codexDesktopProbeSegmentError(record.processesError)
   const packageError = codexDesktopProbeSegmentError(record.packageError)
-  const storeAppLaunchBlock = resolveStoreAppLaunchBlock(readWindowsStoreAppLaunchContext(record.storeAppLaunch))
   return {
-    ...(storeAppLaunchBlock ? { storeAppLaunchBlock } : {}),
     match: startAppsError
       ? null
       : selectCodexDesktopApp(parseStartAppsJson(codexDesktopProbeSegmentJson(record.startApps))),
@@ -2486,7 +2458,6 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         running: false,
         detectionFailed,
         detectionError,
-        ...(combinedProbe.storeAppLaunchBlock ? { storeAppLaunchBlock: combinedProbe.storeAppLaunchBlock } : {}),
         ...desktopUpdateFields(
           packageProbe.error && !processPackage ? 'failed' : 'skipped',
           packageProbe.error && !processPackage ? packageProbe.error : null,
@@ -3353,7 +3324,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           codexDesktopLaunchFallbackWaitMs, packageFamilyName,
         )
       } catch {
-        // The common error below includes the same actionable launch context.
+        // The common error below reports this attempt as well.
       }
     }
     // AppX activation returns the application PID even when WMI is slow or
@@ -3362,12 +3333,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // process was still crossing the AppModel boundary at the first check.
     if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
     if (!startedProcesses.length) {
-      // 先停心跳再去探测账户设置：失败框弹出之前工具行不该再冒一句「还在等」。
+      // 先停心跳：失败框弹出之前工具行不该再冒一句「还在等」。
       const waitedSeconds = heartbeat?.elapsedSeconds()
       heartbeat?.stop()
-      const launchContext = await inspectWindowsStoreAppLaunchContext()
       throw new Error(describeCodexDesktopLaunchFailure(
-        launchContext,
         waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
         resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
       ))
