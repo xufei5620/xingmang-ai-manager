@@ -9,6 +9,7 @@ const {
   assertPackagedMetadata,
   assertPayloadEntries,
   assertPostinst,
+  assertUpdateConfig,
   debianVersion,
   elfArchitecture,
   parseArguments,
@@ -275,6 +276,43 @@ test('the packaged metadata keeps the menu link and the updater switched off', (
   assert.throws(() => assertPackagedMetadata({ ...metadata, name: 'other' }), /name 是 other/)
 })
 
+test('a release package has its updater on and says it is unsigned', () => {
+  const metadata = {
+    name: 'xingmang-ai-manager',
+    desktopName: 'xingmang-ai-manager.desktop',
+    xingmangLocalBuild: false,
+    xingmangUnsignedRelease: true,
+  }
+  assert.doesNotThrow(() => assertPackagedMetadata(metadata, { release: true }))
+  // 本地测试包冒充发布包：装上以后永远收不到更新。
+  assert.throws(() => assertPackagedMetadata({ ...metadata, xingmangLocalBuild: true }, { release: true }), /xingmangLocalBuild 必须为 false/)
+  // 没标「无签名」：主进程不会在下载前问一句，也不会自己再核一遍 SHA-512。
+  assert.throws(() => assertPackagedMetadata({ ...metadata, xingmangUnsignedRelease: undefined }, { release: true }), /xingmangUnsignedRelease/)
+  // 反过来，发布包也过不了本地测试包的校验。
+  assert.throws(() => assertPackagedMetadata(metadata), /xingmangLocalBuild 必须为 true/)
+  assert.throws(() => assertPackagedMetadata({ ...metadata, desktopName: undefined }, { release: true }), /desktopName/)
+})
+
+test('a release package updates only from the feed its version publishes to', () => {
+  const config = [
+    'provider: generic',
+    'url: https://updatesnew.shenfengwl.fun/xingmang-manager/',
+    'updaterCacheDirName: xingmang-ai-manager-updater',
+    '',
+  ].join('\n')
+  assert.doesNotThrow(() => assertUpdateConfig(config, { version: '0.2.14' }))
+  // 0.1.3 以前的版本才用旧桶；新版本指过去就是从没人在发的地方找更新。
+  assert.throws(
+    () => assertUpdateConfig(config.replace('updatesnew.', 'updates.'), { version: '0.2.14' }),
+    /更新地址是 https:\/\/updates\.shenfengwl\.fun\/xingmang-manager\/，期望 https:\/\/updatesnew\./,
+  )
+  assert.throws(() => assertUpdateConfig(config.replace('https://', 'http://'), { version: '0.2.14' }), /更新地址不合格/)
+  assert.throws(() => assertUpdateConfig(config.replace('generic', 'github'), { version: '0.2.14' }), /provider 是「github」/)
+  assert.throws(() => assertUpdateConfig(`${config}publisherName:\n  - XingMang\n`, { version: '0.2.14' }), /publisherName/)
+  assert.throws(() => assertUpdateConfig('- just\n- a list\n', { version: '0.2.14' }), /顶层必须是对象/)
+  assert.throws(() => assertUpdateConfig('url: [unterminated', { version: '0.2.14' }), /不是有效的 YAML/)
+})
+
 test('the release directory must hold exactly the expected deb', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-deb-test-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -287,7 +325,10 @@ test('the release directory must hold exactly the expected deb', (t) => {
 })
 
 test('the command line takes a release directory and an explicit architecture', () => {
-  assert.deepEqual(parseArguments(['out', '--arch', 'arm64']), { releaseDirectory: path.resolve('out'), arch: 'arm64' })
+  assert.deepEqual(parseArguments(['out', '--arch', 'arm64']), { releaseDirectory: path.resolve('out'), arch: 'arm64', release: false })
+  assert.deepEqual(parseArguments(['out', '--arch', 'x64', '--release']), { releaseDirectory: path.resolve('out'), arch: 'x64', release: true })
   assert.equal(parseArguments([]).releaseDirectory, path.resolve('release'))
+  // 不带目录、直接写选项：选项不能被当成目录名。
+  assert.equal(parseArguments(['--arch', 'x64']).releaseDirectory, path.resolve('release'))
   assert.throws(() => parseArguments(['release', '--arch', 'ia32']), /只接受 x64 或 arm64/)
 })
