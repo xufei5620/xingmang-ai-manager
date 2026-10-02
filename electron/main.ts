@@ -2637,6 +2637,7 @@ if (!hasSingleInstanceLock) {
         trayAcceleration?.observe(state)
         accelerationExpiry?.observe(state)
         accelerationInterruption?.observe(state)
+        codexDesktopAcceleration.observe(state)
       },
     })
     // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
