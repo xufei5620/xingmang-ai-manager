@@ -28,8 +28,8 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
   // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
-  // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
-  // 下面的 permission 抢走、把客户送去看安装目录。
+  // 这里只给按钮；排在前面，是为了主进程写好的这整句不被下面更泛的规则（比如
+  // permission）抢走、把客户送去看安装目录。
   // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
   // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
   { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
@@ -231,17 +231,6 @@ export function operationLogPage(failure: { message: string; detail?: string | u
   return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
-/**
- * 系统自带的 Administrator 账户、关掉了「用户账户控制」的电脑，是 Windows 不让打开
- * 商店装的软件（主进程 describeCodexDesktopLaunchFailure 的前两种说法），重置 Codex
- * 自己的数据改变不了这一点，所以这两种不给「重置 Codex」。
- */
-function codexDesktopBlockedByAccount(message: string): boolean {
-  return /Administrator|用户账户控制/.test(message)
-}
-
-const codexDesktopBlockedBody = '先照下面这句话做；还不行就点「找客服」，把这句话发给客服。'
-
 export function presentOperationError(message: string): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
@@ -253,9 +242,6 @@ export function presentOperationError(message: string): OperationErrorHint | nul
   // account layer reuses this wording). Repeating it as a heading above the
   // very same line reads as a bug, so leave those untouched.
   if (text.includes(entry.title)) return null
-  if (key === 'codexDesktopNotStarted' && codexDesktopBlockedByAccount(text)) {
-    return { key, title: entry.title, body: codexDesktopBlockedBody, actions: honourableActions(entry.actions).filter((action) => action.id !== 'resetCodexDesktop') }
-  }
   const actions = honourableActions(entry.actions)
   return {
     key,

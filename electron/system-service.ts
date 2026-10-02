@@ -258,7 +258,6 @@ import {
   type ExternalToolId,
 } from './external-tool-config'
 import type { ExternalClientConfigResult, ExternalClientStatus, ExternalClientRuntimeStatus } from './external-client-contract'
-import type { StoreAppLaunchBlock } from './windows-store-app-launch'
 import { createExternalClientRuntime } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
@@ -368,11 +367,6 @@ export interface DesktopAppStatus extends ToolStatus, Partial<VersionUpdateStatu
   mirrorUpdateAvailable: boolean | null
   mirrorError: string | null
   running: boolean
-  /**
-   * 只在 Windows 上、还没装、且认出这个账户打不开商店应用时才有（第十九批 6）。
-   * 界面据此在「安装」之前先提醒一句，不拦安装。
-   */
-  storeAppLaunchBlock?: StoreAppLaunchBlock
 }
 
 export interface LatestVersionProbe {

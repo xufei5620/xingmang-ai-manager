@@ -179,19 +179,6 @@ describe('renderer-v2 operation error classification', () => {
       .some((action) => action.label.includes('管理员'))).toBe(false)
   })
 
-  it('gives a Codex window that never appeared a retry and a way to support, even when it names Windows settings', () => {
-    for (const message of [
-      'Codex 桌面端没有打开：这台电脑正用 Windows 自带的「Administrator」账户登录，Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。',
-      'Codex 桌面端没有打开：这台电脑关掉了 Windows 的「用户账户控制」，Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。',
-    ]) {
-      const hint = presentOperationError(message)
-      expect(hint?.key).toBe('codexDesktopNotStarted')
-      // 这两种是 Windows 不让这个账户打开商店软件，重置 Codex 帮不上忙，正文也不能提它。
-      expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
-      expect(hint?.body).not.toContain('重置')
-    }
-  })
-
   it('offers 重置 Codex between retry and support when the Codex window simply never appeared', () => {
     const hint = presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。')
     expect(hint?.key).toBe('codexDesktopNotStarted')
