@@ -162,6 +162,7 @@ import {
 import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
+import { resolveBundledCodexModelCatalogPath } from './codex-model-catalog'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { createInstallKeepAwake } from './install-keep-awake'
@@ -1278,6 +1279,8 @@ if (!hasSingleInstanceLock) {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
       }) ?? undefined,
+      // 只由主进程自己读，随 app.asar 走即可，不必像上面两个脚本那样拷进 extraResources。
+      bundledCodexModelCatalogPath: resolveBundledCodexModelCatalogPath(app.getAppPath()),
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),

@@ -29,6 +29,13 @@ import {
   type ManagedCliHookTarget,
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
+import {
+  applyCodexRelayModelCatalog,
+  codexModelCatalogFileName,
+  codexRelayModelCatalogOutdated,
+  isManagedCodexModelCatalogSetting,
+  removeCodexRelayModelCatalog,
+} from './codex-model-catalog'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
@@ -869,6 +876,11 @@ export function codexConfigSnapshotPaths(
   }
 }
 
+/** 本软件写的 Codex 型号名单，放在 config.toml 旁边（见 codex-model-catalog.ts）。 */
+export function codexModelCatalogPath(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): string {
+  return path.join(providerConfigRoot('codex', normalizeProviderConfigRoots(rootsInput)), codexModelCatalogFileName)
+}
+
 export function classifyCodexConfigProfile(
   parsed: Record<string, unknown> | null,
   siteBaseUrl: string,
@@ -987,6 +999,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  removeCodexRelayModelCatalog(parsed)
   removeCodexCliNotify(parsed)
   restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
@@ -1033,6 +1046,7 @@ function buildCodexRelayConfigTemplate(
   providerName: string,
   siteBaseUrl: string,
   cliHook?: CliHookInvocation,
+  withModelCatalog = false,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
@@ -1040,6 +1054,9 @@ function buildCodexRelayConfigTemplate(
   const notifyLine = cliHook
     ? [`notify = [${[cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory].map(tomlString).join(', ')}]`]
     : []
+  // Codex only honours this key above the first table; a relative name resolves
+  // next to config.toml, which also keeps Windows paths out of TOML escaping.
+  const catalogLine = withModelCatalog ? [`model_catalog_json = ${tomlString(codexModelCatalogFileName)}`] : []
   // Same values as applyCodexRelayMachineDefaults; the template is spelled out
   // so a fresh install reads top to bottom like the upstream docs.
   const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
@@ -1051,6 +1068,7 @@ function buildCodexRelayConfigTemplate(
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     'check_for_update_on_startup = false',
+    ...catalogLine,
     ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
@@ -1077,7 +1095,12 @@ function snapshotOfficialCodexConfigText(
   siteBaseUrl: string,
 ): string {
   if (classifyCodexConfigProfile(currentParsed, siteBaseUrl) === 'official') {
-    return withTrailingNewline(currentText)
+    if (!isManagedCodexModelCatalogSetting(currentParsed.model_catalog_json)) return withTrailingNewline(currentText)
+    // 我们那份型号名单会整份顶掉 ChatGPT 登录时服务器下发的名单，官方快照里不能留着指向
+    // 它的那一行。只摘这一行，用户自己的官方设置一个不动。
+    const official = cloneTomlRecord(currentParsed)
+    removeCodexRelayModelCatalog(official)
+    return tomlContent(official)
   }
   const cleaned = cloneTomlRecord(currentParsed)
   stripCodexRelayFromConfig(cleaned, siteBaseUrl)
@@ -1102,6 +1125,9 @@ function createCodexRelayConfigPlans(
   siteBaseUrls: Record<ProviderId, string>,
   mode: NativeConfigSaveMode,
   cliHook?: CliHookInvocation,
+  // 本软件管的型号名单（codex-model-catalog.ts）：字符串 = 写这份文件并指向它；null = 收回
+  // 本软件写的那一行；缺省 = 那一行和文件都原样不动，与从前一致。
+  modelCatalog?: string | null,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
@@ -1128,22 +1154,36 @@ function createCodexRelayConfigPlans(
 
   const storedRelay = mode === 'merge' && currentKind === 'official'
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
+  const templateCatalog = typeof modelCatalog === 'string'
+  let catalogInUse = false
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook)
+    catalogInUse = templateCatalog
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook, templateCatalog)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
     applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(stored, cliHook)
+    if (modelCatalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(stored, templateCatalog)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
     applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
+    if (modelCatalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(currentParsed, templateCatalog)
     nextContent = tomlContent(currentParsed)
   } else {
-    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook)
+    catalogInUse = templateCatalog
+    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook, templateCatalog)
   }
 
+  // Codex refuses to start when model_catalog_json names a missing file, so the
+  // catalog is committed before the config that points at it: a crash between
+  // the renames leaves an unused file, never a dangling setting. An unchanged
+  // file is not rewritten, which also keeps every save from adding a backup.
+  if (catalogInUse && typeof modelCatalog === 'string') {
+    const catalogPath = codexModelCatalogPath(roots)
+    if (readText(catalogPath) !== modelCatalog) plans.unshift({ path: catalogPath, content: modelCatalog })
+  }
   plans.push({ path: paths.relay, content: nextContent })
   plans.push({ path: paths.active, content: nextContent })
   return plans
@@ -1328,6 +1368,23 @@ export function claudeModelPickerNeedsRefresh(
   const [settingsPath] = providerConfigPaths('claude', roots)
   assertSafeConfigPath(settingsPath, providerRoot, 'file')
   return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel)
+}
+
+/**
+ * Codex 那份型号名单按 expected 重写会不会变（见 codex-model-catalog.ts 的
+ * codexRelayModelCatalogOutdated）。只读，读之前先过路径校验。
+ */
+export function codexModelCatalogNeedsRefresh(
+  expected: string | null,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const [configPath] = providerConfigPaths('codex', roots)
+  const catalogPath = codexModelCatalogPath(roots)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  assertSafeConfigPath(catalogPath, providerRoot, 'file')
+  return codexRelayModelCatalogOutdated(requireToml(configPath, '现有 Codex config.toml'), expected, readText(catalogPath))
 }
 
 export function inspectProviderConfig(
@@ -2009,12 +2066,13 @@ function createPlans(
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
   cliHook?: CliHookInvocation,
+  codexModelCatalog?: string | null,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook, codexModelCatalog),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -2117,6 +2175,7 @@ function createMergePlans(
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
   cliHook?: CliHookInvocation,
+  codexModelCatalog?: string | null,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
@@ -2132,7 +2191,7 @@ function createMergePlans(
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, codexModelCatalog),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -2540,6 +2599,9 @@ export function saveProviderConfig(
   // 终端里出错、做完、等人时通知星芒的钩子（见 cli-hooks.ts）。缺省 = 不写，与从前一致；
   // 只有 Claude Code 与 Gemini CLI 用得上，其余工具传了也不看。
   cliHook?: CliHookInvocation,
+  // 写给 Codex 的型号名单全文（codex-model-catalog.ts）：null = 收回本软件写的那一行，
+  // 缺省 = 不动，与从前一致。只有 Codex 看。
+  codexModelCatalog?: string | null,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -2556,8 +2618,8 @@ export function saveProviderConfig(
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

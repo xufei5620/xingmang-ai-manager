@@ -22,6 +22,7 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
+import { resolveBundledCodexModelCatalogPath } from './codex-model-catalog'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
@@ -30,6 +31,7 @@ import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-g
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
+  type CliInstallation,
 } from './tool-installation'
 import { buildCliVersionAdvice, cliVerifiedVersions } from './cli-verified-versions'
 import {
@@ -526,6 +528,85 @@ describe('createSystemService', () => {
       authSnapshots.active,
     ])
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
+  })
+
+  function codexCatalogFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-catalog-save-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const packageRoot = path.join(root, 'npm', 'lib', 'node_modules', '@openai', 'codex')
+    // 测试中途换成别的版本或「读不出来」，看同一个服务下一次保存怎么处理那一行。
+    const cli: { installation: CliInstallation | null | Error } = { installation: null }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ id: 'gpt-5.5' }, { id: 'claude-opus-5' }, { id: 'gpt-6.1-sol' }],
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      bundledCodexModelCatalogPath: resolveBundledCodexModelCatalogPath(path.resolve(__dirname, '..')),
+      resolveCliInstallation: async () => {
+        if (cli.installation instanceof Error) throw cli.installation
+        return cli.installation
+      },
+    })
+    function installCodexCli(version: string): void {
+      cli.installation = {
+        commandPath: path.join(root, 'npm', 'bin', 'codex'),
+        installDirectory: packageRoot,
+        packageRoot,
+        npmPrefix: path.join(root, 'npm'),
+        packageVersion: version,
+        source: 'npm',
+      }
+    }
+    function save() {
+      return service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false)
+    }
+    function catalogSetting(): unknown {
+      return asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))).model_catalog_json
+    }
+    return { cli, roots, installCodexCli, save, catalogSetting, catalogPath: path.join(roots.codexHome, 'xingmang-models.json') }
+  }
+
+  function asTomlRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  }
+
+  it('writes the official Codex entries for the models the account can use, so the desktop menu lists GPT-6.1 Sol', async () => {
+    const f = codexCatalogFixture()
+    f.installCodexCli('0.156.1')
+
+    const result = await f.save()
+
+    expect(result.files[0]).toBe(f.catalogPath)
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    const written = JSON.parse(fs.readFileSync(f.catalogPath, 'utf8')) as { models: Array<{ slug: string }> }
+    expect(written.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('writes the catalog when only the Codex desktop app is on this computer', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+  })
+
+  it('takes its catalog back once the Codex CLI on this computer is too old to read it', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    f.installCodexCli('0.150.0')
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBeUndefined()
+  })
+
+  it('leaves the catalog as it is when the Codex CLI version cannot be read', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    f.cli.installation = new Error('注册表读取失败')
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
   })
 
   function claudeConsoleKeyFixture(prefix: string) {

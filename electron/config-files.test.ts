@@ -19,6 +19,8 @@ import {
   codexChatGptAuthSnapshotName,
   applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
+  codexModelCatalogNeedsRefresh,
+  codexModelCatalogPath,
   defaultCodexRelayProvider,
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
@@ -3160,5 +3162,142 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.models)?.session_summary).toBe('grok-4.6')
     expect(asRecord(parsed.models)?.image_description).toBe('grok')
     expect(asRecord(parsed.models)?.allowed_models).toEqual(['grok'])
+  })
+})
+
+describe('the Codex model catalog Xingmang writes', () => {
+  const catalog = '{\n  "models": [\n    {\n      "slug": "gpt-6.1-sol"\n    }\n  ]\n}\n'
+  const otherCatalog = '{\n  "models": [\n    {\n      "slug": "gpt-6-astra"\n    }\n  ]\n}\n'
+
+  function saveCodex(roots: ReturnType<typeof providerRoots>, mode: 'reset' | 'merge', modelCatalog?: string | null, hooks = {}) {
+    return saveProviderConfig('codex', 'sk-relay', testModels.codex, mode, roots, hooks, providerBaseUrls, undefined, undefined, undefined, modelCatalog)
+  }
+
+  function readConfig(roots: ReturnType<typeof providerRoots>): Record<string, unknown> {
+    return asRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))) ?? {}
+  }
+
+  it('writes the catalog next to config.toml and points Codex at it above the first table', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+
+    const text = fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8')
+    const line = text.indexOf('model_catalog_json = "xingmang-models.json"')
+    expect(line).toBeGreaterThan(-1)
+    expect(line).toBeLessThan(text.indexOf('['))
+    expect(codexModelCatalogPath(roots)).toBe(path.join(roots.codexHome, 'xingmang-models.json'))
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(catalog)
+  })
+
+  it('commits the catalog before the config that points at it', () => {
+    const roots = providerRoots(temporaryHome())
+    const replaced: string[] = []
+    saveCodex(roots, 'reset', catalog, { beforeReplace: (filePath: string) => { replaced.push(path.basename(filePath)) } })
+    expect(replaced.indexOf('xingmang-models.json')).toBe(0)
+    expect(replaced.indexOf('config.toml')).toBeGreaterThan(0)
+  })
+
+  it('adds the catalog to an existing config and rewrites the file only when it changed', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset')
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+
+    expect(saveCodex(roots, 'merge', catalog).files).toContain(codexModelCatalogPath(roots))
+    expect(readConfig(roots).model_catalog_json).toBe('xingmang-models.json')
+    expect(saveCodex(roots, 'merge', catalog).files).not.toContain(codexModelCatalogPath(roots))
+    expect(saveCodex(roots, 'merge', otherCatalog).files).toContain(codexModelCatalogPath(roots))
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(otherCatalog)
+  })
+
+  it('takes back only its own line when no catalog should be written, and keeps the file for old backups', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    saveCodex(roots, 'merge', null)
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+    expect(readConfig(roots).model).toBe(testModels.codex)
+    expect(fs.existsSync(codexModelCatalogPath(roots))).toBe(true)
+  })
+
+  it('leaves the line and the file alone when the caller cannot tell what to write', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    saveCodex(roots, 'merge')
+    expect(readConfig(roots).model_catalog_json).toBe('xingmang-models.json')
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(catalog)
+  })
+
+  it('never replaces a catalog the user pointed Codex at', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configPath, 'model_catalog_json = "my-models.json"\n', 'utf8')
+
+    saveCodex(roots, 'merge', catalog)
+    expect(readConfig(roots).model_catalog_json).toBe('my-models.json')
+    expect(fs.existsSync(codexModelCatalogPath(roots))).toBe(false)
+    saveCodex(roots, 'merge', null)
+    expect(readConfig(roots).model_catalog_json).toBe('my-models.json')
+  })
+
+  it('takes the line back on the official account and puts it back with the relay', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+    expect(fs.existsSync(codexModelCatalogPath(roots))).toBe(true)
+
+    saveCodex(roots, 'merge', catalog)
+    expect(readConfig(roots).model_catalog_json).toBe('xingmang-models.json')
+    expect('model_catalog_json' in asRecord(TOML.parse(fs.readFileSync(codexConfigSnapshotPaths(roots).chatgpt, 'utf8')))!).toBe(false)
+  })
+
+  it('keeps its line out of the saved ChatGPT config even when an official config still carries it', () => {
+    const roots = providerRoots(temporaryHome())
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, 'model_catalog_json = "xingmang-models.json"\napproval_policy = "never"\n', 'utf8')
+
+    saveCodex(roots, 'merge', catalog)
+    const official = asRecord(TOML.parse(fs.readFileSync(configs.chatgpt, 'utf8')))
+    expect(official).toEqual({ approval_policy: 'never' })
+  })
+
+  it('reports whether the catalog on disk matches what the account needs', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset')
+    expect(codexModelCatalogNeedsRefresh(catalog, roots)).toBe(true)
+    expect(codexModelCatalogNeedsRefresh(null, roots)).toBe(false)
+
+    saveCodex(roots, 'merge', catalog)
+    expect(codexModelCatalogNeedsRefresh(catalog, roots)).toBe(false)
+    expect(codexModelCatalogNeedsRefresh(otherCatalog, roots)).toBe(true)
+    expect(codexModelCatalogNeedsRefresh(null, roots)).toBe(true)
+
+    fs.rmSync(codexModelCatalogPath(roots))
+    expect(codexModelCatalogNeedsRefresh(catalog, roots)).toBe(true)
+  })
+
+  function expectLinkRefused(link: (target: string, linkPath: string) => void, refusal: RegExp) {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset')
+    // Same volume as the Codex root, so a hard link can be made on every platform.
+    const elsewhere = path.join(roots.userHome, 'elsewhere.json')
+    fs.writeFileSync(elsewhere, catalog, 'utf8')
+    link(elsewhere, codexModelCatalogPath(roots))
+
+    expect(() => codexModelCatalogNeedsRefresh(catalog, roots)).toThrow(refusal)
+    expect(() => saveCodex(roots, 'merge', otherCatalog)).toThrow(refusal)
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe(catalog)
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+  }
+
+  it('refuses to read or write the catalog through a hard link', () => {
+    expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /单链接普通文件/)
+  })
+
+  // Creating a file symlink needs Developer Mode or administrator rights on Windows.
+  it.skipIf(process.platform === 'win32')('refuses to read or write the catalog through a symbolic link', () => {
+    expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /符号链接|单链接普通文件/)
   })
 })
