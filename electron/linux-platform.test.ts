@@ -43,6 +43,12 @@ describe('Linux command path candidates', () => {
     }
   })
 
+  it('leaves out a home or data directory whose name would split into relative PATH entries', () => {
+    const candidates = linuxCommandPathCandidates({ PATH: '/usr/bin', XDG_DATA_HOME: '/data/x:y', VOLTA_HOME: '/opt/v:w' }, [], '/home/a:b')
+    expect(candidates.some((entry) => entry.includes(':'))).toBe(false)
+    expect(candidates.filter(Boolean)).toEqual(['/usr/bin', '/usr/local/bin', '/usr/bin', '/bin', '/snap/bin'])
+  })
+
   it('still yields the system directories when there is no usable home directory', () => {
     const candidates = linuxCommandPathCandidates({ PATH: '' }, [], 'relative/home')
     expect(candidates.filter(Boolean)).toEqual(['/usr/local/bin', '/usr/bin', '/bin', '/snap/bin'])

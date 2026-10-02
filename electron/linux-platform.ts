@@ -40,22 +40,33 @@ export function linuxCommandPathCandidates(
   const home = homeDirectory && path.posix.isAbsolute(homeDirectory) ? homeDirectory : null
   return [
     ...additionalPaths,
-    ...managed,
+    ...whole(managed),
     ...inheritedPath.split(path.posix.delimiter),
-    baseEnv.VOLTA_HOME ? path.posix.join(baseEnv.VOLTA_HOME, 'bin') : '',
-    baseEnv.FNM_MULTISHELL_PATH ?? '',
+    ...whole([
+      baseEnv.VOLTA_HOME ? path.posix.join(baseEnv.VOLTA_HOME, 'bin') : '',
+      baseEnv.FNM_MULTISHELL_PATH ?? '',
+    ]),
     ...(home
-      ? [
+      ? whole([
           path.posix.join(home, '.local', 'bin'),
           path.posix.join(home, '.npm-global', 'bin'),
           path.posix.join(home, '.volta', 'bin'),
           path.posix.join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin'),
           path.posix.join(home, '.grok', 'bin'),
-        ]
+        ])
       : []),
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
     '/snap/bin',
   ]
+}
+
+/**
+ * A ':' inside a HOME, XDG_DATA_HOME or VOLTA_HOME would split the joined PATH into pieces that
+ * are no longer absolute, and a child would then look them up relative to its working directory,
+ * which can be a project folder the CLI was just pointed at.
+ */
+function whole(entries: readonly string[]): string[] {
+  return entries.filter((entry) => !entry.includes(path.posix.delimiter))
 }

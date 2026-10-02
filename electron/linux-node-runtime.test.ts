@@ -3,13 +3,14 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommandResult } from './command-runner'
 import { managedNodeRuntimeRoot } from './managed-cli-paths'
 import {
   buildLinuxNodeExtractPlan,
   installLinuxNodeRuntime,
   isTrustedLinuxSystemExecutable,
+  linuxExtractEnvironment,
   linuxExtractPath,
   linuxNodeArchiveTopDirectory,
   linuxNodeRuntimeArchitecture,
@@ -75,6 +76,7 @@ function temporaryHome(): string {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
@@ -106,6 +108,7 @@ describe('Linux managed Node.js runtime', () => {
     expect(() => buildLinuxNodeExtractPlan('/home/a/bin/tar', '/h/a/node.tar.gz', '/h/a/extract')).toThrow()
     expect(() => buildLinuxNodeExtractPlan('/usr/bin/tar', 'node.tar.gz', '/h/a/extract')).toThrow()
     expect(linuxExtractPath).toBe('/usr/bin:/bin')
+    expect(linuxExtractEnvironment).toEqual({ PATH: '/usr/bin:/bin', LC_ALL: 'C' })
   })
 
   it('accepts a tar only when root owns it and nobody else can write it', () => {
@@ -260,15 +263,19 @@ describe('Linux managed Node.js runtime', () => {
   it.skipIf(process.platform === 'win32')('refuses an unsupported chip before touching the disk or the network', async () => {
     const home = temporaryHome()
     const network = fakeNetwork()
+    const phases: string[] = []
     await expect(installLinuxNodeRuntime({
       networkRegion: 'mainland-china',
       architecture: 'loong64' as NodeJS.Architecture,
       environment: { HOME: home },
       dependencies: { fetch: network.fetch },
+      onProgress: (progress) => { phases.push(progress.phase) },
       linux: { runProcess: fakeProcesses().runProcess, resolveTar: () => '/usr/bin/tar', pinnedRelease: () => pinned },
     })).rejects.toThrow(/loong64/)
     expect(network.requested).toEqual([])
     expect(fs.readdirSync(home)).toEqual([])
+    // The progress bar only stops and shows the reason once it sees an error phase.
+    expect(phases).toEqual(['error'])
   })
 
   // The real extraction path: system tar under the fixed PATH, then the extracted binary's
@@ -276,6 +283,9 @@ describe('Linux managed Node.js runtime', () => {
   it.runIf(process.platform === 'linux' && resolveLinuxTarExecutable() !== null)(
     'extracts a real archive with the system tar and runs the extracted binary',
     async () => {
+      // GNU tar reads TAR_OPTIONS as extra arguments: with this one inherited, nothing would be
+      // written to disk and the checks after extraction would fail.
+      vi.stubEnv('TAR_OPTIONS', '--to-stdout')
       const home = temporaryHome()
       const build = path.join(home, 'build')
       const top = path.join(build, linuxNodeArchiveTopDirectory(linuxNodeRuntimeVersion, 'x64'))

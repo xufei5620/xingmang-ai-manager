@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   runCommand,
-  trustedCommandEnvironment,
   type CommandResult,
 } from './command-runner'
 import { managedNodeRuntimeRoot, managedProductRoot } from './managed-cli-paths'
@@ -39,8 +38,9 @@ import { nodeVersionStatus } from './versions'
  *    as honest as the mirror serving both. The pin moves that trust to code review: it was
  *    copied from the release's OpenPGP-signed SHASUMS256.txt.asc after checking the signature
  *    against nodejs/release-keys. The mirror then only supplies bytes.
- * 3. tar runs from a fixed root-owned path with PATH fixed to /usr/bin:/bin, so neither tar
- *    nor the gzip it spawns for -z is picked from a directory the user can write. GNU tar
+ * 3. tar runs from a fixed root-owned path with only PATH=/usr/bin:/bin and LC_ALL=C in its
+ *    environment, so neither tar nor the gzip it spawns for -z is picked from a directory the
+ *    user can write, and no TAR_OPTIONS/GZIP variable can add arguments. GNU tar
  *    strips a leading "/" and skips members containing "..", and the digest above already
  *    fixes every member before extraction starts.
  * 4. The extracted binary must report exactly the pinned version.
@@ -95,9 +95,17 @@ export interface InstallLinuxNodeRuntimeOptions extends InstallNodeRuntimeOption
   linux?: Partial<LinuxNodeRuntimeDependencies>
 }
 
+/**
+ * tar and the extracted node get nothing from the app's own environment. trustedCommandEnvironment
+ * is built for elevated Windows children and still passes TAR_OPTIONS and GZIP through, and GNU
+ * tar reads TAR_OPTIONS as extra arguments (--to-command, --absolute-names, …). Neither program
+ * needs more than a fixed PATH and a plain locale here.
+ */
+export const linuxExtractEnvironment: Readonly<NodeJS.ProcessEnv> = Object.freeze({ PATH: linuxExtractPath, LC_ALL: 'C' })
+
 function defaultRunProcess(plan: LinuxNodeRuntimeProcess, signal?: AbortSignal): Promise<CommandResult> {
   return runCommand({ executable: plan.executable, argv: [...plan.argv] }, {
-    env: { ...trustedCommandEnvironment(process.env, undefined, 'linux'), PATH: linuxExtractPath },
+    env: { ...linuxExtractEnvironment },
     timeoutMs: plan.timeoutMs,
     maxOutputBytes: 2 * 1024 * 1024,
     signal,
@@ -207,8 +215,10 @@ async function removeStaleStagingDirectories(runtimeParent: string): Promise<voi
 }
 
 /**
- * 先把旧的挪进暂存目录再放新的，放不上就把旧的挪回去：任何时候 Runtime/node 要么是
- * 完整的旧版，要么是完整的新版（I9 同理）。
+ * 先把旧的挪进暂存目录再放新的，放不上就把旧的挪回去：Runtime/node 要么是完整的旧版，
+ * 要么是完整的新版（I9 同理）。连挪回去也失败（同一目录里接连两次改名失败）时，旧版随
+ * 暂存目录一起清掉，Runtime/node 空着，找 node 时退回电脑上原有的那份；再点一次「准备
+ * Node.js」会重新下载。这是代下的官方包，丢了重下即可，不像 CLI 那样要保住现场。
  */
 export async function replaceLinuxNodeRuntime(extracted: string, target: string, staging: string): Promise<void> {
   const previous = path.join(staging, 'previous')
@@ -309,7 +319,14 @@ export async function installLinuxNodeRuntime(
   options: InstallLinuxNodeRuntimeOptions,
 ): Promise<NodeRuntimeInstallResult> {
   const dependencies: LinuxNodeRuntimeDependencies = { ...defaultDependencies, ...options.linux }
-  const architecture = linuxNodeRuntimeArchitecture(options.architecture ?? process.arch)
+  let architecture: NodeRuntimeArchitecture
+  try {
+    architecture = linuxNodeRuntimeArchitecture(options.architecture ?? process.arch)
+  } catch (error) {
+    // 进度条要收到 error 这一步才会停下并显示原因，和下面每条失败路径一样。
+    report(options, { phase: 'error', source: null, message: errorText(error), percent: null })
+    throw error
+  }
   const release = dependencies.pinnedRelease(architecture)
   const environment = options.environment ?? process.env
   const fetchImplementation = options.dependencies?.fetch ?? globalThis.fetch
