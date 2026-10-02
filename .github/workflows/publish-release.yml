@@ -415,14 +415,17 @@ jobs:
     #
     # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 两个作业
     # 红了也不挡 Windows / macOS，它的包也不会被下载；只选了 linux 又关着，这个作业
-    # 整个跳过，连批准都不会要。linux-checks 也要看：它失败时 linux-build 是 skipped
-    # 而不是 failure，只看 linux-build 会把「没测过」当成「没选 Linux」。
+    # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，要求 linux-build 成功，而不只
+    # 是「没失败」：超时的作业结果是 cancelled 而不是 failure，linux-checks 失败或超时
+    # 时 linux-build 又是 skipped，只挡 failure 会让 Windows / macOS 悄悄不带 Linux 发出去。
+    # GitHub 比较字符串不分大小写，TRUE、True 也算打开。
     if: >-
       ${{ !cancelled()
       && needs.windows-build.result != 'failure'
       && needs.macos-build.result != 'failure'
       && (vars.XINGMANG_PUBLISH_LINUX != 'true'
-        || (needs.linux-checks.result != 'failure' && needs.linux-build.result != 'failure'))
+        || (inputs.platforms != 'all' && inputs.platforms != 'linux')
+        || needs.linux-build.result == 'success')
       && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success'
         || (vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success')) }}
     # 写更新目录的三条工作流（这里、rollback-release、service-status）共用这个并发组

@@ -1056,7 +1056,7 @@ test('remote feed verification rejects unexpected content encoding and cancels e
 async function writeLinuxFixture(directory, version = '1.2.3') {
   const debs = {}
   for (const [arch, debArch, manifest] of [['x64', 'amd64', 'latest-linux.yml'], ['arm64', 'arm64', 'latest-linux-arm64.yml']]) {
-    const fileName = `xingmang-ai-manager_${version.replace(/-/g, '~')}_${debArch}.deb`
+    const fileName = `xingmang-ai-manager_${version}_${debArch}.deb`
     const contents = Buffer.from(`linux-${arch}-deb-fixture`)
     await fs.promises.writeFile(path.join(directory, fileName), contents)
     await fs.promises.writeFile(path.join(directory, manifest), fixtureMetadata(fileName, contents, version))
@@ -1085,8 +1085,10 @@ test('a Linux manifest may only list this version\'s deb for its own architectur
   }
   assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3_amd64.deb'], '1.2.3', 'latest-linux.yml'))
   assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3_arm64.deb'], '1.2.3', 'latest-linux-arm64.yml'))
-  // 预发布版本号里的「-」在 deb 文件名里是「~」，dpkg 才会把它排在正式版前面。
-  assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3~beta.1_amd64.deb'], '1.2.3-beta.1', 'latest-linux.yml'))
+  // 预发布版本：文件名照抄原版本号（electron-builder 只把控制字段里的「-」换成「~」），
+  // 清单里写的也是这个名字。
+  assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3-beta.1_amd64.deb'], '1.2.3-beta.1', 'latest-linux.yml'))
+  assert.throws(inventory(['xingmang-ai-manager_1.2.3~beta.1_amd64.deb'], '1.2.3-beta.1', 'latest-linux.yml'), (error) => error.code === 'LINUX_UPDATE_INVENTORY_INVALID')
   const invalid = (error) => error.code === 'LINUX_UPDATE_INVENTORY_INVALID'
   // x64 的清单指向 arm64 的包：每个 x64 客户都会下到一个 dpkg 拒装的文件。
   assert.throws(inventory(['xingmang-ai-manager_1.2.3_arm64.deb'], '1.2.3', 'latest-linux.yml'), invalid)

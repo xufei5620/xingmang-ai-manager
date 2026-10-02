@@ -74,18 +74,24 @@ test('the architecture has to be named on the command line', () => {
 })
 
 test('the Linux release environment is the unsigned release and drops anything that would change the package', () => {
-  const inherited = {
-    PATH: '/usr/bin',
-    XINGMANG_LOCAL_BUILD: '1',
+  // 签名发布标记、证书、改更新地址、加速资源：带进来就出了一个别的包。名单逐个写出来，
+  // 少剔一个这里就红。
+  const dropped = {
     XINGMANG_RELEASE: '1',
     XINGMANG_MAC_FREE_RELEASE: '1',
-    XINGMANG_UPDATE_URL: 'https://elsewhere.example.test/feed/',
+    XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '1',
+    XINGMANG_MAC_RELEASE_REHEARSAL: '1',
     XINGMANG_UPDATE_DEV: '1',
+    XINGMANG_UPDATE_URL: 'https://elsewhere.example.test/feed/',
     XINGMANG_ACCELERATION_BUNDLE_DIR: '/tmp/acceleration',
     CSC_LINK: 'certificate.p12',
     CSC_KEY_PASSWORD: 'secret',
+    CSC_NAME: 'Someone',
+    CSC_FOR_PULL_REQUEST: 'true',
     WIN_CSC_LINK: 'windows.p12',
+    WIN_CSC_KEY_PASSWORD: 'secret',
   }
+  const inherited = { PATH: '/usr/bin', XINGMANG_LOCAL_BUILD: '1', ...dropped }
   const environment = buildLinuxReleaseEnvironment(inherited, { releaseOutputDirectory })
 
   assert.equal(environment.XINGMANG_LOCAL_BUILD, '0')
@@ -94,16 +100,7 @@ test('the Linux release environment is the unsigned release and drops anything t
   assert.equal(environment.XINGMANG_OUTPUT_DIR, releaseOutputDirectory)
   assert.equal(environment.CSC_IDENTITY_AUTO_DISCOVERY, 'false')
   assert.equal(environment.PATH, '/usr/bin')
-  for (const name of [
-    'XINGMANG_RELEASE',
-    'XINGMANG_MAC_FREE_RELEASE',
-    'XINGMANG_UPDATE_URL',
-    'XINGMANG_UPDATE_DEV',
-    'XINGMANG_ACCELERATION_BUNDLE_DIR',
-    'CSC_LINK',
-    'CSC_KEY_PASSWORD',
-    'WIN_CSC_LINK',
-  ]) {
+  for (const name of Object.keys(dropped)) {
     assert.equal(name in environment, false, `${name} must not reach the Linux release build`)
   }
   // 调用方的环境原样不动。

@@ -18,6 +18,7 @@ const {
   parseDependencies,
   resolveDebPath,
 } = require('./verify-linux-deb.cjs')
+const { debFileName } = require('./linux-artifact-names.cjs')
 
 const CONTROL = [
   'Package: xingmang-ai-manager',
@@ -316,12 +317,26 @@ test('a release package updates only from the feed its version publishes to', ()
 test('the release directory must hold exactly the expected deb', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-deb-test-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  assert.throws(() => resolveDebPath(directory, '0.2.14-beta.1', 'x64'), /找不到 xingmang-ai-manager_0\.2\.14~beta\.1_amd64\.deb/)
-  fs.writeFileSync(path.join(directory, 'xingmang-ai-manager_0.2.14~beta.1_amd64.deb'), '')
-  assert.equal(resolveDebPath(directory, '0.2.14-beta.1', 'x64'), path.join(directory, 'xingmang-ai-manager_0.2.14~beta.1_amd64.deb'))
+  // electron-builder 的 deb 文件名照抄原版本号，只有控制字段的 Version 才把「-」换成
+  // 「~」（FpmTarget 的 `${name}_${version}_${arch}.${ext}` 与 getSanitizedVersion）。
+  assert.throws(() => resolveDebPath(directory, '0.2.14-beta.1', 'x64'), /找不到 xingmang-ai-manager_0\.2\.14-beta\.1_amd64\.deb/)
+  fs.writeFileSync(path.join(directory, 'xingmang-ai-manager_0.2.14-beta.1_amd64.deb'), '')
+  assert.equal(resolveDebPath(directory, '0.2.14-beta.1', 'x64'), path.join(directory, 'xingmang-ai-manager_0.2.14-beta.1_amd64.deb'))
   assert.throws(() => resolveDebPath(directory, '0.2.14-beta.1', 'arm64'), /arm64\.deb/)
   fs.writeFileSync(path.join(directory, 'xingmang-ai-manager-0.2.14-beta.1.AppImage'), '')
   assert.throws(() => resolveDebPath(directory, '0.2.14-beta.1', 'x64'), /只出 deb.*AppImage/)
+})
+
+test('the deb name is the one electron-builder writes, raw version included', () => {
+  // 名字猜错，发布时 apt 装不上、清单校验也会把正确的包拒掉。直接拿 electron-builder
+  // 自己的命名格式和宏展开来比，升级 electron-builder 改了命名这里会先红。
+  const fpmTarget = fs.readFileSync(require.resolve('app-builder-lib/out/targets/FpmTarget.js'), 'utf8')
+  assert.ok(fpmTarget.includes('nameFormat = "${name}_${version}_${arch}.${ext}"'))
+  const { expandMacro } = require('app-builder-lib/out/util/macroExpander')
+  for (const [version, arch, debArch] of [['0.2.14', 'x64', 'amd64'], ['0.2.14-beta.1', 'arm64', 'arm64']]) {
+    const written = expandMacro('${name}_${version}_${arch}.${ext}', debArch, { name: 'xingmang-ai-manager', version }, { ext: 'deb' })
+    assert.equal(debFileName(version, arch), written)
+  }
 })
 
 test('the command line takes a release directory and an explicit architecture', () => {

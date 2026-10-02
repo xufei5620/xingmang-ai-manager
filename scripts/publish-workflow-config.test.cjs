@@ -315,11 +315,14 @@ test('each platform choice builds exactly its own jobs', () => {
 })
 
 test('Linux only reaches customers once the repository switch is on', () => {
-  const publishes = (needs, vars = {}) => evaluateCondition(publishJob.if, { needs, vars })
+  const publishes = (needs, vars = {}, platforms = 'all') => evaluateCondition(publishJob.if, { needs, vars, inputs: { platforms } })
   const ok = { 'windows-build': 'success', 'macos-build': 'success' }
   const linuxOk = { 'linux-checks': 'success', 'linux-build': 'success' }
   const linuxBuildRed = { 'linux-checks': 'success', 'linux-build': 'failure' }
   const linuxChecksRed = { 'linux-checks': 'failure', 'linux-build': 'skipped' }
+  // 作业超过自己的 timeout-minutes 结束时是 cancelled，不是 failure。
+  const linuxChecksTimedOut = { 'linux-checks': 'cancelled', 'linux-build': 'skipped' }
+  const linuxBuildTimedOut = { 'linux-checks': 'success', 'linux-build': 'cancelled' }
   const on = { XINGMANG_PUBLISH_LINUX: 'true' }
 
   for (const vars of [{}, { XINGMANG_PUBLISH_LINUX: 'false' }, { XINGMANG_PUBLISH_LINUX: '' }]) {
@@ -328,8 +331,9 @@ test('Linux only reaches customers once the repository switch is on', () => {
     assert.equal(publishes({ ...ok, ...linuxOk }, vars), true, label)
     assert.equal(publishes({ ...ok, ...linuxBuildRed }, vars), true, label)
     assert.equal(publishes({ ...ok, ...linuxChecksRed }, vars), true, label)
+    assert.equal(publishes({ ...ok, ...linuxChecksTimedOut }, vars), true, label)
     // 只选了 linux：整个发布作业跳过，连批准都不会要。
-    assert.equal(publishes(linuxOk, vars), false, label)
+    assert.equal(publishes(linuxOk, vars, 'linux'), false, label)
   }
 
   // 开关打开：Linux 和别的平台一样，红了就不发。linux-checks 失败时 linux-build 是
@@ -337,10 +341,17 @@ test('Linux only reaches customers once the repository switch is on', () => {
   assert.equal(publishes({ ...ok, ...linuxOk }, on), true)
   assert.equal(publishes({ ...ok, ...linuxBuildRed }, on), false)
   assert.equal(publishes({ ...ok, ...linuxChecksRed }, on), false)
-  assert.equal(publishes(linuxOk, on), true)
-  assert.equal(publishes(linuxChecksRed, on), false)
-  // 只发 Windows 时 Linux 两个作业都是 skipped，不算失败。
-  assert.equal(publishes({ 'windows-build': 'success' }, on), true)
+  // 超时也一样挡住：只挡 failure 的话，Windows / macOS 会悄悄不带 Linux 发出去。
+  assert.equal(publishes({ ...ok, ...linuxChecksTimedOut }, on), false)
+  assert.equal(publishes({ ...ok, ...linuxBuildTimedOut }, on), false)
+  assert.equal(publishes(linuxOk, on, 'linux'), true)
+  assert.equal(publishes(linuxChecksRed, on, 'linux'), false)
+  assert.equal(publishes(linuxBuildTimedOut, on, 'linux'), false)
+  // 只发 Windows 或 macOS 时 Linux 两个作业都是 skipped，不算失败。
+  assert.equal(publishes({ 'windows-build': 'success' }, on, 'windows'), true)
+  assert.equal(publishes({ 'macos-build': 'success' }, on, 'macos'), true)
+  // GitHub 比较字符串不分大小写，文档照这个写：TRUE 也算打开。
+  assert.equal(publishes({ ...ok, ...linuxBuildRed }, { XINGMANG_PUBLISH_LINUX: 'TRUE' }), false)
   // 原有的规则不变：任何一个 Windows / macOS 出包失败都不发。
   assert.equal(publishes({ 'windows-build': 'failure', 'macos-build': 'success', ...linuxOk }, on), false)
   assert.equal(publishes({ 'windows-build': 'success', 'macos-build': 'failure' }, {}), false)
@@ -552,6 +563,78 @@ function manifestText(version, bytes, name = `XingMang-AI-Manager-${version}-Set
   const sha512 = require('node:crypto').createHash('sha512').update(bytes).digest('base64')
   return YAML.stringify({ version, files: [{ url: name, sha512, size: Buffer.byteLength(bytes) }], path: name, sha512, releaseDate: '2026-09-24T00:00:00.000Z' })
 }
+
+// 上传与逐字节复核两步真的跑一遍：aws 桩把文件放进一个本地「桶」目录并记下类型，
+// curl 桩从那个目录取回。两步的通配符只要有一边漏了 deb，开关打开时就会出现清单
+// 指向一个没传、或者传了没核过的安装包。
+function runUploadAndVerify(artifacts) {
+  const upload = publishJob.steps.find((entry) => /Upload the installers and their blockmaps/.test(entry.name || ''))
+  const verify = publishJob.steps.find((entry) => /Verify the uploaded files are downloadable/.test(entry.name || ''))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-upload-'))
+  const binDirectory = path.join(workspace, 'bin')
+  const bucket = path.join(workspace, 'bucket')
+  for (const directory of [binDirectory, bucket, path.join(workspace, 'release-artifacts')]) fs.mkdirSync(directory)
+  for (const [name, text] of Object.entries(artifacts)) fs.writeFileSync(path.join(workspace, 'release-artifacts', name), text)
+  const logPath = path.join(workspace, 'uploads.log')
+  const awsStub = `#!/bin/bash
+type=''
+args=("$@")
+for ((i = 0; i < \${#args[@]}; i++)); do
+  if [ "\${args[$i]}" = '--content-type' ]; then type=\${args[$((i + 1))]}; fi
+done
+name=$(basename "$4")
+cp "$3" ${JSON.stringify(bucket)}/"$name"
+printf '%s %s\\n' "$name" "$type" >> ${JSON.stringify(logPath)}
+`
+  const curlStub = `#!/bin/bash
+output=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  shift
+done
+name=$(basename "$1")
+[ -f ${JSON.stringify(bucket)}/"$name" ] || exit 22
+cp ${JSON.stringify(bucket)}/"$name" "$output"
+`
+  for (const [name, body] of [['aws', awsStub], ['curl', curlStub]]) {
+    const executable = path.join(binDirectory, name)
+    fs.writeFileSync(executable, body)
+    fs.chmodSync(executable, 0o755)
+  }
+  const env = {
+    PATH: `${binDirectory}:/usr/bin:/bin`,
+    HOME: workspace,
+    RUNNER_TEMP: workspace,
+    OBJECT_PREFIX: 'xingmang-manager',
+    R2_ACCOUNT_ID: 'stub',
+    R2_BUCKET: 'stub',
+    PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
+  }
+  const uploaded = spawnSync(SHELL_PATH, ['-c', upload.run], { cwd: workspace, encoding: 'utf8', env })
+  const verified = spawnSync(SHELL_PATH, ['-c', verify.run], { cwd: workspace, encoding: 'utf8', env })
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { uploaded, verified, log }
+}
+
+test('with Linux on, both debs are uploaded and checked byte for byte before any manifest', posixOnly, () => {
+  const run = runUploadAndVerify({
+    'XingMang-AI-Manager-0.2.11-Setup.exe': 'installer',
+    'XingMang-AI-Manager-0.2.11-Setup.exe.blockmap': 'blockmap',
+    'xingmang-ai-manager_0.2.11_amd64.deb': 'deb x64',
+    'xingmang-ai-manager_0.2.11_arm64.deb': 'deb arm64',
+    'latest.yml': 'manifest',
+    'latest-linux.yml': 'manifest',
+    'latest-linux-arm64.yml': 'manifest',
+  })
+  assert.equal(run.uploaded.status, 0, run.uploaded.stderr)
+  assert.equal(run.verified.status, 0, run.verified.stdout + run.verified.stderr)
+  assert.match(run.log, /^xingmang-ai-manager_0\.2\.11_amd64\.deb application\/vnd\.debian\.binary-package$/m)
+  assert.match(run.log, /^xingmang-ai-manager_0\.2\.11_arm64\.deb application\/vnd\.debian\.binary-package$/m)
+  // 清单不在这一步传：它们只能由最后那一步动。
+  assert.doesNotMatch(run.log, /latest/)
+  assert.match(run.verified.stdout, /已逐字节复核 4 个产物/)
+})
 
 test('the publish guard runs before the first upload', () => {
   const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)

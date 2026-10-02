@@ -19,13 +19,18 @@ function assertArchitecture(arch) {
   return arch
 }
 
-// Debian orders "~" before everything, so a prerelease sorts below its release.
+// The control file's Version field: Debian orders "~" before everything, so a
+// prerelease sorts below its release (electron-builder's getSanitizedVersion).
 function debianVersion(version) {
   return String(version).replace(/-/g, '~')
 }
 
+// The file name keeps the raw version: FpmTarget expands
+// `${name}_${version}_${arch}.${ext}` from appInfo.version, and only the control
+// field goes through getSanitizedVersion. latest-linux*.yml carries the same
+// name, so guessing "~" here would refuse every correct prerelease build.
 function debFileName(version, arch) {
-  return `${PACKAGE_NAME}_${debianVersion(version)}_${DEB_ARCHITECTURES[assertArchitecture(arch)]}.deb`
+  return `${PACKAGE_NAME}_${version}_${DEB_ARCHITECTURES[assertArchitecture(arch)]}.deb`
 }
 
 function updateManifestName(arch) {
