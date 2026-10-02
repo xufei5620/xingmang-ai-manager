@@ -28,6 +28,6 @@ export function RuntimeInstallHint({ runtime, guide }: { runtime: ManagedRuntime
     </div>}
     {copied && <p className="v2-runtime-guide-note" role="status">命令已复制，粘到「终端」里回车即可</p>}
     {failed && <p className="v2-runtime-guide-note" role="status">没能写进剪贴板，手动选中上面的命令复制就行</p>}
-    <p className="v2-runtime-guide-note">装 {runtimeDisplayName(runtime)} 的完整步骤在教程里也有一份。</p>
+    {!guide.noTutorial && <p className="v2-runtime-guide-note">装 {runtimeDisplayName(runtime)} 的完整步骤在教程里也有一份。</p>}
   </div>
 }

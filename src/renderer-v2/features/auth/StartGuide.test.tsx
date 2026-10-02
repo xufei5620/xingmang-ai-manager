@@ -134,6 +134,28 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
   })
 
+  // Linux 版拆分 ③：Linux 上 Gemini 不需要 Python，引导不再多一步、也不因为没有 Python 拦着「安装」和「下一步」。
+  it('skips the Python step for a Gemini that does not need it on this computer', () => {
+    stubResumedGuide('gemini', 'prepare')
+    const missing = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: true, pythonReady: false, pythonNotNeeded: true })], { platform: 'linux', onInstallPython: async () => undefined })
+    expect(missing).not.toContain('data-testid="guide-python-step"')
+    expect(missing).not.toContain('data-testid="guide-python"')
+    expect(missing).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+    expect(missing).not.toContain('Python')
+
+    const installed = guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: true })
+    expect(guideCanSkipConnect('gemini', installed, true)).toBe(true)
+  })
+
+  it('keeps the Python step where Gemini still needs it', () => {
+    stubResumedGuide('gemini', 'prepare')
+    const markup = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: true, pythonReady: false })], { onInstallPython: async () => undefined })
+    expect(markup).toContain('data-testid="guide-python-step"')
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"[^>]*disabled/)
+    expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false }), true)).toBe(false)
+    expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: false }), true)).toBe(false)
+  })
+
   it('warns before installing the Codex desktop app on an account that cannot open store apps', () => {
     stubResumedGuide('codexDesktop', 'prepare')
     const markup = render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed', storeAppLaunchBlock: 'builtInAdministrator' })])
