@@ -199,6 +199,7 @@
 - `diagnostics.ts` 的 `ADMINISTRATOR`：alwaysElevated 那支恢复 #473 的 pass，不再多起一次 4 秒的 PowerShell；`DiagnosticsDependencies.inspectStoreAppLaunchContext` 删除。
 - `codex-desktop-service.ts`：首页合并探测不再读当前账户与 UAC 策略，`DesktopAppStatus.storeAppLaunchBlock` 与 ipc-contract 的 `StoreAppLaunchBlock` 删除；`describeCodexDesktopLaunchFailure` 去掉账户参数，打开失败后不再额外起一次最长 10 秒的账户探测。
 - 渲染层删掉 `storeAppLaunchNotice` / `storeAppLaunchShortNotice` 与首页、安装卸载页、新手引导三处挂载；`operation-error.ts` 删掉按「Administrator / 用户账户控制」隐藏「重置 Codex」的特例。`e2e/windows-powershell-probes-smoke.mjs` 去掉账户探测那两项。
+- `realm-account-service.ts` 的 `restoreAllowingOneTimeout`（#748 加的开机快速重试）第二次恢复改为先 `vault.get(saved)` 取库里这个账号最新的一份再试，取不到（记录没了、读不出）就照第一次的超时挂 stalled，交给 30 秒那一轮重新读库。原因：第一次恢复可能已经续过期——Sub2API 服务端换了新令牌、旧续期令牌当场作废，新的经 `onCredentialRotation` 存进了库，超时的是紧接着的 `/auth/me`。原来拿出发前那份旧凭据重试，续期返回 401，`restoreActive` 随即 `vault.signOut(saved)`，把库里刚存好的新凭据连同账号一起删掉。星芒账号换 cookie 也走同一条路，一并改用最新的。另外快速重试前剩下的 prepare 期限不足 12 秒（单个请求 10 秒超时加落库余量）就不试、直接挂 stalled：星芒账号每次恢复都先续期，期限半路掐断续期时 dispose 让 `assertAuthAttempt` 丢掉回话，换来的 cookie 不落库，30 秒那一轮拿作废的那份会 401 删号。来源：0.2.14 发版前回归检查第二节第 1 条，期限那条是复核时补的。
 
 ## 0.2.13 - 2026-10-01
 
