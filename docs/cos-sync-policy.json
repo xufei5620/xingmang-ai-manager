@@ -1,0 +1,18 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "name/cos:GetObject",
+        "name/cos:HeadObject",
+        "name/cos:PutObject"
+      ],
+      "resource": [
+        "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/xingmang/*",
+        "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/chatgpt/*",
+        "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/claude/*"
+      ]
+    }
+  ]
+}
