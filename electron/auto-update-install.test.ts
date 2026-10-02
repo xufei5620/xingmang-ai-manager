@@ -12,6 +12,7 @@ import {
   resolvePreviousAutoInstallFailure,
   emptyPendingUpdateRecord,
   parsePendingUpdateRecord,
+  quitInstallPrompt,
   resolveDownloadedVersionToRecord,
   type LaunchInstallInput,
 } from './auto-update-install'
@@ -177,5 +178,31 @@ describe('auto install wording', () => {
       previousAutoInstallFailureMessage('darwin'),
     ]
     for (const text of texts) expect(text).not.toMatch(/UAC|NSIS|installer|updater|管理员权限|用户账户控制/i)
+  })
+})
+
+describe('system installer channel (Linux .deb)', () => {
+  const record = { downloadedVersion: '0.2.12', attemptedVersion: null }
+
+  it('never installs on its own, at launch or at quit', () => {
+    expect(decideLaunchInstall(input({ snapshot: snapshot({ installMethod: 'system-installer' }) }))).toBeNull()
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, installMethod: 'system-installer' })).toBe('ask')
+    // Windows and macOS keep installing on quit.
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, installMethod: null })).toBe('install')
+    expect(decideLaunchInstall(input({ snapshot: snapshot({ installMethod: null }) }))).toBe('0.2.12')
+  })
+
+  it('tells the user up front that the app closes and the system asks for the login password', () => {
+    const linux = quitInstallPrompt('0.2.12', 'system-installer')
+    expect(linux.message).toBe('新版本 0.2.12 已经下载好，现在装上吗？')
+    expect(linux.detail).toContain('输入开机密码')
+    expect(linux.detail).toContain('重新打开星芒')
+    expect(linux.buttons).toEqual(['关掉并安装', '先退出，下次再装'])
+    expect(quitInstallPrompt('0.2.12', undefined)).toEqual({
+      message: '新版本 0.2.12 已经下载好，顺手装上吗？',
+      detail: '安装很快，装完会自动打开新版本。现在不装也行，更新会一直留着，下次退出时再问你。',
+      buttons: ['安装并退出', '先退出，下次再装'],
+    })
+    expect(quitInstallPrompt(null, 'system-installer').message).toBe('新版本已经下载好，现在装上吗？')
   })
 })

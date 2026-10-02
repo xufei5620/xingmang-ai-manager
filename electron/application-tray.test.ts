@@ -58,6 +58,8 @@ describe('tray update entry', () => {
       .toEqual({ kind: 'available', version: '0.2.12', waitingForDisk: true })
     expect(resolveTrayUpdateEntry({ ...base, phase: 'downloading' })).toEqual({ kind: 'downloading', version: '0.2.12' })
     expect(resolveTrayUpdateEntry({ ...base, phase: 'downloaded' })).toEqual({ kind: 'downloaded', version: '0.2.12' })
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'downloaded', installMethod: 'system-installer' }))
+      .toEqual({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })
   })
 
   it('does not offer a restart once the installer already failed or a download broke', () => {
@@ -86,6 +88,8 @@ describe('tray update entry', () => {
     expect(label({ kind: 'downloading', version: '0.2.12' })).toBe('软件更新：正在下载新版本 0.2.12')
     expect(label({ kind: 'downloading', version: null })).toBe('软件更新：正在下载新版本')
     expect(label({ kind: 'downloaded', version: '0.2.12' })).toBe('重启并安装新版本 0.2.12')
+    // Linux hands the package to the system installer: the app only closes, it does not restart itself.
+    expect(label({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })).toBe('安装新版本 0.2.12')
     expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('软件更新：新版本 0.2.12 已下载好')
     expect(label({ kind: 'failed', version: '0.2.12' })).toBe('软件更新：新版本 0.2.12 没更新成功，点开看看')
   })

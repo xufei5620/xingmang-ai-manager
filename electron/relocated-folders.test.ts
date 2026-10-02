@@ -3,6 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  acceptsLinuxRelocationTarget,
+  acceptsPosixRelocationTarget,
   acceptsWindowsRelocationTarget,
   activeRelocatedFolderPolicy,
   configureRelocatedFolderAccess,
@@ -169,6 +171,27 @@ describe('relocated folders', () => {
     expect(activeRelocatedFolderPolicy()).toBe(policy)
     configureRelocatedFolderAccess('trusted-only', { platform: 'win32', homeDirectory: home })
     expect(activeRelocatedFolderPolicy()).toBeNull()
+  })
+
+  it('judges targets with each platform its own rule and never follows links for root', () => {
+    const home = temporaryDirectory()
+    expect(configureRelocatedFolderAccess('same-user', { platform: 'win32', homeDirectory: home })?.acceptsTarget)
+      .toBe(acceptsWindowsRelocationTarget)
+    expect(configureRelocatedFolderAccess('same-user', { platform: 'darwin', homeDirectory: home, geteuid: () => 501 })?.acceptsTarget)
+      .toBe(acceptsPosixRelocationTarget)
+    expect(configureRelocatedFolderAccess('same-user', { platform: 'linux', homeDirectory: home, geteuid: () => 1000 })?.acceptsTarget)
+      .toBe(acceptsLinuxRelocationTarget)
+    expect(configureRelocatedFolderAccess('same-user', { platform: 'linux', homeDirectory: home, geteuid: () => 0 })).toBeNull()
+    expect(configureRelocatedFolderAccess('trusted-only', { platform: 'linux', homeDirectory: home, geteuid: () => 1000 })).toBeNull()
+  })
+
+  it.runIf(process.platform === 'linux')('accepts a Linux target only when it is a directory no other account can modify', () => {
+    expect(acceptsLinuxRelocationTarget('/usr')).toBe(true)
+    expect(acceptsLinuxRelocationTarget('/usr/bin/env')).toBe(false)
+    expect(acceptsLinuxRelocationTarget('usr')).toBe(false)
+    const scratch = fs.mkdtempSync('/tmp/xingmang-relocated-linux-')
+    temporaryDirectories.push(scratch)
+    expect(acceptsLinuxRelocationTarget(scratch)).toBe(false)
   })
 
   it('accepts only local drive letters as Windows targets', () => {

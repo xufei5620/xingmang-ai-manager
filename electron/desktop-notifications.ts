@@ -72,11 +72,26 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
       body: describeUpdateDiskShortfall(snapshot.diskShortfall, autoUpdate),
     }
   }
+  const title = snapshot.phase === 'downloaded' ? '星芒AI更新已下载' : '星芒AI有可用更新'
+  // 交给系统安装器的版本（Linux）不会自己装，每次都要他点一下，再在系统窗口里输开机密码。
+  if (snapshot.installMethod === 'system-installer') {
+    return {
+      key: `${version}:${snapshot.phase}`,
+      version,
+      stage: snapshot.phase,
+      title,
+      body: snapshot.phase === 'downloaded'
+        ? `新版 ${version} 已经下好，到更新页点「安装新版本」就能装上。`
+        : autoUpdate
+          ? `新版 ${version} 正在后台下载，下好后到更新页点「安装新版本」。`
+          : `版本 ${version} 已可下载。`,
+    }
+  }
   return {
     key: `${version}:${snapshot.phase}`,
     version,
     stage: snapshot.phase,
-    title: snapshot.phase === 'downloaded' ? '星芒AI更新已下载' : '星芒AI有可用更新',
+    title,
     // 自动更新开着时后台已经在下、关掉软件就会装，再说「已可下载」「可在更新页面重启
     // 安装」就是在让用户去点一个用不着点的按钮。
     body: autoUpdate

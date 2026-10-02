@@ -23,6 +23,18 @@ export type UpdatePhase =
 export type UpdateFailedStep = 'check' | 'download' | 'install'
 
 /**
+ * 新版本怎么装上。缺省（快照里没有这一项）＝安装器接手退出、装完自动重开，Windows 和
+ * Mac 一直是这样。
+ *
+ * - 'system-installer'：Linux 的 .deb。下好并核对后交给这台电脑自己的安装程序打开，软件
+ *   随即关掉；客户在系统的安装窗口里点「安装」、输入开机密码，装好后自己重新打开。软件
+ *   从不提权，所以既不在退出时、也不在打开时自动装，每次都由客户点一下。
+ * - 'manual'：这种装法自动更新用不了（Linux 上不是用 .deb 装的，electron-updater 对它
+ *   什么也不做）。阶段停在 disabled，界面请客户去下载页手动下新版本。
+ */
+export type UpdateInstallMethod = 'system-installer' | 'manual'
+
+/**
  * 下载前量出来的空间缺口。不是错误：新版本照旧摆在那里（phase 仍是 available），
  * 只是这一轮没下。放进 `error` 会让界面喊「下载更新失败」，可一个字节都还没下。
  */
@@ -130,6 +142,8 @@ export interface UpdateSnapshot {
    * 只在 phase 为 downloaded 时有值，阶段一变就清掉。可选＝旧快照，界面照旧不显示。
    */
   launchInstallNotice?: LaunchInstallNotice | null
+  /** 见 UpdateInstallMethod。可选＝旧快照，界面照旧按「重启安装」说。 */
+  installMethod?: UpdateInstallMethod | null
 }
 
 export interface LaunchInstallNotice {
@@ -282,6 +296,17 @@ export interface UpdaterRuntime {
   readFreeDiskBytes?: () => Promise<number | null>
   /** 这一轮因为空间不够没下。宿主拿去记一条日志。*/
   diskShortfallSkipped?: (shortfall: UpdateDiskShortfall, version: string | null) => void
+  /** 见 UpdateInstallMethod。不传＝安装器接手退出（Windows、Mac 的旧行为）。 */
+  installMethod?: UpdateInstallMethod
+  /**
+   * 'system-installer' 通道：把下载时已经核对过 SHA-512 的安装包交给系统安装程序。
+   * 必须在返回之前就把安装程序拉起来（退出确认里选「安装并退出」时，紧接着软件就退了，
+   * 等不到任何 await）；返回的 Promise resolve＝安装窗口已经交出去，reject＝没交出去，
+   * 软件照常开着，报安装失败。
+   */
+  openSystemInstaller?: (packagePath: string) => Promise<void>
+  /** 安装窗口交出去之后把软件关掉：安装包要替换的正是这个软件自己的文件。 */
+  quitAfterSystemInstaller?: () => void
 }
 
 /**
@@ -397,6 +422,29 @@ export function isOlderVersion(candidate: string, current: string): boolean {
 export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
   if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
   return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
+}
+
+/**
+ * 「必须更新」那道门此刻该不该亮出来：返回要求的最低版本，不拦时返回 null。
+ *
+ * Windows、Mac 低于最低版本就拦（旧行为）：它们的更新包和发布一起出，拦下来就有东西
+ * 可装。交给系统安装器的那条路（Linux）不一样：Linux 的更新包可能还没上架、这台电脑
+ * 的架构可能没有包，最低版本却是对所有平台写的。拦了也装不上，付费客户就被整个关在
+ * 门外（摸底明细 U1）。所以 Linux 只在更新目录真的给了这台电脑一个够得上最低版本的
+ * 新版本时才拦；退回（找到的版本比本机还旧）不算。
+ */
+export function resolveGatedRequiredVersion(input: {
+  minimumRequired: string | null
+  installMethod: UpdateInstallMethod | null | undefined
+  availableVersion: string | null
+  rollback: boolean
+}): string | null {
+  const minimum = input.minimumRequired
+  if (!minimum) return null
+  if (input.installMethod !== 'system-installer') return minimum
+  const offered = input.availableVersion
+  if (!offered || input.rollback || !versionParts(offered)) return null
+  return isOlderVersion(offered, minimum) ? null : minimum
 }
 
 /**
@@ -620,7 +668,12 @@ export function createUpdaterService(
 ): UpdaterService {
   const development = !runtime.isPackaged || runtime.localBuild === true
   const platform = runtime.platform ?? process.platform
+  const installMethod = runtime.installMethod ?? null
+  const systemInstaller = installMethod === 'system-installer'
+  // 'manual' 的装法 electron-updater 不认（checkForUpdates 什么事件都不发就返回），
+  // 开着只会让界面永远停在「正在检查」。
   const enabled = runtime.localBuild !== true
+    && installMethod !== 'manual'
     && (runtime.isPackaged || runtime.enableDevelopmentUpdates === true)
   const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
   const now = runtime.now ?? (() => new Date())
@@ -655,6 +708,12 @@ export function createUpdaterService(
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
   let offeredPackageBytes: number | null = null
+  // 状态文件定的最低版本、而本机低于它时的那个版本。快照里的 requiredVersion 由它和
+  // 当前提议一起算（resolveGatedRequiredVersion），分批放量的豁免则只看它。
+  let minimumRequired: string | null = null
+  // 下载后 SHA-512 核对通过的那个安装包。只有 'system-installer' 通道用它：安装包要原样
+  // 交给系统安装程序，而不是像 electron-updater 那样由它自己去找缓存里的文件。
+  let verifiedPackagePath: string | null = null
   let snapshot: UpdateSnapshot = {
     phase: enabled ? 'idle' : 'disabled',
     currentVersion: runtime.currentVersion,
@@ -675,6 +734,8 @@ export function createUpdaterService(
     diskShortfall: null,
     requiredVersion: null,
     launchInstallNotice: null,
+    // 只在 Linux 上出现：Windows、Mac 的快照与以前逐字相同。
+    ...(installMethod ? { installMethod } : {}),
   }
 
   client.autoDownload = false
@@ -700,7 +761,8 @@ export function createUpdaterService(
       badVersions: serviceStatus?.badVersions ?? [],
       rollout: serviceStatus?.rollout ?? null,
       // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
-      manual: manualCheck || Boolean(snapshot.requiredVersion),
+      // 看的是本机低不低于最低版本，不是那道门亮没亮：Linux 的门要等有了提议才亮。
+      manual: manualCheck || Boolean(minimumRequired),
     })
     if (!decision.offer) return false
     if (!defaultRolloutCheck) return true
@@ -727,7 +789,16 @@ export function createUpdaterService(
     const launchInstallNotice = phase !== 'downloaded' || (patch.error !== undefined && patch.error !== null)
       ? null
       : patch.launchInstallNotice !== undefined ? patch.launchInstallNotice : snapshot.launchInstallNotice ?? null
-    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall, launchInstallNotice }
+    const merged = { ...snapshot, ...patch, failedStep, diskShortfall, launchInstallNotice }
+    // 那道门跟着提议走（见 resolveGatedRequiredVersion），提议在这里统一落地，门也就在
+    // 这里统一重算，不用每个改 availableVersion 的地方各补一句。
+    const requiredVersion = resolveGatedRequiredVersion({
+      minimumRequired,
+      installMethod,
+      availableVersion: merged.availableVersion,
+      rollback: merged.rollback === true,
+    })
+    snapshot = { ...merged, requiredVersion }
     const value = cloneSnapshot(snapshot)
     for (const listener of listeners) listener(value)
   }
@@ -748,6 +819,7 @@ export function createUpdaterService(
 
   // 已经找到或下载好的版本刚被撤回：收回这个提议，界面回到「没有可装的更新」。
   const withdrawOffer = () => {
+    verifiedPackagePath = null
     emit({
       phase: 'idle',
       availableVersion: null,
@@ -770,9 +842,10 @@ export function createUpdaterService(
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
     // 开发态装不了更新，拦下来只会把人困住。
     const required = enabled && !development ? resolveRequiredVersion(runtime.currentVersion, status?.minimumVersion) : null
-    const previouslyRequired = snapshot.requiredVersion ?? null
-    if (required !== previouslyRequired) patch.requiredVersion = required
-    if (Object.keys(patch).length) emit(patch)
+    const previouslyRequired = minimumRequired
+    minimumRequired = required
+    // 快照里的 requiredVersion 由 emit 按 minimumRequired 重算，这里只判断要不要发一次。
+    if (Object.keys(patch).length || required !== previouslyRequired) emit(patch)
     // 最低版本是软件开着时才定下的：上一次检查可能已经说过「没有新版本」，界面据此不拦。
     // 刚变成「必须更新」时补查一次，免得要等到三小时后的例行检查。
     if (
@@ -835,7 +908,62 @@ export function createUpdaterService(
     return true
   }
 
+  const startInstallWatchdog = (message: string) => {
+    installWatchdogTimer = setTimeout(() => {
+      installWatchdogTimer = null
+      if (!installRequested || disposed) return
+      reportInstallFailure({ code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message })
+    }, installLaunchTimeoutMs)
+    installWatchdogTimer.unref?.()
+  }
+
+  // Linux never lets electron-updater install: its DebUpdater builds a shell
+  // command line, runs dpkg as root through pkexec/sudo found on PATH, and falls
+  // back to a root `apt-get install -f -y` (摸底明细 U4). The verified package is
+  // handed to the desktop's own package installer instead, which owns the
+  // password prompt and the privilege boundary; this process stays unprivileged.
+  const launchSystemInstaller = (): boolean => {
+    const packagePath = verifiedPackagePath
+    // 安装包没了要重来的是下载：停在「已下载」只会让「重新安装」一遍遍撞同一堵墙。
+    const packageMissing = () => {
+      try { runtime.installQuitAborted?.() } catch { /* The rejection below is what the user needs to see. */ }
+      rejectDownloadedUpdate(
+        'UPDATE_PACKAGE_PATH_MISSING',
+        '下载好的安装包找不到了，可能被清理软件删掉了。点「重新下载」再试一次。',
+      )
+    }
+    if (!packagePath) {
+      packageMissing()
+      return false
+    }
+    if (!runtime.openSystemInstaller) {
+      reportInstallFailure({ code: 'UPDATE_SYSTEM_INSTALLER_MISSING', message: '这台电脑上没法打开安装程序。请找客服。' })
+      return false
+    }
+    const failed = (error: unknown) => {
+      if ((error as { code?: unknown } | null)?.code === 'UPDATE_PACKAGE_PATH_MISSING') packageMissing()
+      else reportInstallFailure(error)
+    }
+    let opening: Promise<void>
+    try {
+      opening = runtime.openSystemInstaller(packagePath)
+    } catch (error) {
+      failed(error)
+      return false
+    }
+    void opening.then(() => {
+      if (disposed || !installRequested) return
+      startInstallWatchdog('安装窗口已经打开了，可星芒没能自己关掉。在安装窗口里点「安装」、输入开机密码；装好后关掉星芒再重新打开。')
+      runtime.quitAfterSystemInstaller?.()
+    }, (error: unknown) => {
+      if (disposed || !installRequested) return
+      failed(error)
+    })
+    return true
+  }
+
   const launchInstaller = (): boolean => {
+    if (systemInstaller) return launchSystemInstaller()
     try {
       installEnvironmentGuard(() => {
         if (macInstallHandoffRegistered && macInstallHandoff) {
@@ -858,17 +986,9 @@ export function createUpdaterService(
       reportInstallFailure(error)
       return false
     }
-    installWatchdogTimer = setTimeout(() => {
-      installWatchdogTimer = null
-      if (!installRequested || disposed) return
-      reportInstallFailure({
-        code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT',
-        message: platform === 'win32'
-          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
-          : '新版本没装上：安装程序没起来。点「重新安装」再试一次。',
-      })
-    }, installLaunchTimeoutMs)
-    installWatchdogTimer.unref?.()
+    startInstallWatchdog(platform === 'win32'
+      ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+      : '新版本没装上：安装程序没起来。点「重新安装」再试一次。')
     return true
   }
 
@@ -893,6 +1013,7 @@ export function createUpdaterService(
   const rejectDownloadedUpdate = (code: string, message: string, detail?: string) => {
     clearInstallWatchdog()
     installRequested = false
+    verifiedPackagePath = null
     emit({
       phase: 'error',
       checkedAt: now().toISOString(),
@@ -942,6 +1063,7 @@ export function createUpdaterService(
       )
       return
     }
+    verifiedPackagePath = downloadedFile
     acceptDownloadedUpdate(event)
   }
 
@@ -1025,6 +1147,10 @@ export function createUpdaterService(
     client.on(event as UpdateEventName, handler)
   }
 
+  // A function call is not narrowed by an earlier comparison on snapshot.phase,
+  // which event handlers may have changed while an await was pending.
+  const currentPhase = (): UpdatePhase => snapshot.phase
+
   const requireEnabled = () => {
     if (!enabled) throw new Error('开发环境未启用主程序更新')
   }
@@ -1062,14 +1188,15 @@ export function createUpdaterService(
     // 让全体用户跟着「更新」回去。
     client.allowDowngrade = isWithdrawn(runtime.currentVersion)
     manualCheck = options.manual === true
+    let result: unknown
     try {
-      await client.checkForUpdates()
+      result = await client.checkForUpdates()
     } catch (error) {
       if (retryWithoutProxy && isProxyConnectionFailure(error)) {
         try {
           await retryOffProxy(async () => {
             emit({ phase: 'checking', error: null, progress: null })
-            await client.checkForUpdates()
+            result = await client.checkForUpdates()
           })
         } catch (retryError) {
           emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'check', progress: null })
@@ -1079,6 +1206,23 @@ export function createUpdaterService(
       }
     } finally {
       manualCheck = false
+    }
+    // electron-updater resolves null without emitting a single event when it
+    // considers this install unable to update itself (on Linux: an AppImage
+    // started without $APPIMAGE, a snap, an unpacked or tar.gz build). Every
+    // later check() returns early while the phase is 'checking', so without this
+    // the updater would sit in '正在检查' for the rest of the session. A packaged
+    // Windows or macOS build is always active, so this never fires there.
+    if (result === null && currentPhase() === 'checking' && !disposed) {
+      emit({
+        phase: 'error',
+        error: {
+          code: 'UPDATE_INACTIVE',
+          message: '这台电脑上的星芒没法自己更新。到下载页下载新版本的安装包，装好后打开就行；不会装请找客服。',
+        },
+        failedStep: 'check',
+        progress: null,
+      })
     }
     return cloneSnapshot(snapshot)
   }
@@ -1116,6 +1260,7 @@ export function createUpdaterService(
       }
     }
     progressSamples = []
+    verifiedPackagePath = null
     emit({ phase: 'downloading', progress: null, error: null })
     try {
       await client.downloadUpdate()

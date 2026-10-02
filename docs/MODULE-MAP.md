@@ -19,6 +19,12 @@
 
 **改跨平台代码前先读 `platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
+## Linux 安全边界模块
+
+- `electron/linux-path-trust.ts` — 路径信任判定（组可写按 `/etc/group` 实际成员判），规则见 `.claude/rules/linux-platform.md`
+- `electron/linux-launch-guard.ts` — 拒绝以 root 或替别的账号运行，`platform/entry.ts` 最先调用
+- `electron/linux-renderer-sandbox.ts` — 画布打开前确认渲染进程的系统沙箱（`Seccomp: 2`）真的生效
+
 ## `electron/` 主进程
 
 **进程入口与 IPC 边界**

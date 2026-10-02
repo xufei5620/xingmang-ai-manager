@@ -57,7 +57,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -93,8 +93,10 @@ import { createNewApiClient, type NewApiRetryOffProxyFailure } from './new-api-c
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
+import { createSessionRealmAccountVault } from './realm-account-vault'
 import { createVaultRecoveryNotifier } from './vault-recovery-notice'
-import { inspectSafeStorageBackend } from './safe-storage-backend'
+import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
+import { isRegularFile, resolveLinuxPasswordStore } from './linux-password-store'
 import { parseRealmSavedAccount, type RealmSavedAccount } from './realm-account'
 import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
 import { requireSiteRuntimeDefinition } from './site-runtime'
@@ -186,6 +188,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
@@ -779,6 +782,16 @@ function resolveDisplayLaunch(): DisplayLaunch | null {
 
 const displayLaunch = resolveDisplayLaunch()
 if (displayLaunch && displayLaunch.mode !== 'accelerated') app.disableHardwareAcceleration()
+// Linux：Chromium 不认识的桌面上，就算装了系统自带的密码保管它也不去用，登录就记不住
+// （linux-password-store.ts）。和显卡加速一样必须在 ready 之前定，判断不了就不动。
+const linuxPasswordStore = process.platform === 'linux'
+  ? appValue(() => resolveLinuxPasswordStore({
+      env: process.env,
+      explicit: app.commandLine.hasSwitch('password-store'),
+      isFile: isRegularFile,
+    }), null)
+  : null
+if (linuxPasswordStore) app.commandLine.appendSwitch('password-store', linuxPasswordStore)
 // 这次是自动改的兼容方式、用户还没在提示里选：设置里动过这个开关就算选过了。
 let displayCompatPending = displayLaunch?.mode === 'auto-compat'
 // Set once the runtime log exists; a GPU crash before that is still recorded
@@ -1479,7 +1492,41 @@ if (!hasSingleInstanceLock) {
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
     let previousAutoInstallFailureReported = false
+    // Linux 只有 .deb 装的能自动更新，装这一步交给系统安装程序（linux-deb-update.ts）。
+    const updateInstallMethod = process.platform === 'linux'
+      ? resolveLinuxInstallMethod({
+        isPackaged: app.isPackaged,
+        packageType: app.isPackaged ? readLinuxPackageType(process.resourcesPath) : null,
+      })
+      : undefined
     const updaterService = createUpdaterService(autoUpdater, {
+      installMethod: updateInstallMethod,
+      openSystemInstaller: updateInstallMethod === 'system-installer'
+        ? async (packagePath) => {
+          try {
+            await openWithSystemInstaller({
+              packagePath,
+              opener: resolveSystemPackageOpener(),
+              env: systemInstallerEnvironment(process.env),
+            })
+            runtimeLog.log('info', 'updater', 'install.system-installer.opened', '已把新版本安装包交给系统安装程序')
+          } catch (error) {
+            const code = (error as Partial<SystemInstallerError> | null)?.code ?? 'UPDATE_SYSTEM_INSTALLER_FAILED'
+            runtimeLog.exception('updater', 'install.system-installer.failed', error)
+            if (code === 'UPDATE_PACKAGE_PATH_MISSING') throw error
+            // 安装程序没起来时替客户把安装包所在的文件夹打开，双击它照样能装。
+            let revealed = false
+            try {
+              shell.showItemInFolder(packagePath)
+              revealed = true
+            } catch (cause) {
+              runtimeLog.exception('updater', 'install.system-installer.reveal-failed', cause)
+            }
+            throw Object.assign(new Error(systemInstallerFailureMessage(code, revealed)), { code })
+          }
+        }
+        : undefined,
+      quitAfterSystemInstaller: () => { app.quit() },
       installedRelease,
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
@@ -1544,8 +1591,9 @@ if (!hasSingleInstanceLock) {
     })
     // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
     // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
-    // 请求在后台走，不挡启动。
-    const serviceStatusUrl = updaterService.getState().phase === 'disabled'
+    // 请求在后台走，不挡启动。Linux 上不是 .deb 装的那种更新关着，可维护提示照样
+    // 要让他看到。
+    const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
       : locateServiceStatusUrl(
         app.isPackaged
@@ -1572,6 +1620,7 @@ if (!hasSingleInstanceLock) {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
       unsignedChannel,
+      ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
     })
     if (unsignedChannel) {
@@ -1736,23 +1785,33 @@ if (!hasSingleInstanceLock) {
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
 
-    // Both realms commit accounts through the OS-backed encrypted vault.
-    // Unavailable encryption rejects login without changing existing files.
+    // Both realms commit accounts through the OS-backed encrypted vault. When
+    // encryption is unavailable, Windows and macOS reject login; Linux signs in
+    // for this run only (resolveCredentialPersistence). Existing files are never
+    // touched either way.
     const safeStorageBackend = inspectSafeStorageBackend(safeStorage)
+    const credentialPersistence = resolveCredentialPersistence(process.platform, safeStorageBackend)
+    if (linuxPasswordStore) {
+      // The detail key avoids "password": the log sanitizer would redact the value.
+      runtimeLog.log('info', 'account', 'session.password-store', '桌面环境不在 Chromium 认识的名单里，已改用系统自带的密码保管', {
+        selectedStore: linuxPasswordStore,
+        backend: safeStorageBackend,
+      })
+    }
     if (safeStorageBackend !== 'ok') {
       runtimeLog.log(
         'warn',
         'account',
         'session.persist.unavailable',
-        safeStorageBackend === 'plaintext'
-          ? '当前系统没有可用的密钥环，安全存储只能以明文保存，已停止写入登录凭据；请启用系统凭据服务后重新登录，已有账号文件将保留'
+        credentialPersistence === 'session-only'
+          ? '这台电脑没法安全保存登录，本次登录只留在内存里，关掉软件后要重新登录；已有账号文件不动'
           : '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
-        { backend: safeStorageBackend },
+        { backend: safeStorageBackend, persistence: credentialPersistence },
       )
     }
     const accountSessionStore = new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat'), safeStorage)
     const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
-    const vault = createFileRealmAccountVault(managerDataDirectory, safeStorage, {
+    const vault = credentialPersistence === 'session-only' ? createSessionRealmAccountVault() : createFileRealmAccountVault(managerDataDirectory, safeStorage, {
       // 重建之后用户看到的是「记住的账号没了」，只记日志等于让他自己猜，所以同时
       // 给界面发一条（一次启动只发一条，备份文件名不跟着走）。
       onRecovered: createVaultRecoveryNotifier({
@@ -1831,8 +1890,10 @@ if (!hasSingleInstanceLock) {
           await client.endPersistedServerSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
         } }
       },
-      legacy: { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
-        readActive: () => accountSessionStore.read() },
+      // The old files can only be read with the OS key; in session-only mode
+      // there is nothing to import them into anyway.
+      legacy: credentialPersistence === 'durable' ? { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
+        readActive: () => accountSessionStore.read() } : undefined,
       quiesce: async () => {
         await acceleration?.stopAll()
         const previous = businesses.get(accounts.getSiteId())
@@ -1930,8 +1991,8 @@ if (!hasSingleInstanceLock) {
         },
       })
       const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
-      const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId)
-      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage)
+      const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId, credentialPersistence)
+      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence)
       const chatCredentials = createChatCredentialCoordinator({ accountService, modelService: systemService, keyStore: chatKeyStore })
       // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
       const aiOutputPlacement = chooseAiOutputRoot({
@@ -2918,7 +2979,8 @@ if (!hasSingleInstanceLock) {
           if (!update) return 'quit'
         }
         const version = update.version
-        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord }) === 'install') {
+        const installMethod = updaterService.getState().installMethod
+        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod }) === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
           // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
           // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
@@ -2933,11 +2995,12 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
+        const prompt = quitInstallPrompt(update.version, installMethod)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具',
-          message: update.version ? `新版本 ${update.version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
-          detail: '安装很快，装完会自动打开新版本。现在不装也行，更新会一直留着，下次退出时再问你。',
-          buttons: ['安装并退出', '先退出，下次再装'],
+          message: prompt.message,
+          detail: prompt.detail,
+          buttons: prompt.buttons,
           defaultId: 0, cancelId: 1,
         })
         return result.response === 0 ? 'install-update' : 'quit'

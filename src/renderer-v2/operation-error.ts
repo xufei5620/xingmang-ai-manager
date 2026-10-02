@@ -63,9 +63,9 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // previous version to fall back to, so an integrity mismatch there keeps the
   // raw wording rather than borrowing a reassurance that would be false.
   { key: 'updateIntegrity', match: (message) => /更新|升级/.test(message) && /(SHA-512|完整性|校验)[^。；]{0,12}(失败|不一致|无效)/.test(message) },
-  // safe-storage-backend.ts 的「当前系统没有可用的密钥环，安全存储只能以明文保存」。
-  // 这不是权限问题：目录写得进去，是这台机器没有可用的凭据服务。
-  { key: 'unsafeStorage', match: (message) => /密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
+  // safe-storage-backend.ts 的「这台电脑没法安全保存密码，已拒绝写入……」（旧版本说「密钥环」「明文」）。
+  // 这不是权限问题：目录写得进去，是这台机器没有可用的系统密码保管。
+  { key: 'unsafeStorage', match: (message) => /没法安全保存密码|密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
   // 更新和回滚要替换整个托管目录。Windows 上正在跑的 CLI 把自己的文件锁住，那是
   // 文件占用，不是杀毒拦截也不是权限不够——归到 installBlocked 会把用户送去关杀毒，
   // 方向全错。主进程在那一步会把话说成「文件被占用，……正在运行」
