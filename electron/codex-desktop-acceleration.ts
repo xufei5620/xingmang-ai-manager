@@ -201,6 +201,12 @@ export function createCodexDesktopAccelerationCoordinator(
 
   async function check(current: Watch): Promise<void> {
     if (watch !== current || disposed) return
+    // 换了账号、退出了登录：旧账号的会话加速服务已经停掉，再读它的状态只会被拒，
+    // 落进下面的 catch 就是每分钟空转一次、永远停不下来。先看账号再读。
+    if (options.getAccountScope() !== current.scope) {
+      stopWatching()
+      return
+    }
     let state: AccelerationState
     try { state = await options.readState(current.scope) }
     catch { next(current); return }

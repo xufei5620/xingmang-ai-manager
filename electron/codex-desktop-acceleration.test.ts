@@ -170,8 +170,9 @@ describe('codex desktop acceleration exit watch', () => {
     let current: AccelerationState = stateOf('idle')
     const readState = vi.fn(async () => current)
     const log = vi.fn()
+    let accountScope: string | null = scope
     const coordinator = createCodexDesktopAccelerationCoordinator({
-      getAccountScope: () => scope,
+      getAccountScope: () => accountScope,
       readState,
       connect: async () => {
         await options.connectGate
@@ -199,8 +200,9 @@ describe('codex desktop acceleration exit watch', () => {
       return isDesktopRunning.mock.calls.length > probes
     }
     return {
-      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log,
+      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log, readState,
       setState: (state: AccelerationState) => { current = state },
+      setAccountScope: (next: string | null) => { accountScope = next },
     }
   }
 
@@ -319,6 +321,21 @@ describe('codex desktop acceleration exit watch', () => {
     await h.tick()
     await h.tick()
     await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+  })
+
+  it('stops watching once the account has changed instead of retrying the old account forever', async () => {
+    // 换账号后加速服务对旧账号的读状态一律拒绝；原来落进 catch 每分钟重排一次，停不下来。
+    const h = watchSetup({ running: [true] })
+    await h.coordinator.ensureConnected()
+    expect(h.timers).toHaveLength(1)
+    h.setAccountScope('xm-account:8')
+    const reads = h.readState.mock.calls.length
+    h.timers.shift()!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(h.readState.mock.calls.length).toBe(reads)
+    expect(h.timers).toHaveLength(0)
+    expect(h.isDesktopRunning).not.toHaveBeenCalled()
+    expect(h.disconnect).not.toHaveBeenCalled()
   })
 
   it('ignores state updates that are not an unattended automatic session of this account', () => {
