@@ -501,6 +501,96 @@ jobs:
             exit 1
           fi
 
+  # Linux 安装包（docs/LINUX.md）。Linux 上没有代码签名，也没有 ASAR 完整性校验
+  # （那根 fuse 在 Linux 二进制里什么都不嵌），装好的程序靠的只是「/opt 下全归
+  # root」；客户能不能打开，靠的是安装脚本把 chrome-sandbox 设成 setuid root。
+  # 这两件事都只有真装一次才看得见，所以每个架构都打一个 deb、过产物校验、像客户
+  # 那样用 apt 装上，再以 runner 这个普通用户真开一次，从 /proc 读渲染进程是不是
+  # 在沙箱里，最后卸掉，确认一样不留。
+  #
+  # arm64 用 GitHub 的原生 arm 机器（公开仓库不计费）：x64 机器上装不了 arm64
+  # 的包，模拟器里起 Electron 也说明不了真机。typecheck 与 npm test 不在这里重跑，
+  # linux-test 已经跑过；这里只管 Linux 包本身。
+  linux-package:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            unpacked: linux-unpacked
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            unpacked: linux-arm64-unpacked
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+      UNPACKED_DIRECTORY: release/${{ matrix.unpacked }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - name: Build the deb for this runner's architecture
+        # Compile, then electron-builder's xz-compressed deb. A few minutes;
+        # the bound names this step if a download it makes ever hangs.
+        timeout-minutes: 15
+        run: npm run build:linux:ci
+      - run: node scripts/verify-packaged-hardening.cjs "$UNPACKED_DIRECTORY"
+      - run: node scripts/verify-linux-deb.cjs release --arch "$PACKAGE_ARCH"
+      - name: Install the deb the way a customer would
+        # apt resolves the package's Depends against the archive, which is the
+        # only check that the names in it exist on Ubuntu 24.04. xvfb is for
+        # the launches below; the arm image does not ship it. Recommends are
+        # left out because they are fonts, and the launch does not read them.
+        # Each apt call has its own bound and runs under sudo so the timeout
+        # can reach it (#695: a timeout outside sudo left apt holding the
+        # dpkg lock); the step bound is the backstop.
+        timeout-minutes: 10
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          # Absolute, because apt reads a relative "dir/name" as a package name.
+          deb="$(node -p "require('node:path').resolve(require('./scripts/verify-linux-deb.cjs').resolveDebPath('release', require('./package.json').version, process.env.PACKAGE_ARCH))")"
+          sudo timeout --kill-after=20s 240 apt-get update
+          sudo timeout --kill-after=20s 300 apt-get install -y --no-install-recommends xvfb "$deb"
+      - name: Turn on Ubuntu 24.04's user-namespace restriction
+        # Stock Ubuntu 24.04 desktops refuse unprivileged user namespaces
+        # unless an AppArmor profile allows them, and Chromium's preferred
+        # sandbox needs one. Set it explicitly so the launch below meets what a
+        # customer has, whatever the runner image ships with.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          fi
+      - name: Launch the installed app as an ordinary user and require its sandbox
+        # The script waits at most 90 seconds for the first page.
+        timeout-minutes: 5
+        run: xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
+      - name: Run the packaged hardening smoke against the installed app
+        # Two cold starts with a 40-second readiness bound each, then one
+        # launch that has to refuse --remote-debugging-port within 5 seconds.
+        timeout-minutes: 6
+        run: xvfb-run -a node e2e/packaged-hardening-smoke.mjs /usr/bin/xingmang-ai-manager
+      - name: Remove the deb and require that nothing is left behind
+        timeout-minutes: 5
+        run: |
+          sudo timeout --kill-after=20s 240 apt-get remove -y xingmang-ai-manager
+          for leftover in /opt/xingmang-ai-manager /usr/bin/xingmang-ai-manager /etc/alternatives/xingmang-ai-manager \
+            /usr/share/applications/xingmang-ai-manager.desktop /etc/apparmor.d/xingmang-ai-manager; do
+            if [ -e "$leftover" ] || [ -L "$leftover" ]; then
+              echo "::error::removing the package left $leftover behind"
+              exit 1
+            fi
+          done
+
   # N1 的已验证版本名单说「这个版本在我们的中转上能用」，而在这个作业存在之前
   # 那句话只有上游 changelog 作背书 —— 名单挡住的两次回归都是 CLI 发出的请求被
   # 第三方端点拒掉，只有真的跑一次 `claude -p` 才答得了。所以改名单的 PR 要自己
@@ -555,7 +645,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, audit, cli-relay-probe]
+    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-package, audit, cli-relay-probe]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -568,7 +658,7 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
           // `test` folds the Windows shards together and applies that same
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.
