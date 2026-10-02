@@ -1,6 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
-import { managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
+import { managedNodeRuntimeBinDirectory, managedNpmBinDirectory, managedTerminalLauncherDirectory } from './managed-cli-paths'
 
 /**
  * Where this app looks for node, npm and the four CLIs on Linux, without reading any shell
@@ -21,6 +21,11 @@ import { managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './manage
  * The managed npm bin directory comes next, as on macOS, so the copies this app installed
  * and verified are the ones it scans, updates and opens.
  *
+ * The folder of terminal launchers (linux-shell-profile.ts) is dropped from the inherited
+ * PATH. After the next sign-in the desktop session carries it, and a launcher found by the
+ * scan would pass for an install, a stale one even for a CLI that is gone. The app finds
+ * its own CLIs in the npm folder above and never needs the launchers.
+ *
  * This is ordering only. On Linux the app never elevates, so this PATH is only ever used
  * within the current user's own rights; trustedCommandEnvironment builds the stricter one.
  */
@@ -31,9 +36,11 @@ export function linuxCommandPathCandidates(
 ): string[] {
   const inheritedPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
   const managed: string[] = []
+  let launcherDirectory: string | null = null
   try {
     const env = { ...baseEnv, HOME: homeDirectory }
     managed.push(managedNodeRuntimeBinDirectory(env, 'linux'), managedNpmBinDirectory(env, 'linux'))
+    launcherDirectory = managedTerminalLauncherDirectory(env, 'linux')
   } catch {
     // No usable HOME: there is no product folder either, so nothing of ours to find.
   }
@@ -41,7 +48,7 @@ export function linuxCommandPathCandidates(
   return [
     ...additionalPaths,
     ...whole(managed),
-    ...inheritedPath.split(path.posix.delimiter),
+    ...inheritedPath.split(path.posix.delimiter).filter((entry) => !sameDirectory(entry, launcherDirectory)),
     ...whole([
       baseEnv.VOLTA_HOME ? path.posix.join(baseEnv.VOLTA_HOME, 'bin') : '',
       baseEnv.FNM_MULTISHELL_PATH ?? '',
@@ -69,4 +76,10 @@ export function linuxCommandPathCandidates(
  */
 function whole(entries: readonly string[]): string[] {
   return entries.filter((entry) => !entry.includes(path.posix.delimiter))
+}
+
+function sameDirectory(entry: string, directory: string | null): boolean {
+  if (!directory) return false
+  const trimmed = entry.trim().replace(/^"(.*)"$/, '$1')
+  return Boolean(trimmed) && path.posix.normalize(trimmed).replace(/(.)\/+$/, '$1') === directory
 }

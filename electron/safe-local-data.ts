@@ -403,6 +403,11 @@ export interface SafeAtomicWriteOptions {
    * non-atomic replacement. Disabled by default for configuration/state data.
    */
   allowNonAtomicFallback?: boolean
+  /**
+   * Permission bits for the new file; default 0o600. Set explicitly after open so
+   * the process umask cannot take bits away (a launcher has to stay executable).
+   */
+  mode?: number
 }
 
 function isTransientReplaceError(error: unknown): boolean {
@@ -480,6 +485,7 @@ async function writeAtomicSafeFile(
   let handle: fs.promises.FileHandle | null = null
   try {
     handle = await fs.promises.open(temporaryPath, 'wx', 0o600)
+    if (options.mode !== undefined) await handle.chmod(options.mode)
     await handle.writeFile(content, { encoding })
     await handle.sync()
     await handle.close()

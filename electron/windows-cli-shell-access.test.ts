@@ -520,4 +520,133 @@ describe('createCliTerminalAccess', () => {
     await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', expect.any(String), expect.objectContaining({ outcome: 'added' })))
     expect(ensureShellProfile).toHaveBeenCalledTimes(2)
   })
+
+  it('does nothing on release outside Linux', async () => {
+    const ensureShellProfile = vi.fn(async () => 'added')
+    const syncTerminalCommands = vi.fn(async () => ({ outcome: 'removed', skipped: [] }))
+    for (const platform of ['win32', 'darwin'] as const) {
+      const access = createCliTerminalAccess({ platform, executionMode: 'same-user', isManaged: () => true, ensureShellProfile, syncTerminalCommands })
+      await access.release('claude')
+      // The Linux hook is never used off Linux, even when one is passed.
+      await access.prepare({ provider: 'claude', installation: npmInstall(binDirectory()) }, 'install')
+    }
+    expect(syncTerminalCommands).not.toHaveBeenCalled()
+  })
+
+  describe('on Linux', () => {
+    function linuxAccess(overrides: Partial<Parameters<typeof createCliTerminalAccess>[0]> = {}) {
+      const syncTerminalCommands = vi.fn(async (reason: string) => ({ outcome: reason === 'uninstall' ? 'removed' : 'added', skipped: [] as string[] }))
+      const ensureShellProfile = vi.fn(async () => 'added')
+      const ensureUserPath = vi.fn(async () => 'added' as const)
+      const log = vi.fn()
+      const access = createCliTerminalAccess({
+        platform: 'linux',
+        executionMode: 'same-user',
+        isManaged: (installation) => installation.npmPrefix === '/home/ann/.local/share/XingMangAI/Cli/npm',
+        syncTerminalCommands,
+        ensureShellProfile,
+        ensureUserPath,
+        log,
+        ...overrides,
+      })
+      return { access, syncTerminalCommands, ensureShellProfile, ensureUserPath, log }
+    }
+    const managed = { source: 'npm' as const, npmPrefix: '/home/ann/.local/share/XingMangAI/Cli/npm' }
+
+    it('syncs after every install, touching no shim, PATH or macOS profile', async () => {
+      const prefix = npmPrefixWithShims('claude')
+      const { access, syncTerminalCommands, ensureShellProfile, ensureUserPath, log } = linuxAccess()
+
+      await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+      await access.prepare({ provider: 'codex', installation: managed }, 'install')
+
+      // Each install may add a launcher, so a second one in the same session syncs again.
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(2))
+      expect(syncTerminalCommands).toHaveBeenNthCalledWith(1, 'install')
+      expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
+      expect(ensureShellProfile).not.toHaveBeenCalled()
+      expect(ensureUserPath).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', '已让新开的终端可以直接敲工具名', expect.objectContaining({ provider: 'codex', reason: 'install', outcome: 'added' })))
+    })
+
+    it('at startup syncs once, and only when one of the installs is the app\'s own', async () => {
+      const first = linuxAccess()
+      await first.access.sweepOnce([
+        { provider: 'claude', installation: npmInstall('/usr/local') },
+        { provider: 'codex', installation: managed },
+        { provider: 'gemini', installation: managed },
+      ])
+      await first.access.sweepOnce([{ provider: 'codex', installation: managed }])
+      await vi.waitFor(() => expect(first.syncTerminalCommands).toHaveBeenCalledTimes(1))
+      expect(first.syncTerminalCommands).toHaveBeenCalledWith('startup')
+
+      const second = linuxAccess({ isManaged: () => { throw new Error('未找到有效的用户主目录') } })
+      await second.access.sweepOnce([{ provider: 'codex', installation: npmInstall('/usr/local') }])
+      await second.access.prepare({ provider: 'codex', installation: npmInstall('/usr/local') }, 'startup')
+      expect(second.syncTerminalCommands).not.toHaveBeenCalled()
+    })
+
+    it('at startup also syncs for Grok, which never lives in the app\'s npm folder', async () => {
+      const { access, syncTerminalCommands } = linuxAccess()
+      const grok = { source: 'native' as const, npmPrefix: null }
+
+      await access.sweepOnce([
+        { provider: 'claude', installation: npmInstall('/usr/local') },
+        { provider: 'grok', installation: grok },
+      ])
+
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(1))
+      expect(syncTerminalCommands).toHaveBeenCalledWith('startup')
+    })
+
+    it('syncs again after an uninstall and logs that the lines came out', async () => {
+      const { access, syncTerminalCommands, log } = linuxAccess()
+
+      await access.release('codex')
+
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.removed', expect.any(String), expect.objectContaining({ provider: 'codex', reason: 'uninstall', outcome: 'removed' })))
+      expect(syncTerminalCommands).toHaveBeenCalledWith('uninstall')
+    })
+
+    it('runs one sync at a time so two installs never append to the same file together', async () => {
+      let running = 0
+      let overlapped = false
+      const releases: Array<() => void> = []
+      const syncTerminalCommands = vi.fn(async () => {
+        running += 1
+        if (running > 1) overlapped = true
+        await new Promise<void>((resolve) => releases.push(resolve))
+        running -= 1
+        return { outcome: 'added', skipped: [] as string[] }
+      })
+      const { access } = linuxAccess({ syncTerminalCommands })
+
+      await access.prepare({ provider: 'claude', installation: managed }, 'install')
+      await access.release('codex')
+      await vi.waitFor(() => expect(releases).toHaveLength(1))
+      releases[0]()
+      await vi.waitFor(() => expect(releases).toHaveLength(2))
+      releases[1]()
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(2))
+
+      expect(overlapped).toBe(false)
+    })
+
+    it('logs skipped files and failures without failing the install, and tries again next time', async () => {
+      const syncTerminalCommands = vi.fn()
+        .mockResolvedValueOnce({ outcome: 'added', skipped: ['~/.bashrc'] })
+        .mockRejectedValueOnce(new Error('终端启动器目录无效'))
+        .mockResolvedValueOnce({ outcome: 'present', skipped: [] })
+      const { access, log } = linuxAccess({ syncTerminalCommands })
+
+      await expect(access.prepare({ provider: 'claude', installation: managed }, 'install')).resolves.toBeUndefined()
+      await access.prepare({ provider: 'claude', installation: managed }, 'install')
+      await access.prepare({ provider: 'claude', installation: managed }, 'install')
+
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(3))
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', '终端启动设置无需改动', expect.objectContaining({ outcome: 'present' })))
+      expect(log).toHaveBeenCalledWith('warn', 'cli.shell-profile.skipped', expect.any(String), expect.objectContaining({ skipped: ['~/.bashrc'] }))
+      expect(log).toHaveBeenCalledWith('warn', 'cli.shell-profile.failed', expect.any(String), expect.objectContaining({ error: '终端启动器目录无效' }))
+    })
+  })
 })

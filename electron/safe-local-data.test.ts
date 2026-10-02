@@ -86,6 +86,21 @@ describe('safe local data files', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
   })
 
+  it.runIf(process.platform !== 'win32')('creates the file owner-only by default and with the requested bits otherwise, whatever the umask', async () => {
+    const directory = fs.realpathSync(temporaryDirectory())
+    const plain = path.join(directory, 'state.json')
+    const launcher = path.join(directory, 'launcher')
+    const umask = process.umask(0o077)
+    try {
+      await writeAtomicSafeUtf8File(plain, '{}', '测试导出')
+      await writeAtomicSafeUtf8File(launcher, '#!/bin/sh\n', '测试导出', { mode: 0o755 })
+    } finally {
+      process.umask(umask)
+    }
+    expect(fs.statSync(plain).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(launcher).mode & 0o777).toBe(0o755)
+  })
+
   it('retries a briefly locked rename instead of aborting the write', async () => {
     const filePath = path.join(temporaryDirectory(), 'report.txt')
     await writeAtomicSafeUtf8File(filePath, 'first', '测试导出')
