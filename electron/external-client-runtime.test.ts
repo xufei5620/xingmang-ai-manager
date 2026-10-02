@@ -516,8 +516,73 @@ describe('macOS external desktop lifecycle', () => {
       if (candidate.startsWith('/Applications/WorkBuddy.app')) return candidate
       throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     })
-    return { execute, runtime: createExternalClientRuntime({ platform: 'darwin', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501, ...extra }) }
+    return { execute, runtime: createExternalClientRuntime({ platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501, ...extra }) }
   }
+  /** OpenCode 还没装、装完才出现在「应用程序」里的那台 Mac。 */
+  function macInstallFixture(extra: ExternalClientRuntimeOptions = {}) {
+    let placed = false
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: 'ai.opencode.desktop', CFBundleShortVersionString: '1.18.34' }))
+      return commandResult(spec)
+    })
+    const verifyPath = vi.fn(async (candidate: string) => {
+      if (placed && candidate.startsWith('/Applications/OpenCode.app')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    const installMacosDesktopApp = vi.fn<NonNullable<ExternalClientRuntimeOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 OpenCode 1.18.34', percent: 40 })
+      await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      placed = true
+      return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+    })
+    const assertDiskSpace = vi.fn(async (_subject: string) => undefined)
+    const routed: string[] = []
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501,
+      installMacosDesktopApp, assertDiskSpace, fetch: vi.fn<typeof fetch>(),
+      withDownloadRoute: async (operation) => { routed.push('start'); try { return await operation() } finally { routed.push('end') } },
+      ...extra,
+    })
+    return { execute, runtime, installMacosDesktopApp, assertDiskSpace, routed }
+  }
+  it('offers one-click installation only for clients whose official Mac package has been verified', async () => {
+    const f = macInstallFixture()
+    const statuses = await f.runtime.scan()
+    expect(statuses.map((status) => [status.tool, status.installSupported])).toEqual([['workbuddy', false], ['claudeDesktop', false], ['opencode', true]])
+    expect(statuses[2].installHint).toBeNull()
+    expect(statuses[0].installHint).toContain('官网下载')
+    // A bundle installed as root would belong to root, and the customer could never update it.
+    const root = macInstallFixture({ getuid: () => 0 })
+    expect((await root.runtime.scan())[2]).toMatchObject({ installSupported: false })
+    await expect(root.runtime.install('opencode')).rejects.toThrow('官网下载')
+    expect(root.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+  it('installs OpenCode from its official package inside the download route, then verifies it like any detected app', async () => {
+    const f = macInstallFixture()
+    const progress: string[] = []
+    const status = await f.runtime.install('opencode', (event) => progress.push(event.message))
+    expect(status).toMatchObject({ tool: 'opencode', installed: true, version: '1.18.34', path: '/Applications/OpenCode.app' })
+    expect(f.assertDiskSpace).toHaveBeenCalledWith('OpenCode 安装失败')
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'opencode', architecture: 'arm64', userHome: '/Users/tester' }))
+    expect(progress).toEqual([
+      'OpenCode 已加入安装队列', '正在检测 OpenCode', '正在下载 OpenCode 1.18.34', '正在放进「应用程序」',
+      '正在验证安装结果', 'OpenCode 安装完成',
+    ])
+    // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
+    expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/codesign', argv: ['--verify'] }, expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000 }))
+    for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/usr/sbin/spctl' && spec.argv.at(-1) === '/Applications/OpenCode.app')).toBe(true)
+  })
+  it('checks the disk before anything is downloaded and passes the installer failure on unchanged', async () => {
+    const short = macInstallFixture({ assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足`) } })
+    await expect(short.runtime.install('opencode')).rejects.toThrow('OpenCode 安装失败：安装目录所在磁盘空间不足')
+    expect(short.installMacosDesktopApp).not.toHaveBeenCalled()
+    const failure = Object.assign(new Error('OpenCode 没下载下来，请检查网络后再点一次「安装」。'), { detail: 'fetch failed' })
+    const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
+    await expect(failing.runtime.install('opencode')).rejects.toBe(failure)
+  })
   it('validates installed bundles with Gatekeeper and the verified WorkBuddy team, then launches through open', async () => {
     const f = macFixture()
     expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, version: '5.5.6', running: true, installSupported: false, launchSupported: true })

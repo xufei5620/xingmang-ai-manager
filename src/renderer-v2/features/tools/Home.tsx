@@ -436,8 +436,9 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
     const status = installJob ? 'installing' : tool.status.detectionError ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : tool.configurationStatus
-    // macOS 上这三个官方都只给自己下载的安装包（installSupported 为假）。原来按钮写
-    // 「暂不支持」且点不动，客户看到的是死路一条；现在带他去教程里那一章（第七批 3）。
+    // macOS 上没有核对得了的官方 Mac 包的（主进程 macos-desktop-app-installer.ts 那张表之外，
+    // installSupported 为假）要客户自己下载。原来按钮写「暂不支持」且点不动，客户看到的是
+    // 死路一条；现在带他去教程里那一章（第七批 3）。表里有的照常「安装」。
     // Windows arm64 上 WorkBuddy 同样装不了，但那是没有对应架构的包，教程救不了，
     // 仍旧保持「暂不支持」。
     const manualInstall = tool.action === 'install' && tool.disabled && snapshot?.platform.isMac === true

@@ -895,18 +895,18 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: macDesktopTutorialTopic,
     title: 'Mac 上装桌面端',
-    lead: 'Mac 用户从官网下载需要的桌面端，装好后回工具箱检测、配置。不用把四个都装一遍。',
+    lead: 'OpenCode 在首页点「安装」就能装好；Codex 桌面端、Claude Desktop 和 WorkBuddy 还要你从官网下载。装好后回工具箱检测、配置。不用把四个都装一遍。',
     category: 'advanced',
     minutes: 4,
-    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
+    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', '一键安装', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
     steps: [
       {
         title: '先选你要用的桌面端',
-        where: '工具箱首页 → 对应桌面端 → 安装指南',
-        detail: 'Mac 上的「安装指南」会打开本教程，下载安装要你自己完成。',
+        where: '工具箱首页 → 对应桌面端 → 安装 / 安装指南',
+        detail: 'OpenCode 点「安装」，工具箱会下载官方安装包、放进「应用程序」，装好直接看第 4 步。其他三个的「安装指南」会打开本教程，下载安装要你自己完成。',
         bullets: ['选择 Codex 桌面端、WorkBuddy、Claude Desktop 或 OpenCode。', '已显示版本号的不用重装，直接看第 4 步。'],
         expected: '知道这次要安装哪个应用。',
-        extra: [{ title: '为什么这里不能一键安装？', detail: 'Windows 支持工具箱代装这四个桌面端，macOS 目前采用官网下载、手动安装。它们在 Mac 上也能使用，安装桌面端不会改动已经装好的命令行工具。' }],
+        extra: [{ title: '为什么其他三个不能一键安装？', detail: '工具箱要能确认下载到的是官方原版才会代你安装，Mac 上目前能确认的是 OpenCode。其他三个请从官网下载、自己安装，它们在 Mac 上一样能用。OpenCode 一键安装没成功时，也可以照第 2、3 步自己装。安装桌面端不会改动已经装好的命令行工具。' }],
         action: '回首页选择桌面端',
         page: 'home',
       },
