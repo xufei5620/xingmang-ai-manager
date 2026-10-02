@@ -5,6 +5,8 @@ import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
 import { runtimeButtonLabel, runtimeHomebrewCommand } from '../features/tools/runtime-install-guide';
+import type { WindowOs } from '../features/app/window-os';
+import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 
 export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'acceleration' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
 
@@ -56,6 +58,25 @@ export const updateDiskCleanupTitle = '电脑磁盘快满了，更新下不下�
 // 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了更新页，收尾那句换成门自己的按钮。
 export const updateDiskCleanupSteps = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。';
 export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。`;
+// Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
+export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
+
+export function updateDiskCleanupStepsFor(os: WindowOs): string {
+  return os === 'linux' ? linuxUpdateDiskCleanupSteps : updateDiskCleanupSteps;
+}
+
+// 第一章的登录这一步和读完的两句提醒，Windows / Mac 版和 Linux 版共用。
+const signInTutorialStep: TutorialStep = {
+  title: '登录星芒账号',
+  where: '工具箱左下角 → 账号',
+  detail: '用你自己的星芒账号登录。左下角已经显示账号名字的，直接看第 2 步。',
+  bullets: ['点左下角账号区域，输入账号和密码。', '没有账号就按登录窗口里的注册入口操作。'],
+  expected: '左下角显示你的账号名字。',
+  illustration: 'account',
+  action: '打开个人中心',
+  page: 'account',
+};
+const firstUseReminders = ['AI 写出来的代码和给出的结论都可能出错，合并或执行之前自己再过一遍。', '粘贴来路不明的网页、文档或日志时留个心眼，里面可能藏着让 AI 去做别的事的指令。'] as const;
 
 export const tutorialTopics: readonly TutorialTopic[] = [
   {
@@ -66,16 +87,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     minutes: 5,
     keywords: ['新手', '入门', '第一次', '不会用', '安装', '登录', '首页', 'Codex', '桌面端', '图形界面'],
     steps: [
-      {
-        title: '登录星芒账号',
-        where: '工具箱左下角 → 账号',
-        detail: '用你自己的星芒账号登录。左下角已经显示账号名字的，直接看第 2 步。',
-        bullets: ['点左下角账号区域，输入账号和密码。', '没有账号就按登录窗口里的注册入口操作。'],
-        expected: '左下角显示你的账号名字。',
-        illustration: 'account',
-        action: '打开个人中心',
-        page: 'account',
-      },
+      signInTutorialStep,
       {
         title: '装好 Codex 桌面端',
         where: '工具箱首页 → Codex 桌面端',
@@ -111,7 +123,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'home',
       },
     ],
-    reminders: ['AI 写出来的代码和给出的结论都可能出错，合并或执行之前自己再过一遍。', '粘贴来路不明的网页、文档或日志时留个心眼，里面可能藏着让 AI 去做别的事的指令。'],
+    reminders: firstUseReminders,
   },
   {
     id: 'install',
@@ -1082,3 +1094,150 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
 ];
+
+/*
+ * Linux 版教程（Linux 版拆分 ⑩）。Linux 上没有 Codex 桌面端和游戏加速，Mac 专属的两章
+ * 也用不上；第一章换成 Codex CLI（和新手引导在 Linux 上的推荐项同一个），更新那一步换成
+ * 「交给系统安装窗口」的说法，和更新页、退出确认、必须更新提示同一口径（#760）。
+ * 其余章节原样沿用，只删掉几句讲 Codex 桌面端的话。Windows 和 Mac 拿到的还是上面那份。
+ */
+const linuxHiddenTutorialTopics: ReadonlySet<string> = new Set(['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic]);
+
+const linuxStartTutorial: TutorialTopic = {
+  id: 'start',
+  title: '第一次用？照着这 4 步做',
+  lead: '工具箱帮你装好、配好 Codex CLI。跟着做，最后在终端窗口里发出第一条消息。',
+  category: 'start',
+  minutes: 5,
+  keywords: ['新手', '入门', '第一次', '不会用', '安装', '登录', '首页', 'Codex', 'Codex CLI', '命令行', '终端'],
+  steps: [
+    signInTutorialStep,
+    {
+      title: '装好 Codex CLI',
+      where: '工具箱首页 → Codex CLI',
+      detail: '找准「Codex CLI」这一行。已经显示版本号的，不用重复安装。',
+      bullets: ['点「安装」，等进度和账号同步结束。', '缺 Node.js 时星芒会先自动准备好，不用输开机密码，也不用自己去下载。'],
+      expected: 'Codex CLI 显示已安装版本。',
+      illustration: 'install',
+      action: '去首页找 Codex CLI',
+      page: 'home',
+    },
+    {
+      title: '看到「已配好」就继续',
+      where: '工具箱首页 → Codex CLI → 状态',
+      detail: '工具箱通常会自动配好。已经显示「已配好」就看第 4 步；显示「连接账号」时，才需要下面的操作。',
+      bullets: ['点「连接账号」，选择「使用星芒账号」。', '需要准备密钥时选「自动准备（推荐）」；密钥就是工具调用 AI 用的通行证。', '点「保存配置」，你在工具里做的其他设置会原样保留。'],
+      expected: 'Codex CLI 这一行显示「已配好」。',
+      illustration: 'config',
+      action: '去首页看是否已配好',
+      page: 'home',
+    },
+    {
+      title: '打开 Codex，发出第一条消息',
+      where: '工具箱首页 → Codex CLI「打开」→ 终端窗口',
+      detail: '点「打开」，第一次会让你选这次要处理的文件夹，选好后会弹出终端窗口，Codex 在里面启动。先问一个简单问题。',
+      bullets: ['不知道选哪个文件夹，就在这一行的「…」里选「新建项目文件夹并打开」。', '等终端里的 Codex 启动好，输入下面这句话并回车，等它回复。'],
+      example: '你好，请用中文告诉我你能帮我做什么。',
+      expected: 'Codex 回了一段完整文字，你就可以开始用了。',
+      illustration: 'launch',
+      action: '回首页打开 Codex',
+      page: 'home',
+    },
+  ],
+  reminders: firstUseReminders,
+};
+
+const linuxRuntimeTutorialStep: TutorialStep = {
+  title: '选一个命令行工具，看看缺不缺运行环境',
+  where: '工具箱首页 → 运行环境',
+  detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，放在星芒自己的文件夹里，不用输开机密码，也不用自己去下载。',
+  bullets: ['运行环境卡里 Node.js 一行显示出版本号，就是准备好了。'],
+  expected: '所需运行环境显示版本号。',
+  extra: [{ title: 'Claude Code 为什么提示 Git？', detail: `部分技能、插件里的命令和第一次添加官方插件市场要用到 Git。没有的话打开「终端」，输入 ${gitLinuxInstallCommand} 回车，提示输密码时输开机密码（屏幕上不显示，输完回车）。` }],
+  illustration: 'install',
+  action: '去首页看运行环境',
+  page: 'home',
+};
+
+const linuxSelfUpdateTutorialStep: TutorialStep = {
+  title: '工具箱自己更新，AI 工具在首页更新',
+  where: '更多 → 更新；首页 → 工具行更新',
+  detail: '工具箱的新版本会在后台下好，下好后提醒你点「安装新版本」；首页工具行的「更新」管那个 AI 工具。',
+  bullets: ['点「安装新版本」，星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。', '装好后从应用菜单重新打开星芒。'],
+  expected: '重新打开后，更新页显示「已是最新版本」。',
+  extra: [
+    { title: '不想让它在后台下载？', detail: '去「设置」→「启动与关闭」关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
+    { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
+    { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+    { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
+    { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。` },
+  ],
+  action: '打开工具箱更新',
+  page: 'updates',
+};
+
+const linuxLaunchTroubleTutorialStep: TutorialStep = {
+  title: '点「打开」后没看到终端窗口',
+  where: '工具箱首页 → 工具的「打开」',
+  detail: '命令行工具会在这台电脑的终端窗口里启动。窗口没出来时，先看看是不是被别的窗口挡住了，再看首页有没有出错提示。',
+  bullets: ['有出错提示就按提示里的按钮处理，不要连续重复点击。', '工具行显示「已配好」只说明设置保存了，还要点「打开」才会启动。'],
+  expected: '终端窗口里工具启动好了，或者拿到了明确的出错提示。',
+  action: '回首页打开工具',
+  page: 'home',
+};
+
+// 沿用的章节里只有这几句讲 Codex 桌面端，Linux 上删掉。原文改了这里就对不上，
+// tutorials.test.ts 会因 Linux 版里又出现「桌面端」而失败。
+const linuxRemovedTutorialSentences = ['Codex 桌面端也一样。', 'Codex CLI 和 Codex 桌面端共用一份设置，会一起改。', 'Codex CLI 与桌面端共用配置，修改会影响两者；'] as const;
+
+function withoutLinuxSentences(text: string): string {
+  return linuxRemovedTutorialSentences.reduce((result, sentence) => result.split(sentence).join(''), text);
+}
+
+function linuxTutorialText(topic: TutorialTopic): TutorialTopic {
+  return {
+    ...topic,
+    lead: withoutLinuxSentences(topic.lead),
+    steps: topic.steps.map((step) => ({
+      ...step,
+      detail: withoutLinuxSentences(step.detail),
+      ...(step.bullets ? { bullets: step.bullets.map(withoutLinuxSentences) } : {}),
+      ...(step.extra ? { extra: step.extra.map((entry) => ({ title: entry.title === '已有安装或正在使用 Codex 桌面端？' ? '已经装过这个工具？' : entry.title, detail: withoutLinuxSentences(entry.detail) })) } : {}),
+    })),
+  };
+}
+
+function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
+  if (topic.id === 'start') return [linuxStartTutorial];
+  if (linuxHiddenTutorialTopics.has(topic.id)) return [];
+  if (topic.id === 'cli') {
+    return [linuxTutorialText({
+      ...topic,
+      lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。第一章走的是 Codex CLI，Claude Code、Gemini CLI 也是同样的装法。',
+      steps: topic.steps.map((step) => step.illustration === 'install' ? linuxRuntimeTutorialStep : step),
+    })];
+  }
+  if (topic.id === updatesTutorialTopic) {
+    return [{
+      ...topic,
+      keywords: [...topic.keywords.filter((keyword) => !['Mac', '钥匙串', '始终允许', 'C 盘'].includes(keyword)), '安装窗口', '应用菜单'],
+      steps: topic.steps.map((step) => step.page === 'updates' ? linuxSelfUpdateTutorialStep : step),
+    }];
+  }
+  if (topic.id === 'trouble') {
+    return [{
+      ...topic,
+      keywords: topic.keywords.filter((keyword) => keyword !== '桌面端'),
+      // 前两步讲的是 Codex 桌面端装没装上、打没打开。
+      steps: [linuxLaunchTroubleTutorialStep, ...topic.steps.filter((step) => step.page !== 'home')],
+    }];
+  }
+  return [linuxTutorialText(topic)];
+}
+
+const linuxTutorialTopics: readonly TutorialTopic[] = tutorialTopics.flatMap(linuxTutorialTopic);
+
+/** 当前系统能看到的教程。Windows 和 Mac 是同一份（tutorialTopics 本身）。 */
+export function tutorialTopicsFor(os: WindowOs): readonly TutorialTopic[] {
+  return os === 'linux' ? linuxTutorialTopics : tutorialTopics;
+}

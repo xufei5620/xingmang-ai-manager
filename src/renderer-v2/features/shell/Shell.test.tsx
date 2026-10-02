@@ -72,3 +72,22 @@ describe('renderer-v2 status bar account label', () => {
     expect(statusbar({ signedIn: true, displayName: '星芒用户' })).toContain('已登录 星芒用户')
   })
 })
+
+describe('renderer-v2 sidebar pages per computer', () => {
+  it('drops game acceleration from the sidebar when this computer has none (Linux)', () => {
+    const linux = renderToStaticMarkup(createElement(Shell, {
+      activePage: 'home',
+      platform: 'linux',
+      account: { signedIn: true, displayName: '星芒用户' },
+      adapter: { pageVisible: (page) => page !== 'acceleration' },
+      children: null,
+    }))
+    expect(linux).not.toContain('data-testid="nav-acceleration"')
+    expect(linux).toContain('data-testid="nav-home"')
+    expect(linux).toContain('data-testid="nav-tutorial"')
+  })
+
+  it('keeps every page when nothing says otherwise', () => {
+    expect(render()).toContain('data-testid="nav-acceleration"')
+  })
+})

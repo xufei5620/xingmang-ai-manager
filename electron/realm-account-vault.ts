@@ -47,6 +47,8 @@ export interface RealmLoginHintSummary {
 }
 
 export interface RealmAccountVault {
+  /** Present only on createSessionRealmAccountVault: nothing outlives this run. */
+  readonly sessionOnly?: true
   /** Explicit signed-out login recovery only; ordinary reads never reset accounts. */
   recoverUnreadable(): Promise<boolean>
   list(): Promise<RealmAccountSummary[]>
@@ -304,4 +306,24 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
     importLegacy,
     migrateLegacy: importLegacy,
   })
+}
+
+/**
+ * For Linux desktops without a usable keyring (resolveCredentialPersistence).
+ * Same rules as the file vault -- limits, login hints, one commit point -- but
+ * the document lives only in this process: no file is opened or written, so
+ * the cookies never reach disk unprotected (I3) and the next launch starts
+ * signed out. The "cipher" is an identity encoding for that reason; it must
+ * never be handed to anything that persists.
+ */
+export function createSessionRealmAccountVault(): RealmAccountVault {
+  let document: string | null = null
+  const vault = createRealmAccountVault({
+    isEncryptionAvailable: () => true,
+    encryptString: (plaintext) => Buffer.from(plaintext, 'utf8'),
+    decryptString: (encoded) => Buffer.from(encoded).toString('utf8'),
+    read: async () => document,
+    writeAtomic: async (encoded) => { document = encoded },
+  })
+  return Object.freeze({ ...vault, sessionOnly: true as const })
 }

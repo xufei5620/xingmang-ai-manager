@@ -49,6 +49,8 @@ function createInstallFixture(options: {
   const runtimeBin = path.join(homeDirectory, '.local', 'bin')
   fs.mkdirSync(runtimeBin, { recursive: true })
   vi.stubEnv('HOME', homeDirectory)
+  // Linux 上托管目录跟着 XDG_DATA_HOME 走：开发机上设了它，测试就会写进真实的数据目录。
+  vi.stubEnv('XDG_DATA_HOME', undefined)
   const npmExecutable = path.join(runtimeBin, 'npm')
   fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
   fs.chmodSync(npmExecutable, 0o700)
@@ -115,7 +117,9 @@ function createInstallFixture(options: {
 }
 
 describe('installing a CLI with download acceleration', () => {
-  it('prefers the official registry once the route is up', async () => {
+  // 这几条模拟 Linux 的安装会在 HOME 下建本软件的托管 npm 目录（Linux 版拆分 ②）；Windows
+  // 主机上的 HOME 不是 POSIX 路径，建不出来，所以只在 macOS / Linux 主机上跑。
+  it.runIf(process.platform !== 'win32')('prefers the official registry once the route is up', async () => {
     const fixture = createInstallFixture()
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.acquire).toHaveBeenCalledTimes(1)
@@ -124,7 +128,7 @@ describe('installing a CLI with download acceleration', () => {
     expect(fixture.release).toHaveBeenCalledTimes(1)
   })
 
-  it('tells the user which source order it is using', async () => {
+  it.runIf(process.platform !== 'win32')('tells the user which source order it is using', async () => {
     const fixture = createInstallFixture()
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     const messages = (fixture.target.send as unknown as { mock: { calls: Array<[string, { message?: string }]> } })
@@ -133,21 +137,21 @@ describe('installing a CLI with download acceleration', () => {
     expect(messages.some((message) => message.includes('已启用下载加速，优先使用官方源'))).toBe(true)
   })
 
-  it('keeps the existing order when no route could be started', async () => {
+  it.runIf(process.platform !== 'win32')('keeps the existing order when no route could be started', async () => {
     const fixture = createInstallFixture({ lease: { endpoint: null, accelerated: false } })
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.registries[0]).toContain('npmmirror.com')
     expect(fixture.release).toHaveBeenCalledTimes(1)
   })
 
-  it('installs as before when acquiring the route throws', async () => {
+  it.runIf(process.platform !== 'win32')('installs as before when acquiring the route throws', async () => {
     const fixture = createInstallFixture({ acquire: async () => { throw new Error('加速服务不可用') } })
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.registries[0]).toContain('npmmirror.com')
     expect(fixture.release).not.toHaveBeenCalled()
   })
 
-  it('respects a pinned mirror-first policy', async () => {
+  it.runIf(process.platform !== 'win32')('respects a pinned mirror-first policy', async () => {
     const fixture = createInstallFixture()
     await fixture.settingsStore.update({ version: 2, mirrorPolicy: 'mirror-first' })
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
@@ -162,7 +166,7 @@ describe('installing a CLI with download acceleration', () => {
     expect(fixture.release).toHaveBeenCalledTimes(1)
   })
 
-  it('passes the loopback proxy down to npm', async () => {
+  it.runIf(process.platform !== 'win32')('passes the loopback proxy down to npm', async () => {
     const fixture = createInstallFixture()
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.subprocessEnvironments[0]?.HTTPS_PROXY).toBe('http://127.0.0.1:7890')
@@ -180,10 +184,23 @@ describe('installing a CLI with download acceleration', () => {
     expect(env?.ALL_PROXY).toBe('http://127.0.0.1:1080')
   })
 
-  it('keeps the proxy settings untouched for npm outside Windows', async () => {
+  // Linux 版拆分 ②：网上教程常让人把 `export https_proxy=…7890` 写进 ~/.profile，代理软件一关就装不上。
+  it.runIf(process.platform !== 'win32')('leaves out a proxy setting that points at a closed local port when npm runs on Linux', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7899')
+    vi.stubEnv('ALL_PROXY', 'http://127.0.0.1:1080')
+    const probe = vi.fn(async (target: { port: number }) => target.port === 1080)
+    const fixture = createInstallFixture({ platform: 'linux', subprocessProxy: {}, probeLoopbackProxy: probe })
+    await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
+    const env = fixture.subprocessEnvironments[0]
+    expect(env).toBeDefined()
+    expect(Object.keys(env ?? {}).some((key) => key.toUpperCase() === 'HTTPS_PROXY')).toBe(false)
+    expect(env?.ALL_PROXY).toBe('http://127.0.0.1:1080')
+  })
+
+  it.runIf(process.platform !== 'win32')('keeps the proxy settings untouched for npm on macOS', async () => {
     vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7899')
     const probe = vi.fn(async () => false)
-    const fixture = createInstallFixture({ subprocessProxy: {}, probeLoopbackProxy: probe })
+    const fixture = createInstallFixture({ platform: 'darwin', subprocessProxy: {}, probeLoopbackProxy: probe })
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.subprocessEnvironments[0]?.HTTPS_PROXY).toBe('http://127.0.0.1:7899')
     expect(probe).not.toHaveBeenCalled()

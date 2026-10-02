@@ -10,9 +10,11 @@ const source = fs.readFileSync(workflowPath, 'utf8')
 const workflow = YAML.parse(source)
 const windowsJob = workflow.jobs['windows-package']
 const macosJob = workflow.jobs['macos-package']
+const linuxChecksJob = workflow.jobs['linux-checks']
+const linuxJob = workflow.jobs['linux-package']
 
 function allSteps() {
-  return [...windowsJob.steps, ...macosJob.steps]
+  return Object.values(workflow.jobs).flatMap((job) => job.steps)
 }
 
 test('the test-package build reads no secrets at all', () => {
@@ -21,8 +23,7 @@ test('the test-package build reads no secrets at all', () => {
   // 分支 dispatch 它，分支上的一行改动就能把读到的东西打印出来。没有 secret，
   // 这条攻击路径就不存在，也不必依赖仓库设置里的保护规则还在。
   assert.doesNotMatch(source, /secrets\./)
-  assert.equal(windowsJob.environment, undefined)
-  assert.equal(macosJob.environment, undefined)
+  for (const job of Object.values(workflow.jobs)) assert.equal(job.environment, undefined)
   assert.equal(workflow.permissions.contents, 'read')
   assert.deepEqual(Object.keys(workflow.permissions), ['contents'])
 })
@@ -113,9 +114,12 @@ test('the macOS artifact says in its own name that it cannot be shipped', () => 
   // 下载列表里只看得到名字，而 macOS 包的签名身份是一次性的：发出去既不能自动
   // 更新也无法追溯。Windows 包无签名是产品决定，名字里不必自曝。
   const uploads = allSteps().filter((step) => String(step.uses || '').startsWith('actions/upload-artifact@'))
-  assert.equal(uploads.length, 2)
+  assert.equal(uploads.length, 3)
   const names = uploads.map((step) => step.with.name)
   assert.ok(names.some((name) => name.includes('DO-NOT-PUBLISH')), names.join('、'))
+  // Linux 包是本地构建模式，自动更新关着；装上去的人得从名字上就知道这一点。
+  assert.equal(names.filter((name) => name.startsWith('linux-')).length, 1)
+  assert.ok(names.some((name) => name.startsWith('linux-') && name.includes('NO-AUTO-UPDATE')), names.join('、'))
   for (const step of uploads) {
     assert.equal(step.with['if-no-files-found'], 'error', '出包作业不能以「没有产物」的形式悄悄成功')
   }
@@ -123,9 +127,46 @@ test('the macOS artifact says in its own name that it cannot be shipped', () => 
 
 test('selecting one platform skips the other job instead of failing it', () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.platforms.type, 'choice')
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['both', 'windows', 'macos'])
-  assert.equal(windowsJob.if, "${{ inputs.platforms != 'macos' }}")
-  assert.equal(macosJob.if, "${{ inputs.platforms != 'windows' }}")
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['both', 'windows', 'macos', 'linux'])
+  assert.equal(windowsJob.if, "${{ inputs.platforms == 'both' || inputs.platforms == 'windows' }}")
+  assert.equal(macosJob.if, "${{ inputs.platforms == 'both' || inputs.platforms == 'macos' }}")
+  // both 仍只指发版前要验的 Windows 和 macOS；Linux 还没对客户发布，只在点名时出。
+  assert.equal(linuxChecksJob.if, "${{ inputs.platforms == 'linux' }}")
+  assert.equal(linuxJob.needs, 'linux-checks')
+  assert.equal(linuxJob.if, undefined, 'the packaging jobs inherit the selection from linux-checks')
+})
+
+test('the Linux packages are checked once, then built, installed and launched on native hardware before upload', () => {
+  // 与 macOS 同样的理由：这个工作流能指向任意分支，交出去装的包要自带门禁。
+  const checks = linuxChecksJob.steps.map((step) => String(step.run || '').trim())
+  for (const command of ['npm run typecheck', 'npm test']) {
+    assert.ok(checks.includes(command), `${command} 缺失：${checks.join(' / ')}`)
+  }
+  assert.ok(checks.indexOf('npx --no-install playwright install chromium') < checks.indexOf('npm test'))
+
+  assert.deepEqual(linuxJob.strategy.matrix.include.map((entry) => [entry.arch, entry.runner]), [
+    ['x64', 'ubuntu-24.04'],
+    ['arm64', 'ubuntu-24.04-arm'],
+  ])
+  assert.equal(linuxJob['runs-on'], '${{ matrix.runner }}')
+  const commands = linuxJob.steps.map((step) => String(step.run || '').trim())
+  const index = (pattern) => commands.findIndex((command) => pattern.test(command))
+  const order = [
+    index(/^npm run build:linux:ci$/),
+    index(/^node scripts\/verify-packaged-hardening\.cjs "\$UNPACKED_DIRECTORY"$/),
+    index(/^node scripts\/verify-linux-deb\.cjs release --arch "\$PACKAGE_ARCH"$/),
+    index(/apt-get install -y --no-install-recommends xvfb "\$deb"/),
+    index(/^xvfb-run -a node e2e\/linux-deb-smoke\.mjs \/usr\/bin\/xingmang-ai-manager$/),
+    linuxJob.steps.findIndex((step) => String(step.uses || '').includes('upload-artifact')),
+  ]
+  assert.ok(order.every((entry) => entry !== -1), JSON.stringify(order))
+  assert.deepEqual([...order].sort((a, b) => a - b), order, '上传之前必须先校验、真装、真开')
+  for (const step of linuxJob.steps.filter((entry) => /apt-get|xvfb-run|build:linux/.test(String(entry.run || '')))) {
+    assert.ok(step['timeout-minutes'] > 0, `${step.name || step.run} 需要自己的步骤上限`)
+  }
+  assert.doesNotMatch(JSON.stringify(linuxJob), /no-sandbox|disable-setuid-sandbox|ELECTRON_DISABLE_SANDBOX/)
+  // Linux v1 不带加速（docs/LINUX.md），也就不该在这里准备线路资源。
+  assert.equal(commands.some((command) => command.includes('prepare-acceleration-bundle')), false)
 })
 
 test('the macOS job runs the checks and the compile its build script deliberately skips', () => {

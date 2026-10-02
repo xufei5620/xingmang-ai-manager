@@ -44,7 +44,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
-  unsafeStorage: { sample: '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入托管 API Key。' },
+  unsafeStorage: { sample: '这台电脑没法安全保存密码，已拒绝写入托管 API Key。' },
   // 支付的两个终态不走这条路：pages-account.tsx 的 paymentTerminalPresentation
   // 已经按回跳结果给出更具体的说法，再用目录文案盖一层只会更含糊。
   paymentClosed: { unreachable: 'paymentTerminalPresentation 直接给终态文案' },
@@ -263,9 +263,15 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('tells the user this machine has no keyring rather than blaming permissions', () => {
-    const hint = presentOperationError('当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入已保存的账号。请先启用系统凭据服务后重试。')
-    expect(hint?.key).toBe('unsafeStorage')
-    expect(hint?.title).toBe('这台电脑无法安全保存密码')
+    // safe-storage-backend.ts 现在的说法，和老版本主进程的说法都要认得。
+    for (const message of [
+      '这台电脑没法安全保存密码，已拒绝写入已保存的账号。',
+      '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入已保存的账号。请先启用系统凭据服务后重试。',
+    ]) {
+      const hint = presentOperationError(message)
+      expect(hint?.key).toBe('unsafeStorage')
+      expect(hint?.title).toBe('这台电脑无法安全保存密码')
+    }
   })
 
   it('never reassures when the backend says the rollback failed too', () => {

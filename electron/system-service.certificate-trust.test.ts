@@ -55,6 +55,8 @@ function createInstallFixture(options: {
   const runtimeBin = path.join(homeDirectory, '.local', 'bin')
   fs.mkdirSync(runtimeBin, { recursive: true })
   vi.stubEnv('HOME', homeDirectory)
+  // Linux 上托管目录跟着 XDG_DATA_HOME 走，不清掉会写进开发机真实的数据目录。
+  vi.stubEnv('XDG_DATA_HOME', undefined)
   vi.stubEnv('NODE_USE_SYSTEM_CA', undefined)
   const npmExecutable = path.join(runtimeBin, 'npm')
   const nodeExecutable = path.join(runtimeBin, 'node')
@@ -121,14 +123,16 @@ async function installError(fixture: ReturnType<typeof createInstallFixture>): P
 const selfSignedFailure = 'npm error code SELF_SIGNED_CERT_IN_CHAIN\nnpm error request to https://registry.npmjs.org/@anthropic-ai%2fclaude-code failed, reason: self-signed certificate in certificate chain'
 
 describe('installing a CLI behind a certificate the machine trusts', () => {
-  it('lets npm trust the operating system certificate store on the same-user path', async () => {
+  // 这几条模拟 Linux 的安装会在 HOME 下建本软件的托管 npm 目录（Linux 版拆分 ②）；Windows
+  // 主机上的 HOME 不是 POSIX 路径，建不出来，所以只在 macOS / Linux 主机上跑。
+  it.runIf(process.platform !== 'win32')('lets npm trust the operating system certificate store on the same-user path', async () => {
     const fixture = createInstallFixture()
     await installError(fixture)
     expect(fixture.npmEnvironments.length).toBeGreaterThan(0)
     for (const env of fixture.npmEnvironments) expect(env.NODE_USE_SYSTEM_CA).toBe('1')
   })
 
-  it('keeps a value the user already chose', async () => {
+  it.runIf(process.platform !== 'win32')('keeps a value the user already chose', async () => {
     const fixture = createInstallFixture()
     vi.stubEnv('NODE_USE_SYSTEM_CA', '0')
     await installError(fixture)
@@ -136,7 +140,7 @@ describe('installing a CLI behind a certificate the machine trusts', () => {
     for (const env of fixture.npmEnvironments) expect(env.NODE_USE_SYSTEM_CA).toBe('0')
   })
 
-  it('asks the host fetch for registry metadata when one is provided', async () => {
+  it.runIf(process.platform !== 'win32')('asks the host fetch for registry metadata when one is provided', async () => {
     const registryFetch = vi.fn(async (input: string | URL | Request) => registryResponse(input))
     const fixture = createInstallFixture({ registryFetch: registryFetch as unknown as typeof fetch })
     await installError(fixture)
@@ -144,14 +148,14 @@ describe('installing a CLI behind a certificate the machine trusts', () => {
     expect(fixture.globalFetch.mock.calls.map(([input]) => String(input)).some((url) => url.includes('registry.npmjs.org'))).toBe(false)
   })
 
-  it('names an outdated Node.js when npm still rejects the certificate', async () => {
+  it.runIf(process.platform !== 'win32')('names an outdated Node.js when npm still rejects the certificate', async () => {
     const fixture = createInstallFixture({ lockFailure: selfSignedFailure, nodeVersion: 'v22.12.0' })
     const message = await installError(fixture)
     expect(message).toContain(toolCertificateMessages.outdatedNode)
     expect(message).not.toContain(networkFailureMessages.tls)
   })
 
-  it('adds nothing when Node.js already reads the store, so the machine itself rejects the certificate', async () => {
+  it.runIf(process.platform !== 'win32')('adds nothing when Node.js already reads the store, so the machine itself rejects the certificate', async () => {
     const fixture = createInstallFixture({ lockFailure: selfSignedFailure, nodeVersion: 'v24.11.0' })
     const message = await installError(fixture)
     expect(message).toContain('SELF_SIGNED_CERT_IN_CHAIN')

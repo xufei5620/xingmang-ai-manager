@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ExternalClientStatus } from '../../../../electron/ipc-contract'
-import { presentExternalClients } from './external-model'
+import { presentExternalClients, visibleExternalClients } from './external-model'
 import { isToolId } from './model'
 
 const status: ExternalClientStatus = { tool: 'workbuddy', installed: false, version: null, path: null, installDirectory: null, running: false, installSupported: true, launchSupported: true, detectionError: null, installHint: null, configured: false, model: null, configurationSource: 'missing', configurationError: null }
@@ -60,5 +60,19 @@ describe('external client lifecycle presentation', () => {
     expect(present({ installSupported: false, installHint: 'manual only' })).toMatchObject({ disabled: true, detail: 'manual only' })
     expect(present({ installed: true, configured: true, launchSupported: false }).disabled).toBe(true)
     expect(present({ installed: true, running: true, version: 'v2.0', model: 'deepseek-test' }).detail).toBe('v2.0 · 运行中 · deepseek-test')
+  })
+})
+
+describe('visibleExternalClients', () => {
+  it('drops the desktop-client rows on Linux, where none of them can be installed or opened', () => {
+    const statuses = [status, { ...status, tool: 'claudeDesktop' as const }]
+    expect(visibleExternalClients('linux', statuses)).toEqual([])
+    expect(visibleExternalClients('linux', [])).toBe(visibleExternalClients('linux', statuses))
+  })
+
+  it('keeps every row on Windows and macOS', () => {
+    const statuses = [status]
+    expect(visibleExternalClients('win', statuses)).toBe(statuses)
+    expect(visibleExternalClients('mac', statuses)).toBe(statuses)
   })
 })

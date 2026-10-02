@@ -117,17 +117,18 @@ node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$RU
 
 ### 5.1 一次发布，两次批准
 
-工作流分三个作业：
+工作流分这几个作业：
 
 1. **windows-build** —— 走 `release:build:unsigned` 的完整发布门禁，带第 4 节的加速线路。不读任何 secret。
 2. **macos-build** —— 用**已发布的那张签名证书**出双架构包，带加速线路，出完立刻把包启动一遍。它要读 `.p12`，所以挂 `environment: release`，会停下来等第一次 Approve。
-3. **publish** —— 传 R2、打 tag、建 Release。同样挂 `environment: release`，等第二次 Approve。
+3. **linux-checks / linux-build** —— 先在 x64 上跑一遍类型检查和全部测试，再 x64、arm64 各出一个 deb、真装真开。不读 secret、不用批准。传不传出去看仓库变量 `XINGMANG_PUBLISH_LINUX`，没设就只留在 Actions artifact 里，红了也不挡另外两个平台（`docs/RELEASING.md`「Linux 开关」）。
+4. **publish** —— 传 R2、打 tag、建 Release。同样挂 `environment: release`，等第二次 Approve。
 
 第一次批准放行的只是「用真证书出一份包」，产物只躺在 Actions artifact 里，对外什么都没发生。把包下下来装机验收，过了再批第二次。
 
 macOS 这一半与第 1 节那条测试路径的区别就在这张证书：测试包用 runner 现场生成的一次性身份，**绝不能**进更新源；正式包必须沿用已发布的那张，换一张等于让所有已装的 Mac 客户静默失去自动更新（原理见 `docs/RELEASING.md` 的 2.2）。签名预检会拿证书指纹跟 `scripts/macos-published-signing-identity.cjs` 里登记的台账对账，对不上直接失败。
 
-上传顺序固定为**先安装包和 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`**；反了的话用户会在文件还没传完时就被告知有新版本。`scripts/publish-workflow-config.test.cjs` 把这个顺序钉住了。
+上传顺序固定为**先安装包和 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`（Linux 开关打开时还有两份 Linux 清单）**；反了的话用户会在文件还没传完时就被告知有新版本。`scripts/publish-workflow-config.test.cjs` 把这个顺序钉住了。
 
 ### 5.2 要准备的 secret
 

@@ -99,7 +99,7 @@ test('the workflow keeps free text out of the shell and publishes only the statu
   assert.equal(uploads.length, 1)
   assert.match(uploads[0].run, /\$OBJECT_PREFIX\/service-status\.json/)
   assert.match(uploads[0].run, /--cache-control 'no-cache'/)
-  assert.doesNotMatch(uploads[0].run, /latest(-mac)?\.yml/)
+  assert.doesNotMatch(uploads[0].run, /latest(?:-[a-z0-9-]+)?\.yml/)
 })
 
 test('withdrawn versions are added, removed one by one, or cleared, never silently replaced', () => {
@@ -146,4 +146,10 @@ test('the workflow checks the live manifests before it sets a minimum version', 
   assert.equal(build.env.MINIMUM_VERSION, '${{ inputs.minimum_version }}')
   const manifests = steps.findIndex((step) => /latest-mac\.yml/.test(step.run ?? ''))
   assert.ok(manifests >= 0 && manifests < steps.indexOf(build))
+  // 每个平台都要读，Linux 两个架构各一份：漏读 Linux 的话，最低版本可能被设得比线上
+  // Linux 正在发的还高，Linux 客户就被挡在门外、又找不到能装的新版本。没发过的平台
+  // 404 跳过。
+  const { UPDATE_MANIFEST_NAMES } = require('./update-release-utils.cjs')
+  assert.ok(steps[manifests].run.includes(`for manifest in ${UPDATE_MANIFEST_NAMES.join(' ')}; do`))
+  assert.match(steps[manifests].run, /404\) echo "线上没有 \$manifest，跳过这个平台"/)
 })

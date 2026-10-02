@@ -10,7 +10,9 @@ import '../src/styles/ui-layout.css'
 
 const search = new URLSearchParams(location.search)
 const scenario = search.get('scenario') ?? 'missing'
-const platform = platformCapabilitiesFor(search.get('platform') ?? 'win32', 'x64')
+const capabilities = platformCapabilitiesFor(search.get('platform') ?? 'win32', 'x64')
+// Linux 版拆分 ② 起已经没有哪个平台要客户自己装 Node.js，「外部安装」这条路用 nodeRuntime=external 来演。
+const platform = search.get('nodeRuntime') === 'external' ? { ...capabilities, nodeRuntimeInstall: 'external' as const } : capabilities
 document.documentElement.dataset.theme = search.get('theme') ?? 'dark'
 document.documentElement.dataset.skin = search.get('theme') === 'light' ? 'dawn' : 'obsidian'
 

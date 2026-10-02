@@ -16,6 +16,7 @@ import { OfflineBanner } from './OfflineBanner'
 import { offlineActionMessage } from './online-status'
 import { useOnlineStatus } from './useOnlineStatus'
 import { commandGroupLabels, searchCommands, type CommandResult } from './command-search'
+import { tutorialTopicsFor } from '../../registry/tutorials'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
 interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; /** 「订阅：剩余 $X · M 月 D 日到期」；没有能用的订阅时缺省。 */ subscription?: string; identity?: AvatarIdentity }
@@ -26,6 +27,8 @@ interface Adapter {
   searchTutorial?(query: string): void
   /** 当前账号能看到的个人中心分页；缺省 = 全部。 */
   accountTabVisible?(tab: string): boolean
+  /** 这台电脑上有没有这一页（Linux 没有游戏加速）；缺省 = 都有。侧栏和搜索都按它。 */
+  pageVisible?(page: PageId): boolean
   openAccount?(): void
   switchAccount?(): void
   topUp?(): void
@@ -91,7 +94,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   navigateRef.current = adapter.navigate
   const shownPage = useRef<PageId | null>(null)
   const [pageAnnouncement, setPageAnnouncement] = useState('')
-  const results = searchCommands(query, { accountTabVisible: adapter.accountTabVisible })
+  const results = searchCommands(query, { accountTabVisible: adapter.accountTabVisible, pageVisible: adapter.pageVisible }, tutorialTopicsFor(platform))
   const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
   const resultCount = bonusAction ? 1 : results.length
   useEffect(() => () => { commandEpoch.current++; bonusFlight.current = null }, [])
@@ -237,9 +240,9 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
           <Button variant="ghost" size="xs" icon={PanelLeft} aria-label={collapsed ? '展开侧栏' : '收起侧栏'} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={toggleSidebar} testId="sidebar-collapse" /></div>
         <nav className="v2-sidebar-nav" aria-label="主导航">
           {/* 「设置」不跟着滚：屏幕矮时滚动区先收缩，「设置」始终露在外面。 */}
-          <div className="v2-sidebar-scroll" data-testid="sidebar-scroll">{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.map(navButton)}</div>)}
+          <div className="v2-sidebar-scroll" data-testid="sidebar-scroll">{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>)}
             <button type="button" className="v2-nav-item" onClick={() => setMore((current) => !current)} aria-expanded={more} aria-label="更多" title={collapsed ? '更多' : undefined} data-testid="nav-more"><MenuIcon size={20} /><span>更多</span><ChevronDown size={16} /></button>
-            {more && <div className="v2-more-navigation" ref={moreListRef}>{moreNavigation.map(navButton)}</div>}
+            {more && <div className="v2-more-navigation" ref={moreListRef}>{moreNavigation.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>}
           </div>
           {navButton('settings')}
         </nav>

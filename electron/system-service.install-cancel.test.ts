@@ -47,6 +47,8 @@ function createCancellableInstallFixture() {
   const runtimeBin = path.join(homeDirectory, '.local', 'bin')
   fs.mkdirSync(runtimeBin, { recursive: true })
   vi.stubEnv('HOME', homeDirectory)
+  // Linux 上托管目录跟着 XDG_DATA_HOME 走，不清掉会写进开发机真实的数据目录。
+  vi.stubEnv('XDG_DATA_HOME', undefined)
   const npmExecutable = path.join(runtimeBin, 'npm')
   fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
   fs.chmodSync(npmExecutable, 0o700)
@@ -146,7 +148,9 @@ describe('cancelling a CLI install', () => {
     expect(outcome.reason).toContain('没有正在进行的安装')
   })
 
-  it('aborts the running npm download and does not fall through to the mirror', async () => {
+  // 这几条模拟 Linux 的安装会在 HOME 下建本软件的托管 npm 目录（Linux 版拆分 ②）；Windows
+  // 主机上的 HOME 不是 POSIX 路径，建不出来，所以只在 macOS / Linux 主机上跑。
+  it.runIf(process.platform !== 'win32')('aborts the running npm download and does not fall through to the mirror', async () => {
     const fixture = createCancellableInstallFixture()
     const install = fixture.service.installCli('claude', fixture.target)
     const settled = install.catch((error: unknown) => error)
@@ -164,7 +168,7 @@ describe('cancelling a CLI install', () => {
     )
   })
 
-  it('stops tracking the install once it has finished unwinding', async () => {
+  it.runIf(process.platform !== 'win32')('stops tracking the install once it has finished unwinding', async () => {
     const fixture = createCancellableInstallFixture()
     const install = fixture.service.installCli('claude', fixture.target)
     const settled = install.catch(() => undefined)
@@ -177,7 +181,7 @@ describe('cancelling a CLI install', () => {
     expect(outcome.reason).toContain('没有正在进行的安装')
   })
 
-  it('lets a second install start after the cancelled one unwound', async () => {
+  it.runIf(process.platform !== 'win32')('lets a second install start after the cancelled one unwound', async () => {
     const fixture = createCancellableInstallFixture()
     const settled = fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     await fixture.downloadAttemptStarted(1)

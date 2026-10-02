@@ -1011,6 +1011,9 @@ describe('CLI installation resolution', () => {
     }, 'same-user', {
       platform: 'darwin',
       executablePath: commandPath,
+      // The host's own global npm (a CI image or a developer machine with Claude Code
+      // installed through npm) must not decide which installation this fixture resolves.
+      npmGlobalRoot: path.join(directory, 'missing-node-modules'),
       runCommand: async (spec) => {
         specs.push(spec)
         return { stdout: '', stderr: '' }
@@ -1045,6 +1048,7 @@ describe('CLI installation resolution', () => {
     }, 'same-user', {
       platform: 'darwin',
       executablePath: commandPath,
+      npmGlobalRoot: path.join(directory, 'missing-node-modules'),
       runCommand: async () => {
         throw new Error('code object is not signed at all')
       },

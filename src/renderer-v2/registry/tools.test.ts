@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cliCatalog, isProviderId, providerConfigDirectoryNames, providerIds } from '../../../electron/catalog';
-import { firstRunHints, guideRecommendedTool, officialAccountNames, officialAccountNotes, tools } from './tools';
+import { firstRunHints, guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, officialAccountNotes, tools } from './tools';
 
 describe('renderer-v2 tool registry', () => {
   it('only carries ids the main process knows, plus the Codex desktop entry', () => {
@@ -101,5 +101,15 @@ describe('renderer-v2 tool registry', () => {
     expect(recommended?.requires).toEqual([]);
     expect(recommended?.hidden?.('win') ?? false).toBe(false);
     expect(recommended?.hidden?.('mac') ?? false).toBe(false);
+  });
+
+  // Linux 上看不到桌面端，改推荐 Codex CLI：它要的 Node.js 由星芒自己准备，一路下一步照样走得完。
+  it('recommends Codex CLI on Linux and keeps the desktop app everywhere else', () => {
+    expect(guideRecommendedToolFor('win')).toBe(guideRecommendedTool);
+    expect(guideRecommendedToolFor('mac')).toBe(guideRecommendedTool);
+    expect(guideRecommendedToolFor('linux')).toBe('codex');
+    const linux = tools.find(tool => tool.id === guideRecommendedToolFor('linux'));
+    expect(linux?.hidden?.('linux') ?? false).toBe(false);
+    expect(linux?.requires).toEqual(['node']);
   });
 });

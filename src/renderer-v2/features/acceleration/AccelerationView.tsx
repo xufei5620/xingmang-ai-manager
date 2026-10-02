@@ -104,6 +104,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
   // 软件替他连上的（打开 Codex 桌面端时）：不扣时长、关掉桌面端就断开，这里要说清楚。
+  // 额度圈下面那行也不能照普通连接写「正在计时」：数字不动，旁边又说不扣时长，两句打架。
   const autoStarted = active && state?.autoStartedBy === 'codex-desktop'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
   const unavailable = phase === 'unavailable'
@@ -176,7 +177,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
         <div className="acceleration-console-top"><span><Zap size={15} aria-hidden="true" />{localDevelopment ? '本机测试额度' : '免费体验'}</span><span className="acceleration-quota-badge">{totalMinutes} 分钟</span></div>
         <div className="acceleration-quota">
           <svg className="acceleration-quota-ring" viewBox="0 0 220 220" aria-hidden="true"><circle className="acceleration-quota-track" cx="110" cy="110" r="96" /><circle className="acceleration-quota-ticks" cx="110" cy="110" r="85" /><circle className="acceleration-quota-progress" cx="110" cy="110" r="96" pathLength="100" strokeDasharray={`${ratio * 100} 100`} transform="rotate(-90 110 110)" /></svg>
-          <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
+          <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{autoStarted ? <><Pause size={12} aria-hidden="true" />自动连接不计时</> : active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
         </div>
         <div className="acceleration-primary-action"><Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : Power} loading={signedIn && (busy || transitioning)} disabled={actionDisabled} onClick={!signedIn ? onLogin : active || stopRetry ? onStop : onStart} testId={active || stopRetry ? 'acceleration-session-stop' : 'acceleration-session-start'}>{actionLabel}</Button></div>
         <p className="acceleration-quota-note">{quotaNote}</p>

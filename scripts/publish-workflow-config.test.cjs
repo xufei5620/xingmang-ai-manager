@@ -12,8 +12,13 @@ const source = fs.readFileSync(workflowPath, 'utf8')
 const workflow = YAML.parse(source)
 const windowsJob = workflow.jobs['windows-build']
 const macosJob = workflow.jobs['macos-build']
+const linuxChecksJob = workflow.jobs['linux-checks']
+const linuxBuildJob = workflow.jobs['linux-build']
 const publishJob = workflow.jobs.publish
 const buildJobs = [windowsJob, macosJob]
+const allJobs = Object.values(workflow.jobs)
+const { UPDATE_MANIFEST_NAMES } = require('./update-release-utils.cjs')
+const MANIFEST_LOOP = `for manifest in ${UPDATE_MANIFEST_NAMES.join(' ')}; do`
 
 // 产品所有者 2026-09-20 已经按这八个名字在 release 环境里建 secret 了。工作流读的
 // 名字与他建的名字必须字字相同，否则表现是一条看不出原因的 403 或一个空取值。
@@ -52,23 +57,33 @@ test('the manifests are published last, after the installers are proven download
   assert.ok(feed > manifest, '端到端复核必须排在清单发布之后')
 
   // 清单只能由那一步动。别的步骤顺手 cp 一次 latest.yml，上面那道顺序就形同虚设。
-  // 两个平台各有一份清单，两份都受这条约束。
+  // 每个平台的每份清单（Linux 两个架构各一份）都受这条约束。
   const touchingManifest = publishJob.steps.filter((step) => {
     const script = String(step.run || '')
-    return /aws s3 cp/.test(script) && /latest(?:-mac)?\.yml/.test(script)
+    return /aws s3 cp/.test(script) && /latest(?:-[a-z0-9-]+)?\.yml/.test(script)
   })
   assert.equal(touchingManifest.length, 1)
   assert.match(String(touchingManifest[0].name), /Publish the update manifests/)
-  assert.match(String(touchingManifest[0].run), /latest\.yml latest-mac\.yml/)
+  // 备份与覆盖两圈都要列全 update-release-utils.cjs 登记的清单，漏一个就是那个平台
+  // 没有备份可退、或者新清单根本没发出去。
+  const loops = String(touchingManifest[0].run).split(MANIFEST_LOOP).length - 1
+  assert.equal(loops, 2, `清单那一步的两圈都必须是「${MANIFEST_LOOP}」`)
 })
 
-test('both platforms get their published feed re-verified end to end', () => {
+test('every platform gets its published feed re-verified end to end', () => {
   // 只复核 Windows 那一半的话，一次传坏的 latest-mac.yml 要等客户点更新才暴露。
   const feeds = publishJob.steps.filter((step) => /update:verify-feed/.test(String(step.run || '')))
   assert.deepEqual(
     feeds.map((step) => String(step.run).trim()),
-    ['npm run update:verify-feed -- --platform=windows', 'npm run update:verify-feed -- --platform=macos'],
+    [
+      'npm run update:verify-feed -- --platform=windows',
+      'npm run update:verify-feed -- --platform=macos',
+      'npm run update:verify-feed -- --platform=linux',
+    ],
   )
+  // Linux 只在开关打开、这次真的发了 Linux 时复核；关着时线上没有 Linux 清单，复核
+  // 必然 404。
+  assert.equal(feeds[2].if, "${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}")
 })
 
 test('uploading is gated on the release environment, which is where the owner approves', () => {
@@ -92,6 +107,16 @@ test('the Windows build job holds no credentials at all', () => {
   assert.equal(windowsJob.environment, undefined)
   assert.equal(windowsJob.permissions, undefined)
   assert.doesNotMatch(YAML.stringify(windowsJob), /secrets\./)
+})
+
+test('the Linux jobs hold no credentials and need no approval', () => {
+  // Linux 不签名，出包与测试都用不到任何 secret；挂上 release 环境就会平白多出一次
+  // 只有产品所有者能点的批准，而且是在他还没决定发 Linux 的时候。
+  for (const job of [linuxChecksJob, linuxBuildJob]) {
+    assert.equal(job.environment, undefined)
+    assert.equal(job.permissions, undefined)
+    assert.doesNotMatch(YAML.stringify(job), /secrets\./)
+  }
 })
 
 test('the macOS build job reads the signing identity and nothing else', () => {
@@ -136,7 +161,7 @@ test('the macOS packages are signed with the published identity, never an epheme
 test('no dispatch input, secret or step output is substituted into a shell script', () => {
   // P-26：run 块里的 ${{ ... }} 是在 shell 解析之前做的文本替换。取值里的一个单引号
   // 就能闭合字符串并执行后面的内容 —— 在这条工作流里，那是持有发布凭据的那台机器。
-  for (const job of [...buildJobs, publishJob]) {
+  for (const job of allJobs) {
     for (const step of job.steps) {
       const script = String(step.run || '')
       if (!script) continue
@@ -160,7 +185,7 @@ test('the secrets are only ever bound, never echoed', () => {
 })
 
 test('every third-party action is pinned to a full commit id', () => {
-  for (const step of [...windowsJob.steps, ...macosJob.steps, ...publishJob.steps]) {
+  for (const step of allJobs.flatMap((job) => job.steps)) {
     if (!step.uses) continue
     assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} 必须钉到完整提交号`)
   }
@@ -178,6 +203,44 @@ test('the build goes through the same release gate as a local release, with the 
   assert.match(String(macosPrepare.run), /--target darwin-x64/)
 })
 
+test('the Linux debs go through their own release gate, one native runner per architecture', () => {
+  const build = linuxBuildJob.steps.find((step) => /release:package:linux/.test(String(step.run || '')))
+  assert.equal(String(build.run).trim(), 'npm run release:package:linux -- --arch "$PACKAGE_ARCH"')
+  assert.equal(linuxBuildJob.env.PACKAGE_ARCH, '${{ matrix.arch }}')
+  assert.equal(linuxBuildJob.needs, 'linux-checks')
+  // x64 机器装不了 arm64 的包，模拟器里起 Electron 也说明不了真机。
+  assert.deepEqual(linuxBuildJob.strategy.matrix.include, [
+    { arch: 'x64', runner: 'ubuntu-24.04' },
+    { arch: 'arm64', runner: 'ubuntu-24.04-arm' },
+  ])
+  assert.equal(linuxBuildJob.strategy['fail-fast'], false)
+  // 第一版 Linux 不带加速：没有 Linux 的加速内核，出包门禁也会把这个变量清掉。
+  assert.doesNotMatch(YAML.stringify(linuxBuildJob), /acceleration/i)
+  // release:build:unsigned 里会跑的那几套测试，Linux 在 linux-checks 里跑一遍。
+  const checks = linuxChecksJob.steps.map((step) => String(step.run || '').trim())
+  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2', 'npm run test:canvas', 'npm run test:ui']) {
+    assert.ok(checks.includes(command), `linux-checks must run ${command}`)
+  }
+})
+
+test('a Linux deb is installed, launched and removed like a customer would before it is uploaded', () => {
+  const install = stepIndex(linuxBuildJob, /apt-get install/)
+  const smoke = stepIndex(linuxBuildJob, /linux-deb-smoke\.mjs/)
+  const hardening = stepIndex(linuxBuildJob, /packaged-hardening-smoke\.mjs/)
+  const removal = stepIndex(linuxBuildJob, /apt-get remove/)
+  const upload = linuxBuildJob.steps.findIndex((step) => /upload-artifact/.test(String(step.uses || '')))
+  const build = stepIndex(linuxBuildJob, /release:package:linux/)
+  assert.ok(build >= 0 && install > build && smoke > install && hardening > install && removal > hardening && upload > removal)
+  // 上传的名字和 publish 作业下载时用的通配符必须对得上，否则开关打开了也下不到包。
+  const uploaded = linuxBuildJob.steps[upload].with
+  assert.equal(uploaded.name, 'linux-release-${{ matrix.arch }}-${{ steps.metadata.outputs.version }}')
+  assert.match(uploaded.path, /\*\.deb/)
+  assert.match(uploaded.path, /latest-linux\*\.yml/)
+  const download = publishJob.steps.find((step) => /download-artifact/.test(String(step.uses || '')) && step.with?.pattern)
+  assert.equal(download.with.pattern, 'linux-release-*-${{ needs.linux-build.outputs.version }}')
+  assert.equal(download.with['merge-multiple'], true)
+})
+
 test('both jobs compile the main process before staging the acceleration bundles', () => {
   // prepare-acceleration-bundle.cjs 用的是主进程里那套安全读写与内核校验，没有
   // dist-electron 就在第一秒报「请先编译主进程」。2026-09-20 的首次正式发布就红在
@@ -193,22 +256,118 @@ test('both jobs compile the main process before staging the acceleration bundles
 
 test('the requested version must match package.json before anything is built', () => {
   // 误发一个版本号的代价是线上 latest.yml 指向一个不存在或不该发的产物。
-  for (const job of buildJobs) {
+  for (const job of [...buildJobs, linuxBuildJob]) {
     const confirm = stepIndex(job, /Confirm the requested version/)
-    const build = stepIndex(job, /release:build|dist:mac:free/)
+    const build = stepIndex(job, /release:build|dist:mac:free|release:package:linux/)
     assert.ok(confirm >= 0 && confirm < build)
   }
+  const checksConfirm = stepIndex(linuxChecksJob, /Confirm the requested version/)
+  assert.ok(checksConfirm >= 0 && checksConfirm < stepIndex(linuxChecksJob, /npm ci/))
   assert.equal(workflow.on.workflow_dispatch.inputs.confirm_version.required, true)
 })
 
 test('a single-platform publish does not silently skip the publish job', () => {
   // 被跳过的 needs 默认会把依赖它的作业也跳过，表现是「跑完了但什么都没发」。
-  assert.deepEqual(publishJob.needs, ['windows-build', 'macos-build'])
+  assert.deepEqual(publishJob.needs, ['windows-build', 'macos-build', 'linux-checks', 'linux-build'])
   assert.match(String(publishJob.if), /!cancelled\(\)/)
   assert.match(String(publishJob.if), /windows-build\.result != 'failure'/)
   assert.match(String(publishJob.if), /macos-build\.result != 'failure'/)
   assert.match(String(publishJob.if), /== 'success'/)
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['both', 'windows', 'macos'])
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'both', 'windows', 'macos', 'linux'])
+  assert.equal(workflow.on.workflow_dispatch.inputs.platforms.default, 'all')
+})
+
+// 把作业与步骤上的 if 表达式按 GitHub 的规则算出来：needs 没跑就是 skipped，仓库变量
+// 没建就是空串，字符串比较不分大小写。只认这几种写法，出现别的标识符就报错，免得
+// 表达式改了而这里悄悄算错。
+function evaluateCondition(expression, { inputs = {}, needs = {}, vars = {} }) {
+  const body = String(expression).trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
+  const literal = (value) => JSON.stringify(String(value ?? '').toLowerCase())
+  const javascript = body
+    .replace(/!cancelled\(\)/g, 'true')
+    .replace(/needs\.([a-z-]+)\.result/g, (_, id) => literal(needs[id] ?? 'skipped'))
+    .replace(/vars\.([A-Za-z0-9_]+)/g, (_, name) => literal(vars[name]))
+    .replace(/inputs\.([a-z_]+)/g, (_, name) => literal(inputs[name]))
+    .replace(/'([^']*)'/g, (_, text) => JSON.stringify(text.toLowerCase()))
+  const leftover = javascript.replace(/"[^"]*"/g, '').replace(/\btrue\b/g, '')
+  assert.match(leftover, /^[\s()&|!=]*$/, `认不出的表达式：${body}`)
+  return Function(`return (${javascript})`)()
+}
+
+test('each platform choice builds exactly its own jobs', () => {
+  // 原来的写法是「不是 macos 就出 Windows」；多一个 linux 选项后，只选 linux 也会把
+  // Windows 和 Mac 一起出一遍，Mac 那一半还要等一次批准。
+  const expected = {
+    all: ['windows-build', 'macos-build', 'linux-checks'],
+    // 加 Linux 之前的默认值：照老习惯选它，还是原来的 Windows 与 macOS，不碰 Linux。
+    both: ['windows-build', 'macos-build'],
+    windows: ['windows-build'],
+    macos: ['macos-build'],
+    linux: ['linux-checks'],
+  }
+  for (const platforms of workflow.on.workflow_dispatch.inputs.platforms.options) {
+    const started = Object.entries(workflow.jobs)
+      .filter(([, job]) => job.if && !job.needs)
+      .filter(([, job]) => evaluateCondition(job.if, { inputs: { platforms } }))
+      .map(([id]) => id)
+    assert.deepEqual(started, expected[platforms], platforms)
+  }
+  // linux-build 没有自己的 if：linux-checks 被跳过或失败，它就跟着跳过。
+  assert.equal(linuxBuildJob.if, undefined)
+})
+
+test('Linux only reaches customers once the repository switch is on', () => {
+  const publishes = (needs, vars = {}, platforms = 'all') => evaluateCondition(publishJob.if, { needs, vars, inputs: { platforms } })
+  const ok = { 'windows-build': 'success', 'macos-build': 'success' }
+  const linuxOk = { 'linux-checks': 'success', 'linux-build': 'success' }
+  const linuxBuildRed = { 'linux-checks': 'success', 'linux-build': 'failure' }
+  const linuxChecksRed = { 'linux-checks': 'failure', 'linux-build': 'skipped' }
+  // 作业超过自己的 timeout-minutes 结束时是 cancelled，不是 failure。
+  const linuxChecksTimedOut = { 'linux-checks': 'cancelled', 'linux-build': 'skipped' }
+  const linuxBuildTimedOut = { 'linux-checks': 'success', 'linux-build': 'cancelled' }
+  const on = { XINGMANG_PUBLISH_LINUX: 'true' }
+
+  for (const vars of [{}, { XINGMANG_PUBLISH_LINUX: 'false' }, { XINGMANG_PUBLISH_LINUX: '' }]) {
+    const label = JSON.stringify(vars)
+    // 开关关着：Linux 红了也不挡 Windows / macOS。
+    assert.equal(publishes({ ...ok, ...linuxOk }, vars), true, label)
+    assert.equal(publishes({ ...ok, ...linuxBuildRed }, vars), true, label)
+    assert.equal(publishes({ ...ok, ...linuxChecksRed }, vars), true, label)
+    assert.equal(publishes({ ...ok, ...linuxChecksTimedOut }, vars), true, label)
+    // 只选了 linux：整个发布作业跳过，连批准都不会要。
+    assert.equal(publishes(linuxOk, vars, 'linux'), false, label)
+  }
+
+  // 开关打开：Linux 和别的平台一样，红了就不发。linux-checks 失败时 linux-build 是
+  // skipped 而不是 failure，这一种也必须挡住。
+  assert.equal(publishes({ ...ok, ...linuxOk }, on), true)
+  assert.equal(publishes({ ...ok, ...linuxBuildRed }, on), false)
+  assert.equal(publishes({ ...ok, ...linuxChecksRed }, on), false)
+  // 超时也一样挡住：只挡 failure 的话，Windows / macOS 会悄悄不带 Linux 发出去。
+  assert.equal(publishes({ ...ok, ...linuxChecksTimedOut }, on), false)
+  assert.equal(publishes({ ...ok, ...linuxBuildTimedOut }, on), false)
+  assert.equal(publishes(linuxOk, on, 'linux'), true)
+  assert.equal(publishes(linuxChecksRed, on, 'linux'), false)
+  assert.equal(publishes(linuxBuildTimedOut, on, 'linux'), false)
+  // 只发 Windows 或 macOS（含老的 both）时 Linux 两个作业都是 skipped，不算失败。
+  assert.equal(publishes(ok, on, 'both'), true)
+  assert.equal(publishes(ok, {}, 'both'), true)
+  assert.equal(publishes({ 'windows-build': 'success' }, on, 'windows'), true)
+  assert.equal(publishes({ 'macos-build': 'success' }, on, 'macos'), true)
+  // GitHub 比较字符串不分大小写，文档照这个写：TRUE 也算打开。
+  assert.equal(publishes({ ...ok, ...linuxBuildRed }, { XINGMANG_PUBLISH_LINUX: 'TRUE' }), false)
+  // 原有的规则不变：任何一个 Windows / macOS 出包失败都不发。
+  assert.equal(publishes({ 'windows-build': 'failure', 'macos-build': 'success', ...linuxOk }, on), false)
+  assert.equal(publishes({ 'windows-build': 'success', 'macos-build': 'failure' }, {}), false)
+
+  // 关着时 Linux 的包连下载都不下载，下面的护栏、上传、清单、Release 附件就都碰不到它。
+  const download = publishJob.steps.find((step) => /download-artifact/.test(String(step.uses || '')) && step.with?.pattern)
+  assert.equal(evaluateCondition(download.if, { needs: linuxOk }), false)
+  assert.equal(evaluateCondition(download.if, { needs: linuxOk, vars: on }), true)
+  assert.equal(evaluateCondition(download.if, { needs: { 'linux-checks': 'success', 'linux-build': 'skipped' }, vars: on }), false)
+  // 开关是仓库变量而不是代码里的常量：只有能改仓库设置的人能打开，线程合进来的代码
+  // 打不开它。
+  assert.doesNotMatch(source, /XINGMANG_PUBLISH_LINUX\s*:/)
 })
 
 test('two publishes cannot run at once', () => {
@@ -252,6 +411,7 @@ const shellUnavailable = process.platform === 'win32' || !fs.existsSync(SHELL_PA
 const posixOnly = { skip: shellUnavailable && `需要 ${SHELL_PATH}，publish 作业只在 ubuntu-latest 上跑` }
 
 function runTagStep({ existingTagSha, releaseExists, assets = true, annotated = false }) {
+  // assets：true 是 Windows 与 Mac 各一个包，'linux' 是只有 Linux 两个架构的 deb。
   const step = publishJob.steps.find((entry) => /Tag the commit that shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-tag-'))
   const binDirectory = path.join(workspace, 'bin')
@@ -259,7 +419,11 @@ function runTagStep({ existingTagSha, releaseExists, assets = true, annotated = 
   fs.mkdirSync(path.join(workspace, 'release-artifacts'))
   // 名字要照发行名来：assets 是 *Setup.exe / *.dmg 两个 glob，nullglob 下不匹配
   // 就是空数组，而空数组下 gh release upload 会报错——那正是要防的那一类收尾失败。
-  if (assets) {
+  if (assets === 'linux') {
+    fs.writeFileSync(path.join(workspace, 'release-artifacts', 'xingmang-ai-manager_9.9.9_amd64.deb'), 'deb')
+    fs.writeFileSync(path.join(workspace, 'release-artifacts', 'xingmang-ai-manager_9.9.9_arm64.deb'), 'deb')
+    fs.writeFileSync(path.join(workspace, 'release-artifacts', 'latest-linux.yml'), 'manifest')
+  } else if (assets) {
     fs.writeFileSync(path.join(workspace, 'release-artifacts', 'XingMang-AI-Manager-9.9.9-Setup.exe'), 'installer')
     fs.writeFileSync(path.join(workspace, 'release-artifacts', 'XingMang-AI-Manager-9.9.9-Apple-Silicon-arm64.dmg'), 'image')
   }
@@ -347,6 +511,17 @@ test('re-publishing the same version adds its assets instead of failing on the e
   assert.doesNotMatch(run.log, /gh release create/)
 })
 
+test('a Linux-only publish attaches both debs to the Release and nothing else', posixOnly, () => {
+  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, assets: 'linux' })
+
+  assert.equal(run.status, 0, run.stderr)
+  const upload = run.log.split('\n').find((line) => /gh release upload/.test(line))
+  assert.match(upload, /release-artifacts\/xingmang-ai-manager_9\.9\.9_amd64\.deb/)
+  assert.match(upload, /release-artifacts\/xingmang-ai-manager_9\.9\.9_arm64\.deb/)
+  // 清单是给自动更新读的，挂到 Release 页面上只会让人点错。
+  assert.doesNotMatch(upload, /latest-linux/)
+})
+
 test('an annotated tag from an older release is dereferenced before it is compared', posixOnly, () => {
   const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, annotated: true })
 
@@ -393,6 +568,98 @@ function manifestText(version, bytes, name = `XingMang-AI-Manager-${version}-Set
   return YAML.stringify({ version, files: [{ url: name, sha512, size: Buffer.byteLength(bytes) }], path: name, sha512, releaseDate: '2026-09-24T00:00:00.000Z' })
 }
 
+// 上传与逐字节复核两步真的跑一遍：aws 桩把文件放进一个本地「桶」目录并记下类型，
+// curl 桩从那个目录取回。两步的通配符只要有一边漏了 deb，开关打开时就会出现清单
+// 指向一个没传、或者传了没核过的安装包。
+function runUploadAndVerify(artifacts) {
+  const upload = publishJob.steps.find((entry) => /Upload the installers and their blockmaps/.test(entry.name || ''))
+  const verify = publishJob.steps.find((entry) => /Verify the uploaded files are downloadable/.test(entry.name || ''))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-upload-'))
+  const binDirectory = path.join(workspace, 'bin')
+  const bucket = path.join(workspace, 'bucket')
+  for (const directory of [binDirectory, bucket, path.join(workspace, 'release-artifacts')]) fs.mkdirSync(directory)
+  for (const [name, text] of Object.entries(artifacts)) fs.writeFileSync(path.join(workspace, 'release-artifacts', name), text)
+  const logPath = path.join(workspace, 'uploads.log')
+  const awsStub = `#!/bin/bash
+type=''
+args=("$@")
+for ((i = 0; i < \${#args[@]}; i++)); do
+  if [ "\${args[$i]}" = '--content-type' ]; then type=\${args[$((i + 1))]}; fi
+done
+name=$(basename "$4")
+cp "$3" ${JSON.stringify(bucket)}/"$name"
+printf '%s %s\\n' "$name" "$type" >> ${JSON.stringify(logPath)}
+`
+  const curlStub = `#!/bin/bash
+output=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  shift
+done
+name=$(basename "$1")
+[ -f ${JSON.stringify(bucket)}/"$name" ] || exit 22
+cp ${JSON.stringify(bucket)}/"$name" "$output"
+`
+  for (const [name, body] of [['aws', awsStub], ['curl', curlStub]]) {
+    const executable = path.join(binDirectory, name)
+    fs.writeFileSync(executable, body)
+    fs.chmodSync(executable, 0o755)
+  }
+  const env = {
+    PATH: `${binDirectory}:/usr/bin:/bin`,
+    HOME: workspace,
+    RUNNER_TEMP: workspace,
+    OBJECT_PREFIX: 'xingmang-manager',
+    R2_ACCOUNT_ID: 'stub',
+    R2_BUCKET: 'stub',
+    PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
+  }
+  const uploaded = spawnSync(SHELL_PATH, ['-c', upload.run], { cwd: workspace, encoding: 'utf8', env })
+  const verified = spawnSync(SHELL_PATH, ['-c', verify.run], { cwd: workspace, encoding: 'utf8', env })
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { uploaded, verified, log }
+}
+
+test('with Linux on, both debs are uploaded and checked byte for byte before any manifest', posixOnly, () => {
+  const run = runUploadAndVerify({
+    'XingMang-AI-Manager-0.2.11-Setup.exe': 'installer',
+    'XingMang-AI-Manager-0.2.11-Setup.exe.blockmap': 'blockmap',
+    'xingmang-ai-manager_0.2.11_amd64.deb': 'deb x64',
+    'xingmang-ai-manager_0.2.11_arm64.deb': 'deb arm64',
+    'latest.yml': 'manifest',
+    'latest-linux.yml': 'manifest',
+    'latest-linux-arm64.yml': 'manifest',
+  })
+  assert.equal(run.uploaded.status, 0, run.uploaded.stderr)
+  assert.equal(run.verified.status, 0, run.verified.stdout + run.verified.stderr)
+  assert.match(run.log, /^xingmang-ai-manager_0\.2\.11_amd64\.deb application\/vnd\.debian\.binary-package$/m)
+  assert.match(run.log, /^xingmang-ai-manager_0\.2\.11_arm64\.deb application\/vnd\.debian\.binary-package$/m)
+  // 清单不在这一步传：它们只能由最后那一步动。
+  assert.doesNotMatch(run.log, /latest/)
+  assert.match(run.verified.stdout, /已逐字节复核 4 个产物/)
+
+  // 开关关着时产物里没有 Linux 的东西，这两步和加 Linux 之前一样：只传、只核 Windows
+  // 与 macOS 的文件。
+  const withoutLinux = runUploadAndVerify({
+    'XingMang-AI-Manager-0.2.11-Setup.exe': 'installer',
+    'XingMang-AI-Manager-0.2.11-Setup.exe.blockmap': 'blockmap',
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.dmg': 'image',
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.zip': 'zip',
+    'latest.yml': 'manifest',
+    'latest-mac.yml': 'manifest',
+  })
+  assert.equal(withoutLinux.uploaded.status, 0, withoutLinux.uploaded.stderr)
+  assert.equal(withoutLinux.verified.status, 0, withoutLinux.verified.stdout + withoutLinux.verified.stderr)
+  assert.deepEqual(withoutLinux.log.trim().split('\n').sort(), [
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.dmg application/x-apple-diskimage',
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.zip application/zip',
+    'XingMang-AI-Manager-0.2.11-Setup.exe application/vnd.microsoft.portable-executable',
+    'XingMang-AI-Manager-0.2.11-Setup.exe.blockmap application/octet-stream',
+  ])
+  assert.match(withoutLinux.verified.stdout, /已逐字节复核 4 个产物/)
+})
+
 test('the publish guard runs before the first upload', () => {
   const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)
   const firstUpload = publishJob.steps.findIndex((step) => /aws s3 cp/.test(String(step.run || '')))
@@ -407,8 +674,14 @@ test('the publish guard allows a first release, an upgrade and a rerun of the sa
   // 同一个版本号换一批字节：Mac 出包不可复现，重新出包就是这样。
   assert.throws(() => assessPublish(ours, manifestText('0.2.11', 'build B'), 'latest-mac.yml'), /不能换内容/)
   assert.throws(() => assessPublish(ours, manifestText('0.2.12', 'newer'), 'latest-mac.yml'), /更高的 0\.2\.12/)
-  assert.throws(() => assessPublish(ours, null, 'latest-linux.yml'), PublishGuardError)
   assert.throws(() => assessPublish(ours, '<!doctype html><html></html>', 'latest-mac.yml'), /HTML/)
+  // Linux 两个架构的清单和别的平台走同一套规则；不认识的名字照样拒绝。
+  const linux = manifestText('0.2.11', 'deb A', 'xingmang-ai-manager_0.2.11_amd64.deb')
+  assert.equal(assessPublish(linux, null, 'latest-linux.yml'), 'first')
+  assert.equal(assessPublish(linux, manifestText('0.2.10', 'deb old', 'xingmang-ai-manager_0.2.10_amd64.deb'), 'latest-linux.yml'), 'upgrade')
+  assert.throws(() => assessPublish(linux, manifestText('0.2.11', 'deb B', 'xingmang-ai-manager_0.2.11_amd64.deb'), 'latest-linux.yml'), /不能换内容/)
+  assert.equal(assessPublish(linux, null, 'latest-linux-arm64.yml'), 'first')
+  assert.throws(() => assessPublish(linux, null, 'latest-linux-ia32.yml'), PublishGuardError)
 })
 
 function runGuardStep({ existingTagSha = null, tagLookupFails = false, live = {}, artifacts }) {
@@ -505,6 +778,24 @@ test('publishing macOS later for a version Windows already shipped from the same
 })
 
 // #493 剩下的那半：查 tag 时只有「确实没有」才算没有，接口报错不能当成没有。
+test('publishing Linux later for a version that already shipped elsewhere is allowed, both architectures at once', posixOnly, () => {
+  const x64 = manifestText('0.2.11', 'deb x64', 'xingmang-ai-manager_0.2.11_amd64.deb')
+  const arm64 = manifestText('0.2.11', 'deb arm64', 'xingmang-ai-manager_0.2.11_arm64.deb')
+  const live = { 'latest.yml': manifestText('0.2.11', 'windows build') }
+
+  // 开关打开以后在同一个 commit 上只发 linux：线上没有 Linux 清单，算第一次发布。
+  const later = runGuardStep({ existingTagSha: 'a'.repeat(40), live, artifacts: { 'latest-linux.yml': x64, 'latest-linux-arm64.yml': arm64 } })
+  assert.equal(later.status, 0, later.output)
+  assert.match(later.output, /线上还没有 latest-linux\.yml，这是这个平台的第一次发布/)
+  assert.match(later.output, /线上还没有 latest-linux-arm64\.yml，这是这个平台的第一次发布/)
+
+  // 只到了一个架构：宁可停下，也不让一半的 Linux 客户看到新版本。
+  const half = runGuardStep({ existingTagSha: 'a'.repeat(40), live, artifacts: { 'latest-linux.yml': x64 } })
+  assert.notEqual(half.status, 0)
+  assert.match(half.output, /::error::产物里只有一个架构的 Linux 更新清单/)
+  assert.doesNotMatch(half.output, /可以发/)
+})
+
 test('a failing tag lookup stops the publish instead of being read as no tag', posixOnly, () => {
   const ours = manifestText('0.2.11', 'mac build', 'XingMang-AI-Manager-0.2.11-arm64-mac.zip')
   const run = runGuardStep({ tagLookupFails: true, live: { 'latest-mac.yml': manifestText('0.2.10', 'old') }, artifacts: { 'latest-mac.yml': ours } })

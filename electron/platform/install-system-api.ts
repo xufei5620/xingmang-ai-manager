@@ -20,6 +20,8 @@ import {
   type HostNotifier,
 } from './host-notification-bridge'
 import { proxyBypassActive } from './proxy-bypass-bridge'
+import { trayAvailability } from './tray-availability-bridge'
+import { createLinuxAutostart } from '../linux-autostart'
 import {
   createPlatformNotifications,
   type PlatformNotificationRuntime,
@@ -157,6 +159,15 @@ export function installPlatformSystemApi(
           platform: process.platform,
           packaged: options.app.isPackaged,
           executablePath: process.execPath,
+          ...(process.platform !== 'win32' && process.platform !== 'darwin'
+            ? {
+                linuxAutostart: createLinuxAutostart({
+                  env: process.env,
+                  executablePath: process.execPath,
+                }),
+              }
+            : {}),
+          trayAvailable: trayAvailability,
           relaySiteId: () => existing.read().relaySiteId,
           proxyBypassed: proxyBypassActive,
           resolveProxy: (url) => {

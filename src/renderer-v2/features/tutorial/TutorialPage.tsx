@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, Compass, Copy, Search } from 'lucide-react'
 import { Button, Card, Empty, PageHead, Pill, SearchInput } from '../../ui'
 import type { BusinessActions } from '../../pages-maintenance'
-import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
+import { tutorialTopicsFor, type TutorialTopic } from '../../registry/tutorials'
+import { currentWindowOs, type WindowOs } from '../app/window-os'
 import type { V2Page } from '../../types'
 import { TutorialIllustration } from './TutorialIllustration'
 import { tutorialMatchesSearch } from './tutorial-search'
@@ -15,7 +16,7 @@ const groups = [
   { id: 'advanced', label: '更多用法与问题处理' },
 ] as const
 
-function initialReading(topic?: { id: string; query?: string }) {
+function initialReading(tutorialTopics: readonly TutorialTopic[], topic?: { id: string; query?: string }) {
   const fallback = { selected: 'start', query: '' }
   if (topic) return { selected: tutorialTopics.some(entry => entry.id === topic.id) ? topic.id : 'start', query: topic.query?.slice(0, 200) ?? '' }
   try {
@@ -60,10 +61,13 @@ export type TutorialPageProps = Omit<BusinessActions, 'navigate'> & {
   navigate?: (page: V2Page, section?: string) => void
   /** query：从顶部搜索「去教程里搜」过来时带上的字，缺省 = 清空搜索（旧行为）。 */
   topic?: { sequence: number; id: string; query?: string }
+  /** 哪个系统的教程；缺省按窗口当前的系统（外壳挂载前就写好了）。Linux 有自己的一份。 */
+  os?: WindowOs
 }
 
-export function TutorialPage({ navigate, openGuide, openHelp, topic }: TutorialPageProps) {
-  const [reading, setReading] = useState(() => initialReading(topic))
+export function TutorialPage({ navigate, openGuide, openHelp, topic, os }: TutorialPageProps) {
+  const tutorialTopics = tutorialTopicsFor(os ?? currentWindowOs())
+  const [reading, setReading] = useState(() => initialReading(tutorialTopics, topic))
   // Native details can be closed manually; a new search must reveal its matches again.
   const searchKey = reading.query.trim().toLocaleLowerCase()
   const article = useRef<HTMLElement>(null)
@@ -75,7 +79,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic }: TutorialP
   useEffect(() => {
     if (!topic) return
     // The shell keeps this page mounted; each guide request must clear the old search.
-    setReading(initialReading(topic))
+    setReading(initialReading(tutorialTopics, topic))
     article.current?.scrollIntoView({ block: 'start', behavior: 'instant' })
   }, [topic])
 

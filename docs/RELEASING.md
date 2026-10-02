@@ -278,13 +278,21 @@ git push origin v0.2.6
 工作流在 Actions 页面选 **publish-release**，点 Run workflow，填两项：
 
 - **要发布的版本号**：必须与 `package.json` 完全一致，对不上直接失败（防误发）。
-- **这次发布哪些平台的包**：`both` / `windows` / `macos`。
+- **这次发布哪些平台的包**：`all`（默认，Windows、macOS、Linux）/ `both`（和原来一样，只有 Windows 与 macOS）/ `windows` / `macos` / `linux`。
 
-然后它会：出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`** → 两个平台各跑一次 `update:verify-feed` → 给出包的 commit 打 tag、建 GitHub Release。
+然后它会：出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ 出 Linux 的 x64 与 arm64 两个 deb（见下面「Linux 开关」）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`（以及 Linux 的两份清单）** → 每个平台各跑一次 `update:verify-feed` → 给出包的 commit 打 tag、建 GitHub Release。
+
+**Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
+
+- 不是 `true`（包括没建这个变量，现在就是没建）：publish 作业不下载 Linux 的包，客户看不到任何 Linux 的东西；Linux 两个作业红了**不代表这次发布失败**，也不挡 Windows / macOS；只选 `linux` 时 publish 作业整个跳过，不会停下来等批准。Linux 包留在那次运行的 Actions artifact（`linux-release-<架构>-<版本>`）里 14 天，可以下下来装机验收。
+- 是 `true`：Linux 和别的平台一样，这次选了 Linux 而 Linux 作业没有成功（失败、超时被取消都算）就不发；两个架构的清单必须一起到，只到一个就在上传前停下。
+- 打开：仓库 **Settings → Secrets and variables → Actions → Variables → New repository variable**，Name 填 `XINGMANG_PUBLISH_LINUX`，Value 填 `true`（GitHub 比较时不分大小写，`TRUE`、`True` 也算打开）。关掉就删掉它，或改成 `false` 这类不是 true 的值。第一次对外发 Linux 版之前要在真机上过一遍（`docs/LINUX.md`）。已经发过 Windows / macOS 的版本，打开开关后可以在**同一个 commit** 上再点一次 Run workflow、选 `linux` 补发。
+- 打开以后发版尽量选 `all`，让三个平台停在同一个版本。只发一个平台会让别的平台落后，之后要回滚到比落后平台还新的版本时，rollback-release 会在第一步停下（某个平台线上比要退回的版本还旧，见 `docs/SERVICE-STATUS.md`）。
+- Linux 两个作业不读任何 secret、不挂 release 环境，所以不会多一次批准。
 
 这个顺序是发布正确性的一部分，不是风格问题：清单先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。`scripts/publish-workflow-config.test.cjs` 把它钉住了。
 
-上传之前还有一道关（#493，`scripts/publish-guard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 可以；某个平台已经发过这个版本，要重发就先提升版本号。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
+上传之前还有一道关（#493，`scripts/publish-guard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 或 Linux 可以；某个平台已经发过这个版本，要重发就先提升版本号。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
 
 **一次发布要批准两次。** 读 `.p12` 的 macOS 出包作业和上传的 publish 作业都挂 `environment: release`，运行会各停一次等你按 Approve。第一次批准之后什么都还没有对外发生，产物只躺在 Actions artifact 里——把包下下来装机验收，过了再批第二次。这两下就是本节开头说的「明确发布授权」。
 

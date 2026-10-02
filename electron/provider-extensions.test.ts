@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
 import { codexPluginCatalogNetworkMessage } from './codex-plugin-catalog'
 import { providerIds } from './catalog'
+import { gitLinuxInstallCommand } from './git-runtime'
 import type { ProviderId } from './catalog'
 import {
   claudeMarketplaceGitMissingMessage,
@@ -1254,7 +1255,9 @@ describe('Claude Code official marketplace', () => {
   it('names a platform-appropriate way to install Git', () => {
     expect(claudeMarketplaceGitMissingMessage('win32')).toContain('「安装 Git」')
     expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('「安装 Git」')
-    expect(claudeMarketplaceGitMissingMessage('linux')).toContain('包管理器')
+    // Linux 版拆分 ⑩：原来是「请用系统的包管理器装上 Git」，小白看不懂；Linux 只出 deb，改成照抄就能用的 apt 命令。
+    expect(claudeMarketplaceGitMissingMessage('linux')).toContain(gitLinuxInstallCommand)
+    expect(claudeMarketplaceGitMissingMessage('linux')).not.toContain('包管理器')
     for (const platform of ['win32', 'darwin', 'linux'] as const) {
       expect(claudeMarketplaceGitMissingMessage(platform)).toContain('Git')
     }

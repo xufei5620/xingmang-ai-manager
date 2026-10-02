@@ -24,5 +24,22 @@ export function isSafeStorageUsable(storage: SafeStorageBackendLike): boolean {
 }
 
 export function safeStoragePlaintextMessage(subject: string): string {
-  return `当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入${subject}。请先启用系统凭据服务后重试。`
+  return `这台电脑没法安全保存密码，已拒绝写入${subject}。`
+}
+
+export type CredentialPersistence = 'durable' | 'session-only'
+
+/**
+ * Where account credentials live for this run. A Linux desktop may simply have
+ * no keyring at all (i3, a remote session, a distro that ships none), and no
+ * restart fixes that; refusing to sign in there would lock a paying customer
+ * out for good. Session-only keeps the login in main-process memory and writes
+ * nothing, so I3 still holds: the next launch starts signed out.
+ *
+ * Windows and macOS keep refusing. There a failure means a denied keychain
+ * prompt or a broken profile the user can recover from, and silently dropping
+ * to "not remembered" would hide that.
+ */
+export function resolveCredentialPersistence(platform: string, backend: SafeStorageBackendStatus): CredentialPersistence {
+  return platform === 'linux' && backend !== 'ok' ? 'session-only' : 'durable'
 }

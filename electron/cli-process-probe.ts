@@ -151,7 +151,9 @@ export function managedCliPackageDirectory(
   packageName: string,
   platform: NodeJS.Platform,
 ): string {
-  const nodeModules = platform === 'darwin'
+  // npm keeps global packages in <prefix>/node_modules only on Windows; macOS and Linux
+  // both use <prefix>/lib/node_modules.
+  const nodeModules = platform !== 'win32'
     ? path.join(npmPrefix, 'lib', 'node_modules')
     : path.join(npmPrefix, 'node_modules')
   return cliPackageDirectory(nodeModules, packageName)

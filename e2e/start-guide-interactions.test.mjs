@@ -73,7 +73,7 @@ test('failed runtime or tool probes expose only recheck; external install never 
       assert.deepEqual(await page.evaluate(() => window.startGuideHarness.calls), ['scan', 'scan'])
     } finally { await page.close() }
   }
-  const page = await openFixture('platform=linux')
+  const page = await openFixture('platform=linux&nodeRuntime=external')
   try {
     assert.equal(await page.getByRole('radio').count(), 5)
     await choose(page, 'claude')

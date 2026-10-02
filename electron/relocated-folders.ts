@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
+import { isLinuxForeignWritablePath } from './linux-path-trust'
 import { sameLocalPathIdentity } from './path-identity'
 
 /**
@@ -34,8 +35,8 @@ import { sameLocalPathIdentity } from './path-identity'
  *   account could plant those to make this user's process overwrite its own data.
  * - Its target is somewhere this user's data may live: on Windows a directory
  *   on a local drive letter (never a network share, whose contents another
- *   machine controls); on POSIX a directory no one but root and the user can
- *   modify.
+ *   machine controls); on macOS and Linux a directory no one but root and the user
+ *   can modify, each judged by its own platform's predicate.
  *
  * Callers swap the lexical path for the resolved one and then run the usual
  * strict checks on it, so nothing after the relocated folder is relaxed: a second
@@ -121,6 +122,22 @@ export function acceptsPosixRelocationTarget(target: string): boolean {
 }
 
 /**
+ * The macOS rule above trusts gid 80 and distrusts the user's own private group, both
+ * wrong on Linux: a folder moved to a data disk under the default umask 002 is 0775
+ * with the user's own group, and gid 80 is just some group there.
+ */
+export function acceptsLinuxRelocationTarget(target: string): boolean {
+  return path.posix.isAbsolute(target)
+    && isDirectoryWithoutLink(target)
+    && !isLinuxForeignWritablePath(target)
+}
+
+function relocationTargetRule(platform: NodeJS.Platform): (target: string) => boolean {
+  if (platform === 'win32') return acceptsWindowsRelocationTarget
+  return platform === 'darwin' ? acceptsPosixRelocationTarget : acceptsLinuxRelocationTarget
+}
+
+/**
  * Called once startup knows how the process runs. Anything but an unelevated
  * user keeps every link rejected.
  */
@@ -150,7 +167,7 @@ export function configureRelocatedFolderAccess(
   }
   activePolicy = {
     homeDirectories,
-    acceptsTarget: platform === 'win32' ? acceptsWindowsRelocationTarget : acceptsPosixRelocationTarget,
+    acceptsTarget: relocationTargetRule(platform),
   }
   return activePolicy
 }

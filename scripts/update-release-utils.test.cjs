@@ -17,14 +17,19 @@ const {
   MAX_ARTIFACT_BYTES,
   MAX_BLOCKMAP_BYTES,
   MAX_METADATA_BYTES,
+  UPDATE_MANIFEST_NAMES,
+  assertLinuxUpdateArchitectureInventory,
   assertRemoteReleaseIsOlder,
   compareReleaseVersions,
   normalizeUpdateBaseUrl,
   parseLatestMetadata,
+  readRemoteManifest,
   resolveEmptyReleaseOutputDirectory,
   resolveUpdateUrlForVersion,
+  validateLocalLinuxRelease,
   validateLocalRelease,
   validateReleaseEnvironment,
+  verifyManifestArtifacts,
   verifyRemoteFeed,
 } = require('./update-release-utils.cjs')
 
@@ -1044,4 +1049,211 @@ test('remote feed verification rejects unexpected content encoding and cancels e
     responseClosed,
     new Promise((_, reject) => setTimeout(() => reject(new Error('错误响应正文未被及时取消')), 1_000)),
   ])
+})
+
+// Linux：每个架构一份清单（electron-updater 按 process.arch 找），只列它自己那个 deb，
+// 没有 blockmap。下面的 deb 都是几个字节的假内容，只在本机回环地址上提供。
+async function writeLinuxFixture(directory, version = '1.2.3') {
+  const debs = {}
+  for (const [arch, debArch, manifest] of [['x64', 'amd64', 'latest-linux.yml'], ['arm64', 'arm64', 'latest-linux-arm64.yml']]) {
+    const fileName = `xingmang-ai-manager_${version}_${debArch}.deb`
+    const contents = Buffer.from(`linux-${arch}-deb-fixture`)
+    await fs.promises.writeFile(path.join(directory, fileName), contents)
+    await fs.promises.writeFile(path.join(directory, manifest), fixtureMetadata(fileName, contents, version))
+    debs[arch] = { fileName, contents, manifest }
+  }
+  return debs
+}
+
+async function createLinuxFixtureDirectory(t) {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-linux-update-test-'))
+  t.after(() => fs.promises.rm(directory, { recursive: true, force: true }))
+  return { directory, debs: await writeLinuxFixture(directory) }
+}
+
+test('every platform registers its update manifests in one place, Linux once per architecture', () => {
+  // 发布前检查、备份、回滚、发布后复核都按这张表认清单；Linux 漏一个架构，那个架构的
+  // 清单就会被当成「不认识」挡掉，或者干脆没人备份。
+  assert.deepEqual(UPDATE_MANIFEST_NAMES, ['latest.yml', 'latest-mac.yml', 'latest-linux.yml', 'latest-linux-arm64.yml'])
+})
+
+test('a Linux manifest may only list this version\'s deb for its own architecture', () => {
+  const contents = Buffer.from('deb')
+  function inventory(fileNames, version, manifest) {
+    const text = fixtureMetadataFiles(fileNames.map((fileName) => ({ fileName, contents })), version)
+    return () => assertLinuxUpdateArchitectureInventory(parseLatestMetadata(text, manifest), manifest)
+  }
+  assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3_amd64.deb'], '1.2.3', 'latest-linux.yml'))
+  assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3_arm64.deb'], '1.2.3', 'latest-linux-arm64.yml'))
+  // 预发布版本：文件名照抄原版本号（electron-builder 只把控制字段里的「-」换成「~」），
+  // 清单里写的也是这个名字。
+  assert.doesNotThrow(inventory(['xingmang-ai-manager_1.2.3-beta.1_amd64.deb'], '1.2.3-beta.1', 'latest-linux.yml'))
+  assert.throws(inventory(['xingmang-ai-manager_1.2.3~beta.1_amd64.deb'], '1.2.3-beta.1', 'latest-linux.yml'), (error) => error.code === 'LINUX_UPDATE_INVENTORY_INVALID')
+  const invalid = (error) => error.code === 'LINUX_UPDATE_INVENTORY_INVALID'
+  // x64 的清单指向 arm64 的包：每个 x64 客户都会下到一个 dpkg 拒装的文件。
+  assert.throws(inventory(['xingmang-ai-manager_1.2.3_arm64.deb'], '1.2.3', 'latest-linux.yml'), invalid)
+  assert.throws(inventory(['xingmang-ai-manager_1.2.3_amd64.deb'], '1.2.3', 'latest-linux-arm64.yml'), invalid)
+  assert.throws(inventory(['xingmang-ai-manager_1.2.2_amd64.deb'], '1.2.3', 'latest-linux.yml'), invalid)
+  assert.throws(inventory(['xingmang-ai-manager_1.2.3_amd64.deb', 'xingmang-ai-manager_1.2.3_arm64.deb'], '1.2.3', 'latest-linux.yml'), invalid)
+  assert.throws(inventory(['XingMang-AI-Manager-1.2.3-Setup.exe'], '1.2.3', 'latest-linux.yml'), invalid)
+  assert.throws(
+    inventory(['xingmang-ai-manager_1.2.3_amd64.deb'], '1.2.3', 'latest-linux-ia32.yml'),
+    (error) => error.code === 'VERIFY_PLATFORM_INVALID',
+  )
+
+  const sha512 = createHash('sha512').update(contents).digest('base64')
+  const withoutSize = YAML.stringify({
+    version: '1.2.3',
+    files: [{ url: 'xingmang-ai-manager_1.2.3_amd64.deb', sha512 }],
+    path: 'xingmang-ai-manager_1.2.3_amd64.deb',
+    sha512,
+  })
+  assert.throws(
+    () => assertLinuxUpdateArchitectureInventory(parseLatestMetadata(withoutSize, 'latest-linux.yml'), 'latest-linux.yml'),
+    (error) => error.code === 'LINUX_UPDATE_SIZE_MISSING',
+  )
+})
+
+test('a local Linux release must match the deb next to its manifest, for either architecture', async (t) => {
+  const { directory, debs } = await createLinuxFixtureDirectory(t)
+
+  // 两个架构出在同一个目录里（npm run build:linux 的默认做法）也各自核得过。
+  for (const arch of ['x64', 'arm64']) {
+    const result = await validateLocalLinuxRelease(directory, { arch, expectedVersion: '1.2.3' })
+    assert.equal(result.metadata.version, '1.2.3')
+    assert.equal(result.debPath, path.join(directory, debs[arch].fileName))
+    assert.equal(result.metadataPath, path.join(directory, debs[arch].manifest))
+  }
+  await assert.rejects(
+    validateLocalLinuxRelease(directory, { arch: 'x64', expectedVersion: '1.2.4' }),
+    (error) => error.code === 'LOCAL_VERSION_MISMATCH',
+  )
+
+  const debPath = path.join(directory, debs.x64.fileName)
+  await fs.promises.writeFile(debPath, Buffer.from('linux-x64-deb-fixturX'))
+  await assert.rejects(
+    validateLocalLinuxRelease(directory, { arch: 'x64' }),
+    (error) => error.code === 'LOCAL_ARTIFACT_HASH_MISMATCH',
+  )
+  await fs.promises.writeFile(debPath, Buffer.from('short'))
+  await assert.rejects(
+    validateLocalLinuxRelease(directory, { arch: 'x64' }),
+    (error) => error.code === 'LOCAL_ARTIFACT_SIZE_MISMATCH',
+  )
+  await fs.promises.rm(debPath)
+  await assert.rejects(
+    validateLocalLinuxRelease(directory, { arch: 'x64' }),
+    (error) => error.code === 'LOCAL_ARTIFACT_MISSING',
+  )
+  await fs.promises.rm(path.join(directory, debs.arm64.manifest))
+  await assert.rejects(
+    validateLocalLinuxRelease(directory, { arch: 'arm64' }),
+    (error) => error.code === 'LOCAL_METADATA_MISSING',
+  )
+  await assert.rejects(validateLocalLinuxRelease(directory, { arch: 'ia32' }), /只接受 x64 或 arm64/)
+})
+
+test('a local Linux deb that is a symbolic link is refused', { skip: process.platform === 'win32' && '建符号链接要管理员权限' }, async (t) => {
+  const { directory, debs } = await createLinuxFixtureDirectory(t)
+  const debPath = path.join(directory, debs.x64.fileName)
+  const elsewhere = path.join(directory, 'elsewhere.deb')
+  await fs.promises.rename(debPath, elsewhere)
+  await fs.promises.symlink(elsewhere, debPath)
+
+  // 上传的是链接指向的东西，核的却是链接本身的名字，两者对不上就不该放行。
+  await assert.rejects(
+    validateLocalLinuxRelease(directory, { arch: 'x64' }),
+    (error) => error.code === 'LOCAL_ARTIFACT_EMPTY',
+  )
+})
+
+test('Linux feed verification checks both architectures and downloads each deb', async (t) => {
+  const { directory, debs } = await createLinuxFixtureDirectory(t)
+  const baseUrl = await serveFixtureDirectory(t, directory)
+
+  const result = await verifyRemoteFeed({ baseUrl, allowLocalHttp: true, platform: 'linux' })
+  assert.equal(result.linux.x64.metadata.version, '1.2.3')
+  assert.equal(result.linux.arm64.metadata.version, '1.2.3')
+  assert.equal(result.linux.arm64.metadata.files[0].relativePath, debs.arm64.fileName)
+
+  await fs.promises.writeFile(path.join(directory, debs.arm64.fileName), Buffer.from('linux-arm64-deb-fixturX'))
+  await assert.rejects(
+    verifyRemoteFeed({ baseUrl, allowLocalHttp: true, platform: 'linux' }),
+    (error) => error.code === 'REMOTE_ARTIFACT_HASH_MISMATCH' && error.message.includes(debs.arm64.fileName),
+  )
+
+  // 只发了一个架构：另一个架构的客户永远等不到这一版，复核必须报红。
+  await fs.promises.rm(path.join(directory, debs.arm64.manifest))
+  await assert.rejects(
+    verifyRemoteFeed({ baseUrl, allowLocalHttp: true, verifyAssets: false, platform: 'linux' }),
+    (error) => error.code === 'REMOTE_METADATA_STATUS' && /latest-linux-arm64\.yml/.test(error.message),
+  )
+})
+
+test('the default feed verification still means Windows and macOS only', async (t) => {
+  // Linux 开关没打开时线上没有 Linux 清单；不带参数的复核（发布后、回滚后）不能因此报红。
+  const fixture = await createReleaseFixture(t)
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+  const result = await verifyRemoteFeed({ baseUrl, allowLocalHttp: true, verifyAssets: false })
+  assert.equal(result.metadata.version, '1.2.3')
+  assert.equal(result.linux, undefined)
+})
+
+test('verify-update-feed exposes a Linux mode that names both architectures', async (t) => {
+  const { directory } = await createLinuxFixtureDirectory(t)
+  const baseUrl = await serveFixtureDirectory(t, directory)
+  const result = await runNodeScript(path.join(__dirname, 'verify-update-feed.cjs'), [
+    baseUrl,
+    '--allow-local',
+    '--metadata-only',
+    '--platform=linux',
+  ])
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Linux x64 v1\.2\.3；arm64 v1\.2\.3（Linux x64 与 arm64 元数据）/)
+  assert.doesNotMatch(result.stdout, /Windows|macOS/)
+})
+
+test('a Linux manifest backup is verified by downloading its deb, with no blockmap to ask for', async (t) => {
+  const { directory, debs } = await createLinuxFixtureDirectory(t)
+  const baseUrl = await serveFixtureDirectory(t, directory)
+  const metadataText = await fs.promises.readFile(path.join(directory, debs.x64.manifest), 'utf8')
+
+  const metadata = await verifyManifestArtifacts({ baseUrl, metadataText, metadataFile: 'latest-linux.yml', allowLocalHttp: true })
+  assert.equal(metadata.files[0].relativePath, debs.x64.fileName)
+  // 同一份 x64 清单冒充 arm64 的备份：退回去就会把 x64 的包推给 arm64 的客户。
+  await assert.rejects(
+    verifyManifestArtifacts({ baseUrl, metadataText, metadataFile: 'latest-linux-arm64.yml', allowLocalHttp: true }),
+    (error) => error.code === 'LINUX_UPDATE_INVENTORY_INVALID',
+  )
+  await assert.rejects(
+    verifyManifestArtifacts({ baseUrl, metadataText, metadataFile: 'latest-linux-ia32.yml', allowLocalHttp: true }),
+    (error) => error.code === 'VERIFY_PLATFORM_INVALID',
+  )
+})
+
+test('the release preflight reads a single manifest, allows a first release and downloads nothing', async (t) => {
+  const { directory, debs } = await createLinuxFixtureDirectory(t)
+  const requested = []
+  const baseUrl = await serveFixtureDirectory(t, directory, (request) => {
+    requested.push(request.url)
+    return false
+  })
+
+  await fs.promises.rm(path.join(directory, debs.x64.fileName))
+  const present = await readRemoteManifest({ baseUrl, metadataFile: 'latest-linux.yml', allowLocalHttp: true })
+  assert.equal(present.metadata.version, '1.2.3')
+  assert.deepEqual(requested, ['/latest-linux.yml'])
+
+  await fs.promises.rm(path.join(directory, debs.arm64.manifest))
+  const missing = await readRemoteManifest({ baseUrl, metadataFile: 'latest-linux-arm64.yml', allowLocalHttp: true, allowMissing: true })
+  assert.deepEqual(missing, { missing: true, metadata: null })
+  await assert.rejects(
+    readRemoteManifest({ baseUrl, metadataFile: 'latest-linux-arm64.yml', allowLocalHttp: true }),
+    (error) => error.code === 'REMOTE_METADATA_STATUS',
+  )
+  await assert.rejects(
+    readRemoteManifest({ baseUrl, metadataFile: 'latest-linux-ia32.yml', allowLocalHttp: true }),
+    (error) => error.code === 'VERIFY_PLATFORM_INVALID',
+  )
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runtimeButtonLabel, runtimeHomebrewCommand, runtimeInstallGuide } from './runtime-install-guide'
+import { linuxPythonInstallCommand, managedRuntimeNotice, runtimeButtonLabel, runtimeHomebrewCommand, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
 
 describe('runtimeButtonLabel', () => {
   it('keeps the old wording where the app installs the runtime itself', () => {
@@ -53,5 +53,49 @@ describe('runtimeInstallGuide', () => {
     const guide = runtimeInstallGuide('node', 'linux', 'external')
     expect(guide?.command).toBeNull()
     expect(guide?.steps.join('')).not.toContain('brew')
+  })
+})
+
+describe('Python on Linux', () => {
+  it('says no CLI needs it and gives the apt command instead of a website or the Mac chapter', () => {
+    const guide = runtimeInstallGuide('python', 'linux', 'external')
+    expect(guide?.summary).toBe('这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。')
+    expect(guide?.command).toBe(linuxPythonInstallCommand)
+    expect(guide?.command).toBe('sudo apt install python3')
+    expect(guide?.noTutorial).toBe(true)
+    const text = [guide?.summary, ...(guide?.steps ?? [])].join('')
+    expect(text).not.toMatch(/官网|brew|macOS|Gemini|PATH|npm|环境变量/)
+  })
+
+  it('hides the python.org button on Linux only', () => {
+    expect(runtimeInstallButtonShown('python', 'linux', 'external')).toBe(false)
+    expect(runtimeInstallButtonShown('python', 'macos', 'external')).toBe(true)
+    expect(runtimeInstallButtonShown('python', 'windows', 'managed')).toBe(true)
+    expect(runtimeInstallButtonShown('node', 'linux', 'managed')).toBe(true)
+    expect(runtimeInstallButtonShown('node', 'linux', 'external')).toBe(true)
+  })
+
+  it('leaves the Mac guide pointing at its tutorial chapter', () => {
+    expect(runtimeInstallGuide('python', 'macos', 'external')?.noTutorial).toBeUndefined()
+    expect(runtimeInstallGuide('node', 'macos', 'external')?.noTutorial).toBeUndefined()
+  })
+})
+
+describe('managedRuntimeNotice', () => {
+  it('keeps the macOS sentence exactly as it was', () => {
+    expect(managedRuntimeNotice('node', 'macos', 'managed')).toBe('这台 Mac 上还没有 Node.js，四个命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
+  })
+
+  it('tells Linux customers the app prepares Node.js itself instead of sending them to a website', () => {
+    const notice = managedRuntimeNotice('node', 'linux', 'managed')
+    expect(notice).toBe('这台电脑上还没有能用的 Node.js，四个命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
+    expect(notice).not.toContain('官网')
+  })
+
+  it('says nothing where Windows has its own elevation notice, or where the customer installs it', () => {
+    expect(managedRuntimeNotice('node', 'windows', 'managed')).toBeNull()
+    expect(managedRuntimeNotice('node', 'linux', 'external')).toBeNull()
+    expect(managedRuntimeNotice('python', 'linux', 'managed')).toBeNull()
+    expect(managedRuntimeNotice('node', undefined, undefined)).toBeNull()
   })
 })

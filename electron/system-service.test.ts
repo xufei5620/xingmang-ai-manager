@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +25,7 @@ import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -68,6 +70,7 @@ import {
   fetchNpmPackageReleaseMetadata,
   formatMebibytes,
   cliInstallTargetDirectory,
+  cliLatestVersionSource,
   grokInstallStrategyFor,
   grokManualUninstallResult,
   formatElapsedDuration,
@@ -1967,6 +1970,23 @@ describe('npm registry metadata', () => {
     })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
+  it('takes Linux Grok straight from npm without asking x.ai for its stable version', async () => {
+    const requestedVersions: string[] = []
+    const release = await resolveCliInstallRelease('grok', 'linux-official-npm', {
+      version: '1.0.44',
+      fetchGrokStableVersion: async () => {
+        throw new Error('must not query Grok stable metadata')
+      },
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version, integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['1.0.44'])
+    expect(release.version).toBe('1.0.44')
+  })
+
   it('keeps other npm providers on their latest npm release selector', async () => {
     const requestedVersions: string[] = []
     await resolveCliInstallRelease('codex', null, {
@@ -2361,11 +2381,21 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
   })
 })
 
-// The same-user install path is shared by Windows (same-user mode) and Linux;
-// Linux is the platform where it can run here without Windows-only fakes.
-describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () => {
-  it('passes the prefix from the user npm config while keeping the empty userconfig', async () => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-npm-'))
+// Linux installs into the same per-user managed layout as macOS (Linux 版拆分 ②), so the
+// user's own ~/.npmrc no longer decides where the CLIs land. These run only on Linux,
+// where the fake npm below is a plain POSIX script.
+describe.runIf(process.platform === 'linux')('Linux managed npm install', () => {
+  interface LinuxInstallFixture {
+    root: string
+    homeDirectory: string
+    userPrefix: string
+    npmExecutable: string
+    expectedVersion: string
+    integrity: string
+  }
+
+  function linuxInstallFixture(npmrc: (userPrefix: string) => string): LinuxInstallFixture {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-managed-npm-'))
     temporaryDirectories.push(temporaryRoot)
     const root = fs.realpathSync(temporaryRoot)
     const homeDirectory = path.join(root, 'home')
@@ -2374,11 +2404,12 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     fs.mkdirSync(homeDirectory, { recursive: true })
     fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
     fs.mkdirSync(runtimeBin, { recursive: true })
-    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), npmrc(userPrefix))
     const npmExecutable = path.join(runtimeBin, 'npm')
     fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
     fs.chmodSync(npmExecutable, 0o700)
     vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
     vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
     // `npm test` exports these to its children; the desktop app never inherits them.
     vi.stubEnv('npm_config_prefix', undefined)
@@ -2400,13 +2431,18 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       }
       throw new Error(`Unexpected fetch: ${url}`)
     }))
+    return { root, homeDirectory, userPrefix, npmExecutable, expectedVersion, integrity }
+  }
 
-    let installArgv: readonly string[] | null = null
-    const runCommand = vi.fn(async (
+  function fakeNpm(
+    fixture: LinuxInstallFixture,
+    onGlobalInstall: (prefix: string, argv: readonly string[]) => void,
+  ) {
+    return vi.fn(async (
       spec: { executable: string; argv: readonly string[] },
       options: { cwd?: string; onOutput?: (event: { stream: 'stdout' | 'stderr'; text: string }) => void } = {},
     ) => {
-      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
+      if (spec.executable !== fixture.npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
       if (spec.argv[0] === 'ci') options.onOutput?.({ stream: 'stdout', text: 'added 12 packages in 3s\n' })
       if (spec.argv.includes('--package-lock-only')) {
         const cwd = options.cwd
@@ -2423,11 +2459,13 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
           lockfileVersion: 3,
           packages: {
             '': { dependencies: manifest.dependencies },
-            [`node_modules/${packageName}`]: { version, integrity },
+            [`node_modules/${packageName}`]: { version, integrity: fixture.integrity },
           },
         }))
       } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
-        installArgv = [...spec.argv]
+        const prefixArgument = spec.argv.find((argument) => argument.startsWith('--prefix='))
+        if (!prefixArgument) throw new Error('Managed install omitted --prefix')
+        onGlobalInstall(prefixArgument.slice('--prefix='.length), spec.argv)
       }
       return {
         executable: spec.executable,
@@ -2440,34 +2478,69 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
         durationMs: 1,
       }
     })
-    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
-    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => installArgv
+  }
+
+  function writeCodexPackage(prefix: string, version: string, withNative: boolean): void {
+    const packageRoot = path.join(prefix, 'lib', 'node_modules', '@openai', 'codex')
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+    fs.mkdirSync(packageRoot, { recursive: true })
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex',
+      version,
+      optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${version}-linux-x64` },
+    }))
+    if (withNative) {
+      fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
+      fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    }
+  }
+
+  function managedResolution(fixture: LinuxInstallFixture) {
+    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
+    const packageRoot = path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    return vi.fn<typeof resolveCliInstallationForTest>(async () => fs.existsSync(path.join(packageRoot, 'package.json'))
       ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
+          commandPath: path.join(managedPrefix, 'bin', 'codex'),
           installDirectory: packageRoot,
           packageRoot,
-          npmPrefix: userPrefix,
-          packageVersion: expectedVersion,
+          npmPrefix: managedPrefix,
+          packageVersion: fixture.expectedVersion,
           source: 'npm',
         }
       : null)
+  }
+
+  it('installs into the per-user managed prefix and ignores both the prefix and the registry in ~/.npmrc', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    let installArgv: readonly string[] | null = null
+    let stagedPrefix: string | null = null
+    const runCommand = fakeNpm(fixture, (prefix, argv) => {
+      installArgv = argv
+      stagedPrefix = prefix
+      writeCodexPackage(prefix, fixture.expectedVersion, true)
+    })
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
-      new AppSettingsStore(path.join(root, 'settings.json'), root),
-      { platform: 'linux', runCommand, resolveCliInstallation },
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture) },
     )
 
     await service.installCli('codex', target)
 
-    expect(installArgv).not.toBeNull()
+    const productRoot = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI')
     const argv = installArgv!
-    expect(argv).toContain(`--prefix=${userPrefix}`)
-    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toHaveLength(1)
-    const userConfigArgument = argv.find((argument) => argument.startsWith('--userconfig='))
-    expect(userConfigArgument).toBeDefined()
-    expect(userConfigArgument).not.toBe(`--userconfig=${path.join(homeDirectory, '.npmrc')}`)
-    // Only prefix is carried over; the registry line in the same file stays ignored.
+    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toEqual([`--prefix=${stagedPrefix}`])
+    // The lifecycle runs against a staged copy inside the managed cache, never the user's prefix.
+    expect(path.relative(path.join(productRoot, 'Cli', 'npm-cache'), stagedPrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
+    expect(argv.some((argument) => argument.includes(fixture.userPrefix))).toBe(false)
+    expect(argv).toContain(`--userconfig=${path.join(productRoot, 'Cli', 'npmrc')}`)
     expect(argv.some((argument) => argument.includes('example.invalid'))).toBe(false)
+    // The staged prefix was promoted into place.
+    expect(JSON.parse(fs.readFileSync(
+      path.join(productRoot, 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex', 'package.json'),
+      'utf8',
+    ))).toMatchObject({ version: fixture.expectedVersion })
+    expect(fs.existsSync(path.join(fixture.userPrefix, 'lib'))).toBe(false)
     expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -2483,102 +2556,20 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
   })
 
-  it('fails the install when npm silently skipped the platform build', async () => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-native-'))
-    temporaryDirectories.push(temporaryRoot)
-    const root = fs.realpathSync(temporaryRoot)
-    const homeDirectory = path.join(root, 'home')
-    const userPrefix = path.join(root, 'npm-global')
-    const runtimeBin = path.join(root, 'runtime-bin')
-    fs.mkdirSync(homeDirectory, { recursive: true })
-    fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
-    fs.mkdirSync(runtimeBin, { recursive: true })
-    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `prefix=${userPrefix}\n`)
-    const npmExecutable = path.join(runtimeBin, 'npm')
-    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
-    fs.chmodSync(npmExecutable, 0o700)
-    vi.stubEnv('HOME', homeDirectory)
-    vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
-    vi.stubEnv('npm_config_prefix', undefined)
-    vi.stubEnv('npm_config_userconfig', undefined)
-
-    const expectedVersion = recommendedCodexVersion()
-    const integrity = `sha512-${Buffer.alloc(64, 0x32).toString('base64')}`
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
-        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
-      }
-      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
-        return new Response(JSON.stringify({
-          name: '@openai/codex',
-          version: expectedVersion,
-          dist: { integrity },
-        }), { status: 200 })
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
-    }))
-
-    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
-    let globalInstalls = 0
-    const runCommand = vi.fn(async (
-      spec: { executable: string; argv: readonly string[] },
-      options: { cwd?: string } = {},
-    ) => {
-      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
-      if (spec.argv.includes('--package-lock-only')) {
-        const cwd = options.cwd
-        if (!cwd) throw new Error('Fake npm requires cwd')
-        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
-          name: string
-          version: string
-          dependencies: Record<string, string>
-        }
-        const [[packageName, version]] = Object.entries(manifest.dependencies)
-        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
-          name: manifest.name,
-          version: manifest.version,
-          lockfileVersion: 3,
-          packages: {
-            '': { dependencies: manifest.dependencies },
-            [`node_modules/${packageName}`]: { version, integrity },
-          },
-        }))
-      } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
-        // npm exits 0 after dropping an optional dependency whose download failed.
-        globalInstalls += 1
-        fs.mkdirSync(packageRoot, { recursive: true })
-        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
-          name: '@openai/codex',
-          version: expectedVersion,
-          optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${expectedVersion}-linux-x64` },
-        }))
-      }
-      return {
-        executable: spec.executable,
-        argv: [...spec.argv],
-        exitCode: 0,
-        signal: null,
-        stdout: '',
-        stderr: '',
-        outputBytes: 0,
-        durationMs: 1,
-      }
+  it('fails the install when npm silently skipped the platform build and keeps nothing half-installed', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
+    let withNative = false
+    const runCommand = fakeNpm(fixture, (prefix) => {
+      // npm exits 0 after dropping an optional dependency whose download failed.
+      writeCodexPackage(prefix, fixture.expectedVersion, withNative)
     })
-    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => globalInstalls > 0
-      ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
-          installDirectory: packageRoot,
-          packageRoot,
-          npmPrefix: userPrefix,
-          packageVersion: expectedVersion,
-          source: 'npm',
-        }
-      : null)
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
-      new AppSettingsStore(path.join(root, 'settings.json'), root),
-      { platform: 'linux', runCommand, resolveCliInstallation },
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture) },
+    )
+    const managedPackage = path.join(
+      fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
     )
 
     await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
@@ -2586,14 +2577,196 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+    // Each attempt failed inside its own staged prefix, so the managed prefix was never touched.
+    expect(fs.existsSync(managedPackage)).toBe(false)
 
-    fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
-    fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    withNative = true
     await service.installCli('codex', target)
+    expect(fs.existsSync(path.join(managedPackage, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'))).toBe(true)
     expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+  })
+})
+
+describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () => {
+  const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
+
+  function recommendedGrokVersion(): string {
+    const recommended = cliVerifiedVersions.grok.recommended
+    if (!recommended) throw new Error('cliVerifiedVersions.grok 必须有推荐版本')
+    return recommended.version
+  }
+
+  interface GrokFixture {
+    root: string
+    homeDirectory: string
+    npmExecutable: string
+    version: string
+    binary: Buffer
+  }
+
+  function grokFixture(): GrokFixture {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-grok-install-'))
+    temporaryDirectories.push(temporaryRoot)
+    const root = fs.realpathSync(temporaryRoot)
+    const homeDirectory = path.join(root, 'home')
+    const runtimeBin = path.join(root, 'runtime-bin')
+    fs.mkdirSync(homeDirectory, { recursive: true })
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    const npmExecutable = path.join(runtimeBin, 'npm')
+    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(npmExecutable, 0o700)
+    vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
+    vi.stubEnv('PATH', runtimeBin)
+    vi.stubEnv('npm_config_prefix', undefined)
+    vi.stubEnv('npm_config_userconfig', undefined)
+    const version = recommendedGrokVersion()
+    const integrity = `sha512-${Buffer.alloc(64, 0x47).toString('base64')}`
+    // Anything aimed at x.ai (the stable manifest Windows and macOS use) fails the test.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
+        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      }
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@xai-official/grok', version)) {
+        return new Response(JSON.stringify({ name: '@xai-official/grok', version, dist: { integrity } }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+    const binary = Buffer.concat([Buffer.from('\x7fELF grok '), Buffer.alloc(70_000, 0x61)])
+    return { root, homeDirectory, npmExecutable, version, binary }
+  }
+
+  /**
+   * Stands in for npm and for the installed program. `npm ci --ignore-scripts` unpacks the
+   * packages into the resolution directory; the lifecycle run is where xAI's postinstall
+   * writes ~/.grok/bin, so that is where `installedBytes` lands.
+   */
+  function grokCommands(fixture: GrokFixture, installedBytes: () => Buffer) {
+    const calls: Array<{ executable: string; argv: readonly string[] }> = []
+    const runCommand = vi.fn(async (
+      spec: { executable: string; argv: readonly string[] },
+      options: { cwd?: string } = {},
+    ) => {
+      calls.push(spec)
+      let stdout = ''
+      if (spec.argv.length === 1 && spec.argv[0] === '--version') {
+        if (path.dirname(spec.executable) !== path.join(fixture.homeDirectory, '.grok', 'bin')) {
+          throw new Error(`Unexpected command: ${spec.executable}`)
+        }
+        stdout = `grok ${fixture.version} (6b2c1a0)\n`
+      } else if (spec.executable !== fixture.npmExecutable) {
+        throw new Error(`Unexpected command: ${spec.executable}`)
+      } else if (spec.argv.includes('--package-lock-only')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+          name: string
+          version: string
+          dependencies: Record<string, string>
+        }
+        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
+          name: manifest.name,
+          version: manifest.version,
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: manifest.dependencies },
+            'node_modules/@xai-official/grok': {
+              version: fixture.version,
+              integrity: `sha512-${Buffer.alloc(64, 0x47).toString('base64')}`,
+            },
+          },
+        }))
+      } else if (spec.argv[0] === 'ci' && spec.argv.includes('--ignore-scripts')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const platformPackage = path.join(cwd, 'node_modules', '@xai-official', `grok-linux-${architecture}`)
+        fs.mkdirSync(path.join(platformPackage, 'bin'), { recursive: true })
+        fs.writeFileSync(path.join(platformPackage, 'package.json'), JSON.stringify({
+          name: `@xai-official/grok-linux-${architecture}`,
+          version: fixture.version,
+        }))
+        fs.writeFileSync(path.join(platformPackage, 'bin', 'grok.br'), zlib.brotliCompressSync(fixture.binary))
+      } else if (spec.argv[0] === 'ci') {
+        const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+        fs.mkdirSync(bin, { recursive: true })
+        fs.writeFileSync(path.join(bin, `grok-${fixture.version}`), installedBytes(), { mode: 0o755 })
+        fs.rmSync(path.join(bin, 'grok'), { force: true })
+        fs.symlinkSync(`grok-${fixture.version}`, path.join(bin, 'grok'))
+      }
+      return {
+        executable: spec.executable,
+        argv: [...spec.argv],
+        exitCode: 0,
+        signal: null,
+        stdout,
+        stderr: '',
+        outputBytes: Buffer.byteLength(stdout),
+        durationMs: 1,
+      }
+    })
+    return { runCommand, calls }
+  }
+
+  it('installs Grok with the lifecycle run, checks it byte for byte and never asks x.ai', async () => {
+    const fixture = grokFixture()
+    const { runCommand, calls } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+
+    await service.installCli('grok', target)
+
+    const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+    expect(fs.readlinkSync(path.join(bin, 'grok'))).toBe(`grok-${fixture.version}`)
+    expect(fs.readlinkSync(path.join(bin, 'agent'))).toBe(`grok-${fixture.version}`)
+    expect(target.send).toHaveBeenCalledWith('cli:install-progress', expect.objectContaining({ state: 'success' }))
+    const npmRuns = calls.filter((call) => call.executable === fixture.npmExecutable && call.argv[0] === 'ci')
+    expect(npmRuns.map((call) => call.argv.includes('--ignore-scripts'))).toEqual([true, false])
+    // The lifecycle run installs the resolved lock in place: no global install, no prefix.
+    expect(npmRuns[1].argv.some((argument) => argument === '--global' || argument.startsWith('--prefix='))).toBe(false)
+    expect(calls).toContainEqual({ executable: path.join(bin, `grok-${fixture.version}`), argv: ['--version'] })
+  })
+
+  it('uninstalls what it installed and leaves the Grok settings alone', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+    await service.installCli('grok', target)
+    const grokRoot = path.join(fixture.homeDirectory, '.grok')
+    fs.writeFileSync(path.join(grokRoot, 'config.toml'), 'model = "grok"\n')
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'uninstalled',
+      previousVersion: fixture.version,
+    })
+    expect(fs.readdirSync(path.join(grokRoot, 'bin'))).toEqual([])
+    expect(fs.readFileSync(path.join(grokRoot, 'config.toml'), 'utf8')).toBe('model = "grok"\n')
+  })
+
+  it('rolls the command back and reports failure when the installed program is not the verified one', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => Buffer.from('some other program'))
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+
+    await expect(service.installCli('grok', target)).rejects.toThrow('Grok CLI 装好的程序文件和官方发布的不一致')
+    expect(target.send).not.toHaveBeenCalledWith('cli:install-progress', expect.objectContaining({ state: 'success' }))
+    const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+    expect(fs.existsSync(path.join(bin, 'grok'))).toBe(false)
+    expect(fs.existsSync(path.join(bin, 'agent'))).toBe(false)
   })
 })
 
@@ -3107,7 +3280,7 @@ describe('npm install progress reporting', () => {
     )
   })
 
-  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows', () => {
+  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows and Linux', () => {
     const old = { installed: true, version: 'v20.11.1' }
     const certificate = { reason: 'certificate' as const }
     expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: old })).toBe(true)
@@ -3120,6 +3293,9 @@ describe('npm install progress reporting', () => {
     expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: false, version: null } })).toBe(false)
     // Mac 上代下的那份排在客户自己的后面，换了也用不上。
     expect(shouldReplaceNodeForCertificates({ platform: 'darwin', request: certificate, node: old })).toBe(false)
+    // Linux 上代下的那份在软件里排在最前，装上就是它（linux-platform.ts）。
+    expect(shouldReplaceNodeForCertificates({ platform: 'linux', request: certificate, node: { installed: true, version: 'v22.10.0' } })).toBe(true)
+    expect(shouldReplaceNodeForCertificates({ platform: 'linux', request: {}, node: old })).toBe(false)
   })
 
   function outdatedNodeService(directory: string, versions: string[], installNodeRuntime: () => Promise<NodeRuntimeInstallResult>) {
@@ -4266,6 +4442,22 @@ describe('CLI latest version state', () => {
     expect(parseGrokLocalVersion('<html>')).toBeNull()
   })
 
+  it.runIf(process.platform === 'linux')('reads the Linux Grok version from the link npm postinstall made', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
+    temporaryDirectories.push(home)
+    const bin = path.join(home, '.grok', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'grok-1.0.44'), 'test-binary', { mode: 0o755 })
+    fs.symlinkSync('grok-1.0.44', path.join(bin, 'grok'))
+    // A stale file from an earlier official install must not win over the link.
+    fs.writeFileSync(path.join(home, '.grok', 'version.json'), '{"version":"0.2.112"}\n', 'utf8')
+
+    await expect(readGrokLocalVersionForExecutable(path.join(bin, 'grok'), {
+      platform: 'linux',
+      homeDirectory: home,
+    })).resolves.toBe('1.0.44')
+  })
+
   it('prefers Grok metadata beside the executable over stale root metadata', async () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
     temporaryDirectories.push(home)
@@ -4437,7 +4629,18 @@ describe('CLI latest version state', () => {
   it('selects the Grok installer appropriate to each platform', () => {
     expect(grokInstallStrategyFor('win32')).toBe('windows-native')
     expect(grokInstallStrategyFor('darwin')).toBe('darwin-official-npm')
-    expect(grokInstallStrategyFor('linux')).toBe('external')
+    expect(grokInstallStrategyFor('linux')).toBe('linux-official-npm')
+    expect(grokInstallStrategyFor('freebsd')).toBe('external')
+  })
+
+  it('asks npm for the newest Grok only on Linux, where Grok is installed from npm', () => {
+    expect(cliLatestVersionSource('grok', 'linux')).toBe('npm')
+    expect(cliLatestVersionSource('grok', 'win32')).toBe('official-manifest')
+    expect(cliLatestVersionSource('grok', 'darwin')).toBe('official-manifest')
+    // Callers that do not say which platform keep the old answer.
+    expect(cliLatestVersionSource('grok')).toBe('official-manifest')
+    expect(cliLatestVersionSource('codex', 'win32')).toBe('npm')
+    expect(cliLatestVersionSource('gemini', 'linux')).toBe('npm')
   })
 
   it('names where a first install would land, mirroring the choices installCli makes', () => {
@@ -4488,6 +4691,13 @@ describe('CLI latest version state', () => {
       managedNpmPrefix: null,
       managedNativeRoot: null,
     })).toBe(path.join('/usr/local/lib/node_modules', '@xai-official', 'grok'))
+    // Linux 上 npm 的 postinstall 把程序放进 ~/.grok/bin，不在 node_modules 里。
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'linux',
+      npmGlobalRoot: '/usr/lib/node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: '/home/tester/.grok/bin',
+    })).toBe('/home/tester/.grok/bin')
   })
 
   it('returns null rather than a guessed path when nothing resolves', () => {
@@ -4505,7 +4715,7 @@ describe('CLI latest version state', () => {
     })).toBeNull()
   })
 
-  it('allows Grok npm maintenance only after Darwin integrity verification', () => {
+  it('allows Grok npm maintenance only after Darwin or Linux integrity verification', () => {
     expect(buildCliMaintenancePlan(
       'grok',
       '/Users/tester/.local/bin/npm',
@@ -4553,13 +4763,36 @@ describe('CLI latest version state', () => {
       'win32',
     )).toThrow('已签名二进制')
 
+    // Linux 和 macOS 一样跑 npm ci，同样要先过生命周期脚本的完整性对账（Linux 版拆分 ③）。
+    expect(buildCliMaintenancePlan(
+      'grok',
+      '/home/tester/.local/share/XingMangAI/Runtime/node/bin/npm',
+      null,
+      '1.0.44',
+      true,
+      'linux',
+    )).toEqual({
+      kind: 'npm-install',
+      executable: '/home/tester/.local/share/XingMangAI/Runtime/node/bin/npm',
+      argv: ['ci', '--omit=dev'],
+      windowsPackageManager: 'npm',
+    })
+    expect(() => buildCliMaintenancePlan(
+      'grok',
+      '/usr/bin/npm',
+      null,
+      '1.0.44',
+      false,
+      'linux',
+    )).toThrow('完整性校验')
+
     expect(() => buildCliMaintenancePlan(
       'grok',
       '/usr/bin/npm',
       null,
       '0.2.118',
       true,
-      'linux',
+      'freebsd',
     )).toThrow('不支持')
   })
 
@@ -4666,6 +4899,9 @@ describe('latest version probe budget when the machine looks offline', () => {
       error: latestVersionUncheckedMessage,
     })
     expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'win32').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'darwin').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'linux').source).toBe('npm')
     expect(buildUncheckedLatestVersion('gemini', false, '2026-09-22T00:00:00.000Z')).toEqual({
       status: 'skipped',
       version: null,
@@ -5111,6 +5347,101 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     await expect(launchService(userHome, 'claude').launchProvider('claude', workspace))
       .rejects.toThrow('未检测到 Claude Code')
     expect(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')).toBe('{"projects":')
+  })
+})
+
+describe('opening a CLI on Linux', () => {
+  function linuxLaunchService(userHome: string, launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+    return createService({
+      platform: 'linux',
+      ...(runtimeLog ? { runtimeLog } : {}),
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-02T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: '/opt/xm/npm/bin/claude',
+        installDirectory: '/opt/xm/npm/lib/node_modules/@anthropic-ai/claude-code',
+        packageRoot: '/opt/xm/npm/lib/node_modules/@anthropic-ai/claude-code',
+        npmPrefix: '/opt/xm/npm',
+        packageVersion: '2.1.283',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({ executable: '/opt/xm/npm/bin/claude', argv: [] })),
+      findExecutable: vi.fn(async () => null),
+      probeLoopbackProxy: async () => true,
+      launchLinuxTerminal,
+    })
+  }
+
+  function project(prefix: string): { userHome: string; workspace: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    return { userHome, workspace }
+  }
+
+  it.runIf(process.platform !== 'win32')('hands the resolved tool, the folder and a titled window to the Linux launcher', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const log = vi.fn()
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)).resolves.toBeDefined()
+
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+    const plan = launchLinuxTerminal.mock.calls[0]?.[0]
+    expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
+    expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
+    expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  it.runIf(process.platform !== 'win32')('says which tool did not open, and logs the terminals it tried with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-fail-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.notStarted, [
+        { terminal: 'kitty', executable: path.join(userHome, '.local', 'bin', 'kitty'), outcome: 'exited', detail: '1' },
+      ])
+    })
+    const log = vi.fn()
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace))
+      .rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.notStarted}`)
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 3)).toEqual(['warn', 'system', 'terminal.failed'])
+    expect(JSON.stringify(entry?.[4])).toContain('kitty')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
+  })
+
+  it.runIf(process.platform !== 'win32')('keeps the system error behind an unusable temporary folder in the log only, with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-tmp-')
+    const reason = `EACCES: permission denied, mkdtemp '${path.join(userHome, '.cache', 'xingmang-terminal-1-')}XXXXXX'`
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.noLauncherDirectory, [], reason)
+    })
+    const log = vi.fn()
+
+    const failure = linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)
+    await expect(failure).rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.noLauncherDirectory}`)
+    await expect(failure).rejects.not.toThrow('EACCES')
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(JSON.stringify(entry?.[4])).toContain('EACCES')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
   })
 })
 

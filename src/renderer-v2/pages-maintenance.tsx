@@ -73,10 +73,12 @@ import {
   updateCardTitle,
   updateDiskShortfallText,
   updateDownloadDetail,
+  updateInstallActionLabel,
   updateInstallNote,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
+import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { tools } from './registry/tools'
 import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
@@ -102,7 +104,7 @@ import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
 import type { Conversation } from './features/chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './features/app/data-transfer'
-import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
+import { rememberedLoginAction, rememberedLoginForgottenMessage, sessionOnlyLoginNotice } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -1179,6 +1181,8 @@ export function UpdatesPage({
   }, [api])
   const update = resource.data
   const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
+  // Linux 的 .deb：装这一步交给系统安装程序，软件只关掉、不会自己重开（updater.ts 的 UpdateInstallMethod）。
+  const systemInstaller = update?.installMethod === 'system-installer'
   const check = () =>
     void operation.execute(
       'check',
@@ -1224,7 +1228,7 @@ export function UpdatesPage({
         icon={RefreshCw}
         onClick={() => setConfirm(true)}
       >
-        重启安装
+        {updateInstallActionLabel(update.installMethod)}
       </Button>
     ) : (
       <Button
@@ -1247,7 +1251,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn)} />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
@@ -1361,6 +1365,23 @@ export function UpdatesPage({
               }
             />
           )}
+          {update?.installMethod === 'manual' && (
+            <Notice
+              tone="warn"
+              title="这台电脑上没法自动更新"
+              body="星芒在这台电脑上不是用安装包装的，没法自己更新。到下载页下载新版本的安装包，装好后打开就行。"
+              testId="updates-manual-install"
+              actions={
+                <Button
+                  size="sm"
+                  icon={ExternalLink}
+                  onClick={() => void operation.execute('download-page', async () => { await api.openExternal(appReleaseDownloadUrl) }, '')}
+                >
+                  打开下载页
+                </Button>
+              }
+            />
+          )}
           {update?.development && <p>当前是开发运行环境。</p>}
         </Card>
         <Card title={releaseNotes.title}>
@@ -1384,7 +1405,7 @@ export function UpdatesPage({
       </div>
       <Dialog
         open={confirm}
-        title="重启并安装更新？"
+        title={systemInstaller ? '安装新版本？' : '重启并安装更新？'}
         onClose={() => setConfirm(false)}
         footer={
           <>
@@ -1404,12 +1425,14 @@ export function UpdatesPage({
                 )
               }
             >
-              确认重启安装
+              {systemInstaller ? '关掉并安装' : '确认重启安装'}
             </Button>
           </>
         }
       >
-        <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
+        {systemInstaller
+          ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
+          : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
         {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} />
@@ -1422,6 +1445,8 @@ export function UpdatesPage({
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
 // 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
 export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
+// Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
+export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
@@ -1594,6 +1619,8 @@ export function MaintenancePage({
         {tools.map((tool) => {
           const id = tool.id
           if (!isProvider(id) && id !== 'codexDesktop') return null
+          // 和首页同一口径（presentTools）：打不开桌面端的系统（Linux）不列这一行。
+          if (id === 'codexDesktop' && capability && !capability.codexDesktop.launch) return null
           const status =
             id === 'codexDesktop'
               ? snapshot?.desktopApps.codex
@@ -2038,12 +2065,17 @@ export function SettingsPage({
   const [systemError, setSystemError] = useState('')
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
   const [isMac, setIsMac] = useState(false)
+  const [isLinux, setIsLinux] = useState(false)
+  const [accelerationAvailable, setAccelerationAvailable] = useState(true)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
     void api.getPlatformCapabilities()
       .then((capability) => {
-        if (current) setIsMac(capability.platform === 'macos')
+        if (!current) return
+        setIsMac(capability.platform === 'macos')
+        setIsLinux(capability.platform === 'linux')
+        setAccelerationAvailable(capability.acceleration !== false)
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -2493,7 +2525,10 @@ export function SettingsPage({
           )}
           {row(
             '点关闭按钮时',
-            '按你的选择关闭窗口或缩到托盘',
+            // Linux 的任务栏不一定有放托盘图标的地方（主进程先问过），没有就只能退出。
+            isLinux && resource.data && !resource.data.capabilities.tray
+              ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
+              : '按你的选择关闭窗口或缩到托盘',
             <Segment
               options={[
                 { value: 'ask', label: '每次询问' },
@@ -2529,7 +2564,9 @@ export function SettingsPage({
           {resource.data?.update?.autoUpdateSupported &&
             row(
               '自动更新',
-              '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装',
+              resource.data.update.installMethod === 'system-installer'
+                ? '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载'
+                : '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装',
               <Switch
                 testId="settings-auto-update"
                 checked={settings.autoUpdate !== false}
@@ -2688,7 +2725,7 @@ export function SettingsPage({
               }
             />,
           )}
-          {notificationOptions.map((option) =>
+          {notificationOptions.filter((option) => option.value !== 'acceleration' || accelerationAvailable).map((option) =>
             row(
               option.label,
               option.description,
@@ -2760,7 +2797,9 @@ export function SettingsPage({
       ),
       account: (
         <>
-          {rememberedLogin.kind === 'forget'
+          {resource.data?.session.sessionOnly
+            ? row('记住密码', sessionOnlyLoginNotice, null)
+            : rememberedLogin.kind === 'forget'
             ? row(
                 '记住密码',
                 '由客户端安全存储处理；清掉后下次登录要重新输入密码',

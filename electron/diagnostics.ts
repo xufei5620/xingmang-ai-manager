@@ -31,6 +31,7 @@ import {
   isMacOsCommandLineToolsShim,
   xcodeLicensePendingNotice,
 } from './macos-command-line-tools'
+import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import {
@@ -68,6 +69,7 @@ import {
   type WindowsProcessorArchitecture,
 } from './windows-processor'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { readLinuxSystemName } from './linux-os-release'
 import {
   describeWindowsExecutionProbeFailure,
   inspectCurrentWindowsProcessHighIntegrity,
@@ -130,6 +132,8 @@ export interface DiagnosticsDependencies {
   platform?: NodeJS.Platform
   arch?: string
   release?: string
+  /** Linux 发行版名字；缺省时在 Linux 上读 /etc/os-release。 */
+  readLinuxSystemName?: () => Promise<string | null>
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
   now?: () => Date
@@ -137,6 +141,11 @@ export interface DiagnosticsDependencies {
   /** 当前 Windows 账号能不能自己提权（不是「现在是不是管理员」，见 windows-elevation.ts）。 */
   inspectElevationCapability?: (signal: AbortSignal) => Promise<WindowsElevationCapability>
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
+  /**
+   * Linux 上「打开工具用的命令窗口」一项：点「打开」时会用哪个命令窗口程序（linux-terminal.ts）。
+   * 缺省 = 按这台电脑的 PATH 和桌面现找；测试用它造「装了哪个」「一个都没有」。
+   */
+  findLinuxTerminal?: () => LinuxTerminalCandidate | null
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectProvider?: (provider: ProviderId, roots: ProviderConfigRoots) => NativeConfigInspection
@@ -1187,7 +1196,8 @@ export function clockSkewMs(dateHeader: string | null | undefined, now: Date): n
 export function clockSyncGuidance(platform: NodeJS.Platform): string {
   if (platform === 'win32') return '请在「设置 → 时间和语言 → 日期和时间」里打开「自动设置时间」，并确认时区正确。'
   if (platform === 'darwin') return '请在「系统设置 → 通用 → 日期与时间」里打开「自动设置时间和日期」，并确认时区正确。'
-  return '请把系统时间设为自动同步，并确认时区正确。'
+  // Linux 各家桌面的设置页叫法不一，Ubuntu、deepin、统信都有「日期和时间」这一页。
+  return '请打开系统设置里的「日期和时间」，把时间设为自动同步（有的系统叫「自动设置日期和时间」），并确认时区正确。'
 }
 
 /** 日志里要看得见真正的原因，而 fetch 把它塞在 cause 里，外层只剩 fetch failed。 */
@@ -1372,8 +1382,11 @@ export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): D
  * 「操作系统」一项的结论说人话：Windows 11（64 位）、macOS 15（Apple 芯片）。
  * Windows 11 的内核号仍是 10.0，只能按版本号 22000 起算；macOS 从 Darwin 20
  * （macOS 11）起主版本号差 9，Darwin 25 起苹果跳到 26。认不出就原样给。
+ *
+ * Linux 的内核号对客服没用，要的是发行版（linux-os-release.ts 读出来的
+ * 「Ubuntu 24.04.1 LTS」），读不到才只写 Linux。
  */
-export function operatingSystemSummary(platform: NodeJS.Platform, release: string, arch: string): string {
+export function operatingSystemSummary(platform: NodeJS.Platform, release: string, arch: string, linuxSystemName?: string | null): string {
   if (platform === 'win32') {
     const match = release.match(/^(\d+)\.(\d+)\.(\d+)/)
     if (match && match[1] === '10' && match[2] === '0') {
@@ -1389,6 +1402,10 @@ export function operatingSystemSummary(platform: NodeJS.Platform, release: strin
       const chip = arch === 'arm64' ? 'Apple 芯片' : 'Intel 芯片'
       return `macOS ${version}（${chip}）`
     }
+  }
+  if (platform === 'linux') {
+    const chip = arch === 'arm64' ? 'ARM 芯片' : arch === 'x64' ? '64 位' : arch
+    return `${linuxSystemName || 'Linux'}（${chip}）`
   }
   return `${platform} ${release} (${arch})`
 }
@@ -1740,6 +1757,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     }
     return probePowerShell(signal)
   }
+  const findLinuxTerminal = dependencies.findLinuxTerminal
+    ?? (() => findLinuxTerminals(commandEnvironment(env))[0] ?? null)
   const probeDesktop = dependencies.inspectCodexDesktop ?? defaultInspectCodexDesktop
   const inspectDesktop = (signal: AbortSignal): Promise<DiagnosticToolStatus> => {
     const known = scanned ? scannedCodexDesktopStatus(scanned) : null
@@ -1763,7 +1782,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const diskSpaceTargets = resolveDiskSpaceTargets(env, platform, dependencies.userDataDirectory)
   const log = dependencies.log
   const now = dependencies.now ?? (() => new Date())
-  const supportedPlatform = platform === 'win32' || platform === 'darwin'
+  const supportedPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux'
 
   const checks: CheckDefinition[] = [
     {
@@ -1778,11 +1797,16 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'OPERATING_SYSTEM',
       title: '操作系统',
-      run: () => ({
-        state: supportedPlatform ? 'pass' : 'warn',
-        summary: operatingSystemSummary(platform, release, arch),
-        details: { supported: supportedPlatform },
-      }),
+      run: async () => {
+        const linuxSystemName = platform === 'linux'
+          ? await (dependencies.readLinuxSystemName ?? readLinuxSystemName)().catch(() => null)
+          : null
+        return {
+          state: supportedPlatform ? 'pass' : 'warn',
+          summary: operatingSystemSummary(platform, release, arch, linuxSystemName),
+          details: { supported: supportedPlatform },
+        }
+      },
     },
     ...(platform === 'win32' && dependencies.windowsProcessor === 'arm64' ? [{
       // 星芒自己只出 x64 安装包，在 ARM 笔记本上靠系统模拟运行；Node.js 和经它装的
@@ -1888,12 +1912,29 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'SYSTEM_POWERSHELL',
       title: '打开工具用的命令窗口',
       run: async (signal) => {
-        if (platform !== 'win32') {
+        if (platform === 'darwin') {
           return {
             state: 'pass',
             summary: 'Mac 不需要这一项',
             details: { required: false, installed: null, path: null },
           }
+        }
+        if (platform !== 'win32') {
+          // Linux 上点「打开」要借一个命令窗口程序（终端），和「打开」用的是同一张查找表。
+          const terminal = findLinuxTerminal()
+          const outcome: CheckOutcome = {
+            state: terminal ? 'pass' : 'fail',
+            summary: terminal
+              ? `可用，会用「${terminal.label}」打开工具`
+              : '这台电脑上没找到能打开命令窗口的程序（终端），工具没法从星芒打开。打开系统自带的应用商店，搜「终端」装一个，再回来点「重新检测」',
+            details: {
+              required: true,
+              installed: Boolean(terminal),
+              terminal: terminal?.id ?? null,
+              path: pathForDisplay(terminal?.executable ?? null, displayRoots),
+            },
+          }
+          return outcome
         }
         const status = await inspectPowerShell(signal)
         return {

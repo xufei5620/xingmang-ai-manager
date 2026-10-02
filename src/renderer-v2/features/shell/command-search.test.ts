@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { pageRegistry } from '../../registry/pages'
-import { tutorialTopics } from '../../registry/tutorials'
+import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
 import { maximumTutorialResults, searchCommands } from './command-search'
 
 describe('searchCommands', () => {
@@ -29,6 +29,20 @@ describe('searchCommands', () => {
     expect(searchCommands('通知')[0]).toMatchObject({ page: 'settings', section: 'notifications' })
     expect(searchCommands('隐私')[0]).toMatchObject({ page: 'settings', section: 'privacy' })
     expect(searchCommands('卸载')[0]).toMatchObject({ group: 'page', page: 'maintenance' })
+  })
+
+  it('leaves out pages this computer does not have, such as game acceleration on Linux', () => {
+    const pageVisible = (page: string) => page !== 'acceleration'
+    expect(searchCommands('', { pageVisible }).map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id).filter((id) => id !== 'acceleration'))
+    expect(searchCommands('加速', { pageVisible }, tutorialTopicsFor('linux')).some((item) => item.page === 'acceleration' || item.section === 'acceleration')).toBe(false)
+    expect(searchCommands('加速')[0]).toMatchObject({ group: 'page', page: 'acceleration' })
+  })
+
+  it('searches the Linux tutorials on Linux, so it never offers the desktop-app chapters there', () => {
+    const linux = tutorialTopicsFor('linux')
+    const hits = searchCommands('桌面端', {}, linux)
+    for (const item of hits.filter((entry) => entry.group === 'tutorial')) expect(linux.some((topic) => topic.id === item.section)).toBe(true)
+    expect(hits.some((item) => item.section === 'install' || item.section === 'launch')).toBe(false)
   })
 
   it('finds tutorial topics by the problem the customer describes', () => {

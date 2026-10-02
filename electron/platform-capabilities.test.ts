@@ -21,6 +21,13 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: false,
       },
+      acceleration: true,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: true,
+        grok: false,
+      },
       codexDesktop: {
         install: 'managed',
         launch: true,
@@ -51,6 +58,13 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
+      acceleration: true,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: true,
+        grok: false,
+      },
       codexDesktop: {
         install: 'external',
         launch: true,
@@ -63,24 +77,31 @@ describe('platformCapabilitiesFor', () => {
     expect(Object.isFrozen(capabilities.codexDesktop)).toBe(true)
   })
 
-  it('returns the exact externally managed Linux policy', () => {
+  it('returns the exact Linux policy, with Node.js prepared by the app, Grok from npm and no Python for Gemini', () => {
     expect(platformCapabilitiesFor('linux', 'x64')).toEqual({
       platform: 'linux',
       architecture: 'x64',
       isMac: false,
-      nodeRuntimeInstall: 'external',
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
         gemini: 'managed',
-        grok: 'external',
+        grok: 'managed',
       },
       cliNeedsNodeRuntime: {
         claude: true,
         codex: true,
         gemini: true,
         grok: true,
+      },
+      acceleration: false,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
       },
       codexDesktop: {
         install: 'external',
@@ -91,24 +112,33 @@ describe('platformCapabilitiesFor', () => {
     })
   })
 
-  it('normalizes an unknown Node platform to the fail-closed Linux policy', () => {
+  it('normalizes an unknown Node platform to the Linux policy', () => {
     expect(platformCapabilitiesFor('plan9', 'riscv64')).toEqual({
       platform: 'linux',
       architecture: 'riscv64',
       isMac: false,
-      nodeRuntimeInstall: 'external',
+      // The installer itself refuses chips Node.js has no official build for
+      // (linux-node-runtime.ts), with a sentence that says so.
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
         gemini: 'managed',
-        grok: 'external',
+        grok: 'managed',
       },
       cliNeedsNodeRuntime: {
         claude: true,
         codex: true,
         gemini: true,
         grok: true,
+      },
+      acceleration: false,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
       },
       codexDesktop: {
         install: 'external',

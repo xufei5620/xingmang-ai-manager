@@ -304,3 +304,35 @@ describe('ChatKeyStore', () => {
     ])
   })
 })
+
+describe('ChatKeyStore session-only mode (Linux without a keyring)', () => {
+  it('caches chat keys for this run without a usable keyring and never creates the file', async () => {
+    const filePath = temporaryFilePath()
+    const store = new ChatKeyStore(filePath, fakeSafeStorage({
+      isEncryptionAvailable: () => false,
+      getSelectedStorageBackend: () => 'basic_text',
+    }), 'session-only')
+
+    await expect(store.upsert(chatKey(42, 'codex-pro', 1))).resolves.toBe(true)
+    await expect(store.upsert(chatKey(42, 'Gemini', 2))).resolves.toBe(true)
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'Gemini', 2), chatKey(42, 'codex-pro', 1)])
+    await store.remove(42, 'Gemini')
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'codex-pro', 1)])
+    await store.removeAccount(42)
+    await expect(store.read(42)).resolves.toEqual([])
+    expect(fs.existsSync(path.dirname(filePath))).toBe(false)
+  })
+
+  it('still rejects an upsert that raced a key invalidation', async () => {
+    const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage(), 'session-only')
+    const revision = store.captureRevision()
+    await store.removeByKeyId(42, 7)
+    await expect(store.upsert(chatKey(42, 'codex-pro', 7), revision)).resolves.toBe(false)
+    await expect(store.read(42)).resolves.toEqual([])
+  })
+
+  it('keeps refusing in the default durable mode', async () => {
+    const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false }))
+    await expect(store.read(42)).rejects.toThrow('系统安全存储不可用')
+  })
+})

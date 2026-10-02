@@ -90,15 +90,37 @@ function assertNoDefaultAppFallback(resourcesDirectory) {
   }
 }
 
+// One unpacked directory holds exactly one platform's main executable: the
+// Windows one keeps the Chinese product name, the Linux one is the ASCII
+// linux.executableName (electron-builder.config.cjs). Both carry the same fuse
+// wire, so the same checks apply once the right file is found.
+const PACKAGED_EXECUTABLE_NAMES = ['星芒AI管理工具.exe', 'xingmang-ai-manager']
+
+function resolvePackagedExecutable(unpackedDirectory) {
+  const found = PACKAGED_EXECUTABLE_NAMES
+    .map((name) => path.join(unpackedDirectory, name))
+    .filter((candidate) => {
+      try {
+        return fs.lstatSync(candidate).isFile()
+      } catch {
+        return false
+      }
+    })
+  if (found.length === 0) {
+    throw new Error(`找不到打包后的主程序：${unpackedDirectory} 里没有 ${PACKAGED_EXECUTABLE_NAMES.join(' 或 ')}`)
+  }
+  if (found.length > 1) {
+    throw new Error(`${unpackedDirectory} 里同时有多个平台的主程序，无法确认要校验哪一个`)
+  }
+  return found[0]
+}
+
 async function main() {
   const unpackedDirectory = path.resolve(process.argv[2] || 'release/win-unpacked')
-  const executable = path.join(unpackedDirectory, '星芒AI管理工具.exe')
+  const executable = resolvePackagedExecutable(unpackedDirectory)
   const resourcesDirectory = path.join(unpackedDirectory, 'resources')
   const asar = path.join(resourcesDirectory, 'app.asar')
 
-  if (!fs.existsSync(executable) || !fs.statSync(executable).isFile()) {
-    throw new Error(`找不到打包后的主程序：${executable}`)
-  }
   if (!fs.existsSync(asar) || !fs.statSync(asar).isFile()) {
     throw new Error(`找不到应用归档：${asar}`)
   }
@@ -119,4 +141,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { EXPECTED_FUSES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main }
+module.exports = { EXPECTED_FUSES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, resolvePackagedExecutable }

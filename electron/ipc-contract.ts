@@ -222,6 +222,8 @@ export interface WindowCapabilities {
   unexpectedExit?: UnexpectedExitNotice
   // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
   claudeDesktopRepaired?: true
+  // Linux 发行版名字（「Ubuntu 24.04.1 LTS」），给「复制给客服」那一行用。只有 Linux 有，读不到也缺省。
+  systemLabel?: string
 }
 export interface UnexpectedExitNotice {
   /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
@@ -364,6 +366,11 @@ export interface AccountContextMetadata {
   siteId?: AccountSiteId
   realmId?: 'xm-account' | 'api-account'
   capabilities?: import('./relay-backend').RelayBackendCapabilities
+  /**
+   * 只在 Linux 上没有可用的系统密码保管时出现：照常能登录，但登录只留在主进程内存里，
+   * 软件关掉就没了，界面据此不给「记住密码」。缺省 = 登录会记住（旧行为）。
+   */
+  sessionOnly?: true
 }
 /**
  * 开机账号恢复超过启动画面的等待上限时，会话先按「未登录、正在恢复」作答。

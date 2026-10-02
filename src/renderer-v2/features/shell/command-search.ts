@@ -17,6 +17,8 @@ export interface CommandResult {
 export interface CommandSearchOptions {
   /** 当前账号用不上的个人中心分页（比如历史账号没有充值）不出现在结果里；缺省 = 全部显示。 */
   accountTabVisible?(tab: string): boolean
+  /** 这台电脑上没有的页面（Linux 没有游戏加速）不出现在结果里；缺省 = 全部显示。 */
+  pageVisible?(page: PageId): boolean
 }
 
 /** 结果按这个次序分组显示，回车打开的是排在最前面的那一项。 */
@@ -57,8 +59,8 @@ function score(entry: Entry, words: readonly string[]) {
   return worst
 }
 
-function pageEntries(): Entry[] {
-  return pageRegistry.map(page => ({ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }))
+function pageEntries(options: CommandSearchOptions): Entry[] {
+  return pageRegistry.filter(page => options.pageVisible?.(page.id) ?? true).map(page => ({ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }))
 }
 
 function accountEntries(options: CommandSearchOptions): Entry[] {
@@ -80,8 +82,8 @@ function tutorialEntries(topics: readonly TutorialTopic[]): Entry[] {
  */
 export function searchCommands(query: string, options: CommandSearchOptions = {}, topics: readonly TutorialTopic[] = tutorialTopics): CommandResult[] {
   const words = searchWords(query)
-  if (!words.length) return pageEntries().map(entry => entry.result)
-  const entries = [...pageEntries(), ...accountEntries(options), ...settingsEntries(), ...tutorialEntries(topics)]
+  if (!words.length) return pageEntries(options).map(entry => entry.result)
+  const entries = [...pageEntries(options), ...accountEntries(options), ...settingsEntries(), ...tutorialEntries(topics)]
   const hits = entries.flatMap((entry, index) => {
     const rank = score(entry, words)
     return rank === null ? [] : [{ entry, rank, index }]

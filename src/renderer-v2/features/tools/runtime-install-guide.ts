@@ -8,7 +8,8 @@ type PlatformFamily = PlatformCapabilities['platform']
 /**
  * Windows 上 Node.js 和 Python 由应用代装（platform-capabilities 的 'managed'）。
  * macOS 上 Node.js 从第十六批 2 起也由应用准备（官方压缩包解进本软件自己的文件夹，
- * 不提权），Python 仍是 'external'：本程序从不提权、也不代跑终端命令，只能把装法讲清楚。
+ * 不提权），Linux 版拆分 ② 起 Linux 同样如此。两边的 Python 仍是 'external'：本程序在
+ * 这两个平台上从不提权、也不代跑终端命令，只能把装法讲清楚。
  * 原来那颗按钮在 Mac 上直接把人丢到官网的英文首页——客户既不知道该下哪个包，也不
  * 知道装完要回哪儿点一下，卡在这一步就退款了。
  *
@@ -25,6 +26,8 @@ export interface RuntimeInstallGuide {
   readonly steps: readonly string[]
   /** 可复制的一条命令；没有推荐命令的平台是 null。 */
   readonly command: string | null
+  /** 教程里没有这个平台的装法章节（Linux）；缺省 = 有，首页给「看教程」。 */
+  readonly noTutorial?: boolean
 }
 
 export function runtimeDisplayName(runtime: ManagedRuntimeId): string {
@@ -46,6 +49,22 @@ export function runtimeButtonLabel(runtime: ManagedRuntimeId, management: Instal
   return runtime === 'node' ? '准备 Node.js' : '装 Python（可选环境）'
 }
 
+/**
+ * Linux 上 Python 那颗「去官网下载」不给：python.org 给 Linux 的只有源码包，客户装不上；
+ * 而且 Linux 上四个命令行工具都用不到它（platform-capabilities 的 cliNeedsPythonRuntime，
+ * Linux 版拆分 ③），装法写在首页那段说明里。Windows、Mac 照旧。
+ */
+export function runtimeInstallButtonShown(
+  runtime: ManagedRuntimeId,
+  platform: PlatformFamily | undefined,
+  management: InstallManagement | undefined,
+): boolean {
+  return !(runtime === 'python' && platform === 'linux' && management === 'external')
+}
+
+/** Linux 版只出 deb 包，能装上它的系统都有 apt。 */
+export const linuxPythonInstallCommand = 'sudo apt install python3'
+
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
     ? '四个命令行工具都靠它来安装和启动'
@@ -57,17 +76,23 @@ function verifyStep(runtime: ManagedRuntimeId): string {
 }
 
 /**
- * 由应用准备、又不必弹任何系统窗口的那种（macOS 上的 Node.js）：点之前先说一句
+ * 由应用准备、又不必弹任何系统窗口的那种（macOS 和 Linux 上的 Node.js）：点之前先说一句
  * 会发生什么，免得客户担心要输开机密码、会不会动到电脑上别的软件。Windows 那边
  * 要弹管理员授权，另有 elevation-notice.ts 那一句，这里不重复。
+ *
+ * Linux 上不说「还没有」而说「没有能用的」：Ubuntu、Debian 自带的那份常常太旧，扫描时
+ * 不算数，客户却记得自己装过，说「没有」他会以为软件没找到。
  */
 export function managedRuntimeNotice(
   runtime: ManagedRuntimeId,
   platform: PlatformFamily | undefined,
   management: InstallManagement | undefined,
 ): string | null {
-  if (runtime !== 'node' || platform !== 'macos' || management !== 'managed') return null
-  return `这台 Mac 上还没有 Node.js，${whyNeeded('node')}。点「${runtimeButtonLabel('node', 'managed')}」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。`
+  if (runtime !== 'node' || management !== 'managed') return null
+  const after = `点「${runtimeButtonLabel('node', 'managed')}」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。`
+  if (platform === 'macos') return `这台 Mac 上还没有 Node.js，${whyNeeded('node')}。${after}`
+  if (platform === 'linux') return `这台电脑上还没有能用的 Node.js，${whyNeeded('node')}。${after}`
+  return null
 }
 
 /**
@@ -90,6 +115,17 @@ export function runtimeInstallGuide(
         verifyStep(runtime),
       ],
       command: runtimeHomebrewCommand(runtime),
+    }
+  }
+  if (platform === 'linux' && runtime === 'python') {
+    return {
+      summary: '这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。',
+      steps: [
+        '要装的话：打开「终端」，粘贴下面这条命令回车，按提示输入开机密码，等它跑完。',
+        verifyStep(runtime),
+      ],
+      command: linuxPythonInstallCommand,
+      noTutorial: true,
     }
   }
   return {

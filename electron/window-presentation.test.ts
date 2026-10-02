@@ -4,7 +4,9 @@ import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
+  rendererCrashRecoveryDetail,
   startupFailureMessage,
+  windowIconFileName,
 } from './window-presentation'
 
 const palette = {
@@ -32,6 +34,22 @@ describe('platform window presentation', () => {
       },
       icon: '/app/windows-icon.png',
     })
+  })
+
+  it('gives Linux a PNG window icon, because nativeImage cannot decode .ico there', () => {
+    expect(windowIconFileName('win32')).toBe('favicon.ico')
+    expect(windowIconFileName('darwin')).toBe('favicon.ico')
+    expect(windowIconFileName('linux')).toBe('app-icon.png')
+    expect(platformWindowOptions('linux', palette, '/app/app-icon.png')).toMatchObject({ titleBarStyle: 'hidden', icon: '/app/app-icon.png' })
+  })
+
+  it('tells each system where to quit from after the window kept crashing', () => {
+    expect(rendererCrashRecoveryDetail('win32')).toBe('可以再试一次重新加载。如果还是空白，请从任务栏右下角的星芒图标退出软件后重新打开，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
+    expect(rendererCrashRecoveryDetail('darwin')).toBe('可以再试一次重新加载。如果还是空白，请从屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
+    const linux = rendererCrashRecoveryDetail('linux')
+    expect(linux).not.toContain('右下角')
+    expect(linux).toContain('从应用菜单重新打开')
+    expect(linux).toContain('点「退出」')
   })
 
   it('does not apply a titlebar overlay while changing the macOS window theme', () => {

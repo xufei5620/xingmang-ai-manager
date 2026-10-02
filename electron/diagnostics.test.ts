@@ -130,8 +130,32 @@ describe('diagnostics', () => {
     })
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'pass',
+      summary: 'Mac 不需要这一项',
       details: { required: false, installed: null, path: null },
     })
+    expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
+  it('names the terminal program Linux will open tools in, and fails with a fix when there is none', async () => {
+    const home = temporaryHome()
+    const inspectPowerShell = vi.fn(dependencies(home).inspectPowerShell)
+    const found = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'linux',
+      inspectPowerShell,
+      findLinuxTerminal: () => ({ id: 'deepin-terminal', label: '深度终端', executable: '/usr/bin/deepin-terminal' }),
+    })
+    const missing = await runDiagnostics({ ...dependencies(home), platform: 'linux', findLinuxTerminal: () => null })
+
+    expect(found.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
+      state: 'pass',
+      summary: '可用，会用「深度终端」打开工具',
+      details: { required: true, installed: true, terminal: 'deepin-terminal', path: expect.stringContaining('deepin-terminal') },
+    })
+    const failed = missing.items.find((item) => item.code === 'SYSTEM_POWERSHELL')
+    expect(failed).toMatchObject({ state: 'fail', details: { installed: false, terminal: null, path: null } })
+    expect(failed?.summary).toContain('应用商店')
+    expect(failed?.summary).not.toContain('Mac')
     expect(inspectPowerShell).not.toHaveBeenCalled()
   })
 
@@ -167,10 +191,38 @@ describe('diagnostics', () => {
     }
   })
 
-  it('continues to mark unrecognized operating systems as unsupported', async () => {
+  it('names the Linux distribution and counts Linux as supported now that it has its own build', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
     input.platform = 'linux'
+    input.arch = 'arm64'
+    input.readLinuxSystemName = async () => 'Ubuntu 24.04.1 LTS'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({
+      state: 'pass',
+      summary: 'Ubuntu 24.04.1 LTS（ARM 芯片）',
+      details: { supported: true },
+    })
+  })
+
+  it('still says Linux when the distribution cannot be read', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'linux'
+    input.arch = 'x64'
+    input.readLinuxSystemName = async () => { throw new Error('unreadable') }
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({ state: 'pass', summary: 'Linux（64 位）' })
+  })
+
+  it('continues to mark unrecognized operating systems as unsupported', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'freebsd'
 
     const report = await runDiagnostics(input)
 
@@ -2006,8 +2058,15 @@ describe('operatingSystemSummary', () => {
     expect(operatingSystemSummary('darwin', '25.0.0', 'arm64')).toBe('macOS 26（Apple 芯片）')
   })
 
+  it('names a Linux machine by its distribution, never by the kernel number', () => {
+    expect(operatingSystemSummary('linux', '6.8.0-45-generic', 'x64', 'Ubuntu 24.04.1 LTS')).toBe('Ubuntu 24.04.1 LTS（64 位）')
+    expect(operatingSystemSummary('linux', '5.10.0', 'arm64', 'UOS Desktop 20')).toBe('UOS Desktop 20（ARM 芯片）')
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64')).toBe('Linux（64 位）')
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64', null)).toBe('Linux（64 位）')
+  })
+
   it('falls back to the raw values it cannot map', () => {
-    expect(operatingSystemSummary('linux', '6.8.0', 'x64')).toBe('linux 6.8.0 (x64)')
+    expect(operatingSystemSummary('freebsd', '14.1', 'x64')).toBe('freebsd 14.1 (x64)')
     expect(operatingSystemSummary('win32', '6.3.9600', 'x64')).toBe('win32 6.3.9600 (x64)')
   })
 })

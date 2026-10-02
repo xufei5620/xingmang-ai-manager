@@ -134,6 +134,28 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
   })
 
+  // Linux 版拆分 ③：Linux 上 Gemini 不需要 Python，引导不再多一步、也不因为没有 Python 拦着「安装」和「下一步」。
+  it('skips the Python step for a Gemini that does not need it on this computer', () => {
+    stubResumedGuide('gemini', 'prepare')
+    const missing = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: true, pythonReady: false, pythonNotNeeded: true })], { platform: 'linux', onInstallPython: async () => undefined })
+    expect(missing).not.toContain('data-testid="guide-python-step"')
+    expect(missing).not.toContain('data-testid="guide-python"')
+    expect(missing).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+    expect(missing).not.toContain('Python')
+
+    const installed = guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: true })
+    expect(guideCanSkipConnect('gemini', installed, true)).toBe(true)
+  })
+
+  it('keeps the Python step where Gemini still needs it', () => {
+    stubResumedGuide('gemini', 'prepare')
+    const markup = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: true, pythonReady: false })], { onInstallPython: async () => undefined })
+    expect(markup).toContain('data-testid="guide-python-step"')
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"[^>]*disabled/)
+    expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false }), true)).toBe(false)
+    expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: false }), true)).toBe(false)
+  })
+
   // 0.2.12～0.2.13 在这里按 Windows 账户类型提醒「装完可能打不开」，是误报，已撤掉。
   it('lets the Codex desktop app install without an account warning', () => {
     stubResumedGuide('codexDesktop', 'prepare')
@@ -155,6 +177,34 @@ describe('renderer-v2 start guide first run', () => {
     const markup = render([guideTool({ installed: false, runtimeReady: false })], { platform: 'mac', onInstallRuntime: async () => undefined })
     expect(markup).toContain('data-testid="guide-node"')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"[^>]*disabled/)
+  })
+
+  // Linux 版拆分 ②：Linux 上 Node.js 由本软件准备时，不再说「在应用外安装」、按钮也不叫「安装指南」。
+  it('lets a Linux customer install a CLI with one button once the app prepares Node.js', () => {
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ installed: false, runtimeReady: false, runtimeAutoPrepare: true })], { platform: 'linux', onInstallRuntime: async () => undefined })
+    expect(markup).toContain('点「安装」时会一并装好')
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+    expect(markup).not.toContain('data-testid="guide-node"')
+    expect(markup).not.toContain('在应用外安装')
+  })
+
+  it('offers the one-click runtime button on Linux when the installed tool needs a newer Node.js', () => {
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: true })], { platform: 'linux', onInstallRuntime: async () => undefined })
+    expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*一键安装/)
+    expect(markup).toContain('命令行工具需要运行环境')
+    expect(markup).not.toContain('安装指南')
+  })
+
+  it('keeps the by-hand wording on Linux when the app cannot prepare Node.js, and on a Mac as before', () => {
+    for (const [platform, runtimeAutoPrepare] of [['linux', false], ['mac', true], ['mac', false]] as const) {
+      stubResumedGuide('claude', 'prepare')
+      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare })], { platform, onInstallRuntime: async () => undefined })
+      expect(markup).toContain('在应用外安装完成后回来重新检测')
+      expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*安装指南/)
+      vi.unstubAllGlobals()
+    }
   })
 
   // 全面检测 Q50：装着 2.1.42 也说「已经装好」，人要到打开工具才发现差了一截。
@@ -345,6 +395,32 @@ describe('guide default route', () => {
       expect(markup).not.toMatch(/Node\.js|Python/)
       expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
     }
+  })
+
+  it('preselects Codex CLI on Linux, where the desktop app does not exist', () => {
+    expect(defaultGuideRoute(null, ['claude', 'codex', 'gemini', 'grok'], 'codex')).toBe('codex')
+    const markup = render([], { platform: 'linux' })
+    expect(markup).toContain('data-guide-route="codex"')
+    expect(markup).not.toContain('guide-route-codexDesktop')
+    expect(markup.indexOf('guide-route-codex"')).toBeLessThan(markup.indexOf('guide-route-claude'))
+    expect(markup.match(/data-testid="guide-recommended"/g)).toHaveLength(1)
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
+  })
+})
+
+describe('guide choose step runtime wording', () => {
+  it('says the app prepares the runtime on Linux only when it really does', () => {
+    const managed = render([guideTool({ runtimeAutoPrepare: true })], { platform: 'linux' })
+    expect(managed).toContain('命令行，会自动帮你准备运行环境')
+    expect(managed).not.toContain('要先按提示准备运行环境')
+    const external = render([guideTool({ runtimeAutoPrepare: false })], { platform: 'linux' })
+    expect(external).toContain('命令行，要先按提示准备运行环境')
+  })
+
+  it('keeps the Windows and Mac wording unchanged', () => {
+    expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
+    expect(render([guideTool({ runtimeAutoPrepare: false })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
+    expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'mac' })).toContain('命令行，要先按提示准备运行环境')
   })
 })
 

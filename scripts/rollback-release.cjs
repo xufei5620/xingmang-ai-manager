@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 坏版本回退用到的两件小事，给 publish-release 与 rollback-release 两个工作流调用：
 //
-//   version --manifest <file> --name latest.yml|latest-mac.yml
+//   version --manifest <file> --name <清单名>
 //     读出一份更新清单的版本号。发布新版之前，publish-release 用它把线上那份旧清单
 //     按版本号备份到 manifests/<版本>/ 下——R2 上的根目录清单一覆盖就没了，没有这份
 //     备份，发现坏版本时就没有东西可以退回去。
@@ -17,11 +17,17 @@
 //     在撤回版本、覆盖根目录清单**之前**跑它：只确认文件「在」不够，一个返回 200 却
 //     被同名覆盖或传坏的安装包，会让退回的人下载到一半校验失败，而此刻线上已经换过了。
 //
-// 版本号只收 x.y.z：它要拼进对象路径，任何别的写法都不该出现在这里。
+// 清单名只认 update-release-utils.cjs 的 UPDATE_MANIFEST_NAMES。版本号只收 x.y.z：它要
+// 拼进对象路径，任何别的写法都不该出现在这里。
 const fs = require('node:fs')
-const { compareReleaseVersions, parseLatestMetadata, verifyManifestArtifacts } = require('./update-release-utils.cjs')
+const {
+  UPDATE_MANIFEST_NAMES,
+  compareReleaseVersions,
+  parseLatestMetadata,
+  verifyManifestArtifacts,
+} = require('./update-release-utils.cjs')
 
-const MANIFEST_NAMES = new Set(['latest.yml', 'latest-mac.yml'])
+const MANIFEST_NAMES = new Set(UPDATE_MANIFEST_NAMES)
 const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
 
 class RollbackInputError extends Error {}
@@ -107,7 +113,7 @@ async function main(argv) {
     })
     return
   }
-  throw new RollbackInputError('用法：rollback-release.cjs version|plan|verify --manifest <file> --name <latest.yml|latest-mac.yml> [--expect <版本> --live <版本> --base <更新目录>]')
+  throw new RollbackInputError(`用法：rollback-release.cjs version|plan|verify --manifest <file> --name <${UPDATE_MANIFEST_NAMES.join('|')}> [--expect <版本> --live <版本> --base <更新目录>]`)
 }
 
 if (require.main === module) {

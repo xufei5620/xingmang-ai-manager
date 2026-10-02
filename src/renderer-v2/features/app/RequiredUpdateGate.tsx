@@ -3,7 +3,7 @@ import { BookOpen, Download } from 'lucide-react'
 import type { UpdateDownloadOptions, UpdateSnapshot } from '../../../../electron/ipc-contract'
 import { userFacingErrorMessage } from '../../business-common'
 import { updateDiskShortfallText } from '../../registry/business'
-import { updateDiskCleanupSteps } from '../../registry/tutorials'
+import { updateDiskCleanupStepsFor } from '../../registry/tutorials'
 import { Button, Progress } from '../../ui'
 import { requiredUpdateFollowUp, requiredUpdateGate, type RequiredUpdateAction } from './required-update'
 
@@ -25,9 +25,11 @@ export interface RequiredUpdateActions {
  * 磁盘不够时更新器不下载、也不报错，这层就换成更新页那段「只剩多少、要多少、怎么清理」，
  * 主按钮改成「空间够了，再试一次」；更新页给了「仍要下载」，这里也给，说法相同。
  */
-export function RequiredUpdateGate({ update, windows, actions }: {
+export function RequiredUpdateGate({ update, windows, linux = false, actions }: {
   update: UpdateSnapshot | null
   windows: boolean
+  /** Linux 的清理步骤另有一份（没有「设置 → 存储」，只说文件管理器和回收站）。缺省 = 旧行为。 */
+  linux?: boolean
   actions: RequiredUpdateActions
 }) {
   const [requested, setRequested] = useState(false)
@@ -93,7 +95,9 @@ export function RequiredUpdateGate({ update, windows, actions }: {
     <header><Download size={20} aria-hidden="true" /><div><h2 id="required-update-title">这个版本需要更新后才能继续用</h2></div></header>
     <div className="xm-modal-content">
       <div className="xm-dialog-body">
-        <p>为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本会自己下载并装好，中间会重启一次，账号和设置都会保留。</p>
+        {update?.installMethod === 'system-installer'
+          ? <p data-testid="required-update-system-installer">为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本下载好后星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后重新打开星芒就行，账号和设置都会保留。</p>
+          : <p>为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本会自己下载并装好，中间会重启一次，账号和设置都会保留。</p>}
         {windows && <p>装的时候如果弹出「是否允许更改」，点「是」。</p>}
         <p data-testid="required-update-versions">现在是 {gate.currentVersion}{gate.availableVersion ? `，将更新到 ${gate.availableVersion}` : ''}</p>
         {gate.percent !== null && <Progress value={gate.percent} label="下载进度" testId="required-update-progress" />}
@@ -102,7 +106,7 @@ export function RequiredUpdateGate({ update, windows, actions }: {
           <p><strong>磁盘空间不够，新版本还没开始下载。</strong>{shortfallText}</p>
           <p>先清出一些空间，再点「空间够了，再试一次」。</p>
           {stillShort && !measuring && <p data-testid="required-update-disk-still">刚才又量了一次，空间还是不够。</p>}
-          {cleanupOpen && <p data-testid="required-update-disk-cleanup">{updateDiskCleanupSteps}</p>}
+          {cleanupOpen && <p data-testid="required-update-disk-cleanup">{updateDiskCleanupStepsFor(linux ? 'linux' : 'win')}</p>}
           <Button size="sm" icon={BookOpen} testId="required-update-disk-help" onClick={() => setCleanupOpen((open) => !open)}>{cleanupOpen ? '收起' : '怎么清理'}</Button>
         </div>}
         {gate.failure && <div role="alert" data-testid="required-update-failure">
