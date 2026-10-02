@@ -44,6 +44,11 @@ paths:
 
 `redactHomeDirectory` 在 Linux 上把主目录记作 `~`、按路径边界匹配（主目录 `/home/al` 不会把 `/home/alice` 截成半个名字），并去掉 `/home/<名>`、`/media/<名>`、`/run/media/<名>`、`/run/user/<uid>`、gvfs 挂载名里的 `user=`。Windows 和 macOS 的输出不变。
 
+## 托盘探测与开机启动项
+
+- `linux-tray-host.ts` 只跑 `/usr/bin/dbus-send`、`/usr/bin/gdbus` 两个固定路径（I14 的 Linux 版），执行前过 `isTrustedHighIntegrityExecutable`，环境用 `trustedCommandEnvironment`（它保留 `DBUS_SESSION_BUS_ADDRESS` / `XDG_RUNTIME_DIR`，删了探测就永远是「没有托盘」）。argv 里没有任何来自用户的东西。问不出来一律按「没有托盘」：宁可关窗直接退出，也不让窗口缩进一个看不见的图标。
+- `linux-autostart.ts` 写的 `~/.config/autostart/*.desktop` 在用户可写目录，读写只走 safe-local-data（I8）。Exec 按 Desktop Entry 规范加引号；路径里有换行或控制字符直接拒绝，不去编码。不要改成调用 `xdg-autostart` 一类外部程序。
+
 ## 包的完整性
 
 electron-builder 在 Linux 上不嵌入 ASAR 完整性数据，fuse 打开也挡不住改包（打包摸底实测）。Linux 上 `extraMetadata` 里那几个开关只靠安装目录归 root 所有来保护，这也是只出装到 `/opt` 的 deb、不出 AppImage 的原因之一。

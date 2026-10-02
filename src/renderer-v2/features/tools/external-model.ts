@@ -1,6 +1,17 @@
 import type { ExternalClientStatus } from '../../../../electron/ipc-contract'
 import { clientConnections } from '../../registry/clients'
 import { snapshotErrorMessage } from '../../business-common'
+import type { WindowOs } from '../app/window-os'
+
+const noExternalClients: ExternalClientStatus[] = []
+
+/**
+ * Linux 上星芒装不了也打不开这几个桌面客户端（主进程那边一律「不支持此系统」），
+ * 列出来只是一排点不动的按钮，所以整行不列（Linux 版拆分 ⑩）。
+ */
+export function visibleExternalClients(os: WindowOs, statuses: ExternalClientStatus[]): ExternalClientStatus[] {
+  return os === 'linux' ? noExternalClients : statuses
+}
 
 /** Presentation only: external clients never enter the provider/configuration ToolId union. */
 export function presentExternalClients(statuses: ExternalClientStatus[]) {

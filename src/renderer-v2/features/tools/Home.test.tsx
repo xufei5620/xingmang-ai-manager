@@ -4,6 +4,7 @@ import { Home, lowBalanceText, type HomeProps } from './Home'
 import type { ToolboxSnapshot } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
+import { runtimeLinuxPythonCommand } from './runtime-install-guide'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import type { AccountBootstrapResult } from './account-bootstrap'
 
@@ -459,6 +460,18 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('去官网下载 Python（可选环境）')
     // Node 没缺就不该多出一段 Node 的步骤。
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+  })
+
+  // Linux 版拆分 ⑩：Linux 的教程里没有「Mac 上准备 Node.js 和 Python」那一章，
+  // 官网按钮给的又是 Windows / Mac 安装包，所以装法整段写在卡片里。
+  it('gives a Linux customer the apt command on the card instead of a tutorial or a website', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { python: true }) })
+    expect(markup).toContain('data-testid="home-runtime-guide-python"')
+    expect(markup).toContain(runtimeLinuxPythonCommand)
+    expect(markup).not.toContain('data-testid="home-runtime-python"')
+    expect(markup).not.toContain('data-testid="home-runtime-tutorial"')
+    expect(markup).not.toContain('完整步骤在教程里')
+    expect(markup).not.toContain('brew install')
   })
 
   it('leaves Windows exactly as it was: the app installs both, so no extra steps', () => {

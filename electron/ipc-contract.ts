@@ -223,6 +223,8 @@ export interface WindowCapabilities {
   unexpectedExit?: UnexpectedExitNotice
   // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
   claudeDesktopRepaired?: true
+  // Linux 发行版名字（「Ubuntu 24.04.1 LTS」），给「复制给客服」那一行用。只有 Linux 有，读不到也缺省。
+  systemLabel?: string
 }
 export interface UnexpectedExitNotice {
   /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */

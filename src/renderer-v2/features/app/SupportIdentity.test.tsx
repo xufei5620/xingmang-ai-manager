@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine } from './SupportIdentity'
+import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail } from './SupportIdentity'
 
 describe('SupportIdentity', () => {
   it('lists account name, id, version and system for a signed-in user', () => {
@@ -8,6 +8,22 @@ describe('SupportIdentity', () => {
       .toBe('账号 张三（ID 10086） · 星芒AI管理工具 0.2.10 · Windows')
     expect(buildSupportIdentityLine({ signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.11', os: 'mac' }))
       .toBe('账号 peaker（ID 7） · 星芒AI管理工具 0.2.11 · macOS')
+  })
+
+  it('adds the Linux distribution and chip so support does not have to ask again', () => {
+    const systemDetail = linuxSystemDetail('Ubuntu 24.04.1 LTS', 'arm64')
+    expect(systemDetail).toBe('Ubuntu 24.04.1 LTS · ARM 芯片')
+    expect(buildSupportIdentityLine({ signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.14', os: 'linux', systemDetail }))
+      .toBe('账号 peaker（ID 7） · 星芒AI管理工具 0.2.14 · Linux（Ubuntu 24.04.1 LTS · ARM 芯片）')
+    expect(buildSupportBundle({ signedIn: false, account: null, version: '0.2.14', os: 'linux', systemDetail: linuxSystemDetail(undefined, 'x64') },
+      { at: new Date(2026, 9, 2, 9, 5), message: '安装没有完成' }).split('\n')[2]).toBe('版本 0.2.14 · Linux（64 位）')
+    expect(buildSupportIdentityLine({ signedIn: false, account: null, version: '0.2.14', os: 'linux' })).toBe('未登录 · 星芒AI管理工具 0.2.14 · Linux')
+    expect(linuxSystemDetail(undefined, undefined)).toBeUndefined()
+  })
+
+  it('keeps the Windows and macOS label unchanged even if a system detail is passed', () => {
+    expect(buildSupportIdentityLine({ signedIn: false, account: null, version: '0.2.14', os: 'win', systemDetail: 'x' })).toBe('未登录 · 星芒AI管理工具 0.2.14 · Windows')
+    expect(buildSupportIdentityLine({ signedIn: false, account: null, version: '0.2.14', os: 'mac', systemDetail: 'x' })).toBe('未登录 · 星芒AI管理工具 0.2.14 · macOS')
   })
 
   it('says not signed in when there is no account', () => {

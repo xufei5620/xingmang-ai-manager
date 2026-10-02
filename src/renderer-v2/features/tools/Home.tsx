@@ -255,6 +255,8 @@ export function Home(props: HomeProps) {
   const connectedCount = installed.filter((tool) => tool.configured).length + installedExternal.filter((tool) => tool.status.configured && tool.status.configurationSource === 'xingmang').length
   // Git 是可选环境：只在探到「确实没装」时提示（探测失败按 A4 显示失败、不当没装）。
   const gitHost = gitHostPlatform(snapshot?.platform.platform ?? 'other')
+  // Linux 的教程里没有「Mac 上准备 Node.js 和 Python」那一章，装法直接写在卡片里。
+  const linux = snapshot?.platform.platform === 'linux'
   const gitStatus = snapshot?.system.runtime.git
   const gitMissing = Boolean(gitStatus && !gitStatus.installed && !gitStatus.detectionFailed)
   // macOS 上 Python 归客户自己装（platform.pythonRuntimeInstall === 'external'）：
@@ -532,11 +534,11 @@ export function Home(props: HomeProps) {
           {gitHost === 'macos' && jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-waiting">{gitMacInstallWaitingHint}</p>}
           {nodeElevationNotice && <p className="v2-runtime-hint" data-testid="home-runtime-node-elevation">{nodeElevationNotice}</p>}
           {nodeManagedNotice && !jobs.node && <p className="v2-runtime-hint" data-testid="home-runtime-node-managed">{nodeManagedNotice}</p>}
-          {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} />}
-          {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
+          {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} tutorialNote={!linux} />}
+          {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} tutorialNote={!linux} />}
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
-            {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
-            {(nodeGuide || pythonGuide) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial', macRuntimeTutorialTopic)} testId="home-runtime-tutorial">看教程</Button>}
+            {!snapshot?.system.runtime.python.installed && !(linux && pythonGuide) && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
+            {(nodeGuide || pythonGuide) && !linux && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial', macRuntimeTutorialTopic)} testId="home-runtime-tutorial">看教程</Button>}
             {gitMissing && gitHost !== 'other' && <Button variant="ghost" size="sm" icon={Download} loading={Boolean(jobs.git)} disabled={Boolean(jobs.git)} onClick={() => props.onRuntime('git')} testId="home-runtime-git">安装 Git</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>

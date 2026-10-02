@@ -32,6 +32,9 @@ export function runtimeDisplayName(runtime: ManagedRuntimeId): string {
   return runtime === 'node' ? 'Node.js' : 'Python'
 }
 
+/** Linux 上装 Python 的那一条命令。Linux 只出 deb，装得上星芒的系统都用 apt。 */
+export const runtimeLinuxPythonCommand = 'sudo apt install -y python3'
+
 /** Homebrew 那一条命令，教程页与首页必须是同一个字符串，测试据此钉住。 */
 export function runtimeHomebrewCommand(runtime: ManagedRuntimeId): string {
   return runtime === 'node' ? 'brew install node' : 'brew install python'
@@ -97,6 +100,17 @@ export function runtimeInstallGuide(
         verifyStep(runtime),
       ],
       command: runtimeHomebrewCommand(runtime),
+    }
+  }
+  // Linux 的 Python 官网只有源码包，「去官网下载」对客户是死路；给一条能照抄的命令。
+  if (platform === 'linux' && runtime === 'python') {
+    return {
+      summary: '这台电脑上没有找到 Python（Gemini CLI 要用到它）。星芒不会替你装它，照下面做一次就好。',
+      steps: [
+        '在应用菜单里搜「终端」并打开，粘贴下面这条命令回车；提示输密码时输开机密码（屏幕上不显示，输完回车）。',
+        verifyStep(runtime),
+      ],
+      command: runtimeLinuxPythonCommand,
     }
   }
   return {

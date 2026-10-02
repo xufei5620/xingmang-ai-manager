@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { HealthPage, OnboardingSettingRows, TutorialPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
+import { tutorialTopicsFor } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
 import { errors } from './registry/errors'
@@ -223,9 +224,10 @@ describe('tutorial topics', () => {
 
   it('opens at the chapter the caller asked for instead of the first one', () => {
     // 首页那几行「安装指南」跳过来时要直接停在 macOS 那一章（第七批 3）。
+    // 教程按电脑分版本（Linux 版没有这一章），这里说明是在 Mac 上，测试跑在哪台机器都一样。
     const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
     const markup = renderToStaticMarkup(
-      createElement(TutorialPage, { topic: { sequence: 1, id: macDesktopTutorialTopic } }),
+      createElement(TutorialPage, { os: 'mac', topic: { sequence: 1, id: macDesktopTutorialTopic } }),
     )
     expect(markup).toContain(`<h2 id="tutorial-article-title">${topic?.title}</h2>`)
     expect(markup).toContain(topic?.steps[0]?.title ?? '')
@@ -244,6 +246,21 @@ describe('tutorial topics', () => {
       createElement(TutorialPage, { topic: { sequence: 1, id: 'no-such-chapter' } }),
     )
     expect(markup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
+  })
+
+  it('opens the Linux chapters on a Linux computer and keeps the Windows chapters elsewhere', () => {
+    // Linux 版拆分 ⑩：Linux 上第一章是 Codex CLI，没有桌面端和加速那几章。
+    const linux = tutorialTopicsFor('linux')
+    const linuxMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux' }))
+    expect(linuxMarkup).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
+    expect(linuxMarkup).toContain('Codex CLI')
+    expect(linuxMarkup).not.toContain('桌面端')
+    expect(linuxMarkup).not.toContain('游戏加速')
+    // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 第一章，不显示 Windows 那份。
+    const fallback = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: macDesktopTutorialTopic } }))
+    expect(fallback).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
+    const windowsMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'win' }))
+    expect(windowsMarkup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
   })
 
   it('only links steps at pages the shell can actually navigate to', () => {

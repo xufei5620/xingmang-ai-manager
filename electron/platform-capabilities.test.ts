@@ -21,6 +21,7 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: false,
       },
+      acceleration: true,
       codexDesktop: {
         install: 'managed',
         launch: true,
@@ -51,6 +52,7 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
+      acceleration: true,
       codexDesktop: {
         install: 'external',
         launch: true,
@@ -82,6 +84,7 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
+      acceleration: false,
       codexDesktop: {
         install: 'external',
         launch: false,
@@ -112,6 +115,7 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
+      acceleration: false,
       codexDesktop: {
         install: 'external',
         launch: false,

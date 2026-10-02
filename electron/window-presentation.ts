@@ -23,10 +23,27 @@ export function startupFailureMessage(error: unknown, platform: NodeJS.Platform)
   return '主程序初始化失败，当前系统未返回错误详情'
 }
 
+// Linux 的 nativeImage 解不开 .ico，给它 .ico 窗口和任务栏就只剩一个空白方块；画布窗口
+// 早就用 PNG 了。macOS 不看窗口图标（Dock 另设），Windows 照旧用多尺寸的 .ico。
+export function windowIconFileName(platform: NodeJS.Platform): string {
+  return platform === 'win32' || platform === 'darwin' ? 'favicon.ico' : 'app-icon.png'
+}
+
+// Linux 上不一定有托盘（linux-tray-host.ts），窗口一关软件就退了；有托盘时关窗只是藏起来，
+// 得先从托盘菜单退出，否则重新打开拿到的还是那个空白窗口。
+export function rendererCrashRecoveryDetail(platform: NodeJS.Platform): string {
+  const restart = platform === 'darwin'
+    ? '从屏幕顶部菜单栏的星芒图标退出软件后重新打开'
+    : platform === 'win32'
+      ? '从任务栏右下角的星芒图标退出软件后重新打开'
+      : '关掉窗口再从应用菜单重新打开（屏幕顶部或任务栏上有星芒图标的话，先从它的菜单里点「退出」）'
+  return `可以再试一次重新加载。如果还是空白，请${restart}，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`
+}
+
 export function platformWindowOptions(
   platform: NodeJS.Platform,
   palette: WindowThemePalette,
-  windowsIcon: string,
+  windowIcon: string,
 ): Pick<
   BrowserWindowConstructorOptions,
   'autoHideMenuBar' | 'titleBarStyle' | 'titleBarOverlay' | 'icon'
@@ -45,7 +62,7 @@ export function platformWindowOptions(
       symbolColor: palette.symbol,
       height: 38,
     },
-    icon: windowsIcon,
+    icon: windowIcon,
   }
 }
 

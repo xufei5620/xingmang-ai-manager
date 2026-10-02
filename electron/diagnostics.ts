@@ -68,6 +68,7 @@ import {
   type WindowsProcessorArchitecture,
 } from './windows-processor'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { readLinuxSystemName } from './linux-os-release'
 import {
   describeWindowsExecutionProbeFailure,
   inspectCurrentWindowsProcessHighIntegrity,
@@ -137,6 +138,8 @@ export interface DiagnosticsDependencies {
   platform?: NodeJS.Platform
   arch?: string
   release?: string
+  /** Linux 发行版名字；缺省时在 Linux 上读 /etc/os-release。 */
+  readLinuxSystemName?: () => Promise<string | null>
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
   now?: () => Date
@@ -1199,7 +1202,8 @@ export function clockSkewMs(dateHeader: string | null | undefined, now: Date): n
 export function clockSyncGuidance(platform: NodeJS.Platform): string {
   if (platform === 'win32') return '请在「设置 → 时间和语言 → 日期和时间」里打开「自动设置时间」，并确认时区正确。'
   if (platform === 'darwin') return '请在「系统设置 → 通用 → 日期与时间」里打开「自动设置时间和日期」，并确认时区正确。'
-  return '请把系统时间设为自动同步，并确认时区正确。'
+  // Linux 各家桌面的设置页叫法不一，Ubuntu、deepin、统信都有「日期和时间」这一页。
+  return '请打开系统设置里的「日期和时间」，把时间设为自动同步（有的系统叫「自动设置日期和时间」），并确认时区正确。'
 }
 
 /** 日志里要看得见真正的原因，而 fetch 把它塞在 cause 里，外层只剩 fetch failed。 */
@@ -1384,8 +1388,11 @@ export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): D
  * 「操作系统」一项的结论说人话：Windows 11（64 位）、macOS 15（Apple 芯片）。
  * Windows 11 的内核号仍是 10.0，只能按版本号 22000 起算；macOS 从 Darwin 20
  * （macOS 11）起主版本号差 9，Darwin 25 起苹果跳到 26。认不出就原样给。
+ *
+ * Linux 的内核号对客服没用，要的是发行版（linux-os-release.ts 读出来的
+ * 「Ubuntu 24.04.1 LTS」），读不到才只写 Linux。
  */
-export function operatingSystemSummary(platform: NodeJS.Platform, release: string, arch: string): string {
+export function operatingSystemSummary(platform: NodeJS.Platform, release: string, arch: string, linuxSystemName?: string | null): string {
   if (platform === 'win32') {
     const match = release.match(/^(\d+)\.(\d+)\.(\d+)/)
     if (match && match[1] === '10' && match[2] === '0') {
@@ -1401,6 +1408,10 @@ export function operatingSystemSummary(platform: NodeJS.Platform, release: strin
       const chip = arch === 'arm64' ? 'Apple 芯片' : 'Intel 芯片'
       return `macOS ${version}（${chip}）`
     }
+  }
+  if (platform === 'linux') {
+    const chip = arch === 'arm64' ? 'ARM 芯片' : arch === 'x64' ? '64 位' : arch
+    return `${linuxSystemName || 'Linux'}（${chip}）`
   }
   return `${platform} ${release} (${arch})`
 }
@@ -1777,7 +1788,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const diskSpaceTargets = resolveDiskSpaceTargets(env, platform, dependencies.userDataDirectory)
   const log = dependencies.log
   const now = dependencies.now ?? (() => new Date())
-  const supportedPlatform = platform === 'win32' || platform === 'darwin'
+  const supportedPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux'
 
   const checks: CheckDefinition[] = [
     {
@@ -1792,11 +1803,16 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'OPERATING_SYSTEM',
       title: '操作系统',
-      run: () => ({
-        state: supportedPlatform ? 'pass' : 'warn',
-        summary: operatingSystemSummary(platform, release, arch),
-        details: { supported: supportedPlatform },
-      }),
+      run: async () => {
+        const linuxSystemName = platform === 'linux'
+          ? await (dependencies.readLinuxSystemName ?? readLinuxSystemName)().catch(() => null)
+          : null
+        return {
+          state: supportedPlatform ? 'pass' : 'warn',
+          summary: operatingSystemSummary(platform, release, arch, linuxSystemName),
+          details: { supported: supportedPlatform },
+        }
+      },
     },
     ...(platform === 'win32' && dependencies.windowsProcessor === 'arm64' ? [{
       // 星芒自己只出 x64 安装包，在 ARM 笔记本上靠系统模拟运行；Node.js 和经它装的
@@ -1917,7 +1933,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         if (platform !== 'win32') {
           return {
             state: 'pass',
-            summary: 'Mac 不需要这一项',
+            summary: platform === 'darwin' ? 'Mac 不需要这一项' : 'Linux 不需要这一项',
             details: { required: false, installed: null, path: null },
           }
         }

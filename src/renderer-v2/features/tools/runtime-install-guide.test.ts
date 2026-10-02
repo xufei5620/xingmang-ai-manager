@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { managedRuntimeNotice, runtimeButtonLabel, runtimeHomebrewCommand, runtimeInstallGuide } from './runtime-install-guide'
+import { managedRuntimeNotice, runtimeButtonLabel, runtimeHomebrewCommand, runtimeInstallGuide, runtimeLinuxPythonCommand } from './runtime-install-guide'
 
 describe('runtimeButtonLabel', () => {
   it('keeps the old wording where the app installs the runtime itself', () => {
@@ -47,6 +47,15 @@ describe('runtimeInstallGuide', () => {
     expect(guide?.summary).toContain('Gemini CLI')
     expect(guide?.summary).toContain('版本可能过旧')
     expect(guide?.command).toBe('brew install python')
+  })
+
+  it('gives Linux one apt command for Python instead of the source-only Python website', () => {
+    const guide = runtimeInstallGuide('python', 'linux', 'external')
+    expect(guide?.command).toBe(runtimeLinuxPythonCommand)
+    expect(runtimeLinuxPythonCommand).toBe('sudo apt install -y python3')
+    expect(guide?.summary).toContain('Gemini CLI')
+    expect(JSON.stringify(guide)).not.toMatch(/macOS|Mac|brew|官网/)
+    expect(guide?.steps.join('')).toContain('开机密码')
   })
 
   it('drops the Homebrew line on other external platforms rather than suggesting a wrong command', () => {
