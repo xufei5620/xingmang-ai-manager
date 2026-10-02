@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -245,5 +245,28 @@ describe('toolTemplateFilledNotice', () => {
     expect(notice?.body).toContain('Claude Code、Codex、Grok CLI')
     expect(notice?.body).toContain('「备份」页')
     expect(notice?.secondaryAction).toBeUndefined()
+  })
+})
+
+describe('claudeDesktopRepairedNotice', () => {
+  it('stays silent when nothing was repaired at startup', () => {
+    expect(claudeDesktopRepairedNotice({}, 'windows')).toBeNull()
+    expect(claudeDesktopRepairedNotice(null, 'macos')).toBeNull()
+  })
+
+  it('says what changed and how to fully quit on each platform, with only a dismiss button', () => {
+    const mac = claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, 'macos')
+    expect(mac).toMatchObject({ id: 'claude-desktop-repaired', failure: false, tone: 'ok', action: { label: '知道了', dismiss: true } })
+    expect(mac?.secondaryAction).toBeUndefined()
+    expect(mac?.body).toContain('别的设置都没动')
+    expect(mac?.body).toContain('Command + Q')
+    expect(claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, 'windows')?.body).toContain('托盘里的 Claude 图标')
+  })
+
+  it('uses no technical words in what the customer reads', () => {
+    for (const platform of ['windows', 'macos', 'linux'] as const) {
+      const notice = claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, platform)
+      expect(`${notice?.title}${notice?.body}`).not.toMatch(/inferenceModels|JSON|配置文件|configLibrary|0\.2\.12|网关|gateway|xm\.solov|Sub2API/i)
+    }
   })
 })

@@ -220,6 +220,8 @@ export interface WindowCapabilities {
   displayCompat?: 'auto'
   // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
   unexpectedExit?: UnexpectedExitNotice
+  // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
+  claudeDesktopRepaired?: true
 }
 export interface UnexpectedExitNotice {
   /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
