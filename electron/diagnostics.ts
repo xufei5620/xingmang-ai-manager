@@ -1933,7 +1933,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         if (platform !== 'win32') {
           return {
             state: 'pass',
-            summary: platform === 'darwin' ? 'Mac 不需要这一项' : 'Linux 不需要这一项',
+            summary: 'Mac 不需要这一项',
             details: { required: false, installed: null, path: null },
           }
         }

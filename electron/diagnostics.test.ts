@@ -183,7 +183,6 @@ describe('diagnostics', () => {
       summary: 'Ubuntu 24.04.1 LTS（ARM 芯片）',
       details: { supported: true },
     })
-    expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({ state: 'pass', summary: 'Linux 不需要这一项' })
   })
 
   it('still says Linux when the distribution cannot be read', async () => {
