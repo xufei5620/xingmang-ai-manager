@@ -22,6 +22,7 @@
 - `electron/linux-node-runtime.ts` — Linux 上代下 Node.js：钉版本与每个架构的 SHA-256，只用 root 所有的系统 tar 解进 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，核对后原子替换（Linux 版拆分 ②）
 - `electron/linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反）
 - `electron/linux-shell-profile.ts` — 客户自己开的终端里直接敲 claude / codex / gemini / grok：每个托管工具一个小启动器，`~/.bashrc` / `~/.zshrc` / `~/.profile` 末尾的标记段与 fish 的 conf.d 文件，卸掉最后一个时逐字撤掉（Linux 版拆分 ④）
+- `electron/linux-terminal.ts` — Linux 上「打开」工具：找命令窗口程序（按桌面、系统默认、再按表）、写一次性 sh 启动脚本、等脚本删掉自己才算打开；启动脚本文件的写入与清理和 macOS 共用 `electron/terminal-launcher-files.ts`（Linux 版拆分 ⑤）
 
 ## `electron/` 主进程
 

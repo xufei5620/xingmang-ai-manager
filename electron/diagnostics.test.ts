@@ -136,6 +136,29 @@ describe('diagnostics', () => {
     expect(inspectPowerShell).not.toHaveBeenCalled()
   })
 
+  it('names the terminal program Linux will open tools in, and fails with a fix when there is none', async () => {
+    const home = temporaryHome()
+    const inspectPowerShell = vi.fn(dependencies(home).inspectPowerShell)
+    const found = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'linux',
+      inspectPowerShell,
+      findLinuxTerminal: () => ({ id: 'deepin-terminal', label: '深度终端', executable: '/usr/bin/deepin-terminal' }),
+    })
+    const missing = await runDiagnostics({ ...dependencies(home), platform: 'linux', findLinuxTerminal: () => null })
+
+    expect(found.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
+      state: 'pass',
+      summary: '可用，会用「深度终端」打开工具',
+      details: { required: true, installed: true, terminal: 'deepin-terminal', path: expect.stringContaining('deepin-terminal') },
+    })
+    const failed = missing.items.find((item) => item.code === 'SYSTEM_POWERSHELL')
+    expect(failed).toMatchObject({ state: 'fail', details: { installed: false, terminal: null, path: null } })
+    expect(failed?.summary).toContain('应用商店')
+    expect(failed?.summary).not.toContain('Mac')
+    expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
   it('explains an ARM laptop in plain words only when the chip is ARM', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
