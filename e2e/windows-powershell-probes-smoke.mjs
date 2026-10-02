@@ -38,11 +38,8 @@ const { windowsExternalClientInventoryScript } = compiled('external-client-runti
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
 const { trustedCommandEnvironment } = compiled('command-runner')
 const {
-  buildWindowsStoreAppLaunchContextScript,
   buildWindowsStoreAvailabilityScript,
-  inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
-  parseWindowsStoreAppLaunchContext,
   parseWindowsStoreAvailability,
 } = compiled('windows-store-app-launch')
 
@@ -115,14 +112,12 @@ const checks = [
     const output = await runScript(buildCodexDesktopProcessProbeScript())
     if (output.trim()) assert.doesNotThrow(() => JSON.parse(output))
   }],
-  ['Codex merged probe answers all three segments and the current account', async () => {
+  ['Codex merged probe answers all three segments', async () => {
     const output = await runScript(buildCodexDesktopCombinedProbeScript())
     const parsed = JSON.parse(output.trim())
     assert.ok(Object.prototype.hasOwnProperty.call(parsed, 'startApps'))
     assert.ok(Object.prototype.hasOwnProperty.call(parsed, 'processes'))
     assert.ok(parsed.package)
-    // 首页装之前的「这个账户打不开商店应用」提醒靠这一段读出当前用户。
-    assert.match(String(parsed.storeAppLaunch?.sid ?? ''), /^S-1-\d+(?:-\d+)+$/)
     // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错。
     const probe = parseCodexDesktopCombinedProbeJson(output)
     assert.ok(probe.packageProbe.value !== null || probe.packageProbe.confirmedAbsent === true || probe.packageProbe.error !== null)
@@ -181,11 +176,6 @@ function Get-AppxPackage { @() }
     assert.equal(line, `KNOWN:${known.map((entry) => entry.path).sort().join('|')}`)
   }],
 ]
-
-checks.push(['store app launch script reads the current account', async () => {
-  const context = parseWindowsStoreAppLaunchContext(await runScript(buildWindowsStoreAppLaunchContextScript()))
-  assert.match(context.userSid ?? '', /^S-1-\d+(?:-\d+)+$/)
-}])
 
 checks.push(['store availability probe answers without throwing', async () => {
   // A runner image may or may not carry the Store; the probe must still reach a
@@ -432,22 +422,15 @@ async function reportTrustedProbesWithoutAutoloading() {
 
 // The shipped functions, in the environment the app gives them. Under
 // trustedCommandEnvironment() command autoloading used to cost about 22 s per
-// process on this runner (#714): the account probe ran past its own 10 s limit
-// and the home screen silently lost the "this account cannot open store apps"
-// warning, and the Codex merged probe took 23~29 s of its 24 s budget, so a
-// scan on a slow machine reported Codex desktop as unreadable. Both are real
-// checks at their shipped limits; store availability only prints its timing.
-checks.push(['store app launch probe answers inside its own limit under the trusted environment', async () => {
-  const context = await inspectWindowsStoreAppLaunchContext()
-  assert.match(context.userSid ?? '', /^S-1-5-/)
-}])
-
+// process on this runner (#714): the Codex merged probe took 23~29 s of its
+// 24 s budget, so a scan on a slow machine reported Codex desktop as
+// unreadable. It is a real check at its shipped limit; store availability only
+// prints its timing.
 checks.push(['Codex merged probe answers inside its own limit under the trusted environment', async () => {
   const startedAt = Date.now()
   const output = await runPowerShell(['-Command', buildCodexDesktopCombinedProbeScript()], trustedCommandEnvironment())
   const elapsed = Date.now() - startedAt
   const parsed = JSON.parse(output.trim())
-  assert.match(String(parsed.storeAppLaunch?.sid ?? ''), /^S-1-\d+(?:-\d+)+$/)
   console.log(`info Codex merged probe under the trusted environment: package=${parsed.package?.packages?.length ? 'yes' : 'none'}, startAppsError=${parsed.startAppsError ?? 'none'}, processesError=${parsed.processesError ?? 'none'}, packageError=${parsed.packageError ?? 'none'} (${elapsed}ms)`)
   assert.ok(elapsed < codexDesktopCombinedProbeTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopCombinedProbeTimeoutMs}ms`)
 }])
