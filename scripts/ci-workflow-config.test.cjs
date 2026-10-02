@@ -573,6 +573,62 @@ test('the Windows job packages and exercises a hardened non-publishing build', (
   assert.match(buildCommand, /--publish never/)
 })
 
+test('every Linux architecture is built, installed, launched sandboxed and removed on its own hardware', () => {
+  const job = workflow.jobs['linux-package']
+  const commands = runSteps('linux-package')
+  const indexOf = (pattern) => commands.findIndex((command) => pattern.test(command))
+
+  // A deb cannot be installed on another architecture, and Electron under an
+  // emulator says nothing about a real machine, so each one gets a native
+  // runner. electron-builder names the arm64 unpacked directory differently.
+  assert.equal(job.strategy['fail-fast'], false)
+  assert.deepEqual(job.strategy.matrix.include, [
+    { arch: 'x64', runner: 'ubuntu-24.04', unpacked: 'linux-unpacked' },
+    { arch: 'arm64', runner: 'ubuntu-24.04-arm', unpacked: 'linux-arm64-unpacked' },
+  ])
+  assert.equal(job['runs-on'], '${{ matrix.runner }}')
+  // build:linux:ci packages the runner's own architecture only; anything
+  // else would make the matrix verify one deb twice.
+  assert.doesNotMatch(packageJson.scripts['build:linux:ci'], /--(x64|arm64)\b/)
+  assert.equal(job.env.PACKAGE_ARCH, '${{ matrix.arch }}')
+  assert.equal(job.env.UNPACKED_DIRECTORY, 'release/${{ matrix.unpacked }}')
+
+  const order = [
+    /^npm ci\b/,
+    /^npm run build:linux:ci$/,
+    /^node scripts\/verify-packaged-hardening\.cjs "\$UNPACKED_DIRECTORY"$/,
+    /^node scripts\/verify-linux-deb\.cjs release --arch "\$PACKAGE_ARCH"$/,
+    /apt-get install -y --no-install-recommends xvfb "\$deb"/,
+    /apparmor_restrict_unprivileged_userns=1/,
+    /^xvfb-run -a node e2e\/linux-deb-smoke\.mjs \/usr\/bin\/xingmang-ai-manager$/,
+    /^xvfb-run -a node e2e\/packaged-hardening-smoke\.mjs \/usr\/bin\/xingmang-ai-manager$/,
+    /apt-get remove -y xingmang-ai-manager/,
+  ].map(indexOf)
+  assert.ok(order.every((index) => index !== -1), `linux-package is missing a step: ${JSON.stringify(order)}`)
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'linux-package runs its steps out of order')
+
+  // The launches are what prove an ordinary user gets a sandboxed app. Under
+  // sudo Electron only starts with the sandbox off, which proves nothing.
+  for (const command of commands.filter((entry) => /node e2e\//.test(entry))) {
+    assert.doesNotMatch(command, /\bsudo\b/, command)
+  }
+  assert.doesNotMatch(JSON.stringify(job), /no-sandbox|disable-setuid-sandbox|ELECTRON_DISABLE_SANDBOX/)
+
+  // Each step that installs, launches or removes names itself if it hangs.
+  const bounded = job.steps.filter((step) => /apt-get|xvfb-run|build:linux/.test(String(step.run || '')))
+  assert.equal(bounded.length, 5)
+  for (const step of bounded) {
+    assert.ok(step['timeout-minutes'] > 0, `${step.name || step.run} needs its own bound`)
+  }
+  assert.ok(job['timeout-minutes'] > Math.max(...bounded.map((step) => step['timeout-minutes'])),
+    'linux-package must outlive its longest bounded step')
+
+  const removal = commands[order.at(-1)]
+  for (const leftover of ['/opt/xingmang-ai-manager', '/usr/bin/xingmang-ai-manager', '/etc/alternatives/xingmang-ai-manager', '/usr/share/applications/xingmang-ai-manager.desktop', '/etc/apparmor.d/xingmang-ai-manager']) {
+    assert.ok(removal.includes(leftover), `removal must check ${leftover}`)
+  }
+})
+
 test('a branch push with an open pull request triggers exactly one run', () => {
   // `on:` parses to the `true` key because YAML reads a bare `on` as a boolean.
   const triggers = workflow.on ?? workflow[true]
@@ -597,7 +653,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -639,7 +695,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit', 'cli-relay-probe'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit', 'cli-relay-probe'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -649,7 +705,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results) => {
     const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit']) {
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
@@ -668,8 +724,11 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('false', 'failure', {}), false)
   assert.equal(verify('', 'success', {}), false)
   assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure' }), false)
+  // One red architecture fails the whole matrix job, which is what this sees.
+  assert.equal(verify('true', 'success', { 'linux-package': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'linux-package': 'skipped' }), false)
   assert.equal(verify('false', 'success', Object.fromEntries(
-    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].map(name => [name, 'skipped']),
+    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit'].map(name => [name, 'skipped']),
   )), true)
   // The relay probe runs only when the verified-version list moves, so its
   // skip is a pass; a red one is the whole reason it exists and must block.

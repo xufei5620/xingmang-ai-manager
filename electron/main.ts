@@ -57,7 +57,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -186,6 +186,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
@@ -1479,7 +1480,41 @@ if (!hasSingleInstanceLock) {
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
     let previousAutoInstallFailureReported = false
+    // Linux 只有 .deb 装的能自动更新，装这一步交给系统安装程序（linux-deb-update.ts）。
+    const updateInstallMethod = process.platform === 'linux'
+      ? resolveLinuxInstallMethod({
+        isPackaged: app.isPackaged,
+        packageType: app.isPackaged ? readLinuxPackageType(process.resourcesPath) : null,
+      })
+      : undefined
     const updaterService = createUpdaterService(autoUpdater, {
+      installMethod: updateInstallMethod,
+      openSystemInstaller: updateInstallMethod === 'system-installer'
+        ? async (packagePath) => {
+          try {
+            await openWithSystemInstaller({
+              packagePath,
+              opener: resolveSystemPackageOpener(),
+              env: systemInstallerEnvironment(process.env),
+            })
+            runtimeLog.log('info', 'updater', 'install.system-installer.opened', '已把新版本安装包交给系统安装程序')
+          } catch (error) {
+            const code = (error as Partial<SystemInstallerError> | null)?.code ?? 'UPDATE_SYSTEM_INSTALLER_FAILED'
+            runtimeLog.exception('updater', 'install.system-installer.failed', error)
+            if (code === 'UPDATE_PACKAGE_PATH_MISSING') throw error
+            // 安装程序没起来时替客户把安装包所在的文件夹打开，双击它照样能装。
+            let revealed = false
+            try {
+              shell.showItemInFolder(packagePath)
+              revealed = true
+            } catch (cause) {
+              runtimeLog.exception('updater', 'install.system-installer.reveal-failed', cause)
+            }
+            throw Object.assign(new Error(systemInstallerFailureMessage(code, revealed)), { code })
+          }
+        }
+        : undefined,
+      quitAfterSystemInstaller: () => { app.quit() },
       installedRelease,
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
@@ -1544,8 +1579,9 @@ if (!hasSingleInstanceLock) {
     })
     // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
     // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
-    // 请求在后台走，不挡启动。
-    const serviceStatusUrl = updaterService.getState().phase === 'disabled'
+    // 请求在后台走，不挡启动。Linux 上不是 .deb 装的那种更新关着，可维护提示照样
+    // 要让他看到。
+    const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
       : locateServiceStatusUrl(
         app.isPackaged
@@ -1572,6 +1608,7 @@ if (!hasSingleInstanceLock) {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
       unsignedChannel,
+      ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
     })
     if (unsignedChannel) {
@@ -2600,6 +2637,7 @@ if (!hasSingleInstanceLock) {
         trayAcceleration?.observe(state)
         accelerationExpiry?.observe(state)
         accelerationInterruption?.observe(state)
+        codexDesktopAcceleration.observe(state)
       },
     })
     // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
@@ -2917,7 +2955,8 @@ if (!hasSingleInstanceLock) {
           if (!update) return 'quit'
         }
         const version = update.version
-        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord }) === 'install') {
+        const installMethod = updaterService.getState().installMethod
+        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod }) === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
           // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
           // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
@@ -2932,11 +2971,12 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
+        const prompt = quitInstallPrompt(update.version, installMethod)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具',
-          message: update.version ? `新版本 ${update.version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
-          detail: '安装很快，装完会自动打开新版本。现在不装也行，更新会一直留着，下次退出时再问你。',
-          buttons: ['安装并退出', '先退出，下次再装'],
+          message: prompt.message,
+          detail: prompt.detail,
+          buttons: prompt.buttons,
           defaultId: 0, cancelId: 1,
         })
         return result.response === 0 ? 'install-update' : 'quit'

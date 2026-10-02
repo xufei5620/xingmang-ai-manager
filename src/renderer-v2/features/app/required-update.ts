@@ -25,7 +25,7 @@ export interface RequiredUpdateGateState {
   diskShortfall: UpdateDiskShortfall | null
 }
 
-type GateSnapshot = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'error' | 'failedStep' | 'development' | 'rollback' | 'progress' | 'requiredVersion' | 'diskShortfall'>
+type GateSnapshot = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'error' | 'failedStep' | 'development' | 'rollback' | 'progress' | 'requiredVersion' | 'diskShortfall' | 'installMethod'>
 
 /**
  * 状态文件说本机低于最低版本时，那层关不掉的提示该长什么样；不该拦时返回 null。
@@ -68,7 +68,8 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     case 'downloaded':
       if (update.error) return { ...base, action: 'install', ...gateFailure(update) }
       return installing
-        ? { ...base, action: null, label: '正在重启安装…' }
+        // Linux 交给系统安装窗口，软件只关掉不重开，不能说「重启」。
+        ? { ...base, action: null, label: update.installMethod === 'system-installer' ? '正在打开安装窗口…' : '正在重启安装…' }
         : { ...base, action: 'install', label: '立即更新' }
     case 'error':
       // 检查或下载失败后，electron-updater 已经不在「可下载」状态：从检查重新来，找到后
