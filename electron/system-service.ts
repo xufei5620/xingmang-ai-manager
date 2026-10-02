@@ -49,7 +49,7 @@ import {
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { cliProcessProbeRoots, inspectRunningTools as inspectRunningToolsWith, type RunningToolsReport } from './running-tools'
-import { createToolModelChecker, type ToolModelCheck } from './tool-model-check'
+import { createToolModelChecker, type ToolModelCheck, type ToolModelCheckTarget } from './tool-model-check'
 import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
@@ -61,8 +61,25 @@ import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
   desktopUpdateFields,
+  inspectCodexDesktopPackage,
   type CodexDesktopInstallResult,
+  type CodexDesktopPackageProbe,
 } from './codex-desktop-service'
+import {
+  buildCodexRelayModelCatalog,
+  codexCliAcceptsModelCatalog,
+  codexDesktopAcceptsModelCatalog,
+  codexModelCatalogContent,
+  codexModelCatalogListsModel,
+  codexModelCatalogRequiredCliVersion,
+  combineCodexModelCatalogVerdicts,
+  parseCodexModelCatalog,
+  readBundledCodexModelCatalog,
+  type CodexDesktopCatalogProbe,
+  type CodexModelCatalog,
+  type CodexModelCatalogVerdict,
+  type ParsedCodexModelCatalog,
+} from './codex-model-catalog'
 import {
   canLaunchManagedProvider,
   geminiCliCompatibleModel,
@@ -71,6 +88,10 @@ import {
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
   claudeModelPickerNeedsRefresh,
+  codexModelCatalogNeedsRefresh,
+  codexModelCatalogTargetUsable,
+  inspectCodexModelCatalogOnDisk,
+  takeBackCodexModelCatalog,
   inspectManagedCliHookTargets,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
@@ -227,7 +248,7 @@ import {
   verifyLinuxGrokPostInstall,
   type VerifyLinuxGrokPostInstallOptions,
 } from './linux-grok'
-import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
+import { inspectMacosCodexApp, type MacosCodexAppInfo, type MacosCodexAppInspection } from './macos-codex-app'
 import {
   inspectCommandLineToolsShim,
   isCommandLineToolsShimBacked,
@@ -1008,6 +1029,11 @@ export interface SystemService {
    * 队列里，不会和正在进行的安装撞上；从不抛错。
    */
   cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult>
+  /**
+   * 开机时在本机看一眼本软件写给 Codex 的型号名单还读不读得进，读不进就收回那一行；不看
+   * 账号、不联网，登录状态下开机那轮按账号同步也共用这一次。从不抛错。可选 = 旧实现不提供。
+   */
+  guardCodexModelCatalogAtStartup?(): Promise<void>
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -2302,6 +2328,16 @@ export interface SystemServiceOptions {
   claudeStatusLineScriptPath?: string
   /** 随包的命令行工具钩子脚本路径；缺省则不给 Claude Code / Gemini CLI 写通知钩子。 */
   cliHookScriptPath?: string
+  /**
+   * 随包的官方 Codex 型号名单（codex-model-catalog.ts）。缺省 = 不写也不收回 Codex 的
+   * 型号名单，与从前一致。
+   */
+  bundledCodexModelCatalogPath?: string
+  /**
+   * 读型号名单的还有桌面端自带的那份 Codex，写之前要知道桌面端是哪一批。缺省 = Windows
+   * 问 Appx 包、Mac 看应用包、其余平台算没装；测试里替换掉。
+   */
+  inspectCodexDesktopForModelCatalog?: () => Promise<CodexDesktopCatalogProbe>
   /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   /**
@@ -2500,6 +2536,68 @@ export function shouldReplaceNodeForCertificates(input: {
 }
 
 export const nodeStillOutdatedAfterReplaceMessage = '新版 Node.js 已经装上了，但电脑上另外还有一份旧的 Node.js 排在前面，工具仍会先用到它，还是认不了这台电脑的证书。请联系客服帮你处理。'
+
+/**
+ * Windows 上桌面端是哪一批：Appx 探测明确报了「没有」才算没装，报错、没下结论都算看不出
+ * （同 codex-desktop-service.ts 判卸载干净的口径）。
+ */
+export function codexDesktopCatalogProbeFromPackage(probe: CodexDesktopPackageProbe): CodexDesktopCatalogProbe {
+  if (probe.value) return { installed: true, version: probe.value.version }
+  return probe.confirmedAbsent === true && !probe.error ? { installed: false, version: null } : { installed: null, version: null }
+}
+
+/** Mac 上同理：检测没跑完（detectionFailed）就是看不出，不当没装。 */
+export function codexDesktopCatalogProbeFromMacosApp(inspection: MacosCodexAppInspection): CodexDesktopCatalogProbe {
+  if (inspection.app) return { installed: true, version: inspection.app.version }
+  return inspection.detectionFailed ? { installed: null, version: null } : { installed: false, version: null }
+}
+
+/** 读本软件写的 Codex 型号名单的是哪几份 Codex：命令行、桌面端自带的那份，或两边都看。 */
+type CodexModelCatalogReaders = 'cli' | 'desktop' | 'all'
+
+type CodexModelCatalogGuardTrigger = 'cli-installed' | 'desktop-installed' | 'startup' | 'before-launch'
+
+/** 收回读不进的名单时只看这次可能变了的那一边：装了命令行只看命令行，开机两边都看。 */
+const codexModelCatalogGuardReaders: Record<CodexModelCatalogGuardTrigger, CodexModelCatalogReaders> = {
+  'cli-installed': 'cli',
+  'desktop-installed': 'desktop',
+  startup: 'all',
+  'before-launch': 'cli',
+}
+
+/** 打开 Codex 之前在本机看一眼型号名单，最多等这么久。 */
+const codexModelCatalogLaunchGuardMs = 3_000
+
+/** 等 promise 落定，最多等 ms 毫秒：到点就不等了，它自己接着跑完。从不抛错。 */
+export function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    function done(): void {
+      clearTimeout(timer)
+      resolve()
+    }
+    promise.then(done, done)
+  })
+}
+
+/**
+ * 同一个本机探测在 ttlMs 内复用上一次的结果（同时只跑一遍）；forget 之后下一次重新探。
+ * probe 自己不该抛错：抛了也会被复用到过期为止。
+ */
+export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now: () => number = () => Date.now()) {
+  let cached: { at: number; result: Promise<T> } | null = null
+  return {
+    read(): Promise<T> {
+      const at = now()
+      // 系统时间往回拨过也重新探，不能让上一次的结论一直用下去。
+      if (!cached || at - cached.at >= ttlMs || at < cached.at) cached = { at, result: probe() }
+      return cached.result
+    },
+    forget(): void {
+      cached = null
+    },
+  }
+}
 
 export function createSystemService(
   store: AppSettingsStore,
@@ -3843,10 +3941,16 @@ export function createSystemService(
     // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
     // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
     await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
-    await withDownloadAcceleration(
-      (message) => sendInstallProgress(target, provider, 'output', message),
-      () => runCliInstall(provider, target, requestedVersion, cancellation),
-    )
+    try {
+      await withDownloadAcceleration(
+        (message) => sendInstallProgress(target, provider, 'output', message),
+        () => runCliInstall(provider, target, requestedVersion, cancellation),
+      )
+    } finally {
+      // 命令行可能换了版本（更新、退回，装到一半回滚没回干净的也算）：读不进型号名单的话
+      // Codex 起不来。趁还没出队就收回，排在后面的那次打开才不会先撞上。
+      if (provider === 'codex') await takeBackUnreadableCodexModelCatalog('cli-installed')
+    }
   }
 
   /**
@@ -4839,7 +4943,10 @@ export function createSystemService(
   }
 
   function uninstallCli(provider: ProviderId): Promise<ToolUninstallResult> {
-    return installationQueue.enqueue(`cli:uninstall:${provider}`, () => uninstallCliOperation(provider))
+    const finished = installationQueue.enqueue(`cli:uninstall:${provider}`, () => uninstallCliOperation(provider))
+    // 卸掉命令行不会让谁读不进型号名单，只是下次写名单时要重新看装没装。
+    if (provider === 'codex') void finished.then(forgetCodexModelCatalogReaders, forgetCodexModelCatalogReaders)
+    return finished
   }
 
   function spawnDetached(
@@ -4895,7 +5002,13 @@ export function createSystemService(
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
-    const result = await installCodexDesktopOperation(target)
+    let result: CodexDesktopInstallResult
+    try {
+      result = await installCodexDesktopOperation(target)
+    } finally {
+      // 桌面端换了一批，自带的 Codex 也跟着换了：读不进型号名单的话开不了新对话。
+      await takeBackUnreadableCodexModelCatalog('desktop-installed')
+    }
     // A successful manual install is an explicit opt-in again. The setting is
     // cleared only after the desktop package has been verified by the service.
     await store.update({ version: 2, codexDesktopInstallDisabled: false })
@@ -4903,7 +5016,7 @@ export function createSystemService(
   }
 
   async function uninstallCodexDesktop(): Promise<ToolUninstallResult> {
-    const result = await uninstallCodexDesktopOperation()
+    const result = await uninstallCodexDesktopOperation().finally(forgetCodexModelCatalogReaders)
     if (result.outcome === 'uninstalled') {
       await store.update({ version: 2, codexDesktopInstallDisabled: true })
     }
@@ -5758,6 +5871,177 @@ export function createSystemService(
     }
   }
 
+  // 随包那份官方 Codex 型号名单同一次运行里不会变，只读一次；读不成（构建残留、被替换）
+  // 也不必每次保存都再试，这次运行就不写名单。
+  let bundledCodexModelCatalog: ParsedCodexModelCatalog | null | undefined
+
+  function loadBundledCodexModelCatalog(): ParsedCodexModelCatalog | null {
+    if (bundledCodexModelCatalog !== undefined) return bundledCodexModelCatalog
+    bundledCodexModelCatalog = null
+    const filePath = serviceOptions.bundledCodexModelCatalogPath
+    if (!filePath) return null
+    try {
+      bundledCodexModelCatalog = readBundledCodexModelCatalog(filePath)
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.bundled-unreadable', '随包的 Codex 型号名单读不出来，这次运行不写型号名单', {
+        reason: credentialFailureReason(error),
+      })
+      return null
+    }
+    if (bundledCodexModelCatalog.rejected.length) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.bundled-rejected', '随包的 Codex 型号名单里有 Codex 读不进去的型号，已经剔掉', {
+        rejected: bundledCodexModelCatalog.rejected,
+      })
+    }
+    return bundledCodexModelCatalog
+  }
+
+  // 读 xingmang-models.json 的不只命令行，还有桌面端自带的那份 Codex：两边是哪一版都在本机
+  // 探（命令行读 npm 包的版本或跑一次 --version，桌面端 Windows 问 Appx 包、Mac 看应用包）。
+  // 一次保存、开机那一轮会连着问好几遍，30 秒内复用上一次的结论；星芒自己装、卸、更新过
+  // 之后作废。
+  const codexCliForModelCatalog = createCachedProbe(async (): Promise<{ installed: boolean; version: string | null } | null> => {
+    try {
+      const { status } = await inspectCliTool('codex', null, null)
+      return { installed: status.installed, version: status.version }
+    } catch {
+      return null
+    }
+  }, 30_000)
+  const codexDesktopForModelCatalog = createCachedProbe(async (): Promise<CodexDesktopCatalogProbe> => {
+    try {
+      if (serviceOptions.inspectCodexDesktopForModelCatalog) return await serviceOptions.inspectCodexDesktopForModelCatalog()
+      if (platform === 'win32') return codexDesktopCatalogProbeFromPackage(await inspectCodexDesktopPackage())
+      if (platform === 'darwin') return codexDesktopCatalogProbeFromMacosApp(await detectMacosCodexApp())
+      return { installed: false, version: null }
+    } catch {
+      return { installed: null, version: null }
+    }
+  }, 30_000)
+
+  function forgetCodexModelCatalogReaders(): void {
+    codexCliForModelCatalog.forget()
+    codexDesktopForModelCatalog.forget()
+  }
+
+  /** 读这份名单的几份 Codex 合起来能不能用它（codex-model-catalog.ts），顺带各自的版本留给日志。 */
+  async function codexModelCatalogReadersVerdict(catalog: CodexModelCatalog, readers: CodexModelCatalogReaders): Promise<{
+    verdict: CodexModelCatalogVerdict
+    detail: Record<string, unknown>
+  }> {
+    const verdicts: CodexModelCatalogVerdict[] = []
+    const detail: Record<string, unknown> = { required: codexModelCatalogRequiredCliVersion(catalog) }
+    if (readers !== 'desktop') {
+      const cli = await codexCliForModelCatalog.read()
+      const verdict = cli ? codexCliAcceptsModelCatalog(cli, catalog) : 'unknown'
+      verdicts.push(verdict)
+      Object.assign(detail, { cli: verdict, cliVersion: cli?.version ?? null })
+    }
+    if (readers !== 'cli') {
+      const desktop = await codexDesktopForModelCatalog.read()
+      const verdict = codexDesktopAcceptsModelCatalog(desktop)
+      verdicts.push(verdict)
+      Object.assign(detail, { desktop: verdict, desktopVersion: desktop.version })
+    }
+    return { verdict: combineCodexModelCatalogVerdicts(verdicts), detail }
+  }
+
+  /**
+   * 这次要给 Codex 写的型号名单（codex-model-catalog.ts）：全文 = 照写；null = 收回本软件
+   * 写的那一行（账号的型号随包名单里一个都没有、默认型号不在名单里、名单文件的位置被换成了
+   * 链接、这台电脑上的命令行或桌面端太旧）；undefined = 原样不动（没有随包名单、看不出
+   * 命令行或桌面端是哪一版），免得一次没读到就把菜单来回改。
+   */
+  async function resolveCodexModelCatalog(availableModels: readonly string[], model: string): Promise<string | null | undefined> {
+    const official = loadBundledCodexModelCatalog()
+    if (!official) return undefined
+    const catalog = buildCodexRelayModelCatalog(official, availableModels)
+    if (!catalog) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.no-match', '当前账号能用的型号随包名单里都没有，Codex 用它自带的菜单', {
+        models: availableModels.length,
+      })
+      return null
+    }
+    if (!codexModelCatalogListsModel(catalog, model)) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.model-not-listed', 'Codex 的默认型号不在随包名单里，这次不写型号名单', { model })
+      return null
+    }
+    if (!codexModelCatalogTargetUsable(providerRoots)) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.target-unsafe', 'Codex 型号名单的位置被换成了链接，这次不写型号名单')
+      return null
+    }
+    const { verdict, detail } = await codexModelCatalogReadersVerdict(catalog, 'all')
+    if (verdict === 'unknown') {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.reader-unknown', '看不出 Codex 命令行或桌面端是哪一版，型号名单这次不动', detail)
+      return undefined
+    }
+    if (verdict === 'too-old') {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.reader-too-old', '这台电脑上的 Codex 命令行或桌面端太旧，读不进型号名单，这次不写', detail)
+      return null
+    }
+    return codexModelCatalogContent(catalog)
+  }
+
+  /** Codex 那份型号名单按当前账号的型号重写会不会变；看不出该不该写的时候算没变。 */
+  async function codexModelCatalogOutdated(availableModels: readonly string[], model: string): Promise<boolean> {
+    const expected = await resolveCodexModelCatalog(availableModels, model)
+    return expected !== undefined && codexModelCatalogNeedsRefresh(expected, providerRoots)
+  }
+
+  /**
+   * 本软件写的名单该不该收回：名单文件丢了、读不进，或读它的命令行 / 桌面端太旧（只看这次
+   * 可能变了的那一边）。不该收回是 null，该收回给出原因留给日志；看不出版本的算不该。
+   */
+  async function codexModelCatalogTakeBackReason(trigger: CodexModelCatalogGuardTrigger): Promise<Record<string, unknown> | null> {
+    const onDisk = inspectCodexModelCatalogOnDisk(providerRoots)
+    if (!onDisk.managed) return null
+    let catalog: ParsedCodexModelCatalog | null = null
+    try {
+      catalog = onDisk.content === null ? null : parseCodexModelCatalog(onDisk.content)
+    } catch {
+      catalog = null
+    }
+    if (!catalog || catalog.rejected.length) return { reason: onDisk.content === null ? 'missing' : 'unreadable' }
+    const readers = await codexModelCatalogReadersVerdict(catalog, codexModelCatalogGuardReaders[trigger])
+    return readers.verdict === 'too-old' ? { reason: 'too-old', ...readers.detail } : null
+  }
+
+  /**
+   * 不看账号、不联网，只看本机，读不进就收回 config.toml 里那一行（名单文件留着）：Codex 读
+   * 不进名单整个起不来，这一步不能等联网核对，也不管工具开没开。失败只记日志。
+   */
+  async function takeBackUnreadableCodexModelCatalog(trigger: CodexModelCatalogGuardTrigger): Promise<void> {
+    if (!serviceOptions.bundledCodexModelCatalogPath) return
+    try {
+      // 打开前那次有人在等：名单好好的（绝大多数时候）就不必排在别的写入后面。装完那两次
+      // 不能这样省：正在进行的保存可能拿装之前探的版本写下那一行，要等它写完再看。
+      if (trigger === 'before-launch' && !(await codexModelCatalogTakeBackReason(trigger))) return
+      await serializeConfigWrite(async () => {
+        if (trigger === 'cli-installed' || trigger === 'desktop-installed') {
+          // 刚装完的那一边要重新探，不能用装之前那次的结论；当天那次核对说的「名单该不该写」
+          // 也跟着作废，版本够了下次打开就补上。
+          forgetCodexModelCatalogReaders()
+          toolModelChecker.forget('codex')
+        }
+        // 进锁以后按同一套条件再判一次：排队期间配置可能刚被重写过。
+        const detail = await codexModelCatalogTakeBackReason(trigger)
+        if (detail && takeBackCodexModelCatalog(providerRoots)) {
+          runtimeLog?.log('info', 'config', 'codex-model-catalog.taken-back', 'Codex 读不进本软件写的型号名单，已经收回 config.toml 里那一行', { trigger, ...detail })
+        }
+      })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.take-back-failed', '没能收回 Codex 读不进的型号名单', { trigger, reason: credentialFailureReason(error) })
+    }
+  }
+
+  // 开机那次只做一遍：没登录的由 main.ts 在开机后调，登录状态下开机那轮按账号同步也先等它，
+  // 两边共用这一次，不为同一件事问两遍命令行和桌面端。
+  let startupCodexModelCatalogGuard: Promise<void> | null = null
+  function guardCodexModelCatalogAtStartup(): Promise<void> {
+    startupCodexModelCatalogGuard ??= takeBackUnreadableCodexModelCatalog('startup')
+    return startupCodexModelCatalogGuard
+  }
+
   // 注册表里整台电脑 + 当前账号的 PATH，最近读到的那一份；读不到时是 null，只看星芒启动时的快照。
   let windowsLivePath: string | null = null
   let windowsLivePathRead: Promise<void> | null = null
@@ -5967,6 +6251,8 @@ export function createSystemService(
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
       const cliHook = await resolveCliHookInvocation()
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
+      // 同上：要问一遍 Codex 命令行是哪一版，也放在「校验没变」之前。
+      const codexModelCatalog = payload.provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.
@@ -5979,7 +6265,7 @@ export function createSystemService(
       const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
       let result: ReturnType<typeof saveProviderConfig>
       try {
-        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook)
+        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
       } catch (error) {
         if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
         throw error
@@ -5997,24 +6283,33 @@ export function createSystemService(
   // 打开前的模型核对（tool-model-check.ts）。只认本软件用当前账号写的配置：官方账号、
   // 手填、被改动过的都不碰；刷新菜单走 saveConfig 的自动写入那道闸，与开机同步 Key
   // 同一套所有权规则，写一半回滚（I9）也照旧。
+  function modelCheckTarget(provider: ProviderId, accountOwnedOnly: boolean): ToolModelCheckTarget | null {
+    if (store.read().officialProviders?.includes(provider)) return null
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (!owner) return null
+    const config = inspectNativeProviderConfig(provider)
+    const apiKey = config.apiKey?.trim() ?? ''
+    const model = config.model.trim()
+    if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
+    if (accountOwnedOnly && configOwnership.read(provider, config, owner) !== 'account') return null
+    const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
+  }
+
   const toolModelChecker = createToolModelChecker({
     now: () => Date.now(),
-    target: (provider) => {
-      if (store.read().officialProviders?.includes(provider)) return null
-      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-      if (!owner) return null
-      const config = inspectNativeProviderConfig(provider)
-      const apiKey = config.apiKey?.trim() ?? ''
-      const model = config.model.trim()
-      if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
-      if (configOwnership.read(provider, config, owner) !== 'account') return null
-      const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-      return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
-    },
+    target: (provider) => modelCheckTarget(provider, true),
+    // 写入当中认人时不看来源记录：saveConfig 写之前会先把记录改成「手动」（写失败就停在受
+    // 保护的状态），按记录认人的话刷新永远在写到一半时作废，记录还留在「手动」（#562 起
+    // Claude Code 的菜单就是这样一次没刷成过）。来源是不是当前账号，由 saveConfig 的自动写入
+    // 那道闸进锁时自己把关。
+    identity: (provider) => modelCheckTarget(provider, false)?.identity ?? null,
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
-    pickerOutdated: (models, model) => claudeModelPickerNeedsRefresh(models, model, providerRoots),
-    refreshPicker: async (model, assertCurrent) => {
-      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
+    pickerOutdated: (provider, models, model) => provider === 'claude'
+      ? claudeModelPickerNeedsRefresh(models, model, providerRoots)
+      : codexModelCatalogOutdated(models, model),
+    refreshPicker: async (provider, model, assertCurrent) => {
+      await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })
@@ -6077,6 +6372,38 @@ export function createSystemService(
       }
     }
     return { filled }
+  }
+
+  /**
+   * 开机那一轮把 Codex 的型号名单对一遍：先在本机收回读不进的（不看账号），再按当前账号能用
+   * 的型号补上或刷新（tool-model-check.ts 的 syncPicker）。老客户升级以后配置不会重写，多半
+   * 也直接从开始菜单打开桌面端、不经过打开前那次核对，不在这里补，新型号就一直进不了菜单。
+   * 按账号刷新与补设置同一套规矩：Codex 开着或看不出开没开的这次不动（桌面端自己也会写
+   * config.toml），真要改先做一份与保存配置同样的备份，备份不成就不改。失败只记日志。
+   */
+  async function syncCodexModelCatalogAtStartup(backup?: (provider: ProviderId) => void): Promise<void> {
+    if (!serviceOptions.bundledCodexModelCatalogPath) return
+    await guardCodexModelCatalogAtStartup()
+    let report: RunningToolsReport
+    try {
+      report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex'])
+    } catch {
+      return
+    }
+    if (report.running.includes('codex') || report.unknown.includes('codex') || report.codexDesktopRunning !== false) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-deferred', 'Codex 可能正开着，型号名单这次先不按账号刷新')
+      return
+    }
+    await toolModelChecker.syncPicker('codex', { beforeRefresh: () => backup?.('codex') })
+  }
+
+  /** 开机那次：补设置那句提示照常先出，Codex 型号名单随后再对（要先问一遍中转），不等它。 */
+  async function fillToolTemplateDefaultsThenSyncPickers(backup?: (provider: ProviderId) => void): Promise<ToolTemplateFillResult> {
+    try {
+      return await fillToolTemplateDefaults(backup)
+    } finally {
+      void syncCodexModelCatalogAtStartup(backup).catch(() => undefined)
+    }
   }
 
   function credentialFailureReason(error: unknown): string {
@@ -6223,8 +6550,15 @@ export function createSystemService(
     setCodexDesktopLocale,
     launchCodexDesktop,
     inspectRunningTools,
-    checkToolModels: (provider: ProviderId) => toolModelChecker.check(provider),
-    fillToolTemplateDefaults,
+    checkToolModels: async (provider: ProviderId) => {
+      // 打开前那次核对一天只有一回，还要联网；命令行在星芒开着时被换成了旧版，名单读不进
+      // 它就起不来，所以每次打开前先在本机看一眼。最多等这么久，打开的人在等；没看完的
+      // 自己在后台接着做完。
+      if (provider === 'codex') await settleWithin(takeBackUnreadableCodexModelCatalog('before-launch'), codexModelCatalogLaunchGuardMs)
+      return toolModelChecker.check(provider)
+    },
+    guardCodexModelCatalogAtStartup,
+    fillToolTemplateDefaults: fillToolTemplateDefaultsThenSyncPickers,
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,

@@ -19,9 +19,10 @@ CLI 和桌面端使用同一个有效 Codex 配置目录。正式版优先使用
 
 | 文件 | 操作 |
 | --- | --- |
-| `config.toml` | 优先恢复已保存的 ChatGPT 配置。没有快照时，从现有配置中移除当前星芒 provider 条目以及顶层 `model_provider`、`model`、`review_model`，其他字段保留。 |
+| `config.toml` | 优先恢复已保存的 ChatGPT 配置。没有快照时，从现有配置中移除当前星芒 provider 条目以及顶层 `model_provider`、`model`、`review_model`、本软件写的 `model_catalog_json`，其他字段保留。 |
 | `xingmang-config-relay.toml` | 保存当前星芒 `config.toml`，用于以后切回星芒。 |
-| `xingmang-config-chatgpt.toml` | 保存/恢复 ChatGPT 来源的配置；已有快照时以这份配置为准。 |
+| `xingmang-config-chatgpt.toml` | 保存/恢复 ChatGPT 来源的配置；已有快照时以这份配置为准。存快照时去掉本软件写的 `model_catalog_json`，官方账号用服务器下发的型号名单。 |
+| `xingmang-models.json` | 本软件写的型号名单（见下文「型号名单」），切换时不删：星芒快照和旧备份可能还指向它。 |
 | `auth.json` | 恢复当前或快照中的 ChatGPT tokens；有登录态时写入 `auth_mode: "chatgpt"`，不混入星芒 Key。没有可恢复登录态时移除 API Key 和认证选择，之后在 Codex 中登录。 |
 | `xingmang-auth-apikey.json` | 保存当前星芒 `OPENAI_API_KEY`。 |
 | `xingmang-auth-chatgpt.json` | 保存/恢复官方 tokens 和已有 `last_refresh`；切换不生成新的官方登录令牌。 |
@@ -51,6 +52,22 @@ CLI 和桌面端使用同一个有效 Codex 配置目录。正式版优先使用
 - `merge` 优先使用当前星芒配置，或切回星芒时恢复的星芒快照；更新 `model`、`review_model`、`model_provider` 和 provider 的地址、`wire_api`、认证要求。未设置权限策略时补入 `approval_policy = "on-request"`、`sandbox_mode = "workspace-write"`，已有值保留。
 - `auth.json` 和 `xingmang-auth-apikey.json` 写入仅包含 `OPENAI_API_KEY` 的内容；切走前的 ChatGPT tokens 另存为官方登录快照。
 - 成功后移除 `officialProviders` 中的 `codex` 并恢复星芒AI技能开关。
+
+## 型号名单：桌面端看不到新型号
+
+用星芒 Key 时，Codex 不问中转有哪些型号，菜单只列它二进制里随版本打包的名单（`codex-rs/models-manager/models.json`），提示词、工具、推理档位也从这份名单取。桌面端自带的 Codex 跟着 OpenAI 自己冻结的版本走：2026-09-30 那一批（26.930.x）带的是 0.159.0-alpha.12.1，名单里没有 9-29 才上的 `gpt-6.1-sol`，中转开了也选不到；硬写进配置，桌面端只显示「自定义」，还退回通用提示词。
+
+所以保存星芒配置时，主进程还会写一份型号名单（`electron/codex-model-catalog.ts`）：
+
+- 来源是随包的官方名单 `bundled-catalog/codex-models/models.json`（原样拷自 openai/codex 的发布 tag，按 sha256 钉住），只挑当前 Key 的模型列表里有的型号，型号资料一个字不改，写成有效 Codex 配置目录下的 `xingmang-models.json`，再在 `config.toml` 顶层写 `model_catalog_json = "xingmang-models.json"`。写入走与 `config.toml` 同一次两阶段提交，名单文件先落盘；内容没变不重写。
+- 这份名单会整份替换 Codex 自带的名单，所以只写当前账号能用的型号，Codex 的默认型号也必须在里面（不在的话它丢了官方资料，宁可不写）。账号的型号变了，打开工具前那次每日核对（`tool-model-check.ts`）和开机那次会按新型号重写。开机那次与补设置同一套规矩：只动来源确认是当前账号的配置，Codex 开着或看不出开没开就留到下次，真要改先做一份与保存配置同样的备份。自己填写密钥的要重新保存一次。
+- 读这份名单的不只命令行，还有桌面端自带的那份 Codex。读不了它 Codex 就整个起不来（文件丢了、格式不对、空名单都会让命令行退出、桌面端开不了新对话），所以下面任何一条成立就不写，并收回本软件写的那一行：账号的型号随包名单里一个都没有、或挑出来的全是菜单里不显示的；这台电脑上的 Codex 命令行低于名单要求的版本（至少 0.147.0，再取写进去的型号里官方标的最低版本，账号有 `gpt-6-sol` 时是 0.155.0）；桌面端早于 26.917 那一批（版本号前两段就是批次，26.917 自带 0.155.0-alpha.16.3，26.930 自带 0.159.0-alpha.12.1）；名单文件的位置被换成了链接（这时只是不写名单，Key 照常保存）。看不出命令行或桌面端是哪一版时原样不动。命令行和桌面端的版本都在本机探，30 秒内复用上一次的结论，星芒自己装、卸、更新过就作废。
+- 版本变了不等联网核对：Codex 命令行装好 / 更新 / 退回之后（还在安装队列里，排在后面的打开不会先撞上）、星芒装好桌面端之后、每次从星芒打开 Codex 之前、开机那次（没登录也做），都先在本机看一眼：本软件写的名单文件丢了、读不进，或读它的命令行 / 桌面端太旧，就只收回 `config.toml`（和切回星芒用的那份快照）里那一行，其余一个字不动；不看账号、也不管工具开没开。打开前那次最多等 3 秒，名单好好的时候不排在别的写入后面。装好命令行或桌面端之后，当天那次核对的结论作废，版本够了下次打开就按账号补上。
+- 看不到的读者：星芒只认得出 PATH 上的 Codex 命令行和官方桌面端（正式版和 Beta 版同时装着时只按正式版判断）。IDE 插件自带的 Codex、不在 PATH 上的另一份命令行也读同一份 `config.toml`，它们太旧时星芒不知道；遇到起不来，删掉 `model_catalog_json` 那一行即可恢复。
+- 用户自己设了 `model_catalog_json` 的一律不动。切回 ChatGPT 时收回那一行，名单文件留着。
+- 桌面端只在启动时读名单，开着的要完全退出再打开才看得到新型号。
+
+随包名单要跟着上游换：抬 Codex 推荐版本时（每周巡检），把同一个 tag 的 `models.json` 整份拷过来，换掉 `bundledCodexModelCatalogSource` 里的 tag 与 sha256，步骤见 `bundled-catalog/codex-models/README.md`。中转开了随包名单里还没有的新 GPT 型号，在下一版带上新名单之前，菜单里看不到它。
 
 ## 重置范围
 
