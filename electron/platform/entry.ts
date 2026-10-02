@@ -1,6 +1,3 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { accelerationEntryMode } from '../acceleration-worker-entry'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice, type LinuxLaunchRefusal } from '../linux-launch-guard'
 import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
@@ -14,6 +11,9 @@ import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
  */
 function refuseLinuxLaunch(refusal: LinuxLaunchRefusal): void {
   const { app, dialog } = require('electron') as typeof import('electron')
+  const fs = require('node:fs') as typeof import('node:fs')
+  const os = require('node:os') as typeof import('node:os')
+  const path = require('node:path') as typeof import('node:path')
   const notice = linuxLaunchRefusalNotice(refusal)
   // A terminal launch (where sudo was typed) shows this even if no dialog can open.
   process.stderr.on('error', () => undefined)

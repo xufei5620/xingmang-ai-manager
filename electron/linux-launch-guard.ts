@@ -13,8 +13,8 @@
  * Windows and macOS are untouched: Windows has its own execution-mode model, and macOS
  * never reaches here as root through any supported launch.
  *
- * This module imports nothing so platform/desktop-entry.ts can consult it before any
- * other module loads.
+ * This module imports nothing so platform/entry.ts can consult it before any other
+ * module loads.
  */
 
 export type LinuxLaunchRefusal = 'root' | 'other-account'
