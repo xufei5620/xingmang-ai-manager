@@ -266,6 +266,9 @@ function controllerOptions(
       subscribe: vi.fn((_listener: unknown) => () => undefined),
     } as never,
     externalShell: { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) },
+    // The real probe starts a hidden renderer, which the BrowserWindow mock cannot
+    // stand in for; linux-renderer-sandbox.test.ts covers its verdicts.
+    inspectRendererSandbox: async () => ({ kind: 'sandboxed' }),
     ...overrides,
   }
 }
@@ -373,6 +376,37 @@ describe('createCanvasWindowController', () => {
     expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledWith(
       'xingmang-canvas://app/?theme=dark',
     )
+  })
+
+  it('refuses to create the canvas window when the renderer sandbox is off', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({
+      runtimeLog: runtimeLog as never,
+      inspectRendererSandbox: async () => ({ kind: 'disabled', reason: 'no-sandbox' }),
+    }))
+
+    await expect(controller.open()).rejects.toThrow('这层保护被关掉了')
+
+    expect(electronMocks.browserWindowOptions).toEqual([])
+    expect(runtimeLog.log).toHaveBeenCalledWith('error', 'canvas', 'sandbox.refused', expect.any(String), {
+      verdict: 'disabled',
+      reason: 'no-sandbox',
+    })
+  })
+
+  it('asks the sandbox gate again on the next open after a refusal', async () => {
+    const inspectRendererSandbox = vi.fn()
+      .mockResolvedValueOnce({ kind: 'unverified', reason: 'renderer status unreadable' })
+      .mockResolvedValue({ kind: 'sandboxed' })
+    const controller = createCanvasWindowController(controllerOptions({ inspectRendererSandbox }))
+
+    await expect(controller.open()).rejects.toThrow('没能确认画布的安全保护')
+    await controller.open()
+
+    expect(inspectRendererSandbox).toHaveBeenCalledTimes(2)
+    expect(electronMocks.browserWindowOptions).toEqual([
+      expect.objectContaining({ webPreferences: expect.objectContaining({ sandbox: true, contextIsolation: true, nodeIntegration: false }) }),
+    ])
   })
 
   it('opens with the stored light theme in both the native background and renderer URL', async () => {

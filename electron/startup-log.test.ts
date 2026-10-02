@@ -6,6 +6,8 @@ import {
   drainStartupFailures,
   formatStartupFailure,
   recordStartupFailure,
+  redactHomeDirectory,
+  redactLinuxUserPaths,
   redactStartupSecrets,
   resolveStartupLogDirectory,
   resolveStartupLogPath,
@@ -197,4 +199,41 @@ describe('startup failure records', () => {
       expect(fs.readFileSync(secret, 'utf8')).toBe('sk-private-file-contents')
     },
   )
+})
+
+describe('home directory redaction on Linux', () => {
+  it('labels the home directory ~ and stops at a path boundary', () => {
+    const text = 'open /home/al/project and /home/alice/notes, json "/home/al/.claude"'
+    expect(redactHomeDirectory(text, '/home/al', 'linux'))
+      .toBe('open ~/project and /home/%USER%/notes, json "~/.claude"')
+  })
+
+  it('removes account names that sit outside the home directory', () => {
+    const text = [
+      '/media/alice/U盘/work',
+      '/run/media/alice/disk/a.txt',
+      '/run/user/1000/gvfs/smb-share:server=nas,share=team,user=alice/x',
+      '/var/home/alice/a',
+      '/data/home/alice/a',
+      'node_modules/pkg/media/dist/a.js',
+    ].join('\n')
+    expect(redactLinuxUserPaths(text)).toBe([
+      '/media/%USER%/U盘/work',
+      '/run/media/%USER%/disk/a.txt',
+      '/run/user/%UID%/gvfs/smb-share:server=nas,share=team,user=%USER%/x',
+      '/var/home/%USER%/a',
+      '/data/home/%USER%/a',
+      'node_modules/pkg/media/dist/a.js',
+    ].join('\n'))
+    expect(redactHomeDirectory('/media/alice/a', '', 'linux')).toBe('/media/%USER%/a')
+  })
+
+  it('keeps the Windows and macOS output exactly as before', () => {
+    const text = '/Users/al/x /media/alice/z /run/user/501/a'
+    expect(redactHomeDirectory(text, '/Users/al', 'darwin')).toBe('%USERPROFILE%/x /media/alice/z /run/user/501/a')
+    expect(redactHomeDirectory('C:\\Users\\Al\\x /media/alice/z', 'C:\\Users\\Al', 'win32'))
+      .toBe('%USERPROFILE%\\x /media/alice/z')
+    // A Windows-shaped home keeps its label wherever the redaction runs.
+    expect(redactHomeDirectory('C:\\Users\\Al\\x', 'C:\\Users\\Al', 'linux')).toBe('%USERPROFILE%\\x')
+  })
 })
