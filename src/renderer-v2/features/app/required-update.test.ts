@@ -45,6 +45,8 @@ describe('requiredUpdateGate', () => {
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }))).toMatchObject({ progressDetail: null })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }))).toMatchObject({ action: 'install', label: '立即更新' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }), true)).toMatchObject({ action: null, label: '正在重启安装…' })
+    // Linux only opens the system installer window; the app does not restart itself.
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', installMethod: 'system-installer' }), true)).toMatchObject({ action: null, label: '正在打开安装窗口…' })
   })
 
   it('turns a failure into a retry with the reason', () => {

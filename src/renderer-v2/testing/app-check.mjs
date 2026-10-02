@@ -2327,6 +2327,44 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
   }
 })
 
+// Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
+// 确认框要先说清楚会弹安装窗口、要输开机密码。不是 .deb 装的那种根本没法自动更新，
+// 更新页给一条去下载页的路，而不是一颗永远点不动的「检查更新」。
+test('on Linux the updates page hands installing to the system installer and explains the password prompt', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      installMethod: 'system-installer',
+    }))
+    assert.equal(await updates.getByRole('button', { name: '重启安装', exact: true }).count(), 0)
+    await updates.getByRole('button', { name: '安装新版本', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '安装新版本？' })
+    await dialog.waitFor()
+    await dialog.getByTestId('updates-system-installer-hint').getByText('输入开机密码', { exact: false }).waitFor()
+    assert.equal(await dialog.getByRole('button', { name: '关掉并安装', exact: true }).count(), 1)
+    await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
+
+    await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: null, progress: null, failedStep: null, error: null, development: false,
+      installMethod: 'manual',
+    }))
+    const manual = updates.getByTestId('updates-manual-install')
+    await manual.waitFor()
+    await manual.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openExternal'))
+    const opened = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').at(-1).args)
+    assert.deepEqual(opened, ['https://github.com/xufei5620/xingmang-ai-manager/releases/latest'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 维护提示来自更新目录上的状态文件，没登录也得看得到：欢迎页角落一条，登录框是
 // 模态的会盖住角落，所以框里再放一份。关掉的是这句话，发布者换了说法会再出现。
 test('a maintenance notice from the update feed reaches signed-out users, including inside the login dialog', async () => {

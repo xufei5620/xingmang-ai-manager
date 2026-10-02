@@ -71,7 +71,7 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
  * 本机旧（退回上一个好版本）时，照常说「发现新版本」就是在骗人。这几句也只在这里
  * 定义一次，更新页与首页气泡读同一份。
  */
-type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall'>
+type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall' | 'installMethod'>
 export function updateCardTitle(update: UpdateOfferState): string {
   if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
   if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
@@ -85,7 +85,12 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
   return '这个版本有已知问题'
 }
 // 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进更新页。
-export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean): string {
+// 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
+export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod']): string {
+  if (installMethod === 'system-installer') {
+    if (phase === 'downloaded') return '已经下好了，到更新页点「安装新版本」就能装上。';
+    return autoUpdate ? '正在后台下载，下好后到更新页点「安装新版本」。' : '查看更新内容和安装状态。';
+  }
   if (!autoUpdate) return '查看更新内容和安装状态。';
   if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
   return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
@@ -144,15 +149,22 @@ export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null
 }
 // 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
 // 重启」就是在说反话。
-export function updatesPageLead(autoUpdate: boolean): string {
+export function updatesPageLead(autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod']): string {
+  if (autoUpdate && installMethod === 'system-installer') {
+    return '新版本会在后台下好，下好后点「安装新版本」，在弹出的安装窗口里输入开机密码就装上了。';
+  }
   return autoUpdate
     ? '新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。'
     : '新版本什么时候安装由你决定，不会自己重启。';
 }
+/** 更新页上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启安装」。*/
+export function updateInstallActionLabel(installMethod: UpdateOfferState['installMethod']): string {
+  return installMethod === 'system-installer' ? '安装新版本' : '重启安装';
+}
 export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
-  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「重启安装」。`
+  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「${updateInstallActionLabel(update.installMethod)}」。`
   if (next) return `发布者撤回了 ${update.currentVersion}，修好的 ${next} 已经可以装了，建议尽快更新。`
   return `发布者撤回了 ${update.currentVersion}。修好的版本准备好后，这里会提示你更新。`
 }

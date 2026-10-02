@@ -23,11 +23,12 @@ export interface ApplicationTraySnapshot {
 export type TrayUpdateEntry =
   | { kind: 'available'; version: string | null; waitingForDisk: boolean }
   | { kind: 'downloading'; version: string | null }
-  | { kind: 'downloaded'; version: string | null }
+  /** systemInstaller：装这一步交给系统安装程序（Linux），软件只关掉、不会自己重开。 */
+  | { kind: 'downloaded'; version: string | null; systemInstaller?: true }
   | { kind: 'failed'; version: string | null }
 
 export function resolveTrayUpdateEntry(
-  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall'>,
+  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall' | 'installMethod'>,
 ): TrayUpdateEntry | null {
   const version = snapshot.availableVersion
   switch (snapshot.phase) {
@@ -38,7 +39,8 @@ export function resolveTrayUpdateEntry(
     case 'downloaded':
       // 带错误的 downloaded 是安装器起过一次又失败了：updater 的安装闸已经关上，
       // 再点「重启安装」会什么都不发生，只能带他去更新页看原因。
-      return snapshot.error ? { kind: 'failed', version } : { kind: 'downloaded', version }
+      if (snapshot.error) return { kind: 'failed', version }
+      return snapshot.installMethod === 'system-installer' ? { kind: 'downloaded', version, systemInstaller: true } : { kind: 'downloaded', version }
     case 'error':
       // 只有下载失败时 availableVersion 才确定还是那个要装的版本；检查失败时它可能是上一轮留下的。
       return snapshot.failedStep === 'download' && version ? { kind: 'failed', version } : null
@@ -67,7 +69,7 @@ function updateItem(
     case 'downloaded':
       // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
       return install
-        ? { label: `重启并安装${named}`.trimEnd(), click: () => run(install) }
+        ? { label: `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
         : { label: `软件更新：${named}已下载好`, click: openPage }
     case 'failed':
       return { label: `软件更新：${named}没更新成功，点开看看`, click: openPage }

@@ -93,7 +93,9 @@ export function RequiredUpdateGate({ update, windows, actions }: {
     <header><Download size={20} aria-hidden="true" /><div><h2 id="required-update-title">这个版本需要更新后才能继续用</h2></div></header>
     <div className="xm-modal-content">
       <div className="xm-dialog-body">
-        <p>为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本会自己下载并装好，中间会重启一次，账号和设置都会保留。</p>
+        {update?.installMethod === 'system-installer'
+          ? <p data-testid="required-update-system-installer">为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本下载好后星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后重新打开星芒就行，账号和设置都会保留。</p>
+          : <p>为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本会自己下载并装好，中间会重启一次，账号和设置都会保留。</p>}
         {windows && <p>装的时候如果弹出「是否允许更改」，点「是」。</p>}
         <p data-testid="required-update-versions">现在是 {gate.currentVersion}{gate.availableVersion ? `，将更新到 ${gate.availableVersion}` : ''}</p>
         {gate.percent !== null && <Progress value={gate.percent} label="下载进度" testId="required-update-progress" />}

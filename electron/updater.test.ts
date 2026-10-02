@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -2079,5 +2079,222 @@ describe('launch install notice', () => {
     client.emit('checking-for-update')
     expect(service.getState().launchInstallNotice).toBeNull()
     service.dispose()
+  })
+})
+
+describe('system installer channel (Linux .deb)', () => {
+  const debFile = '/home/tester/.cache/xingmang-ai-manager-updater/pending/XingMang-AI-Manager-1.1.0-linux-amd64.deb'
+  const debInfo = (version = '1.1.0') => ({
+    ...updateInfo(version),
+    files: [{ url: `XingMang-AI-Manager-${version}-linux-amd64.deb`, sha512: 'deb-digest', size: 42 }],
+    downloadedFile: debFile,
+  })
+  const linuxRuntime = (overrides: Record<string, unknown> = {}) => ({
+    currentVersion: '1.0.0',
+    isPackaged: true,
+    platform: 'linux' as NodeJS.Platform,
+    installMethod: 'system-installer' as const,
+    verifyPackageDigest: vi.fn(async () => true),
+    ...overrides,
+  })
+
+  it('keeps the Windows and macOS snapshot free of the install method', () => {
+    const service = createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true })
+    expect(Object.keys(service.getState())).not.toContain('installMethod')
+    service.dispose()
+  })
+
+  it('disables an install electron-updater cannot update instead of checking forever', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'linux', installMethod: 'manual' })
+    expect(service.getState()).toMatchObject({ phase: 'disabled', installMethod: 'manual', development: false })
+    await expect(service.startup()).resolves.toMatchObject({ phase: 'disabled' })
+    await expect(service.check()).rejects.toThrow()
+    expect(client.checkForUpdates).not.toHaveBeenCalled()
+    service.setServiceStatus({ maintenance: { message: '维护中' }, minimumVersion: '9.9.9' })
+    expect(service.getState()).toMatchObject({ requiredVersion: null, serviceMaintenance: { message: '维护中' } })
+    service.dispose()
+  })
+
+  it('leaves checking when electron-updater resolves null without a single event', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => null)
+    const service = createUpdaterService(client, linuxRuntime())
+    await service.check()
+    expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'check', error: { code: 'UPDATE_INACTIVE' } })
+    // The next check is not swallowed by a stuck 'checking' phase.
+    await service.check()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('gates a Linux machine only once an install that satisfies the minimum is on offer', () => {
+    const gate = (availableVersion: string | null, rollback = false, installMethod: 'system-installer' | null = 'system-installer') =>
+      resolveGatedRequiredVersion({ minimumRequired: '1.2.0', installMethod, availableVersion, rollback })
+    expect(gate(null)).toBeNull()
+    expect(gate('1.1.0')).toBeNull()
+    expect(gate('1.2.0')).toBe('1.2.0')
+    expect(gate('1.3.0')).toBe('1.2.0')
+    expect(gate('1.3.0', true)).toBeNull()
+    expect(gate('nightly')).toBeNull()
+    // Windows and macOS keep gating on the minimum alone.
+    expect(gate(null, false, null)).toBe('1.2.0')
+    expect(resolveGatedRequiredVersion({ minimumRequired: null, installMethod: 'system-installer', availableVersion: '1.3.0', rollback: false })).toBeNull()
+  })
+
+  it('does not lock Linux customers out while the feed has no Linux package', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => {
+      const error = Object.assign(new Error('Cannot find latest-linux.yml in the latest release artifacts'), { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })
+      client.emit('error', error)
+      throw error
+    })
+    const service = createUpdaterService(client, linuxRuntime())
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    await vi.waitFor(() => expect(client.checkForUpdates).toHaveBeenCalled())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().requiredVersion).toBeNull()
+
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', debInfo('1.2.0'))
+    })
+    await service.check()
+    expect(service.getState()).toMatchObject({ phase: 'available', availableVersion: '1.2.0', requiredVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  it('keeps the Windows gate up even before any package is offered', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(() => new Promise(() => undefined))
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32' })
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    expect(service.getState()).toMatchObject({ phase: 'checking', requiredVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  it('still lets a Linux machine below the minimum past a staged rollout before its gate is up', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50
+    const status = { maintenance: null, rollout: { version: '1.2.0', percent: 0 }, minimumVersion: '1.2.0' }
+    const service = createUpdaterService(client, linuxRuntime({ refreshServiceStatus: async () => status }))
+    const offered: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      offered.push(await client.isUserWithinRollout!(updateInfo('1.2.0')))
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    await service.check()
+    expect(offered).toEqual([true])
+    expect(service.getState().requiredVersion).toBeNull()
+    service.dispose()
+  })
+
+  it('hands the verified package to the system installer, then quits, and never runs electron-updater install', async () => {
+    const client = new FakeUpdater()
+    const openSystemInstaller = vi.fn(async (_packagePath: string) => undefined)
+    const quitAfterSystemInstaller = vi.fn()
+    const prepareInstallQuit = vi.fn(async () => undefined)
+    const runtime = linuxRuntime({ openSystemInstaller, quitAfterSystemInstaller, prepareInstallQuit })
+    const service = createUpdaterService(client, runtime)
+    client.emit('update-downloaded', debInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    expect(runtime.verifyPackageDigest).toHaveBeenCalledWith(debFile, 'deb-digest')
+
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(quitAfterSystemInstaller).toHaveBeenCalledOnce())
+    expect(prepareInstallQuit).toHaveBeenCalledOnce()
+    expect(openSystemInstaller).toHaveBeenCalledWith(debFile)
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(client.autoInstallOnAppQuit).toBe(false)
+    service.dispose()
+  })
+
+  it('opens the installer before returning when the host is already quitting', () => {
+    const client = new FakeUpdater()
+    const openSystemInstaller = vi.fn(() => new Promise<void>(() => undefined))
+    const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, prepareInstallQuit: () => undefined }))
+    client.emit('update-downloaded', debInfo())
+    return vi.waitFor(() => expect(service.getState().phase).toBe('downloaded')).then(() => {
+      service.install()
+      expect(openSystemInstaller).toHaveBeenCalledOnce()
+      service.dispose()
+    })
+  })
+
+  it('stays open and keeps the package for a retry when the installer cannot be opened', async () => {
+    const client = new FakeUpdater()
+    const quitAfterSystemInstaller = vi.fn()
+    const installQuitAborted = vi.fn()
+    const openSystemInstaller = vi.fn(async (_packagePath: string): Promise<void> => {
+      throw Object.assign(new Error('没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。'), { code: 'UPDATE_SYSTEM_INSTALLER_FAILED' })
+    })
+    const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, quitAfterSystemInstaller, installQuitAborted, prepareInstallQuit: async () => undefined }))
+    client.emit('update-downloaded', debInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    service.install()
+    await vi.waitFor(() => expect(service.getState().failedStep).toBe('install'))
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      error: { code: 'UPDATE_SYSTEM_INSTALLER_FAILED', message: '没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。' },
+    })
+    expect(installQuitAborted).toHaveBeenCalledOnce()
+    expect(quitAfterSystemInstaller).not.toHaveBeenCalled()
+
+    openSystemInstaller.mockImplementationOnce(async () => undefined)
+    service.install()
+    await vi.waitFor(() => expect(quitAfterSystemInstaller).toHaveBeenCalledOnce())
+    service.dispose()
+  })
+
+  it('sends a vanished package back to the download step', async () => {
+    const client = new FakeUpdater()
+    const installQuitAborted = vi.fn()
+    const openSystemInstaller = vi.fn(async () => {
+      throw Object.assign(new Error('gone'), { code: 'UPDATE_PACKAGE_PATH_MISSING' })
+    })
+    const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, installQuitAborted }))
+    client.emit('update-downloaded', debInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    service.install()
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_PACKAGE_PATH_MISSING' } })
+    expect(installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('never hands over a package that was not verified', async () => {
+    const client = new FakeUpdater()
+    const openSystemInstaller = vi.fn(async () => undefined)
+    const service = createUpdaterService(client, linuxRuntime({ verifyPackageDigest: undefined, openSystemInstaller }))
+    client.emit('update-downloaded', debInfo())
+    expect(service.getState().phase).toBe('downloaded')
+    expect(() => service.install()).toThrow()
+    expect(openSystemInstaller).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'download' })
+    service.dispose()
+  })
+
+  it('reports a quit that never happens after the installer window opened', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, linuxRuntime({
+        openSystemInstaller: async () => undefined,
+        quitAfterSystemInstaller: () => undefined,
+        installLaunchTimeoutMs: 1_000,
+      }))
+      client.emit('update-downloaded', debInfo())
+      await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+      service.install()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        failedStep: 'install',
+        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT' },
+      })
+      expect(service.getState().error?.message).toContain('安装窗口已经打开')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
