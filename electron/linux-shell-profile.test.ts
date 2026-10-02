@@ -43,6 +43,17 @@ function installManaged(home: string, command: string, content = `#!/bin/sh\nech
   return target
 }
 
+/** The layout xAI's npm postinstall leaves on Linux: ~/.grok/bin/grok is a relative link to grok-<version> beside it. */
+function installGrok(home: string, version = '1.0.45'): string {
+  const bin = path.join(home, '.grok', 'bin')
+  fs.mkdirSync(bin, { recursive: true })
+  fs.writeFileSync(path.join(bin, `grok-${version}`), '#!/bin/sh\necho "grok:$*"\n', { mode: 0o755 })
+  const link = path.join(bin, 'grok')
+  fs.rmSync(link, { force: true })
+  fs.symlinkSync(`grok-${version}`, link)
+  return link
+}
+
 function env(home: string): NodeJS.ProcessEnv {
   return { HOME: home }
 }
@@ -167,6 +178,16 @@ describe('buildLinuxTerminalLauncher', () => {
     expect(launcher).toContain('exec "$xingmang_target" "$@"')
     expect(() => buildLinuxTerminalLauncher('claude; rm -rf ~', '/a', '/b')).toThrow('命令名无效')
     expect(() => buildLinuxTerminalLauncher('claude', 'relative', '/b')).toThrow()
+  })
+
+  it('gives a native CLI no Node.js folder and leaves PATH alone', () => {
+    const launcher = buildLinuxTerminalLauncher('grok', '/home/ann/.grok/bin/grok', null)
+    expect(launcher).toContain("xingmang_target='/home/ann/.grok/bin/grok'")
+    expect(launcher).toContain('exec "$xingmang_target" "$@"')
+    expect(launcher).not.toContain('xingmang_node')
+    expect(launcher).not.toContain('PATH')
+    expect(launcher).not.toContain('Node.js')
+    expect(() => buildLinuxTerminalLauncher('grok', '/home/ann/.grok/bin/grok', 'relative')).toThrow()
   })
 
   describe.runIf(process.platform !== 'win32' && fs.existsSync('/bin/sh'))('when run', () => {
@@ -396,6 +417,56 @@ describe.runIf(process.platform !== 'win32')('syncLinuxTerminalCommands', () => 
     expect(fs.readFileSync(bashrc, 'utf8')).toBe(edited)
     expect(fs.readFileSync(path.join(launcherDirectory(home), 'codex'), 'utf8')).toBe('#!/bin/sh\necho mine\n')
     expect(fs.existsSync(path.join(launcherDirectory(home), 'claude'))).toBe(false)
+  })
+
+  // Grok is not in the app's npm folder on Linux: xAI's postinstall puts it in ~/.grok/bin (linux-grok.ts).
+  it('gives Grok from ~/.grok/bin a launcher too, without the Node.js folder', async () => {
+    const home = homeDirectory()
+    const grok = installGrok(home)
+
+    await expect(syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toEqual({ outcome: 'added', launchers: ['grok'], skipped: [] })
+
+    const launcher = path.join(launcherDirectory(home), 'grok')
+    expect(fs.readFileSync(launcher, 'utf8')).toBe(buildLinuxTerminalLauncher('grok', grok, null))
+    expect(fs.readFileSync(path.join(home, '.bashrc'), 'utf8')).toBe(block(home))
+    const result = spawnSync(launcher, ['hello'], { env: { PATH: '/usr/bin:/bin' } })
+    expect(result.stdout.toString()).toBe('grok:hello\n')
+
+    // An update re-points the link; the launcher follows it without a rewrite.
+    installGrok(home, '1.0.46')
+    fs.writeFileSync(path.join(home, '.grok', 'bin', 'grok-1.0.46'), '#!/bin/sh\necho "new grok:$*"\n')
+    expect(spawnSync(launcher, ['again']).stdout.toString()).toBe('new grok:again\n')
+  })
+
+  it("leaves a Grok it did not install to its owner and drops the launcher it wrote before", async () => {
+    const home = homeDirectory()
+    const grok = installGrok(home)
+    await syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' })
+    // xAI's own installer points the link into ~/.grok/downloads instead.
+    fs.mkdirSync(path.join(home, '.grok', 'downloads'))
+    fs.writeFileSync(path.join(home, '.grok', 'downloads', 'grok-1.0.45-linux-x86_64'), '#!/bin/sh\n', { mode: 0o755 })
+    fs.rmSync(grok)
+    fs.symlinkSync(path.join('..', 'downloads', 'grok-1.0.45-linux-x86_64'), grok)
+
+    await expect(syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toEqual({ outcome: 'not-needed', launchers: [], skipped: [] })
+
+    expect(fs.existsSync(path.join(launcherDirectory(home), 'grok'))).toBe(false)
+  })
+
+  it('takes the lines out once Grok, the last CLI of ours, is uninstalled', async () => {
+    const home = homeDirectory()
+    const grok = installGrok(home)
+    await syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' })
+    fs.rmSync(grok)
+    fs.rmSync(path.join(home, '.grok', 'bin', 'grok-1.0.45'))
+
+    await expect(syncLinuxTerminalCommands({ reason: 'uninstall', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toEqual({ outcome: 'removed', launchers: [], skipped: [] })
+
+    expect(fs.readFileSync(path.join(home, '.bashrc'), 'utf8')).toBe('')
+    expect(fs.existsSync(launcherDirectory(home))).toBe(false)
   })
 
   it('never takes the lines out at startup, even when it finds nothing installed', async () => {

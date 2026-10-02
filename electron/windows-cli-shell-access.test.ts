@@ -586,6 +586,19 @@ describe('createCliTerminalAccess', () => {
       expect(second.syncTerminalCommands).not.toHaveBeenCalled()
     })
 
+    it('at startup also syncs for Grok, which never lives in the app\'s npm folder', async () => {
+      const { access, syncTerminalCommands } = linuxAccess()
+      const grok = { source: 'native' as const, npmPrefix: null }
+
+      await access.sweepOnce([
+        { provider: 'claude', installation: npmInstall('/usr/local') },
+        { provider: 'grok', installation: grok },
+      ])
+
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(1))
+      expect(syncTerminalCommands).toHaveBeenCalledWith('startup')
+    })
+
     it('syncs again after an uninstall and logs that the lines came out', async () => {
       const { access, syncTerminalCommands, log } = linuxAccess()
 

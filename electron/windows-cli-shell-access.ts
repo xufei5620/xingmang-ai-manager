@@ -355,9 +355,9 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
   async function prepare(target: CliTerminalAccessTarget, reason: 'install' | 'startup'): Promise<void> {
     const { provider, installation } = target
     if (linux) {
-      // Same rule as macOS at startup; after an install the sync itself looks at
-      // what is in the app's own npm folder, whichever CLI triggered it.
-      if (reason === 'startup' && !isManagedSafely(installation)) return
+      // Same rule as macOS at startup (Grok as in sweepOnce); after an install the
+      // sync itself looks at what the app installed, whichever CLI triggered it.
+      if (reason === 'startup' && provider !== 'grok' && !isManagedSafely(installation)) return
       syncTerminalCommands(provider, reason)
       return
     }
@@ -428,7 +428,9 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
     swept = true
     if (linux) {
       // One sync covers all four CLIs, so the first install of ours is enough to trigger it.
-      const managed = targets.find((target) => isManagedSafely(target.installation))
+      // Grok never lives in the app's npm folder on Linux (it goes to ~/.grok/bin), so
+      // any Grok install triggers it and the sync tells whether that one is ours.
+      const managed = targets.find((target) => target.provider === 'grok' || isManagedSafely(target.installation))
       if (managed) syncTerminalCommands(managed.provider, 'startup')
       return
     }

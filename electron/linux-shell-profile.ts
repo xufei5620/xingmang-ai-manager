@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cliCatalog, providerIds } from './catalog'
+import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { resolveLinuxGrokInstalledVersion } from './linux-grok'
 import { quotePosixArgument } from './macos-platform'
 import {
   managedNodeRuntimeBinDirectory,
@@ -159,26 +160,34 @@ export function planLinuxShellProfileRemoval(current: string, block: string): st
  * their own `node` keeps meaning what it meant. It does the same as starting
  * the CLI from the app, where linux-platform.ts puts that Node.js first.
  * Nothing in it is exported except PATH, and only when the app's Node.js exists.
+ * Grok is a native program (linux-grok.ts), so its launcher gets no Node.js
+ * folder and leaves PATH alone.
  */
-export function buildLinuxTerminalLauncher(command: string, target: string, nodeBinDirectory: string): string {
+export function buildLinuxTerminalLauncher(command: string, target: string, nodeBinDirectory: string | null): string {
   if (!/^[a-z][a-z0-9-]*$/.test(command)) throw new Error('命令名无效')
-  if (!path.posix.isAbsolute(target) || !path.posix.isAbsolute(nodeBinDirectory)) {
+  if (!path.posix.isAbsolute(target) || (nodeBinDirectory !== null && !path.posix.isAbsolute(nodeBinDirectory))) {
     throw new Error(`${launcherLabel}的目标路径无效`)
   }
   return [
     '#!/bin/sh',
     launcherSignature,
-    `# 星芒AI管理工具生成：在自己开的终端里敲 ${command} 走这里，固定用星芒准备的 Node.js。在星芒里卸掉 ${command} 时会自动删掉。`,
+    nodeBinDirectory
+      ? `# 星芒AI管理工具生成：在自己开的终端里敲 ${command} 走这里，固定用星芒准备的 Node.js。在星芒里卸掉 ${command} 时会自动删掉。`
+      : `# 星芒AI管理工具生成：在自己开的终端里敲 ${command} 走这里。在星芒里卸掉 ${command} 时会自动删掉。`,
     `xingmang_target=${quotePosixArgument(target)}`,
-    `xingmang_node=${quotePosixArgument(nodeBinDirectory)}`,
+    ...(nodeBinDirectory ? [`xingmang_node=${quotePosixArgument(nodeBinDirectory)}`] : []),
     'if [ ! -x "$xingmang_target" ]; then',
     `  echo ${quotePosixArgument(`找不到星芒AI管理工具装的 ${command}，请打开星芒AI管理工具重新安装。`)} >&2`,
     '  exit 127',
     'fi',
-    'if [ -x "$xingmang_node/node" ]; then',
-    '  PATH="$xingmang_node:$PATH"',
-    '  export PATH',
-    'fi',
+    ...(nodeBinDirectory
+      ? [
+          'if [ -x "$xingmang_node/node" ]; then',
+          '  PATH="$xingmang_node:$PATH"',
+          '  export PATH',
+          'fi',
+        ]
+      : []),
     'exec "$xingmang_target" "$@"',
     '',
   ].join('\n')
@@ -263,28 +272,58 @@ function fishConfigDirectory(env: NodeJS.ProcessEnv, homeDirectory: string): str
 }
 
 interface LauncherSync {
-  /** Commands whose entry point exists in the app's npm folder, whether or not their launcher could be written. */
+  /** Commands the app installed (see launcherTarget), whether or not their launcher could be written. */
   installed: string[]
   /** Commands that have a launcher after this call. */
   launchers: string[]
 }
 
-async function syncLaunchers(env: NodeJS.ProcessEnv, skipped: string[]): Promise<LauncherSync> {
-  const npmBin = managedNpmBinDirectory(env, 'linux')
-  const nodeBin = managedNodeRuntimeBinDirectory(env, 'linux')
+interface LauncherTarget {
+  /** The entry point the launcher execs, or null when this CLI is not one the app installed. */
+  path: string | null
+  nodeBinDirectory: string | null
+}
+
+/**
+ * Claude, Codex and Gemini come from the app's own npm folder. Grok does not: on
+ * Linux it is installed from npm the same way as on macOS, and xAI's postinstall
+ * puts it in ~/.grok/bin (linux-grok.ts). Only that npm layout counts, read the
+ * way the install reads it; the official installer's layout or a hand-made link
+ * answers null. A Grok the user installed with their own `npm i -g` looks the
+ * same; its launcher folder comes after their npm folder on PATH, so theirs
+ * still wins. The launcher execs the `grok` link itself, so an update that
+ * re-points the link needs no new launcher.
+ */
+function launcherTarget(provider: ProviderId, env: NodeJS.ProcessEnv, homeDirectory: string): LauncherTarget {
+  const command = cliCatalog[provider].command
+  if (provider !== 'grok') {
+    const target = path.posix.join(managedNpmBinDirectory(env, 'linux'), command)
+    return { path: pathExists(target) ? target : null, nodeBinDirectory: managedNodeRuntimeBinDirectory(env, 'linux') }
+  }
+  // postinstall resolves a linked $HOME before writing (`realpath(home)/.grok`), and so does linux-grok.ts.
+  let home: string
+  try {
+    home = fs.realpathSync(homeDirectory)
+  } catch {
+    return { path: null, nodeBinDirectory: null }
+  }
+  const target = path.posix.join(home, '.grok', 'bin', command)
+  return { path: resolveLinuxGrokInstalledVersion(home, target) ? target : null, nodeBinDirectory: null }
+}
+
+async function syncLaunchers(env: NodeJS.ProcessEnv, homeDirectory: string, skipped: string[]): Promise<LauncherSync> {
   const launcherDirectory = managedTerminalLauncherDirectory(env, 'linux')
   const installed: string[] = []
   const launchers: string[] = []
   for (const provider of providerIds) {
     const command = cliCatalog[provider].command
-    const target = path.posix.join(npmBin, command)
+    const target = launcherTarget(provider, env, homeDirectory)
     const launcherPath = path.posix.join(launcherDirectory, command)
-    const present = pathExists(target)
-    if (present) installed.push(command)
+    if (target.path) installed.push(command)
     try {
-      if (present) {
+      if (target.path) {
         ensureSafeDataDirectory(launcherDirectory, launcherLabel)
-        const content = buildLinuxTerminalLauncher(command, target, nodeBin)
+        const content = buildLinuxTerminalLauncher(command, target.path, target.nodeBinDirectory)
         const current = await readSafeUtf8File(launcherPath, launcherLabel, maximumLauncherBytes).catch(() => null)
         if (current !== content) await writeAtomicSafeUtf8File(launcherPath, content, launcherLabel, { mode: 0o700 })
         launchers.push(command)
@@ -363,7 +402,7 @@ export async function syncLinuxTerminalCommands(options: SyncLinuxTerminalComman
   const loginShell = options.loginShell === undefined ? defaultLoginShell() : options.loginShell
   const fishDirectory = fishConfigDirectory(env, homeDirectory)
   const skipped: string[] = []
-  const { installed, launchers } = await syncLaunchers(env, skipped)
+  const { installed, launchers } = await syncLaunchers(env, homeDirectory, skipped)
 
   if (!installed.length) {
     if (options.reason !== 'uninstall') return { outcome: 'not-needed', launchers, skipped }
