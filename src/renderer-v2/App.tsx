@@ -742,6 +742,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
     else if (action === 'useCodexCli') switchToCodexCli()
+    else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
@@ -758,6 +759,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
     else if (action === 'useCodexCli') switchToCodexCli()
+    else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys])
   // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；

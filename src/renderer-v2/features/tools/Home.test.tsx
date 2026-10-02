@@ -881,6 +881,17 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(markup).not.toContain('暂不支持')
   })
 
+  it('offers a real install on a Mac for a client whose official Mac package the main process can fetch', () => {
+    const opencode = { ...macClient, tool: 'opencode', installSupported: true, installHint: null } as typeof macClient
+    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [macClient, opencode] })
+    const button = rowButton(markup, 'opencode')
+    expect(button).toContain('安装')
+    expect(button).not.toContain('安装指南')
+    expect(button).not.toContain('disabled')
+    // 其余没有可核对官方包的，照旧带去教程。
+    expect(clientButton(markup)).toContain('安装指南')
+  })
+
   it('keeps 「暂不支持」 where no guide can help, such as Windows arm64', () => {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     const windows = {

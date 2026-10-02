@@ -1,10 +1,11 @@
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -42,6 +43,12 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'codexDesktopTooOld', match: (message) => isCodexDesktopUnsupportedInstallFailure(message) },
   { key: 'codexDesktopInstallNoStore', match: (message) => isCodexDesktopNoStoreInstallFailure(message) },
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
+  // Mac 上一键装桌面端没装成（主进程 macos-desktop-install-failure.ts 写好的整句，认法也
+  // 取那边的）。那句话已经说了下一步，这里配「看安装指南」：照教程自己从官网下载安装
+  // 这条老路一直走得通。排在前面是因为它会说「检查网络」，不能被下面的 timeout 抢走。
+  // 系统太旧那一句重试救不了，自己下载也一样装不上，单独一类。
+  { key: 'macDesktopTooOld', match: (message) => isMacosDesktopSystemTooOld(message) },
+  { key: 'macDesktopInstallFailed', match: (message) => isMacosDesktopInstallFailure(message) },
   // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
@@ -168,6 +175,8 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   '重置 Codex': 'resetCodexDesktop',
   // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
   '改用 Codex 命令行版': 'useCodexCli',
+  // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
+  看安装指南: 'installGuide',
 }
 
 /**
