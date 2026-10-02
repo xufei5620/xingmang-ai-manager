@@ -48,6 +48,10 @@ paths:
 
 electron-builder 在 Linux 上不嵌入 ASAR 完整性数据，fuse 打开也挡不住改包（打包摸底实测）。Linux 上 `extraMetadata` 里那几个开关只靠安装目录归 root 所有来保护，这也是只出装到 `/opt` 的 deb、不出 AppImage 的原因之一。
 
+## Grok 的完整性（Linux 版拆分 ③）
+
+`linux-grok.ts`。Linux 上没有 codesign，Grok 和另外三家一样从 npm 官方包装，信任锚是锁里对过官方 SHA-512 的 `@xai-official/grok-linux-x64` / `-arm64`：xAI 的 postinstall 把程序解到 `~/.grok/bin/grok-<版本>` 之后，这个文件（按 `grok` 链接选中时的 dev/ino、`O_NOFOLLOW` 打开）必须和那份 `grok.br` 由我们自己解出来逐字节一致、归当前用户、只有一个链接，`--version` 必须报这次的版本，否则链接退回原样；装之前 `grok` 链接若是这种布局描述不了的（退不回去），npm 跑之前就停下。核对时**不**用 `isLinuxForeignWritablePath`：另外三家装进的也是用户自己的目录，一样不查，这不是同 uid 防御。卸载只认「相对链接直指同目录 `grok-<版本>`」这一种布局，指到别处的一律拒绝、什么都不动；`grok-<版本>` 文件一个一个删，有多个链接或不归当前用户的列出来给客户手动删。
+
 ## 仍然欠着的
 
 - 统信开发者模式、麒麟 KySec 这类发行版执行管控还没处理，要真机。

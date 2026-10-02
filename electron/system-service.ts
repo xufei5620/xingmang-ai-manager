@@ -216,6 +216,15 @@ import {
   runDarwinGrokPostInstallTransaction,
   verifyDarwinGrokUninstallPlan,
 } from './macos-grok'
+import {
+  buildLinuxGrokRetainedFilesCommand,
+  buildLinuxGrokRetainedFilesReason,
+  resolveLinuxGrokInstalledVersion,
+  runLinuxGrokPostInstallTransaction,
+  uninstallVerifiedLinuxGrokInstallation,
+  verifyLinuxGrokPostInstall,
+  type VerifyLinuxGrokPostInstallOptions,
+} from './linux-grok'
 import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
 import {
   inspectCommandLineToolsShim,
@@ -669,6 +678,33 @@ export async function inspectVerifiedDarwinGrokPostInstall(
 }
 
 /**
+ * Linux 版拆分 ③：Linux 上没有 codesign，linux-grok.ts 改用「和 npm 官方源校验过的主程序包逐字节
+ * 一致 + 报告的版本一致」来证明装的是 xAI 的那份，证明完了才在这里描述这次安装，和 macOS 那一份同形。
+ */
+export async function inspectVerifiedLinuxGrokPostInstall(
+  options: VerifyLinuxGrokPostInstallOptions,
+): Promise<{ status: ToolStatus; installation: CliInstallation }> {
+  const selection = await verifyLinuxGrokPostInstall(options)
+  const installDirectory = fs.realpathSync(path.dirname(selection.canonicalLinkPath))
+  return {
+    status: {
+      installed: true,
+      version: options.expectedVersion,
+      path: selection.executablePath,
+      installDirectory,
+    },
+    installation: {
+      commandPath: selection.canonicalLinkPath,
+      installDirectory,
+      packageRoot: null,
+      npmPrefix: null,
+      packageVersion: null,
+      source: 'native',
+    },
+  }
+}
+
+/**
  * internal #20 (second-round darwin verification): every entry point that
  * decides whether to run a fresh install — the dashboard's per-card button,
  * "安装全部缺失项", and the maintenance page's batch action — gates purely on
@@ -1042,6 +1078,11 @@ export async function readGrokLocalVersionForExecutable(
     } catch {
       return null
     }
+  }
+  if (platform === 'linux') {
+    // npm 的 postinstall 不写 version.json，版本在 ~/.grok/bin/grok 指向的文件名里（Linux 版拆分 ③）。
+    const version = resolveLinuxGrokInstalledVersion(options.homeDirectory ?? os.homedir(), executablePath)
+    if (version) return version
   }
   const executableDirectory = path.dirname(executablePath)
   const candidates = new Set<string>([
@@ -1766,12 +1807,27 @@ export interface CliMaintenancePlan {
   windowsPackageManager: 'npm'
 }
 
-export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'external'
+export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'linux-official-npm' | 'external'
 
 export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallStrategy {
   if (platform === 'win32') return 'windows-native'
   if (platform === 'darwin') return 'darwin-official-npm'
+  // 和 macOS 一样从 npm 装（Linux 版拆分 ③），只是没有 codesign，核对改由 linux-grok.ts 做。
+  if (platform === 'linux') return 'linux-official-npm'
   return 'external'
+}
+
+/**
+ * 「有没有新版」去哪问。Windows 与 macOS 的 Grok 以 xAI 的 stable 清单为准；Linux 的 Grok 从
+ * npm 装，也就问 npm：x.ai 和它的备用地址在国内大多连不上，Linux 第一版又没有加速。
+ * 不给平台时按 stable 清单答，和以前一样。
+ */
+export function cliLatestVersionSource(
+  provider: ProviderId,
+  platform?: NodeJS.Platform,
+): 'npm' | 'official-manifest' {
+  if (provider !== 'grok') return 'npm'
+  return platform && grokInstallStrategyFor(platform) === 'linux-official-npm' ? 'npm' : 'official-manifest'
 }
 
 export interface CliInstallTargetOptions {
@@ -1780,7 +1836,10 @@ export interface CliInstallTargetOptions {
   npmGlobalRoot: string | null
   /** 这一次安装会不会落进托管 npm 布局，落则给出它的 prefix，否则 null。 */
   managedNpmPrefix: string | null
-  /** Grok 在 Windows 上走原生通道，装进这个目录，而不是 node_modules。 */
+  /**
+   * Grok 不落在 node_modules 里：Windows 上走原生通道装进这个目录，Linux 上 npm 的
+   * postinstall 把程序放进 ~/.grok/bin。
+   */
   managedNativeRoot: string | null
 }
 
@@ -1796,7 +1855,8 @@ export function cliInstallTargetDirectory(
   provider: ProviderId,
   options: CliInstallTargetOptions,
 ): string | null {
-  if (provider === 'grok' && grokInstallStrategyFor(options.platform) === 'windows-native') {
+  const grokStrategy = provider === 'grok' ? grokInstallStrategyFor(options.platform) : null
+  if (grokStrategy === 'windows-native' || grokStrategy === 'linux-official-npm') {
     return options.managedNativeRoot
   }
   const packageName = cliCatalog[provider].packageName
@@ -1965,8 +2025,9 @@ export function buildUncheckedLatestVersion(
   provider: ProviderId,
   installed: boolean,
   checkedAt: string = new Date().toISOString(),
+  platform?: NodeJS.Platform,
 ): LatestVersionProbe {
-  const source = provider === 'grok' ? 'official-manifest' : 'npm'
+  const source = cliLatestVersionSource(provider, platform)
   return installed
     ? { status: 'failed', version: null, source, checkedAt, error: latestVersionUncheckedMessage }
     : { status: 'skipped', version: null, source, checkedAt, error: null }
@@ -2764,7 +2825,11 @@ export function createSystemService(
         platform,
         npmGlobalRoot,
         managedNpmPrefix: managed,
-        managedNativeRoot: platform === 'win32' && provider === 'grok' ? managedNativeProviderRoot('grok') : null,
+        managedNativeRoot: provider !== 'grok'
+          ? null
+          : platform === 'win32'
+            ? managedNativeProviderRoot('grok')
+            : path.join(commandEnvironment().HOME?.trim() || os.homedir(), '.grok', 'bin'),
       })
     } catch {
       return null
@@ -3042,7 +3107,8 @@ export function createSystemService(
         if (key.startsWith('official:grok:')) npmLatestCache.delete(key)
       }
       grokLatestInFlight.clear()
-      return
+      // Linux 的 Grok 问的是 npm（cliLatestVersionSource），下面那份也要清。
+      if (cliLatestVersionSource(provider, platform) === 'official-manifest') return
     }
     const packageSuffix = `:${cliCatalog[provider].packageName}`
     for (const key of npmLatestCache.keys()) {
@@ -3058,16 +3124,17 @@ export function createSystemService(
     networkRegion: NetworkRegion,
     budgetSignal?: AbortSignal,
   ): Promise<LatestVersionProbe> {
+    const source = cliLatestVersionSource(provider, platform)
     if (!installed.installed) {
       return {
         status: 'skipped',
         version: null,
-        source: provider === 'grok' ? 'official-manifest' : 'npm',
+        source,
         checkedAt: new Date().toISOString(),
         error: null,
       }
     }
-    if (provider === 'grok') {
+    if (source === 'official-manifest') {
       return inspectLatestGrokVersion(budgetSignal)
     }
     return inspectLatestNpmVersion(cliCatalog[provider].packageName, networkRegion, budgetSignal)
@@ -3124,7 +3191,7 @@ export function createSystemService(
     const npmPath = await findInstalledExecutable('npm')
     const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
     const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
-    const networkRegion = provider !== 'grok' && status.installed
+    const networkRegion = cliLatestVersionSource(provider, platform) === 'npm' && status.installed
       ? await inspectNetworkRegion()
       : 'unknown'
     const latest = await inspectCliLatestVersion(provider, status, networkRegion)
@@ -3250,7 +3317,7 @@ export function createSystemService(
     // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
     // 给整批一个总预算，到点先出画面（见 settleLatestVersionProbes）。
     const uncheckedLatest = providerIds.map(
-      (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed),
+      (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed, undefined, platform),
     )
     const latestVersionBudgetMs = networkProbeSuggestsOffline(network)
       ? offlineLatestVersionBudgetMs
@@ -3845,7 +3912,8 @@ export function createSystemService(
     try {
       // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
       // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
-      // latest,行为与从前一致。Grok 两条官方安装路径都以 xAI stable 为上限。
+      // latest,行为与从前一致。Grok 在 Windows、macOS 上以 xAI stable 为上限;Linux 上
+      // 和另外三家一样只认 npm（cliLatestVersionSource）。
       const versionChoice = resolveCliInstallVersion(provider, {
         requested: requestedVersion,
         alwaysLatest: store.read().alwaysInstallLatestCli === true,
@@ -4300,6 +4368,19 @@ export function createSystemService(
                 return inspected
               },
             })
+          } else if (provider === 'grok' && grokInstallStrategy === 'linux-official-npm') {
+            // 核对用的主程序包就在这次 npm ci 的 resolution 目录里，事务结束前它都还在。
+            verification = await runLinuxGrokPostInstallTransaction({
+              homeDirectory: os.homedir(),
+              lifecycle,
+              verify: () => inspectVerifiedLinuxGrokPostInstall({
+                homeDirectory: os.homedir(),
+                expectedVersion: trustedRelease.version,
+                resolutionDirectory: resolution,
+                architecture: process.arch,
+                runCommand: buildDarwinTrustedVerificationRunner(executeCommand),
+              }),
+            })
           } else {
             await lifecycle()
             // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
@@ -4350,6 +4431,9 @@ export function createSystemService(
         }
       }
 
+      // 两条 npm 官方通道都在 postinstall 事务里核对过了（macOS 靠 codesign，Linux 靠逐字节对账）。
+      const grokPostInstallVerified = provider === 'grok'
+        && (grokInstallStrategy === 'darwin-official-npm' || grokInstallStrategy === 'linux-official-npm')
       if (managedNpmLayout && managedNpmTransaction && installPrefix) {
         cancellation?.seal(managedPrefixSwapSealReason)
         try {
@@ -4393,15 +4477,14 @@ export function createSystemService(
           if (!occupied) throw error
           throw new Error(occupied, { cause: error })
         }
-      } else if (provider !== 'grok' || grokInstallStrategy !== 'darwin-official-npm') {
+      } else if (!grokPostInstallVerified) {
         const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)
         if (verification.installation?.source === 'npm' && verification.installation.packageRoot) {
           await assertCliNativePackageInstalled(verification.installation.packageRoot)
         }
       }
-      const darwinGrokVerified = provider === 'grok' && grokInstallStrategy === 'darwin-official-npm'
-      if (!darwinGrokVerified && (
+      if (!grokPostInstallVerified && (
         !verification?.installation
         || verification.status.version !== trustedRelease.version
         || (managedNpmLayout && !isManagedNpmInstallation(verification.installation))
@@ -4537,7 +4620,8 @@ export function createSystemService(
     })
   }
 
-  async function uninstallNativeGrok(installation: CliInstallation): Promise<void> {
+  /** 返回命令入口已经删掉、但没能删掉的程序文件（只有 Linux 会有）。 */
+  async function uninstallNativeGrok(installation: CliInstallation): Promise<string[]> {
     const cliEnvironment = commandEnvironment()
     const homeDirectory = cliEnvironment.HOME?.trim() || os.homedir()
     const userDirectory = path.resolve(homeDirectory, '.grok', 'bin')
@@ -4547,7 +4631,15 @@ export function createSystemService(
         installDirectory: installation.installDirectory,
         runCommand: buildDarwinTrustedVerificationRunner(executeCommand),
       })
-      return
+      return []
+    }
+    if (platform === 'linux') {
+      // npm postinstall 留下的是指向 grok-<版本> 的链接，按普通文件卸会被拒（Linux 版拆分 ③）。
+      const result = await uninstallVerifiedLinuxGrokInstallation({
+        homeDirectory,
+        installDirectory: installation.installDirectory,
+      })
+      return result.retainedFiles
     }
     const managedDirectory = process.platform === 'win32'
       ? path.resolve(managedNativeProviderRoot('grok'))
@@ -4565,6 +4657,7 @@ export function createSystemService(
       platform: process.platform,
     })
     if (!managed) await removeDirectoryFromUserPath(result.directory)
+    return []
   }
 
   // Q14：官方脚本装的 ~/.local/bin/claude 在 macOS/Linux 上是指向
@@ -4616,6 +4709,7 @@ export function createSystemService(
       let current = initial
       const removedInstallations: string[] = []
       const retainedClaudeVersionFiles: string[] = []
+      const retainedGrokFiles: string[] = []
       for (let attempt = 0; attempt < 8 && current.installation; attempt += 1) {
         const installation = current.installation
         const uninstall = current.status.uninstall
@@ -4684,9 +4778,10 @@ export function createSystemService(
           }
         } else if (plan.kind === 'grok-native') {
           try {
-            await uninstallNativeGrok(installation)
+            retainedGrokFiles.push(...await uninstallNativeGrok(installation))
           } catch (error) {
-            if (platform === 'darwin') {
+            // Linux 和 macOS 一样：安全核对没过就交给客户手动卸，并说清为什么。
+            if (platform === 'darwin' || platform === 'linux') {
               return grokManualUninstallResult(initial.status.version, error)
             }
             throw error
@@ -4714,6 +4809,18 @@ export function createSystemService(
           manualHelp: {
             reason: retainedReason,
             manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeVersionFiles, process.platform),
+          },
+        }
+      }
+      const retainedGrokReason = buildLinuxGrokRetainedFilesReason(retainedGrokFiles)
+      if (retainedGrokReason) {
+        return {
+          outcome: 'manual-required',
+          previousVersion: initial.status.version,
+          error: retainedGrokReason,
+          manualHelp: {
+            reason: retainedGrokReason,
+            manualCommand: buildLinuxGrokRetainedFilesCommand(retainedGrokFiles),
           },
         }
       }
