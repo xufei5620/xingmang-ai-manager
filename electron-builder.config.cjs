@@ -217,6 +217,9 @@ module.exports = {
     'bundled-catalog/cli-status-line/**/*',
     // Claude Code / Gemini CLI 钩子脚本。只把事件类型写进星芒数据目录，不出网、不读 Key。
     'bundled-catalog/cli-hooks/**/*',
+    // 官方 Codex 型号名单（原样拷自 openai/codex，Apache-2.0，LICENSE / NOTICE 同目录）。
+    // 主进程按账号挑出能用的型号写给 Codex，见 electron/codex-model-catalog.ts。
+    'bundled-catalog/codex-models/**/*',
     'package.json',
   ],
   extraResources: [
