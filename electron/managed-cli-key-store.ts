@@ -3,7 +3,7 @@ import path from 'node:path'
 import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { isManagedCliGroupName } from './managed-cli-groups'
 import type { SafeStorageLike } from './account-session-store'
-import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
+import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -131,11 +131,15 @@ export class ManagedCliKeyCacheCorruptError extends Error {}
 export class ManagedCliKeyStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private revision = 0
+  // Session-only: the record this store would have written, so switching
+  // accounts within one run still reuses keys instead of signing new ones.
+  private sessionRecord: PersistedManagedCliKeys | null = null
 
   constructor(
     private readonly filePath: string,
     private readonly storage: SafeStorageLike,
     private readonly siteId: 'solov' | 'solov-api' = 'solov',
+    private readonly persistence: CredentialPersistence = 'durable',
   ) {}
 
   getSiteId(): 'solov' | 'solov-api' {
@@ -213,6 +217,7 @@ export class ManagedCliKeyStore {
   }
 
   private async readRecord(): Promise<PersistedManagedCliKeys | null> {
+    if (this.persistence === 'session-only') return this.sessionRecord && structuredClone(this.sessionRecord)
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedManagedCliKeys(content, this.storage, this.siteId)
@@ -256,6 +261,7 @@ export class ManagedCliKeyStore {
   }
 
   private assertEncryptionAvailable(): void {
+    if (this.persistence === 'session-only') return
     const backend = inspectSafeStorageBackend(this.storage)
     if (backend === 'unavailable') {
       throw new Error('系统安全存储不可用，无法持久化托管 API Key')
@@ -265,6 +271,10 @@ export class ManagedCliKeyStore {
 
   private async writeRecord(record: PersistedManagedCliKeys): Promise<void> {
     if (!isPersistedManagedCliKeys(record, this.siteId)) throw new Error('托管 CLI API Key 格式错误')
+    if (this.persistence === 'session-only') {
+      this.sessionRecord = structuredClone(record)
+      return
+    }
     ensureSafeDataDirectory(path.dirname(this.filePath), FILE_LABEL)
     await writeAtomicSafeUtf8File(
       this.filePath,

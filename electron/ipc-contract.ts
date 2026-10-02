@@ -366,6 +366,11 @@ export interface AccountContextMetadata {
   siteId?: AccountSiteId
   realmId?: 'xm-account' | 'api-account'
   capabilities?: import('./relay-backend').RelayBackendCapabilities
+  /**
+   * 只在 Linux 上没有可用的系统密码保管时出现：照常能登录，但登录只留在主进程内存里，
+   * 软件关掉就没了，界面据此不给「记住密码」。缺省 = 登录会记住（旧行为）。
+   */
+  sessionOnly?: true
 }
 /**
  * 开机账号恢复超过启动画面的等待上限时，会话先按「未登录、正在恢复」作答。

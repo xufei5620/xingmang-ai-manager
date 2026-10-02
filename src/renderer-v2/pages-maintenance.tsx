@@ -102,7 +102,7 @@ import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
 import type { Conversation } from './features/chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './features/app/data-transfer'
-import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
+import { rememberedLoginAction, rememberedLoginForgottenMessage, sessionOnlyLoginNotice } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -2761,7 +2761,9 @@ export function SettingsPage({
       ),
       account: (
         <>
-          {rememberedLogin.kind === 'forget'
+          {resource.data?.session.sessionOnly
+            ? row('记住密码', sessionOnlyLoginNotice, null)
+            : rememberedLogin.kind === 'forget'
             ? row(
                 '记住密码',
                 '由客户端安全存储处理；清掉后下次登录要重新输入密码',

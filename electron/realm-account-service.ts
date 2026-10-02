@@ -15,6 +15,8 @@ export interface RealmAccountSessionState extends NewApiSessionState {
   siteId: RealmAccountSiteId
   realmId: AccountRealmId
   capabilities: RelayBackendCapabilities
+  /** 这台电脑没法安全保存登录（见 resolveCredentialPersistence）：登录只留到软件关掉。 */
+  sessionOnly?: true
   /** 只在开机恢复因为联不上而搁着时出现：登录还在本机，等下一次重试。 */
   restoring?: { account: { siteId: RealmAccountSiteId; userId: number }; retrying: true }
 }
@@ -22,6 +24,7 @@ export interface RealmAccountLoginResult extends NewApiLoginResult {
   siteId: RealmAccountSiteId
   realmId: AccountRealmId
   capabilities: RelayBackendCapabilities
+  sessionOnly?: true
 }
 export interface RealmAccountClientHandle {
   client: RelayBackendClient
@@ -124,7 +127,8 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     if (busy) throw new RealmAccountError('BUSY')
   }
   function metadata(handle = active) {
-    return { siteId: handle.siteId, realmId: realmForExplicitSite(handle.siteId), capabilities: handle.client.capabilities }
+    return { siteId: handle.siteId, realmId: realmForExplicitSite(handle.siteId), capabilities: handle.client.capabilities,
+      ...(options.vault.sessionOnly ? { sessionOnly: true as const } : {}) }
   }
   function session(): RealmAccountSessionState {
     const state = { ...active.client.getSessionState(), ...metadata() }

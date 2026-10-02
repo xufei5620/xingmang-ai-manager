@@ -299,3 +299,41 @@ describe('managed key realm validation', () => {
     expect(await api.read(7)).toEqual(apiKeys)
   })
 })
+
+describe('ManagedCliKeyStore session-only mode (Linux without a keyring)', () => {
+  it('keeps keys for this run without a usable keyring and never creates the file', async () => {
+    const filePath = temporaryFilePath()
+    const store = new ManagedCliKeyStore(filePath, fakeSafeStorage({
+      isEncryptionAvailable: () => false,
+      getSelectedStorageBackend: () => 'basic_text',
+    }), 'solov', 'session-only')
+
+    await expect(store.save(42, [managedKey('codex'), managedKey('claude')])).resolves.toBe(true)
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex'), managedKey('claude')])
+    await store.remove(42, managedKey('codex').id)
+    await expect(store.read(42)).resolves.toEqual([managedKey('claude')])
+    await expect(store.read(7)).resolves.toEqual([])
+    expect(fs.existsSync(path.dirname(filePath))).toBe(false)
+  })
+
+  it('rejects a stale save the same way the file cache does', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage(), 'solov', 'session-only')
+    const revision = store.captureRevision()
+    await store.save(42, [managedKey('codex')])
+    await expect(store.save(42, [managedKey('gemini')], revision)).resolves.toBe(false)
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex')])
+  })
+
+  it('hands out copies, so a caller cannot edit the cached record', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage(), 'solov', 'session-only')
+    await store.save(42, [managedKey('codex')])
+    const [entry] = await store.read(42)
+    entry.key = 'sk-tampered-value-123456'
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex')])
+  })
+
+  it('keeps refusing in the default durable mode', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false }))
+    await expect(store.read(42)).rejects.toThrow('系统安全存储不可用')
+  })
+})
