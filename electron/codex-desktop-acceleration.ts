@@ -16,7 +16,8 @@
  *   一处失败都收敛成一句日志，绝不抛给调用方。
  * - 桌面端退出后断开。不扣时长的线路一直开着就是白送不限时的加速，所以连上后
  *   定时问一次桌面端还在不在（isDesktopRunning），连续两次确认不在了就断开。
- *   只断自己连的那一次：用户停过、重连过，那条线路就归他了，不再管。
+ *   只断自己连的那一次：用户停过、重连过，那条线路就归他了，不再管。「打开」那一刻
+ *   没等到、后来才连上的那一次也算自己连的，照样盯着（见 followLateConnection）。
  * - 悄悄地连。yoyo 2026-10-01 定：打开桌面端时加速只是「在后台顺手连一下」，不弹
  *   通知、不切页面、不抢焦点；连上、跳过、失败都只记日志。加速页和托盘照实显示
  *   「已自动连接 · 不扣时长」，他想看、想断随时能在那里找到。
@@ -65,8 +66,8 @@ export interface CodexDesktopAccelerationOptions {
   /**
    * 连线路要校验随包资源、拉起内核、再探一次节点，实测几秒。预算给 15 秒：
    * 比正常值宽出一截，又不至于让一台连不上的机器把「打开」拖成半分钟没反应。
-   * 超时不代表没连上，只代表不再为它等下去——桌面端照常打开，线路连上了也
-   * 留给用户。
+   * 超时不代表没连上，只代表「打开」不再为它等下去——桌面端照常打开，连接在
+   * 后台接着走，后来连上了照样在桌面端退出后断开。
    */
   timeoutMs?: number
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
@@ -75,6 +76,11 @@ export interface CodexDesktopAccelerationOptions {
 export interface CodexDesktopAccelerationCoordinator {
   /** 永不抛错：调用方拿到什么结果都要照常打开桌面端。 */
   ensureConnected(): Promise<CodexDesktopAccelerationOutcome>
+  /**
+   * 加速服务每产出一份状态都交过来看一眼。软件替他连上、正连着、却没人盯着的那一次
+   * （不管是怎么漏掉的），从这里接着盯，免得一条不扣时长的线路一直开到退出星芒。
+   */
+  observe(state: AccelerationState): void
   /** 停掉「桌面端退出就断开」的定时检查。退出程序时加速服务自己会停干净。 */
   dispose(): void
 }
@@ -157,15 +163,32 @@ export function createCodexDesktopAccelerationCoordinator(
     watch = null
   }
 
-  /** 只盯本模块自己连上的那一次会话；同一次会话已经在盯就不重来。 */
-  function watchSession(state: AccelerationState): void {
-    if (disposed || !options.isDesktopRunning || !options.disconnect) return
-    if (state.phase !== 'active' || !state.autoStartedBy || !state.connectedAt) return
-    if (watch && watch.scope === state.scope && watch.connectedAt === state.connectedAt) return
+  /**
+   * 只盯本模块自己连上的那一次会话；同一次会话已经在盯就不重来。返回这次会话
+   * 现在有没有人盯着。
+   */
+  function watchSession(state: AccelerationState): boolean {
+    if (disposed || !options.isDesktopRunning || !options.disconnect) return false
+    if (state.phase !== 'active' || !state.autoStartedBy || !state.connectedAt) return false
+    if (watch && watch.scope === state.scope && watch.connectedAt === state.connectedAt) return true
     stopWatching()
     const current: Watch = { scope: state.scope, connectedAt: state.connectedAt, gone: 0, unknown: 0, steady: 0, cancel: null }
     watch = current
     next(current)
+    return true
+  }
+
+  /**
+   * 「打开」只等 15 秒，连接本身却撤不回来：加速服务照样把它连完，而且照样不扣时长、
+   * 没有到期。原来超时就撒手不管，慢电脑上（A014，2026-10-02）这条线路就一直开到
+   * 退出星芒。所以超时之后接着等它的结果，连上了就跟准时连上的一样盯着。
+   */
+  function followLateConnection(connecting: Promise<AccelerationState>): void {
+    void connecting.then((late) => {
+      if (!watchSession(late)) return
+      log('info', 'acceleration.codex-desktop.connected',
+        '打开 Codex 桌面端时没等到的那次自动连接后来连上了，桌面端退出后自动断开', { late: true })
+    }, () => undefined).catch(() => undefined)
   }
 
   function next(current: Watch): void {
@@ -239,9 +262,11 @@ export function createCodexDesktopAccelerationCoordinator(
       return skip('unavailable', '本机加速组件不可用，Codex 桌面端按未加速打开')
     }
     let connected: AccelerationState
-    try { connected = await withTimeout(options.connect(scope, state), timeoutMs) }
+    const connecting = options.connect(scope, state)
+    try { connected = await withTimeout(connecting, timeoutMs) }
     catch (error) {
       const timedOut = error instanceof Error && error.message === '加速连接超时。'
+      if (timedOut) followLateConnection(connecting)
       return skip(timedOut ? 'timeout' : 'connect-failed',
         timedOut
           ? '打开 Codex 桌面端前自动连接加速未在预期时间内完成，已照常打开'
@@ -265,6 +290,11 @@ export function createCodexDesktopAccelerationCoordinator(
       inFlight = pending
       void pending.finally(() => { if (inFlight === pending) inFlight = null }).catch(() => undefined)
       return pending
+    },
+    observe(state) {
+      // 只认当前账号的：换了账号，旧账号的会话由加速服务自己停掉。
+      if (state.scope !== options.getAccountScope()) return
+      watchSession(state)
     },
     dispose() {
       disposed = true
