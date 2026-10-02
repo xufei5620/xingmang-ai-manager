@@ -23,7 +23,12 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
   const inspectClaudeDesktopStoreVirtualization = vi.fn<NonNullable<SystemServiceOptions['inspectClaudeDesktopStoreVirtualization']>>(async () => ({
     localProfileVirtualized: true, roamingProfileVirtualized: true, roamingDeveloperVirtualized: true,
   }))
-  const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: selectedModel }, { id: 'gpt-5.4' }] }))
+  // Claude Desktop 的自检照它网关的启动检查发 /v1/messages（connection-check.ts 的
+  // gatewayMessagesShape），其余请求都是查模型清单。
+  const relayFetch = vi.fn<typeof fetch>(async (url) => String(url).endsWith('/v1/messages')
+    ? Response.json({ id: 'msg_fixture', type: 'message', role: 'assistant', model: selectedModel,
+      content: [{ type: 'text', text: 'H' }], stop_reason: 'max_tokens' })
+    : Response.json({ data: [{ id: selectedModel }, { id: 'gpt-5.4' }] }))
   const store = new AppSettingsStore(path.join(directory, 'settings.json'), userHome)
   const runtimeStatuses: ExternalClientRuntimeStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as const).map((tool) => ({
     tool, installed: tool === 'claudeDesktop', version: tool === 'claudeDesktop' ? '2.2553.1.0' : null,
@@ -175,7 +180,9 @@ describe('external client system-service integration', () => {
     const result = await f.service.checkExternalClientConnection('claudeDesktop')
 
     expect(result).toMatchObject({ tool: 'claudeDesktop', siteId: 'solov', installed: true, ok: true, model: selectedModel })
-    expect(f.relayFetch).toHaveBeenCalledExactlyOnceWith('https://xm.solov.cc/v1/models', expect.any(Object))
+    expect(f.relayFetch).toHaveBeenCalledExactlyOnceWith('https://xm.solov.cc/v1/messages', expect.objectContaining({
+      method: 'POST', headers: expect.objectContaining({ authorization: `Bearer ${selectedKey}` }),
+    }))
     // 报告与界面都会拿到这份结论，里面不许出现那把密钥（I3）。
     expect(JSON.stringify(result)).not.toContain(selectedKey)
   })
@@ -461,6 +468,8 @@ describe('external client system-service integration', () => {
     expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
     expect(JSON.stringify(result)).not.toContain(selectedKey)
     expect(f.relayFetch).toHaveBeenCalledWith('https://api.solov.cc/v1/models', expect.any(Object))
+    // 保存后的复测照 Claude Desktop 网关的启动检查，打的是同一站点的 /v1/messages。
+    expect(f.relayFetch).toHaveBeenCalledWith('https://api.solov.cc/v1/messages', expect.objectContaining({ method: 'POST' }))
     expect((await f.service.scanExternalClients()).find(status => status.tool === 'claudeDesktop')).toMatchObject({
       installed: true, configured: true, configurationSource: 'xingmang', model: selectedModel,
     })
