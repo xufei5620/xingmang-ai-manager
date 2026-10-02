@@ -17,6 +17,7 @@ paths:
 | `trustedCommandEnvironment` | 重建 PATH：托管 npm bin、`/usr/local/sbin`、`/usr/local/bin`、`/usr/sbin`、`/usr/bin`、`/sbin`、`/bin` 在前，继承项在后，托管 Node 最后，**每一项过同一判定**；另剥一批只在 Linux 生效的注入变量（glibc 的不安全变量表、`LD_*`、`BASH_FUNC_*`、`SHELLOPTS`/`PS4`、GTK/GIO/GStreamer/gdk-pixbuf/Qt 模块路径、`LUA_*` 等） |
 | `runCommand` 的 `trustedOnly` | **Linux 已补可信解析**：可执行文件只从可信 PATH 找，realpath 后再判，spawn 规范路径但 argv[0] 保留查找时的名字（`/bin/sh` 指向 dash、Ubuntu 的 uutils coreutils 这类一体式程序靠它分辨自己是谁）；参数里的绝对路径（单独一项或 `--x=/...`）和 `trustedPaths` 同判。macOS 那条欠账仍在 |
 | relocated-folders | `acceptsLinuxRelocationTarget`，不再借用 macOS 规则 |
+| `commandEnvironment`（same-user） | `linux-platform.ts` 的 `linuxCommandPathCandidates`：托管 Node、托管 npm bin 排在继承 PATH **前面**，和上面 trusted 那份相反，是有意的：Ubuntu、Debian 自带的 Node.js 常常太旧，排在后面永远轮不到托管那份。Linux 的执行模式恒为 same-user，安装和启动 CLI 都走这份，trusted 那份只给辅助进程用 |
 
 ⚠️ **和 macOS 不同、最容易照搬错的两点**：
 

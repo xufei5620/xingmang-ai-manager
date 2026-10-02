@@ -133,6 +133,7 @@ import {
   type WindowsRestartStatus,
 } from './node-runtime'
 import { installDarwinNodeRuntime } from './macos-node-runtime'
+import { installLinuxNodeRuntime } from './linux-node-runtime'
 import {
   inspectInstalledPythonRuntime,
   installPythonRuntime as installPythonRuntime312,
@@ -1866,8 +1867,8 @@ export function buildCliMaintenancePlan(
     }
   }
   if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
-  if (platform === 'darwin' && provider !== 'grok' && !npmPrefix) {
-    throw new Error('macOS 用户级 npm 前缀不能为空')
+  if (platform !== 'win32' && provider !== 'grok' && !npmPrefix) {
+    throw new Error(platform === 'darwin' ? 'macOS 用户级 npm 前缀不能为空' : '用户级 npm 前缀不能为空')
   }
   if (version !== 'latest' && !isExactCliVersion(version)) {
     throw new Error('npm CLI 版本号格式无效')
@@ -2417,8 +2418,9 @@ export function cliHooksAutoRepairedField(autoRepaired: boolean, stale: boolean)
 
 /**
  * 客户点了「换成新版 Node.js」（公司电脑的证书要 22.19 / 24.6 以上才认）时，已经装着的
- * Node.js 即使够装工具也要照样换。只在 Windows 上换：那边装的是官方安装包，会接替
- * Program Files 里原来那份；Mac 上本软件代下的那份排在 PATH 最后，客户自己的旧版
+ * Node.js 即使够装工具也要照样换。Windows 上换：那边装的是官方安装包，会接替
+ * Program Files 里原来那份；Linux 上也换：本软件代下的那份排在 PATH 最前
+ * （linux-platform.ts），装上就是它。Mac 上代下的那份排在 PATH 最后，客户自己的旧版
  * 永远先被找到，装了也白装（macos-platform.ts darwinCommandPathCandidates）。
  * 版本读不出（null）不换：那时不知道该怪 Node 旧。
  */
@@ -2427,7 +2429,7 @@ export function shouldReplaceNodeForCertificates(input: {
   request: NodeRuntimeInstallRequest
   node: Pick<ToolStatus, 'installed' | 'version'>
 }): boolean {
-  return input.platform === 'win32'
+  return input.platform !== 'darwin'
     && input.request.reason === 'certificate'
     && input.node.installed
     && nodeReadsSystemCertificates(input.node.version) === false
@@ -2481,8 +2483,11 @@ export function createSystemService(
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
   // macOS 上不跑 Windows 那套 winget / MSI：把官方压缩包解进本软件自己的文件夹（第十六批 2）。
+  // Linux 同理，只是版本和校验值钉在软件里（linux-node-runtime.ts，Linux 版拆分 ②）。
   const installNodeRuntimeForService = serviceOptions.installNodeRuntime
-    ?? (platform === 'darwin' ? installDarwinNodeRuntime : installNodeRuntimeLts)
+    ?? (platform === 'darwin'
+      ? installDarwinNodeRuntime
+      : platform === 'win32' ? installNodeRuntimeLts : installLinuxNodeRuntime)
   const installGitRuntimeForService = serviceOptions.installGitRuntime ?? installGitForWindows
   const installMacGitRuntimeWith = serviceOptions.installMacGitRuntime ?? installMacGitRuntime
   // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
@@ -2754,7 +2759,7 @@ export function createSystemService(
     try {
       const managed = platform === 'win32'
         ? windowsExecutionMode === 'trusted-only' ? managedNpmPrefix() : null
-        : platform === 'darwin' && provider !== 'grok' ? managedNpmPrefix(commandEnvironment(), 'darwin') : null
+        : provider !== 'grok' ? managedNpmPrefix(commandEnvironment(), platform) : null
       return cliInstallTargetDirectory(provider, {
         platform,
         npmGlobalRoot,
@@ -3945,9 +3950,11 @@ export function createSystemService(
       let installPrefix: string | null = null
       if (process.platform === 'win32' && windowsExecutionMode === 'trusted-only') {
         managedNpmLayout = await ensureManagedNpmLayout()
-      } else if (platform === 'darwin' && provider !== 'grok') {
+      } else if (platform !== 'win32' && provider !== 'grok') {
+        // Linux 与 macOS 一样装进当前用户自己的托管目录（Linux 版拆分 ②）：发行版 npm 的
+        // 默认全局目录是 /usr，普通权限写不进去；装进 Node.js 自己的目录又会在换 Node 时一起丢掉。
         managedNpmLayout = await ensureManagedNpmLayout({
-          platform: 'darwin',
+          platform,
           env: commandEnvironment(),
         })
       }
@@ -4072,14 +4079,16 @@ export function createSystemService(
         return npmProxyVariables
       }
       // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
-      // 装不上。同一次安装只判断一次，日志也只写一条。
+      // 装不上。同一次安装只判断一次，日志也只写一条。Linux 上照着网上教程把
+      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）；
+      // macOS 维持原样。
       let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
       const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
         if (!npmBaseEnvironment) {
           // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
           // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
           const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment())
-          npmBaseEnvironment = platform === 'win32' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+          npmBaseEnvironment = platform !== 'darwin' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
         }
         return npmBaseEnvironment
       }
@@ -4326,7 +4335,7 @@ export function createSystemService(
       const stagedManifest = installPrefix
         ? path.join(
             installPrefix,
-            ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+            ...(platform !== 'win32' ? ['lib', 'node_modules'] : ['node_modules']),
             ...definition.packageName.split('/'),
             'package.json',
           )
@@ -4355,7 +4364,7 @@ export function createSystemService(
                 npmExecutable,
                 path.join(
                   managedNpmLayout!.prefix,
-                  ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+                  ...(platform !== 'win32' ? ['lib', 'node_modules'] : ['node_modules']),
                 ),
               )
               if (
@@ -4571,7 +4580,7 @@ export function createSystemService(
   }
 
   function isManagedNpmInstallation(installation: Pick<CliInstallation, 'npmPrefix'>): boolean {
-    if ((platform !== 'win32' && platform !== 'darwin') || !installation.npmPrefix) return false
+    if (!installation.npmPrefix) return false
     const expected = managedNpmPrefix(commandEnvironment(), platform)
     return sameLocalPathIdentity(expected, installation.npmPrefix)
   }
@@ -5026,7 +5035,11 @@ export function createSystemService(
       return launchResult
     }
 
-    const environment = interactiveTerminalEnvironment(providerEnv, sameUserTerminalEnvironment)
+    // 打开的工具同样带不上一个没开的本机代理，否则连不上中转（Linux 版拆分 ②，与上面 Windows 那条同理）。
+    const environment = await withoutDeadLoopbackProxies(
+      interactiveTerminalEnvironment(providerEnv, sameUserTerminalEnvironment),
+      provider,
+    )
     const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
     const argv = cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId })
     const terminals = [

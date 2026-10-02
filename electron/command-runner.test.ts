@@ -291,7 +291,7 @@ describe('secure command runner', () => {
     expect(environment.PATH?.split(process.platform === 'win32' ? ';' : ':')[0]).toBeTruthy()
   })
 
-  it.runIf(process.platform !== 'darwin')('keeps the app-installed Python behind every inherited PATH entry', () => {
+  it.runIf(process.platform === 'win32')('keeps the app-installed Python behind every inherited PATH entry', () => {
     const localAppData = path.join(os.tmpdir(), 'xingmang-local-app-data')
     const environment = commandEnvironment({ PATH: ['/custom/python', '/custom/inherited'].join(path.delimiter), LOCALAPPDATA: localAppData })
     const entries = environment.PATH?.split(path.delimiter) ?? []
@@ -303,7 +303,7 @@ describe('secure command runner', () => {
     expect(entries.indexOf('/custom/python')).toBeLessThan(entries.indexOf(python))
   })
 
-  it.runIf(process.platform !== 'darwin')('finds the app-installed Git without restarting, behind the inherited PATH', () => {
+  it.runIf(process.platform === 'win32')('finds the app-installed Git without restarting, behind the inherited PATH', () => {
     const localAppData = path.join(os.tmpdir(), 'xingmang-local-app-data')
     const programFiles = path.join(os.tmpdir(), 'xingmang-program-files')
     const environment = commandEnvironment({ PATH: '/custom/git', LOCALAPPDATA: localAppData, ProgramFiles: programFiles })
@@ -314,6 +314,53 @@ describe('secure command runner', () => {
     expect(entries).toContain(userGit)
     expect(entries).toContain(machineGit)
     expect(entries.indexOf('/custom/git')).toBeLessThan(entries.indexOf(userGit))
+  })
+
+  it.runIf(process.platform === 'linux')('puts the app-downloaded Node.js and the managed CLIs ahead of the inherited Linux PATH', () => {
+    const environment = commandEnvironment({
+      HOME: '/home/isolated-test-user',
+      PATH: '/usr/local/bin:/usr/bin:/custom/inherited',
+    }, ['/resolved/bin'])
+
+    // A distro Node.js in /usr/bin must not shadow the pinned one this app downloaded
+    // (Linux 版拆分 ②); everything the user put on PATH keeps its own order after ours.
+    expect(environment.PATH?.split(':')).toEqual([
+      '/resolved/bin',
+      '/home/isolated-test-user/.local/share/XingMangAI/Runtime/node/bin',
+      '/home/isolated-test-user/.local/share/XingMangAI/Cli/npm/bin',
+      '/usr/local/bin',
+      '/usr/bin',
+      '/custom/inherited',
+      '/home/isolated-test-user/.local/bin',
+      '/home/isolated-test-user/.npm-global/bin',
+      '/home/isolated-test-user/.volta/bin',
+      '/home/isolated-test-user/.local/share/fnm/aliases/default/bin',
+      '/home/isolated-test-user/.grok/bin',
+      '/bin',
+      '/snap/bin',
+    ])
+    // None of the Windows-only fallbacks leak into a Linux PATH.
+    expect(environment.PATH).not.toContain('Python312')
+  })
+
+  it.runIf(process.platform === 'linux')('resolves node from the app-downloaded runtime before an older one on the inherited PATH', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-node-order-'))
+    try {
+      const distro = path.join(home, 'distro-bin')
+      const managed = path.join(home, '.local', 'share', 'XingMangAI', 'Runtime', 'node', 'bin')
+      for (const directory of [distro, managed]) {
+        fs.mkdirSync(directory, { recursive: true })
+        fs.writeFileSync(path.join(directory, 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+      }
+
+      const resolved = await findExecutable('node', {
+        env: commandEnvironment({ HOME: home, PATH: distro }),
+      })
+
+      expect(resolved).toBe(path.join(managed, 'node'))
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it.runIf(process.platform === 'darwin')('orders deterministic macOS command paths before inherited PATH entries', () => {

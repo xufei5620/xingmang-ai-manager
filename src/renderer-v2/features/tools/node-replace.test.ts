@@ -17,8 +17,10 @@ function result(overrides: Partial<NodeRuntimeInstallResult> = {}): NodeRuntimeI
 }
 
 describe('node replacement for company certificates', () => {
-  it('is only offered on Windows, where the app installs Node.js itself', () => {
+  it('is only offered where the copy the app installs is the one its tools then use', () => {
     expect(canReplaceNode({ platform: 'windows', nodeRuntimeInstall: 'managed' })).toBe(true)
+    expect(canReplaceNode({ platform: 'linux', nodeRuntimeInstall: 'managed' })).toBe(true)
+    expect(canReplaceNode({ platform: 'linux', nodeRuntimeInstall: 'external' })).toBe(false)
     expect(canReplaceNode({ platform: 'macos', nodeRuntimeInstall: 'managed' })).toBe(false)
     expect(canReplaceNode({ platform: 'windows', nodeRuntimeInstall: 'external' })).toBe(false)
     expect(canReplaceNode({ platform: null, nodeRuntimeInstall: null })).toBe(false)

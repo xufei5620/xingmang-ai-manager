@@ -2,7 +2,7 @@
 
 星芒AI管理工具本身的 Linux 桌面版（带界面，和 Windows、Mac 版并列），装在客户自己的 Linux 电脑上用。不是服务器命令行版。
 
-**现在的状态（2026-10-02）**：能打出 `.deb`，CI 每次都在 x64 和 arm64 的原生机器上真装一遍、以普通用户真开一次；发版流程（publish-release）也能出 Linux 发布包了，但**开关默认关着，还没对客户发布**（第 4 节）。托管 Node.js、四家 CLI 一键装、终端启动等还没做完（下面「还欠着的」）。本地出包（第 2 节）只出本地测试包，更新器关着；发布包只走 `npm run release:package:linux`（无签名发布模式），`electron-builder.config.cjs` 的 `beforePack` 拒绝 Linux 用两种签名发布模式出包。
+**现在的状态（2026-10-02）**：能打出 `.deb`，CI 每次都在 x64 和 arm64 的原生机器上真装一遍、以普通用户真开一次；发版流程（publish-release）也能出 Linux 发布包了，但**开关默认关着，还没对客户发布**（第 4 节）。Grok 一键装、终端启动等还没做完（下面「还欠着的」）。本地出包（第 2 节）只出本地测试包，更新器关着；发布包只走 `npm run release:package:linux`（无签名发布模式），`electron-builder.config.cjs` 的 `beforePack` 拒绝 Linux 用两种签名发布模式出包。
 
 ## 1. 已定的做法
 
@@ -14,6 +14,8 @@
 | 完整性 | 靠 `/opt` 下全归 root、只有 root 能写 | Linux 没有代码签名，ASAR 完整性那根 fuse 在 Linux 二进制里什么也不嵌（`e2e/asar-tamper-smoke.mjs` 因此只在 Windows 跑）。 |
 | 依赖 | Depends 补上 electron-builder 默认漏掉的 `libsecret-1-0`、`libgbm1`、`libxkbcommon0`、`libudev1` 等；Ubuntu 24.04 改名带 `t64` 的几个写成「新名 \| 旧名」；Recommends 中文字体与系统密码库 | 缺一个动态库是首次启动就报错，不是安装时报错。只写旧名在 24.04 上靠 Provides 也能装，只写新名会让 22.04 和 Debian 12 装不上。 |
 | 运行身份 | 安装时系统要一次开机密码；软件运行时从不提权，也不许以 root 运行 | root 下 Electron 必须关沙箱才能启动。 |
+| 数据目录 | `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，只在 `managed-cli-paths.ts` 的 `linuxProductRoot` 定；Node.js 在 `Runtime/node`，Claude / Codex / Gemini 在 `Cli/npm` | 原来的 `/var/lib/xingmang-ai` 普通用户建不出来；XDG 是 Linux 桌面的惯例。 |
+| Node.js | 软件自己下官方压缩包（`linux-node-runtime.ts`）：版本钉在 v24.21.0，x64 / arm64 各钉一个 SHA-256，字节可以从 npmmirror 来但哈希必须对上；只用 root 所有、别人不可写的 `/usr/bin/tar`（退到 `/bin/tar`），环境只给 `PATH=/usr/bin:/bin` 和 `LC_ALL=C`。安装和启动 CLI 时这份排在继承的 PATH 前面（`linux-platform.ts`） | Ubuntu、Debian 自带的那份常常太旧，排在后面永远轮不到它；不提权、不碰系统包管理器。`trustedCommandEnvironment` 的 Linux PATH 仍把它放最后，那份环境在 Linux 上只给辅助进程用（执行模式恒为 same-user）。 |
 
 后面各 PR 的默认做法（数据目录、托管 Node、无密码库登录、自动更新走系统安装器、画布要求沙箱、第一版不带加速、版本号与 Windows/Mac 一致）见项目文件 `Linux版/计划与拆分.md`，落地时各自补进本文件。
 
@@ -69,7 +71,7 @@ Linux 和 Windows / Mac 用同一个版本号、同一次 publish-release。
 
 | 编号 | 内容 |
 |---|---|
-| ② | Linux 上 Node.js 由软件自己装、Claude / Codex / Gemini 一键装 |
+| ② | 已做（#761）：Linux 上 Node.js 由软件自己装、Claude / Codex / Gemini 一键装 |
 | ③ | Grok 在 Linux 一键装；Gemini 不再要求 Python |
 | ④ | 客户自己的终端里能直接敲命令 |
 | ⑤ | 一键打开终端运行工具 |

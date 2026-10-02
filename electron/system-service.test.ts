@@ -2361,11 +2361,21 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
   })
 })
 
-// The same-user install path is shared by Windows (same-user mode) and Linux;
-// Linux is the platform where it can run here without Windows-only fakes.
-describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () => {
-  it('passes the prefix from the user npm config while keeping the empty userconfig', async () => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-npm-'))
+// Linux installs into the same per-user managed layout as macOS (Linux 版拆分 ②), so the
+// user's own ~/.npmrc no longer decides where the CLIs land. These run only on Linux,
+// where the fake npm below is a plain POSIX script.
+describe.runIf(process.platform === 'linux')('Linux managed npm install', () => {
+  interface LinuxInstallFixture {
+    root: string
+    homeDirectory: string
+    userPrefix: string
+    npmExecutable: string
+    expectedVersion: string
+    integrity: string
+  }
+
+  function linuxInstallFixture(npmrc: (userPrefix: string) => string): LinuxInstallFixture {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-managed-npm-'))
     temporaryDirectories.push(temporaryRoot)
     const root = fs.realpathSync(temporaryRoot)
     const homeDirectory = path.join(root, 'home')
@@ -2374,11 +2384,12 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     fs.mkdirSync(homeDirectory, { recursive: true })
     fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
     fs.mkdirSync(runtimeBin, { recursive: true })
-    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), npmrc(userPrefix))
     const npmExecutable = path.join(runtimeBin, 'npm')
     fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
     fs.chmodSync(npmExecutable, 0o700)
     vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
     vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
     // `npm test` exports these to its children; the desktop app never inherits them.
     vi.stubEnv('npm_config_prefix', undefined)
@@ -2400,13 +2411,18 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       }
       throw new Error(`Unexpected fetch: ${url}`)
     }))
+    return { root, homeDirectory, userPrefix, npmExecutable, expectedVersion, integrity }
+  }
 
-    let installArgv: readonly string[] | null = null
-    const runCommand = vi.fn(async (
+  function fakeNpm(
+    fixture: LinuxInstallFixture,
+    onGlobalInstall: (prefix: string, argv: readonly string[]) => void,
+  ) {
+    return vi.fn(async (
       spec: { executable: string; argv: readonly string[] },
       options: { cwd?: string; onOutput?: (event: { stream: 'stdout' | 'stderr'; text: string }) => void } = {},
     ) => {
-      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
+      if (spec.executable !== fixture.npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
       if (spec.argv[0] === 'ci') options.onOutput?.({ stream: 'stdout', text: 'added 12 packages in 3s\n' })
       if (spec.argv.includes('--package-lock-only')) {
         const cwd = options.cwd
@@ -2423,11 +2439,13 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
           lockfileVersion: 3,
           packages: {
             '': { dependencies: manifest.dependencies },
-            [`node_modules/${packageName}`]: { version, integrity },
+            [`node_modules/${packageName}`]: { version, integrity: fixture.integrity },
           },
         }))
       } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
-        installArgv = [...spec.argv]
+        const prefixArgument = spec.argv.find((argument) => argument.startsWith('--prefix='))
+        if (!prefixArgument) throw new Error('Managed install omitted --prefix')
+        onGlobalInstall(prefixArgument.slice('--prefix='.length), spec.argv)
       }
       return {
         executable: spec.executable,
@@ -2440,34 +2458,69 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
         durationMs: 1,
       }
     })
-    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
-    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => installArgv
+  }
+
+  function writeCodexPackage(prefix: string, version: string, withNative: boolean): void {
+    const packageRoot = path.join(prefix, 'lib', 'node_modules', '@openai', 'codex')
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+    fs.mkdirSync(packageRoot, { recursive: true })
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex',
+      version,
+      optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${version}-linux-x64` },
+    }))
+    if (withNative) {
+      fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
+      fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    }
+  }
+
+  function managedResolution(fixture: LinuxInstallFixture) {
+    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
+    const packageRoot = path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    return vi.fn<typeof resolveCliInstallationForTest>(async () => fs.existsSync(path.join(packageRoot, 'package.json'))
       ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
+          commandPath: path.join(managedPrefix, 'bin', 'codex'),
           installDirectory: packageRoot,
           packageRoot,
-          npmPrefix: userPrefix,
-          packageVersion: expectedVersion,
+          npmPrefix: managedPrefix,
+          packageVersion: fixture.expectedVersion,
           source: 'npm',
         }
       : null)
+  }
+
+  it('installs into the per-user managed prefix and ignores both the prefix and the registry in ~/.npmrc', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    let installArgv: readonly string[] | null = null
+    let stagedPrefix: string | null = null
+    const runCommand = fakeNpm(fixture, (prefix, argv) => {
+      installArgv = argv
+      stagedPrefix = prefix
+      writeCodexPackage(prefix, fixture.expectedVersion, true)
+    })
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
-      new AppSettingsStore(path.join(root, 'settings.json'), root),
-      { platform: 'linux', runCommand, resolveCliInstallation },
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture) },
     )
 
     await service.installCli('codex', target)
 
-    expect(installArgv).not.toBeNull()
+    const productRoot = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI')
     const argv = installArgv!
-    expect(argv).toContain(`--prefix=${userPrefix}`)
-    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toHaveLength(1)
-    const userConfigArgument = argv.find((argument) => argument.startsWith('--userconfig='))
-    expect(userConfigArgument).toBeDefined()
-    expect(userConfigArgument).not.toBe(`--userconfig=${path.join(homeDirectory, '.npmrc')}`)
-    // Only prefix is carried over; the registry line in the same file stays ignored.
+    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toEqual([`--prefix=${stagedPrefix}`])
+    // The lifecycle runs against a staged copy inside the managed cache, never the user's prefix.
+    expect(path.relative(path.join(productRoot, 'Cli', 'npm-cache'), stagedPrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
+    expect(argv.some((argument) => argument.includes(fixture.userPrefix))).toBe(false)
+    expect(argv).toContain(`--userconfig=${path.join(productRoot, 'Cli', 'npmrc')}`)
     expect(argv.some((argument) => argument.includes('example.invalid'))).toBe(false)
+    // The staged prefix was promoted into place.
+    expect(JSON.parse(fs.readFileSync(
+      path.join(productRoot, 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex', 'package.json'),
+      'utf8',
+    ))).toMatchObject({ version: fixture.expectedVersion })
+    expect(fs.existsSync(path.join(fixture.userPrefix, 'lib'))).toBe(false)
     expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -2483,102 +2536,20 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
   })
 
-  it('fails the install when npm silently skipped the platform build', async () => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-native-'))
-    temporaryDirectories.push(temporaryRoot)
-    const root = fs.realpathSync(temporaryRoot)
-    const homeDirectory = path.join(root, 'home')
-    const userPrefix = path.join(root, 'npm-global')
-    const runtimeBin = path.join(root, 'runtime-bin')
-    fs.mkdirSync(homeDirectory, { recursive: true })
-    fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
-    fs.mkdirSync(runtimeBin, { recursive: true })
-    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `prefix=${userPrefix}\n`)
-    const npmExecutable = path.join(runtimeBin, 'npm')
-    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
-    fs.chmodSync(npmExecutable, 0o700)
-    vi.stubEnv('HOME', homeDirectory)
-    vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
-    vi.stubEnv('npm_config_prefix', undefined)
-    vi.stubEnv('npm_config_userconfig', undefined)
-
-    const expectedVersion = recommendedCodexVersion()
-    const integrity = `sha512-${Buffer.alloc(64, 0x32).toString('base64')}`
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
-        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
-      }
-      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
-        return new Response(JSON.stringify({
-          name: '@openai/codex',
-          version: expectedVersion,
-          dist: { integrity },
-        }), { status: 200 })
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
-    }))
-
-    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
-    let globalInstalls = 0
-    const runCommand = vi.fn(async (
-      spec: { executable: string; argv: readonly string[] },
-      options: { cwd?: string } = {},
-    ) => {
-      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
-      if (spec.argv.includes('--package-lock-only')) {
-        const cwd = options.cwd
-        if (!cwd) throw new Error('Fake npm requires cwd')
-        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
-          name: string
-          version: string
-          dependencies: Record<string, string>
-        }
-        const [[packageName, version]] = Object.entries(manifest.dependencies)
-        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
-          name: manifest.name,
-          version: manifest.version,
-          lockfileVersion: 3,
-          packages: {
-            '': { dependencies: manifest.dependencies },
-            [`node_modules/${packageName}`]: { version, integrity },
-          },
-        }))
-      } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
-        // npm exits 0 after dropping an optional dependency whose download failed.
-        globalInstalls += 1
-        fs.mkdirSync(packageRoot, { recursive: true })
-        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
-          name: '@openai/codex',
-          version: expectedVersion,
-          optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${expectedVersion}-linux-x64` },
-        }))
-      }
-      return {
-        executable: spec.executable,
-        argv: [...spec.argv],
-        exitCode: 0,
-        signal: null,
-        stdout: '',
-        stderr: '',
-        outputBytes: 0,
-        durationMs: 1,
-      }
+  it('fails the install when npm silently skipped the platform build and keeps nothing half-installed', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
+    let withNative = false
+    const runCommand = fakeNpm(fixture, (prefix) => {
+      // npm exits 0 after dropping an optional dependency whose download failed.
+      writeCodexPackage(prefix, fixture.expectedVersion, withNative)
     })
-    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => globalInstalls > 0
-      ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
-          installDirectory: packageRoot,
-          packageRoot,
-          npmPrefix: userPrefix,
-          packageVersion: expectedVersion,
-          source: 'npm',
-        }
-      : null)
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
-      new AppSettingsStore(path.join(root, 'settings.json'), root),
-      { platform: 'linux', runCommand, resolveCliInstallation },
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture) },
+    )
+    const managedPackage = path.join(
+      fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
     )
 
     await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
@@ -2586,10 +2557,12 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+    // Each attempt failed inside its own staged prefix, so the managed prefix was never touched.
+    expect(fs.existsSync(managedPackage)).toBe(false)
 
-    fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
-    fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    withNative = true
     await service.installCli('codex', target)
+    expect(fs.existsSync(path.join(managedPackage, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'))).toBe(true)
     expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -3107,7 +3080,7 @@ describe('npm install progress reporting', () => {
     )
   })
 
-  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows', () => {
+  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows and Linux', () => {
     const old = { installed: true, version: 'v20.11.1' }
     const certificate = { reason: 'certificate' as const }
     expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: old })).toBe(true)
@@ -3120,6 +3093,9 @@ describe('npm install progress reporting', () => {
     expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: false, version: null } })).toBe(false)
     // Mac 上代下的那份排在客户自己的后面，换了也用不上。
     expect(shouldReplaceNodeForCertificates({ platform: 'darwin', request: certificate, node: old })).toBe(false)
+    // Linux 上代下的那份在软件里排在最前，装上就是它（linux-platform.ts）。
+    expect(shouldReplaceNodeForCertificates({ platform: 'linux', request: certificate, node: { installed: true, version: 'v22.10.0' } })).toBe(true)
+    expect(shouldReplaceNodeForCertificates({ platform: 'linux', request: {}, node: old })).toBe(false)
   })
 
   function outdatedNodeService(directory: string, versions: string[], installNodeRuntime: () => Promise<NodeRuntimeInstallResult>) {

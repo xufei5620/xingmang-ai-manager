@@ -366,9 +366,9 @@ describe('renderer-v2 home account key bootstrap notice', () => {
  * 沙箱里只能靠注入平台能力来演，这里演的是渲染层拿到这组能力后的表现，不是真机行为。
  */
 describe('renderer-v2 home missing runtime guidance on macOS', () => {
-  function runtimeSnapshot(platform: 'windows' | 'macos', missing: { node?: boolean; python?: boolean }): ToolboxSnapshot {
+  function runtimeSnapshot(platform: 'windows' | 'macos' | 'linux', missing: { node?: boolean; python?: boolean }): ToolboxSnapshot {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
-    const python = platform === 'macos' ? 'external' : 'managed'
+    const python = platform === 'windows' ? 'managed' : 'external'
     return {
       ...base,
       platform: { ...base.platform, platform, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: python },
@@ -394,6 +394,18 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('brew install node')
     expect(markup).not.toContain('去官网下载 Node.js')
     // Mac 上不提权，Windows 那句管理员授权不能出现。
+    expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
+  })
+
+  // Linux 版拆分 ②：原来这里是「去官网下载 Node.js」加一段「用系统自带的包管理器装上」。
+  it('lets a Linux customer prepare Node.js with one button instead of a website', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { node: true }) })
+    expect(markup).toContain('data-testid="home-runtime-node-managed"')
+    expect(markup).toContain('这台电脑上还没有能用的 Node.js')
+    expect(markup).toContain('准备 Node.js')
+    expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+    expect(markup).not.toContain('去官网下载 Node.js')
+    expect(markup).not.toContain('包管理器')
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
   })
 

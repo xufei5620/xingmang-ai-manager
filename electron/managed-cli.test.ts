@@ -9,6 +9,8 @@ import {
   managedNpmCacheRoot,
   managedNpmPrefix,
   managedNativeProviderRoot,
+  managedNodeRuntimeBinDirectory,
+  managedNodeRuntimeRoot,
   managedProductRoot,
 } from './managed-cli-paths'
 import type { WindowsMachinePaths } from './windows-machine-paths'
@@ -59,6 +61,48 @@ describe('managed CLI paths', () => {
     expect(managedNativeProviderRoot('grok', env, 'darwin')).toBe(
       path.posix.join(productRoot, 'Cli', 'native', 'grok'),
     )
+  })
+
+  it('keeps Linux npm maintenance below the current user XDG data directory', () => {
+    const env = { HOME: '/home/isolated-test-user' }
+    const productRoot = '/home/isolated-test-user/.local/share/XingMangAI'
+
+    expect(managedProductRoot(env, 'linux')).toBe(productRoot)
+    expect(managedCliRoot(env, 'linux')).toBe(path.posix.join(productRoot, 'Cli'))
+    expect(managedNpmPrefix(env, 'linux')).toBe(path.posix.join(productRoot, 'Cli', 'npm'))
+    expect(managedNpmCacheRoot(env, 'linux')).toBe(path.posix.join(productRoot, 'Cli', 'npm-cache'))
+    expect(managedNpmBinDirectory(env, 'linux')).toBe(path.posix.join(productRoot, 'Cli', 'npm', 'bin'))
+    expect(managedNodeRuntimeRoot(env, 'linux')).toBe(path.posix.join(productRoot, 'Runtime', 'node'))
+    expect(managedNodeRuntimeBinDirectory(env, 'linux')).toBe(path.posix.join(productRoot, 'Runtime', 'node', 'bin'))
+  })
+
+  it('follows an absolute XDG_DATA_HOME on Linux and ignores a relative one', () => {
+    expect(managedProductRoot({ HOME: '/home/a', XDG_DATA_HOME: '/data/a' }, 'linux')).toBe('/data/a/XingMangAI')
+    expect(managedProductRoot({ HOME: '/home/a', XDG_DATA_HOME: 'relative/share' }, 'linux'))
+      .toBe('/home/a/.local/share/XingMangAI')
+    expect(managedProductRoot({ HOME: '/home/a', XDG_DATA_HOME: '  ' }, 'linux'))
+      .toBe('/home/a/.local/share/XingMangAI')
+  })
+
+  it('treats every other POSIX platform like Linux instead of a root-owned directory', () => {
+    expect(managedProductRoot({ HOME: '/home/a' }, 'freebsd')).toBe('/home/a/.local/share/XingMangAI')
+  })
+
+  it.runIf(process.platform === 'linux')('creates a private Linux npm layout for atomic maintenance', async () => {
+    const temporaryHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-linux-'))
+    temporaryDirectories.push(temporaryHome)
+    const homeDirectory = fs.realpathSync(temporaryHome)
+    const env = { ...process.env, HOME: homeDirectory, XDG_DATA_HOME: '' }
+
+    const layout = await ensureManagedNpmLayout({ env, platform: 'linux' })
+
+    const productRoot = path.join(homeDirectory, '.local', 'share', 'XingMangAI')
+    expect(layout.prefix).toBe(path.join(productRoot, 'Cli', 'npm'))
+    expect(layout.cacheRoot).toBe(path.join(productRoot, 'Cli', 'npm-cache'))
+    expect(fs.readFileSync(layout.userConfig, 'utf8')).toBe('')
+    expect(fs.statSync(productRoot).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(layout.prefix).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(layout.userConfig).mode & 0o777).toBe(0o600)
   })
 
   it.runIf(process.platform === 'darwin')('creates a private Darwin npm layout for atomic maintenance', async () => {

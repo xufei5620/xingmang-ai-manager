@@ -31,6 +31,8 @@ function createInstallFixture(readDiskSpace: () => Promise<DiskSpaceReading | nu
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-disk-space-')))
   temporaryDirectories.push(root)
   vi.stubEnv('HOME', path.join(root, 'home'))
+  // Linux 上托管目录跟着 XDG_DATA_HOME 走，不清掉会写进开发机真实的数据目录。
+  vi.stubEnv('XDG_DATA_HOME', undefined)
   const target = { isDestroyed: () => false, send: vi.fn() }
   const service = createSystemService(
     new AppSettingsStore(path.join(root, 'settings.json'), root),

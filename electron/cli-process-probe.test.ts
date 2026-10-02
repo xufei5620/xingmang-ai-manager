@@ -110,6 +110,8 @@ describe('cli process probe', () => {
       .toBe(path.join('C:\\prefix', 'node_modules', '@anthropic-ai', 'claude-code'))
     expect(managedCliPackageDirectory('/opt/prefix', '@openai/codex', 'darwin'))
       .toBe(path.join('/opt/prefix', 'lib', 'node_modules', '@openai', 'codex'))
+    expect(managedCliPackageDirectory('/home/a/.local/share/XingMangAI/Cli/npm', '@openai/codex', 'linux'))
+      .toBe(path.join('/home/a/.local/share/XingMangAI/Cli/npm', 'lib', 'node_modules', '@openai', 'codex'))
     expect(cliPackageDirectory('/root/node_modules', '@google/gemini-cli'))
       .toBe(path.join('/root/node_modules', '@google', 'gemini-cli'))
   })
