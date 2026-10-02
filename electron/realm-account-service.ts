@@ -427,11 +427,18 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   // 小时里约四次撞一次）。开机恢复只发一两次请求，撞上就要挂「暂时连不上」等 30 秒。
   // 所以第一次超时先隔几秒再试一次，这段时间界面照旧是「正在恢复登录」；两次都超时
   // 才按联不上处理。仍在同一个 transition 的 prepare 期限里，不会无限拖长。
+  //
+  // 第一次可能已经续过期：服务端换了新令牌、旧续期令牌当场作废，新的已经存进本机
+  // 账号库，超时的是紧接着那个请求。再拿出发前读的那份去试只会被当成登录失效，把
+  // 库里刚存好的新令牌连同账号一起删掉。所以重试前从库里取这个账号最新的一份；
+  // 取不到就按第一次的超时交给 30 秒那一轮，那一轮会重新读库。
   async function restoreAllowingOneTimeout(saved: RealmSavedAccount): Promise<boolean> {
     try { return await restore(saved) } catch (error) {
       if (!restoreTimedOut(error)) throw error
       await new Promise<void>((resolve) => { setTimeout(resolve, startupRetryDelayMs) })
-      return restore(saved)
+      const latest = await options.vault.get(saved).catch(() => null)
+      if (!latest) throw error
+      return restore(latest)
     }
   }
   // 「暂时连不上，登录还在」之后的自动重试（全面检测 Q9）。以前每次重试都走一遍
