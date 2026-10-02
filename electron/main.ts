@@ -196,6 +196,7 @@ import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus }
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
+import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -1234,6 +1235,9 @@ if (!hasSingleInstanceLock) {
         : {}),
       ...(process.platform === 'darwin'
         ? { ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({ reason }) }
+        : {}),
+      ...(process.platform !== 'win32' && process.platform !== 'darwin'
+        ? { syncLinuxTerminalCommands: (reason: LinuxTerminalCommandsReason) => syncLinuxTerminalCommands({ reason }) }
         : {}),
       projectInstructionsTemplatePath: resolveProjectInstructionsTemplatePath(app.getAppPath(), {
         packaged: app.isPackaged,

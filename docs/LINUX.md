@@ -15,6 +15,7 @@
 | 依赖 | Depends 补上 electron-builder 默认漏掉的 `libsecret-1-0`、`libgbm1`、`libxkbcommon0`、`libudev1` 等；Ubuntu 24.04 改名带 `t64` 的几个写成「新名 \| 旧名」；Recommends 中文字体与系统密码库 | 缺一个动态库是首次启动就报错，不是安装时报错。只写旧名在 24.04 上靠 Provides 也能装，只写新名会让 22.04 和 Debian 12 装不上。 |
 | 运行身份 | 安装时系统要一次开机密码；软件运行时从不提权，也不许以 root 运行 | root 下 Electron 必须关沙箱才能启动。 |
 | 数据目录 | `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，只在 `managed-cli-paths.ts` 的 `linuxProductRoot` 定；Node.js 在 `Runtime/node`，Claude / Codex / Gemini 在 `Cli/npm` | 原来的 `/var/lib/xingmang-ai` 普通用户建不出来；XDG 是 Linux 桌面的惯例。 |
+| 终端里直接敲命令 | 星芒装的每个工具在 `Cli/launchers` 下放一个小启动器（`linux-shell-profile.ts`），它只对这一条命令把星芒准备的 Node.js 排到最前再 `exec` 真正的入口；`~/.bashrc`、`~/.zshrc`、`~/.profile` 末尾追加一段带标记、只把这个目录接在 PATH **最后**的几行，fish 用自己的 `conf.d/xingmang-ai-manager.fish`。只给已经存在的文件和账号登录 shell 自己读的文件加，从不建 `~/.bash_profile`；符号链接的文件不碰。打开软件只补一次（`terminal-commands-added` 记录），装、修、更新工具时再确认；在星芒里卸掉它装的最后一个工具时，按原样逐字去掉这几行、删掉 fish 文件和启动器目录，用户改过的那段不动。软件自己找程序时把这个目录从继承的 PATH 里剔掉（`linux-platform.ts`），启动器不会被当成一份安装 | 桌面终端开的是非登录交互 shell，只读 rc 文件；直接把托管 Node.js 放进用户 PATH 会改掉他自己 `node` 的意思，只放 npm 的 bin 又会让入口的 `#!/usr/bin/env node` 撞上系统自带的旧版。deb 的卸载脚本以 root 跑，不许进用户主目录，所以只卸软件本身时这几行和工具都留着 |
 | Node.js | 软件自己下官方压缩包（`linux-node-runtime.ts`）：版本钉在 v24.21.0，x64 / arm64 各钉一个 SHA-256，字节可以从 npmmirror 来但哈希必须对上；只用 root 所有、别人不可写的 `/usr/bin/tar`（退到 `/bin/tar`），环境只给 `PATH=/usr/bin:/bin` 和 `LC_ALL=C`。安装和启动 CLI 时这份排在继承的 PATH 前面（`linux-platform.ts`） | Ubuntu、Debian 自带的那份常常太旧，排在后面永远轮不到它；不提权、不碰系统包管理器。`trustedCommandEnvironment` 的 Linux PATH 仍把它放最后，那份环境在 Linux 上只给辅助进程用（执行模式恒为 same-user）。 |
 
 后面各 PR 的默认做法（数据目录、托管 Node、无密码库登录、自动更新走系统安装器、画布要求沙箱、第一版不带加速、版本号与 Windows/Mac 一致）见项目文件 `Linux版/计划与拆分.md`，落地时各自补进本文件。
@@ -73,7 +74,7 @@ Linux 和 Windows / Mac 用同一个版本号、同一次 publish-release。
 |---|---|
 | ② | 已做（#761）：Linux 上 Node.js 由软件自己装、Claude / Codex / Gemini 一键装 |
 | ③ | Grok 在 Linux 一键装；Gemini 不再要求 Python |
-| ④ | 客户自己的终端里能直接敲命令 |
+| ④ | 已做：客户自己的终端里能直接敲命令（第 1 节「终端里直接敲命令」） |
 | ⑤ | 一键打开终端运行工具 |
 | ⑥ | 没有系统密码库也能登录（不记住，绝不明文） |
 | ⑦ | Linux 安全边界：路径信任、环境变量收紧、拒绝 root、画布沙箱检查、日志脱敏 |

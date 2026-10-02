@@ -2536,6 +2536,28 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
     expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
   })
 
+  it('brings the terminal commands in line after an install and again after the uninstall', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
+    const managedPackage = path.join(
+      fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
+    )
+    const runCommand = fakeNpm(fixture, (prefix) => writeCodexPackage(prefix, fixture.expectedVersion, true))
+    // The uninstall spawns npm for real rather than through the injected runner.
+    fs.writeFileSync(fixture.npmExecutable, `#!/bin/sh\nif [ "$1" = uninstall ]; then rm -rf '${managedPackage}'; fi\nexit 0\n`)
+    const syncLinuxTerminalCommands = vi.fn(async () => ({ outcome: 'added' as const, launchers: ['codex'], skipped: [] }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture), syncLinuxTerminalCommands },
+    )
+
+    await service.installCli('codex', { isDestroyed: () => false, send: vi.fn() })
+    await vi.waitFor(() => expect(syncLinuxTerminalCommands).toHaveBeenCalledWith('install'))
+
+    await expect(service.uninstallCli('codex')).resolves.toMatchObject({ outcome: 'uninstalled' })
+    await vi.waitFor(() => expect(syncLinuxTerminalCommands).toHaveBeenLastCalledWith('uninstall'))
+    expect(syncLinuxTerminalCommands).toHaveBeenCalledTimes(2)
+  })
+
   it('fails the install when npm silently skipped the platform build and keeps nothing half-installed', async () => {
     const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
     let withNative = false
