@@ -21,6 +21,11 @@ async function main() {
     console.log(`更新源校验通过：Windows v${result.metadata.version}（${scope}）`)
     return
   }
+  if (platform === 'linux') {
+    const scope = verifyAssets ? 'Linux x64 与 arm64 元数据、deb 安装包' : 'Linux x64 与 arm64 元数据'
+    console.log(`更新源校验通过：Linux x64 v${result.linux.x64.metadata.version}；arm64 v${result.linux.arm64.metadata.version}（${scope}）`)
+    return
+  }
   if (platform === 'macos') {
     const scope = verifyAssets ? 'macOS 元数据、双架构引用文件与 ZIP blockmap' : 'macOS 元数据'
     console.log(`更新源校验通过：macOS v${result.mac.metadata.version}（${scope}）`)

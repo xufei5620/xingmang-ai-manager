@@ -28,12 +28,22 @@
 # runner 现场生成的一次性身份（见 package-for-testing.yml）**绝不能**进更新源：老用户的
 # 机器不认它会拒绝更新，新装用户拿到的又是一个没人认得的发布者。本工作流不走那条路径。
 #
+# ## Linux：先出包，开关打开才对外发
+#
+# 选 all 或 linux 时，Linux 的 x64 与 arm64 两个 deb 跟着出包、过门禁、真装真开，
+# 产物进这次运行的 Actions artifact（linux-release-<架构>-<版本>），供发布者装机验收。
+# **传不传到更新目录和 GitHub Release，看仓库变量 XINGMANG_PUBLISH_LINUX**：不是
+# true（包括没建这个变量）时，publish 作业不下载 Linux 的包，客户看不到任何 Linux
+# 的东西，Linux 两个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
+# 点头、先在真机上过一遍，这个变量由他自己在仓库设置里打开（docs/LINUX.md）。Linux
+# 不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准。
+#
 # ## 上传顺序
 #
-# `latest.yml` / `latest-mac.yml` 是客户端用来判断"有没有新版本"的清单。它一旦先
-# 落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。所以顺序固定为：
-# **先传安装包与 blockmap → 逐字节确认它们能从客户会用的地址下载下来 → 最后才覆盖
-# 两份清单**。这三步在下面是三个独立的步骤，顺序由
+# `latest.yml` / `latest-mac.yml` / `latest-linux*.yml` 是客户端用来判断"有没有新版本"
+# 的清单。它一旦先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。所以
+# 顺序固定为：**先传安装包与 blockmap → 逐字节确认它们能从客户会用的地址下载下来 →
+# 最后才覆盖清单**。这三步在下面是三个独立的步骤，顺序由
 # scripts/publish-workflow-config.test.cjs 钉住。
 name: publish-release
 
@@ -45,14 +55,18 @@ on:
         required: true
         type: string
       platforms:
-        description: '这次发布哪些平台的包'
+        description: '这次发布哪些平台的包（all 是全部；both 和原来一样只有 Windows 与 macOS；Linux 开关没打开时只出包、不上传）'
         required: true
-        default: both
+        default: all
         type: choice
+        # both 是加 Linux 之前的默认值，留着它，照老习惯选 both 还是原来那样只发
+        # Windows 与 macOS，不会碰 Linux。
         options:
+          - all
           - both
           - windows
           - macos
+          - linux
 
 permissions:
   contents: read
@@ -64,7 +78,7 @@ concurrency:
 
 jobs:
   windows-build:
-    if: ${{ inputs.platforms != 'macos' }}
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'windows' }}
     runs-on: windows-latest
     # 这个作业不读任何 secret，也不挂 environment：它只是出包。凭据集中在 publish
     # 作业里，那里才有需要保护的东西。
@@ -128,7 +142,7 @@ jobs:
 
 
   macos-build:
-    if: ${{ inputs.platforms != 'windows' }}
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'macos' }}
     runs-on: macos-15
     # 这个作业要读发布证书的 .p12，所以也挂 release 环境，也就同样停下来等批准。
     # 批准它放行的只是「用真证书出一份包」，产物仍然只进 Actions artifact。
@@ -238,15 +252,185 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # Linux 的两个出包作业共用一份源码，类型检查和测试在 x64 上跑一遍就够，和
+  # package-for-testing 的 Linux 那半一样。跑的是 Windows 那条 release:build:unsigned
+  # 里同样会跑的套件；Electron 开发目录冒烟与 ASAR 篡改校验为什么不在 Linux 上跑，见
+  # scripts/run-linux-release-package.cjs。
+  linux-checks:
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'linux' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').version")
+          if [ "$declared" != "$CONFIRM_VERSION" ]; then
+            echo "::error::版本不一致：package.json 是 $declared，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - run: npx --no-install playwright install chromium
+
+      - name: Install Chromium's system libraries
+        # 与 quality.yml 的 linux-test 同一个脚本：每次尝试限时，卡住就清掉 apt
+        # 残留进程再重试一次。
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run test:v2
+
+      - run: npm run test:canvas
+
+      - run: npm run test:ui
+
+  linux-build:
+    needs: linux-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # arm64 用 GitHub 的原生 arm 机器：x64 机器上装不了 arm64 的包，模拟器里起
+          # Electron 也说明不了真机。
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # 与 windows-build 一样不读任何 secret、不挂 environment：Linux 不签名，出包不需要
+    # 凭据，也就不会多出一次批准。
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        id: metadata
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').version")
+          if [ "$declared" != "$CONFIRM_VERSION" ]; then
+            echo "::error::版本不一致：package.json 是 $declared，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Build the deb through the Linux release gate
+        # 线上清单比本次旧 → 编译 → 出 deb → 加固校验 → deb 与更新清单校验。
+        timeout-minutes: 20
+        run: npm run release:package:linux -- --arch "$PACKAGE_ARCH"
+
+      # 与 quality.yml 的 linux-package 一样：像客户那样用 apt 装上，再以普通用户真开
+      # 一次、确认渲染进程在沙箱里，最后卸干净，过了才上传。只看产物的检查看不见「装
+      # 上去打不开」，2026-09-19 的 macOS 包就是这么漏过去的。
+      - name: Install the deb the way a customer would
+        timeout-minutes: 10
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          # 绝对路径：apt 会把相对的「目录/文件名」当成包名。
+          deb="$(node -p "require('node:path').resolve('release-' + process.env.PACKAGE_VERSION, require('./scripts/linux-artifact-names.cjs').debFileName(process.env.PACKAGE_VERSION, process.env.PACKAGE_ARCH))")"
+          sudo timeout --kill-after=20s 240 apt-get update
+          sudo timeout --kill-after=20s 300 apt-get install -y --no-install-recommends xvfb "$deb"
+
+      - name: Turn on Ubuntu 24.04's user-namespace restriction
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          fi
+
+      - name: Launch the installed app as an ordinary user and require its sandbox
+        timeout-minutes: 5
+        run: xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
+
+      - name: Run the packaged hardening smoke against the installed app
+        timeout-minutes: 6
+        run: xvfb-run -a node e2e/packaged-hardening-smoke.mjs /usr/bin/xingmang-ai-manager
+
+      - name: Remove the deb and require that nothing is left behind
+        timeout-minutes: 5
+        run: |
+          sudo timeout --kill-after=20s 240 apt-get remove -y xingmang-ai-manager
+          for leftover in /opt/xingmang-ai-manager /usr/bin/xingmang-ai-manager /etc/alternatives/xingmang-ai-manager \
+            /usr/share/applications/xingmang-ai-manager.desktop /etc/apparmor.d/xingmang-ai-manager; do
+            if [ -e "$leftover" ] || [ -L "$leftover" ]; then
+              echo "::error::removing the package left $leftover behind"
+              exit 1
+            fi
+          done
+
+      - name: Print artifact checksums
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: sha256sum "release-$PACKAGE_VERSION"/*.deb "release-$PACKAGE_VERSION"/latest-linux*.yml
+
+      - name: Upload the Linux release artifacts for the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-${{ matrix.arch }}-${{ steps.metadata.outputs.version }}
+          path: |
+            release-${{ steps.metadata.outputs.version }}/*.deb
+            release-${{ steps.metadata.outputs.version }}/latest-linux*.yml
+          retention-days: 14
+          if-no-files-found: error
+
   publish:
-    needs: [windows-build, macos-build]
+    needs: [windows-build, macos-build, linux-checks, linux-build]
     # 只发一个平台时另一个作业是 skipped，而被跳过的 needs 默认会把依赖它的作业也
     # 跳过。这里显式写出「没取消、没有失败的依赖、至少有一个出了包」。
+    #
+    # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 两个作业
+    # 红了也不挡 Windows / macOS，它的包也不会被下载；只选了 linux 又关着，这个作业
+    # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，要求 linux-build 成功，而不只
+    # 是「没失败」：超时的作业结果是 cancelled 而不是 failure，linux-checks 失败或超时
+    # 时 linux-build 又是 skipped，只挡 failure 会让 Windows / macOS 悄悄不带 Linux 发出去。
+    # GitHub 比较字符串不分大小写，TRUE、True 也算打开。
     if: >-
       ${{ !cancelled()
       && needs.windows-build.result != 'failure'
       && needs.macos-build.result != 'failure'
-      && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success') }}
+      && (vars.XINGMANG_PUBLISH_LINUX != 'true'
+        || (inputs.platforms != 'all' && inputs.platforms != 'linux')
+        || needs.linux-build.result == 'success')
+      && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success'
+        || (vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success')) }}
     # 写更新目录的三条工作流（这里、rollback-release、service-status）共用这个并发组
     # （#492）。它们都是「读线上的清单或状态 → 算出新内容 → 写回去」，交错执行时后写
     # 的会盖掉先写的：回滚刚把清单换回旧版、发布又把新版盖上去，撤回名单里却还写着它。
@@ -264,8 +448,8 @@ jobs:
       contents: write
     timeout-minutes: 60
     env:
-      # 两个出包作业各自核对过 confirm_version 与 package.json 一致，取跑过的那个。
-      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version }}
+      # 出包作业各自核对过 confirm_version 与 package.json 一致，取跑过的那个。
+      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version || needs.linux-build.outputs.version }}
       # R2 桶里的前缀，也是 R2 凭据被限制到的那个前缀。
       OBJECT_PREFIX: xingmang-manager
     steps:
@@ -305,6 +489,15 @@ jobs:
         if: ${{ needs.macos-build.result == 'success' }}
         with:
           name: macos-release-${{ needs.macos-build.outputs.version }}
+          path: release-artifacts
+
+      # Linux 开关关着时不下载 Linux 的包，下面每一步就都碰不到它：护栏、上传、复核、
+      # 清单和 Release 附件都只按 release-artifacts 里实际有什么来做。
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
+        with:
+          pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
+          merge-multiple: true
           path: release-artifacts
 
       - name: List what is about to be published
@@ -380,8 +573,18 @@ jobs:
               node scripts/publish-guard.cjs "$@"
             fi
           }
+          # Linux 两个架构同一次发布：只有一份清单，说明另一个架构的包没到，宁可停下也
+          # 不要让一半的 Linux 客户看到新版本、另一半看不到。
+          linux_manifests=0
+          for manifest in latest-linux.yml latest-linux-arm64.yml; do
+            if [ -f "release-artifacts/$manifest" ]; then linux_manifests=$((linux_manifests + 1)); fi
+          done
+          if [ "$linux_manifests" -eq 1 ]; then
+            echo "::error::产物里只有一个架构的 Linux 更新清单，x64 与 arm64 必须一起发，线上什么都没改"
+            exit 1
+          fi
           checked=0
-          for manifest in latest.yml latest-mac.yml; do
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/guard-live-$manifest" \
               --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
@@ -410,11 +613,12 @@ jobs:
           # 只发一个平台时另一半的通配符不该展开成字面量再被 aws 当成文件名。
           shopt -s nullglob
           endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
-          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap; do
+          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap release-artifacts/*.deb; do
             case "$file" in
               *Setup.exe) type=application/vnd.microsoft.portable-executable ;;
               *.dmg) type=application/x-apple-diskimage ;;
               *.zip) type=application/zip ;;
+              *.deb) type=application/vnd.debian.binary-package ;;
               *) type=application/octet-stream ;;
             esac
             aws s3 cp "$file" "s3://$R2_BUCKET/$OBJECT_PREFIX/$(basename "$file")" \
@@ -431,7 +635,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           checked=0
-          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap; do
+          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap release-artifacts/*.deb; do
             name=$(basename "$file")
             curl --fail --silent --show-error --location --max-time 900 \
               --output "$RUNNER_TEMP/$name" "$PUBLIC_BASE/$name"
@@ -449,7 +653,7 @@ jobs:
           echo "已逐字节复核 $checked 个产物"
 
       # 第三步，且必须是最后一步：更新清单。到这里为止线上仍是旧版本，随时可以放弃。
-      # 两份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序
+      # 每份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序
       # 形同虚设，由 scripts/publish-workflow-config.test.cjs 钉住。
       #
       # 覆盖之前先把线上那一份按它自己的版本号备份到 manifests/<版本>/，新清单也同样
@@ -468,7 +672,7 @@ jobs:
         run: |
           set -euo pipefail
           endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
-          for manifest in latest.yml latest-mac.yml; do
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/live-$manifest" \
               --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
@@ -491,7 +695,7 @@ jobs:
               --content-type text/yaml \
               --cache-control 'no-cache'
           done
-          for manifest in latest.yml latest-mac.yml; do
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             aws s3 cp "release-artifacts/$manifest" \
               "s3://$R2_BUCKET/$OBJECT_PREFIX/$manifest" \
@@ -510,6 +714,12 @@ jobs:
       - name: Re-verify the published macOS update feed end to end
         if: ${{ needs.macos-build.result == 'success' }}
         run: npm run update:verify-feed -- --platform=macos
+
+      - name: Re-verify the published Linux update feed end to end
+        # 两个架构一起查：同一次发布、同一次回滚，只查一个的话另一个架构的客户拿到
+        # 半发布的清单要等他们点更新才暴露。
+        if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
+        run: npm run update:verify-feed -- --platform=linux
 
       - name: Tag the commit that shipped and create the GitHub Release
         env:
@@ -546,7 +756,7 @@ jobs:
           # release-notes.md 里是从 0.1.x 起的全部历史，Release 正文只要这一版那一节。
           node scripts/extract-release-notes.cjs --version "$PACKAGE_VERSION" --output "$RUNNER_TEMP/release-section.md"
           shopt -s nullglob
-          assets=(release-artifacts/*Setup.exe release-artifacts/*.dmg)
+          assets=(release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.deb)
           if gh release view "$tag" > /dev/null 2>&1; then
             # Release 已经在了，只把这一次出的包挂上去。正文不重写：发布者可能已经
             # 在上面补过话，补发一个平台不该把那些改动冲掉。

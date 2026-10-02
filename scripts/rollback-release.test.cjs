@@ -26,7 +26,10 @@ test('reads the version of a manifest so it can be backed up under it', () => {
   const manifest = writeManifest('0.2.9')
   try {
     assert.equal(manifestVersion(manifest.target, 'latest.yml'), '0.2.9')
-    assert.throws(() => manifestVersion(manifest.target, 'latest-linux.yml'), RollbackInputError)
+    // Linux 两个架构的清单也要能备份；不认识的名字照样拒绝。
+    assert.equal(manifestVersion(manifest.target, 'latest-linux.yml'), '0.2.9')
+    assert.equal(manifestVersion(manifest.target, 'latest-linux-arm64.yml'), '0.2.9')
+    assert.throws(() => manifestVersion(manifest.target, 'latest-linux-ia32.yml'), RollbackInputError)
   } finally { manifest.cleanup() }
 })
 
@@ -216,9 +219,16 @@ if [ -f "$file" ]; then cp "$file" "$output"; printf 200; else printf 404; fi
   return { status: result.status, log: result.stdout + result.stderr, outputs }
 }
 
+const FIXTURE_INSTALLERS = {
+  'latest.yml': (version) => `XingMang-AI-Manager-${version}-Setup.exe`,
+  'latest-mac.yml': (version) => `XingMang-AI-Manager-${version}-arm64-mac.zip`,
+  'latest-linux.yml': (version) => `xingmang-ai-manager_${version}_amd64.deb`,
+  'latest-linux-arm64.yml': (version) => `xingmang-ai-manager_${version}_arm64.deb`,
+}
+
 function writeManifestFile(workspace, version, name) {
   const target = path.join(workspace, `fixture-${version}-${name}`)
-  const file = `XingMang-AI-Manager-${version}-${name === 'latest.yml' ? 'Setup.exe' : 'arm64-mac.zip'}`
+  const file = FIXTURE_INSTALLERS[name](version)
   const sha512 = createHash('sha512').update(version).digest('base64')
   fs.writeFileSync(target, YAML.stringify({ version, files: [{ url: file, sha512, size: 10 }], path: file, sha512, releaseDate: '2026-09-23T00:00:00.000Z' }))
   return target
@@ -254,4 +264,63 @@ test('the rollback plan stops when no platform needs rolling back or one is olde
   assert.notEqual(older.status, 0)
   assert.match(older.log, /这不是回退/)
   assert.equal(older.outputs, '')
+})
+
+test('the rollback plan rolls Linux back with the others and leaves it alone when it never shipped', posixOnly, () => {
+  const all = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-mac.yml': '0.2.11', 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10', 'latest-linux.yml': '0.2.10', 'latest-linux-arm64.yml': '0.2.10' },
+  })
+  assert.equal(all.status, 0, all.log)
+  assert.match(all.log, /VERIFY latest-linux\.yml/)
+  assert.match(all.log, /VERIFY latest-linux-arm64\.yml/)
+  assert.match(all.outputs, /^platforms= latest\.yml latest-mac\.yml latest-linux\.yml latest-linux-arm64\.yml$/m)
+  assert.match(all.outputs, /^withdrawn=0\.2\.11 $/m)
+
+  // Linux 开关没打开过：线上没有 Linux 清单，跳过它，不挡 Windows / macOS 的回退。
+  const never = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-mac.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10' },
+  })
+  assert.equal(never.status, 0, never.log)
+  assert.match(never.log, /线上没有 latest-linux\.yml，跳过这个平台/)
+  assert.match(never.outputs, /^platforms= latest\.yml latest-mac\.yml$/m)
+
+  // Linux 第一次发的就是坏版本，没有更早的 Linux 备份可退：Linux 保持不动并报警告，
+  // 别的平台照样退回。
+  const firstLinux = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10' },
+  })
+  assert.equal(firstLinux.status, 0, firstLinux.log)
+  assert.match(firstLinux.log, /::warning::没有 0\.2\.10 的 latest-linux\.yml 备份/)
+  assert.match(firstLinux.outputs, /^platforms= latest\.yml$/m)
+})
+
+function runReverifyStep(platforms) {
+  const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'rollback-release.yml'), 'utf8'))
+  const step = workflow.jobs.rollback.steps.find((entry) => /Re-verify/.test(String(entry.name)))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rollback-reverify-'))
+  const bin = path.join(workspace, 'bin')
+  fs.mkdirSync(bin)
+  const log = path.join(workspace, 'npm.log')
+  fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\n`)
+  fs.chmodSync(path.join(bin, 'npm'), 0o755)
+  const result = spawnSync('/bin/bash', ['-c', step.run], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: { PATH: `${bin}:/usr/bin:/bin`, HOME: workspace, PLATFORMS: platforms },
+  })
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []
+  fs.rmSync(workspace, { recursive: true, force: true })
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  return calls
+}
+
+test('after a rollback each restored platform is re-verified, and Linux is never mistaken for Windows', posixOnly, () => {
+  const verify = (platform) => `run update:verify-feed -- --platform=${platform}`
+  assert.deepEqual(runReverifyStep(' latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml'), [verify('windows'), verify('macos'), verify('linux')])
+  // 「latest-linux.yml」里没有「latest.yml」这个子串，只退回 Linux 时不该去复核 Windows。
+  assert.deepEqual(runReverifyStep(' latest-linux.yml latest-linux-arm64.yml'), [verify('linux')])
+  assert.deepEqual(runReverifyStep(' latest-mac.yml'), [verify('macos')])
 })
