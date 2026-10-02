@@ -4860,20 +4860,20 @@ describe('scan probe degradation', () => {
   })
 })
 
-describe('checking a single CLI for updates', () => {
-  function versionProbeRunner() {
-    return vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
-      executable: spec.executable,
-      argv: [...spec.argv],
-      exitCode: 0,
-      signal: null,
-      stdout: '10.9.0\n',
-      stderr: '',
-      outputBytes: 7,
-      durationMs: 1,
-    }))
-  }
+function versionProbeRunner() {
+  return vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
+    executable: spec.executable,
+    argv: [...spec.argv],
+    exitCode: 0,
+    signal: null,
+    stdout: '10.9.0\n',
+    stderr: '',
+    outputBytes: 7,
+    durationMs: 1,
+  }))
+}
 
+describe('checking a single CLI for updates', () => {
   it('looks up where npm is without running npm --version', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-update-npm-'))
     temporaryDirectories.push(userHome)
@@ -4917,6 +4917,80 @@ describe('checking a single CLI for updates', () => {
 
     expect(status.installed).toBe(false)
     expect(resolveCliInstallation).toHaveBeenCalledWith('claude', expect.objectContaining({ npmExecutable: null }))
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+})
+
+describe('installing or uninstalling a CLI', () => {
+  it('checks who owns the existing copy without running npm --version', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-install-npm-'))
+    temporaryDirectories.push(userHome)
+    const npmPath = path.join(userHome, 'bin', 'npm')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const runCommand = versionProbeRunner()
+    // 装在 npm 之外的那份 Codex：安装前的归属确认会拦下，不会真的往下装。
+    const resolveCliInstallation = vi.fn(async () => ({
+      commandPath: '/opt/tools/codex',
+      installDirectory: '/opt/tools',
+      packageRoot: null,
+      npmPrefix: null,
+      packageVersion: null,
+      source: 'native' as const,
+    }))
+    const service = createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation,
+      findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmPath : null),
+      runCommand,
+    })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(service.installCli('codex', target)).rejects.toThrow('不是通过本工具安装的')
+
+    expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: npmPath }))
+    expect(runCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ executable: npmPath, argv: ['--version'] }),
+      expect.anything(),
+    )
+  })
+
+  it('looks up where npm is before uninstalling without running npm --version', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-npm-'))
+    temporaryDirectories.push(userHome)
+    const npmPath = path.join(userHome, 'bin', 'npm')
+    const runCommand = versionProbeRunner()
+    const resolveCliInstallation = vi.fn(async () => null)
+    const service = createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation,
+      findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmPath : null),
+      runCommand,
+    })
+
+    await expect(service.uninstallCli('codex')).resolves.toEqual({ outcome: 'not-installed', previousVersion: null })
+
+    expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: npmPath }))
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  it('still finds nothing to uninstall when npm itself cannot be found', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-no-npm-'))
+    temporaryDirectories.push(userHome)
+    const runCommand = versionProbeRunner()
+    const resolveCliInstallation = vi.fn(async () => null)
+    const service = createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation,
+      findExecutable: vi.fn(async () => null),
+      runCommand,
+    })
+
+    await expect(service.uninstallCli('codex')).resolves.toEqual({ outcome: 'not-installed', previousVersion: null })
+
+    expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: null }))
     expect(runCommand).not.toHaveBeenCalled()
   })
 })
