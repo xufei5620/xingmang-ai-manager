@@ -3780,9 +3780,10 @@ export function createSystemService(
     if (provider === 'grok') return
     let installSource: CliInstallDisplaySource | undefined
     try {
-      const npmTool = await inspectTool('npm')
-      const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-      installSource = (await inspectCliTool(provider, npmTool.path, npmGlobalRoot)).status.installSource
+      // 同 inspectCliUpdate：这里只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
+      const npmPath = await findInstalledExecutable('npm')
+      const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+      installSource = (await inspectCliTool(provider, npmPath, npmGlobalRoot)).status.installSource
     } catch {
       return
     }
@@ -4596,9 +4597,10 @@ export function createSystemService(
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装、更新或卸载中`)
     installing.add(provider)
     try {
-      const npmTool = await inspectTool('npm')
-      const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-      const initial = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+      // 同 inspectCliUpdate：卸载只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
+      const npmPath = await findInstalledExecutable('npm')
+      const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+      const initial = await inspectCliTool(provider, npmPath, npmGlobalRoot)
       if (!initial.status.installed || !initial.installation) {
         return { outcome: 'not-installed', previousVersion: null }
       }
@@ -4639,7 +4641,7 @@ export function createSystemService(
               trustedOnly: true,
             })
           : await findNpmExecutable(commandEnvironment(), [installation.commandPath])
-            ?? npmTool.path
+            ?? npmPath
         const plan = buildCliUninstallPlan(provider, installation, npmExecutable)
         if (plan.kind === 'npm-uninstall') {
           const layout = managedInstallation ? await ensureManagedNpmLayout() : null
@@ -4684,7 +4686,7 @@ export function createSystemService(
           retainedClaudeVersionFiles.push(...await uninstallNativeClaude(installation))
         }
         removedInstallations.push(installation.installDirectory)
-        current = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+        current = await inspectCliTool(provider, npmPath, npmGlobalRoot)
       }
       if (current.status.installed) {
         const removed = removedInstallations.length
