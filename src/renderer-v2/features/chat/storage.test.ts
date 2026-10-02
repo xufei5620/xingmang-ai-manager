@@ -537,10 +537,13 @@ describe('moving history to another computer', () => {
 
   it('merges into the saved files and survives a reopen', async () => {
     const files = memoryFiles()
-    await createHistoryWriter(files.api, null).save(workspace(scope, 2))
+    // 导入按 updatedAt 倒序排；夹具连着建的两个对话偶尔跨过一毫秒，后建的就排到前面，所以时间写死。
+    const saved = workspace(scope, 2)
+    saved.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index * 1000 })
+    await createHistoryWriter(files.api, null).save(saved)
     const imported = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(workspace('xm-account:9', 0)))))
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toBe(0)
-    const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: Date.now() + 1000, messages: [message()] }
+    const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: 3000, messages: [message()] }
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(1)
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(0)
     const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
