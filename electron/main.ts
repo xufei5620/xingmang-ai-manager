@@ -2563,6 +2563,9 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, installLeftoverStartupDelayMs).unref()
     })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
+    // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
+    // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
+    void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,

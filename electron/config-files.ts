@@ -881,6 +881,20 @@ export function codexModelCatalogPath(rootsInput: ProviderConfigRoots = defaultP
   return path.join(providerConfigRoot('codex', normalizeProviderConfigRoots(rootsInput)), codexModelCatalogFileName)
 }
 
+/**
+ * 名单文件的位置能不能写：还不存在、或是单链接普通文件才行。被换成符号链接、硬链接时
+ * 不能经它写（I8），也不该让 Codex 经它读到我们核对不了的内容。
+ */
+export function codexModelCatalogTargetUsable(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  try {
+    assertSafeConfigPath(codexModelCatalogPath(roots), providerConfigRoot('codex', roots), 'file')
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function classifyCodexConfigProfile(
   parsed: Record<string, unknown> | null,
   siteBaseUrl: string,
@@ -1131,6 +1145,9 @@ function createCodexRelayConfigPlans(
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
+  // 名单文件被换成了链接：这次只收回那一行，Key 和其余配置照常保存，不让一个写不了的
+  // 附属文件把整次保存连累失败。
+  const catalog = typeof modelCatalog === 'string' && !codexModelCatalogTargetUsable(roots) ? null : modelCatalog
   const currentText = fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null
@@ -1154,7 +1171,7 @@ function createCodexRelayConfigPlans(
 
   const storedRelay = mode === 'merge' && currentKind === 'official'
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
-  const templateCatalog = typeof modelCatalog === 'string'
+  const templateCatalog = typeof catalog === 'string'
   let catalogInUse = false
   let nextContent: string
   if (mode === 'reset') {
@@ -1164,12 +1181,12 @@ function createCodexRelayConfigPlans(
     const stored = TOML.parse(storedRelay)
     applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(stored, cliHook)
-    if (modelCatalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(stored, templateCatalog)
+    if (catalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(stored, templateCatalog)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
     applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
-    if (modelCatalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(currentParsed, templateCatalog)
+    if (catalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(currentParsed, templateCatalog)
     nextContent = tomlContent(currentParsed)
   } else {
     catalogInUse = templateCatalog
@@ -1180,9 +1197,9 @@ function createCodexRelayConfigPlans(
   // catalog is committed before the config that points at it: a crash between
   // the renames leaves an unused file, never a dangling setting. An unchanged
   // file is not rewritten, which also keeps every save from adding a backup.
-  if (catalogInUse && typeof modelCatalog === 'string') {
+  if (catalogInUse && typeof catalog === 'string') {
     const catalogPath = codexModelCatalogPath(roots)
-    if (readText(catalogPath) !== modelCatalog) plans.unshift({ path: catalogPath, content: modelCatalog })
+    if (readText(catalogPath) !== catalog) plans.unshift({ path: catalogPath, content: catalog })
   }
   plans.push({ path: paths.relay, content: nextContent })
   plans.push({ path: paths.active, content: nextContent })
@@ -1372,7 +1389,8 @@ export function claudeModelPickerNeedsRefresh(
 
 /**
  * Codex 那份型号名单按 expected 重写会不会变（见 codex-model-catalog.ts 的
- * codexRelayModelCatalogOutdated）。只读，读之前先过路径校验。
+ * codexRelayModelCatalogOutdated）。只读，读之前先过路径校验；不该有名单时只看那一行，
+ * 不去碰名单文件。
  */
 export function codexModelCatalogNeedsRefresh(
   expected: string | null,
@@ -1381,10 +1399,110 @@ export function codexModelCatalogNeedsRefresh(
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot('codex', roots)
   const [configPath] = providerConfigPaths('codex', roots)
-  const catalogPath = codexModelCatalogPath(roots)
   assertSafeConfigPath(configPath, providerRoot, 'file')
+  const parsed = requireToml(configPath, '现有 Codex config.toml')
+  if (expected === null) return codexRelayModelCatalogOutdated(parsed, null, null)
+  const catalogPath = codexModelCatalogPath(roots)
   assertSafeConfigPath(catalogPath, providerRoot, 'file')
-  return codexRelayModelCatalogOutdated(requireToml(configPath, '现有 Codex config.toml'), expected, readText(catalogPath))
+  return codexRelayModelCatalogOutdated(parsed, expected, readText(catalogPath))
+}
+
+export interface CodexModelCatalogOnDisk {
+  /** config.toml 顶层有本软件写的那一行。 */
+  managed: boolean
+  /** 那一行指向的名单文件内容；不存在、读不了或被换成链接时是 null。 */
+  content: string | null
+}
+
+/** 本软件写的型号名单现在是什么样：开机、换了命令行版本之后据此判断还能不能留着。 */
+export function inspectCodexModelCatalogOnDisk(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): CodexModelCatalogOnDisk {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const [configPath] = providerConfigPaths('codex', roots)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  if (!isManagedCodexModelCatalogSetting(requireToml(configPath, '现有 Codex config.toml').model_catalog_json)) {
+    return { managed: false, content: null }
+  }
+  return { managed: true, content: codexModelCatalogTargetUsable(roots) ? readText(codexModelCatalogPath(roots)) : null }
+}
+
+const managedCodexModelCatalogLine = new RegExp(
+  `^\\s*model_catalog_json\\s*=\\s*(["'])${codexModelCatalogFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1\\s*(?:#.*)?$`,
+)
+
+/** 两份 TOML 读出来的值逐项相同（大整数读出来是 BigInt，JSON.stringify 不认，换成文本比）。 */
+function sameTomlValue(left: unknown, right: unknown): boolean {
+  function replacer(_key: string, value: unknown): unknown {
+    return typeof value === 'bigint' ? `${value}n` : value
+  }
+  return JSON.stringify(left, replacer) === JSON.stringify(right, replacer)
+}
+
+/**
+ * 去掉本软件写的那一行，其余一个字不动（注释、顺序、每一行的换行符都留着）；没有那一行
+ * 返回 null。按行删不干净（写法少见）时才退回整份重新排版。
+ */
+function withoutManagedCodexModelCatalogLine(text: string, label: string): string | null {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(text)
+  } catch (error) {
+    throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
+  }
+  if (!isManagedCodexModelCatalogSetting(parsed.model_catalog_json)) return null
+  removeCodexRelayModelCatalog(parsed)
+  // 每一行连着它自己的换行符切开，删掉那一行再原样拼回。
+  const lines = text.split(/(?<=\n)/)
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line))
+  const topLevelEnd = firstTable === -1 ? lines.length : firstTable
+  const index = lines.slice(0, topLevelEnd).findIndex((line) => managedCodexModelCatalogLine.test(line.replace(/\r?\n$/, '')))
+  if (index !== -1) {
+    const next = [...lines.slice(0, index), ...lines.slice(index + 1)].join('')
+    try {
+      // 删掉的必须恰好是那一个键：读回来与「原样去掉它」逐项一致才用按行删的结果
+      // （防的是多行字符串里刚好有一行长得一样）。
+      if (sameTomlValue(TOML.parse(next), parsed)) return next
+    } catch {
+      // 按行删坏了结构：下面整份重排。
+    }
+  }
+  return tomlContent(parsed)
+}
+
+function codexConfigWithoutManagedCatalog(filePath: string, label: string, providerRoot: string): FilePlan | null {
+  assertSafeConfigPath(filePath, providerRoot, 'file')
+  const text = requireConfigText(filePath, label)
+  const next = text ? withoutManagedCodexModelCatalogLine(text, label) : null
+  return next === null ? null : { path: filePath, content: next }
+}
+
+/**
+ * 只收回本软件写的 model_catalog_json 那一行（正在用的 config.toml 与切回星芒时用的那份），
+ * 不看账号、不联网：命令行退回旧版、桌面端太旧时，名单读不进 Codex 就起不来，这一步
+ * 不能等账号核对。名单文件留着。什么都没改返回 null。
+ */
+export function takeBackCodexModelCatalog(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  hooks: NativeConfigWriteHooks = {},
+): NativeConfigSaveResult | null {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const paths = codexConfigSnapshotPaths(roots)
+  const plans: FilePlan[] = []
+  try {
+    const relay = codexConfigWithoutManagedCatalog(paths.relay, '已保存的星芒 Codex 配置', providerRoot)
+    if (relay) plans.push(relay)
+  } catch {
+    // 切回星芒用的那份快照读不了、或被换成了链接：留着不碰，不挡住收回 Codex 正在读的这份。
+  }
+  const active = codexConfigWithoutManagedCatalog(paths.active, '现有 Codex config.toml', providerRoot)
+  if (active) plans.push(active)
+  if (plans.length === 0) return null
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans(plans, hooks, providerRoot)
 }
 
 export function inspectProviderConfig(

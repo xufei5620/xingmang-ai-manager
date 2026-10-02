@@ -21,4 +21,4 @@
 1. 从那个 tag 原样下载 `codex-rs/models-manager/models.json`、根目录的 `LICENSE` 与 `NOTICE`，覆盖这里的三个文件。不要经过会改换行或缩进的编辑器。
 2. 改 `electron/codex-model-catalog.ts` 的 `bundledCodexModelCatalogSource`：`tag` 与 `sha256`（`sha256sum models.json`）。改这份 README 的表格。
 3. 跑 `npx vitest run electron/codex-model-catalog.test.ts`：每个型号都要读得进（`rejected` 为空），要求的最低命令行版本（`codexModelCatalogRequiredCliVersion`）不能高过推荐版本。新名单要是用了 `codexModelCatalogEntryProblem` 不认识的固定取值，先查上游 `codex-rs/protocol/src/openai_models.rs` 再放进白名单。
-4. 用真二进制核一遍：推荐版本的命令行、桌面端当前带的那版 Codex，各在临时 `CODEX_HOME` 里写一份指向新名单的 `config.toml`，跑 `codex debug models` 能列出全部型号、`codex exec` 不报 `Model metadata ... not found`。读不进的版本要么抬 `codexModelCatalogMinimumCliVersion`，要么这次不换。
+4. 用真二进制核一遍：推荐版本的命令行、桌面端当前带的那版 Codex，各在临时 `CODEX_HOME` 里写一份指向新名单的 `config.toml`，跑 `codex debug models` 能列出全部型号、`codex exec` 不报 `Model metadata ... not found`。读不进的版本要么抬 `codexModelCatalogMinimumCliVersion`（命令行）或 `codexDesktopModelCatalogMinimumBuild`（桌面端那一批），要么这次不换。

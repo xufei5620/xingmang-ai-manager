@@ -22,7 +22,7 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
-import { resolveBundledCodexModelCatalogPath } from './codex-model-catalog'
+import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } from './codex-model-catalog'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
@@ -60,6 +60,10 @@ import {
   offlineLatestVersionBudgetMs,
   settleLatestVersionProbes,
   createSystemService,
+  codexDesktopCatalogProbeFromMacosApp,
+  codexDesktopCatalogProbeFromPackage,
+  createCachedProbe,
+  settleWithin,
   nodeStillOutdatedAfterReplaceMessage,
   shouldReplaceNodeForCertificates,
   DarwinGrokRetainedPathsError,
@@ -320,6 +324,7 @@ function officialDarwinGrokUninstallResult(
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
@@ -537,9 +542,16 @@ describe('createSystemService', () => {
     const packageRoot = path.join(root, 'npm', 'lib', 'node_modules', '@openai', 'codex')
     // 测试中途换成别的版本或「读不出来」，看同一个服务下一次保存怎么处理那一行。
     const cli: { installation: CliInstallation | null | Error } = { installation: null }
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
-      data: [{ id: 'gpt-5.5' }, { id: 'claude-opus-5' }, { id: 'gpt-6.1-sol' }],
-    }), { status: 200 })))
+    // 桌面端自带的那份 Codex：缺省是没装；真去探在 Windows / Mac CI 上会问到 runner 自己的系统。
+    const desktop: { probe: CodexDesktopCatalogProbe } = { probe: { installed: false, version: null } }
+    const account = { models: ['gpt-5.5', 'claude-opus-5', 'gpt-6.1-sol'] }
+    const fetchModels = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchModels)
+    const running = vi.fn(async () => ({ running: [] as ProviderId[], unknown: [] as ProviderId[], codexDesktopRunning: false as boolean | null, canRestartCodexDesktop: false }))
+    const session = { account: JSON.stringify(['solov', 36]) as string | null }
+    const desktopProbe = vi.fn(async () => desktop.probe)
     const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
       providerRoots: roots,
       bundledCodexModelCatalogPath: resolveBundledCodexModelCatalogPath(path.resolve(__dirname, '..')),
@@ -547,6 +559,9 @@ describe('createSystemService', () => {
         if (cli.installation instanceof Error) throw cli.installation
         return cli.installation
       },
+      inspectCodexDesktopForModelCatalog: desktopProbe,
+      inspectRunningToolsForTemplateFill: running,
+      getExternalClientAccountId: () => session.account,
     })
     function installCodexCli(version: string): void {
       cli.installation = {
@@ -558,17 +573,30 @@ describe('createSystemService', () => {
         source: 'npm',
       }
     }
-    function save() {
-      return service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false)
+    function save(model = 'gpt-6.1-sol') {
+      return service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model, mode: 'merge' }, false)
     }
     function catalogSetting(): unknown {
       return asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))).model_catalog_json
     }
-    return { cli, roots, installCodexCli, save, catalogSetting, catalogPath: path.join(roots.codexHome, 'xingmang-models.json') }
+    function storedRelaySetting(): unknown {
+      return asTomlRecord(TOML.parse(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8'))).model_catalog_json
+    }
+    return {
+      cli, desktop, desktopProbe, account, session, fetchModels, running, roots, service, installCodexCli, save, catalogSetting, storedRelaySetting,
+      catalogPath: path.join(roots.codexHome, 'xingmang-models.json'),
+      catalogSlugs: () => (JSON.parse(fs.readFileSync(path.join(roots.codexHome, 'xingmang-models.json'), 'utf8')) as { models: Array<{ slug: string }> })
+        .models.map((model) => model.slug),
+    }
   }
 
   function asTomlRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  }
+
+  /** 本机版本探测 30 秒内复用；测试里让时间走过去，下一次保存才会重新探。 */
+  function letCatalogReaderProbesExpire(): void {
+    vi.setSystemTime(Date.now() + 31_000)
   }
 
   it('writes the official Codex entries for the models the account can use, so the desktop menu lists GPT-6.1 Sol', async () => {
@@ -583,16 +611,41 @@ describe('createSystemService', () => {
     expect(written.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
   })
 
-  it('writes the catalog when only the Codex desktop app is on this computer', async () => {
+  it('writes the catalog when only a Codex desktop app from a release that reads it is on this computer', async () => {
     const f = codexCatalogFixture()
+    f.desktop.probe = { installed: true, version: '26.930.2377.0' }
+
     await f.save()
+
     expect(f.catalogSetting()).toBe('xingmang-models.json')
   })
 
+  it('does not write the catalog for a Codex desktop app from a release that predates it', async () => {
+    const f = codexCatalogFixture()
+    f.desktop.probe = { installed: true, version: '26.909.1234.0' }
+
+    const result = await f.save()
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(result.files).not.toContain(f.catalogPath)
+    expect(fs.existsSync(f.catalogPath)).toBe(false)
+  })
+
+  it('does not write a catalog that would leave out the configured default model', async () => {
+    const f = codexCatalogFixture()
+
+    await f.save('claude-opus-5')
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(fs.existsSync(f.catalogPath)).toBe(false)
+  })
+
   it('takes its catalog back once the Codex CLI on this computer is too old to read it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
     const f = codexCatalogFixture()
     await f.save()
     f.installCodexCli('0.150.0')
+    letCatalogReaderProbesExpire()
 
     await f.save()
 
@@ -600,12 +653,166 @@ describe('createSystemService', () => {
   })
 
   it('leaves the catalog as it is when the Codex CLI version cannot be read', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
     const f = codexCatalogFixture()
     await f.save()
     f.cli.installation = new Error('注册表读取失败')
+    letCatalogReaderProbesExpire()
 
     await f.save()
 
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+  })
+
+  it('leaves the catalog as it is when it cannot tell whether the Codex desktop app is installed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.desktop.probe = { installed: null, version: null }
+    letCatalogReaderProbesExpire()
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+  })
+
+  it('takes the catalog back on this computer before a launch once the Codex CLI was swapped for an older one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.installCodexCli('0.146.1')
+    letCatalogReaderProbesExpire()
+
+    expect(await f.service.checkToolModels!('codex')).toEqual({ status: 'skipped' })
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(f.storedRelaySetting()).toBeUndefined()
+    // 名单文件留着：星芒的快照和旧备份可能还指向它。
+    expect(fs.existsSync(f.catalogPath)).toBe(true)
+  })
+
+  it('takes the catalog back before a launch when its file went missing', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    fs.rmSync(f.catalogPath)
+
+    await f.service.checkToolModels!('codex')
+
+    expect(f.catalogSetting()).toBeUndefined()
+  })
+
+  it('keeps a readable catalog before a launch while the Codex CLI still reads it', async () => {
+    const f = codexCatalogFixture()
+    f.installCodexCli('0.156.1')
+    await f.save()
+    const before = fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')
+
+    await f.service.checkToolModels!('codex')
+
+    expect(fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')).toBe(before)
+  })
+
+  it('brings the catalog up to the account at startup, backing the config up first, once Codex is closed', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+    f.account.models.push('gpt-6-astra')
+    const backups: Array<{ provider: ProviderId; slugs: string[] }> = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, slugs: f.catalogSlugs() }) })).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5']))
+    expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
+    expect(f.running).toHaveBeenCalledWith(['codex'])
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('refreshes the Claude Code menu before a launch and keeps the account as the source of the config', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-picker-refresh-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['claude-opus-5', 'claude-sonnet-5'] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+    })
+    await service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    account.models.push('claude-haiku-5')
+
+    // 刷新那次写入会先把来源记录改成「手动」再写：按记录认人的话写到一半就作废，记录还留在「手动」。
+    expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
+
+    expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  it('leaves the catalog for the next startup while Codex may still be open', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false })
+    const requests = f.fetchModels.mock.calls.length
+    const backup = vi.fn()
+
+    await f.service.fillToolTemplateDefaults!(backup)
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(backup).not.toHaveBeenCalled()
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('takes the catalog back at startup once the Codex desktop app turns out to predate it, without an account', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.desktop.probe = { installed: true, version: '26.827.5501.0' }
+    letCatalogReaderProbesExpire()
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.catalogSetting()).toBeUndefined())
+  })
+
+  it('takes the catalog back at startup while logged out, once for the whole startup', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.session.account = null
+    f.desktop.probe = { installed: true, version: '26.827.5501.0' }
+    letCatalogReaderProbesExpire()
+
+    const startup = f.service.guardCodexModelCatalogAtStartup!()
+    await startup
+
+    expect(f.catalogSetting()).toBeUndefined()
+    // 登录状态下开机那轮按账号同步也走这一次，不再问一遍。
+    expect(f.service.guardCodexModelCatalogAtStartup!()).toBe(startup)
+  })
+
+  it('does not hold a launch behind another config write while the catalog is readable', async () => {
+    const f = codexCatalogFixture()
+    f.installCodexCli('0.156.1')
+    await f.save()
+    // 另一次保存（换了一把 Key，模型列表不在缓存里）卡在问中转：它拿着写配置的锁。
+    let answer!: () => void
+    f.fetchModels.mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      answer = () => resolve(new Response(JSON.stringify({ data: f.account.models.map((id) => ({ id })) }), { status: 200 }))
+    }))
+    const pendingSave = f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog-next', model: 'gpt-6.1-sol', mode: 'merge' }, false)
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+
+    const launch = await Promise.race([
+      f.service.checkToolModels!('codex').then(() => 'checked'),
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 1_000)),
+    ])
+
+    expect(launch).toBe('checked')
+    answer()
+    await pendingSave
     expect(f.catalogSetting()).toBe('xingmang-models.json')
   })
 
@@ -5728,5 +5935,74 @@ describe('CC Switch leftovers in the config summary', () => {
     expect(after.claude.ccSwitchLeftover).toBe('proxy')
     expect(after.gemini.ccSwitchLeftover).toBe('provider')
     expect(after.codex).not.toHaveProperty('ccSwitchLeftover')
+  })
+})
+
+describe('telling which Codex builds would read the model catalog', () => {
+  const desktopPackage = {
+    name: 'OpenAI.Codex',
+    version: '26.930.2377.0',
+    packageFullName: 'OpenAI.Codex_26.930.2377.0_x64__2p2nqsd0c76g0',
+    packageFamilyName: 'OpenAI.Codex_2p2nqsd0c76g0',
+    installLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.930.2377.0_x64__2p2nqsd0c76g0',
+  }
+
+  it('counts a Windows desktop app as absent only when the Appx probe confirmed it', () => {
+    expect(codexDesktopCatalogProbeFromPackage({ value: desktopPackage, error: null, source: 'current-user', confirmedAbsent: false }))
+      .toEqual({ installed: true, version: '26.930.2377.0' })
+    expect(codexDesktopCatalogProbeFromPackage({ value: null, error: null, source: null, confirmedAbsent: true }))
+      .toEqual({ installed: false, version: null })
+    expect(codexDesktopCatalogProbeFromPackage({ value: null, error: 'Get-AppxPackage 超时', source: null, confirmedAbsent: true }))
+      .toEqual({ installed: null, version: null })
+    expect(codexDesktopCatalogProbeFromPackage({ value: null, error: null, source: null, confirmedAbsent: false }))
+      .toEqual({ installed: null, version: null })
+  })
+
+  it('treats an unfinished macOS app scan as unknown rather than absent', () => {
+    expect(codexDesktopCatalogProbeFromMacosApp({ app: { path: '/Applications/Codex.app', version: '26.930.11008', running: false }, detectionFailed: false, detectionError: null }))
+      .toEqual({ installed: true, version: '26.930.11008' })
+    expect(codexDesktopCatalogProbeFromMacosApp({ app: null, detectionFailed: false, detectionError: null }))
+      .toEqual({ installed: false, version: null })
+    expect(codexDesktopCatalogProbeFromMacosApp({ app: null, detectionFailed: true, detectionError: 'codesign 超时' }))
+      .toEqual({ installed: null, version: null })
+  })
+
+  it('reuses one probe within its time window and probes again after it or once forgotten', async () => {
+    let clock = 1_000
+    let runs = 0
+    const probe = createCachedProbe(async () => ++runs, 30_000, () => clock)
+
+    expect(await Promise.all([probe.read(), probe.read()])).toEqual([1, 1])
+    clock += 29_999
+    expect(await probe.read()).toBe(1)
+    clock += 1
+    expect(await probe.read()).toBe(2)
+    probe.forget()
+    expect(await probe.read()).toBe(3)
+    // 系统时间往回拨了：不能让这一次的结论一直用到时间追回来。
+    clock -= 60_000
+    expect(await probe.read()).toBe(4)
+  })
+
+  it('stops waiting at the deadline but lets the work finish on its own, and never throws', async () => {
+    vi.useFakeTimers()
+    try {
+      let finish!: () => void
+      let finished = false
+      const work = new Promise<void>((resolve) => { finish = resolve }).then(() => { finished = true })
+      let waited = false
+      void settleWithin(work, 3_000).then(() => { waited = true })
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(waited).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(waited).toBe(true)
+      expect(finished).toBe(false)
+      finish()
+      await work
+      expect(finished).toBe(true)
+
+      await expect(settleWithin(Promise.reject(new Error('收回失败')), 3_000)).resolves.toBeUndefined()
+      await expect(settleWithin(Promise.resolve('done'), 3_000)).resolves.toBeUndefined()
+    } finally { vi.useRealTimers() }
   })
 })

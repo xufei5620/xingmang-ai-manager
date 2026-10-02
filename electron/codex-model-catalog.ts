@@ -23,8 +23,10 @@ import { isNewerVersion } from './versions'
 // - 它整份替换内置名单，不合并：没写进来的型号菜单里就没有。所以只写当前账号有、官方
 //   资料也有的型号，账号能用的型号变了要跟着重写（tool-model-check.ts）。
 // - 0.146.x 及更早要求每个型号都带 base_instructions，官方从 0.147.0 起的名单不再带它；
-//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它筛，客户端自己不看）。这台
-//   电脑上的 Codex 命令行低于这些版本里最高的那个就不写。
+//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它筛，客户端自己不看）。读这份
+//   名单的不只命令行，还有桌面端自带的那一份：命令行低于这些版本里最高的那个、桌面端早于
+//   已知读得懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
+// - 默认型号要在名单里：不在的话它丢了官方资料、菜单里也没有它，宁可不写。
 // - 只在启动时读名单：桌面端开着时写进去，要关掉重开才看得到。
 
 /** 写在 CODEX_HOME 里、config.toml 旁边。配置里用相对名字，Codex 按 config.toml 所在目录解析。 */
@@ -42,6 +44,15 @@ export const BUNDLED_CODEX_MODEL_CATALOG_RELATIVE_PATH = ['bundled-catalog', 'co
 
 /** 不带 base_instructions 的型号资料从这一版起才读得懂（openai_models.rs @ rust-v0.147.0）。 */
 export const codexModelCatalogMinimumCliVersion = '0.147.0'
+
+/**
+ * 桌面端自带的 Codex 跟着 OpenAI 自己的发布批次走，版本号前两段就是批次（26.930 =
+ * 2026-09-30 那一批；Windows 包是 26.930.2377.0，Mac 是 26.930.11008 这样）。已知自带版本
+ * 的最早一批是 26.917（0.155.0-alpha.16.3，2026-09-23 真机日志），26.930 带的是
+ * 0.159.0-alpha.12.1（openai/codex #50061），都读得懂。批次越新带的越新；更早的批次带的
+ * 多半早于 0.147.0，读不进名单时桌面端开不了新对话，一律当太旧。
+ */
+export const codexDesktopModelCatalogMinimumBuild = '26.917'
 
 const MAX_BUNDLED_CATALOG_BYTES = 2 * 1024 * 1024
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
@@ -74,7 +85,13 @@ export interface ParsedCodexModelCatalog extends CodexModelCatalog {
   rejected: CodexModelCatalogRejection[]
 }
 
-export type CodexCliCatalogVerdict = 'accepted' | 'too-old' | 'unknown'
+export type CodexModelCatalogVerdict = 'accepted' | 'too-old' | 'unknown'
+
+export interface CodexDesktopCatalogProbe {
+  /** null = 看不出装没装（探测本身失败）。 */
+  installed: boolean | null
+  version: string | null
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -107,11 +124,15 @@ export function codexModelCatalogEntryProblem(entry: unknown): string | null {
   if (typeof entry.shell_type !== 'string' || !shellTypes.has(entry.shell_type)) return 'shell_type 无效'
   if (typeof entry.visibility !== 'string' || !visibilities.has(entry.visibility)) return 'visibility 无效'
   if (typeof entry.supported_in_api !== 'boolean') return 'supported_in_api 无效'
-  if (!Number.isSafeInteger(entry.priority) || Math.abs(entry.priority as number) > 2 ** 31 - 1) return 'priority 无效'
+  if (typeof entry.priority !== 'number' || !Number.isSafeInteger(entry.priority) || Math.abs(entry.priority) > 2 ** 31 - 1) {
+    return 'priority 无效'
+  }
   if (typeof entry.support_verbosity !== 'boolean') return 'support_verbosity 无效'
   const truncation = entry.truncation_policy
   if (!isRecord(truncation) || typeof truncation.mode !== 'string' || !truncationModes.has(truncation.mode)
-    || !Number.isSafeInteger(truncation.limit) || (truncation.limit as number) < 0) return 'truncation_policy 无效'
+    || typeof truncation.limit !== 'number' || !Number.isSafeInteger(truncation.limit) || truncation.limit < 0) {
+    return 'truncation_policy 无效'
+  }
   if (!Array.isArray(entry.experimental_supported_tools)
     || !entry.experimental_supported_tools.every((tool) => typeof tool === 'string')) return 'experimental_supported_tools 无效'
   if (!isOptionalMember(entry.apply_patch_tool_type, applyPatchToolTypes)) return 'apply_patch_tool_type 无效'
@@ -143,17 +164,16 @@ export function parseCodexModelCatalog(content: string): ParsedCodexModelCatalog
   const seen = new Set<string>()
   for (const entry of value.models) {
     const problem = codexModelCatalogEntryProblem(entry)
-    const slug = isRecord(entry) && typeof entry.slug === 'string' ? entry.slug : null
-    if (problem) {
-      rejected.push({ slug, reason: problem })
+    if (problem !== null || !isRecord(entry) || typeof entry.slug !== 'string') {
+      rejected.push({ slug: isRecord(entry) && typeof entry.slug === 'string' ? entry.slug : null, reason: problem ?? '不是对象' })
       continue
     }
-    if (slug === null || seen.has(slug)) {
-      rejected.push({ slug, reason: '重复的 slug' })
+    if (seen.has(entry.slug)) {
+      rejected.push({ slug: entry.slug, reason: '重复的 slug' })
       continue
     }
-    seen.add(slug)
-    models.push(entry as Record<string, unknown>)
+    seen.add(entry.slug)
+    models.push(entry)
   }
   if (models.length === 0) throw new Error('Codex 模型资料里没有可用的型号')
   return { models, rejected }
@@ -203,17 +223,44 @@ export function codexModelCatalogRequiredCliVersion(catalog: CodexModelCatalog):
 }
 
 /**
- * 这台电脑上的 Codex 命令行能不能用这份名单。没装命令行只看桌面端，算能用；装了但读不出
+ * 这台电脑上的 Codex 命令行能不能用这份名单。没装命令行就不拦（桌面端另看）；装了但读不出
  * 版本号就算不知道，交给调用方保持原样，免得一次没读到就把菜单来回改。
  */
 export function codexCliAcceptsModelCatalog(
   cli: { installed: boolean; version: string | null },
   catalog: CodexModelCatalog,
-): CodexCliCatalogVerdict {
+): CodexModelCatalogVerdict {
   if (!cli.installed) return 'accepted'
   const version = CLI_VERSION_IN_TEXT.exec(cli.version ?? '')?.[1]
   if (!version) return 'unknown'
   return isNewerVersion(version, codexModelCatalogRequiredCliVersion(catalog)) ? 'too-old' : 'accepted'
+}
+
+/**
+ * 桌面端自带的那份 Codex 能不能用这份名单，按批次判断（见 codexDesktopModelCatalogMinimumBuild）。
+ * 没装不拦；看不出装没装、版本号认不出批次，都算不知道。
+ */
+export function codexDesktopAcceptsModelCatalog(desktop: CodexDesktopCatalogProbe): CodexModelCatalogVerdict {
+  if (desktop.installed === false) return 'accepted'
+  if (desktop.installed === null) return 'unknown'
+  const build = /^(\d+)\.(\d+)(?:\.|$)/.exec(desktop.version?.trim() ?? '')
+  if (!build) return 'unknown'
+  const [minimumMajor, minimumMinor] = codexDesktopModelCatalogMinimumBuild.split('.').map(Number)
+  const major = Number(build[1])
+  const minor = Number(build[2])
+  return major > minimumMajor || (major === minimumMajor && minor >= minimumMinor) ? 'accepted' : 'too-old'
+}
+
+/** 读这份名单的几份 Codex 合起来看：有一份太旧就不能写，有一份看不出就原样不动。 */
+export function combineCodexModelCatalogVerdicts(verdicts: readonly CodexModelCatalogVerdict[]): CodexModelCatalogVerdict {
+  if (verdicts.includes('too-old')) return 'too-old'
+  return verdicts.includes('unknown') ? 'unknown' : 'accepted'
+}
+
+/** 名单整份顶掉内置那份：默认型号不在里面，它就丢了官方资料，退回通用提示词。 */
+export function codexModelCatalogListsModel(catalog: CodexModelCatalog, model: string): boolean {
+  const slug = model.trim()
+  return catalog.models.some((entry) => entry.slug === slug)
 }
 
 /** 落盘内容。只由型号资料决定，同一份输入永远写出同样的字节，便于判断要不要重写。 */

@@ -21,6 +21,9 @@ import {
   codexConfigSnapshotPaths,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogPath,
+  codexModelCatalogTargetUsable,
+  inspectCodexModelCatalogOnDisk,
+  takeBackCodexModelCatalog,
   defaultCodexRelayProvider,
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
@@ -3280,24 +3283,135 @@ describe('the Codex model catalog Xingmang writes', () => {
 
   function expectLinkRefused(link: (target: string, linkPath: string) => void, refusal: RegExp) {
     const roots = providerRoots(temporaryHome())
-    saveCodex(roots, 'reset')
+    saveCodex(roots, 'reset', catalog)
     // Same volume as the Codex root, so a hard link can be made on every platform.
     const elsewhere = path.join(roots.userHome, 'elsewhere.json')
     fs.writeFileSync(elsewhere, catalog, 'utf8')
+    fs.rmSync(codexModelCatalogPath(roots))
     link(elsewhere, codexModelCatalogPath(roots))
 
+    expect(codexModelCatalogTargetUsable(roots)).toBe(false)
     expect(() => codexModelCatalogNeedsRefresh(catalog, roots)).toThrow(refusal)
-    expect(() => saveCodex(roots, 'merge', otherCatalog)).toThrow(refusal)
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: true, content: null })
+    // 名单写不了不连累整次保存：Key 照存，那一行收回，链接指向的文件一个字不动。
+    saveProviderConfig('codex', 'sk-relay-next', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, undefined, otherCatalog)
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).apiKey).toBe('sk-relay-next')
     expect(fs.readFileSync(elsewhere, 'utf8')).toBe(catalog)
     expect('model_catalog_json' in readConfig(roots)).toBe(false)
   }
 
-  it('refuses to read or write the catalog through a hard link', () => {
+  it('saves the key without the catalog when the catalog was swapped for a hard link', () => {
     expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /单链接普通文件/)
   })
 
   // Creating a file symlink needs Developer Mode or administrator rights on Windows.
-  it.skipIf(process.platform === 'win32')('refuses to read or write the catalog through a symbolic link', () => {
+  it.skipIf(process.platform === 'win32')('saves the key without the catalog when the catalog was swapped for a symbolic link', () => {
     expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /符号链接|单链接普通文件/)
+  })
+
+  it('reports whether config.toml carries its own catalog line and what that file holds', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: false, content: null })
+    saveCodex(roots, 'reset', catalog)
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: true, content: catalog })
+    fs.rmSync(codexModelCatalogPath(roots))
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: true, content: null })
+    fs.writeFileSync(providerConfigPaths('codex', roots)[0], 'model_catalog_json = "my-models.json"\n', 'utf8')
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: false, content: null })
+  })
+
+  it('takes back only its own line, from config.toml and the saved relay config, leaving every other byte alone', () => {
+    const roots = providerRoots(temporaryHome())
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    const original = [
+      '# 我自己的注释',
+      'model = "gpt-6.1-sol"',
+      "model_catalog_json = 'xingmang-models.json'  # 星芒写的",
+      'model_provider = "xingmang"',
+      '',
+      '[model_providers.xingmang]',
+      'name = "星芒"',
+      '',
+    ].join('\r\n')
+    fs.writeFileSync(configs.active, original, 'utf8')
+    fs.writeFileSync(configs.relay, original, 'utf8')
+    fs.writeFileSync(codexModelCatalogPath(roots), catalog, 'utf8')
+
+    const result = takeBackCodexModelCatalog(roots)
+
+    const expected = original.replace("model_catalog_json = 'xingmang-models.json'  # 星芒写的\r\n", '')
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe(expected)
+    expect(fs.readFileSync(configs.relay, 'utf8')).toBe(expected)
+    expect(result?.files).toEqual([configs.relay, configs.active])
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(catalog)
+  })
+
+  it('keeps mixed line endings and values that only read back as big integers when it takes the line back', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    const original = 'model = "gpt-6.1-sol"\nmodel_catalog_json = "xingmang-models.json"\r\nproject_doc_max_bytes = 9007199254740993\r\n'
+    fs.writeFileSync(configPath, original, 'utf8')
+
+    expect(takeBackCodexModelCatalog(roots)).not.toBeNull()
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "gpt-6.1-sol"\nproject_doc_max_bytes = 9007199254740993\r\n')
+  })
+
+  it('still takes the line back from config.toml when the saved relay config cannot be read', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.writeFileSync(configs.relay, 'model_catalog_json = "xingmang-models.json"\nmodel = [\n', 'utf8')
+
+    expect(takeBackCodexModelCatalog(roots)?.files).toEqual([configs.active])
+
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+    expect(fs.readFileSync(configs.relay, 'utf8')).toBe('model_catalog_json = "xingmang-models.json"\nmodel = [\n')
+  })
+
+  it('has nothing to take back when the line is absent or the user set their own catalog', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(takeBackCodexModelCatalog(roots)).toBeNull()
+    saveCodex(roots, 'reset')
+    expect(takeBackCodexModelCatalog(roots)).toBeNull()
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.writeFileSync(configPath, 'model_catalog_json = "my-models.json"\n', 'utf8')
+    expect(takeBackCodexModelCatalog(roots)).toBeNull()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model_catalog_json = "my-models.json"\n')
+  })
+
+  it('rewrites the whole file instead of cutting a line that only looks like its own', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configPath, [
+      'developer_instructions = """',
+      'model_catalog_json = "xingmang-models.json"',
+      '"""',
+      '"model_catalog_json" = "xingmang-models.json"',
+      'model = "gpt-6.1-sol"',
+      '',
+    ].join('\n'), 'utf8')
+
+    expect(takeBackCodexModelCatalog(roots)).not.toBeNull()
+
+    expect(readConfig(roots)).toEqual({
+      developer_instructions: 'model_catalog_json = "xingmang-models.json"\n',
+      model: 'gpt-6.1-sol',
+    })
+  })
+
+  it('refuses to take the line back through a linked config.toml', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const elsewhere = path.join(roots.userHome, 'config-elsewhere.toml')
+    fs.renameSync(configPath, elsewhere)
+    fs.linkSync(elsewhere, configPath)
+
+    expect(() => takeBackCodexModelCatalog(roots)).toThrow(/单链接普通文件/)
+    expect(asRecord(TOML.parse(fs.readFileSync(elsewhere, 'utf8')))?.model_catalog_json).toBe('xingmang-models.json')
   })
 })

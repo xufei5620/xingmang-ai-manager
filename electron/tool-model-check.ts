@@ -29,8 +29,15 @@ export interface ToolModelCheckDependencies {
   now(): number
   /** 只核本软件用当前账号写的配置；官方账号、手填、被改动过的一律 null，不碰。 */
   target(provider: ProviderId): ToolModelCheckTarget | null
+  /**
+   * 这份配置现在是谁的（同 target 的 identity），只是不管它还该不该碰；缺省就取 target 的。
+   * 只给交到 refreshPicker 手里的 assertCurrent 用：那次写入会先把来源记录改成别的再写
+   * （system-service.ts 的 saveConfig），写入当中再按 target 认人，就会以为换了人，菜单
+   * 永远刷不成（#562 起）。写之前的几道核对照旧按 target。
+   */
+  identity?(provider: ProviderId): string | null
   listModels(apiKey: string): Promise<string[]>
-  /** Codex 要先问一遍命令行的版本才知道该不该写名单，所以可以是异步的。 */
+  /** Codex 要先在本机问一遍命令行和桌面端的版本才知道该不该写名单，所以可以是异步的。 */
   pickerOutdated(provider: ModelPickerProvider, models: readonly string[], model: string): boolean | Promise<boolean>
   /**
    * assertCurrent 要在真正落盘前再调一次：核对和写入之间隔着网络请求，账号随时会切走，
@@ -86,8 +93,10 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     function stillCurrent(): boolean {
       return deps.target(provider)?.identity === identity
     }
+    // 写入当中只认人：来源记录是写入自己改的，该不该自动写由写入那道闸进锁时把关。
     function assertCurrent(): void {
-      if (!stillCurrent()) throw new Error('账号已变化，这次核对作废')
+      const current = deps.identity ? deps.identity(provider) : deps.target(provider)?.identity
+      if (current !== identity) throw new Error('账号已变化，这次核对作废')
     }
     return { stillCurrent, assertCurrent }
   }
@@ -100,12 +109,16 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     return withTimeout(deps.listModels(target.apiKey), deps.listTimeoutMs ?? 5_000)
   }
 
-  /** 菜单对不上就悄悄重写。读不出、写不成都只记日志：明天第一次打开（或下次开机）再试。 */
+  /**
+   * 菜单对不上就悄悄重写。读不出、写不成都只记日志：明天第一次打开（或下次开机）再试。
+   * beforeRefresh 在真要重写之前调（开机那次用来先备份），它抛错就不重写。
+   */
   async function refreshPickerIfOutdated(
     provider: ModelPickerProvider,
     target: ToolModelCheckTarget,
     models: readonly string[],
     guard: ReturnType<typeof currentGuard>,
+    beforeRefresh?: () => void,
   ): Promise<'refreshed' | 'unchanged' | 'stale'> {
     const name = pickerNames[provider]
     let outdated: boolean
@@ -118,6 +131,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     if (!outdated) return 'unchanged'
     if (!guard.stillCurrent()) return 'stale'
     try {
+      beforeRefresh?.()
       await deps.refreshPicker(provider, target.model, guard.assertCurrent)
     } catch (error) {
       deps.log?.('warn', 'tool-models.picker-refresh-failed', `${name} 的模型菜单没能刷新`, { provider, reason: errorText(error) })
@@ -169,7 +183,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
    * 桌面端，不经过打开前那次核对，新型号就一直进不了菜单。这里不劝换模型、也不占当天
    * 那次核对，默认模型已经用不了的留给打开前那次去问。返回菜单是否真的刷新了。
    */
-  async function syncPicker(provider: ProviderId): Promise<boolean> {
+  async function syncPicker(provider: ProviderId, options: { beforeRefresh?: () => void } = {}): Promise<boolean> {
     if (!hasModelPicker(provider)) return false
     const target = deps.target(provider)
     if (!target) return false
@@ -186,10 +200,20 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       return false
     }
     if (models.length === 0 || !modelOffered(provider, target.model, models)) return false
-    const refreshed = await refreshPickerIfOutdated(provider, target, models, guard)
+    const refreshed = await refreshPickerIfOutdated(provider, target, models, guard, options.beforeRefresh)
     if (refreshed === 'stale') logStale(provider)
     return refreshed === 'refreshed'
   }
 
-  return { check, syncPicker }
+  /**
+   * 作废这个工具当天那次核对的结论，下次打开时重新核：Codex 命令行或桌面端换了版本以后，
+   * 名单该不该写跟着变了，不能等到明天。
+   */
+  function forget(provider: ProviderId): void {
+    for (const key of [...nextCheckAt.keys()]) {
+      if (key.startsWith(`${provider}:`)) nextCheckAt.delete(key)
+    }
+  }
+
+  return { check, syncPicker, forget }
 }

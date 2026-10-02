@@ -8,11 +8,14 @@ import {
   buildCodexRelayModelCatalog,
   bundledCodexModelCatalogSource,
   codexCliAcceptsModelCatalog,
+  codexDesktopAcceptsModelCatalog,
   codexModelCatalogContent,
   codexModelCatalogEntryProblem,
   codexModelCatalogFileName,
+  codexModelCatalogListsModel,
   codexModelCatalogRequiredCliVersion,
   codexRelayModelCatalogOutdated,
+  combineCodexModelCatalogVerdicts,
   isManagedCodexModelCatalogSetting,
   parseCodexModelCatalog,
   readBundledCodexModelCatalog,
@@ -161,6 +164,36 @@ describe('Codex relay model catalog', () => {
   ] as const)('judges Codex CLI %j as %s for a catalog that needs 0.155.0', (cli, verdict) => {
     const catalog = { models: [entry('gpt-6-sol', { minimal_client_version: '0.155.0' })] }
     expect(codexCliAcceptsModelCatalog(cli, catalog)).toBe(verdict)
+  })
+
+  it.each([
+    [{ installed: false, version: null }, 'accepted'],
+    [{ installed: true, version: '26.930.2377.0' }, 'accepted'],
+    [{ installed: true, version: '26.930.11008' }, 'accepted'],
+    [{ installed: true, version: '26.917.8451.0' }, 'accepted'],
+    [{ installed: true, version: '27.105.100.0' }, 'accepted'],
+    [{ installed: true, version: '26.909.1234.0' }, 'too-old'],
+    [{ installed: true, version: '26.727.51351' }, 'too-old'],
+    [{ installed: true, version: '25.1201.3.0' }, 'too-old'],
+    [{ installed: true, version: null }, 'unknown'],
+    [{ installed: true, version: 'beta' }, 'unknown'],
+    [{ installed: null, version: null }, 'unknown'],
+  ] as const)('judges Codex desktop app %j as %s by its release', (desktop, verdict) => {
+    expect(codexDesktopAcceptsModelCatalog(desktop)).toBe(verdict)
+  })
+
+  it('refuses the catalog when any reader is too old, and holds still when any reader is unknown', () => {
+    expect(combineCodexModelCatalogVerdicts(['accepted', 'accepted'])).toBe('accepted')
+    expect(combineCodexModelCatalogVerdicts(['accepted', 'unknown'])).toBe('unknown')
+    expect(combineCodexModelCatalogVerdicts(['unknown', 'too-old'])).toBe('too-old')
+    expect(combineCodexModelCatalogVerdicts([])).toBe('accepted')
+  })
+
+  it('tells whether the configured default model keeps its official entry', () => {
+    const catalog = buildCodexRelayModelCatalog(official, ['gpt-5.5', 'gpt-6.1-sol', 'claude-opus-5'])!
+    expect(codexModelCatalogListsModel(catalog, ' gpt-6.1-sol ')).toBe(true)
+    expect(codexModelCatalogListsModel(catalog, 'claude-opus-5')).toBe(false)
+    expect(codexModelCatalogListsModel(catalog, 'gpt-6-astra')).toBe(false)
   })
 
   it('writes the same bytes for the same catalog, ending in a newline Codex can parse back', () => {
