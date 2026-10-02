@@ -24,6 +24,8 @@ const startupNoticeRank: Record<StartupCheckId, number> = {
   diagnostics: 2,
   update: 2,
   appearance: 2,
+  // 开着的 Claude Desktop 要重开一次才用上改好的设置，比纯告知的「已更新」先说。
+  'claude-desktop-repaired': 2,
   updated: 3,
   'template-filled': 3,
 }

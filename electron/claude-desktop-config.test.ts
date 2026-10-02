@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  buildClaudeDesktopGatewayConfig, createClaudeDesktopConfigService,
+  buildClaudeDesktopGatewayConfig, createClaudeDesktopConfigService, legacyClaudeDesktopSelectedModel,
   type ClaudeDesktopGatewayInput, type ClaudeDesktopConfigOptions,
 } from './claude-desktop-config'
 
@@ -396,5 +396,116 @@ describe('Claude Desktop in-app third-party configuration', () => {
     const service = createClaudeDesktopConfigService({ ...f.options, developerDirectories: [f.profileDirectory, f.profileDirectory, f.developerDirectory] })
     const result = await service.saveGateway(input)
     expect(new Set(result.files).size).toBe(result.files.length)
+  })
+})
+
+// 0.2.12 写型号清单的原样（#685 的 buildClaudeDesktopModelList，#746 删掉了）。修复只认它写得出来的清单。
+function legacyWriterList(availableModels: readonly string[], selectedModel: string): string[] {
+  const others = [...new Set(availableModels.map((model) => model.trim()))]
+    .filter((model) => /^claude-/i.test(model) && model !== selectedModel)
+    .sort((left, right) => left.localeCompare(right))
+  return [selectedModel, ...others].slice(0, 20)
+}
+
+describe('legacyClaudeDesktopSelectedModel', () => {
+  it('recognizes every list the 0.2.12 writer produced and returns the model the customer picked', () => {
+    const available = ['gpt-6', 'claude-sonnet-5', ' claude-opus-5-5 ', 'claude-fable-5', 'claude-sonnet-5', 'gemini-3-pro', 'claude-haiku-4-5-20251001']
+    expect(legacyClaudeDesktopSelectedModel(legacyWriterList(available, 'claude-sonnet-5'))).toBe('claude-sonnet-5')
+    expect(legacyClaudeDesktopSelectedModel(legacyWriterList(available, 'gpt-6'))).toBe('gpt-6')
+    const many = Array.from({ length: 30 }, (_, index) => `claude-model-${String(index).padStart(2, '0')}`)
+    expect(legacyClaudeDesktopSelectedModel(legacyWriterList(many, 'claude-model-29'))).toBe('claude-model-29')
+  })
+
+  it('leaves alone anything the 0.2.12 writer could not have produced', () => {
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5'])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel([])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel('claude-sonnet-5')).toBeNull()
+    // Reordered, foreign or object entries, padding, duplicates and an overlong list all mean someone else edited it.
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5'])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5', 'claude-fable-5', 'gpt-6'])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5', { name: 'claude-fable-5' }])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5', ' claude-fable-5'])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5', 'claude-fable-5', 'claude-fable-5'])).toBeNull()
+    expect(legacyClaudeDesktopSelectedModel(['claude-sonnet-5', 'claude-sonnet-5'])).toBeNull()
+    const many = Array.from({ length: 21 }, (_, index) => `claude-model-${String(index).padStart(2, '0')}`)
+    expect(legacyClaudeDesktopSelectedModel(many)).toBeNull()
+  })
+})
+
+describe('Claude Desktop legacy model list repair', () => {
+  const relayBaseUrls = ['https://xm.solov.cc', 'https://api.solov.cc']
+  const legacyModels = ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5']
+
+  it('narrows the toolbox profile to the picked model exactly as a fresh save would and keeps everything else', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: legacyModels })
+    write(saved.path, { ...read(saved.path), custom: { preserved: true } })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    const others = snapshot([f.metadataPath, f.configPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json')])
+    const result = await f.service.repairLegacyModelList(relayBaseUrls)
+    expect(result).toMatchObject({ status: 'repaired', model: 'claude-sonnet-5' })
+    expect(read(saved.path)).toEqual({ ...buildClaudeDesktopGatewayConfig({ ...input, models: ['claude-sonnet-5'] }), custom: { preserved: true } })
+    if (result.status !== 'repaired') throw new Error('expected a repair')
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(before)
+    expectSnapshot(others)
+    expect(JSON.stringify(result)).not.toContain(input.apiKey)
+    expect(await f.service.inspectConnection(input.baseUrl)).toMatchObject({ configured: true, model: 'claude-sonnet-5' })
+    // Already single: a second pass reads but never writes again.
+    const repaired = fs.readFileSync(saved.path, 'utf8')
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unchanged' })
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(repaired)
+  })
+
+  it('never touches a profile the toolbox did not save, even with the same list', async () => {
+    const f = fixture()
+    const manualPath = path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`)
+    write(f.metadataPath, { appliedId: otherId, entries: [{ id: otherId, name: 'Manual' }] })
+    write(manualPath, buildClaudeDesktopGatewayConfig({ ...input, models: legacyModels }))
+    const previous = snapshot([f.metadataPath, manualPath])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unowned' })
+    expectSnapshot(previous)
+  })
+
+  it('leaves single, missing or empty model lists as they are', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    let previous = snapshot([saved.path])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unchanged' })
+    expectSnapshot(previous)
+    const { inferenceModels: _models, ...withoutModels } = read(saved.path)
+    write(saved.path, withoutModels)
+    previous = snapshot([saved.path])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unchanged' })
+    expectSnapshot(previous)
+    fs.rmSync(saved.path)
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unchanged' })
+    expect(fs.existsSync(saved.path)).toBe(false)
+  })
+
+  it('does not guess when the customer edited the list, pointed it elsewhere or broke the file', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: legacyModels })
+    write(saved.path, { ...read(saved.path), inferenceModels: ['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5'] })
+    let previous = snapshot([saved.path])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unrecognized', reason: 'model-list' })
+    expectSnapshot(previous)
+
+    write(saved.path, { ...read(saved.path), inferenceModels: legacyModels, inferenceGatewayBaseUrl: 'https://gateway.example' })
+    previous = snapshot([saved.path])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unrecognized', reason: 'gateway' })
+    expectSnapshot(previous)
+
+    fs.writeFileSync(saved.path, '{"inferenceModels": [', 'utf8')
+    previous = snapshot([saved.path])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unrecognized', reason: 'unreadable' })
+    expectSnapshot(previous)
+  })
+
+  it('accepts the relay address with a trailing slash like the connection check does', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, baseUrl: 'https://api.solov.cc/', models: legacyModels })
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toMatchObject({ status: 'repaired', model: 'claude-sonnet-5' })
+    expect(read(saved.path).inferenceModels).toEqual(['claude-sonnet-5'])
   })
 })

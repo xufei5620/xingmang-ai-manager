@@ -1,4 +1,4 @@
-import type { AppSettingsV2, InstalledRelease, ProviderId, SettingsSaveIssue, UnexpectedExitNotice, WindowCapabilities } from '../../../../electron/ipc-contract'
+import type { AppSettingsV2, InstalledRelease, PlatformCapabilities, ProviderId, SettingsSaveIssue, UnexpectedExitNotice, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import { tools } from '../../registry/tools'
 import type { Tone } from '../../ui'
@@ -10,12 +10,12 @@ import type { SupportFailure } from './SupportIdentity'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired'
 /**
  * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
  * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -267,6 +267,30 @@ export function toolTemplateFilledNotice(filled: readonly ProviderId[]): Startup
     tone: 'ok',
     title: '已把工具设置补齐到最新',
     body: `已按新版本补上了 ${names.join('、')} 的几项设置，用起来更顺、更少卡顿。你的账号、密钥、对话和自己改过的设置都没动，改之前的样子在「备份」页可以找回。`,
+    action: { label: '知道了', dismiss: true },
+  }
+}
+
+/**
+ * 开机时把 0.2.12 写坏的 Claude Desktop 设置改回了客户选的那一个型号（主进程
+ * claude-desktop-model-repair.ts）。客户什么都没点，得说一句改了什么、没动什么；正开着的
+ * Claude Desktop 还拿着旧设置，要完全退出再打开才用上新的，和「保存配置」后的说法一样。
+ * 看不出它开没开（Windows 上那要起进程查），所以按「开着的话」说。只说一次，一颗「知道了」。
+ */
+export function claudeDesktopRepairedNotice(
+  capabilities: Pick<WindowCapabilities, 'claudeDesktopRepaired'> | null | undefined,
+  platform: PlatformCapabilities['platform'] | null | undefined,
+): StartupNotice | null {
+  if (capabilities?.claudeDesktopRepaired !== true) return null
+  const quit = platform === 'macos'
+    ? '只关窗口不算，要按 Command + Q'
+    : platform === 'windows' ? '只关窗口不算，还要退出屏幕右下角托盘里的 Claude 图标' : '只关窗口不算'
+  return {
+    id: 'claude-desktop-repaired',
+    failure: false,
+    tone: 'ok',
+    title: 'Claude Desktop 的设置已经改好了',
+    body: `之前版本保存的设置可能让 Claude Desktop 发消息没有回复，星芒已经改回你当时选的那一个型号，别的设置都没动。Claude Desktop 现在开着的话，完全退出再重新打开就好（${quit}）。`,
     action: { label: '知道了', dismiss: true },
   }
 }

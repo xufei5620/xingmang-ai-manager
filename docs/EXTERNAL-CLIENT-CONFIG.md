@@ -128,6 +128,8 @@ Windows x64 WorkBuddy 在受信任的 winget 缺失，或安装器启动前遇�
 
 保存涉及 `configLibrary/<UUID>.json`（上面的 gateway 字段）、`configLibrary/_meta.json`（`entries` 与当前 `appliedId`）、第三方目录的 `claude_desktop_config.json`（`deploymentMode: "3p"`），以及原生和第三方目录的 `developer_settings.json`（`allowDevTools: true`）。为星芒配置维护独立条目，保留用户原有配置列表、MCP、偏好及其他文件内容；重复保存复用本工具关联的配置。所有文件先验证、备份，提交失败尝试回滚，界面只返回路径和结果，不返回凭据。
 
+0.2.12 曾把当前 Key 能用的全部 `claude-*` 型号写进 `inferenceModels`（#685），客户端因此发消息没有回复；#746 起改回只写所选的一个。已经写成多个的，升级后开机由 `claude-desktop-model-repair.ts` 修一次：只认工具箱归属记录认领得到的那份配置，且清单逐项对得上当年的写法（所选在前，其余为去重并按名字排好的 `claude-*`，最多 20 个）、网关地址是星芒的，才改回第一项，其余字段不动并留 `.bak`；认不准的不碰、只记日志。查完记在工具箱数据目录的 `migrations/` 下，不再重复检查。
+
 配置保存后需完全退出并重新打开 Claude Desktop；工具箱不强制结束用户正在进行的会话。保存成功只表示本地配置已落盘，不代表正在运行的旧进程已重新加载，也不代表真实推理已通过。此配置可继续在 Claude 原生第三方推理窗口编辑。
 
 系统管理策略仍有更高优先级。保留只读冲突检测；发现会覆盖本地推理的策略时阻止保存并提示处理，不能把被策略覆盖的文件写入报告为已接通。不会擅自删除管理员策略或旧配置备份。
