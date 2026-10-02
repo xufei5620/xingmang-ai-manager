@@ -30,6 +30,6 @@
   原生 Claude Code 的用例不再读宿主机自己的全局 npm；legacy 的 `platform-presentation.test.ts` 改为显式给
   一份 external 能力，旧界面新手引导的 e2e 夹具（`e2e/start-guide-fixture.tsx`）加 `nodeRuntime=external` 来演
   「外部安装」（都只动测试，跟着平台能力契约走）。
-- 文档：`docs/LINUX.md` 第 1 节补「数据目录」「Node.js」两行、第 4 节把 ② 标为已做；
+- 文档：`docs/LINUX.md` 第 1 节补「数据目录」「Node.js」两行、第 5 节「还欠着的」把 ② 标为已做；
   `.claude/rules/linux-platform.md` 补一行说明 same-user 环境里托管 Node 排在前面、和 trusted 环境相反是有意的；
   `docs/MODULE-MAP.md` 的 Linux 模块并成一段。

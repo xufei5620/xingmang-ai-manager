@@ -101,7 +101,8 @@ jobs:
           esac
 
       # 最低版本不许高于线上正在发的版本，否则低于它的人找不到可装的新版本、被挡在门外。
-      # 只在这次要设最低版本时读两份更新清单；读到的版本号交给脚本比较。
+      # 只在这次要设最低版本时读各平台的更新清单（Linux 两个架构各一份，没发过就 404 跳过）；
+      # 读到的版本号交给脚本比较。
       - name: Read the versions the feed is publishing now
         id: published
         env:
@@ -113,7 +114,7 @@ jobs:
           trimmed=$(printf '%s' "$MINIMUM_VERSION" | tr -d '[:space:]')
           if [ -n "$trimmed" ] && [ "$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
             base="${STATUS_URL%/*}"
-            for manifest in latest.yml latest-mac.yml; do
+            for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
               code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/$manifest" --write-out '%{http_code}' "$base/$manifest")
               case "$code" in
                 200)

@@ -2,7 +2,7 @@
 
 星芒AI管理工具本身的 Linux 桌面版（带界面，和 Windows、Mac 版并列），装在客户自己的 Linux 电脑上用。不是服务器命令行版。
 
-**现在的状态（2026-10-02）**：能打出 `.deb`，CI 每次都在 x64 和 arm64 的原生机器上真装一遍、以普通用户真开一次。但**还没对客户发布**：Grok 一键装、终端启动、无密码库登录、Linux 安全边界、自动更新、发版流水线都还没做（下面「还欠着的」）。所以现在的 Linux 包只出本地构建模式（`XINGMANG_LOCAL_BUILD=1`，更新器关着），`electron-builder.config.cjs` 的 `beforePack` 拒绝任何 Linux 发布模式构建。
+**现在的状态（2026-10-02）**：能打出 `.deb`，CI 每次都在 x64 和 arm64 的原生机器上真装一遍、以普通用户真开一次；发版流程（publish-release）也能出 Linux 发布包了，但**开关默认关着，还没对客户发布**（第 4 节）。Grok 一键装、终端启动等还没做完（下面「还欠着的」）。本地出包（第 2 节）只出本地测试包，更新器关着；发布包只走 `npm run release:package:linux`（无签名发布模式），`electron-builder.config.cjs` 的 `beforePack` 拒绝 Linux 用两种签名发布模式出包。
 
 ## 1. 已定的做法
 
@@ -37,7 +37,7 @@ node scripts/verify-packaged-hardening.cjs release/linux-unpacked   # arm64 是 
 node scripts/verify-linux-deb.cjs release --arch x64
 ```
 
-`verify-linux-deb.cjs` 查的是：控制字段（包名、版本、架构、依赖）、包内每个文件都归 root 且组和其他用户不可写、没有包外的链接和多余的安装位置、包里不带 setuid 位（只由 postinst 按名字设一个）、postinst 无条件设 chrome-sandbox 且不再用 `unshare` 探测、菜单文件的 Exec / StartupWMClass / `xingmang://` 登记、主程序与 chrome-sandbox 的 ELF 架构和包标的一致、`package-type` 是 deb、包内 `package.json` 有 desktopName 且更新器关着。
+`verify-linux-deb.cjs` 查的是：控制字段（包名、版本、架构、依赖）、包内每个文件都归 root 且组和其他用户不可写、没有包外的链接和多余的安装位置、包里不带 setuid 位（只由 postinst 按名字设一个）、postinst 无条件设 chrome-sandbox 且不再用 `unshare` 探测、菜单文件的 Exec / StartupWMClass / `xingmang://` 登记、主程序与 chrome-sandbox 的 ELF 架构和包标的一致、`package-type` 是 deb、包内 `package.json` 有 desktopName 且更新器关着，最后核对同目录下这个架构的更新清单（`latest-linux.yml` / `latest-linux-arm64.yml`）与 deb 的大小和 SHA-512 一致。加 `--release` 是查发布包：更新器开着、标了 `xingmangUnsignedRelease`、`resources/app-update.yml` 指向这个版本的正式更新目录且不带 `publisherName`。
 
 真装真开（必须以普通用户、在有显示的环境里）：
 
@@ -54,8 +54,20 @@ xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
 
 - `quality.yml` 的 `linux-package`（进 quality-gate）：x64 在 `ubuntu-24.04`、arm64 在 `ubuntu-24.04-arm`，各自打包 → 两道产物校验 → apt 真装 → 打开 Ubuntu 24.04 的用户命名空间限制 → 普通用户真开一次（上面的冒烟）→ 再跑一遍 `packaged-hardening-smoke.mjs`（迁移只做一次、拒绝远程调试参数）→ 卸载并确认 `/opt`、`/usr/bin`、菜单文件、AppArmor 配置一样不留。typecheck 与 npm test 由 `linux-test` 跑，这里不重复。
 - `package-for-testing.yml` 选 `linux`：先在 x64 上跑一遍 typecheck 和 npm test，再两个架构各自出包、校验、真装真开，过了才上传。artifact 名字带 `NO-AUTO-UPDATE`，装上以后只能手动换新版。选 `both` 仍只出 Windows 和 macOS。
+- `publish-release.yml` 的 Linux 那半见第 4 节。
 
-## 4. 还欠着的
+## 4. 发版
+
+Linux 和 Windows / Mac 用同一个版本号、同一次 publish-release。
+
+- **出包**：`platforms` 选 `all`（默认）或 `linux` 时跑两个作业（选老的 `both` 仍只有 Windows 与 macOS）。`linux-checks` 在 x64 上把 typecheck、npm test、test:v2、test:canvas、test:ui 跑一遍；`linux-build` 在 `ubuntu-24.04` 和 `ubuntu-24.04-arm` 上各跑一次 `npm run release:package:linux -- --arch <x64|arm64>`（线上这个架构的清单比本次旧 → 编译 → 出无签名发布模式的 deb → 加固校验 → `verify-linux-deb.cjs --release`），再 apt 真装、普通用户真开、卸干净，过了才上传 artifact `linux-release-<架构>-<版本>`。和 Windows 门禁相比少的三项（测试改由 linux-checks 跑、开发目录冒烟、ASAR 篡改校验）每次都会打印原因，见 `scripts/run-linux-release-package.cjs`。两个作业不读 secret、不挂 release 环境，不会多一次批准。
+- **更新目录**：每个架构一份清单，x64 是 `latest-linux.yml`、arm64 是 `latest-linux-arm64.yml`（electron-updater 按 `process.arch` 找），各只列自己那个 deb，没有 blockmap。文件名统一从 `scripts/linux-artifact-names.cjs` 来；清单名单是 `update-release-utils.cjs` 的 `UPDATE_MANIFESTS`，发布护栏、清单备份、回滚、发布后复核、service-status 的最低版本检查都按它认。
+- **开关**：仓库变量 `XINGMANG_PUBLISH_LINUX`（GitHub 比较时不分大小写）。不是 `true`（包括没建，现在就是没建）时，publish 作业不下载 Linux 的包，更新目录和 GitHub Release 里都不会出现 Linux 的东西；Linux 两个作业红了也不挡 Windows / Mac，只选 `linux` 时 publish 作业整个跳过。包照样出，在那次运行的 artifact 里留 14 天，可以下下来装机验收。是 `true` 时 Linux 和别的平台一样：这次选了 Linux 而 Linux 作业没成功（失败或超时）就不发，两个架构的清单必须一起到，发布后 `update:verify-feed --platform=linux` 把两个架构都下载核一遍，GitHub Release 挂两个 deb（应用里「打开下载页」去的就是那里）。
+- **打开开关**（第一次对外发 Linux 版之前要 yoyo 点头、真机过一遍）：仓库 Settings → Secrets and variables → Actions → Variables → New repository variable，Name `XINGMANG_PUBLISH_LINUX`，Value `true`。已经发过 Windows / Mac 的版本，可以在同一个 commit 上再触发一次、选 `linux` 补发（线上没有 Linux 清单算第一次发布，护栏放行）。关掉就删掉变量或改成别的值。
+- **回滚与服务状态**：rollback-release 和 service-status 都读 Linux 两份清单，线上没有就跳过。Linux 最早只能退回到它第一次对外发的那一版，再早的版本没有 Linux 备份，回滚会对 Linux 报警告、保持不动（`docs/SERVICE-STATUS.md`）。服务状态的最低版本不许高于线上任何平台（含 Linux）正在发的版本。
+- **dl.solov.cc 下载落地页没动**：它不在发版流程里，是 `npm run dl:publish` 经 SSH 手动部署到服务器的静态页，三个按钮都指向飞书安装教程。对外发 Linux 时要在飞书教程里加 Linux 的安装说明和 GitHub Release 上 deb 的下载方式，落地页如需单独的 Linux 按钮再改 `dl-landing/` 并重新部署，这两件都要产品所有者来做或批准。
+
+## 5. 还欠着的
 
 | 编号 | 内容 |
 |---|---|
@@ -66,7 +78,7 @@ xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
 | ⑥ | 没有系统密码库也能登录（不记住，绝不明文） |
 | ⑦ | Linux 安全边界：路径信任、环境变量收紧、拒绝 root、画布沙箱检查、日志脱敏 |
 | ⑧ | Linux 自动更新（交给系统安装器，不用 electron-updater 的 DebUpdater） |
-| ⑨ | 发版流水线、更新目录、回滚 / 服务状态、下载页加 Linux；做完才拆掉 `beforePack` 里的发布模式拦截 |
+| ⑨ | 已接上发版流水线、更新目录、回滚 / 服务状态（第 4 节，开关默认关）；还欠 dl.solov.cc 落地页和飞书教程里的 Linux 下载说明 |
 | ⑩ | 托盘、开机自启、输入法、加速页隐藏、文案 |
 | ⑪ | 软件自己联网也认系统里装的公司证书 |
 | ⑫ | Linux 加速 |
