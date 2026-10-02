@@ -4,6 +4,11 @@ import { networkFailureMessages, toolCertificateMessages } from '../../electron/
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
+import {
+  macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
+  macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage,
+} from '../../electron/macos-desktop-install-failure'
+import { operationFailureFrom } from './business-common'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -22,6 +27,9 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
   codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
+  // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
+  macDesktopInstallFailed: { sample: macosDesktopDownloadFailedMessage('OpenCode') },
+  macDesktopTooOld: { sample: macosDesktopSystemTooOldMessage('OpenCode', '13.0') },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
@@ -234,6 +242,45 @@ describe('renderer-v2 operation error classification', () => {
       expect([message, hint?.key]).toEqual([message, 'codexDesktopTooOld'])
       expect(hint?.actions.map((action) => action.id)).toEqual(['log', 'support'])
     }
+  })
+
+  it('gives every failed one-click Mac desktop install a retry and the install guide, ahead of the network rules', () => {
+    // 「检查网络」那一句不能被 timeout 抢走：那边没有「看安装指南」这条出路。
+    for (const message of [
+      macosDesktopDownloadFailedMessage('OpenCode'),
+      macosDesktopNotOfficialMessage,
+      macosDesktopNameTakenMessage('OpenCode'),
+      macosDesktopInstallFailedMessage('OpenCode'),
+    ]) {
+      const hint = presentOperationError(message)
+      expect([message, hint?.key]).toEqual([message, 'macDesktopInstallFailed'])
+      expect(hint?.actions).toEqual([
+        { id: 'retry', label: '重试' },
+        { id: 'installGuide', label: '看安装指南' },
+        { id: 'log', label: '查看日志' },
+        { id: 'support', label: '找客服' },
+      ])
+      // 原因原话只记在运行日志里。
+      expect(operationLogPage({ message })).toBe('feedback')
+    }
+    // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
+    expect(classifyOperationError('OpenCode 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError(macosDesktopDiskFullMessage('OpenCode'))).toBe('diskFull')
+  })
+
+  it('puts a failed Mac desktop install on screen without the class name Electron adds to the rejection', () => {
+    // Electron 把主进程的拒绝写成「Error invoking remote method '通道': 类名: 原话」。
+    const message = macosDesktopDownloadFailedMessage('OpenCode')
+    const rejected = new Error(`Error invoking remote method 'external-clients:install': ${macosDesktopInstallErrorName}: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装客户端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
+  })
+
+  it('offers neither a retry nor the install guide when the Mac is too old for the app', () => {
+    const hint = presentOperationError(macosDesktopSystemTooOldMessage('OpenCode', '13.0'))
+    expect(hint?.key).toBe('macDesktopTooOld')
+    expect(hint?.actions.map((action) => action.id)).toEqual(['log', 'support'])
   })
 
   it('sends a relocated folder to the check page instead of blaming permissions', () => {

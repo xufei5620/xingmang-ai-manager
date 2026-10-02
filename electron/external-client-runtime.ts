@@ -10,6 +10,7 @@ import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClie
 import type { ExternalToolId } from './external-tool-config'
 import { InstallationQueue } from './installation-queue'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { installMacosDesktopApp, macosDesktopAppInstallable } from './macos-desktop-app-installer'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { sameLocalPathIdentity } from './path-identity'
 import { assertNoReparseComponents } from './safe-local-data'
@@ -67,6 +68,13 @@ export interface ExternalClientRuntimeOptions {
   verifyPath?: (candidate: string, kind: 'file' | 'directory' | 'appx-file') => Promise<string>
   launchProcess?: (plan: LaunchPlan) => Promise<void>
   installWorkBuddyFromOfficial?: typeof installWorkBuddyFromOfficial
+  /** Mac 上一键装桌面端时下载用的 fetch；system-service 传接好系统代理的那个。 */
+  fetch?: typeof fetch
+  /** 把 Mac 上那次下载包进临时加速线路（同命令行工具的安装）；缺省直接下。 */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
+  /** 下载之前先看一眼盘，不够时抛出那句「磁盘空间不足」。 */
+  assertDiskSpace?: (subject: string) => Promise<void>
+  installMacosDesktopApp?: typeof installMacosDesktopApp
   getuid?: () => number
   /** 同一份盘点结果复用多久；缺省 5 分钟。测试用假时钟时一并注入 now。 */
   scanCacheTtlMs?: number
@@ -299,10 +307,12 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const knownSignatures = new Map<string, KnownExternalClientSignature>()
 
   const environment = () => trustedCommandEnvironment(options.env, platform === 'win32' ? resolveMachinePaths() : undefined, platform)
+  const runningAsRoot = () => (options.getuid?.() ?? process.getuid?.() ?? 1) === 0
   const systemOptions = (): RunCommandOptions => ({ env: environment(), trustedOnly: true, timeoutMs: externalClientSystemCommandTimeoutMs, maxOutputBytes: maximumProbeBytes, windowsHide: true })
   const noInstallHint = (tool: ExternalToolId): string | null => {
     if (platform === 'win32') return architecture === 'x64' || (architecture === 'arm64' && tool !== 'workbuddy') ? null : '当前处理器架构没有可用的官方 Windows 安装包'
-    if (platform === 'darwin') return 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'
+    // 有核对过的官方 Mac 包的才一键装；root 身份下装出来的应用归 root，客户自己更新不了。
+    if (platform === 'darwin') return macosDesktopAppInstallable(tool, architecture) && !runningAsRoot() ? null : 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'
     return '工具箱当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
   }
   let lastWingetReason: string | null = null
@@ -413,13 +423,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const client = inspection.clients.find((item) => item.tool === tool)
     const platformHint = noInstallHint(tool)
     const officialDownload = platform === 'win32' && architecture === 'x64' && tool === 'workbuddy'
-    const hint = platformHint ?? (!winget.executable ? officialDownload ? '将使用腾讯官方安装包' : externalClientWingetUnavailableHint : null)
+    const hint = platformHint ?? (platform === 'win32' && !winget.executable ? officialDownload ? '将使用腾讯官方安装包' : externalClientWingetUnavailableHint : null)
     const manualDownload = platform === 'win32' && platformHint === null && !winget.executable && !officialDownload
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
-      running: client?.running ?? false, installSupported: platform === 'win32' && platformHint === null && Boolean(winget.executable || officialDownload),
-      launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && (options.getuid?.() ?? process.getuid?.() ?? 1) !== 0)),
+      running: client?.running ?? false,
+      installSupported: platformHint === null && (platform === 'darwin' || (platform === 'win32' && Boolean(winget.executable || officialDownload))),
+      launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && !runningAsRoot())),
       detectionError: inspection.errors[tool] ?? null, installHint: hint,
       officialDownloadUrl: manualDownload ? officialDownloadUrl(tool) : null,
     }
@@ -441,6 +452,16 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     inFlightScan = promise
     void promise.then(() => { if (inFlightScan === promise) inFlightScan = null }, () => { if (inFlightScan === promise) inFlightScan = null })
     return promise
+  }
+  /** Mac 上没有 winget 一类的系统安装器：下载官方包、核对签名、放进「应用程序」都在这一步。 */
+  async function installOnMac(tool: ExternalToolId, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void): Promise<void> {
+    await options.assertDiskSpace?.(`${definitions[tool].name} 安装失败`)
+    const run = () => (options.installMacosDesktopApp ?? installMacosDesktopApp)({
+      tool, architecture, userHome, environment: options.env ?? process.env, fetch: options.fetch ?? fetch,
+      runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024 }),
+      onProgress: (event) => report(event.phase, event.message, event.percent),
+    })
+    await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
   }
   function install(tool: ExternalToolId, onProgress?: (event: ExternalClientInstallProgress) => void): Promise<ExternalClientRuntimeStatus> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
@@ -464,7 +485,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (current.installed) { report('completed', '客户端已安装，无需重复安装', 100); return current }
         if (current.detectionError) throw new Error(`无法确认当前安装状态：${current.detectionError}`)
         if (!current.installSupported) throw new Error(current.installHint || '当前系统不支持一键安装')
-        let officialDownloadNeeded = !winget.executable
+        if (platform === 'darwin') await installOnMac(tool, report)
+        let officialDownloadNeeded = platform === 'win32' && !winget.executable
         let sourceFailure: unknown
         let installerStarted = false
         let recentOutput = ''
@@ -532,7 +554,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         // for an elevated spawn; Explorer delegates to the interactive shell.
         await launchProcess({ executable, argv: [client.applicationId ? `shell:AppsFolder\\${client.applicationId}` : client.path], cwd: machinePaths.systemRoot, env: environment(), windowsHide: true })
       } else if (platform === 'darwin') {
-        if ((options.getuid?.() ?? process.getuid?.() ?? 1) === 0) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
+        if (runningAsRoot()) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
     })

@@ -8,6 +8,7 @@
 - `electron/macos-platform.ts` — macOS 终端启动器与平台能力
 - `electron/macos-codex.ts` / `macos-codex-app.ts` — Codex CLI 与桌面端的 macOS 实现
 - `electron/macos-grok.ts` — Grok 的 macOS 安装
+- `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；失败的那几句话主进程与渲染层共用
 - `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
 - `src/platform-presentation.ts` — 渲染层的平台差异表达

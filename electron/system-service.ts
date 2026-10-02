@@ -2693,6 +2693,10 @@ export function createSystemService(
   const installCancellations = new InstallCancellationRegistry()
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
+    // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
+    fetch: downloadFetch,
+    withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
   })
   let nodeRuntimeInstalling = false
