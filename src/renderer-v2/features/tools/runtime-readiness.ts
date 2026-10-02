@@ -48,6 +48,15 @@ export function cliNeedsNodeRuntime(platform: Pick<PlatformCapabilities, 'cliNee
   return platform?.cliNeedsNodeRuntime?.[provider] ?? true
 }
 
+/**
+ * Gemini 要 Python 只为没有预编译包时现场编译一个可选组件；Linux 上缺了它照样能装能用，
+ * 主进程按平台报这张表（Linux 版拆分 ③）。没报（旧版本）时按注册表的 requires 判断，
+ * 就是原来的行为。
+ */
+export function cliNeedsPythonRuntime(platform: Pick<PlatformCapabilities, 'cliNeedsPythonRuntime'> | null | undefined, provider: ProviderId, requiresPython: boolean): boolean {
+  return platform?.cliNeedsPythonRuntime?.[provider] ?? requiresPython
+}
+
 export interface CliInstallPlan {
   /** 装工具之前要先代装的运行环境，按顺序跑。 */
   prepare: InstallRuntimeId[]

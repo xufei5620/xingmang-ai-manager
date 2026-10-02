@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -69,6 +70,7 @@ import {
   fetchNpmPackageReleaseMetadata,
   formatMebibytes,
   cliInstallTargetDirectory,
+  cliLatestVersionSource,
   grokInstallStrategyFor,
   grokManualUninstallResult,
   formatElapsedDuration,
@@ -1968,6 +1970,23 @@ describe('npm registry metadata', () => {
     })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
+  it('takes Linux Grok straight from npm without asking x.ai for its stable version', async () => {
+    const requestedVersions: string[] = []
+    const release = await resolveCliInstallRelease('grok', 'linux-official-npm', {
+      version: '1.0.44',
+      fetchGrokStableVersion: async () => {
+        throw new Error('must not query Grok stable metadata')
+      },
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version, integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['1.0.44'])
+    expect(release.version).toBe('1.0.44')
+  })
+
   it('keeps other npm providers on their latest npm release selector', async () => {
     const requestedVersions: string[] = []
     await resolveCliInstallRelease('codex', null, {
@@ -2590,6 +2609,186 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+  })
+})
+
+describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () => {
+  const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
+
+  function recommendedGrokVersion(): string {
+    const recommended = cliVerifiedVersions.grok.recommended
+    if (!recommended) throw new Error('cliVerifiedVersions.grok 必须有推荐版本')
+    return recommended.version
+  }
+
+  interface GrokFixture {
+    root: string
+    homeDirectory: string
+    npmExecutable: string
+    version: string
+    binary: Buffer
+  }
+
+  function grokFixture(): GrokFixture {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-grok-install-'))
+    temporaryDirectories.push(temporaryRoot)
+    const root = fs.realpathSync(temporaryRoot)
+    const homeDirectory = path.join(root, 'home')
+    const runtimeBin = path.join(root, 'runtime-bin')
+    fs.mkdirSync(homeDirectory, { recursive: true })
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    const npmExecutable = path.join(runtimeBin, 'npm')
+    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(npmExecutable, 0o700)
+    vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
+    vi.stubEnv('PATH', runtimeBin)
+    vi.stubEnv('npm_config_prefix', undefined)
+    vi.stubEnv('npm_config_userconfig', undefined)
+    const version = recommendedGrokVersion()
+    const integrity = `sha512-${Buffer.alloc(64, 0x47).toString('base64')}`
+    // Anything aimed at x.ai (the stable manifest Windows and macOS use) fails the test.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
+        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      }
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@xai-official/grok', version)) {
+        return new Response(JSON.stringify({ name: '@xai-official/grok', version, dist: { integrity } }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+    const binary = Buffer.concat([Buffer.from('\x7fELF grok '), Buffer.alloc(70_000, 0x61)])
+    return { root, homeDirectory, npmExecutable, version, binary }
+  }
+
+  /**
+   * Stands in for npm and for the installed program. `npm ci --ignore-scripts` unpacks the
+   * packages into the resolution directory; the lifecycle run is where xAI's postinstall
+   * writes ~/.grok/bin, so that is where `installedBytes` lands.
+   */
+  function grokCommands(fixture: GrokFixture, installedBytes: () => Buffer) {
+    const calls: Array<{ executable: string; argv: readonly string[] }> = []
+    const runCommand = vi.fn(async (
+      spec: { executable: string; argv: readonly string[] },
+      options: { cwd?: string } = {},
+    ) => {
+      calls.push(spec)
+      let stdout = ''
+      if (spec.argv.length === 1 && spec.argv[0] === '--version') {
+        if (path.dirname(spec.executable) !== path.join(fixture.homeDirectory, '.grok', 'bin')) {
+          throw new Error(`Unexpected command: ${spec.executable}`)
+        }
+        stdout = `grok ${fixture.version} (6b2c1a0)\n`
+      } else if (spec.executable !== fixture.npmExecutable) {
+        throw new Error(`Unexpected command: ${spec.executable}`)
+      } else if (spec.argv.includes('--package-lock-only')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+          name: string
+          version: string
+          dependencies: Record<string, string>
+        }
+        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
+          name: manifest.name,
+          version: manifest.version,
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: manifest.dependencies },
+            'node_modules/@xai-official/grok': {
+              version: fixture.version,
+              integrity: `sha512-${Buffer.alloc(64, 0x47).toString('base64')}`,
+            },
+          },
+        }))
+      } else if (spec.argv[0] === 'ci' && spec.argv.includes('--ignore-scripts')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const platformPackage = path.join(cwd, 'node_modules', '@xai-official', `grok-linux-${architecture}`)
+        fs.mkdirSync(path.join(platformPackage, 'bin'), { recursive: true })
+        fs.writeFileSync(path.join(platformPackage, 'package.json'), JSON.stringify({
+          name: `@xai-official/grok-linux-${architecture}`,
+          version: fixture.version,
+        }))
+        fs.writeFileSync(path.join(platformPackage, 'bin', 'grok.br'), zlib.brotliCompressSync(fixture.binary))
+      } else if (spec.argv[0] === 'ci') {
+        const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+        fs.mkdirSync(bin, { recursive: true })
+        fs.writeFileSync(path.join(bin, `grok-${fixture.version}`), installedBytes(), { mode: 0o755 })
+        fs.rmSync(path.join(bin, 'grok'), { force: true })
+        fs.symlinkSync(`grok-${fixture.version}`, path.join(bin, 'grok'))
+      }
+      return {
+        executable: spec.executable,
+        argv: [...spec.argv],
+        exitCode: 0,
+        signal: null,
+        stdout,
+        stderr: '',
+        outputBytes: Buffer.byteLength(stdout),
+        durationMs: 1,
+      }
+    })
+    return { runCommand, calls }
+  }
+
+  it('installs Grok with the lifecycle run, checks it byte for byte and never asks x.ai', async () => {
+    const fixture = grokFixture()
+    const { runCommand, calls } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+
+    await service.installCli('grok', target)
+
+    const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+    expect(fs.readlinkSync(path.join(bin, 'grok'))).toBe(`grok-${fixture.version}`)
+    expect(fs.readlinkSync(path.join(bin, 'agent'))).toBe(`grok-${fixture.version}`)
+    expect(target.send).toHaveBeenCalledWith('cli:install-progress', expect.objectContaining({ state: 'success' }))
+    const npmRuns = calls.filter((call) => call.executable === fixture.npmExecutable && call.argv[0] === 'ci')
+    expect(npmRuns.map((call) => call.argv.includes('--ignore-scripts'))).toEqual([true, false])
+    // The lifecycle run installs the resolved lock in place: no global install, no prefix.
+    expect(npmRuns[1].argv.some((argument) => argument === '--global' || argument.startsWith('--prefix='))).toBe(false)
+    expect(calls).toContainEqual({ executable: path.join(bin, `grok-${fixture.version}`), argv: ['--version'] })
+  })
+
+  it('uninstalls what it installed and leaves the Grok settings alone', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+    await service.installCli('grok', target)
+    const grokRoot = path.join(fixture.homeDirectory, '.grok')
+    fs.writeFileSync(path.join(grokRoot, 'config.toml'), 'model = "grok"\n')
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'uninstalled',
+      previousVersion: fixture.version,
+    })
+    expect(fs.readdirSync(path.join(grokRoot, 'bin'))).toEqual([])
+    expect(fs.readFileSync(path.join(grokRoot, 'config.toml'), 'utf8')).toBe('model = "grok"\n')
+  })
+
+  it('rolls the command back and reports failure when the installed program is not the verified one', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => Buffer.from('some other program'))
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+
+    await expect(service.installCli('grok', target)).rejects.toThrow('Grok CLI 装好的程序文件和官方发布的不一致')
+    expect(target.send).not.toHaveBeenCalledWith('cli:install-progress', expect.objectContaining({ state: 'success' }))
+    const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+    expect(fs.existsSync(path.join(bin, 'grok'))).toBe(false)
+    expect(fs.existsSync(path.join(bin, 'agent'))).toBe(false)
   })
 })
 
@@ -4265,6 +4464,22 @@ describe('CLI latest version state', () => {
     expect(parseGrokLocalVersion('<html>')).toBeNull()
   })
 
+  it.runIf(process.platform === 'linux')('reads the Linux Grok version from the link npm postinstall made', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
+    temporaryDirectories.push(home)
+    const bin = path.join(home, '.grok', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'grok-1.0.44'), 'test-binary', { mode: 0o755 })
+    fs.symlinkSync('grok-1.0.44', path.join(bin, 'grok'))
+    // A stale file from an earlier official install must not win over the link.
+    fs.writeFileSync(path.join(home, '.grok', 'version.json'), '{"version":"0.2.112"}\n', 'utf8')
+
+    await expect(readGrokLocalVersionForExecutable(path.join(bin, 'grok'), {
+      platform: 'linux',
+      homeDirectory: home,
+    })).resolves.toBe('1.0.44')
+  })
+
   it('prefers Grok metadata beside the executable over stale root metadata', async () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
     temporaryDirectories.push(home)
@@ -4436,7 +4651,18 @@ describe('CLI latest version state', () => {
   it('selects the Grok installer appropriate to each platform', () => {
     expect(grokInstallStrategyFor('win32')).toBe('windows-native')
     expect(grokInstallStrategyFor('darwin')).toBe('darwin-official-npm')
-    expect(grokInstallStrategyFor('linux')).toBe('external')
+    expect(grokInstallStrategyFor('linux')).toBe('linux-official-npm')
+    expect(grokInstallStrategyFor('freebsd')).toBe('external')
+  })
+
+  it('asks npm for the newest Grok only on Linux, where Grok is installed from npm', () => {
+    expect(cliLatestVersionSource('grok', 'linux')).toBe('npm')
+    expect(cliLatestVersionSource('grok', 'win32')).toBe('official-manifest')
+    expect(cliLatestVersionSource('grok', 'darwin')).toBe('official-manifest')
+    // Callers that do not say which platform keep the old answer.
+    expect(cliLatestVersionSource('grok')).toBe('official-manifest')
+    expect(cliLatestVersionSource('codex', 'win32')).toBe('npm')
+    expect(cliLatestVersionSource('gemini', 'linux')).toBe('npm')
   })
 
   it('names where a first install would land, mirroring the choices installCli makes', () => {
@@ -4487,6 +4713,13 @@ describe('CLI latest version state', () => {
       managedNpmPrefix: null,
       managedNativeRoot: null,
     })).toBe(path.join('/usr/local/lib/node_modules', '@xai-official', 'grok'))
+    // Linux 上 npm 的 postinstall 把程序放进 ~/.grok/bin，不在 node_modules 里。
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'linux',
+      npmGlobalRoot: '/usr/lib/node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: '/home/tester/.grok/bin',
+    })).toBe('/home/tester/.grok/bin')
   })
 
   it('returns null rather than a guessed path when nothing resolves', () => {
@@ -4504,7 +4737,7 @@ describe('CLI latest version state', () => {
     })).toBeNull()
   })
 
-  it('allows Grok npm maintenance only after Darwin integrity verification', () => {
+  it('allows Grok npm maintenance only after Darwin or Linux integrity verification', () => {
     expect(buildCliMaintenancePlan(
       'grok',
       '/Users/tester/.local/bin/npm',
@@ -4552,13 +4785,36 @@ describe('CLI latest version state', () => {
       'win32',
     )).toThrow('已签名二进制')
 
+    // Linux 和 macOS 一样跑 npm ci，同样要先过生命周期脚本的完整性对账（Linux 版拆分 ③）。
+    expect(buildCliMaintenancePlan(
+      'grok',
+      '/home/tester/.local/share/XingMangAI/Runtime/node/bin/npm',
+      null,
+      '1.0.44',
+      true,
+      'linux',
+    )).toEqual({
+      kind: 'npm-install',
+      executable: '/home/tester/.local/share/XingMangAI/Runtime/node/bin/npm',
+      argv: ['ci', '--omit=dev'],
+      windowsPackageManager: 'npm',
+    })
+    expect(() => buildCliMaintenancePlan(
+      'grok',
+      '/usr/bin/npm',
+      null,
+      '1.0.44',
+      false,
+      'linux',
+    )).toThrow('完整性校验')
+
     expect(() => buildCliMaintenancePlan(
       'grok',
       '/usr/bin/npm',
       null,
       '0.2.118',
       true,
-      'linux',
+      'freebsd',
     )).toThrow('不支持')
   })
 
@@ -4665,6 +4921,9 @@ describe('latest version probe budget when the machine looks offline', () => {
       error: latestVersionUncheckedMessage,
     })
     expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'win32').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'darwin').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'linux').source).toBe('npm')
     expect(buildUncheckedLatestVersion('gemini', false, '2026-09-22T00:00:00.000Z')).toEqual({
       status: 'skipped',
       version: null,

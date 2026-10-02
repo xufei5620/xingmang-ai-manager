@@ -23,6 +23,7 @@
 - `electron/linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反）
 - `electron/linux-shell-profile.ts` — 客户自己开的终端里直接敲 claude / codex / gemini / grok：每个托管工具一个小启动器，`~/.bashrc` / `~/.zshrc` / `~/.profile` 末尾的标记段与 fish 的 conf.d 文件，卸掉最后一个时逐字撤掉（Linux 版拆分 ④）
 - `electron/linux-terminal.ts` — Linux 上「打开」工具：找命令窗口程序（按桌面、系统默认、再按表）、写一次性 sh 启动脚本、等脚本删掉自己才算打开；启动脚本文件的写入与清理和 macOS 共用 `electron/terminal-launcher-files.ts`（Linux 版拆分 ⑤）
+- `electron/linux-grok.ts` — Grok 的 Linux 安装核对与卸载：没有 codesign，改为和 npm 官方锁校验过的平台包逐字节对账，再核版本；链接快照与回滚复用 `macos-grok.ts`（Linux 版拆分 ③）
 
 ## `electron/` 主进程
 

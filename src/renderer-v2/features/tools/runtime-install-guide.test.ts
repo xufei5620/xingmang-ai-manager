@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { managedRuntimeNotice, runtimeButtonLabel, runtimeHomebrewCommand, runtimeInstallGuide } from './runtime-install-guide'
+import { linuxPythonInstallCommand, managedRuntimeNotice, runtimeButtonLabel, runtimeHomebrewCommand, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
 
 describe('runtimeButtonLabel', () => {
   it('keeps the old wording where the app installs the runtime itself', () => {
@@ -53,6 +53,31 @@ describe('runtimeInstallGuide', () => {
     const guide = runtimeInstallGuide('node', 'linux', 'external')
     expect(guide?.command).toBeNull()
     expect(guide?.steps.join('')).not.toContain('brew')
+  })
+})
+
+describe('Python on Linux', () => {
+  it('says no CLI needs it and gives the apt command instead of a website or the Mac chapter', () => {
+    const guide = runtimeInstallGuide('python', 'linux', 'external')
+    expect(guide?.summary).toBe('这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。')
+    expect(guide?.command).toBe(linuxPythonInstallCommand)
+    expect(guide?.command).toBe('sudo apt install python3')
+    expect(guide?.noTutorial).toBe(true)
+    const text = [guide?.summary, ...(guide?.steps ?? [])].join('')
+    expect(text).not.toMatch(/官网|brew|macOS|Gemini|PATH|npm|环境变量/)
+  })
+
+  it('hides the python.org button on Linux only', () => {
+    expect(runtimeInstallButtonShown('python', 'linux', 'external')).toBe(false)
+    expect(runtimeInstallButtonShown('python', 'macos', 'external')).toBe(true)
+    expect(runtimeInstallButtonShown('python', 'windows', 'managed')).toBe(true)
+    expect(runtimeInstallButtonShown('node', 'linux', 'managed')).toBe(true)
+    expect(runtimeInstallButtonShown('node', 'linux', 'external')).toBe(true)
+  })
+
+  it('leaves the Mac guide pointing at its tutorial chapter', () => {
+    expect(runtimeInstallGuide('python', 'macos', 'external')?.noTutorial).toBeUndefined()
+    expect(runtimeInstallGuide('node', 'macos', 'external')?.noTutorial).toBeUndefined()
   })
 })
 

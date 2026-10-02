@@ -29,6 +29,8 @@ export interface GuideToolState {
   /** 这台电脑上装它、用它都不需要 Node.js（Windows 版 Grok，第十八批 8）；缺省 = 需要。 */
   runtimeNotNeeded?: boolean
   pythonReady?: boolean
+  /** 这台电脑上装它、用它都不需要 Python（Linux 上的 Gemini，Linux 版拆分 ③）；缺省 = 按原来的判断。 */
+  pythonNotNeeded?: boolean
   /** 缺 Node.js 时「安装」会先把它装上（Windows 代装）；缺省 = 旧行为，先单独准备。 */
   runtimeAutoPrepare?: boolean
   /** 同上，Gemini 的 Python。 */
@@ -235,10 +237,15 @@ function guideNeedsNodeRuntime(route: GuideRoute | null, state: GuideToolState |
   return route !== 'codexDesktop' && state?.runtimeNotNeeded !== true
 }
 
+/** 这一步要不要看 Python：只有 Gemini 看，而且主进程说这台电脑不需要时也不看。 */
+function guideNeedsPython(route: GuideRoute | null, state: GuideToolState | undefined): boolean {
+  return route === 'gemini' && state?.pythonNotNeeded !== true
+}
+
 export function resolveGuideReadiness(route: GuideRoute | null, state: GuideToolState | undefined, signedIn: boolean) {
   if (!route) return { prepared: false, connected: false }
   if (route === 'chat') return { prepared: true, connected: signedIn }
-  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (!guideNeedsNodeRuntime(route, state) || state.runtimeReady === true) && (route !== 'gemini' || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'none' && !state.officialLoginRequired
+  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (!guideNeedsNodeRuntime(route, state) || state.runtimeReady === true) && (!guideNeedsPython(route, state) || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'none' && !state.officialLoginRequired
     // 来源没确认的只放行 Key 就在当前账号那个站上、确实能用的两种；别的站的 Key 在这里用不了。
     && (state.source !== 'unknown' || state.keyState === 'otherAccount' || state.keyState === 'changed')
     && (state.configured || state.source === 'official')) }
@@ -328,7 +335,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 只提醒，不拦「安装」：这种账户装不装得上没核过，装得上、打不开是推测。
   const storeAppNotice = route === 'codexDesktop' && tool && !tool.installed ? storeAppLaunchNotice(tool.storeAppLaunchBlock) : null
   const updateLabel = update?.newer === false ? '换成推荐版本' : '更新'
-  const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare) && (route !== 'gemini' || tool.pythonReady || tool.pythonAutoPrepare))
+  const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare) && (!guideNeedsPython(route, tool) || tool.pythonReady || tool.pythonAutoPrepare))
   // Node.js 由本软件准备的平台，运行环境那几句说「自动」「一键」，别把人支到软件外面去。
   // Linux 版拆分 ② 起 Linux 也是，按能力判断；Windows、Mac 两边的字样这次不动。
   const runtimeByApp = platform === 'win' || (platform === 'linux' && tools.some((entry) => entry.runtimeAutoPrepare === true))
@@ -475,8 +482,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <p className="auth-guide-lead">{readiness.prepared ? update ? `${name} 已经装好，但${update.knownIssue ? '这个版本有已知问题，用起来会出错' : '版本旧了'}，建议先${update.manualHint ? '用它原来的方式更新' : `点「${updateLabel}」`}。${update.knownIssue ? '' : '不更新也能直接点「下一步」。'}` : `${name} 已经装好。` : oneButton ? '点「安装」就行，缺的运行环境会一并装好。' : `核对 ${name} 的安装状态，再按顺序准备。`}</p>
             {!tool || tool.detectionError ? <p className="auth-error" role="alert">暂时无法确认工具是否已安装，请重新检测。</p> : <div className="auth-guide-checklist">
               {guideNeedsNodeRuntime(route, tool) && <div className="auth-guide-check-row"><Terminal size={20} aria-hidden="true" /><div><strong>运行环境</strong><p>{tool.runtimeReady ? '运行环境已就绪' : oneButton ? '点「安装」时会一并装好' : runtimeByApp ? '命令行工具需要运行环境' : '在应用外安装完成后回来重新检测'}</p></div><Pill tone={tool.runtimeReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.runtimeReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.runtimeReady && !oneButton && onInstallRuntime && <Button icon={Download} disabled={locked} onClick={() => void run('准备环境', onInstallRuntime)} testId="guide-node">{runtimeByApp ? '一键安装' : '安装指南'}</Button>}</div>}
-              {route === 'gemini' && <div className="auth-guide-check-row" data-testid="guide-python-step"><BrandIcon tool="python" size={26} /><div><strong>Python</strong><p>{tool.pythonReady ? 'Python 已就绪' : oneButton ? '点「安装」时会一并装好' : !tool.runtimeReady ? '先准备运行环境，再继续这一步' : platform === 'win' ? 'Gemini 的准备清单包含 Python 环境' : '在应用外安装 Python 后回来重新检测'}</p></div><Pill tone={tool.pythonReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.pythonReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.pythonReady && !oneButton && onInstallPython && <Button icon={Download} disabled={locked || !tool.runtimeReady} onClick={() => void run('准备 Python', onInstallPython)} testId="guide-python">{platform === 'win' ? '一键安装' : '安装指南'}</Button>}</div>}
-              <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{tool.installed ? `已找到${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : ''}` : '尚未检测到安装'}</p>{storeAppNotice && <p className="auth-hint" data-testid="guide-store-app-notice">{storeAppNotice}</p>}</div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button icon={Download} disabled={locked || (!oneButton && ((guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady) || (route === 'gemini' && !tool.pythonReady)))} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
+              {guideNeedsPython(route, tool) && <div className="auth-guide-check-row" data-testid="guide-python-step"><BrandIcon tool="python" size={26} /><div><strong>Python</strong><p>{tool.pythonReady ? 'Python 已就绪' : oneButton ? '点「安装」时会一并装好' : !tool.runtimeReady ? '先准备运行环境，再继续这一步' : platform === 'win' ? 'Gemini 的准备清单包含 Python 环境' : '在应用外安装 Python 后回来重新检测'}</p></div><Pill tone={tool.pythonReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.pythonReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.pythonReady && !oneButton && onInstallPython && <Button icon={Download} disabled={locked || !tool.runtimeReady} onClick={() => void run('准备 Python', onInstallPython)} testId="guide-python">{platform === 'win' ? '一键安装' : '安装指南'}</Button>}</div>}
+              <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{tool.installed ? `已找到${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : ''}` : '尚未检测到安装'}</p>{storeAppNotice && <p className="auth-hint" data-testid="guide-store-app-notice">{storeAppNotice}</p>}</div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button icon={Download} disabled={locked || (!oneButton && ((guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady) || (guideNeedsPython(route, tool) && !tool.pythonReady)))} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
               {update?.manualHint && <p className="auth-hint" data-testid="guide-update-manual">{update.manualHint}</p>}
               {(tool.supported === false || tool.installMode === 'unavailable') && <p className="auth-error">当前平台暂不支持这个工具，请返回选择其他开始方式。</p>}
             </div>}

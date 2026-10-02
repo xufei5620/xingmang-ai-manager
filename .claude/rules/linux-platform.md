@@ -52,6 +52,10 @@ electron-builder 在 Linux 上不嵌入 ASAR 完整性数据，fuse 打开也挡
 
 `linux-terminal.ts`。交给命令窗口程序的参数只有常量和 `/bin/sh <启动脚本>`，用户能影响的东西（工具路径、续聊参数、项目文件夹、Gemini Key）全在脚本正文里、逐个按 POSIX 单引号转义：Debian 的 x-terminal-emulator 包装脚本在 `-e` 后只有一个参数时会走 `sh -c`，`/proc/<pid>/cmdline` 对谁都可读。启动脚本路径限定为不用转义的字符，三种只收一个字符串的终端（tilix、lxterminal、qterminal）才能照空格切对。找终端只看 PATH 里的绝对路径项和系统目录、启动绝对路径（相对项会在项目文件夹里找，等于让仓库自带一个 `gnome-terminal`）；不读 `$TERMINAL` 这类变量。脚本先放 `$XDG_RUNTIME_DIR`（本人所有、0700、不是链接才用），用不了或写不进去再换系统临时目录（本人私有，或 root 所有且带粘滞位），不放项目文件夹。不要为了「一个窗口一个进程」去加 `--disable-server` 这类开关：脚本自己 `cd`、自己 export / unset 那几个关键变量，交给后台进程的终端也拿不到错的文件夹和账号。
 
+## Grok 的完整性（Linux 版拆分 ③）
+
+`linux-grok.ts`。Linux 上没有 codesign，Grok 和另外三家一样从 npm 官方包装，信任锚是锁里对过官方 SHA-512 的 `@xai-official/grok-linux-x64` / `-arm64`：xAI 的 postinstall 把程序解到 `~/.grok/bin/grok-<版本>` 之后，这个文件（按 `grok` 链接选中时的 dev/ino、`O_NOFOLLOW` 打开）必须和那份 `grok.br` 由我们自己解出来逐字节一致、归当前用户、只有一个链接，`--version` 必须报这次的版本，否则链接退回原样；装之前 `grok` 链接若是这种布局描述不了的（退不回去），npm 跑之前就停下。核对时**不**用 `isLinuxForeignWritablePath`：另外三家装进的也是用户自己的目录，一样不查，这不是同 uid 防御。卸载只认「相对链接直指同目录 `grok-<版本>`」这一种布局，指到别处的一律拒绝、什么都不动；`grok-<版本>` 文件一个一个删，有多个链接或不归当前用户的列出来给客户手动删。
+
 ## 仍然欠着的
 
 - 统信开发者模式、麒麟 KySec 这类发行版执行管控还没处理，要真机。

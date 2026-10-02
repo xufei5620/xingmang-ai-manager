@@ -26,6 +26,8 @@ export interface RuntimeInstallGuide {
   readonly steps: readonly string[]
   /** 可复制的一条命令；没有推荐命令的平台是 null。 */
   readonly command: string | null
+  /** 教程里没有这个平台的装法章节（Linux）；缺省 = 有，首页给「看教程」。 */
+  readonly noTutorial?: boolean
 }
 
 export function runtimeDisplayName(runtime: ManagedRuntimeId): string {
@@ -46,6 +48,22 @@ export function runtimeButtonLabel(runtime: ManagedRuntimeId, management: Instal
   if (management === 'external') return `去官网下载 ${runtimeDisplayName(runtime)}${optional}`
   return runtime === 'node' ? '准备 Node.js' : '装 Python（可选环境）'
 }
+
+/**
+ * Linux 上 Python 那颗「去官网下载」不给：python.org 给 Linux 的只有源码包，客户装不上；
+ * 而且 Linux 上四个命令行工具都用不到它（platform-capabilities 的 cliNeedsPythonRuntime，
+ * Linux 版拆分 ③），装法写在首页那段说明里。Windows、Mac 照旧。
+ */
+export function runtimeInstallButtonShown(
+  runtime: ManagedRuntimeId,
+  platform: PlatformFamily | undefined,
+  management: InstallManagement | undefined,
+): boolean {
+  return !(runtime === 'python' && platform === 'linux' && management === 'external')
+}
+
+/** Linux 版只出 deb 包，能装上它的系统都有 apt。 */
+export const linuxPythonInstallCommand = 'sudo apt install python3'
 
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
@@ -97,6 +115,17 @@ export function runtimeInstallGuide(
         verifyStep(runtime),
       ],
       command: runtimeHomebrewCommand(runtime),
+    }
+  }
+  if (platform === 'linux' && runtime === 'python') {
+    return {
+      summary: '这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。',
+      steps: [
+        '要装的话：打开「终端」，粘贴下面这条命令回车，按提示输入开机密码，等它跑完。',
+        verifyStep(runtime),
+      ],
+      command: linuxPythonInstallCommand,
+      noTutorial: true,
     }
   }
   return {

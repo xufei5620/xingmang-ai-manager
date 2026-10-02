@@ -21,6 +21,12 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: false,
       },
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: true,
+        grok: false,
+      },
       codexDesktop: {
         install: 'managed',
         launch: true,
@@ -51,6 +57,12 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: true,
+        grok: false,
+      },
       codexDesktop: {
         install: 'external',
         launch: true,
@@ -63,7 +75,7 @@ describe('platformCapabilitiesFor', () => {
     expect(Object.isFrozen(capabilities.codexDesktop)).toBe(true)
   })
 
-  it('returns the exact Linux policy, with Node.js prepared by the app', () => {
+  it('returns the exact Linux policy, with Node.js prepared by the app, Grok from npm and no Python for Gemini', () => {
     expect(platformCapabilitiesFor('linux', 'x64')).toEqual({
       platform: 'linux',
       architecture: 'x64',
@@ -74,13 +86,19 @@ describe('platformCapabilitiesFor', () => {
         claude: 'managed',
         codex: 'managed',
         gemini: 'managed',
-        grok: 'external',
+        grok: 'managed',
       },
       cliNeedsNodeRuntime: {
         claude: true,
         codex: true,
         gemini: true,
         grok: true,
+      },
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
       },
       codexDesktop: {
         install: 'external',
@@ -104,13 +122,19 @@ describe('platformCapabilitiesFor', () => {
         claude: 'managed',
         codex: 'managed',
         gemini: 'managed',
-        grok: 'external',
+        grok: 'managed',
       },
       cliNeedsNodeRuntime: {
         claude: true,
         codex: true,
         gemini: true,
         grok: true,
+      },
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
       },
       codexDesktop: {
         install: 'external',

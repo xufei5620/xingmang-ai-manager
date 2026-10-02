@@ -12,6 +12,8 @@ export interface PlatformCapabilities {
   readonly cliInstall: Readonly<Record<ProviderId, InstallManagement>>
   /** 缺省 = 每家都要 Node.js（旧行为）。 */
   readonly cliNeedsNodeRuntime?: Readonly<Record<ProviderId, boolean>>
+  /** 缺省 = 按渲染层注册表的 requires 判断，Gemini 要 Python（旧行为）。 */
+  readonly cliNeedsPythonRuntime?: Readonly<Record<ProviderId, boolean>>
   readonly codexDesktop: Readonly<{
     install: InstallManagement
     launch: boolean
@@ -33,6 +35,7 @@ export function platformCapabilitiesFor(
   const family = platformFamily(platform)
   const windows = family === 'windows'
   const macos = family === 'macos'
+  const linux = family === 'linux'
   return Object.freeze({
     platform: family,
     architecture,
@@ -42,20 +45,29 @@ export function platformCapabilitiesFor(
     // 让客户自己装就是卡死。Python 仍归客户自己装。
     nodeRuntimeInstall: 'managed',
     pythonRuntimeInstall: windows ? 'managed' : 'external',
+    // Linux 上 Grok 和 macOS 一样从 npm 包装（Linux 版拆分 ③，linux-grok.ts）。
     cliInstall: Object.freeze({
       claude: 'managed',
       codex: 'managed',
       gemini: 'managed',
-      grok: windows || macos ? 'managed' : 'external',
+      grok: 'managed',
     }),
     // Windows 版 Grok 是 xAI 签名的独立程序，装和跑都不经过 npm（system-service.ts 的
-    // grokInstallStrategyFor → windows-native）；Mac 仍从 npm 包取，照旧要 Node.js。
+    // grokInstallStrategyFor → windows-native）；Mac 和 Linux 从 npm 包取，照旧要 Node.js。
     // 没有 Node.js 时只是少了做完提醒那几条钩子，配置照写（resolveCliHookInvocation）。
     cliNeedsNodeRuntime: Object.freeze({
       claude: true,
       codex: true,
       gemini: true,
       grok: !windows,
+    }),
+    // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
+    // Linux 上缺了它照样能装能用，不该拦着（Linux 版拆分 ③）。Windows 和 Mac 不变。
+    cliNeedsPythonRuntime: Object.freeze({
+      claude: false,
+      codex: false,
+      gemini: !linux,
+      grok: false,
     }),
     codexDesktop: Object.freeze({
       install: windows ? 'managed' : 'external',
