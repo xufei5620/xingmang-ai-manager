@@ -50,7 +50,7 @@ electron-builder 在 Linux 上不嵌入 ASAR 完整性数据，fuse 打开也挡
 
 ## 打开工具的命令窗口（I1）
 
-`linux-terminal.ts`。交给命令窗口程序的参数只有常量和 `/bin/sh <启动脚本>`，用户能影响的东西（工具路径、续聊参数、项目文件夹、Gemini Key）全在脚本正文里、逐个按 POSIX 单引号转义：Debian 的 x-terminal-emulator 包装脚本在 `-e` 后只有一个参数时会走 `sh -c`，`/proc/<pid>/cmdline` 对谁都可读。启动脚本路径限定为不用转义的字符，三种只收一个字符串的终端（tilix、lxterminal、qterminal）才能照空格切对。找终端只看 PATH 里的绝对路径项和系统目录、启动绝对路径（相对项会在项目文件夹里找，等于让仓库自带一个 `gnome-terminal`）；不读 `$TERMINAL` 这类变量。脚本先放 `$XDG_RUNTIME_DIR`（本人所有、0700、不是链接才用），否则系统临时目录（本人私有，或 root 所有且带粘滞位），不放项目文件夹。不要为了「一个窗口一个进程」去加 `--disable-server` 这类开关：脚本自己 `cd`、自己 export / unset 那几个关键变量，交给后台进程的终端也拿不到错的文件夹和账号。
+`linux-terminal.ts`。交给命令窗口程序的参数只有常量和 `/bin/sh <启动脚本>`，用户能影响的东西（工具路径、续聊参数、项目文件夹、Gemini Key）全在脚本正文里、逐个按 POSIX 单引号转义：Debian 的 x-terminal-emulator 包装脚本在 `-e` 后只有一个参数时会走 `sh -c`，`/proc/<pid>/cmdline` 对谁都可读。启动脚本路径限定为不用转义的字符，三种只收一个字符串的终端（tilix、lxterminal、qterminal）才能照空格切对。找终端只看 PATH 里的绝对路径项和系统目录、启动绝对路径（相对项会在项目文件夹里找，等于让仓库自带一个 `gnome-terminal`）；不读 `$TERMINAL` 这类变量。脚本先放 `$XDG_RUNTIME_DIR`（本人所有、0700、不是链接才用），用不了或写不进去再换系统临时目录（本人私有，或 root 所有且带粘滞位），不放项目文件夹。不要为了「一个窗口一个进程」去加 `--disable-server` 这类开关：脚本自己 `cd`、自己 export / unset 那几个关键变量，交给后台进程的终端也拿不到错的文件夹和账号。
 
 ## 仍然欠着的
 

@@ -302,6 +302,9 @@ const clearedWhenAbsentKeys = [
   'GEMINI_API_KEY',
   'GOOGLE_GEMINI_BASE_URL',
   'GEMINI_MODEL',
+  // providerCommandEnvironment 每次打开 Gemini 都会去掉这两个，不再补回来。
+  'GOOGLE_GENAI_API_VERSION',
+  'GOOGLE_GEMINI_API_KEY',
   'NO_COLOR',
   'NODE_DISABLE_COLORS',
   'HTTP_PROXY',
@@ -320,11 +323,21 @@ function printLines(lines: readonly string[], indent: string): string[] {
   return lines.map((line) => `${indent}printf '%s\\n' ${quotePosixArgument(line)}`)
 }
 
-/** Builds the short-lived POSIX sh launcher that the terminal runs. */
-export function buildLinuxTerminalScript(plan: LinuxTerminalScriptPlan): string {
+/**
+ * Only the listed variables are ever written, so only their values are checked.
+ * Everything else, including names a shell cannot export such as the
+ * `BASH_FUNC_module%%` that environment-modules leaves in every login session,
+ * stays with the terminal process and must not block the launch.
+ */
+function exportedEnvironment(env: NodeJS.ProcessEnv): Array<[string, string]> {
+  return Object.entries(env)
+    .filter((entry): entry is [string, string] => entry[1] !== undefined && exportedEnvironmentKeys.has(entry[0]))
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+}
+
+function assertLinuxTerminalPlan(plan: LinuxTerminalLaunchPlan): void {
   if (!isAbsolutePath(plan.executable)) throw new TypeError('executable must be an absolute path')
   if (!isAbsolutePath(plan.workspace)) throw new TypeError('workspace must be an absolute path')
-  assertSimpleLauncherPath(plan.launcherPath)
   if (plan.argv.some((argument) => argument.includes('\0'))) {
     throw new TypeError('argv must not contain NUL bytes')
   }
@@ -333,22 +346,22 @@ export function buildLinuxTerminalScript(plan: LinuxTerminalScriptPlan): string 
   if (!plan.title || /[\u0000-\u001f\u007f-\u009f]/.test(plan.title)) {
     throw new TypeError('title must be non-empty printable text')
   }
-  const environmentEntries = Object.entries(plan.env)
-  for (const [key, value] of environmentEntries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      throw new TypeError(`invalid environment key: ${key}`)
-    }
-    if (value?.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
+  for (const [key, value] of exportedEnvironment(plan.env)) {
+    if (value.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
   }
   for (const requiredKey of ['HOME', 'PATH'] as const) {
     if (!plan.env[requiredKey]?.trim()) {
       throw new TypeError(`environment ${requiredKey} is required`)
     }
   }
+}
+
+/** Builds the short-lived POSIX sh launcher that the terminal runs. */
+export function buildLinuxTerminalScript(plan: LinuxTerminalScriptPlan): string {
+  assertLinuxTerminalPlan(plan)
+  assertSimpleLauncherPath(plan.launcherPath)
   const cleared = clearedWhenAbsentKeys.filter((key) => plan.env[key] === undefined)
-  const environmentExports = environmentEntries
-    .filter((entry): entry is [string, string] => entry[1] !== undefined && exportedEnvironmentKeys.has(entry[0]))
-    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+  const environmentExports = exportedEnvironment(plan.env)
     .map(([key, value]) => `export ${key}=${quotePosixArgument(value)}`)
 
   return [
@@ -412,11 +425,14 @@ export interface LinuxTerminalAttempt {
 
 export class LinuxTerminalLaunchError extends Error {
   readonly attempts: readonly LinuxTerminalAttempt[]
+  /** The underlying system error, for the log only; the message stays in plain words. */
+  readonly reason: string | null
 
-  constructor(message: string, attempts: readonly LinuxTerminalAttempt[]) {
+  constructor(message: string, attempts: readonly LinuxTerminalAttempt[], reason: string | null = null) {
     super(message)
     this.name = 'LinuxTerminalLaunchError'
     this.attempts = attempts
+    this.reason = reason
   }
 }
 
@@ -442,8 +458,8 @@ export type LinuxTerminalSpawner = (
 export interface LinuxTerminalLaunchDependencies {
   findTerminals?: (env: NodeJS.ProcessEnv) => LinuxTerminalCandidate[]
   spawnTerminal?: LinuxTerminalSpawner
-  /** Where the private launcher directory is created; see resolveLinuxLauncherBaseDirectory. */
-  launcherBaseDirectory?: (env: NodeJS.ProcessEnv) => string | null
+  /** Where the private launcher directory may be created, best first; see resolveLinuxLauncherBaseDirectories. */
+  launcherBaseDirectories?: (env: NodeJS.ProcessEnv) => readonly string[]
   /** How long one terminal gets to run the launcher. */
   waitMs?: number
   pollIntervalMs?: number
@@ -497,30 +513,31 @@ function directoryFacts(directory: string): DirectoryFacts | null {
  * Only plain-character paths qualify, because three terminals take the command as
  * one string they split on spaces.
  */
-export function resolveLinuxLauncherBaseDirectory(
+export function resolveLinuxLauncherBaseDirectories(
   env: NodeJS.ProcessEnv,
   inspect: (directory: string) => DirectoryFacts | null = directoryFacts,
   uid: number | undefined = process.getuid?.(),
   temporaryDirectory: string = os.tmpdir(),
-): string | null {
+): string[] {
   function plain(directory: string): boolean {
     return /^\/[A-Za-z0-9._/+-]*$/.test(directory)
       && !directory.split('/').some((part) => part === '..' || part === '.')
   }
+  const accepted: string[] = []
   const runtime = env.XDG_RUNTIME_DIR?.trim()
   if (runtime && plain(runtime)) {
     const facts = inspect(runtime)
-    if (facts?.isDirectory && !facts.isSymbolicLink && facts.uid === uid && (facts.mode & 0o077) === 0) return runtime
+    if (facts?.isDirectory && !facts.isSymbolicLink && facts.uid === uid && (facts.mode & 0o077) === 0) accepted.push(runtime)
   }
   for (const directory of [temporaryDirectory, '/tmp']) {
-    if (!directory || !plain(directory)) continue
+    if (!directory || !plain(directory) || accepted.includes(directory)) continue
     const facts = inspect(directory)
     if (!facts?.isDirectory || facts.isSymbolicLink) continue
     const ownPrivate = facts.uid === uid && (facts.mode & 0o022) === 0
     const sharedSticky = facts.uid === 0 && (facts.mode & 0o1000) !== 0
-    if (ownPrivate || sharedSticky) return directory
+    if (ownPrivate || sharedSticky) accepted.push(directory)
   }
-  return null
+  return accepted
 }
 
 async function launcherConsumed(launcherPath: string): Promise<boolean> {
@@ -562,10 +579,10 @@ async function waitForLauncher(
   }
 }
 
-async function writeLauncher(directory: string, launcherPath: string, content: () => string): Promise<LauncherIdentity> {
+async function writeLauncher(directory: string, launcherPath: string, content: string): Promise<LauncherIdentity> {
   try {
     await fs.promises.chmod(directory, 0o700)
-    await writeLauncherAtomically(launcherPath, content(), 0o600)
+    await writeLauncherAtomically(launcherPath, content, 0o600)
     return await captureLauncherIdentity(directory, launcherPath)
   } catch (error) {
     // Only reached before the launcher has an identity, inside the directory this
@@ -573,6 +590,36 @@ async function writeLauncher(directory: string, launcherPath: string, content: (
     await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
     throw error
   }
+}
+
+interface CreatedLauncher {
+  directory: string
+  launcherPath: string
+  identity: LauncherIdentity
+}
+
+/**
+ * A full /run/user tmpfs, a quota or a read-only temp directory is a property of
+ * that one directory, so the next acceptable one is tried. The plan was validated
+ * before this point, so anything thrown here is about the filesystem; the user
+ * gets one plain sentence and the system error goes to the log.
+ */
+async function createLauncher(plan: LinuxTerminalLaunchPlan, baseDirectories: readonly string[]): Promise<CreatedLauncher> {
+  let lastFailure: string | null = null
+  for (const baseDirectory of baseDirectories) {
+    try {
+      await cleanupStaleTerminalDirectoriesOnce(baseDirectory)
+      // The pid in the name lets the collector above tell an abandoned directory
+      // from one whose owner is still waiting on it.
+      const directory = await fs.promises.mkdtemp(path.posix.join(baseDirectory, terminalDirectoryPrefix()))
+      const launcherPath = path.posix.join(directory, 'launch.sh')
+      const identity = await writeLauncher(directory, launcherPath, buildLinuxTerminalScript({ ...plan, launcherPath }))
+      return { directory, launcherPath, identity }
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error)
+    }
+  }
+  throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.noLauncherDirectory, [], lastFailure)
 }
 
 /**
@@ -587,19 +634,13 @@ export async function launchLinuxTerminal(
   plan: LinuxTerminalLaunchPlan,
   dependencies: LinuxTerminalLaunchDependencies = {},
 ): Promise<LinuxTerminalLaunchResult> {
-  if (!isAbsolutePath(plan.executable)) throw new TypeError('executable must be an absolute path')
-  if (!isAbsolutePath(plan.workspace)) throw new TypeError('workspace must be an absolute path')
+  assertLinuxTerminalPlan(plan)
   const candidates = (dependencies.findTerminals ?? findLinuxTerminals)(plan.env)
   if (!candidates.length) throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.notFound, [])
-
-  const baseDirectory = (dependencies.launcherBaseDirectory ?? resolveLinuxLauncherBaseDirectory)(plan.env)
-  if (!baseDirectory) throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.noLauncherDirectory, [])
-  await cleanupStaleTerminalDirectoriesOnce(baseDirectory)
-  // The pid in the name lets the collector above tell an abandoned directory from
-  // one whose owner is still waiting on it.
-  const directory = await fs.promises.mkdtemp(path.posix.join(baseDirectory, terminalDirectoryPrefix()))
-  const launcherPath = path.posix.join(directory, 'launch.sh')
-  const identity = await writeLauncher(directory, launcherPath, () => buildLinuxTerminalScript({ ...plan, launcherPath }))
+  const { directory, launcherPath, identity } = await createLauncher(
+    plan,
+    (dependencies.launcherBaseDirectories ?? resolveLinuxLauncherBaseDirectories)(plan.env),
+  )
 
   const spawnTerminal = dependencies.spawnTerminal ?? spawnLinuxTerminal
   const waitMs = dependencies.waitMs ?? defaultTerminalWaitMs

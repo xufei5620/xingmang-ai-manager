@@ -13,7 +13,7 @@ import {
   linuxTerminalFailureMessages,
   linuxTerminalSearchDirectories,
   linuxTerminalTable,
-  resolveLinuxLauncherBaseDirectory,
+  resolveLinuxLauncherBaseDirectories,
   type LinuxTerminalCandidate,
   type LinuxTerminalProcess,
   type LinuxTerminalSpawner,
@@ -148,12 +148,12 @@ describe('Linux launcher directory', () => {
   }
 
   it('prefers the private per-user runtime directory', () => {
-    expect(resolveLinuxLauncherBaseDirectory(
+    expect(resolveLinuxLauncherBaseDirectories(
       { XDG_RUNTIME_DIR: '/run/user/1000' },
       facts({ '/run/user/1000': { uid, mode: 0o40700 }, '/tmp': { uid: 0, mode: 0o41777 } }),
       uid,
       '/tmp',
-    )).toBe('/run/user/1000')
+    )).toEqual(['/run/user/1000', '/tmp'])
   })
 
   it('falls back to the sticky system temp directory when the runtime directory cannot be trusted', () => {
@@ -163,15 +163,15 @@ describe('Linux launcher directory', () => {
       { '/run/user/1000': { uid: 1001, mode: 0o40700 } },
       { '/run/user/1000': { uid, mode: 0o40700, symlink: true } },
     ]) {
-      expect(resolveLinuxLauncherBaseDirectory({ XDG_RUNTIME_DIR: '/run/user/1000' }, facts({ ...base, ...runtime }), uid, '/tmp')).toBe('/tmp')
+      expect(resolveLinuxLauncherBaseDirectories({ XDG_RUNTIME_DIR: '/run/user/1000' }, facts({ ...base, ...runtime }), uid, '/tmp')).toEqual(['/tmp'])
     }
-    expect(resolveLinuxLauncherBaseDirectory({ XDG_RUNTIME_DIR: '/run/user/my dir' }, facts(base), uid, '/tmp')).toBe('/tmp')
-    expect(resolveLinuxLauncherBaseDirectory({}, facts(base), uid, '/tmp')).toBe('/tmp')
+    expect(resolveLinuxLauncherBaseDirectories({ XDG_RUNTIME_DIR: '/run/user/my dir' }, facts(base), uid, '/tmp')).toEqual(['/tmp'])
+    expect(resolveLinuxLauncherBaseDirectories({}, facts(base), uid, '/tmp')).toEqual(['/tmp'])
   })
 
   it('accepts a private TMPDIR of the user’s own and refuses a shared one without the sticky bit', () => {
-    expect(resolveLinuxLauncherBaseDirectory({}, facts({ '/home/a/tmp': { uid, mode: 0o40700 } }), uid, '/home/a/tmp')).toBe('/home/a/tmp')
-    expect(resolveLinuxLauncherBaseDirectory({}, facts({ '/tmp': { uid: 0, mode: 0o40777 } }), uid, '/tmp')).toBeNull()
+    expect(resolveLinuxLauncherBaseDirectories({}, facts({ '/home/a/tmp': { uid, mode: 0o40700 } }), uid, '/home/a/tmp')).toEqual(['/home/a/tmp'])
+    expect(resolveLinuxLauncherBaseDirectories({}, facts({ '/tmp': { uid: 0, mode: 0o40777 } }), uid, '/tmp')).toEqual([])
   })
 })
 
@@ -210,13 +210,22 @@ describe('Linux terminal launcher script', () => {
     expect(script).not.toContain('must-not-reach-disk')
     expect(script).not.toContain('DBUS_SESSION_BUS_ADDRESS')
     const unset = script.split('\n').find((line) => line.startsWith('unset '))
-    expect(unset?.split(' ').slice(1)).toEqual(expect.arrayContaining(['CODEX_HOME', 'GOOGLE_GEMINI_BASE_URL', 'HTTPS_PROXY', 'http_proxy', 'NO_COLOR']))
-    expect(unset).not.toContain('GEMINI_API_KEY')
-    expect(unset).not.toContain('https_proxy')
+    expect(unset?.split(' ').slice(1)).toEqual(expect.arrayContaining([
+      'CODEX_HOME', 'GOOGLE_GEMINI_BASE_URL', 'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY', 'HTTPS_PROXY', 'http_proxy', 'NO_COLOR',
+    ]))
+    expect(unset?.split(' ')).not.toContain('GEMINI_API_KEY')
+    expect(unset?.split(' ')).not.toContain('https_proxy')
+  })
+
+  it('ignores variables it never writes, even ones a shell could not name', () => {
+    const script = buildLinuxTerminalScript(scriptPlan({
+      env: { HOME: '/home/a', PATH: '/usr/bin', 'BASH_FUNC_module%%': '() {  eval x\n}', SECRET: 'a\0b' },
+    }))
+    expect(script).not.toContain('BASH_FUNC')
+    expect(script).not.toContain('SECRET')
   })
 
   it('rejects values that could escape their quoting or the title', () => {
-    expect(() => buildLinuxTerminalScript(scriptPlan({ env: { HOME: '/home/a', PATH: '/usr/bin', 'BAD-KEY': 'x' } }))).toThrow(TypeError)
     expect(() => buildLinuxTerminalScript(scriptPlan({ env: { HOME: '/home/a', PATH: '/usr/bin\0' } }))).toThrow(TypeError)
     expect(() => buildLinuxTerminalScript(scriptPlan({ argv: ['a\0b'] }))).toThrow(TypeError)
     expect(() => buildLinuxTerminalScript(scriptPlan({ title: 'x\u001b]0;evil\u0007' }))).toThrow(TypeError)
@@ -357,7 +366,7 @@ describe.runIf(process.platform !== 'win32')('launching a Linux terminal', () =>
     const result = await launchLinuxTerminal(plan(base), {
       findTerminals: () => [...candidates, { id: 'x-terminal-emulator', label: '系统默认终端', executable: '/usr/bin/x-terminal-emulator' }],
       spawnTerminal,
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
       pollIntervalMs: 5,
     })
 
@@ -386,7 +395,7 @@ describe.runIf(process.platform !== 'win32')('launching a Linux terminal', () =>
         setTimeout(() => fs.unlinkSync(launcherPath), 40)
         return fakeProcess({ exit: 0 })
       },
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
       pollIntervalMs: 5,
     })
     expect(result).toEqual({ terminal: candidates[0], attempts: [] })
@@ -401,7 +410,7 @@ describe.runIf(process.platform !== 'win32')('launching a Linux terminal', () =>
         calls.push(executable)
         return fakeProcess({ exit: 0 })
       },
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
       waitMs: 30,
       pollIntervalMs: 5,
     }).catch((caught: unknown) => caught)
@@ -419,20 +428,53 @@ describe.runIf(process.platform !== 'win32')('launching a Linux terminal', () =>
     const base = temporaryDirectory('xingmang-linux-launch-none-')
     await expect(launchLinuxTerminal(plan(base), {
       findTerminals: () => [],
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
     })).rejects.toThrow(linuxTerminalFailureMessages.notFound)
 
     await expect(launchLinuxTerminal(plan(base), {
       findTerminals: () => candidates,
       spawnTerminal: () => fakeProcess({ spawnError: 'EACCES' }),
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
     })).rejects.toThrow(linuxTerminalFailureMessages.notStarted)
     expect(fs.readdirSync(base)).toEqual([])
 
     await expect(launchLinuxTerminal(plan(base), {
       findTerminals: () => candidates,
-      launcherBaseDirectory: () => null,
+      launcherBaseDirectories: () => [],
     })).rejects.toThrow(linuxTerminalFailureMessages.noLauncherDirectory)
+  })
+
+  it('writes the launcher in the next temp directory when the first one cannot take it', async () => {
+    const base = temporaryDirectory('xingmang-linux-launch-fallback-')
+    const full = path.join(base, 'missing-runtime-dir')
+    const spare = path.join(base, 'spare')
+    fs.mkdirSync(spare, { mode: 0o700 })
+    const launchers: string[] = []
+    const result = await launchLinuxTerminal(plan(base), {
+      findTerminals: () => candidates,
+      spawnTerminal: (_executable, args) => {
+        const launcherPath = args.at(-1) ?? ''
+        launchers.push(launcherPath)
+        return fakeProcess({ onStart: () => fs.unlinkSync(launcherPath) })
+      },
+      launcherBaseDirectories: () => [full, spare],
+      pollIntervalMs: 5,
+    })
+    expect(result.terminal.id).toBe('gnome-terminal')
+    expect(launchers[0]?.startsWith(`${spare}/`)).toBe(true)
+    expect(fs.readdirSync(spare)).toEqual([])
+  })
+
+  it('reports an unusable temp directory in plain words and keeps the system error for the log', async () => {
+    const base = temporaryDirectory('xingmang-linux-launch-no-dir-')
+    const error = await launchLinuxTerminal(plan(base), {
+      findTerminals: () => candidates,
+      spawnTerminal: () => fakeProcess(),
+      launcherBaseDirectories: () => [path.join(base, 'gone')],
+    }).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(LinuxTerminalLaunchError)
+    expect((error as LinuxTerminalLaunchError).message).toBe(linuxTerminalFailureMessages.noLauncherDirectory)
+    expect((error as LinuxTerminalLaunchError).reason).toContain('ENOENT')
   })
 
   it('leaves nothing behind when the launcher cannot be built', async () => {
@@ -440,7 +482,7 @@ describe.runIf(process.platform !== 'win32')('launching a Linux terminal', () =>
     await expect(launchLinuxTerminal({ ...plan(base), title: 'bad\u0007title' }, {
       findTerminals: () => candidates,
       spawnTerminal: () => fakeProcess(),
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
     })).rejects.toThrow(TypeError)
     expect(fs.readdirSync(base)).toEqual([])
   })
@@ -466,7 +508,7 @@ describe.runIf(process.platform !== 'win32')('launching a Linux terminal', () =>
       env: { HOME: directory, PATH: '/usr/bin:/bin' },
     }, {
       findTerminals: () => [{ id: 'x-terminal-emulator', label: '系统默认终端', executable: terminal }],
-      launcherBaseDirectory: () => base,
+      launcherBaseDirectories: () => [base],
       pollIntervalMs: 10,
     })
 

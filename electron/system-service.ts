@@ -5065,6 +5065,7 @@ export function createSystemService(
         runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的命令窗口没能打开`, {
           provider,
           ...describeLinuxTerminalAttempts(error.attempts),
+          ...(error.reason ? { reason: redactHomeDirectory(error.reason, providerRoots.userHome) } : {}),
         })
       }
       const detail = error instanceof Error ? error.message : String(error)

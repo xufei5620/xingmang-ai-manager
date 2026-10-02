@@ -5167,6 +5167,23 @@ describe('opening a CLI on Linux', () => {
     expect(JSON.stringify(entry?.[4])).toContain('kitty')
     expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
   })
+
+  it.runIf(process.platform !== 'win32')('keeps the system error behind an unusable temporary folder in the log only, with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-tmp-')
+    const reason = `EACCES: permission denied, mkdtemp '${path.join(userHome, '.cache', 'xingmang-terminal-1-')}XXXXXX'`
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.noLauncherDirectory, [], reason)
+    })
+    const log = vi.fn()
+
+    const failure = linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)
+    await expect(failure).rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.noLauncherDirectory}`)
+    await expect(failure).rejects.not.toThrow('EACCES')
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(JSON.stringify(entry?.[4])).toContain('EACCES')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
+  })
 })
 
 describe('scan coalescing', () => {
