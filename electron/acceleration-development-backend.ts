@@ -75,7 +75,9 @@ export interface AccelerationDevelopmentBackend extends AccelerationApi {
   /**
    * 软件替用户发起的连接（打开 Codex 桌面端时）。与 startAcceleration 同一条路，
    * 只是这次会话不扣免费时长、免费时长用完也照样连，也就没有到点断开这回事；
-   * 什么时候断由宿主决定（桌面端退出时）。状态里带 `autoStartedBy`。
+   * 什么时候断由宿主决定（codex-desktop-acceleration.ts）。状态里带 `autoStartedBy`，
+   * 加速页与托盘上看不见它（acceleration-service 的 userAccelerationState），所以它
+   * 连不上、意外断开、撞上别的代理软件都不在加速页上留话。
    * 刻意不进 AccelerationApi：渲染层没有通道能要到一次不计时的连接。
    */
   startAutomaticAcceleration(scope: string, mode: AccelerationState['mode'], lineId?: string): Promise<AccelerationState>
@@ -431,8 +433,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   }
   /** Runs before any OS state is touched, so a refused start costs no time and
    *  leaves nothing to undo. A detector that cannot read the platform reports
-   *  nothing, which is the pre-check behavior. */
-  async function detectConflicts(scope: string, ignore: boolean): Promise<boolean> {
+   *  nothing, which is the pre-check behavior. `record` = false 时照样拒绝，
+   *  只是不把冲突留在加速页上：那次连接不是用户点的（见 startSession）。 */
+  async function detectConflicts(scope: string, ignore: boolean, record: boolean): Promise<boolean> {
     if (!options.detectConflicts) return false
     let conflicts: AccelerationConflictKind[] = []
     try { conflicts = await options.detectConflicts() }
@@ -444,6 +447,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       catch { /* Reporting must not change what the user asked for. */ }
     }
     if (ignore) return false
+    if (!record) return true
     lastConflicts.set(scope, conflicts)
     lastErrors.set(scope, accelerationConflictNotice)
     return true
@@ -503,7 +507,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         await stopStage('ledger-write', () => saveAccount(current.scope,
           { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
       }
-      lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
+      // 加速页上那句「本次连接」只说他自己连的那一次：后台那次他看不见，时长也不该冒出来。
+      if (current.billed) lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
       lastErrors.delete(current.scope)
       lastConflicts.delete(current.scope)
       session = null
@@ -533,9 +538,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     if (session && (session.phase === 'active' && !options.runtime.isRunning() || sessionLeftMs(session) <= 0)) {
       const oldScope = session.scope
       const exited = !options.runtime.isRunning()
+      const billed = session.billed
       try {
         await stopSession()
-        if (exited) lastErrors.set(oldScope, exitFailure)
+        if (exited && billed) lastErrors.set(oldScope, exitFailure)
       } catch { arm(5000) }
       if (exited) reportRuntimeInterrupted()
     }
@@ -552,14 +558,19 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
       if (probeNeedsCleanup) await stopSession()
       if (session) {
-        if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) return state(scope)
+        if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
+          // 用户自己点「开始加速」时连着的若是软件替他在后台连的那一次（加速页上
+          // 看不见，见 acceleration-service 的 userAccelerationState），停掉它重新
+          // 连一次计时的，从这一刻起归他。时长用完的照旧原样返回，后台那次不动。
+          if (session.billed || !billed || usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
+        }
         try { await stopSession() } catch { throw new Error(stopFailure) }
       }
       lastErrors.delete(scope)
       lastConflicts.delete(scope)
       // 软件替用户连的不扣时长，时长用完也照样连（yoyo 2026-09-30 定）。
       if (billed && usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
-      if (await detectConflicts(scope, ignoreConflicts === true)) return state(scope)
+      if (await detectConflicts(scope, ignoreConflicts === true, billed)) return state(scope)
       // 下载专用线路已经把内核跑起来了：同一条线路直接接管，不重起内核，
       // 正在进行的下载因此不会断在半路。用户点名了另一条线路才必须重起。
       let adopted: { port: number; line: AccelerationLine } | null = null
@@ -601,7 +612,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         return state(scope)
       } catch (error) {
         reportStartFailure(error, phase)
-        try { await stopSession(); lastErrors.set(scope, connectionFailure(error, phase)) }
+        // 后台那次连不上只记日志（宿主那边），不在加速页上留一句他没点过的失败。
+        try { await stopSession(); if (billed) lastErrors.set(scope, connectionFailure(error, phase)) }
         catch { arm(5000) }
         return state(scope)
       }
@@ -746,7 +758,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       downloadHolders = 0
       if (!session || disposed) return
       const scope = session.scope
-      try { await stopSession(); lastErrors.set(scope, exitFailure) }
+      const billed = session.billed
+      try { await stopSession(); if (billed) lastErrors.set(scope, exitFailure) }
       catch { arm(5000); throw new Error(stopFailure) }
       finally { reportRuntimeInterrupted() }
     }),
