@@ -599,6 +599,10 @@ describe('createSystemService', () => {
     vi.setSystemTime(Date.now() + 31_000)
   }
 
+  // 开机那轮在后台跑，测试只能等结果落盘。Windows CI 上保存一次配置就要 0.8 秒上下，
+  // waitFor 缺省的 1 秒连一次保存都等不完。
+  const backgroundStartupWait = { timeout: 10_000 }
+
   it('writes the official Codex entries for the models the account can use, so the desktop menu lists GPT-6.1 Sol', async () => {
     const f = codexCatalogFixture()
     f.installCodexCli('0.156.1')
@@ -725,7 +729,7 @@ describe('createSystemService', () => {
     await vi.waitFor(() => {
       expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
       expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
-    })
+    }, backgroundStartupWait)
     expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
     expect(f.running).toHaveBeenCalledWith(['codex'])
   })
@@ -760,7 +764,7 @@ describe('createSystemService', () => {
     const backup = vi.fn()
 
     await f.service.fillToolTemplateDefaults!(backup)
-    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']))
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']), backgroundStartupWait)
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(f.fetchModels.mock.calls.length).toBe(requests)
@@ -777,7 +781,7 @@ describe('createSystemService', () => {
 
     expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
 
-    await vi.waitFor(() => expect(f.catalogSetting()).toBeUndefined())
+    await vi.waitFor(() => expect(f.catalogSetting()).toBeUndefined(), backgroundStartupWait)
   })
 
   it('takes the catalog back at startup while logged out, once for the whole startup', async () => {
@@ -808,9 +812,10 @@ describe('createSystemService', () => {
     const pendingSave = f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog-next', model: 'gpt-6.1-sol', mode: 'merge' }, false)
     await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
 
+    // 排在锁后面的话要等到打开前那 3 秒上限才放行：给慢机器留些余量，但不能放到 3 秒。
     const launch = await Promise.race([
       f.service.checkToolModels!('codex').then(() => 'checked'),
-      new Promise((resolve) => setTimeout(() => resolve('waiting'), 1_000)),
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000)),
     ])
 
     expect(launch).toBe('checked')
