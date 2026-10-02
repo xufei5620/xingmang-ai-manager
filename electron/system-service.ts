@@ -206,6 +206,7 @@ import { readBoundedUtf8File } from './bounded-file'
 import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
+import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
 import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
@@ -2186,6 +2187,8 @@ export interface SystemServiceOptions {
   resolveCliCommand?: typeof resolveCliCommand
   resolveCliInstallation?: typeof resolveCliInstallation
   findExecutable?: typeof findExecutable
+  /** Test seam: the real one looks for a terminal program and waits for its window (linux-terminal.ts). */
+  launchLinuxTerminal?: typeof launchLinuxTerminal
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
@@ -2475,6 +2478,7 @@ export function createSystemService(
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
+  const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
@@ -5035,27 +5039,52 @@ export function createSystemService(
       return launchResult
     }
 
-    // 打开的工具同样带不上一个没开的本机代理，否则连不上中转（Linux 版拆分 ②，与上面 Windows 那条同理）。
-    const environment = await withoutDeadLoopbackProxies(
-      interactiveTerminalEnvironment(providerEnv, sameUserTerminalEnvironment),
-      provider,
-    )
-    const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
-    const argv = cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId })
-    const terminals = [
-      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...argv] },
-      { command: 'gnome-terminal', args: ['--', command.executable, ...argv] },
-      { command: 'konsole', args: ['-e', command.executable, ...argv] },
-    ]
-    let terminal = terminals[0]
-    for (const candidate of terminals) {
-      if (await findExecutable(candidate.command, { env: environment })) {
-        terminal = candidate
-        break
+    // Linux：找一个命令窗口程序，交给它一份一次性启动脚本，脚本真的跑起来才算打开
+    // （linux-terminal.ts，Linux 版拆分 ⑤）。
+    try {
+      // 打开的工具同样带不上一个没开的本机代理，否则连不上中转（Linux 版拆分 ②，与上面 Windows 那条同理）。
+      const environment = await withoutDeadLoopbackProxies(
+        interactiveTerminalEnvironment(providerEnv, sameUserTerminalEnvironment),
+        provider,
+      )
+      const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
+      const opened = await launchLinuxTerminalForService({
+        executable: command.executable,
+        argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),
+        workspace,
+        title: `${definition.name} · 星芒AI`,
+        env: environment,
+      })
+      runtimeLog?.log('info', 'system', 'terminal.opened', `${definition.name} 已在「${opened.terminal.label}」里打开`, {
+        provider,
+        terminal: opened.terminal.id,
+        ...describeLinuxTerminalAttempts(opened.attempts),
+      })
+    } catch (error) {
+      if (error instanceof LinuxTerminalLaunchError) {
+        runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的命令窗口没能打开`, {
+          provider,
+          ...describeLinuxTerminalAttempts(error.attempts),
+          ...(error.reason ? { reason: redactHomeDirectory(error.reason, providerRoots.userHome) } : {}),
+        })
       }
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
     }
-    await spawnDetached(terminal.command, terminal.args, { cwd: workspace, env: environment })
     return launchResult
+  }
+
+  /** 日志只写试过哪几个命令窗口、各自怎么失败的；路径按主目录脱敏（I13）。 */
+  function describeLinuxTerminalAttempts(attempts: readonly LinuxTerminalAttempt[]): Record<string, unknown> {
+    if (!attempts.length) return {}
+    return {
+      attempts: attempts.map((attempt) => ({
+        terminal: attempt.terminal,
+        executable: redactHomeDirectory(attempt.executable, providerRoots.userHome),
+        outcome: attempt.outcome,
+        detail: attempt.detail,
+      })),
+    }
   }
 
   /**

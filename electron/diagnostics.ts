@@ -31,6 +31,7 @@ import {
   isMacOsCommandLineToolsShim,
   xcodeLicensePendingNotice,
 } from './macos-command-line-tools'
+import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import {
@@ -152,6 +153,11 @@ export interface DiagnosticsDependencies {
    */
   inspectStoreAppLaunchContext?: (signal: AbortSignal) => Promise<WindowsStoreAppLaunchContext>
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
+  /**
+   * Linux 上「打开工具用的命令窗口」一项：点「打开」时会用哪个命令窗口程序（linux-terminal.ts）。
+   * 缺省 = 按这台电脑的 PATH 和桌面现找；测试用它造「装了哪个」「一个都没有」。
+   */
+  findLinuxTerminal?: () => LinuxTerminalCandidate | null
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectProvider?: (provider: ProviderId, roots: ProviderConfigRoots) => NativeConfigInspection
@@ -1763,6 +1769,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     }
     return probePowerShell(signal)
   }
+  const findLinuxTerminal = dependencies.findLinuxTerminal
+    ?? (() => findLinuxTerminals(commandEnvironment(env))[0] ?? null)
   const probeDesktop = dependencies.inspectCodexDesktop ?? defaultInspectCodexDesktop
   const inspectDesktop = (signal: AbortSignal): Promise<DiagnosticToolStatus> => {
     const known = scanned ? scannedCodexDesktopStatus(scanned) : null
@@ -1930,12 +1938,29 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'SYSTEM_POWERSHELL',
       title: '打开工具用的命令窗口',
       run: async (signal) => {
-        if (platform !== 'win32') {
+        if (platform === 'darwin') {
           return {
             state: 'pass',
             summary: 'Mac 不需要这一项',
             details: { required: false, installed: null, path: null },
           }
+        }
+        if (platform !== 'win32') {
+          // Linux 上点「打开」要借一个命令窗口程序（终端），和「打开」用的是同一张查找表。
+          const terminal = findLinuxTerminal()
+          const outcome: CheckOutcome = {
+            state: terminal ? 'pass' : 'fail',
+            summary: terminal
+              ? `可用，会用「${terminal.label}」打开工具`
+              : '这台电脑上没找到能打开命令窗口的程序（终端），工具没法从星芒打开。打开系统自带的应用商店，搜「终端」装一个，再回来点「重新检测」',
+            details: {
+              required: true,
+              installed: Boolean(terminal),
+              terminal: terminal?.id ?? null,
+              path: pathForDisplay(terminal?.executable ?? null, displayRoots),
+            },
+          }
+          return outcome
         }
         const status = await inspectPowerShell(signal)
         return {
