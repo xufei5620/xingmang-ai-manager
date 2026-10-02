@@ -59,6 +59,12 @@ export const firstRunHints: Record<ProviderId, ToolFirstRun> = {
 // Windows 与 Mac 用同一个，Mac 上它走「安装指南」。页面里不写这个字面量（T2）。
 export const guideRecommendedTool: ToolDef['id'] = 'codexDesktop';
 
+// Linux 上没有桌面端（ui-spec/04-pages.md：Linux 走 Codex CLI 或直接聊天）。推荐 Codex CLI，
+// 和 Linux 版教程第一章同一条路；Node.js 由星芒自己准备，新手一路「下一步」照样走得完。
+export function guideRecommendedToolFor(os: 'win' | 'mac' | 'linux'): ToolDef['id'] {
+  return os === 'linux' ? 'codex' : guideRecommendedTool;
+}
+
 export const tools: ToolDef[] = [
   { id: 'claude', name: 'Claude Code', vendor: 'Anthropic', brandIcon: 'Claude', kind: 'cli', install: npmInstall('claude'), requires: ['node'], configPath: configPathsFor('claude'), sources: ['account', 'official', 'manual'], shortcutIndex: 1, firstRun: firstRunHints.claude },
   { id: 'codex', name: 'Codex CLI', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'cli', install: npmInstall('codex'), requires: ['node'], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 2, firstRun: firstRunHints.codex },

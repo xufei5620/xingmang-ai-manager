@@ -34,6 +34,7 @@ export type PlatformHostNotification =
   | 'accelerationInterruptedUnrestored'
   | 'hiddenToTray'
   | 'hiddenToMenuBar'
+  | 'hiddenToPanel'
   | 'paymentSettled'
 
 export interface NotificationMessage {
@@ -242,6 +243,13 @@ const hostMessages: Record<
     title: '星芒AI管理工具还在运行',
     body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。',
   },
+  // Linux 各家桌面放托盘图标的地方不一样：Ubuntu 在屏幕右上角，KDE、deepin、UKUI 在
+  // 任务栏右边，所以两处都说。没有托盘的桌面根本不会缩进去（linux-tray-host.ts）。
+  hiddenToPanel: {
+    kind: null,
+    title: '星芒AI管理工具还在运行',
+    body: '窗口已收起，点屏幕顶部或任务栏右边的星芒图标就能打开。',
+  },
   // 客户关了支付窗口以后才确认到账。钱是他自己刚付的，不归「余额不足」那类提醒管，
   // 只看总开关。订单号不写进通知：通知中心谁都看得见，点进来「充值与订阅」页写着。
   paymentSettled: {
@@ -315,6 +323,13 @@ function terminalNotificationKind(
   notice: TerminalNotice,
 ): PlatformNotificationKind {
   return notice.event === 'failed' ? 'cliTrouble' : 'cliTurn'
+}
+
+/** 窗口第一次缩起来时说它去了哪儿：Windows 托盘、macOS 菜单栏、Linux 顶栏或任务栏。 */
+export function hiddenWindowNotification(platform: NodeJS.Platform): PlatformHostNotification {
+  if (platform === 'win32') return 'hiddenToTray'
+  if (platform === 'darwin') return 'hiddenToMenuBar'
+  return 'hiddenToPanel'
 }
 
 /** 系统通知发不出去时，宿主改用别的办法（Windows 托盘气泡）说同一句话。 */

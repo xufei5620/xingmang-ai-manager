@@ -15,7 +15,9 @@ export function windowOsFor(platform: PlatformCapabilities['platform']): WindowO
  */
 export function initialWindowOs(root: string | undefined, navigatorPlatform: string | undefined): WindowOs {
   if (root === 'mac' || root === 'linux' || root === 'win') return root
-  return navigatorPlatform !== undefined && /mac/i.test(navigatorPlatform) ? 'mac' : 'win'
+  if (navigatorPlatform !== undefined && /mac/i.test(navigatorPlatform)) return 'mac'
+  // Linux 上 Chromium 报「Linux x86_64」「Linux aarch64」。启动页、欢迎页在这之前就要分平台的文案。
+  return navigatorPlatform !== undefined && /linux/i.test(navigatorPlatform) ? 'linux' : 'win'
 }
 
 export function currentWindowOs(): WindowOs {

@@ -22,9 +22,14 @@ describe('initialWindowOs', () => {
     expect(initialWindowOs('unexpected', 'MacIntel')).toBe('mac')
   })
 
-  it('falls back to the Windows layout when nothing points at a Mac', () => {
+  it('reads Linux from what Chromium reports, so Linux copy is right before the capabilities arrive', () => {
+    expect(initialWindowOs(undefined, 'Linux x86_64')).toBe('linux')
+    expect(initialWindowOs(undefined, 'Linux aarch64')).toBe('linux')
+    expect(initialWindowOs('win', 'Linux x86_64')).toBe('win')
+  })
+
+  it('falls back to the Windows layout when nothing points at a Mac or Linux', () => {
     expect(initialWindowOs(undefined, 'Win32')).toBe('win')
-    expect(initialWindowOs(undefined, 'Linux x86_64')).toBe('win')
     expect(initialWindowOs(undefined, undefined)).toBe('win')
   })
 })

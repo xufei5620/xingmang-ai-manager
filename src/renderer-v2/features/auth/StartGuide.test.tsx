@@ -403,6 +403,16 @@ describe('guide default route', () => {
       expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
     }
   })
+
+  it('preselects Codex CLI on Linux, where the desktop app does not exist', () => {
+    expect(defaultGuideRoute(null, ['claude', 'codex', 'gemini', 'grok'], 'codex')).toBe('codex')
+    const markup = render([], { platform: 'linux' })
+    expect(markup).toContain('data-guide-route="codex"')
+    expect(markup).not.toContain('guide-route-codexDesktop')
+    expect(markup.indexOf('guide-route-codex"')).toBeLessThan(markup.indexOf('guide-route-claude'))
+    expect(markup.match(/data-testid="guide-recommended"/g)).toHaveLength(1)
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
+  })
 })
 
 describe('guide choose step runtime wording', () => {

@@ -1619,6 +1619,8 @@ export function MaintenancePage({
         {tools.map((tool) => {
           const id = tool.id
           if (!isProvider(id) && id !== 'codexDesktop') return null
+          // 和首页同一口径（presentTools）：打不开桌面端的系统（Linux）不列这一行。
+          if (id === 'codexDesktop' && capability && !capability.codexDesktop.launch) return null
           const status =
             id === 'codexDesktop'
               ? snapshot?.desktopApps.codex
@@ -2064,12 +2066,17 @@ export function SettingsPage({
   const [systemError, setSystemError] = useState('')
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
   const [isMac, setIsMac] = useState(false)
+  const [isLinux, setIsLinux] = useState(false)
+  const [accelerationAvailable, setAccelerationAvailable] = useState(true)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
     void api.getPlatformCapabilities()
       .then((capability) => {
-        if (current) setIsMac(capability.platform === 'macos')
+        if (!current) return
+        setIsMac(capability.platform === 'macos')
+        setIsLinux(capability.platform === 'linux')
+        setAccelerationAvailable(capability.acceleration !== false)
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -2519,7 +2526,10 @@ export function SettingsPage({
           )}
           {row(
             '点关闭按钮时',
-            '按你的选择关闭窗口或缩到托盘',
+            // Linux 的任务栏不一定有放托盘图标的地方（主进程先问过），没有就只能退出。
+            isLinux && resource.data && !resource.data.capabilities.tray
+              ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
+              : '按你的选择关闭窗口或缩到托盘',
             <Segment
               options={[
                 { value: 'ask', label: '每次询问' },
@@ -2716,7 +2726,7 @@ export function SettingsPage({
               }
             />,
           )}
-          {notificationOptions.map((option) =>
+          {notificationOptions.filter((option) => option.value !== 'acceleration' || accelerationAvailable).map((option) =>
             row(
               option.label,
               option.description,

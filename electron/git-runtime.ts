@@ -36,12 +36,16 @@ export function gitHostPlatform(platform: string = process.platform): GitHostPla
  */
 export const gitWindowsDownloadUrl = 'https://git-scm.com/download/win'
 
+/** Linux 上装 Git 的那一条命令；教程页和提示必须是同一个字符串。 */
+export const gitLinuxInstallCommand = 'sudo apt install -y git'
+
 /** 「怎么装上」这一句，句末不带标点，便于拼进更长的提示里。 */
 export function gitInstallGuidance(platform: string = process.platform): string {
   const host = gitHostPlatform(platform)
   if (host === 'windows') return '点首页「运行环境」里的「安装 Git」，星芒会自动下载装好，不用管理员权限'
   if (host === 'macos') return '点首页「运行环境」里的「安装 Git」，Mac 会弹出苹果自己的安装窗口，点里面的“安装”就好'
-  return '请用系统的包管理器装上 Git'
+  // Linux 只出 deb，装得上星芒的系统（Ubuntu、Debian、deepin、统信、麒麟）都用 apt。
+  return `打开「终端」，输入 ${gitLinuxInstallCommand} 回车，提示输密码时输开机密码（屏幕上不显示，输完回车）`
 }
 
 /**

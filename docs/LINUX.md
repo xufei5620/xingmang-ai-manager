@@ -20,6 +20,16 @@
 | Node.js | 软件自己下官方压缩包（`linux-node-runtime.ts`）：版本钉在 v24.21.0，x64 / arm64 各钉一个 SHA-256，字节可以从 npmmirror 来但哈希必须对上；只用 root 所有、别人不可写的 `/usr/bin/tar`（退到 `/bin/tar`），环境只给 `PATH=/usr/bin:/bin` 和 `LC_ALL=C`。安装和启动 CLI 时这份排在继承的 PATH 前面（`linux-platform.ts`） | Ubuntu、Debian 自带的那份常常太旧，排在后面永远轮不到它；不提权、不碰系统包管理器。`trustedCommandEnvironment` 的 Linux PATH 仍把它放最后，那份环境在 Linux 上只给辅助进程用（执行模式恒为 same-user）。 |
 | 打开工具 | 点「打开」时按桌面找它自带的命令窗口（GNOME → GNOME 终端，统信 / deepin → 深度终端，麒麟 UKUI → MATE 终端，KDE → Konsole 等），再试系统默认的 `x-terminal-emulator`，再按表试其余十几种；只在 PATH 的绝对路径和 `/usr/bin` 这类系统目录里找，启动找到的绝对路径。命令窗口只收到 `/bin/sh` 和一份一次性启动脚本的路径，工具路径、参数、项目文件夹、当前账号的值都只在脚本里；脚本放 `$XDG_RUNTIME_DIR`（用不了或写不进去就换系统临时目录）下 0700 的私有目录、本身 0600，第一行就删掉自己。脚本删掉自己才算打开成功，命令窗口起不来或报错就换下一个，等 15 秒还没跑就不再换、删掉脚本并报「命令窗口一直没有出现」。工具退出后补两行中文，等回车再关窗口（`linux-terminal.ts`） | 各家终端对 `-e` 的理解不一样，只给一个参数时 Debian 的几个包装脚本会走 `sh -c`；交给它的全是本软件定的常量就不怕。终端程序起来了不等于窗口出来了（GNOME 终端的客户端交给后台就退出），只有脚本被执行才说明工具真的开始跑了。窗口默认在脚本结束时关掉，不停一下，退出提示和报错一闪就没了 |
 
+| 托盘 | 启动时问一次会话总线有没有人占着 `org.kde.StatusNotifierWatcher`（`linux-tray-host.ts`，固定路径的 `/usr/bin/dbus-send`，退到 `/usr/bin/gdbus`，1.5 秒超时）。有才建托盘；没有就不建，关窗直接退出，设置页「点关闭按钮时」那一行说明原因，开机自启时直接弹窗 | 原版 GNOME（Debian 12、Fedora，以及关掉 AppIndicator 扩展的 Ubuntu）没有接收方，`new Tray()` 照样成功、图标却哪儿都看不见，关窗「缩到托盘」后窗口就找不回来了。只认 StatusNotifier，只支持老式 XEmbed 的面板也按没有算 |
+| 开机自启 | 写 `${XDG_CONFIG_HOME:-~/.config}/autostart/xingmang-ai-manager.desktop`（`linux-autostart.ts`），Exec 带 `--launched-at-login`；关掉开关就删掉。读写走 safe-local-data（I8）；用户在系统里停用了（`Hidden=true` / `X-GNOME-Autostart-enabled=false`）或文件指向别的程序时报「登记了但没生效」，不替他改回来 | Electron 在 Linux 上没有登录项接口（`getLoginItemSettings` 恒为 false），各家桌面认的是 XDG 这个约定 |
+| 菜单与窗口图标 | 不要应用菜单（`Menu.setApplicationMenu(null)`，按 Alt 也不弹英文菜单）；窗口图标用 `assets/brand/v3/app-icon.png` | Linux 上 Electron 默认菜单是英文的 File / Edit / View；`.ico` Linux 不认 |
+| 中文输入法 | Wayland 会话（Ubuntu 22.04/24.04 默认）启动前加 `--enable-wayland-ime --wayland-text-input-version=3`（`linux-ime.ts`），命令行上已有的不重复加；X11 会话不加 | 不加的话 Wayland 下输入框收不到输入法（沙箱里用嵌套 weston 实测：两个开关都加才建出 text-input 对象）。真机上各输入法框架的表现还没验 |
+| 加速 | 平台能力 `acceleration: false`：侧栏、搜索、托盘菜单、设置里的加速提醒都不出现，也不发加速相关请求 | 计划里第一版不带加速（⑫） |
+| 桌面端与外部客户端 | Codex 桌面端那一行在维护页不显示，首页外部客户端（Claude Desktop 等）一行都不列，教程里删掉讲桌面端的章节和句子 | 这几个都没有 Linux 版 |
+| 新手引导与教程 | Linux 上新手引导默认推荐 Codex CLI；教程第一章换成 Codex CLI，更新那一步写「点『安装新版本』→ 星芒关掉 → 系统安装窗口里点『安装』、输开机密码 → 从应用菜单重新打开」；安装、配置、打开、加速和两章 Mac 专属教程不显示（`registry/tutorials.ts` 的 `tutorialTopicsFor`） | Windows / Mac 拿到的教程不变（测试钉住） |
+| Git | 缺了时直接给 `sudo apt install -y git`（`git-runtime.ts` 的 `gitLinuxInstallCommand`），首页卡片、检查页、插件市场的提示和 Linux 版教程用同一条（Python 见上面那一行） | 只出 deb，装 deb 的系统都有 apt；原来那句「用系统的包管理器装上」小白看不懂 |
+| 客服信息 | 读 `/etc/os-release`（`linux-os-release.ts`，过滤成只剩系统名字、最长 48 个字符）：检查页「操作系统」写「Ubuntu 24.04.1 LTS（64 位）」，「复制给客服」写「Linux（Ubuntu 24.04.1 LTS · 64 位）」，启动日志另记桌面（GNOME / KDE…）、x11 还是 wayland、有没有托盘 | `os.release()` 在 Linux 上只是内核版本号，客服分不出是哪个发行版 |
+
 后面各 PR 的默认做法（数据目录、托管 Node、无密码库登录、自动更新走系统安装器、画布要求沙箱、第一版不带加速、版本号与 Windows/Mac 一致）见项目文件 `Linux版/计划与拆分.md`，落地时各自补进本文件。
 
 ## 2. 本地出包
@@ -82,7 +92,7 @@ Linux 和 Windows / Mac 用同一个版本号、同一次 publish-release。
 | ⑦ | Linux 安全边界：路径信任、环境变量收紧、拒绝 root、画布沙箱检查、日志脱敏 |
 | ⑧ | Linux 自动更新（交给系统安装器，不用 electron-updater 的 DebUpdater） |
 | ⑨ | 已接上发版流水线、更新目录、回滚 / 服务状态（第 4 节，开关默认关）；还欠 dl.solov.cc 落地页和飞书教程里的 Linux 下载说明 |
-| ⑩ | 托盘、开机自启、输入法、加速页隐藏、文案 |
+| ⑩ | 已做：托盘、开机自启、菜单、窗口图标、中文输入法、加速页与桌面端行隐藏、教程文案、客服信息带发行版（第 1 节）。没做：标题栏在各家桌面上的样子、Wayland 下从托盘图标打开窗口能不能到最前面（推测有的桌面不行），都要真机看；应用内卸载和卸载后清 CLI 配置里的钩子路径另做 |
 | ⑪ | 软件自己联网也认系统里装的公司证书 |
 | ⑫ | Linux 加速 |
 

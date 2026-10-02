@@ -4,6 +4,7 @@ import {
   buildActivityNotificationMessage,
   buildTerminalNotificationMessage,
   createPlatformNotifications,
+  hiddenWindowNotification,
   hostNotificationMessage,
   resolveNotificationTarget,
   resolveTerminalNotificationTarget,
@@ -149,6 +150,18 @@ describe('acceleration reminders sent by the main process', () => {
       title: '星芒AI管理工具还在运行',
       body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
     })
+  })
+
+  it('says where the window went in each system\'s own words', () => {
+    expect(hiddenWindowNotification('win32')).toBe('hiddenToTray')
+    expect(hiddenWindowNotification('darwin')).toBe('hiddenToMenuBar')
+    expect(hiddenWindowNotification('linux')).toBe('hiddenToPanel')
+    expect(hostNotificationMessage('hiddenToPanel')).toEqual({
+      title: '星芒AI管理工具还在运行',
+      body: '窗口已收起，点屏幕顶部或任务栏右边的星芒图标就能打开。',
+    })
+    // Linux 上没有 Windows 那个小箭头，也不一定在右下角。
+    expect(hostNotificationMessage('hiddenToPanel').body).not.toMatch(/右下角|\^/)
   })
 
   it('says a payment settled after its window closed, once per order, without the order number', () => {

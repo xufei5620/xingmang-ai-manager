@@ -51,8 +51,8 @@ async function screenshot(name) {
 try {
   await page.getByRole('heading', { name: '选一种开始方式' }).waitFor()
   // 第十一批 1：新来的用户第一步默认选中推荐的 Codex 桌面端，一路「下一步」就能走；
-  // Linux 上没有桌面端，不替他选。
-  const recommended = process.platform === 'linux' ? '' : 'codexDesktop'
+  // Linux 上没有桌面端，推荐 Codex CLI（Linux 版拆分 ⑩）。
+  const recommended = process.platform === 'linux' ? 'codex' : 'codexDesktop'
   assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), recommended)
   assert.equal(await page.getByRole('radio', { checked: true }).count(), recommended ? 1 : 0)
   assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 5 : 6)

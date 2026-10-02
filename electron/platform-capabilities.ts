@@ -12,6 +12,8 @@ export interface PlatformCapabilities {
   readonly cliInstall: Readonly<Record<ProviderId, InstallManagement>>
   /** 缺省 = 每家都要 Node.js（旧行为）。 */
   readonly cliNeedsNodeRuntime?: Readonly<Record<ProviderId, boolean>>
+  /** 游戏加速（加速页、托盘那一行、兑换加速时长）。缺省 = 有（旧行为）。 */
+  readonly acceleration?: boolean
   /** 缺省 = 按渲染层注册表的 requires 判断，Gemini 要 Python（旧行为）。 */
   readonly cliNeedsPythonRuntime?: Readonly<Record<ProviderId, boolean>>
   readonly codexDesktop: Readonly<{
@@ -61,6 +63,9 @@ export function platformCapabilitiesFor(
       gemini: true,
       grok: !windows,
     }),
+    // Linux 第一版不带加速：安装包里没有加速内核，页面开着只会一直「线路准备中」。
+    // 等 Linux 加速（拆分 ⑫）落地再打开。
+    acceleration: windows || macos,
     // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
     // Linux 上缺了它照样能装能用，不该拦着（Linux 版拆分 ③）。Windows 和 Mac 不变。
     cliNeedsPythonRuntime: Object.freeze({

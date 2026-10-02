@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Copy, Download, FolderOpen, FolderPlus, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal, Zap } from 'lucide-react'
 import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId, StoreAppLaunchBlock } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Card, Logo, Pill, Progress } from '../../ui'
-import { guideRecommendedTool, officialAccountNames, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
+import { guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from '../tools/FirstRun'
 import { storeAppLaunchNotice } from '../tools/elevation-notice'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
@@ -212,12 +212,12 @@ export function guideInstallExits(reason: unknown, canReplaceNode = false): Oper
 
 /**
  * 引导第一步默认选中哪一项（第十一批候选 1）。上次停在半路的按上次的来；新来的
- * 直接给推荐项，新手一路「下一步」就能走完。推荐项在当前平台上看不到时（Linux）
- * 不替他选。
+ * 直接给推荐项，新手一路「下一步」就能走完。推荐项按平台给（guideRecommendedToolFor，
+ * Linux 是 Codex CLI），在当前平台上看不到时不替他选。
  */
-export function defaultGuideRoute(restored: GuideRoute | null | undefined, visible: readonly string[]): GuideRoute | null {
+export function defaultGuideRoute(restored: GuideRoute | null | undefined, visible: readonly string[], recommended: GuideRoute = guideRecommendedTool): GuideRoute | null {
   if (restored) return restored
-  return visible.includes(guideRecommendedTool) ? guideRecommendedTool : null
+  return visible.includes(recommended) ? recommended : null
 }
 
 /**
@@ -294,8 +294,9 @@ function GuideFirstTaskPrompt({ prompt, disabled }: { prompt: string; disabled: 
 
 function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, canReplaceNode = false, onLogin, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
-  const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === guideRecommendedTool) - Number(a.id === guideRecommendedTool) || a.shortcutIndex - b.shortcutIndex)
-  const [route, setRoute] = useState<GuideRoute | null>(() => defaultGuideRoute(restored?.route, options.map((item) => item.id)))
+  const recommended = guideRecommendedToolFor(platform)
+  const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended) || a.shortcutIndex - b.shortcutIndex)
+  const [route, setRoute] = useState<GuideRoute | null>(() => defaultGuideRoute(restored?.route, options.map((item) => item.id), recommended))
   const [step, setStep] = useState<GuideStep>(restored?.step ?? 'choose')
   const [pending, setPending] = useState('')
   const [error, setError] = useState('')
@@ -476,7 +477,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
         <ol className="auth-guide-steps start-guide-steps" aria-label="首次使用进度">{steps.map((item, index) => <li key={item.id} aria-current={item.id === step ? 'step' : undefined} data-completed={index < currentStep}><i>{index < currentStep ? <Check size={14} aria-hidden="true" /> : index + 1}</i><span>{item.title}</span></li>)}</ol>
         <h1 ref={heading} tabIndex={-1} data-testid="guide-heading">{step === 'ready' ? '可以开始了' : steps[currentStep].title}</h1>
         <div className="auth-guide-body">
-          {step === 'choose' && <><p className="auth-guide-lead">{signedIn ? '账号已登录。' : ''}选一个先开始，之后随时可以再装别的。</p><fieldset className="auth-guide-choices" disabled={locked}><legend>开始方式</legend>{options.map((item) => <label className="auth-guide-choice" data-selected={route === item.id} key={item.id}><input type="radio" name="start-guide-route" value={item.id} checked={route === item.id} onChange={() => choose(item.id as GuideRoute)} data-testid={`guide-route-${item.id}`} /><BrandIcon tool={item.id} size={32} variant="tile" /><strong>{item.name}{item.id === guideRecommendedTool && <Pill tone="accent" testId="guide-recommended">推荐</Pill>}</strong><span>{item.vendor} · {item.kind === 'desktop' ? '图形界面，点开就能用' : runtimeByApp ? '命令行，会自动帮你准备运行环境' : '命令行，要先按提示准备运行环境'}</span></label>)}<label className="auth-guide-choice" data-selected={route === 'chat'}><input type="radio" name="start-guide-route" value="chat" checked={route === 'chat'} onChange={() => choose('chat')} data-testid="guide-route-chat" /><MessageSquare size={26} aria-hidden="true" /><strong>先在星芒里聊天</strong><span>直接描述你的问题，稍后再准备编程工具</span></label></fieldset></>}
+          {step === 'choose' && <><p className="auth-guide-lead">{signedIn ? '账号已登录。' : ''}选一个先开始，之后随时可以再装别的。</p><fieldset className="auth-guide-choices" disabled={locked}><legend>开始方式</legend>{options.map((item) => <label className="auth-guide-choice" data-selected={route === item.id} key={item.id}><input type="radio" name="start-guide-route" value={item.id} checked={route === item.id} onChange={() => choose(item.id as GuideRoute)} data-testid={`guide-route-${item.id}`} /><BrandIcon tool={item.id} size={32} variant="tile" /><strong>{item.name}{item.id === recommended && <Pill tone="accent" testId="guide-recommended">推荐</Pill>}</strong><span>{item.vendor} · {item.kind === 'desktop' ? '图形界面，点开就能用' : runtimeByApp ? '命令行，会自动帮你准备运行环境' : '命令行，要先按提示准备运行环境'}</span></label>)}<label className="auth-guide-choice" data-selected={route === 'chat'}><input type="radio" name="start-guide-route" value="chat" checked={route === 'chat'} onChange={() => choose('chat')} data-testid="guide-route-chat" /><MessageSquare size={26} aria-hidden="true" /><strong>先在星芒里聊天</strong><span>直接描述你的问题，稍后再准备编程工具</span></label></fieldset></>}
           {step === 'prepare' && route === 'chat' && <p className="auth-guide-callout">聊天在星芒内打开，这一步无需安装其他工具。</p>}
           {step === 'prepare' && route && route !== 'chat' && <>
             <p className="auth-guide-lead">{readiness.prepared ? update ? `${name} 已经装好，但${update.knownIssue ? '这个版本有已知问题，用起来会出错' : '版本旧了'}，建议先${update.manualHint ? '用它原来的方式更新' : `点「${updateLabel}」`}。${update.knownIssue ? '' : '不更新也能直接点「下一步」。'}` : `${name} 已经装好。` : oneButton ? '点「安装」就行，缺的运行环境会一并装好。' : `核对 ${name} 的安装状态，再按顺序准备。`}</p>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   gitHostPlatform,
   gitInstallGuidance,
+  gitLinuxInstallCommand,
   gitMissingFirstRunHint,
   gitMissingHomeNotice,
   gitMissingImpact,
@@ -24,7 +25,13 @@ describe('git-runtime shared copy', () => {
     expect(gitInstallGuidance('darwin')).toContain('「安装 Git」')
     expect(gitInstallGuidance('darwin')).toContain('苹果自己的安装窗口')
     expect(gitInstallGuidance('darwin')).not.toMatch(/终端|xcode-select|brew/)
-    expect(gitInstallGuidance('linux')).toContain('包管理器')
+  })
+
+  it('gives Linux customers the one apt command that installs Git on every system the deb runs on', () => {
+    expect(gitInstallGuidance('linux')).toContain(gitLinuxInstallCommand)
+    expect(gitInstallGuidance('linux')).toContain('开机密码')
+    expect(gitInstallGuidance('linux')).not.toContain('包管理器')
+    expect(gitLinuxInstallCommand).toBe('sudo apt install -y git')
   })
 
   it('keeps shell jargon out of the customer-facing copy', () => {
