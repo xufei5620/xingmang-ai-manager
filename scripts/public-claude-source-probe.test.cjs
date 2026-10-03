@@ -66,3 +66,27 @@ test('known host and legal path redirects use HEAD only and disclose query prese
     && row.path === '/releases/1.2.3/package.msix' && row.queryPresent === true))
   assert.doesNotMatch(JSON.stringify(rows), /SECRET|sig=/)
 })
+
+test('GET response-only mode skips APT and destroys package responses before reading any body', async () => {
+  const calls = []
+  function requestImpl(url, options, callback) {
+    calls.push(url)
+    assert.equal(options.method, 'GET')
+    assert.equal(options.headers['user-agent'], 'xingmang-official-offline-sync/1')
+    assert.equal(options.headers.cookie, undefined)
+    assert.equal(options.headers.authorization, undefined)
+    const request = new Writable({ write(chunk, encoding, done) { assert.fail('no upload'); done() } })
+    request.on('finish', () => {
+      const response = new Readable({ read() { assert.fail('package body must never be consumed') } })
+      response.statusCode = url.pathname.includes('/win32/') ? 405 : 403
+      response.headers = { 'content-length': '132' }
+      callback(response)
+      assert.equal(response.destroyed, true)
+    })
+    return request
+  }
+  const rows = await probeClaudeSources({ requestImpl, method: 'GET', metadata: false })
+  assert.equal(calls.length, 4)
+  assert.ok(calls.every((url) => url.hostname === 'claude.ai' && !url.pathname.endsWith('/Packages')))
+  assert.ok(rows.every((row) => row.phase === 'get-response-headers' && row.sameAsPriorHead === true && row.declaredBytesSafe === 132))
+})
