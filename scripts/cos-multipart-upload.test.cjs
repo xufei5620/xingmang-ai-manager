@@ -232,6 +232,7 @@ test('only a diagnosed HTTP 400 RequestTimeout retries and each part stops after
   for (const [code, failCount, expectedAttempts, succeeds] of [
     ['RequestTimeout', 2, 3, true], ['RequestTimeout', 3, 3, false],
     ['BadDigest', 1, 1, false], ['InvalidDigest', 1, 1, false], ['UnknownSECRET', 1, 1, false],
+    ...['UserNetworkTooSlow', 'IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'].map(code => [code, 1, 1, false]),
   ]) {
     const transport = memoryMultipart({ partFault: function ({ call, callback, attempt }) {
       if (call.url.searchParams.get('partNumber') !== '1' || attempt > failCount) return false
@@ -312,6 +313,8 @@ test('part retries retain the original deadline and stop after another worker fa
     let active = 0
     let release
     const sibling = new Promise(resolve => { release = resolve })
+    let enterFirstPart
+    const firstPartStarted = new Promise(resolve => { enterFirstPart = resolve })
     const operations = []
     const timeout = new Error('retryable timeout')
     const terminal = new Error('terminal failure')
@@ -326,11 +329,13 @@ test('part retries retain the original deadline and stop after another worker fa
           active += 1
           try {
             if (query.partNumber === '1') {
+              enterFirstPart()
               if (reason === 'sibling') await sibling
               else clock = 75 * 60 * 1000
               throw timeout
             }
             if (query.partNumber === '2' && reason === 'sibling') {
+              await firstPartStarted
               setImmediate(release)
               throw terminal
             }

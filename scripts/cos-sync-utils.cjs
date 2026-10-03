@@ -14,7 +14,9 @@ const DEFAULT_BUCKET = 'xingmang-downloads-1342302199'
 const DEFAULT_REGION = 'ap-shanghai'
 const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed', 'cos-multipart-unconfirmed'])
 const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
-const COS_ERROR_CODES = new Set(['RequestTimeout', 'BadDigest', 'InvalidDigest', 'AccessDenied', 'SignatureDoesNotMatch', 'NoSuchUpload', 'EntityTooSmall', 'InvalidPart', 'InvalidPartOrder', 'InvalidArgument'])
+const COS_ERROR_CODES = new Set(['RequestTimeout', 'BadDigest', 'InvalidDigest', 'AccessDenied', 'SignatureDoesNotMatch', 'NoSuchUpload', 'EntityTooSmall', 'InvalidPart', 'InvalidPartOrder', 'InvalidArgument', 'UserNetworkTooSlow', 'IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'])
+const COS_ERROR_BODY_STATUSES = new Set(['recognized-code', 'unrecognized-code', 'missing-code', 'empty-body', 'invalid-utf8', 'invalid-xml', 'unsupported-field', 'duplicate-field', 'invalid-entity', 'unsupported-encoding', 'invalid-content-length', 'declared-too-large', 'body-too-large', 'body-timeout', 'body-stream-failed', 'length-mismatch'])
+const COS_ERROR_CONTENT_TYPES = new Set(['missing', 'xml', 'json', 'html', 'text', 'other'])
 const MAX_COS_ERROR_BYTES = 4096
 const failureDetails = new WeakMap()
 
@@ -35,6 +37,9 @@ function readSafeSyncFailure(error, seen, depth) {
   if (['response-headers', 'upload-body', 'response-body'].includes(value.phase)) result.phase = value.phase
   if (TRANSPORT_CODES.has(value.transportCode)) result.transportCode = value.transportCode
   if (COS_ERROR_CODES.has(value.cosErrorCode)) result.cosErrorCode = value.cosErrorCode
+  if (COS_ERROR_BODY_STATUSES.has(value.cosErrorBodyStatus)) result.cosErrorBodyStatus = value.cosErrorBodyStatus
+  if (Number.isSafeInteger(value.cosErrorBodyBytes) && value.cosErrorBodyBytes >= 0 && value.cosErrorBodyBytes <= MAX_COS_ERROR_BYTES) result.cosErrorBodyBytes = value.cosErrorBodyBytes
+  if (COS_ERROR_CONTENT_TYPES.has(value.cosErrorContentType)) result.cosErrorContentType = value.cosErrorContentType
   if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status
   for (const name of ['transferredBytes', 'expectedBytes']) {
     if (Number.isSafeInteger(value[name]) && value[name] >= 0 && value[name] <= MAX_FILE_BYTES) result[name] = value[name]
@@ -153,22 +158,29 @@ function validateTimeout(value, fallback) {
   return timeout
 }
 
-function parseCosErrorCode(body) {
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(body).trim()
-    .replace(/^<\?xml\s+version=["']1\.0["'](?:\s+encoding=["']UTF-8["'])?\s*\?>\s*/i, '')
+function parseCosErrorDiagnostic(body) {
+  if (body.length === 0) return { cosErrorBodyStatus: 'empty-body' }
+  let text
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(body).trim() }
+  catch { return { cosErrorBodyStatus: 'invalid-utf8' } }
+  text = text.replace(/^<\?xml\s+version=["']1\.0["'](?:\s+encoding=["']UTF-8["'])?\s*\?>\s*/i, '')
   const root = /^<Error>\s*([\s\S]*?)\s*<\/Error>$/.exec(text)
-  if (!root) return undefined
+  if (!root) return { cosErrorBodyStatus: 'invalid-xml' }
   const seen = new Set()
   let remaining = root[1]
   let code
   while (remaining.trim()) {
-    const field = /^\s*<(Code|Message|Resource|RequestId|TraceId)>([^<]*)<\/\1>\s*/.exec(remaining)
-    if (!field || seen.has(field[1]) || /&(?!amp;|lt;|gt;|quot;|apos;)/.test(field[2])) return undefined
+    const field = /^\s*<([A-Za-z][A-Za-z0-9]*)>([^<]*)<\/\1>\s*/.exec(remaining)
+    if (!field) return { cosErrorBodyStatus: 'invalid-xml' }
+    if (!['Code', 'Message', 'Resource', 'RequestId', 'TraceId'].includes(field[1])) return { cosErrorBodyStatus: 'unsupported-field' }
+    if (seen.has(field[1])) return { cosErrorBodyStatus: 'duplicate-field' }
+    if (/&(?!amp;|lt;|gt;|quot;|apos;)/.test(field[2])) return { cosErrorBodyStatus: 'invalid-entity' }
     seen.add(field[1])
     if (field[1] === 'Code') code = field[2]
     remaining = remaining.slice(field[0].length)
   }
-  return COS_ERROR_CODES.has(code) ? code : undefined
+  if (!seen.has('Code')) return { cosErrorBodyStatus: 'missing-code' }
+  return COS_ERROR_CODES.has(code) ? { cosErrorBodyStatus: 'recognized-code', cosErrorCode: code } : { cosErrorBodyStatus: 'unrecognized-code' }
 }
 
 function isCosMultipartRequest(input, url) {
@@ -177,26 +189,48 @@ function isCosMultipartRequest(input, url) {
     /^[a-z0-9][a-z0-9-]{0,49}-[0-9]{5,20}\.cos\.[a-z]{2}-[a-z]+(?:-[a-z]+)?\.myqcloud\.com$/.test(url.hostname)
 }
 
-async function readCosErrorCode(response, timeoutMs) {
+function classifyCosErrorContentType(value) {
+  if (value === undefined) return 'missing'
+  if (typeof value !== 'string') return 'other'
+  const mime = value.split(';', 1)[0].trim().toLowerCase()
+  if (mime === 'text/html' || mime === 'application/xhtml+xml') return 'html'
+  if (mime === 'application/xml' || mime === 'text/xml' || /^application\/[a-z0-9.-]+\+xml$/.test(mime)) return 'xml'
+  if (mime === 'application/json' || /^application\/[a-z0-9.-]+\+json$/.test(mime)) return 'json'
+  if (mime.startsWith('text/')) return 'text'
+  return 'other'
+}
+
+async function readCosErrorDiagnostic(response, timeoutMs) {
   let timer
+  const headers = response.headers || {}
+  const diagnostic = { cosErrorBodyStatus: 'body-stream-failed', cosErrorBodyBytes: 0, cosErrorContentType: classifyCosErrorContentType(headers['content-type']) }
   try {
-    if (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity') return undefined
-    const declaredBytes = parseContentLength(response.headers)
-    if (declaredBytes !== null && declaredBytes > MAX_COS_ERROR_BYTES) return undefined
+    if (headers['content-encoding'] && headers['content-encoding'] !== 'identity') return { ...diagnostic, cosErrorBodyStatus: 'unsupported-encoding' }
+    let declaredBytes
+    try { declaredBytes = parseContentLength(headers) }
+    catch { return { ...diagnostic, cosErrorBodyStatus: 'invalid-content-length' } }
+    if (declaredBytes !== null && declaredBytes > MAX_COS_ERROR_BYTES) return { ...diagnostic, cosErrorBodyStatus: 'declared-too-large' }
     const chunks = []
     let bytes = 0
-    timer = setTimeout(() => response.destroy(), Math.min(timeoutMs, 5000))
+    timer = setTimeout(() => {
+      diagnostic.cosErrorBodyStatus = 'body-timeout'
+      response.destroy()
+    }, Math.min(timeoutMs, 5000))
     await pipeline(response, new Writable({ write(chunk, encoding, callback) {
       bytes += chunk.length
-      if (bytes > MAX_COS_ERROR_BYTES) return callback(new Error('COS 错误响应超出大小限制'))
+      diagnostic.cosErrorBodyBytes = Math.min(bytes, MAX_COS_ERROR_BYTES)
+      if (bytes > MAX_COS_ERROR_BYTES) {
+        diagnostic.cosErrorBodyStatus = 'body-too-large'
+        return callback(new Error('COS 错误响应超出大小限制'))
+      }
       chunks.push(Buffer.from(chunk))
       callback()
     } }))
-    if (declaredBytes !== null && bytes !== declaredBytes) return undefined
-    return parseCosErrorCode(Buffer.concat(chunks))
+    if (declaredBytes !== null && bytes !== declaredBytes) return { ...diagnostic, cosErrorBodyStatus: 'length-mismatch' }
+    return { ...diagnostic, ...parseCosErrorDiagnostic(Buffer.concat(chunks)) }
   } catch {
     // Diagnostics never replace the original HTTP failure or retain server text.
-    return undefined
+    return diagnostic
   } finally { clearTimeout(timer) }
 }
 
@@ -280,8 +314,7 @@ async function performRequest(input, options = {}) {
       const error = transferFailure(status >= 300 && status < 400 ? 'redirect-rejected' : 'http-status', status >= 300 && status < 400 ? '服务器重定向已拒绝' : `服务器请求失败（HTTP ${Number.isInteger(status) ? status : 0}）`, details({ status }))
       error.status = status
       if (Number.isInteger(status) && status >= 400 && status <= 599 && isCosMultipartRequest(input, url)) {
-        const cosErrorCode = await readCosErrorCode(response, bodyTimeoutMs)
-        if (cosErrorCode) failureDetails.get(error).cosErrorCode = cosErrorCode
+        Object.assign(failureDetails.get(error), await readCosErrorDiagnostic(response, bodyTimeoutMs))
       }
       throw error
     }
