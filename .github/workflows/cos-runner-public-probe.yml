@@ -1,0 +1,46 @@
+# Temporary diagnostic branch only. No COS identity or protected environment.
+name: cos-runner-public-probe
+
+on:
+  push:
+    branches:
+      - codex/cos-runner-public-probe-20261003
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cos-runner-public-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/codex/cos-runner-public-probe-20261003' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Read fixed public small-resource endpoints
+        env:
+          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/cos-public-entry-probe-${{ runner.os }}.json
+        run: node scripts/public-cos-entry-probe.cjs
+
+      - name: Preserve only the fixed safe evidence rows
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cos-public-entry-probe-${{ runner.os }}
+          path: ${{ runner.temp }}/cos-public-entry-probe-${{ runner.os }}.json
+          if-no-files-found: warn
+          retention-days: 3
