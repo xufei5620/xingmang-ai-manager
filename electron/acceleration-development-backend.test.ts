@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, automaticSessionDrainMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
@@ -639,10 +639,14 @@ describe('automatic acceleration started for the Codex desktop app', () => {
   it('replaces the automatic session with a billed one of the user\'s own when they press start', async () => {
     const test = await setup()
     await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    const events = test.events.length
     const started = await test.backend.startAcceleration(scope, 'system-proxy')
     expect(started).toMatchObject({ phase: 'active', remainingSeconds: accelerationTrialSeconds })
     expect(started.autoStartedBy).toBeUndefined()
-    expect(test.events.slice(-4)).toEqual(['proxy:restore', 'runtime:stop', 'runtime:start', 'proxy:enable'])
+    // 内核不重起：后台那次连着时已经在走的连接（比如 Codex 正写到一半的回复）不被打断。
+    expect(test.events.slice(events)).toEqual(['proxy:restore', 'proxy:enable'])
+    expect(test.runtime.start).toHaveBeenCalledOnce()
+    // 只剩他这次的到期：后台那次停下时的收尾已经交给了这次会话。
     expect(test.scheduled.size).toBe(1)
     test.elapse(30_000)
     const stopped = await test.backend.stopAcceleration(scope)
@@ -694,6 +698,208 @@ describe('automatic acceleration started for the Codex desktop app', () => {
     await test.backend.startAcceleration(scope, 'system-proxy')
     test.setRunning(false)
     expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error' })
+  })
+})
+
+// #772 起用星芒 Key 的约两分钟就断开，这时第一次提问很可能还在流式返回：
+// 系统代理当场改回，内核留着让已经在走的连接走完。
+describe('core kept for connections in flight after an automatic session stops', () => {
+  it('restores the system proxy at once but stops the core only once the drain runs out', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    const events = test.events.length
+    expect(await test.backend.stopAcceleration(scope)).toMatchObject({ phase: 'idle', connectedAt: null, line: null })
+    expect(test.events.slice(events)).toEqual(['proxy:restore'])
+    expect(test.runtime.isRunning()).toBe(true)
+    expect(await test.backend.isIdle()).toBe(false)
+    await test.advance(automaticSessionDrainMs - 1)
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    await test.advance(1)
+    expect(test.events.slice(events)).toEqual(['proxy:restore', 'runtime:stop'])
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('still stops the core right away for a session the user started', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    const events = test.events.length
+    await test.backend.stopAcceleration(scope)
+    expect(test.events.slice(events)).toEqual(['proxy:restore', 'runtime:stop'])
+    expect(test.scheduled.size).toBe(0)
+  })
+
+  it('keeps nothing for a session that never connected or whose core is already gone', async () => {
+    const test = await setup()
+    test.proxy.enable.mockRejectedValueOnce(new Error('denied'))
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    expect(test.runtime.isRunning()).toBe(false)
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    test.setRunning(false)
+    await test.backend.stopAcceleration(scope)
+    expect(test.scheduled.size).toBe(0)
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('hands the core to the next connection on the same line without restarting it', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    const events = test.events.length
+    expect(await test.backend.startAutomaticAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'active', line })
+    expect(test.events.slice(events)).toEqual(['proxy:enable'])
+    expect(test.proxy.enable).toHaveBeenLastCalledWith(19001)
+    // 收尾归了这次会话就作废，到点也不会把它的内核停掉。
+    expect(test.scheduled.size).toBe(0)
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('active')
+  })
+
+  it('restarts the core when the next connection asks for another line', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    const events = test.events.length
+    await test.backend.startAcceleration(scope, 'system-proxy', 'line-2')
+    expect(test.events.slice(events)).toEqual(['runtime:stop', 'runtime:start', 'proxy:enable'])
+    expect(test.runtime.start).toHaveBeenLastCalledWith('line-2')
+    test.runtime.stop.mockClear()
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('active')
+  })
+
+  it('lets the drain run out when the next start never gets as far as a session', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    vi.spyOn(safe, 'writeAtomicSafeUtf8File').mockRejectedValueOnce(new Error('private-fs-path'))
+    expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('error')
+    expect(test.runtime.isRunning()).toBe(true)
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('shares the core with a download and stops it once both have let go', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    expect(await test.backend.startDownloadRoute(scope)).toEqual({ status: 'ready', port: 19001 })
+    expect(test.runtime.start).toHaveBeenCalledOnce()
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    await test.backend.stopDownloadRoute()
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('keeps the core for the rest of the drain after a download that shared it finishes', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    await test.backend.startDownloadRoute(scope)
+    await test.backend.stopDownloadRoute()
+    // 下载那边多出来的一次 stop 也减不掉收尾这一份。
+    await test.backend.stopDownloadRoute()
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+  })
+
+  it('gives way to a line probe, which cannot share the core', async () => {
+    const test = await setup(undefined, async () => line)
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    expect(await test.backend.pingAccelerationLine!(scope, line.id)).toEqual(line)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(test.scheduled.size).toBe(0)
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('still refuses a line probe while a download shares the core', async () => {
+    const test = await setup(undefined, async () => line)
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    await test.backend.startDownloadRoute(scope)
+    await expect(test.backend.pingAccelerationLine!(scope, line.id)).rejects.toThrow('正在下载安装包，暂不能检测线路。')
+    expect(test.runtime.isRunning()).toBe(true)
+  })
+
+  it('logs a core that would not stop when the drain ran out and keeps trying', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    expect(test.onDiagnostic).toHaveBeenCalledWith('core-stop')
+    expect(test.runtime.isRunning()).toBe(true)
+    expect(await test.backend.isIdle()).toBe(false)
+    await test.advance(5000)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(await test.backend.isIdle()).toBe(true)
+    expect(test.scheduled.size).toBe(0)
+  })
+
+  it('keeps retrying the cleanup after a core that would not stop exits on its own', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    expect(await test.backend.isIdle()).toBe(false)
+    test.runtime.stop.mockClear()
+    await test.advance(5000)
+    // 进程没了，上次没清完的运行目录还得再清一次。
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('drops a pending cleanup retry once the app shuts down', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    await test.backend.dispose()
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(test.scheduled.size).toBe(0)
+  })
+
+  it('does not let a pending retry cut the next drain short', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    // 下一次后台连接先把那个没停掉的内核清掉，再连、再断，开始新的一段收尾。
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockClear()
+    await test.advance(5000)
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    expect(test.runtime.isRunning()).toBe(true)
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+  })
+
+  it('drops the drain when the core exits on its own or the app shuts down', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    expect(test.scheduled.size).toBe(0)
+    expect(test.onRuntimeInterrupted).not.toHaveBeenCalled()
+    expect(await test.backend.isIdle()).toBe(true)
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockClear()
+    await test.backend.dispose()
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+    expect(test.scheduled.size).toBe(0)
   })
 })
 
