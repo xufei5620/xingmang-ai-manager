@@ -8,6 +8,7 @@ import type {
 import {
   KeyRewriteSkippedError,
   accountBootstrapPlan,
+  accountKeyChangePending,
   bootstrapAccountTools,
   configurationFailure,
   configurationFailureMessages,
@@ -15,6 +16,7 @@ import {
   describeAccountBootstrapResult,
   skippedNamedProviders,
   type AccountBootstrapBridge,
+  type AccountBootstrapProgress,
   type AccountBootstrapResult,
 } from './account-bootstrap'
 import { networkFailureMessages } from '../../../../electron/network-failure'
@@ -654,6 +656,111 @@ describe('account managed Key bootstrap', () => {
     await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
     expect(sync).not.toHaveBeenCalled()
     expect(configure).not.toHaveBeenCalled()
+  })
+})
+
+// 第三十一批 A：开机检测没跑完时首页按这一轮账号会不会换 Key，决定哪几行能先「打开」。
+describe('account key changes before the startup scan finishes', () => {
+  const connected = () => ({
+    exists: true,
+    hasApiKey: true,
+    matchesRelay: true,
+    configurationOwnership: 'account' as const,
+    baseUrl: 'https://xm.solov.cc/v1',
+    actualBaseUrl: 'https://xm.solov.cc/v1',
+    model: 'fixture-model',
+    apiKeyPreview: 'sk-***',
+    dataDirectory: 'C:\\home',
+    dataDirectoryExists: true,
+    files: [],
+    updatedAt: null,
+  })
+  const syncing = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15 }
+
+  it('cannot tell yet for a signed-in or restoring account whose key sync has not started', () => {
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: null }, 'claude')).toBe(true)
+    expect(accountKeyChangePending({ signedIn: false, restoring: true, bootstrap: null }, 'claude')).toBe(true)
+  })
+
+  it('has nothing to wait for without an account', () => {
+    expect(accountKeyChangePending({ signedIn: false, restoring: false, bootstrap: null }, 'claude')).toBe(false)
+  })
+
+  it('waits while the key sync has not said which connected tools change', () => {
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: syncing }, 'codex')).toBe(true)
+  })
+
+  it('waits only for the connected tools whose key changes this round', () => {
+    const bootstrap = { phase: 'inspecting' as const, label: '正在检查已安装工具和连接来源', percent: 40, connectedKeyChanges: ['claude' as ProviderId] }
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap }, 'claude')).toBe(true)
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap }, 'codex')).toBe(false)
+  })
+
+  it('stops waiting once the round has finished or failed', () => {
+    const finished = { ...syncing, result: { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false } }
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: finished }, 'claude')).toBe(false)
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: { ...syncing, error: '账号 Key 初始化没有完成' } }, 'claude')).toBe(false)
+  })
+
+  it('names the regrouped connected tools before it waits for the scan on a restore', async () => {
+    const current = config()
+    current.providers.claude = connected()
+    current.providers.codex = connected()
+    const order: string[] = []
+    const progress: AccountBootstrapProgress[] = []
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [], regrouped: ['claude' as ProviderId] })),
+      scanSystem: vi.fn(async () => { order.push('scan'); return system(['claude', 'codex']) }),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: ['claude' as ProviderId], failed: [] })),
+    }
+
+    await bootstrapAccountTools(api, 17, (entry) => { order.push(entry.phase); progress.push(entry) }, 'restore', undefined, memoryStorage())
+
+    expect(order.indexOf('inspecting')).toBeLessThan(order.indexOf('scan'))
+    expect(progress.filter((entry) => entry.phase !== 'syncing').map((entry) => entry.connectedKeyChanges)).toEqual([['claude'], ['claude'], ['claude']])
+    // 换了分组的那一家这一轮确实要重写，没换的照旧不动。
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'] }))
+  })
+
+  it('names no tool when nothing was regrouped, so every connected tool can open', async () => {
+    const current = config()
+    current.providers.claude = connected()
+    const progress: AccountBootstrapProgress[] = []
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, memoryStorage())
+
+    expect(progress.find((entry) => entry.phase === 'inspecting')?.connectedKeyChanges).toEqual([])
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+  })
+
+  it('leaves the answer open on a login, which rewrites connected tools too', async () => {
+    const current = config()
+    current.providers.claude = connected()
+    const progress: AccountBootstrapProgress[] = []
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: ['claude' as ProviderId], failed: [] })),
+    }
+
+    await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'login', undefined, memoryStorage())
+
+    expect(progress.every((entry) => !('connectedKeyChanges' in entry))).toBe(true)
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'] }))
   })
 })
 

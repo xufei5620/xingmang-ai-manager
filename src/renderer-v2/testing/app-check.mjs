@@ -1589,6 +1589,104 @@ test('a launch paints the last saved scan first and swaps in the fresh one witho
   } finally { await page.close() }
 })
 
+// 第三十一批 A：开机检测没跑完时只放开「打开」「接着聊」。点下去配置现读、工具现找，
+// 用不上上次的结果；「安装」照旧等检测跑完。
+test('a connected tool opens while the last saved scan is still on screen, and install keeps waiting', async () => {
+  const page = await open('allInstalled=1&cachedScan=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    // 上次的结果里 Grok 还没装：装不装要等这一轮检测说了算。
+    assert.equal(await page.getByTestId('tool-grok-primary').innerText(), '安装')
+    assert.equal(await page.getByTestId('tool-grok-primary').isDisabled(), true)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\Selected Project']])
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 1, '检测还没跑完就已经打开了')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the home recent card resumes a conversation before the startup scan finishes', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&cachedScan=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    const resume = page.getByTestId('home-recent-resume-claude:1')
+    await resume.waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:1"]')?.disabled === false)
+    // 目录已经不在的那一行照旧按不动。
+    assert.equal(await page.getByTestId('home-recent-resume-claude:2').isDisabled(), true)
+    await resume.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 1, '检测还没跑完就已经接上了')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 开机这一轮账号要给已连好的 Claude 换 Key（Key 换了分组）：新 Key 要等检测跑完才写，
+// 抢在前面打开就带着旧 Key 起来，所以只有它照旧等，别的工具不受连累。
+test('a tool whose account key changes this startup keeps waiting for the scan while the others open', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&regrouped=claude')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.disabled === false)
+    assert.equal(await page.getByTestId('tool-claude-primary').isDisabled(), true)
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    const configured = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').map((entry) => entry.args[0].providers))
+    assert.ok(configured.some((providers) => providers.includes('claude')), '换了分组的 Claude 要在这一轮换上新 Key')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
+// 问完了、谁都不用换，检测没跑完也能打开。
+test('opening waits while the account key sync has not answered yet, then opens before the scan finishes', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&bootstrapPending=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    assert.equal(await page.getByTestId('tool-claude-primary').isDisabled(), true)
+    await page.evaluate(() => window.v2Test.releaseBootstrap())
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 1)
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 检测没跑完时打开、刚选的文件夹写上了按钮；那一轮落地时带的是打开前读的配置，
+// 不能把这个文件夹盖回去，否则下次点「打开」又要选一遍。
+test('a folder picked while the startup scan runs stays on the button after the scan lands', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&launchRemembers=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    // 账号这一轮写完 Key 也会重读一次配置，先按住它，看的是检测落地这一下本身。
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an edited configuration can be kept as it is and stops asking', async () => {
   const page = await open('allInstalled=1&changedClaude=1')
   try {
