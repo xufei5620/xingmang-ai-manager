@@ -302,3 +302,26 @@ describe('system-service Codex Desktop locale workflow', () => {
     expect(fixture.launch).not.toHaveBeenCalled()
   })
 })
+
+describe('system-service Codex workspace trust', () => {
+  it('restarts a running Windows Desktop after trusting the folder', async () => {
+    const fixture = createFixture()
+
+    const result = await fixture.service.trustCodexWorkspace(fixture.target)
+
+    expect(result).toMatchObject({ changed: true, restarted: true })
+    expect(result.status.trustLevel).toBe('trusted')
+    expect(fixture.launch).toHaveBeenCalledWith('restart', fixture.target, expect.any(Object))
+  })
+
+  it('saves the trust on macOS without asking for the restart that platform refuses', async () => {
+    const fixture = createFixture({ platform: 'darwin' })
+    fixture.launch.mockRejectedValue(new Error('macOS 不支持重启 Codex，请使用打开操作唤起现有应用'))
+
+    const result = await fixture.service.trustCodexWorkspace(fixture.target)
+
+    expect(result).toMatchObject({ changed: true, restarted: false })
+    expect(result.status.trustLevel).toBe('trusted')
+    expect(fixture.launch).not.toHaveBeenCalled()
+  })
+})
