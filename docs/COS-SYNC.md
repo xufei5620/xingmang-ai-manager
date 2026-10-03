@@ -89,7 +89,7 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 运行 `sync-published-manager-cos`，选择 `main`；留空版本号导入最新正式 GitHub Release，也可指定正规发布标签。仅接受同一仓库的正式发布和安装包资产，下载后核对 GitHub 提供的大小及 SHA-256，再按安装包模式同步 COS。该模式不重新发布星芒、不修改 R2，也不伪造 GitHub Release 中没有的更新 companion 文件。未来正式发版仍同步完整发布产物。
 
-观察 `[manager-sync]` 的固定阶段：GitHub 发布清单、下载位置、安装包下载/摘要、COS 文件完整回读、候选索引、latest 切换及清理。失败只输出阶段、已验证版本/平台和安全白名单分类；HEAD 探测分别标记超时、网络失败、HTTP 状态和被拒的重定向原因，绝不输出原异常、堆栈、文件路径、URL、Location 或认证正文。`not-written-by-this-run` 不表示此前的不可变文件未上传；`write-unconfirmed` 需要先读取远端状态；`published-and-read-back` 表示 latest 已完整回读确认，即使之后清理临时目录失败。清理错误单独记录，不盖掉原始同步失败；诊断不自动重试或改变上传行为。
+观察 `[manager-sync]` 的固定阶段：GitHub 发布清单、下载位置、安装包下载/摘要、COS 文件完整回读、候选索引、latest 切换及清理。失败只输出阶段、已验证版本/平台和安全白名单分类；HEAD 探测分别标记超时、网络失败、HTTP 状态和被拒的重定向原因，绝不输出原异常、堆栈、文件路径、URL、Location 或认证正文。`not-written-by-this-run` 不表示此前的不可变文件未上传；`write-unconfirmed` 需要先读取远端状态；`published-and-read-back` 表示 latest 已完整回读确认，即使之后清理临时目录失败。清理错误单独记录，不盖掉原始同步失败；分块仅按下文列明的条件有限重试，其它写入不自动重试。
 
 ### 官方 ChatGPT 包
 
@@ -97,15 +97,23 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 真实运行中，官方源下载正常而 COS 单连接 PUT 约为 50 KiB/s，大包可能超过既有上传期限。实现提供分块上传，而不是增加原 PUT 超时：`XINGMANG_COS_MULTIPART_ENABLED` 缺省或 `false` 保持原流程。负责人现场确认权限及存储桶版本控制关闭后，才在受保护环境设置为 `true`；本改动不修改线上变量、凭据或权限。
 
-启用后，16 MiB 及以上的不可变文件使用 4 MiB 分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 32 MiB。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多六分钟，显式设置的更短调用方超时仍优先；分块调度总期限七十五分钟（已发出的请求收拢后退出），合并正文至多十分钟，各平台作业仍限九十分钟。每次请求重新生成有效期三十分钟的签名，覆盖单块请求；整体调度不会复用一份过期签名。
+启用后，16 MiB 及以上的不可变文件使用 1 MiB（1,048,576 字节）分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 8 MiB。2 GiB 文件上限对应最多 2048 块，低于 COS 的 10000 块限制；最大 Complete 请求 XML 为 181216 字节，64 KiB 上限仅用于响应读取。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多六分钟，显式设置的更短调用方超时仍优先；分块调度总期限七十五分钟（已发出的请求收拢后退出），合并正文至多十分钟，各平台作业仍限九十分钟。每次请求重新生成有效期三十分钟的签名，覆盖单块请求；整体调度不会复用一份过期签名。
 
-2026-10-03 的两个真实运行均在 4 MiB 单块等待响应头三分钟后失败：八并发运行 `37103271602` 在约 244 秒提交 58,720,256 字节，四并发对照 `37119586459` 在约 611 秒提交 96,468,992 字节，两次均未开始 Complete 且公共 GET 为 404。减并发未解决单块超时，因此提高这两项时间上限，以容纳近期约 900 MB 包的较慢传输；单次 PUT、其它网络预算与安全边界不变，也不增加自动重试。七十五分钟是分块调度上限，并非整个同步的保证耗时；源下载、在途请求收拢、合并及完整公共回读仍受各自预算和九十分钟作业硬期限约束，实际吞吐与成功率须继续用真实运行验收。
+2026-10-03 的两个真实运行均在 4 MiB 单块等待响应头三分钟后失败：八并发运行 `37103271602` 在约 244 秒提交 58,720,256 字节，四并发对照 `37119586459` 在约 611 秒提交 96,468,992 字节，两次均未开始 Complete 且公共 GET 为 404。减并发未解决单块超时，因此提高这两项时间上限，以容纳近期约 900 MB 包的较慢传输。七十五分钟是分块调度上限，并非整个同步的保证耗时；源下载、在途请求收拢、合并及完整公共回读仍受各自预算和九十分钟作业硬期限约束，实际吞吐与成功率须继续用真实运行验收。
+
+同日六分钟预算运行仍出现分块 HTTP 400；原日志没有 COS 错误码，不能将其认定为 RequestTimeout。现在仅对固定 COS HTTPS 域名的分块请求读取错误正文，限制为 4 KiB 和五秒（更短调用方正文预算优先），只从严格 XML 的唯一顶层 Code 提取固定白名单 `cosErrorCode`，不记录 Message、Resource、RequestId、TraceId、正文或认证数据。解析失败、超限、慢正文和断流仍保留原 HTTP 状态；重定向不读取或跟随。
+
+诊断白名单包括官方定义的 UserNetworkTooSlow、IncompleteBody、EntitySizeNotMatch、MissingRequestBodyError、BadRequest、InvalidRequest、UnexpectedContent、EntityTooLarge 和 MalformedXML。无法提取 Code 时，`cosErrorBodyStatus` 区分未知错误码、空正文、UTF-8/XML 格式、额外或重复字段、实体、编码、长度、超限、超时和断流；`cosErrorBodyBytes` 是读取字节数（最多记 4096，超限由状态表示），`cosErrorContentType` 仅为 missing/xml/json/html/text/other 固定分类。未知 Code 与原始响应头仍不输出。新增错误码只提供诊断，重试范围仍限下文明确列出的条件；此前未记录 Code 的真实 HTTP 400 原因仍未确定。
+
+同日运行 `37134516231` 在 Windows x64 上传 291543056 字节包的阶段于 130954 毫秒失败，安全诊断为分块 PUT 等待响应头时 ECONNRESET（当时每块 4 MiB）；Complete 尚未开始，完整公共回读为 404，latest 未写。这证明该次出现连接断开，不能确认此前 HTTP 400 为 UserNetworkTooSlow。现将单块缩至 1 MiB，以减少一次失败需要重发的数据；请求数约增至四倍，实际可靠性与吞吐仍需真实运行验收。
+
+同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、私有分块 PUT 网络错误 ETIMEDOUT 或 ECONNRESET，或安全识别为 HTTP 400 RequestTimeout 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
 
 仅需要在原有两个对象前缀范围增授四项 CAM action：`cos:InitiateMultipartUpload`、`cos:UploadPart`、`cos:CompleteMultipartUpload`、`cos:AbortMultipartUpload`。不需要 List、Copy、ACL、公开对象 DELETE 或扩大资源前缀。Init 与 Complete 都签入 `x-cos-forbid-overwrite: true`；官方文档明确该头不保护开启版本控制的桶，因此启用前必须核实桶版本控制仍为关闭。本模块不自行访问或修改桶配置。
 
 Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文并严格核对 XML 根、唯一字段及桶/对象身份，拒绝 Error、DTD/实体注入和重复字段。响应 Location 不用于下载，最终仍从固定 COS HTTPS 公共地址完整 GET 核对大小、SHA-256 和类型，成功后上层才可发布 latest。Complete 结果未知时不再 Complete、PUT、覆盖或回滚，也不中止可能仍在合并的会话；先回读，无法确认时停止并由负责人核实远程状态。分块失败只会在全部在途分块结束后 Abort 本次成功初始化且身份匹配的 UploadId；Abort 失败保留主错误，且不会删除公开对象。初始化回执未知时不猜测 UploadId 或列举其它会话，需负责人核查残留未完成分块。
 
-协议依据：[初始化](https://cloud.tencent.com/document/product/436/7746)、[上传分块](https://cloud.tencent.com/document/product/436/7750)、[合并](https://cloud.tencent.com/document/product/436/7742)、[中止](https://cloud.tencent.com/document/product/436/7740)、[上传概览](https://cloud.tencent.com/document/product/436/65935)。这是本地 mock 验证的能力，不能当作实际上传速度或生产权限已验收。
+协议依据：[初始化](https://cloud.tencent.com/document/product/436/7746)、[上传分块](https://cloud.tencent.com/document/product/436/7750)、[合并](https://cloud.tencent.com/document/product/436/7742)、[中止](https://cloud.tencent.com/document/product/436/7740)、[错误码](https://cloud.tencent.com/document/product/436/7730)、[上传概览](https://cloud.tencent.com/document/product/436/65935)。这是本地 mock 验证的能力，不能当作实际上传速度或生产权限已验收。
 
 1. 合并工作流后，打开 **Actions → sync-chatgpt-official-cos → Run workflow**。
 2. 分支选 `main`。首次及最终验收选 `all`，目标为八个平台包及两个 Windows 许可对象。选择器将其展开为八个固定平台作业，`max-parallel: 1` 顺次运行，各自保留 90 分钟期限及原 Windows 校验环境；整个工作流只有八项全成功才算成功。手动入口也支持 `windows`、`macos`、`linux` 和八个精确平台标识，便于定位单项故障。
@@ -120,7 +128,7 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 安全错误分类区分响应头超时、正文超时、HTTP 状态、断流、ETag/大小/摘要不一致，以及 PUT 与公共完整回读的各自原因。`latestState: write-unconfirmed` 表示最新索引写入结果未知，需要先读取远端状态；`published-and-read-back` 表示索引已发布并回读确认，即使随后临时目录清理失败。清理失败不会盖掉此前的主错误。
 
-期限仍为 GET/HEAD 响应头 30 秒、GET 正文与 PUT 响应头 20 分钟、原生 Windows 检查 120 秒、整个作业 90 分钟；日志计时使用单调时钟。最终切换索引前重新核对所选官方源的指纹及 Windows/Mac 元数据，避免长时间同步后将已经变化的 `latest` 源快照继续公布。同步不自动重试写入，也不调整上传身份的权限。
+期限仍为 GET/HEAD 响应头 30 秒、GET 正文与普通 PUT 响应头 20 分钟、原生 Windows 检查 120 秒、整个作业 90 分钟；分块预算及有限超时重试见上文，日志计时使用单调时钟。最终切换索引前重新核对所选官方源的指纹及 Windows/Mac 元数据，避免长时间同步后将已经变化的 `latest` 源快照继续公布。其它写入不自动重试，也不调整上传身份的权限。
 
 ### 星芒正式发布
 
