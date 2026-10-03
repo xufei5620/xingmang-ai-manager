@@ -811,14 +811,15 @@ describe('createSystemService', () => {
 
     const startup = f.service.fillToolTemplateDefaults!(backup)
     await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']))
-    f.service.stopTemplateFillWaits!()
+    const resume = f.service.stopTemplateFillWaits!()
 
     expect(await startup).toEqual({ filled: [], pending: ['codex'] })
     expect(f.fetchModels.mock.calls.length).toBe(requests)
     expect(backups).toEqual([])
     expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
 
-    // 换账号没成，还是这个账号：隔一阵再来要时照常看，Codex 关着就按账号核对。
+    // 换账号那段等完了、没换成，还是这个账号：再来要时照常看，Codex 关着就按账号核对。
+    resume()
     f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
     expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
     await vi.waitFor(() => {
@@ -6108,7 +6109,7 @@ describe('telling which Codex builds would read the model catalog', () => {
       return value
     })
     const stop = new AbortController()
-    const waiting = unlessStopped(work, stop.signal)
+    const waiting = unlessStopped(() => work, stop.signal)
     stop.abort()
 
     await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
@@ -6117,9 +6118,11 @@ describe('telling which Codex builds would read the model catalog', () => {
     expect(await work).toBe('done')
     expect(finished).toBe(true)
 
-    // 已经停了的一开始就不等；没停的照常交回结果，或原样交回它自己的错。
-    await expect(unlessStopped(new Promise<never>(() => undefined), stop.signal)).rejects.toMatchObject({ name: 'AbortError' })
-    await expect(unlessStopped(Promise.resolve('ok'), new AbortController().signal)).resolves.toBe('ok')
-    await expect(unlessStopped(Promise.reject(new Error('探测失败')), new AbortController().signal)).rejects.toThrow('探测失败')
+    // 已经停了的不再起；没停的照常交回结果，或原样交回它自己的错。
+    const late = vi.fn(async () => 'late')
+    await expect(unlessStopped(late, stop.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(late).not.toHaveBeenCalled()
+    await expect(unlessStopped(async () => 'ok', new AbortController().signal)).resolves.toBe('ok')
+    await expect(unlessStopped(async () => { throw new Error('探测失败') }, new AbortController().signal)).rejects.toThrow('探测失败')
   })
 })

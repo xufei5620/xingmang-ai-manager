@@ -1010,9 +1010,10 @@ export interface SystemService {
   fillToolTemplateDefaults?(backup?: (provider: ProviderId) => void, retry?: boolean): Promise<ToolTemplateFillResult>
   /**
    * 换账号、退出、登录之前叫一声（main.ts 的 quiesce）：正在补设置的那次不再等本机看工具开没开，
-   * 这次先不补、记成还欠着，账号操作不用陪它等。可选 = 旧实现不提供，调用方照旧等它做完。
+   * 这次先不补、记成还欠着，账号操作不用陪它等。返回的函数在那段等待结束后调，之后开始的补设置
+   * 照常看。可选 = 旧实现不提供，调用方照旧等它做完。
    */
-  stopTemplateFillWaits?(): void
+  stopTemplateFillWaits?(): () => void
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
@@ -2599,17 +2600,21 @@ export function settleWithin(promise: Promise<unknown>, ms: number): Promise<voi
 }
 
 /**
- * 等 promise 落定，signal 一停就不等了（按停下的原因拒绝），它自己接着跑完、结果没人要。
- * 给只读的本机探测用：起出去的进程收不回来，放着跑完无害，等它的人不必陪着。
+ * 等 start() 起的活落定，signal 一停就不等了（按停下的原因拒绝），活自己接着跑完、结果没人要；
+ * 已经停了就不起。给只读的本机探测用：起出去的进程收不回来，放着跑完无害，等它的人不必陪着。
  */
-export function unlessStopped<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function unlessStopped<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const work = start()
     function stop(): void {
       reject(signal.reason)
     }
-    if (signal.aborted) stop()
-    else signal.addEventListener('abort', stop, { once: true })
-    void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
+    signal.addEventListener('abort', stop, { once: true })
+    void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
   })
 }
 
@@ -6402,13 +6407,23 @@ export function createSystemService(
    * 先等型号名单的本机核对；安全软件拖慢的电脑上这几步各自等到超时，加起来超过换账号肯等的
    * 30 秒，客户就看到「账号服务请求超时」，被引去查网络。这几步都只是看：换账号前叫停
    * （stopTemplateFillWaits）就不再等，还没看完的当成没看出来，不写、记成还欠着；已经在写的
-   * 照常写完（都在本机，很快）。真换了账号，欠的就作废；没换成的，下次照常再看。每次调用
-   * 开头拿当时那个 signal，叫停之后这次调用里后面的等待也都不等了。
+   * 照常写完（都在本机，很快）。真换了账号，欠的就作废。
+   * 每次调用开头拿当时那个 signal，叫停之后这次调用里后面的等待也都不等了。叫停一直管到换账号
+   * 那段等待结束（调返回的函数）：已经进了门、晚一步才走到这里的那次（ipc.ts 要先读备份用的账号
+   * 信息）也不等。上一次换账号超时了还在等、又来一次的，两次都放开才恢复。
    */
   let templateFillWaits = new AbortController()
-  function stopTemplateFillWaits(): void {
+  let templateFillHolds = 0
+  function stopTemplateFillWaits(): () => void {
+    templateFillHolds += 1
     templateFillWaits.abort()
-    templateFillWaits = new AbortController()
+    let resumed = false
+    return () => {
+      if (resumed) return
+      resumed = true
+      templateFillHolds -= 1
+      if (!templateFillHolds) templateFillWaits = new AbortController()
+    }
   }
 
   /**
@@ -6434,7 +6449,7 @@ export function createSystemService(
     if (!due.length) return { filled }
     let report: RunningToolsReport
     try {
-      report = await unlessStopped((serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due), stopped)
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due), stopped)
     } catch {
       return { filled, pending: due }
     }
@@ -6486,16 +6501,16 @@ export function createSystemService(
   async function syncCodexModelCatalog(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<boolean> {
     if (!serviceOptions.bundledCodexModelCatalogPath) return false
     try {
-      await unlessStopped(guardCodexModelCatalogAtStartup(), stopped)
+      await unlessStopped(guardCodexModelCatalogAtStartup, stopped)
     } catch {
-      // 那次核对从不抛错，到这里只会是换账号叫停：它照旧在后台做完；欠不欠这次还没看，照原样记。
+      // 那次核对从不抛错，到这里只会是换账号叫停：核对照旧在后台做（main.ts 开机也起它）；欠不欠这次还没看，照原样记。
       return round.codexModelCatalog
     }
     // 不是当前账号写的 Codex 配置本来就不按账号刷新，谈不上欠着，不必起进程看它开没开。
     if (!round.codexModelCatalog || !modelCheckTarget('codex', true)) return false
     let report: RunningToolsReport
     try {
-      report = await unlessStopped((serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex']), stopped)
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex']), stopped)
     } catch {
       return true
     }
