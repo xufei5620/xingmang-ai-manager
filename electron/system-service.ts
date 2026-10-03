@@ -5462,7 +5462,9 @@ export function createSystemService(
     }
     const result = trustCodexWorkspace(providerRoots, workspace)
     let restarted = false
-    if (result.changed) {
+    // 只在 Windows 上替人重开：Mac 上主进程一律拒绝重启 Codex（codex-desktop-service.ts），
+    // 信任这时已经写进去了，再去重启只会把「已保存」变成一个报错框（第二十九批 A 的同一个原因）。
+    if (result.changed && platform === 'win32') {
       const desktop = await inspectCodexDesktop()
       if (desktop.running) {
         await launchCodexDesktop('restart', target)
