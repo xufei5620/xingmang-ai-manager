@@ -1003,8 +1003,11 @@ export interface SystemService {
   inspectRunningTools?(providers: readonly ProviderId[]): Promise<RunningToolsReport>
   /** 打开工具前核对当前账号能用的模型（一天一次）；可选 = 旧实现不提供，调用方直接打开。 */
   checkToolModels?(provider: ProviderId): Promise<ToolModelCheck>
-  /** 开机恢复账号后给落后于模板的配置补缺省项；可选 = 旧实现不提供，调用方当什么都没补。 */
-  fillToolTemplateDefaults?(backup?: (provider: ProviderId) => void): Promise<ToolTemplateFillResult>
+  /**
+   * 开机恢复账号后给落后于模板的配置补缺省项；可选 = 旧实现不提供，调用方当什么都没补。
+   * retry = 只补开机那轮因为工具可能开着而欠下的（第二十六批 E）。
+   */
+  fillToolTemplateDefaults?(backup?: (provider: ProviderId) => void, retry?: boolean): Promise<ToolTemplateFillResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
@@ -2567,6 +2570,16 @@ const codexModelCatalogGuardReaders: Record<CodexModelCatalogGuardTrigger, Codex
 
 /** 打开 Codex 之前在本机看一眼型号名单，最多等这么久。 */
 const codexModelCatalogLaunchGuardMs = 3_000
+
+/**
+ * 补设置这一轮看哪些：开机那轮（连同联网后、开通订阅后补跑的那几次）什么都看；渲染层
+ * 隔一阵来补做（retry）时只看开机那轮因为工具可能开着而欠下的（第二十六批 E）。
+ */
+interface TemplateFillRound {
+  retry: boolean
+  providers: readonly ProviderId[]
+  codexModelCatalog: boolean
+}
 
 /** 等 promise 落定，最多等 ms 毫秒：到点就不等了，它自己接着跑完。从不抛错。 */
 export function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
@@ -6319,13 +6332,20 @@ export function createSystemService(
   })
 
   /**
+   * 开机那轮因为工具可能开着而没做的（第二十六批 E）：哪几个工具的设置没补、Codex 的型号
+   * 名单有没有按账号核对。客户升级后头一回开星芒时 Codex 多半正开着，以前要等下次开机；
+   * 现在渲染层隔一阵来要一次（retry），只补这几样。记的是那一轮的账号，换了账号就作废。
+   */
+  let templateFillDebt: { owner: string; providers: readonly ProviderId[]; codexModelCatalog: boolean } | null = null
+
+  /**
    * 老客户的配置不跟着模板升级（第十七批第 2 条）：开机恢复账号只核对连没连上，一个字
    * 不写。这里对「来源确认是当前账号、记录的模板版本落后」的配置补一次缺省项
    * （fillRelayTemplateDefaults：只补缺的，用户写过的一律不动）。官方账号、手填、来源
-   * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，下次开机再来。失败只
-   * 记日志，不打扰用户，版本号不前进，下次再试。
+   * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，记进 pending 等渲染层
+   * 再来要。失败只记日志，不打扰用户，版本号不前进，下次开机再试。
    */
-  async function fillToolTemplateDefaults(backup?: (provider: ProviderId) => void): Promise<ToolTemplateFillResult> {
+  async function fillToolTemplateDefaults(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound): Promise<ToolTemplateFillResult> {
     const filled: ProviderId[] = []
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     if (!owner) return { filled }
@@ -6337,19 +6357,23 @@ export function createSystemService(
       const revision = configOwnership.templateRevision(provider, config)
       return revision !== null && revision < relayTemplateRevision
     }
-    const due = providerIds.filter(outdated)
+    const due = round.providers.filter(outdated)
     if (!due.length) return { filled }
     let report: RunningToolsReport
     try {
       report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due)
     } catch {
-      return { filled }
+      return { filled, pending: due }
     }
+    // 补做那几次在日志里标出来，客服看得出开机那轮之后又试过几回。
+    const again = round.retry ? { retry: true } : {}
+    const pending: ProviderId[] = []
     for (const provider of due) {
       const busy = report.running.includes(provider) || report.unknown.includes(provider)
         || (provider === 'codex' && report.codexDesktopRunning !== false)
       if (busy) {
-        runtimeLog?.log('info', 'config', 'template-defaults.deferred', '工具可能正开着，这次先不补设置', { provider })
+        runtimeLog?.log('info', 'config', 'template-defaults.deferred', '工具可能正开着，这次先不补设置', { provider, ...again })
+        pending.push(provider)
         continue
       }
       try {
@@ -6369,13 +6393,13 @@ export function createSystemService(
         })
         if (wrote) {
           filled.push(provider)
-          runtimeLog?.log('info', 'config', 'template-defaults.filled', '已按新版模板给工具补齐设置', { provider })
+          runtimeLog?.log('info', 'config', 'template-defaults.filled', '已按新版模板给工具补齐设置', { provider, ...again })
         }
       } catch (error) {
         runtimeLog?.log('warn', 'config', 'template-defaults.failed', '给工具补齐设置没有完成，下次开机再试', { provider, reason: credentialFailureReason(error) })
       }
     }
-    return { filled }
+    return pending.length ? { filled, pending } : { filled }
   }
 
   /**
@@ -6383,31 +6407,53 @@ export function createSystemService(
    * 的型号补上或刷新（tool-model-check.ts 的 syncPicker）。老客户升级以后配置不会重写，多半
    * 也直接从开始菜单打开桌面端、不经过打开前那次核对，不在这里补，新型号就一直进不了菜单。
    * 按账号刷新与补设置同一套规矩：Codex 开着或看不出开没开的这次不动（桌面端自己也会写
-   * config.toml），真要改先做一份与保存配置同样的备份，备份不成就不改。失败只记日志。
+   * config.toml），返回 true 记成还欠着；真要改先做一份与保存配置同样的备份，备份不成就不改。
+   * 按账号核对要先问一遍中转，放到后台去做，不等它。失败只记日志。
    */
-  async function syncCodexModelCatalogAtStartup(backup?: (provider: ProviderId) => void): Promise<void> {
-    if (!serviceOptions.bundledCodexModelCatalogPath) return
+  async function syncCodexModelCatalog(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound): Promise<boolean> {
+    if (!serviceOptions.bundledCodexModelCatalogPath) return false
     await guardCodexModelCatalogAtStartup()
+    // 不是当前账号写的 Codex 配置本来就不按账号刷新，谈不上欠着，不必起进程看它开没开。
+    if (!round.codexModelCatalog || !modelCheckTarget('codex', true)) return false
     let report: RunningToolsReport
     try {
       report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex'])
     } catch {
-      return
+      return true
     }
     if (report.running.includes('codex') || report.unknown.includes('codex') || report.codexDesktopRunning !== false) {
-      runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-deferred', 'Codex 可能正开着，型号名单这次先不按账号刷新')
-      return
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-deferred', 'Codex 可能正开着，型号名单这次先不按账号刷新', round.retry ? { retry: true } : undefined)
+      return true
     }
-    await toolModelChecker.syncPicker('codex', { beforeRefresh: () => backup?.('codex') })
+    if (round.retry) runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-resumed', 'Codex 已经关了，型号名单补做一次按账号核对')
+    void toolModelChecker.syncPicker('codex', { beforeRefresh: () => backup?.('codex') }).catch(() => undefined)
+    return false
   }
 
-  /** 开机那次：补设置那句提示照常先出，Codex 型号名单随后再对（要先问一遍中转），不等它。 */
-  async function fillToolTemplateDefaultsThenSyncPickers(backup?: (provider: ProviderId) => void): Promise<ToolTemplateFillResult> {
+  /**
+   * 开机那次：先补设置，再在本机看 Codex 开没开、型号名单欠不欠，两样都算进 pending 交回去；
+   * 按账号核对型号名单要先问一遍中转，补设置那句提示不等它。retry = 渲染层隔一阵来补做
+   * （第二十六批 E）：只做开机那轮欠下的，换了账号就什么都不做。
+   */
+  async function fillToolTemplateDefaultsThenSyncPickers(backup?: (provider: ProviderId) => void, retry = false): Promise<ToolTemplateFillResult> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const debt = templateFillDebt?.owner === owner ? templateFillDebt : null
+    if (retry && !debt) return { filled: [] }
+    const round: TemplateFillRound = retry && debt
+      ? { retry, providers: debt.providers, codexModelCatalog: debt.codexModelCatalog }
+      : { retry: false, providers: providerIds, codexModelCatalog: true }
+    let result: ToolTemplateFillResult
     try {
-      return await fillToolTemplateDefaults(backup)
-    } finally {
-      void syncCodexModelCatalogAtStartup(backup).catch(() => undefined)
+      result = await fillToolTemplateDefaults(backup, round)
+    } catch (error) {
+      void syncCodexModelCatalog(backup, round).catch(() => false)
+      throw error
     }
+    const catalogOwed = await syncCodexModelCatalog(backup, round).catch(() => false)
+    const skipped = result.pending ?? []
+    templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
+    const pending = providerIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
+    return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
   function credentialFailureReason(error: unknown): string {

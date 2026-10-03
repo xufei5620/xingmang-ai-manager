@@ -74,7 +74,7 @@ import { AccountSourceServiceUnavailableError, switchAccountSource } from './acc
 import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
 import { isCodexSessionUuid } from './tool-installation'
-import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
+import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
 import type { CodexDesktopLocale } from './codex-desktop-locale'
@@ -1342,7 +1342,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'tools:inspect-running': '换账号后检查哪些工具还开着',
   'tools:check-models': '打开工具前核对当前账号能用的模型',
-  'config:fill-template-defaults': '开机给工具配置补齐新版设置',
+  'config:fill-template-defaults': '给工具配置补齐新版设置',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
   'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
@@ -1464,6 +1464,57 @@ export function parseRunningToolsProviders(value: unknown): ProviderId[] {
     if (!providers.includes(item)) providers.push(item)
   }
   return providers
+}
+
+const runtimeToolNames: Readonly<Record<keyof SystemSnapshot['runtime'], string>> = {
+  node: 'Node.js',
+  npm: 'npm',
+  python: 'Python',
+  git: 'Git',
+}
+
+function isRuntimeToolId(value: string): value is keyof SystemSnapshot['runtime'] {
+  return Object.hasOwn(runtimeToolNames, value)
+}
+
+export interface DetectionFailureLogLine {
+  event: string
+  name: string
+  /** 探针给的原话；没给的是 null。 */
+  reason: string | null
+  detail: Record<string, unknown>
+}
+
+/**
+ * 这次扫描里检测失败的那几项（第二十六批 D）。界面上只按原因说一句中文，英文原话（EPERM
+ * 之类）不再上屏，靠这几行进日志，客服在反馈报告里才看得到。以前 scan.completed 里只记
+ * 装没装、版本号，反馈报告也只写「检测失败」四个字。
+ */
+export function scanDetectionFailures(snapshot: Pick<SystemSnapshot, 'runtime' | 'clis' | 'desktopApps'>): DetectionFailureLogLine[] {
+  const lines: DetectionFailureLogLine[] = []
+  for (const [id, status] of Object.entries(snapshot.runtime)) {
+    if (status.detectionFailed !== true) continue
+    lines.push({ event: 'runtime.detection-failed', name: isRuntimeToolId(id) ? runtimeToolNames[id] : id, reason: status.detectionError || null, detail: { tool: id } })
+  }
+  for (const [provider, status] of Object.entries(snapshot.clis)) {
+    if (status.detectionFailed !== true) continue
+    lines.push({ event: 'cli.detection-failed', name: providerDisplayName(provider) ?? provider, reason: status.detectionError || null, detail: { provider } })
+  }
+  const desktop = snapshot.desktopApps.codex
+  if (desktop.detectionFailed === true) {
+    lines.push({ event: 'desktop.detection-failed', name: 'Codex 桌面端', reason: desktop.detectionError || null, detail: {} })
+  }
+  return lines
+}
+
+/** 外部客户端（WorkBuddy、Claude Desktop、OpenCode）同理：detectionError 有值就是这次没检测成。 */
+export function externalClientDetectionFailures(statuses: readonly Pick<ExternalClientStatus, 'tool' | 'detectionError'>[]): DetectionFailureLogLine[] {
+  return statuses.filter((status) => status.detectionError).map((status) => ({
+    event: 'external-client.detection-failed',
+    name: externalClientNames[status.tool],
+    reason: status.detectionError,
+    detail: { tool: status.tool },
+  }))
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -1908,6 +1959,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   }
 
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
+  // 原话里常带着配置文件的绝对路径（I13）：进日志前把主目录换掉，同下面切换来源那条日志。
+  const logDetectionFailures = (lines: DetectionFailureLogLine[]) => {
+    const home = options.providerRoots?.userHome ?? os.homedir()
+    for (const line of lines) {
+      const reason = line.reason ? redactHomeDirectory(line.reason, home) : '没有给出原因'
+      options.runtimeLog.log('warn', 'system', line.event, `${line.name} 检测失败：${reason}`, line.detail)
+    }
+  }
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown, input: unknown) => {
     if (forceRefresh !== undefined && typeof forceRefresh !== 'boolean') {
@@ -1972,6 +2031,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         { installedVersion: snapshot.desktopApps.codex.version },
       )
     }
+    logDetectionFailures(scanDetectionFailures(snapshot))
     return snapshot
   })
   registerTrustedHandler('system:refresh-network-location', () => service.refreshNetworkLocation())
@@ -2067,9 +2127,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertCurrent()
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
   })
-  registerTrustedHandler('external-clients:scan', (_event, force: unknown) => {
+  registerTrustedHandler('external-clients:scan', async (_event, force: unknown) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
-    return service.scanExternalClients(force === true)
+    const statuses = await service.scanExternalClients(force === true)
+    logDetectionFailures(externalClientDetectionFailures(statuses))
+    return statuses
   })
   registerTrustedHandler('external-clients:install', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
@@ -2170,10 +2232,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!service.checkToolModels) return { status: 'skipped' }
     return service.checkToolModels(provider)
   })
-  registerTrustedHandler('config:fill-template-defaults', async (): Promise<ToolTemplateFillResult> => {
+  registerTrustedHandler('config:fill-template-defaults', async (_event, retry: unknown): Promise<ToolTemplateFillResult> => {
+    if (retry !== undefined && typeof retry !== 'boolean') throw new Error('补设置参数格式错误')
     if (!service.fillToolTemplateDefaults) return { filled: [] }
     const context = await readBackupAccountContext()
-    return service.fillToolTemplateDefaults((provider) => { options.backupStore.create(provider, 'pre-save', undefined, context) })
+    return service.fillToolTemplateDefaults((provider) => { options.backupStore.create(provider, 'pre-save', undefined, context) }, retry === true)
   })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')

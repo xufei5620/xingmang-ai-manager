@@ -289,7 +289,9 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 - 开机恢复账号后，渲染层调 `config:fill-template-defaults`：对来源确认是当前账号、版本号落后的配置，
   由 `fillRelayTemplateDefaults` **只补缺省的键**（用户写过的值哪怕是 `false` 也不动，不碰 Key、
   地址、型号、钩子、状态行），补之前在「备份」页留一份整套备份，写入走两阶段 + `.bak`；工具开着或
-  看不出开没开的这次跳过；失败只记日志、版本号不前进。首页角落说一次补了哪几个工具。
+  看不出开没开的这次跳过，记进结果的 `pending`，渲染层每 10 分钟、或窗口回到前台时带 `retry` 再要一次，
+  只补欠着的、换了账号不补，最多 6 次（`template-fill-retry.ts`）；失败只记日志、版本号不前进，下次开机再试。
+  首页角落说一次补了哪几个工具（补做那次补上了也说）。
 - 官方账号、手填、来源没确认、被改动过的配置一律不碰。
 
 **规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
