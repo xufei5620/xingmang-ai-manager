@@ -179,60 +179,80 @@ function Invoke-XingmangProxyRecovery([bool]$writeChanges) {
 # format and notification order as electron/platform/windows-system-proxy.ts.
 
 function Initialize-WinInet {
-  if($null -ne $script:XingmangWinInet){return}
-  $type=[Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly([Reflection.AssemblyName]::new('XingmangWinInet'),[Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('XingmangWinInet').DefineType('XingmangWinInet',[Reflection.TypeAttributes]'Public, Sealed, Abstract')
-  foreach($call in @(@('Query','wininet.dll','InternetQueryOptionW',[bool],[IntPtr],[uint32],[IntPtr],[IntPtr]),@('Set','wininet.dll','InternetSetOptionW',[bool],[IntPtr],[uint32],[IntPtr],[uint32]),@('GlobalFree','kernel32.dll','GlobalFree',[IntPtr],[IntPtr]))) {
-    $method=$type.DefinePInvokeMethod($call[0],[IO.Path]::Combine([Environment]::SystemDirectory,$call[1]),$call[2],[Reflection.MethodAttributes]'Public, Static, PinvokeImpl',[Reflection.CallingConventions]::Standard,$call[3],[Type[]]$call[4..($call.Count-1)],[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
-    $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    if ('XingmangWinInet' -as [type]) { return }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+public static class XingmangWinInet {
+  [StructLayout(LayoutKind.Explicit)] public struct Value {
+    [FieldOffset(0)] public uint number;
+    [FieldOffset(0)] public IntPtr text;
+    [FieldOffset(0)] public System.Runtime.InteropServices.ComTypes.FILETIME time;
   }
-  $script:XingmangWinInet=$type.CreateType()
-}
-function New-WinInetList([int]$extra) {
-  Initialize-WinInet
-  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8;$bytes=$size+4*($p+8)+$extra
-  $list=$m::AllocHGlobal($bytes)
-  $m::Copy([byte[]]::new($bytes),0,$list,$bytes)
-  $m::WriteInt32($list,0,$size);$m::WriteInt32($list,2*$p,4);$m::WriteIntPtr($list,2*$p+8,[IntPtr]::Add($list,$size))
-  for($i=0;$i -lt 4;$i++){$m::WriteInt32($list,$size+$i*($p+8),$i+1)}
-  return $list
-}
-function Read-WinInet {
-  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8
-  $list=New-WinInetList 4
-  try {
-    $length=[IntPtr]::Add($list,$size+4*($p+8))
-    $m::WriteInt32($length,0,$size)
-    if(-not $script:XingmangWinInet::Query([IntPtr]::Zero,75,$list,$length)){throw 'proxy-query-failed'}
-    $text=@('','','')
-    for($i=1;$i -lt 4;$i++){
-      $value=$m::ReadIntPtr($list,$size+$i*($p+8)+$p)
-      if($value -ne [IntPtr]::Zero){$text[$i-1]=$m::PtrToStringUni($value);[void]$script:XingmangWinInet::GlobalFree($value)}
+  [StructLayout(LayoutKind.Sequential)] public struct Option { public uint kind; public Value value; }
+  [StructLayout(LayoutKind.Sequential)] public struct List {
+    public uint size; public IntPtr connection; public uint count; public uint error; public IntPtr options;
+  }
+  public sealed class State { public int flags; public string server; public string bypass; public string autoConfigUrl; }
+  [DllImport("wininet.dll", EntryPoint="InternetQueryOptionW", SetLastError=true)]
+  static extern bool Query(IntPtr handle, uint option, ref List value, ref uint length);
+  [DllImport("wininet.dll", EntryPoint="InternetSetOptionW", SetLastError=true)]
+  static extern bool Set(IntPtr handle, uint option, ref List value, uint length);
+  [DllImport("wininet.dll", EntryPoint="InternetSetOptionW", SetLastError=true)]
+  static extern bool Notify(IntPtr handle, uint option, IntPtr value, uint length);
+  [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr memory);
+  public static State Read() {
+    int size = Marshal.SizeOf(typeof(Option));
+    IntPtr options = Marshal.AllocHGlobal(size * 4);
+    try {
+      for (int i=0; i<4; i++) Marshal.StructureToPtr(new Option { kind=(uint)i+1 }, IntPtr.Add(options,i*size),false);
+      var list = new List { size=(uint)Marshal.SizeOf(typeof(List)), count=4, options=options };
+      uint length=list.size;
+      if (!Query(IntPtr.Zero,75,ref list,ref length)) throw new InvalidOperationException("proxy-query-failed");
+      var result = new State();
+      for (int i=0; i<4; i++) {
+        var value=(Option)Marshal.PtrToStructure(IntPtr.Add(options,i*size),typeof(Option));
+        if (i==0) result.flags=(int)value.value.number;
+        else {
+          string text=value.value.text==IntPtr.Zero ? "" : Marshal.PtrToStringUni(value.value.text);
+          if (i==1) result.server=text;
+          if (i==2) result.bypass=text;
+          if (i==3) result.autoConfigUrl=text;
+          if (value.value.text!=IntPtr.Zero) GlobalFree(value.value.text);
+        }
+      }
+      return result;
+    } finally { Marshal.FreeHGlobal(options); }
+  }
+  public static void Write(int flags, string server, string bypass, string pac) {
+    int size=Marshal.SizeOf(typeof(Option));
+    IntPtr options=Marshal.AllocHGlobal(size*4);
+    IntPtr[] text=new IntPtr[3];
+    try {
+      string[] values={server,bypass,pac};
+      for(int i=0;i<4;i++) {
+        var option=new Option {kind=(uint)i+1};
+        if(i==0) option.value.number=(uint)flags;
+        else { text[i-1]=Marshal.StringToHGlobalUni(values[i-1] ?? ""); option.value.text=text[i-1]; }
+        Marshal.StructureToPtr(option,IntPtr.Add(options,i*size),false);
+      }
+      var list=new List {size=(uint)Marshal.SizeOf(typeof(List)), count=4, options=options};
+      if(!Set(IntPtr.Zero,75,ref list,list.size)) throw new InvalidOperationException("proxy-write-failed");
+    } finally {
+      foreach(IntPtr item in text) if(item!=IntPtr.Zero) Marshal.FreeHGlobal(item);
+      Marshal.FreeHGlobal(options);
     }
-    return @{flags=$m::ReadInt32($list,$size+$p);server=$text[0];bypass=$text[1];autoConfigUrl=$text[2]}
-  } finally {$m::FreeHGlobal($list)}
-}
-function Write-WinInet([int]$flags,[string]$server,[string]$bypass,[string]$pac) {
-  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8
-  $list=New-WinInetList 0
-  $text=@()
-  try {
-    $m::WriteInt32($list,$size+$p,$flags)
-    foreach($value in @($server,$bypass,$pac)){
-      $text+=$m::StringToHGlobalUni($value)
-      $m::WriteIntPtr($list,$size+$text.Count*($p+8)+$p,$text[-1])
-    }
-    if(-not $script:XingmangWinInet::Set([IntPtr]::Zero,75,$list,$size)){throw 'proxy-write-failed'}
-  } finally {
-    foreach($item in $text){$m::FreeHGlobal($item)}
-    $m::FreeHGlobal($list)
+  }
+  public static void Refresh() {
+    if(!Notify(IntPtr.Zero,39,IntPtr.Zero,0) || !Notify(IntPtr.Zero,37,IntPtr.Zero,0))
+      throw new InvalidOperationException("proxy-notify-failed");
   }
 }
-function Update-WinInet {
-  Initialize-WinInet
-  if(-not $script:XingmangWinInet::Set([IntPtr]::Zero,39,[IntPtr]::Zero,0) -or -not $script:XingmangWinInet::Set([IntPtr]::Zero,37,[IntPtr]::Zero,0)){throw 'proxy-notify-failed'}
+'@
 }
 function Read-State {
-  $native=Read-WinInet
+  $native=[XingmangWinInet]::Read()
   $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',$false)
   try {
     $registry=[ordered]@{}
@@ -249,7 +269,7 @@ function Read-State {
   } finally { if($null -ne $key){$key.Dispose()} }
 }
 function Write-State($state) {
-  Write-WinInet ([int]$state.flags) ([string]$state.server) ([string]$state.bypass) ([string]$state.autoConfigUrl)
+  [XingmangWinInet]::Write([int]$state.flags,[string]$state.server,[string]$state.bypass,[string]$state.autoConfigUrl)
   $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',$true)
   try {
     foreach($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
@@ -259,7 +279,7 @@ function Write-State($state) {
       else {$key.SetValue($name,[string]$value,[Microsoft.Win32.RegistryValueKind]::String)}
     }
   } finally { if($null -ne $key){$key.Dispose()} }
-  Update-WinInet
+  [XingmangWinInet]::Refresh()
 }
 function Same-State($left,$right) {
   if([int]$left.flags -ne [int]$right.flags){return $false}

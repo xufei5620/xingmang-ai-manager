@@ -1857,7 +1857,9 @@ test('unavailable local preferences cannot prevent the toolbox shell from openin
   try {
     await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
     await page.addInitScript(() => { Storage.prototype.getItem = () => { throw new Error('storage unavailable') }; Storage.prototype.setItem = () => { throw new Error('storage unavailable') } })
-    await page.goto(`${origin}/src/renderer-v2/testing/app.html`)
+    // A fresh page like every open() above, so it gets the same shared retry.
+    await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html`,
+      (timeout) => waitForFixtureReady(page, timeout), { label: 'renderer-v2 fixture without storage' })
     await page.getByTestId('page-home').waitFor()
     await page.getByTestId('sidebar-collapse').click()
     assert.equal(await page.locator('.v2-sidebar').evaluate((element) => element.clientWidth), 59)

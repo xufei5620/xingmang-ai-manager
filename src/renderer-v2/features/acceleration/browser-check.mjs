@@ -4,7 +4,7 @@ import { before, after, test } from 'node:test'
 import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
-import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 import { enterWorkspaceWithoutAccount } from '../../testing/guest-workspace.mjs'
 
 let server, browser, origin
@@ -20,13 +20,20 @@ async function open(query = 'accelerationPreview=1', { initScript } = {}) {
   await page.clock.install({ time: new Date('2026-09-14T00:00:00Z') })
   await page.clock.pauseAt(new Date('2026-09-14T00:00:01Z'))
   await page.route('**/*', route => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
   // Mounting and asserting are two different waits: the click below retries on
   // Playwright's 30s action default, which a cold Windows open of this fixture
   // can outlast, and it would be reported as the acceleration nav never
   // appearing. Take the shared mount budget first; everything after it keeps
   // the default so a real regression still fails in 30s.
-  await waitForFixtureMount(page, { what: 'the acceleration fixture' })
+  //
+  // On #768 (2026-10-02) this open spent that whole budget on a page that never
+  // mounted while the cases either side passed in 2-5s, so the budget is spent
+  // as up to three navigations rather than one. The clock installed above is
+  // replayed into every new document, so a second navigation starts from the
+  // same paused time; the mount is polled from Node because that clock also
+  // pauses Playwright's in-page polling.
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?${query}`,
+    (timeout) => waitForFixtureMount(page, { timeout, what: 'the acceleration fixture' }), { label: 'acceleration fixture' })
   if (new URLSearchParams(query).get('guest') === '1') await enterWorkspaceWithoutAccount(page)
   await openLazyAcceleration(page)
   return page

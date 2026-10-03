@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CodexDesktopLocaleResult } from '../../../../electron/ipc-contract'
-import { describeChineseLocale, describeChineseLocaleResult, macLocaleNote } from './locale-status'
+import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
 
 function result(overrides: Partial<CodexDesktopLocaleResult> = {}): CodexDesktopLocaleResult {
   return {
@@ -66,5 +66,16 @@ describe('Codex Desktop locale result messages', () => {
   it('explains the Mac settings without the Windows-only local channel or automatic reopen', () => {
     expect(macLocaleNote).toContain('Command + Q')
     expect(macLocaleNote).not.toMatch(/通道|重新打开/)
+  })
+
+  it('tells a Mac user how an open Codex picks up a newly trusted folder', () => {
+    expect(describeWorkspaceTrustResult(true, 'mac'))
+      .toBe('文件夹信任已保存。Codex 开着的话，先在 Codex 窗口里按 Command + Q 完全退出，再回星芒点「打开」。')
+  })
+
+  it('keeps the plain trust message on Windows, where Codex is reopened for the user, and when nothing changed', () => {
+    expect(describeWorkspaceTrustResult(true, 'win')).toBe('文件夹信任已保存')
+    expect(describeWorkspaceTrustResult(false, 'mac')).toBe('文件夹信任已保存')
+    expect(describeWorkspaceTrustResult(true, 'linux')).toBe('文件夹信任已保存')
   })
 })
