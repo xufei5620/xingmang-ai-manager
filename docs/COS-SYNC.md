@@ -32,6 +32,8 @@ Claude 同步在 Windows、macOS、Linux 各自的原生 runner 上验证，同�
 
 Claude Windows 检查 MSIX 产品身份和有效 Authenticode；Mac 原生读取应用/PKG 元数据并核对签名；Linux 核对官方索引大小、SHA-256 和 DEB 包头，记录未执行 APT GPG 验签。文档中的下载接口已核实，真实版本、最终 CDN、签名及安装结果以首轮 Actions 验收为准。
 
+Claude 固定 `latest/redirect` 入口使用匿名 GET，仅读取响应头后立即销毁正文；最终静态包仍使用 HEAD 获取大小与 ETag。2026-10-03 GitHub runner 公开探测确认 Windows 两个入口拒绝 HEAD（405），GET 则返回 307 到已允许的 `downloads.claude.ai/releases/`。此方法修复不代表完成包下载或原生验签；同轮 Mac DMG/PKG 入口的 GET 仍返回 403，六个平台目标及全部来源、格式、签名校验继续保留。
+
 Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`，不可变候选清单保存在同一前缀的 `indexes/`。它们与星芒正式发布的 `xingmang/releases/` 和 `xingmang/latest.json` 分开，使用现有 `xingmang/*` 授权即可同步，无需扩大 CAM 权限。
 
 官方源没有变化且已验证的 COS 对象指纹也没有变化时，跳过大包下载。没有经过校验的旧索引时，先完整下载官方原包；手动上传的同名对象必须与原包完整字节一致才可复用。

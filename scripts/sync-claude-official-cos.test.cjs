@@ -2,11 +2,12 @@ const assert = require('node:assert/strict')
 const { test } = require('node:test')
 const { createHash } = require('node:crypto')
 const { EventEmitter } = require('node:events')
+const { Readable } = require('node:stream')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { SOURCES, APT_ROOT, OFFICIAL_HOSTS, LATEST_KEY, MAX_PACKAGE_BYTES, WINDOWS_INSPECTION_SCRIPT,
-  parsePlatforms, validateOfficialUrl, validateHead, compareVersions, resolveOfficialPackage, requestHead,
+  parsePlatforms, validateOfficialUrl, validateHead, compareVersions, resolveOfficialPackage, requestHead, requestRedirectHeaders,
   parseDebianPackages, artifactKey, validateIndex, validateWindowsInspection, synchronizeOfficialClaude,
   safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectPackage } = require('./sync-claude-official-cos.cjs')
 
@@ -126,13 +127,80 @@ test('validates numeric versions and rejects overlarge packages or unsafe ETags'
 test('checks every redirect hop and rejects unknown CDN, loops, or extra hops before payload download', async () => {
   const start = SOURCES['windows-x64'].requestUrl
   const target = 'https://downloads.claude.ai/releases/windows/Claude.msix'
-  const good = await resolveOfficialPackage(start, { requestHead: async url => url === start ? { status: 302, headers: { location: target } } : { status: 200, headers: { 'content-length': '1024', etag: '"source"' } } })
+  const good = await resolveOfficialPackage(start, { requestRedirectHeaders: async () => ({ status: 302, headers: { location: target } }), requestHead: async () => ({ status: 200, headers: { 'content-length': '1024', etag: '"source"' } }) })
   assert.equal(good.url, target)
   assert.equal(good.redirects.length, 1)
-  await assert.rejects(resolveOfficialPackage(start, { requestHead: async () => ({ status: 302, headers: { location: 'https://evil.invalid/file' } }) }), /未核实的主机/)
-  await assert.rejects(resolveOfficialPackage(start, { requestHead: async () => ({ status: 302, headers: { location: start } }) }), /循环/)
+  await assert.rejects(resolveOfficialPackage(start, { requestRedirectHeaders: async () => ({ status: 302, headers: { location: 'https://evil.invalid/file' } }), requestHead: async () => { throw new Error('Unexpected static request') } }), /未核实的主机/)
+  await assert.rejects(resolveOfficialPackage(start, { requestRedirectHeaders: async () => ({ status: 302, headers: { location: start } }), requestHead: async () => { throw new Error('Unexpected static request') } }), /循环/)
   let count = 0
-  await assert.rejects(resolveOfficialPackage(start, { requestHead: async () => ({ status: 302, headers: { location: `${target}/${count++}` } }) }), /超过上限/)
+  const redirect = async () => ({ status: 302, headers: { location: `${target}/${count++}` } })
+  await assert.rejects(resolveOfficialPackage(start, { requestRedirectHeaders: redirect, requestHead: redirect }), /超过上限/)
+})
+
+test('uses headers-only GET for the documented Windows redirect that rejects HEAD then HEAD for the static package', async () => {
+  for (const id of ['windows-x64', 'windows-arm64']) {
+    const start = SOURCES[id].requestUrl
+    const target = `https://downloads.claude.ai/releases/win32/${SOURCES[id].architecture}/2.19675.0/Claude-5706e5524dba58b23e105c31c358df8ab0a95852.msix`
+    const calls = []
+    const responses = []
+    let bodyReads = 0
+    const options = { requestImpl(url, input, callback) {
+      calls.push({ url: url.href, method: input.method })
+      assert.equal(input.headers.authorization, undefined)
+      assert.equal(input.headers.cookie, undefined)
+      assert.equal(input.agent, false)
+      assert.equal(input.maxHeaderSize, 16 * 1024)
+      const response = new Readable({ read() { bodyReads += 1; this.push('must not consume redirect or package bytes'); this.push(null) } })
+      responses.push(response)
+      response.statusCode = url.href === start ? input.method === 'HEAD' ? 405 : 307 : 200
+      response.headers = response.statusCode === 307 ? { location: target } : { 'content-length': '1024', etag: '"source"' }
+      const request = new EventEmitter()
+      request.end = () => callback(response)
+      request.destroy = () => {}
+      return request
+    } }
+    assert.equal((await requestHead(start, options)).status, 405)
+    const result = await resolveOfficialPackage(start, options)
+    assert.equal(result.url, target)
+    assert.equal(result.redirects.length, 1)
+    assert.deepEqual(calls.map(call => call.method), ['HEAD', 'GET', 'HEAD'])
+    assert.equal(bodyReads, 0)
+    assert.equal(responses.every(response => response.destroyed), true)
+  }
+})
+
+test('GET header probes reject unapproved endpoints, query redirects, unknown hosts and paths before the next request', async () => {
+  let requests = 0
+  const options = { requestImpl(url, input, callback) {
+    requests += 1
+    const request = new EventEmitter()
+    request.end = () => callback({ statusCode: 307, headers: { location: options.redirect }, destroy() {} })
+    request.destroy = () => {}
+    return request
+  } }
+  const start = SOURCES['windows-x64'].requestUrl
+  for (const invalid of [start + '?token=secret', 'https://claude.ai/api/desktop/arbitrary', 'https://downloads.claude.ai/releases/file.msix']) {
+    await assert.rejects(requestRedirectHeaders(invalid, options))
+    assert.equal(requests, 0)
+  }
+  for (const redirect of ['https://evil.invalid/file.msix', 'https://downloads.claude.ai/releases/file.msix?token=secret', 'https://downloads.claude.ai/arbitrary/file.msix']) {
+    options.redirect = redirect
+    const before = requests
+    await assert.rejects(resolveOfficialPackage(start, options))
+    assert.equal(requests, before + 1)
+  }
+})
+
+test('GET header deadline destroys a stalled request and preserves timeout classification without raw errors', async () => {
+  let destroyed = false
+  await assert.rejects(requestRedirectHeaders(SOURCES['windows-x64'].requestUrl, { headerTimeoutMs: 20, requestImpl() {
+    const request = new EventEmitter()
+    request.end = () => {}
+    request.destroy = () => { destroyed = true; request.emit('error', new Error('Bearer SECRET')) }
+    return request
+  } }), error => /响应头超时/.test(error.message) && !error.message.includes('SECRET'))
+  assert.equal(destroyed, true)
+  await assert.rejects(requestRedirectHeaders(SOURCES['windows-x64'].requestUrl, { headerTimeoutMs: 30001 }), /超时配置/)
 })
 
 test('HEAD resolver has fixed anonymous headers and destroys redirect response bodies', async () => {
