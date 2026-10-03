@@ -133,6 +133,41 @@ test('bounded parallel parts sign exact queries and MD5 then confirm the full pu
   assert.doesNotMatch(JSON.stringify(progress), /uploadId|SECRET|authorization|url/)
 })
 
+test('part response headers allow six minutes within each signature and honor shorter caller budgets', async t => {
+  const data = await fixture(t)
+  const realSetTimeout = global.setTimeout
+  let latestTimeoutMs
+  t.mock.method(global, 'setTimeout', function (callback, milliseconds, ...args) {
+    latestTimeoutMs = milliseconds
+    return realSetTimeout(callback, milliseconds, ...args)
+  })
+  for (const [headerTimeoutMs, expectedPartTimeoutMs] of [[undefined, 360000], [1200000, 360000], [120000, 120000]]) {
+    const transport = memoryMultipart()
+    const requests = []
+    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, {
+      now: () => 1000,
+      headerTimeoutMs,
+      requestImpl: function (url, input, callback) {
+        requests.push({ url, ...input, headerTimeoutMs: latestTimeoutMs })
+        return transport.requestImpl(url, input, callback)
+      },
+    })
+    await client.publishFile(key, data.filePath, data.input)
+    const partRequests = requests.filter(call => call.url.searchParams.has('partNumber'))
+    assert.equal(partRequests.length, Math.ceil(data.body.length / PART_BYTES))
+    for (const call of partRequests) {
+      assert.equal(call.headerTimeoutMs, expectedPartTimeoutMs)
+      const [start, end] = new URLSearchParams(call.headers.authorization).get('q-sign-time').split(';').map(Number)
+      assert.equal(start, 940)
+      assert.equal(end, 2800)
+      assert.ok(end - 1000 > call.headerTimeoutMs / 1000)
+    }
+    for (const call of requests.filter(call => !call.url.searchParams.has('partNumber'))) {
+      assert.equal(call.headerTimeoutMs, headerTimeoutMs ?? 30000)
+    }
+  }
+})
+
 test('a lost complete response is never retried or aborted and matching public content recovers', async t => {
   const data = await fixture(t)
   const transport = memoryMultipart({ loseComplete: true })
@@ -202,20 +237,24 @@ test('all protected workflows expose disabled-by-default multipart without grant
   }
 })
 
-test('disabled large files and enabled latest JSON both preserve the single PUT path', async t => {
+test('disabled large files, enabled small files and latest JSON preserve the single PUT path', async t => {
   const data = await fixture(t)
   const disabled = memoryMultipart()
   await store(disabled, false).publishFile(key, data.filePath, data.input)
   assert.deepEqual(disabled.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  const smallData = await fixture(t, 123)
+  const small = memoryMultipart()
+  await store(small).publishFile(key, smallData.filePath, smallData.input)
+  assert.deepEqual(small.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
   const latest = memoryMultipart()
   await store(latest).publishJson('chatgpt/latest.json', { schemaVersion: 1 }, { overwrite: true })
   assert.deepEqual(latest.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
   assert.equal(latest.calls[1].headers['x-cos-forbid-overwrite'], undefined)
 })
 
-test('twenty-one minute transfers can complete but thirty-one minute dispatch cannot publish', async t => {
+test('dispatch can finish beyond thirty minutes but stops at the seventy-five minute boundary', async t => {
   const data = await fixture(t, PART_BYTES + 123)
-  for (const minutes of [21, 31]) {
+  for (const elapsedMs of [31 * 60 * 1000, 75 * 60 * 1000 - 1, 75 * 60 * 1000]) {
     const handle = await fs.open(data.filePath, 'r')
     const stat = await handle.stat()
     let clock = 0
@@ -225,13 +264,13 @@ test('twenty-one minute transfers can complete but thirty-one minute dispatch ca
         monotonicNow: () => clock, failure: error => error,
         request: async function (operation, method, query, body) {
           operations.push(operation)
-          if (operation === 'init') { clock = minutes * 60 * 1000; return { body: initXml() } }
+          if (operation === 'init') { clock = elapsedMs; return { body: initXml() } }
           if (operation === 'part') return { bytes: 0, headers: { etag: `"${digest(body, 'md5')}"` } }
           if (operation === 'complete') return { body: completeXml() }
           return {}
         },
       })
-      if (minutes === 21) { await run; assert.ok(operations.includes('complete')) }
+      if (elapsedMs < 75 * 60 * 1000) { await run; assert.ok(operations.includes('complete')) }
       else { await assert.rejects(run, /总时间限制/); assert.deepEqual(operations, ['init', 'abort']) }
     } finally { await handle.close() }
   }

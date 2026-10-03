@@ -4,7 +4,7 @@ const { performance } = require('node:perf_hooks')
 const PART_BYTES = 4 * 1024 * 1024
 const THRESHOLD_BYTES = 16 * 1024 * 1024
 const MAX_XML_BYTES = 64 * 1024
-const TOTAL_UPLOAD_MS = 30 * 60 * 1000
+const TOTAL_UPLOAD_MS = 75 * 60 * 1000
 
 function readMultipartOptions(env = process.env) {
   const enabled = env.XINGMANG_COS_MULTIPART_ENABLED
