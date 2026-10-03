@@ -171,10 +171,11 @@ function createFixture() {
   return fixture
 }
 
-test('defaults to Windows packages and allows only fixed platform identifiers', function () {
-  assert.deepEqual(parsePlatforms(), ['windows-x64', 'windows-arm64'])
+test('defaults to Windows and macOS while retaining historical platform identifiers', function () {
+  assert.deepEqual(parsePlatforms(), ['windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64'])
+  assert.deepEqual(parsePlatforms('all'), parsePlatforms())
   assert.deepEqual(parsePlatforms('windows'), ['windows-x64', 'windows-arm64'])
-  assert.equal(parsePlatforms('all').length, 8)
+  assert.equal(parsePlatforms('all').length, 4)
   assert.deepEqual(parsePlatforms('macos'), ['macos-arm64', 'macos-x64'])
   assert.deepEqual(parsePlatforms('linux'), ['linux-deb-x64', 'linux-deb-arm64', 'linux-rpm-x64', 'linux-rpm-arm64'])
   assert.deepEqual(parsePlatforms('linux-rpm-arm64'), ['linux-rpm-arm64'])
@@ -183,18 +184,18 @@ test('defaults to Windows packages and allows only fixed platform identifiers', 
   assert.throws(function () { parsePlatforms('windows-x64,../escape') }, /平台无效/)
 })
 
-test('exact platform recovery merges the other seven verified entries and retains both Windows licenses', async function () {
+test('Windows and macOS updates preserve historical Linux entries and retain both Windows licenses', async function () {
   const fixture = createFixture()
-  await fixture.run('all')
+  await fixture.run(Object.keys(SOURCES))
   const previous = clone(fixture.latest)
-  const url = SOURCES['linux-rpm-arm64'].url
+  const url = SOURCES['windows-x64'].url
   fixture.resources.set(url, { ...fixture.resources.get(url), etag: '"new-source"' })
   const before = fixture.downloads.length
-  const result = await fixture.run('linux-rpm-arm64')
-  assert.equal(fixture.downloads.length, before + 1)
+  const result = await fixture.run('all')
+  assert.equal(fixture.downloads.length, before + 2)
   assert.equal(Object.keys(result.manifest.platforms).length, 8)
   for (const [id, entry] of Object.entries(previous.platforms)) {
-    if (id !== 'linux-rpm-arm64') assert.deepEqual(result.manifest.platforms[id], entry)
+    if (id !== 'windows-x64') assert.deepEqual(result.manifest.platforms[id], entry)
   }
   assert.ok(result.manifest.platforms['windows-x64'].license)
   assert.ok(result.manifest.platforms['windows-arm64'].license)
@@ -205,17 +206,17 @@ test('source changes after object publication stop the latest pointer and identi
   const inspect = fixture.dependencies.inspectResource
   fixture.dependencies.inspectResource = async function (input) {
     const head = await inspect(input)
-    return fixture.publications.length && input.url === SOURCES['linux-rpm-arm64'].url
+    return fixture.publications.length && input.url === parseMacAppcast(appcast('x64'), 'x64').url
       ? { ...head, etag: '"changed-after-upload"' } : head
   }
   await assert.rejects(fixture.run('all'), (error) => {
     const diagnostic = safeOfficialSyncFailure(error)
     assert.equal(diagnostic.stage, 'source-recheck-package')
-    assert.equal(diagnostic.platform, 'linux-rpm-arm64')
+    assert.equal(diagnostic.platform, 'macos-x64')
     assert.equal(diagnostic.latestState, 'not-written-by-this-run')
     return true
   })
-  assert.equal(fixture.publications.length, 10)
+  assert.equal(fixture.publications.length, 6)
   assert.equal(fixture.pointers.length, 0)
 })
 
@@ -312,7 +313,7 @@ test('rejects malicious XML, duplicate full enclosures, and foreign Mac URLs', f
 
 test('downloads validates and publishes both MSIX packages before the latest pointer', async function () {
   const fixture = createFixture()
-  const result = await fixture.run()
+  const result = await fixture.run('windows')
   assert.equal(result.changed, true)
   assert.equal(fixture.downloads.length, 3)
   assert.equal(fixture.inspections.length, 3)
@@ -481,10 +482,11 @@ test('does not retry or roll back an unconfirmed latest write', async function (
   assert.equal(fixture.pointers.length, 0)
 })
 
-test('publishes all verified platforms with separate Mac versions and honest signature labels', async function () {
+test('publishes only Windows and macOS by default with separate Mac versions and honest signature labels', async function () {
   const fixture = createFixture()
-  const result = await fixture.run('all')
-  assert.equal(Object.keys(result.manifest.platforms).length, 8)
+  const result = await fixture.run()
+  assert.equal(Object.keys(result.manifest.platforms).length, 4)
+  assert.ok(fixture.downloads.every(item => !item.url.includes('/linux/')))
   const mac = result.manifest.platforms['macos-x64']
   assert.equal(mac.buildVersion, '12776')
   assert.equal(mac.appVersion, '26.930.21537')
@@ -492,7 +494,7 @@ test('publishes all verified platforms with separate Mac versions and honest sig
   assert.equal(mac.format, 'zip')
   assert.match(mac.artifact.key, /^chatgpt\/macos-x64\/sha256-[a-f0-9]{64}\/ChatGPT-darwin-x64-26\.930\.21537\.zip$/)
   assert.equal(mac.artifact.verification, 'official-https-sha256')
-  assert.equal(result.manifest.platforms['linux-deb-arm64'].artifact.verification, 'official-https-sha256')
+  assert.equal(result.manifest.platforms['linux-deb-arm64'], undefined)
   const before = fixture.downloads.length
   assert.equal((await fixture.run('all')).changed, false)
   assert.equal(fixture.downloads.length, before)

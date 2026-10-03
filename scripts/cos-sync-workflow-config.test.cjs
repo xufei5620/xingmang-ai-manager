@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 const YAML = require('yaml')
+const vm = require('node:vm')
 
 const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'sync-chatgpt-official-cos.yml')
 const source = fs.readFileSync(workflowPath, 'utf8')
@@ -13,7 +14,7 @@ const claudeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.g
 test('Claude backup packages support official native runners and independent manual platform selection', () => {
   assert.deepEqual(Object.keys(claudeWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
   assert.equal(claudeWorkflow.on.schedule[0].cron, '31 */6 * * *')
-  assert.deepEqual(claudeWorkflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows', 'macos', 'linux'])
+  assert.deepEqual(claudeWorkflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows', 'macos', 'windows-x64', 'windows-arm64', 'macos-dmg-universal', 'macos-pkg-universal'])
   assert.equal(claudeWorkflow.on.workflow_dispatch.inputs.platforms.default, 'all')
   const select = claudeWorkflow.jobs.select
   const matrixStep = select.steps[0]
@@ -23,8 +24,31 @@ test('Claude backup packages support official native runners and independent man
   assert.equal(matrixStep.env.PLATFORM_REQUEST, "${{ inputs.platforms || 'all' }}")
   assert.match(matrixStep.run, /platform: 'windows', runner: 'windows-latest'/)
   assert.match(matrixStep.run, /platform: 'macos', runner: 'macos-latest'/)
-  assert.match(matrixStep.run, /platform: 'linux', runner: 'ubuntu-latest'/)
+  assert.doesNotMatch(matrixStep.run, /platform: 'linux'/)
   assert.doesNotMatch(matrixStep.run, /\$\{\{|COS_SECRET|shell:\s*true/)
+})
+
+test('Claude scheduled all covers only both native systems and exact package recovery cannot select Linux', () => {
+  const script = claudeWorkflow.jobs.select.steps[0].run.replace(/^node <<'NODE'\n/, '').replace(/\nNODE\s*$/, '')
+  function select(value) {
+    let output
+    vm.runInNewContext(script, {
+      process: { env: { PLATFORM_REQUEST: value, GITHUB_OUTPUT: 'mock-output' } },
+      require: name => {
+        assert.equal(name, 'node:fs')
+        return { appendFileSync: (file, text) => { assert.equal(file, 'mock-output'); output = text } }
+      },
+    })
+    return JSON.parse(output.trim().slice('matrix='.length)).include
+  }
+  assert.deepEqual(select('all'), [
+    { platform: 'windows', runner: 'windows-latest' },
+    { platform: 'macos', runner: 'macos-latest' },
+  ])
+  for (const id of ['windows-x64', 'windows-arm64', 'macos-dmg-universal', 'macos-pkg-universal']) {
+    assert.deepEqual(select(id), [{ platform: id, runner: id.startsWith('windows-') ? 'windows-latest' : 'macos-latest' }])
+  }
+  for (const id of ['linux', 'linux-deb-x64', 'linux-deb-arm64', 'constructor', 'https://evil.invalid', 'macos-dmg-universal,windows-x64']) assert.throws(() => select(id))
 })
 
 test('Claude native jobs serialize the shared index and preserve repository branch and opt-in gates', () => {
@@ -62,8 +86,8 @@ test('official package synchronization supports a timer and manual retry without
   assert.deepEqual(Object.keys(workflow.on).sort(), ['schedule', 'workflow_dispatch'])
   assert.equal(workflow.on.schedule.length, 1)
   assert.equal(workflow.on.schedule[0].cron, '17 */6 * * *')
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows', 'macos', 'linux',
-    'windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64', 'linux-deb-x64', 'linux-deb-arm64', 'linux-rpm-x64', 'linux-rpm-arm64'])
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows', 'macos',
+    'windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64'])
   assert.equal(workflow.on.workflow_dispatch.inputs.platforms.default, 'all')
 })
 
