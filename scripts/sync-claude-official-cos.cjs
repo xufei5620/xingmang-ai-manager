@@ -9,12 +9,15 @@ const { createHash, randomUUID } = require('node:crypto')
 
 const API_ROOT = 'https://claude.ai/api/desktop/'
 const APT_ROOT = 'https://downloads.claude.ai/claude-desktop/apt/stable/'
-// Final CDN hosts have not been independently observed in this session. An
-// unknown redirect must fail closed, never expand this list from response data.
+// Only documented entry points and the previously approved package host are
+// trusted. Never expand this list from a redirect response.
 const OFFICIAL_HOSTS = Object.freeze(['claude.ai', 'downloads.claude.ai'])
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_METADATA_BYTES = 1024 * 1024
-const LATEST_KEY = 'claude/latest.json'
+// Keep emergency packages within the previously authorized manager prefix,
+// separate from formal manager releases and their latest pointer.
+const OFFLINE_PREFIX = 'xingmang/offline/claude'
+const LATEST_KEY = `${OFFLINE_PREFIX}/latest.json`
 const SOURCES = Object.freeze({
   'windows-x64': Object.freeze({ platform: 'windows', architecture: 'x64', format: 'msix', fileName: 'Claude-x64.msix', type: 'application/vnd.ms-appx', requestUrl: `${API_ROOT}win32/x64/msix/latest/redirect`, verification: 'windows-authenticode-msix-identity' }),
   'windows-arm64': Object.freeze({ platform: 'windows', architecture: 'arm64', format: 'msix', fileName: 'Claude-arm64.msix', type: 'application/vnd.ms-appx', requestUrl: `${API_ROOT}win32/arm64/msix/latest/redirect`, verification: 'windows-authenticode-msix-identity' }),
@@ -71,33 +74,58 @@ function compareVersions(left, right) {
   return 0
 }
 
-async function requestHead(url, options = {}) {
+function isDocumentedRedirectUrl(url) {
+  return Object.values(SOURCES).some(function (source) { return source.requestUrl === url })
+}
+
+async function requestHeadersOnly(url, method, options = {}) {
   validateOfficialUrl(url)
+  const timeoutMs = options.headerTimeoutMs ?? 30000
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('Claude 官方包响应头超时配置无效')
   return new Promise(function (resolve, reject) {
     let request
+    let settled = false
     const timer = setTimeout(function () {
-      if (request) request.destroy()
-      reject(new Error('Claude 官方包响应头超时'))
-    }, 30000)
-    function fail() {
+      fail(new Error('Claude 官方包响应头超时'))
+    }, timeoutMs)
+    function fail(error = new Error('Claude 官方包网络请求失败；未记录正文或认证信息')) {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
-      reject(new Error('Claude 官方包网络请求失败；未记录正文或认证信息'))
+      reject(error)
+      if (request) request.destroy()
     }
     try {
-      request = (options.requestImpl || https.request)(new URL(url), { method: 'HEAD', headers: { 'accept-encoding': 'identity', 'user-agent': 'xingmang-official-offline-sync/1' }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
+      request = (options.requestImpl || https.request)(new URL(url), { method, headers: { 'accept-encoding': 'identity', 'user-agent': 'xingmang-official-offline-sync/1' }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
+        if (settled) { response.destroy(); return }
+        settled = true
         clearTimeout(timer)
         const headers = response.headers || {}
-        response.destroy()
         resolve({ status: response.statusCode, headers })
+        // The redirect API rejects HEAD. GET is used only to obtain its headers;
+        // no data listener, resume, body collection or file write is permitted.
+        response.destroy()
+        if (request) request.destroy()
       })
-      request.on('error', fail)
+      request.on('error', function () { fail() })
       request.end()
     } catch { fail() }
   })
 }
 
+async function requestHead(url, options = {}) {
+  return requestHeadersOnly(url, 'HEAD', options)
+}
+
+async function requestRedirectHeaders(url, options = {}) {
+  const target = validateOfficialUrl(url).href
+  if (!isDocumentedRedirectUrl(target)) throw new Error('Claude GET 响应头探测仅允许固定的官方下载入口')
+  return requestHeadersOnly(target, 'GET', options)
+}
+
 async function resolveOfficialPackage(requestUrl, options = {}) {
   const head = options.requestHead || requestHead
+  const redirectHeaders = options.requestRedirectHeaders || requestRedirectHeaders
   let current = validateOfficialUrl(requestUrl).href
   const redirects = []
   const visited = new Set()
@@ -105,7 +133,7 @@ async function resolveOfficialPackage(requestUrl, options = {}) {
   for (let hop = 0; hop <= 3; hop += 1) {
     if (visited.has(current) || performance.now() - started > 120000) throw new Error('Claude 官方下载重定向循环或总超时')
     visited.add(current)
-    const result = await head(current, options)
+    const result = await (isDocumentedRedirectUrl(current) ? redirectHeaders : head)(current, options)
     if ([301, 302, 303, 307, 308].includes(result.status)) {
       if (hop === 3 || typeof result.headers.location !== 'string' || result.headers.location.length > 4096) throw new Error('Claude 官方下载重定向超过上限或无效')
       const next = validateOfficialUrl(new URL(result.headers.location, current).href).href
@@ -153,7 +181,7 @@ function parseDebianPackages(text, architecture) {
 
 function artifactKey(id, sha256) {
   if (!Object.hasOwn(SOURCES, id) || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error('Claude 不可变对象参数无效')
-  return `claude/${id}/sha256-${sha256}/${SOURCES[id].fileName}`
+  return `${OFFLINE_PREFIX}/${id}/sha256-${sha256}/${SOURCES[id].fileName}`
 }
 
 function sourceRecord(source, resource) {
@@ -276,7 +304,7 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
     const manifest = { schemaVersion: 1, product: 'claude-desktop', generatedAt: now(), files: [...files.values()].sort(function (left, right) { return left.platformId.localeCompare(right.platformId, 'en') }) }
     validateIndex(manifest, store.publicUrl)
     const candidateDigest = createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
-    await store.publishJson(`claude/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' })
+    await store.publishJson(`${OFFLINE_PREFIX}/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' })
     const current = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
     if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('Claude COS 最新索引在同步期间变化，已保留现有指针')
     try {
@@ -481,4 +509,4 @@ if (require.main === module) main().catch(function (error) {
   process.exitCode = 1
 })
 
-module.exports = { SOURCES, OFFICIAL_HOSTS, API_ROOT, APT_ROOT, MAX_PACKAGE_BYTES, LATEST_KEY, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, validateOfficialUrl, validateHead, validateVersion, compareVersions, requestHead, resolveOfficialPackage, parseDebianPackages, artifactKey, sourceRecord, validateIndex, validateWindowsInspection, validateInspection, synchronizeOfficialClaude, safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectDmgMount, inspectPackage, createRuntimeDependencies, main }
+module.exports = { SOURCES, OFFICIAL_HOSTS, API_ROOT, APT_ROOT, MAX_PACKAGE_BYTES, LATEST_KEY, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, validateOfficialUrl, validateHead, validateVersion, compareVersions, requestHead, requestRedirectHeaders, resolveOfficialPackage, parseDebianPackages, artifactKey, sourceRecord, validateIndex, validateWindowsInspection, validateInspection, synchronizeOfficialClaude, safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectDmgMount, inspectPackage, createRuntimeDependencies, main }
