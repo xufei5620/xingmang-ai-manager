@@ -1057,6 +1057,28 @@ export function FeedbackPage({
           </>
         }
       >
+        {report?.selfChecked === false && navigate && (
+          <Notice
+            tone="accent"
+            icon={HeartPulse}
+            title="报告里还没有检查结果"
+            body="点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。"
+            actions={
+              <Button
+                size="sm"
+                icon={HeartPulse}
+                onClick={() => {
+                  setReport(null)
+                  navigate('health')
+                }}
+                testId="feedback-report-go-check"
+              >
+                去检查
+              </Button>
+            }
+            testId="feedback-report-unchecked"
+          />
+        )}
         <ResultNotice
           {...operation}
           onReveal={(path) => api.revealExportedFile(path)}

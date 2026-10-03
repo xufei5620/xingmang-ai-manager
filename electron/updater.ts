@@ -168,6 +168,37 @@ type UpdateEventName =
   | 'update-cancelled'
   | 'error'
 
+/**
+ * The one member of builder-util-runtime's CancellationToken the stall watchdog
+ * uses. The host creates the token from electron-updater's own export: the
+ * library recognises a cancellation with `instanceof CancellationError`, so a
+ * token from a second copy of builder-util-runtime would surface as an error.
+ */
+export interface UpdateDownloadCancellation {
+  cancel(): void
+}
+
+/** 看门狗停掉一次下载时交给宿主记日志的东西。*/
+export interface UpdateDownloadStall {
+  /** true＝接下来自动重下一次；false＝这就报下载失败。*/
+  retrying: boolean
+  /**
+   * true＝取消、掐断以后 electron-updater 那次一直没收尾（宿主没掐到它的请求，增量下载又不认
+   * 取消）。这时再下只会接回同一次，所以不自动重下。
+   */
+  unsettled: boolean
+  /**
+   * true＝停住的是看门狗停过一次以后的那次重下，它关掉了增量下载，只下整个安装包。false＝头一次
+   * 下，可能是只下改了的那几段，也可能是整个安装包（没有旧安装包可比、增量下载失败时
+   * electron-updater 自己改下整包）。
+   */
+  fullPackage: boolean
+  /** 停住前最后一次进度是 100%：停在下完以后的核对、改名那几步，或者分批下载的下一批开头。*/
+  transferEnded: boolean
+  transferred: number
+  total: number
+}
+
 export interface UpdateClient {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
@@ -176,11 +207,16 @@ export interface UpdateClient {
   allowDowngrade: boolean
   disableWebInstaller: boolean
   forceDevUpdateConfig: boolean
+  /**
+   * electron-updater 的增量下载（只下变了的那几段）开关，下载开始那一刻读。看门狗停住一次后
+   * 重下时临时关掉增量下载，见 downloadWatched。
+   */
+  disableDifferentialDownload?: boolean
   logger: unknown
   on(event: UpdateEventName, listener: (...args: any[]) => void): this
   off(event: UpdateEventName, listener: (...args: any[]) => void): this
   checkForUpdates(): Promise<unknown>
-  downloadUpdate(): Promise<unknown>
+  downloadUpdate(cancellationToken?: UpdateDownloadCancellation): Promise<unknown>
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void
   /**
    * electron-updater 判断「这台电脑在不在放量范围内」的钩子，默认读 latest.yml
@@ -296,6 +332,34 @@ export interface UpdaterRuntime {
   readFreeDiskBytes?: () => Promise<number | null>
   /** 这一轮因为空间不够没下。宿主拿去记一条日志。*/
   diskShortfallSkipped?: (shortfall: UpdateDiskShortfall, version: string | null) => void
+  /**
+   * Gives each download a token the stall watchdog cancels. Cancelling settles
+   * a full-package download and a blockmap fetch at once. The differential
+   * downloader never reads the token while no data arrives; that is what
+   * `abortDownloadRequests` is for.
+   */
+  createDownloadCancellation?: () => UpdateDownloadCancellation
+  /**
+   * When an electron-updater request last received response headers or bytes,
+   * from the host's request guard (update-request-guard.ts). The watchdog counts
+   * it as activity next to progress events, which electron-updater does not send
+   * for blockmaps, for single-range differential batches or for a response
+   * without a Content-Length. Without it only progress events count.
+   */
+  downloadReceivedAt?: () => number | null
+  /**
+   * Fails every request electron-updater still has open with `reason`, the way a
+   * dropped connection would. The watchdog calls it right after cancelling the
+   * token, so a stalled differential download settles as well: electron-updater
+   * then falls back to a full download, which the cancelled token ends at once.
+   * Closing the updater session's connections is no substitute. In Electron 43 it
+   * leaves HTTP/1.1 sockets that are in use open, and on HTTP/2 the differential
+   * response it fails has no 'error' listener, so the failure is uncaught. Both
+   * were reproduced against a local server that stalls mid-body.
+   */
+  abortDownloadRequests?: (reason: Error) => void
+  /** 看门狗停掉了一次下载。宿主拿去记一条日志。*/
+  downloadStalled?: (stall: UpdateDownloadStall) => void
   /** 见 UpdateInstallMethod。不传＝安装器接手退出（Windows、Mac 的旧行为）。 */
   installMethod?: UpdateInstallMethod
   /**
@@ -397,6 +461,78 @@ export function resolveDownloadSecondsRemaining(
 ): number | null {
   if (!rate || rate <= 0 || total <= 0 || transferred >= total) return null
   return Math.ceil((total - transferred) / rate)
+}
+
+/**
+ * 到 `at` 这一刻的平均速度：最后一个样本之后没有新进度，就当这段时间一个字节也没进账。
+ * 下载停住时 electron-updater 不再报进度，只看已有的样本，界面会一直挂着停住前的速度和
+ * 「大约还要多久」。
+ */
+export function resolveDownloadRateAt(samples: readonly DownloadProgressSample[], at: number): number | null {
+  const last = samples.at(-1)
+  if (!last || at <= last.at) return resolveAverageDownloadRate(samples)
+  return resolveAverageDownloadRate(recordDownloadProgressSample(samples, { at, transferred: last.transferred }))
+}
+
+/**
+ * 下载多久没有新数据算停住了，和装 Codex 桌面端、Node.js 那几个大安装包同一个数
+ * （download-retry.ts）。
+ *
+ * electron-updater 自带的 60 秒超时在 Electron 里不起作用：builder-util-runtime 把它挂在
+ * 请求的 socket 事件上，而 Electron 的 net 请求不发这个事件。断网、换了网络旧连接没断
+ * 干净、代理软件不转发时，下载就一直停在那里，不报错也不重试。
+ */
+export const updateDownloadStallMs = 45_000
+/**
+ * 进度到过 100% 以后，多久没动静算停住。下完以后 electron-updater 还要核对签名
+ * （update-signature.ts 最多 30 秒）、改名（文件被占着时最多重试 30 秒），这几步都不报进度；
+ * 增量下载分批的话，下一批开头也要过一会儿才报进度。
+ */
+export const updateDownloadSettleMs = 180_000
+/** 下载中多久看一眼：停没停住、要不要把停住前的速度收起来，都按这个节拍。*/
+export const updateDownloadWatchMs = 5_000
+/**
+ * 取消、掐断一次停住的下载以后，等 electron-updater 收尾的时间，期间又来了数据就从那一刻重新算。
+ * 宿主掐得到请求时几毫秒就收完；等不到说明掐不到（宿主没装上 update-request-guard.ts，增量下载
+ * 又不认取消），不再干等，照「停住了」往下走。
+ */
+export const updateDownloadCancelWaitMs = 10_000
+
+/** 看门狗停掉的那一次下载。只在 download() 里流转，进快照前换成「超时」那句话。*/
+class UpdateDownloadStalled extends Error {
+  /** 见 UpdateDownloadStall.unsettled。*/
+  readonly unsettled: boolean
+  readonly fullPackage: boolean
+  readonly transferEnded: boolean
+
+  constructor(unsettled: boolean, detail: { fullPackage: boolean; transferEnded: boolean }) {
+    super('update download stalled')
+    this.name = 'UpdateDownloadStalled'
+    this.unsettled = unsettled
+    this.fullPackage = detail.fullPackage
+    this.transferEnded = detail.transferEnded
+  }
+}
+
+/**
+ * 看门狗交给宿主去掐断请求的错误（abortDownloadRequests）。下整个安装包时令牌已经让那次下载以
+ * 「已取消」收场，这个错误落空，宿主没给令牌时它才成了那次下载的失败。增量下载时 electron-updater
+ * 自己接住它，改下整个安装包，再被已经取消的令牌当场结束。
+ */
+class UpdateDownloadAborted extends Error {
+  constructor() {
+    super('update download stalled')
+    this.name = 'UpdateDownloadAborted'
+  }
+}
+
+/**
+ * 一次下载是不是以看门狗的取消、掐断收场。令牌取消时 electron-updater 给 CancellationError，
+ * 取消以后又到一块数据时是它的进度流抛的普通 Error，两种的 message 都是 'cancelled'；宿主掐断了
+ * 请求、令牌又没起作用时，回来的是 UpdateDownloadAborted 本身。
+ */
+function isDownloadCancellation(error: unknown): boolean {
+  return error instanceof UpdateDownloadAborted || (error instanceof Error && error.message === 'cancelled')
 }
 
 function versionParts(version: string): number[] | null {
@@ -736,6 +872,11 @@ export function createUpdaterService(
   // 下载后 SHA-512 核对通过的那个安装包。只有 'system-installer' 通道用它：安装包要原样
   // 交给系统安装程序，而不是像 electron-updater 那样由它自己去找缓存里的文件。
   let verifiedPackagePath: string | null = null
+  // 正在下载的那一次的看门狗（见 downloadWatched）；没在下载时为 null。
+  let downloadWatch: { observe(percent: number): void; stop(): void } | null = null
+  // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
+  // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
+  const abandonedDownloads = new Set<Promise<unknown>>()
   let snapshot: UpdateSnapshot = {
     phase: enabled ? 'idle' : 'disabled',
     currentVersion: runtime.currentVersion,
@@ -1105,6 +1246,10 @@ export function createUpdaterService(
       void verifyDownloadedUpdate(event)
     },
     'update-cancelled': (info: UpdateInfo) => {
+      // 取消下载的只有看门狗（autoDownload 关着，electron-updater 不会自己起一次带令牌的
+      // 下载），接下来重下还是报错由它定。把它的回声落成「已取消」，会盖掉它要发的状态；
+      // 放弃的那次过了很久才收尾的话，盖掉的就是界面上早已报出的失败。
+      if (abandonedDownloads.size > 0) return
       clearInstallWatchdog()
       installRequested = false
       applyInfo('cancelled', info)
@@ -1114,6 +1259,11 @@ export function createUpdaterService(
       const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0))
       const transferred = Math.max(0, Number(progress.transferred) || 0)
       const total = Math.max(0, Number(progress.total) || 0)
+      // 没人盯着时来的进度，只能是看门狗放弃的那次又动了。界面已经报了下载失败，不能悄悄
+      // 翻回「正在下载」又没人看它停没停；它真下完了，update-downloaded 照常接住。
+      if (!downloadWatch && abandonedDownloads.size > 0) return
+      // 在节流之前告诉看门狗：被节流掉的那几次同样说明数据还在来。
+      downloadWatch?.observe(percent)
       // 样本在节流之前记：被节流掉的那几次也是真实的进度，算速度用得上。
       progressSamples = recordDownloadProgressSample(progressSamples, { at: timestamp, transferred })
       if (
@@ -1138,6 +1288,9 @@ export function createUpdaterService(
       })
     },
     error: (error: unknown) => {
+      // 看门狗掐断请求用的那个错误：接下来重下还是报「下载更新失败」由看门狗定。宿主没给取消
+      // 令牌时，electron-updater 才会把它当成下载出错发出来。
+      if (error instanceof UpdateDownloadAborted) return
       if (
         snapshot.phase === 'downloaded'
         && (
@@ -1154,10 +1307,14 @@ export function createUpdaterService(
       // 这里永远不标 'install'：这条分支会把阶段推到 error，安装包不再可用，界面
       // 给出的「重新安装」会当场被主进程以「更新尚未下载并校验完成」顶回来。真正
       // 的安装失败走 reportInstallFailure，那条路把阶段留在 downloaded。
+      // 看门狗放弃的那次晚到的出错（比如它自己下完了、签名却对不上）也是下载那一步的，
+      // 哪怕界面已经报了失败。正在检查时来的出错算检查的：检查失败时 electron-updater 先发
+      // error 再让检查失败，check() 随后照样标成检查失败，中间不能闪一下「下载更新失败」。
       emit({
         phase: 'error',
         error: safeError(error, platform),
-        failedStep: snapshot.phase === 'downloading' || snapshot.phase === 'downloaded'
+        failedStep: snapshot.phase !== 'checking'
+          && (abandonedDownloads.size > 0 || snapshot.phase === 'downloading' || snapshot.phase === 'downloaded')
           ? 'download'
           : 'check',
         progress: null,
@@ -1262,6 +1419,146 @@ export function createUpdaterService(
     return resolveUpdateDiskShortfall(freeBytes, requiredUpdateDiskBytes(offeredPackageBytes))
   }
 
+  // 下载停住时快照里一直是停住前那个速度。还在报进度时不动它（免得多发快照）；停了一拍
+  // 以上，按「这段时间没进账」重算：10 秒没进账速度就是 0，界面只留「已下载多少」。
+  const refreshIdleDownloadRate = (at: number) => {
+    const progress = snapshot.progress
+    const last = progressSamples.at(-1)
+    if (!progress || !last || at - last.at < updateDownloadWatchMs) return
+    const averageBytesPerSecond = resolveDownloadRateAt(progressSamples, at)
+    const secondsRemaining = resolveDownloadSecondsRemaining(averageBytesPerSecond, progress.transferred, progress.total)
+    if (
+      averageBytesPerSecond === (progress.averageBytesPerSecond ?? null)
+      && secondsRemaining === (progress.secondsRemaining ?? null)
+    ) return
+    emit({ progress: { ...progress, averageBytesPerSecond, secondsRemaining } })
+  }
+
+  const noteDownloadStall = (stall: UpdateDownloadStalled, retrying: boolean) => {
+    try {
+      runtime.downloadStalled?.({
+        retrying,
+        unsettled: stall.unsettled,
+        fullPackage: stall.fullPackage,
+        transferEnded: stall.transferEnded,
+        transferred: snapshot.progress?.transferred ?? 0,
+        total: snapshot.progress?.total ?? 0,
+      })
+    } catch {
+      // 记日志失败不影响接下来重下或报错。
+    }
+  }
+
+  // 停住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多
+  // 一句新话；code 另记，日志里分得清是看门狗停的。
+  const downloadFailure = (error: unknown) => error instanceof UpdateDownloadStalled
+    ? { code: 'UPDATE_DOWNLOAD_STALLED', message: updateNetworkFailureMessages.timeout }
+    : safeError(error, platform)
+
+  // 下载一次，期间盯着有没有新数据进来：electron-updater 的进度和宿主看到的字节
+  // （downloadReceivedAt）都算。还在传时 updateDownloadStallMs、进度到过 100% 以后
+  // updateDownloadSettleMs 没动静，就算停住：取消令牌、让宿主掐断还开着的请求，以
+  // UpdateDownloadStalled 收场；electron-updater 自己报的错原样抛出。掐断以后
+  // updateDownloadCancelWaitMs 没收尾、期间也没再来数据，就不再等它；又来了数据就接着等，它真
+  // 下完了就当没停过。fullPackage 让这一次不走增量下载。
+  async function downloadWatched(fullPackage: boolean): Promise<void> {
+    const cancellation = runtime.createDownloadCancellation?.()
+    let lastActivityAt = Date.now()
+    let lastTickAt = lastActivityAt
+    let transferEnded = false
+    // 已经取消、掐断过，在等 electron-updater 收尾。
+    let cancelling = false
+    let reportStall: () => void = () => undefined
+    let reportUnsettled: () => void = () => undefined
+    const stalled = new Promise<'stalled'>((resolve) => { reportStall = () => resolve('stalled') })
+    const unsettled = new Promise<'unsettled'>((resolve) => { reportUnsettled = () => resolve('unsettled') })
+    const noteActivity = (at: number) => {
+      if (at > lastActivityAt) lastActivityAt = at
+    }
+    const abortStalled = () => {
+      // 令牌让下整个安装包的那条路当场收场；增量下载不认令牌，靠宿主掐断它开着的请求。
+      try { cancellation?.cancel() } catch { /* the wait that follows still bounds this attempt */ }
+      try { runtime.abortDownloadRequests?.(new UpdateDownloadAborted()) } catch { /* same */ }
+    }
+    const timer = setInterval(() => {
+      const at = Date.now()
+      // 机器睡着时什么也进不来，时钟往前、往回跳的那一截也不是在等：都从这一刻重新算。
+      if (at < lastTickAt || at - lastTickAt > 2 * updateDownloadWatchMs) lastActivityAt = at
+      lastTickAt = at
+      try {
+        const received = runtime.downloadReceivedAt?.()
+        // 时钟往回跳以前记下的时间比现在还晚，不能把刚重新算的这一刻又推到后面去。
+        if (typeof received === 'number' && received <= at) noteActivity(received)
+      } catch {
+        // 读不到就只看进度。
+      }
+      if (cancelling) {
+        if (at - lastActivityAt < updateDownloadCancelWaitMs) return
+        watch.stop()
+        reportUnsettled()
+        return
+      }
+      if (snapshot.phase !== 'downloading') return
+      if (at - lastActivityAt < (transferEnded ? updateDownloadSettleMs : updateDownloadStallMs)) {
+        refreshIdleDownloadRate(at)
+        return
+      }
+      cancelling = true
+      lastActivityAt = at
+      reportStall()
+    }, updateDownloadWatchMs)
+    timer.unref?.()
+    const watch = {
+      observe(percent: number) {
+        transferEnded = percent >= 100
+        noteActivity(Date.now())
+      },
+      stop() {
+        clearInterval(timer)
+        if (downloadWatch === watch) downloadWatch = null
+      },
+    }
+    downloadWatch = watch
+    const stalledDownload = (unsettledDownload: boolean) => (
+      new UpdateDownloadStalled(unsettledDownload, { fullPackage, transferEnded })
+    )
+    const differential = client.disableDifferentialDownload
+    try {
+      if (fullPackage) client.disableDifferentialDownload = true
+      const pending = cancellation ? client.downloadUpdate(cancellation) : client.downloadUpdate()
+      // electron-updater 同时只下一次：上一次还没收尾时，downloadUpdate() 交回来的就是那一次。
+      const inherited = abandonedDownloads.has(pending)
+      const settled = pending.then(
+        () => ({ failed: false as const, error: null }),
+        (error: unknown) => ({ failed: true as const, error }),
+      )
+      const outcome = await Promise.race([settled, stalled])
+      if (outcome !== 'stalled') {
+        if (!outcome.failed) return
+        // 接手的是放弃过的那次，它以当初看门狗的取消收场：对客户来说还是停住了，不过它这就收了
+        // 尾，再下就是新的一次。它自己出的错（比如下完了签名对不上）照实报。
+        if (inherited && isDownloadCancellation(outcome.error)) throw stalledDownload(false)
+        throw outcome.error
+      }
+      // 先记成放弃的，再取消：取消引来的「已取消」回声得认得出来。
+      if (!abandonedDownloads.has(pending)) {
+        abandonedDownloads.add(pending)
+        const settle = () => { abandonedDownloads.delete(pending) }
+        pending.then(settle, settle)
+      }
+      abortStalled()
+      const late = await Promise.race([settled, unsettled])
+      if (late === 'unsettled') throw stalledDownload(true)
+      // 掐断前后它自己下完了：就当没停过。
+      if (!late.failed) return
+      if (isDownloadCancellation(late.error)) throw stalledDownload(false)
+      throw late.error
+    } finally {
+      watch.stop()
+      if (fullPackage) client.disableDifferentialDownload = differential
+    }
+  }
+
   const download = async (options: UpdateDownloadOptions = {}): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (snapshot.phase === 'downloading') return cloneSnapshot(snapshot)
@@ -1285,20 +1582,30 @@ export function createUpdaterService(
     verifiedPackagePath = null
     emit({ phase: 'downloading', progress: null, error: null })
     try {
-      await client.downloadUpdate()
+      await downloadWatched(false)
     } catch (error) {
-      if (retryWithoutProxy && isProxyConnectionFailure(error)) {
+      const stall = error instanceof UpdateDownloadStalled ? error : null
+      // 自动再下只有一次，再不行就照实报下载失败，重下的按钮界面上都有。停住的那次多半是
+      // 这条路不通了（代理软件不转发、换了网络旧连接没断干净），和代理连不上一样换直连，
+      // 而且重下整个安装包：只有一个请求，取消令牌就停得下来，不靠宿主掐请求。
+      // electron-updater 那次一直没收尾时不重下：再下只会接回同一次，白等一轮。
+      const retry = stall
+        ? !stall.unsettled
+        : retryWithoutProxy !== undefined && isProxyConnectionFailure(error)
+      if (stall) noteDownloadStall(stall, retry)
+      if (retry) {
         try {
           await retryOffProxy(async () => {
             progressSamples = []
             emit({ phase: 'downloading', error: null, progress: null })
-            await client.downloadUpdate()
+            await downloadWatched(stall !== null)
           })
         } catch (retryError) {
-          emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'download', progress: null })
+          if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)
+          emit({ phase: 'error', error: downloadFailure(retryError), failedStep: 'download', progress: null })
         }
       } else {
-        emit({ phase: 'error', error: safeError(error, platform), failedStep: 'download', progress: null })
+        emit({ phase: 'error', error: downloadFailure(error), failedStep: 'download', progress: null })
       }
     }
     return cloneSnapshot(snapshot)
@@ -1407,6 +1714,7 @@ export function createUpdaterService(
       disposed = true
       listeners.clear()
       clearInstallWatchdog()
+      downloadWatch?.stop()
       for (const [event, handler] of Object.entries(eventHandlers)) {
         client.off(event as UpdateEventName, handler)
       }

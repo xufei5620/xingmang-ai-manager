@@ -892,6 +892,35 @@ describe('registerIpcHandlers', () => {
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })
 
+    it('tells the window whether the report carries any self-check result, also after regenerating it', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        let checked = false
+        const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+          diagnosticsService: {
+            run: vi.fn(),
+            checkConnection: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            exportLatest: vi.fn(),
+            hasSelfCheckResult: () => checked,
+          },
+        })
+        runtimeLog.captureFeedbackReport
+          .mockResolvedValueOnce({ text: 'before checking\n', entries: 1 })
+          .mockResolvedValueOnce({ text: 'after checking\n', entries: 2 })
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        expect(preview).toEqual({ id: expect.any(String), text: 'before checking\n', entries: 1, selfChecked: false })
+        // The customer went to the check page and came back after the preview expired.
+        checked = true
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({
+          entries: 2,
+          regenerated: { id: expect.any(String), text: 'after checking\n', entries: 2, selfChecked: true },
+        })
+      } finally { clock.mockRestore() }
+    })
+
     it('allows clipboard retry and save cancellation without changing the preview', async () => {
       const { runtimeLog } = register()
       const owner = trustedEvent()

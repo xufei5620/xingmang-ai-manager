@@ -42,7 +42,9 @@ const stateLabels: Readonly<Record<DiagnosticState, string>> = {
   error: '待处理',
 }
 
-const NOT_CHECKED = '还没做过自检，可以在软件里打开「检查」页点一次「开始检查」，再导出一份报告。'
+// 新界面的「检查」页一打开就自动查，页上叫「开始检查」的只有要花额度的「Codex 干活检查」，
+// 所以不写按钮名，只说打开、等它查完（第二十六批 C）。
+const NOT_CHECKED = '还没做过自检，可以在软件里打开「检查」页，等它查完再导出一份报告。'
 
 /**
  * 隔夜的结果照发无妨——用户往往是先检查、隔天才想起来找客服；但客服得知道这
@@ -95,6 +97,16 @@ function readConnectionQuietly(
     // 一个工具的结果取不出来不该让整段（更不该让整份报告）失败。
     return null
   }
+}
+
+/**
+ * 这份报告的「最近一次自检」那段有没有真东西：「检查」页查过，或者至少一个工具做过
+ * 连接自检。为假时那段只有一句「还没做过自检」。那句话是写给客服看的，客户导出时根本
+ * 不会去读，所以预览报告时据此在报告上面提醒客户先去查一次（第二十六批 C）。
+ */
+export function hasFeedbackSelfCheck(input: Pick<FeedbackSelfCheckInput, 'report' | 'readConnection'>): boolean {
+  return input.report !== null
+    || providerIds.some((provider) => readConnectionQuietly(provider, input.readConnection) !== null)
 }
 
 export function buildFeedbackSelfCheckLines(input: FeedbackSelfCheckInput): string[] {

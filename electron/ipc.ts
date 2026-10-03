@@ -208,6 +208,8 @@ export interface IpcRegistrationOptions {
     trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
     /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
     fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
+    /** 反馈报告「最近一次自检」那段有没有结果；缺省 = 不知道，预览报告时不提醒先去检查。 */
+    hasSelfCheckResult?(): boolean
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -2764,13 +2766,19 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     return options.runtimeLog.snapshot(limit as number | undefined)
   })
-  const feedbackPreviews = new Map<number, { id: string; text: string; entries: number; expiresAt: number }>()
+  const feedbackPreviews = new Map<number, { id: string; text: string; entries: number; selfChecked?: boolean; expiresAt: number }>()
   const captureFeedbackPreview = async (senderId: number) => {
     const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
     // captureFeedbackReport already trims the oldest log lines to fit; this
     // only guards a runtime log implementation that ignored the budget.
     if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
-    const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
+    const selfChecked = options.diagnosticsService.hasSelfCheckResult?.()
+    const preview = {
+      id: randomUUID(),
+      ...report,
+      ...(selfChecked === undefined ? {} : { selfChecked }),
+      expiresAt: Date.now() + 30 * 60 * 1_000,
+    }
     feedbackPreviews.delete(senderId)
     feedbackPreviews.set(senderId, preview)
     if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
@@ -2785,8 +2793,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (preview && preview.id === reportId && preview.expiresAt >= Date.now()) return { preview, regenerated: false }
     return { preview: await captureFeedbackPreview(senderId), regenerated: true }
   }
-  const publicFeedbackPreview = (preview: { id: string; text: string; entries: number }) => (
-    { id: preview.id, text: preview.text, entries: preview.entries }
+  const publicFeedbackPreview = (preview: { id: string; text: string; entries: number; selfChecked?: boolean }) => (
+    {
+      id: preview.id,
+      text: preview.text,
+      entries: preview.entries,
+      ...(preview.selfChecked === undefined ? {} : { selfChecked: preview.selfChecked }),
+    }
   )
   registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
     return publicFeedbackPreview(await captureFeedbackPreview(event.sender.id))
