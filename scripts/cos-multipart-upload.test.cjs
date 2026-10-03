@@ -3,7 +3,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
-const { Readable, Writable } = require('node:stream')
+const { PassThrough, Readable, Writable } = require('node:stream')
 const { test } = require('node:test')
 const { PART_BYTES, THRESHOLD_BYTES, readMultipartOptions, parseMultipartXml, uploadMultipart } = require('./cos-multipart-upload.cjs')
 const { createCosStore, readCosConfiguration, buildCosAuthorization, safeSyncFailure } = require('./cos-sync-utils.cjs')
@@ -30,16 +30,17 @@ async function fixture(t, size = THRESHOLD_BYTES + 123) {
   await fs.writeFile(filePath, body)
   return { filePath, body, input: { expectedBytes: size, expectedSha256: digest(body, 'sha256'), contentType: 'application/x-rpm' } }
 }
-function memoryMultipart({ loseComplete = false, errorComplete = false, corruptReadback = false, existing = null, failPart = false } = {}) {
+function memoryMultipart({ loseComplete = false, errorComplete = false, completeHttpError = false, corruptReadback = false, existing = null, failPart = false, partFault, now = function () { return 1000 } } = {}) {
   const calls = []
   const parts = new Map()
+  const attempts = new Map()
   let object = existing
   let contentType = 'application/x-rpm'
   let active = 0
   let peak = 0
   function requestImpl(url, input, callback) {
     const chunks = []
-    const request = new Writable({ write(chunk, encoding, done) { chunks.push(Buffer.from(chunk)); done() } })
+    const request = new Writable({ autoDestroy: false, write(chunk, encoding, done) { chunks.push(Buffer.from(chunk)); done() } })
     const call = { url, ...input }
     calls.push(call)
     request.on('finish', () => {
@@ -51,7 +52,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, corruptR
         // The common transport adds identity encoding after signing; COS v5
         // signs the explicitly declared header-list, not every wire header.
         delete headers['accept-encoding']
-        assert.equal(input.headers.authorization, buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: input.method, pathname: decodeURIComponent(url.pathname), query, headers, now: 1000 }))
+        assert.equal(input.headers.authorization, buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: input.method, pathname: decodeURIComponent(url.pathname), query, headers, now: now() }))
         if (input.method !== 'DELETE') assert.equal(headers['content-md5'], digest(call.body, 'md5', 'base64'))
       }
       if (input.method === 'POST' && Object.hasOwn(query, 'uploads')) {
@@ -67,6 +68,9 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, corruptR
           active -= 1
           if (failPart && query.partNumber === '1') return callback(response(Buffer.alloc(0), 403))
           parts.set(Number(query.partNumber), call.body)
+          const attempt = (attempts.get(query.partNumber) || 0) + 1
+          attempts.set(query.partNumber, attempt)
+          if (partFault?.({ call, callback, request, attempt })) return
           callback(response(Buffer.alloc(0), 200, { etag: `"${digest(call.body, 'md5')}"` }))
         }, 100)
         return
@@ -82,6 +86,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, corruptR
         const numbers = [...call.body.toString().matchAll(/<PartNumber>(\d+)<\/PartNumber>/g)].map(match => Number(match[1]))
         assert.deepEqual(numbers, [...parts.keys()].sort((a, b) => a - b))
         if (errorComplete) return callback(response(Buffer.from('<Error><Code>SECRET</Code></Error>')))
+        if (completeHttpError) return callback(response(Buffer.from('<Error><Code>RequestTimeout</Code></Error>'), 400))
         object = Buffer.concat(numbers.map(number => parts.get(number)))
         if (loseComplete) return request.destroy(Object.assign(new Error('SECRET signed upload URL'), { code: 'ECONNRESET' }))
         return callback(response(completeXml()))
@@ -195,6 +200,154 @@ test('failed parts all settle before aborting only the owned session with no com
   await assert.rejects(store(transport).publishFile(key, data.filePath, data.input))
   assert.equal(transport.calls.filter(call => call.method === 'POST').length, 1)
   assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1)
+})
+
+test('a saved part with a lost reply retries identical bytes and digests with a fresh signature', async t => {
+  const data = await fixture(t)
+  let now = 1000
+  const transport = memoryMultipart({ now: () => now, partFault: function ({ call, request, attempt }) {
+    if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
+    now = 1010
+    request.destroy(Object.assign(new Error('SECRET response lost'), { code: 'ETIMEDOUT' }))
+    return true
+  } })
+  const progress = []
+  const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => now })
+  await client.publishFile(key, data.filePath, { ...data.input, onProgress: value => { if (value.method === 'PUT' && value.phase === 'upload-body') progress.push(value.transferredBytes) } })
+  const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
+  assert.equal(attempts.length, 2)
+  assert.equal(attempts[0].url.href, attempts[1].url.href)
+  assert.deepEqual(attempts[0].body, attempts[1].body)
+  assert.equal(attempts[0].headers['content-md5'], attempts[1].headers['content-md5'])
+  assert.equal(digest(attempts[0].body, 'sha256'), digest(attempts[1].body, 'sha256'))
+  assert.notEqual(attempts[0].headers.authorization, attempts[1].headers.authorization)
+  assert.equal(progress.at(-1), data.body.length)
+  assert.equal(progress.length, Math.ceil(data.body.length / PART_BYTES))
+  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+})
+
+test('only a diagnosed HTTP 400 RequestTimeout retries and each part stops after three attempts', async t => {
+  const data = await fixture(t)
+  for (const [code, failCount, expectedAttempts, succeeds] of [
+    ['RequestTimeout', 2, 3, true], ['RequestTimeout', 3, 3, false],
+    ['BadDigest', 1, 1, false], ['InvalidDigest', 1, 1, false], ['UnknownSECRET', 1, 1, false],
+    ...['UserNetworkTooSlow', 'IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'].map(code => [code, 1, 1, false]),
+  ]) {
+    const transport = memoryMultipart({ partFault: function ({ call, callback, attempt }) {
+      if (call.url.searchParams.get('partNumber') !== '1' || attempt > failCount) return false
+      callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+      return true
+    } })
+    const run = store(transport).publishFile(key, data.filePath, data.input)
+    if (succeeds) await run
+    else await assert.rejects(run, error => {
+      const diagnostic = safeSyncFailure(error)
+      assert.equal(diagnostic.put.put.status, 400)
+      assert.equal(diagnostic.put.put.cosErrorCode, code === 'UnknownSECRET' ? undefined : code)
+      assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|authorization|upload-123/)
+      return true
+    })
+    assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, expectedAttempts)
+    assert.equal(transport.calls.filter(call => call.method === 'POST').length, succeeds ? 2 : 1)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, succeeds ? 0 : 1)
+  }
+})
+
+test('part checksum and certificate failures never retry', async t => {
+  const data = await fixture(t)
+  for (const failure of ['etag', 'CERT_HAS_EXPIRED', 'ECONNRESET']) {
+    const transport = memoryMultipart({ partFault: function ({ call, callback, request }) {
+      if (call.url.searchParams.get('partNumber') !== '1') return false
+      if (failure === 'etag') callback(response(Buffer.alloc(0), 200, { etag: '"wrong-md5"' }))
+      else request.destroy(Object.assign(new Error('SECRET'), { code: failure }))
+      return true
+    } })
+    await assert.rejects(store(transport).publishFile(key, data.filePath, data.input))
+    assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, 1)
+    assert.equal(transport.calls.filter(call => call.method === 'POST').length, 1)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1)
+  }
+})
+
+test('part response header and body timeouts retry only the failed part', async t => {
+  const data = await fixture(t)
+  for (const phase of ['header', 'body']) {
+    const transport = memoryMultipart({ partFault: function ({ call, callback, attempt }) {
+      if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
+      if (phase === 'body') {
+        const stream = new PassThrough()
+        stream.statusCode = 200
+        stream.headers = { 'content-length': '0', etag: `"${digest(call.body, 'md5')}"` }
+        callback(stream)
+      }
+      return true
+    } })
+    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => 1000, headerTimeoutMs: 500, bodyTimeoutMs: 20 })
+    await client.publishFile(key, data.filePath, data.input)
+    assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, 2)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+  }
+})
+
+test('a diagnosed complete timeout remains uncertain without retry or abort', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart({ completeHttpError: true })
+  await assert.rejects(store(transport).publishFile(key, data.filePath, data.input), error => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.put.multipartState, 'complete-unconfirmed')
+    assert.equal(diagnostic.put.put.cosErrorCode, 'RequestTimeout')
+    assert.equal(diagnostic.put.put.multipartOperation, 'complete')
+    return true
+  })
+  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+  assert.equal(transport.calls.at(-1).method, 'GET')
+})
+
+test('part retries retain the original deadline and stop after another worker fails', async t => {
+  const data = await fixture(t, PART_BYTES * 4)
+  for (const reason of ['deadline', 'sibling']) {
+    const handle = await fs.open(data.filePath, 'r')
+    let clock = 0
+    let active = 0
+    let release
+    const sibling = new Promise(resolve => { release = resolve })
+    let enterFirstPart
+    const firstPartStarted = new Promise(resolve => { enterFirstPart = resolve })
+    const operations = []
+    const timeout = new Error('retryable timeout')
+    const terminal = new Error('terminal failure')
+    try {
+      await assert.rejects(uploadMultipart({ handle, stat: await handle.stat(), hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+        monotonicNow: () => clock, failure: error => error, shouldRetryPart: error => error === timeout,
+        request: async function (operation, method, query, body) {
+          operations.push([operation, query.partNumber])
+          if (operation === 'init') return { body: initXml() }
+          if (operation === 'abort') { assert.equal(active, 0); return {} }
+          assert.equal(operation, 'part')
+          active += 1
+          try {
+            if (query.partNumber === '1') {
+              enterFirstPart()
+              if (reason === 'sibling') await sibling
+              else clock = 75 * 60 * 1000
+              throw timeout
+            }
+            if (query.partNumber === '2' && reason === 'sibling') {
+              await firstPartStarted
+              setImmediate(release)
+              throw terminal
+            }
+            return { bytes: 0, headers: { etag: `"${digest(body, 'md5')}"` } }
+          } finally { active -= 1 }
+        },
+      }), reason === 'deadline' ? /总时间限制/ : /terminal failure/)
+      assert.equal(operations.filter(([operation, number]) => operation === 'part' && number === '1').length, 1)
+      assert.equal(operations.filter(([operation]) => operation === 'complete').length, 0)
+      assert.deepEqual(operations.at(-1), ['abort', undefined])
+    } finally { await handle.close() }
+  }
 })
 
 test('an existing conflicting immutable object is fully read and never starts multipart', async t => {
