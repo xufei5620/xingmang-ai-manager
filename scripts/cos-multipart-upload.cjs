@@ -1,7 +1,7 @@
 const crypto = require('node:crypto')
 const { performance } = require('node:perf_hooks')
 
-const PART_BYTES = 4 * 1024 * 1024
+const PART_BYTES = 1024 * 1024
 const THRESHOLD_BYTES = 16 * 1024 * 1024
 const MAX_XML_BYTES = 64 * 1024
 const TOTAL_UPLOAD_MS = 75 * 60 * 1000
@@ -60,6 +60,10 @@ async function readPart(handle, offset, length) {
 
 function partDigest(body) {
   return { md5: crypto.createHash('md5').update(body).digest('hex'), sha256: crypto.createHash('sha256').update(body).digest('hex') }
+}
+
+function buildCompleteMultipartBody(parts) {
+  return Buffer.from(`<CompleteMultipartUpload>${parts.map((part, index) => `<Part><PartNumber>${index + 1}</PartNumber><ETag>${part.etag}</ETag></Part>`).join('')}</CompleteMultipartUpload>`)
 }
 
 async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, request, failure, onPartCommitted, shouldRetryPart = function () { return false }, monotonicNow = function () { return performance.now() } }) {
@@ -128,7 +132,7 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
     if (primaryError) throw primaryError
     assertSourceStat(stat, await handle.stat())
     checkDeadline()
-    const body = Buffer.from(`<CompleteMultipartUpload>${parts.map((part, index) => `<Part><PartNumber>${index + 1}</PartNumber><ETag>${part.etag}</ETag></Part>`).join('')}</CompleteMultipartUpload>`)
+    const body = buildCompleteMultipartBody(parts)
     completeStarted = true
     const completed = await request('complete', 'POST', { uploadId }, body)
     const value = parseMultipartXml(completed.body, 'CompleteMultipartUploadResult', ['Location', 'Bucket', 'Key', 'ETag'])
@@ -145,4 +149,4 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
   }
 }
 
-module.exports = { PART_BYTES, THRESHOLD_BYTES, MAX_XML_BYTES, readMultipartOptions, parseMultipartXml, uploadMultipart }
+module.exports = { PART_BYTES, THRESHOLD_BYTES, MAX_XML_BYTES, readMultipartOptions, parseMultipartXml, buildCompleteMultipartBody, uploadMultipart }
