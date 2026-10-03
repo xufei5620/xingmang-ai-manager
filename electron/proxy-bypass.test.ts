@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createNewApiClient } from './new-api-client'
-import { automaticBypassCooldownMs, createProxyBypass, createSiteFetch, isNetworkSettingsKind, networkSettingsTarget, probeDirectConnection, siteProbeBackoffMs, systemProxyCheckIntervalMs, type ProxyBypassDependencies } from './proxy-bypass'
+import { automaticBypassCooldownMs, createProxyBypass, createSiteFetch, createSiteRouting, isNetworkSettingsKind, networkSettingsTarget, probeDirectConnection, siteProbeBackoffMs, systemProxyCheckIntervalMs, type ProxyBypassDependencies } from './proxy-bypass'
 
 const probeUrl = 'https://relay.example/api/status'
 // An AI request to the same service the account requests go to.
@@ -223,6 +223,22 @@ describe('proxy bypass after an account request timed out or was cut off on a li
     expect(modes).toEqual([])
   })
 
+  it('moves the service the failed request went to, which is not always the selected one', async () => {
+    let clock = 1_000
+    const probeSiteDirect = vi.fn(async () => true)
+    const probe = vi.fn(async () => true)
+    const { deps } = dependencies({ probeSiteDirect, probe, now: () => clock })
+    const bypass = createProxyBypass(deps)
+    // Switching accounts shows the other service's sign-in while this one is still selected.
+    expect(await bypass.recoverFailedRequest(900, 'timeout', 'https://other.example/api/status')).toBe(true)
+    expect(probeSiteDirect).toHaveBeenCalledWith('https://other.example/api/status')
+    expect(bypass.routeSiteRequest(siteUrl)).toBeNull()
+    // The proxy is later checked at that same service.
+    clock += systemProxyCheckIntervalMs
+    expect(bypass.routeSiteRequest('https://other.example/api/user/login')).not.toBeNull()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledWith('https://other.example/api/status'))
+  })
+
   it('probes once for several account requests that fail together', async () => {
     const probeSiteDirect = vi.fn(async () => true)
     const { deps } = dependencies({ probeSiteDirect })
@@ -426,7 +442,7 @@ describe('site fetch', () => {
   })
 })
 
-describe('proxy bypass with the account client', () => {
+describe('site routing as main.ts wires it', () => {
   const status = {
     system_name: '星芒AI',
     version: 'v1.0.0-rc.24',
@@ -440,32 +456,83 @@ describe('proxy bypass with the account client', () => {
     turnstile_check: false,
   }
 
-  it('resends an account read that timed out on a live proxy over the direct session, and takes AI requests to the same service along', async () => {
-    const { deps, modes } = dependencies()
-    const bypass = createProxyBypass(deps)
-    // The proxy forwards everything but the service, where it just hangs until the client gives up.
-    const viaSession = vi.fn<typeof fetch>(async (input) => {
-      if (String(input instanceof Request ? input.url : input).startsWith('https://relay.example/')) {
-        throw new DOMException('This operation was aborted', 'AbortError')
-      }
+  function requestUrl(input: string | URL | Request): string {
+    return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+  }
+
+  function routing(overrides: Partial<Parameters<typeof createSiteRouting>[0]> = {}) {
+    const modes: string[] = []
+    // The app session's proxy forwards everything except the service, where it hangs until
+    // the caller gives up. Once the whole app is switched, the session itself goes direct.
+    const sessionFetch = vi.fn<typeof fetch>(async (input) => {
+      if (modes.at(-1) === 'direct') return new Response('direct')
+      if (requestUrl(input).startsWith('https://relay.example/')) throw new DOMException('This operation was aborted', 'AbortError')
       return new Response('through the proxy')
     })
-    const viaDirect = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ success: true, message: '', data: status }), {
+    const siteDirectFetch = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ success: true, message: '', data: status }), {
       headers: { 'Content-Type': 'application/json' },
     }))
+    const wired = createSiteRouting({
+      probeUrl: () => probeUrl,
+      resolveProxy: async () => 'PROXY 127.0.0.1:7890',
+      setProxy: async (mode) => { modes.push(mode) },
+      accelerationActive: async () => false,
+      sessionFetch,
+      siteDirectFetch,
+      ...overrides,
+    })
+    return { ...wired, modes, sessionFetch, siteDirectFetch }
+  }
+
+  it('resends an account read that timed out on a live proxy over the direct session, and takes AI requests to the same service along', async () => {
+    const { bypass, accountFetch, relayFetch, modes, sessionFetch, siteDirectFetch } = routing()
     const client = createNewApiClient({
       baseUrl: 'https://relay.example',
-      fetchImpl: createSiteFetch(bypass, viaSession, viaDirect, { abortMeansUnreachable: true }),
+      fetchImpl: accountFetch,
       retryOffProxy: (failure) => bypass.recoverFailedRequest(failure.startedAt, failure.reason),
     })
     await expect(client.getStatus()).resolves.toBeTruthy()
-    expect(viaSession).toHaveBeenCalledTimes(1)
-    expect(viaDirect).toHaveBeenCalledTimes(1)
+    // One try through the proxy, then the probe and the resent read over the direct session.
+    expect(sessionFetch).toHaveBeenCalledTimes(1)
+    expect(siteDirectFetch).toHaveBeenCalledTimes(2)
     expect(modes).toEqual([])
 
-    const relayFetch = createSiteFetch(bypass, viaSession, viaDirect)
     await relayFetch(siteUrl, { method: 'POST' })
-    expect(viaDirect).toHaveBeenCalledTimes(2)
+    expect(siteDirectFetch).toHaveBeenCalledTimes(3)
     expect(await (await relayFetch('https://github.com/anthropics/claude-plugins-official')).text()).toBe('through the proxy')
+  })
+
+  it('keeps the direct session when an AI request is stopped, but hands it back when an account request runs out of time', async () => {
+    const { bypass, accountFetch, relayFetch, siteDirectFetch } = routing()
+    expect(await bypass.recoverFailedRequest(0, 'timeout')).toBe(true)
+    const stopped = new AbortController()
+    siteDirectFetch.mockImplementationOnce(async () => {
+      stopped.abort()
+      throw new DOMException('This operation was aborted', 'AbortError')
+    })
+    await expect(relayFetch(siteUrl, { method: 'POST', signal: stopped.signal })).rejects.toThrow('aborted')
+    expect(bypass.routeSiteRequest(siteUrl)).not.toBeNull()
+
+    const timedOut = new AbortController()
+    siteDirectFetch.mockImplementationOnce(async () => {
+      timedOut.abort()
+      throw new DOMException('This operation was aborted', 'AbortError')
+    })
+    await expect(accountFetch(probeUrl, { signal: timedOut.signal })).rejects.toThrow('aborted')
+    expect(bypass.routeSiteRequest(siteUrl)).toBeNull()
+  })
+
+  it('looks for a dead proxy through the app session, which the diversion never touches', async () => {
+    let clock = 1_000
+    const { bypass, relayFetch, modes, sessionFetch, siteDirectFetch } = routing({ now: () => clock })
+    expect(await bypass.recoverFailedRequest(900, 'timeout')).toBe(true)
+    sessionFetch.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+    clock += systemProxyCheckIntervalMs
+    await relayFetch(siteUrl, { method: 'POST' })
+    await vi.waitFor(() => expect(bypass.active()).toBe(true))
+    expect(sessionFetch).toHaveBeenCalledWith(probeUrl, expect.objectContaining({ method: 'GET' }))
+    expect(modes).toEqual(['direct'])
+    // The probe and the AI request: neither check went over the direct session.
+    expect(siteDirectFetch).toHaveBeenCalledTimes(2)
   })
 })

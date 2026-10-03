@@ -121,7 +121,7 @@ import { hostNotifier } from './platform/host-notification-bridge'
 import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
-import { createProxyBypass, createSiteFetch, networkSettingsTarget, probeDirectConnection } from './proxy-bypass'
+import { createSiteRouting, networkSettingsTarget } from './proxy-bypass'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
@@ -1139,22 +1139,21 @@ if (!hasSingleInstanceLock) {
     }
     // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
     // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
-    // 建在这里是因为 relayFetch 就要用它；站点设置、加速状态都是出了事才去读。
-    const proxyBypass = createProxyBypass({
+    // AI 聊天画图、连通检查、查模型（relayFetch）都连星芒站点，账号请求（accountFetch）
+    // 改直连时跟着一起改，它们自己不触发改直连；别的地址照旧走默认会话。建在这里是因为
+    // relayFetch 马上就要用；站点设置、加速状态都是出了事才去读。
+    const { bypass: proxyBypass, relayFetch, accountFetch } = createSiteRouting({
       probeUrl: () => {
         try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
         catch { return null }
       },
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
       setProxy: (mode) => session.defaultSession.setProxy({ mode }),
-      probe: (url) => probeDirectConnection(sessionFetch, url),
-      probeSiteDirect: (url) => probeDirectConnection(siteDirectFetch, url),
       accelerationActive: accelerationRunning,
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+      sessionFetch,
+      siteDirectFetch,
     })
-    // AI 聊天画图、连通检查、查模型都连星芒站点，账号请求改直连时跟着一起改（它们自己
-    // 不触发改直连）；别的地址照旧走默认会话。
-    const relayFetch = createSiteFetch(proxyBypass, sessionFetch, siteDirectFetch)
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecution = await windowsCliExecutionModePromise
@@ -1904,13 +1903,14 @@ if (!hasSingleInstanceLock) {
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
-    // 账号请求只会因为 10 秒没回话而中止，那正说明直连这一路不通。
-    const accountFetch = createSiteFetch(proxyBypass, sessionFetch, siteDirectFetch, { abortMeansUnreachable: true })
     // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
     // 一直超时。客户端在网络层失败后来问这一句，和登没登录无关；所以兜底必须建在
     // 账号服务之前，开机恢复登录的头一个请求就用得上。
-    async function recoverAccountRequestOffProxy(failure: NewApiRetryOffProxyFailure): Promise<boolean> {
-      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason)
+    // 改直连的是这个客户端连的站点：切账号时另一个站点的登录框也在发请求，它不一定是
+    // 当前选中的那个。
+    async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
+      const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
+      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
       if (direct) {
         runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
           reason: failure.reason,
@@ -1934,7 +1934,7 @@ if (!hasSingleInstanceLock) {
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
         client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: accountFetch,
-          retryOffProxy: recoverAccountRequestOffProxy,
+          retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
             const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
