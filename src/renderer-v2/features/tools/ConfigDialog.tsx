@@ -8,7 +8,7 @@ import { foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, t
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
-import { describeChineseLocale, describeChineseLocaleResult, macLocaleNote } from './locale-status'
+import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
 import { codexModelChoices, codexModelFilterSaveIssue, type CodexModelFilter } from './model-filter'
 import { errorMessage } from '../../business-common'
 import { currentWindowOs } from '../app/window-os'
@@ -366,7 +366,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result, os)) } })}>启用中文界面</Button>
         <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result, os)) })}>跟随系统语言</Button>
         <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`文件夹：${result.workspace}，${result.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹' : result.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'}`) })}>查看文件夹权限</Button>
-        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { await api.trustWorkspace(); if (active.current) setLocaleText('文件夹信任已保存') })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
+        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { const result = await api.trustWorkspace(); if (active.current) setLocaleText(describeWorkspaceTrustResult(result.changed, os)) })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
       <details data-testid="tool-config-advanced"><summary>高级</summary>
         <p>点「保存配置」只改账号、密钥和模型，你在工具里做的其他设置都会留着；改之前会先自动备份。</p>
         {!manualVisible && <Button size="sm" variant="ghost" icon={KeyRound} onClick={() => change({ source: 'manual' })} testId="tool-manual-key">自己填写密钥</Button>}
