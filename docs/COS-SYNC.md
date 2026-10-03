@@ -103,6 +103,8 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 同日六分钟预算运行仍出现分块 HTTP 400；原日志没有 COS 错误码，不能将其认定为 RequestTimeout。现在仅对固定 COS HTTPS 域名的分块请求读取错误正文，限制为 4 KiB 和五秒（更短调用方正文预算优先），只从严格 XML 的唯一顶层 Code 提取固定白名单 `cosErrorCode`，不记录 Message、Resource、RequestId、TraceId、正文或认证数据。解析失败、超限、慢正文和断流仍保留原 HTTP 状态；重定向不读取或跟随。
 
+诊断白名单包括官方定义的 UserNetworkTooSlow、IncompleteBody、EntitySizeNotMatch、MissingRequestBodyError、BadRequest、InvalidRequest、UnexpectedContent、EntityTooLarge 和 MalformedXML。无法提取 Code 时，`cosErrorBodyStatus` 区分未知错误码、空正文、UTF-8/XML 格式、额外或重复字段、实体、编码、长度、超限、超时和断流；`cosErrorBodyBytes` 是读取字节数（最多记 4096，超限由状态表示），`cosErrorContentType` 仅为 missing/xml/json/html/text/other 固定分类。未知 Code 与原始响应头仍不输出。新增错误码只提供诊断，重试范围仍限下文明确列出的超时；此前未记录 Code 的真实 HTTP 400 原因仍未确定。
+
 同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、网络 ETIMEDOUT，或安全识别为 HTTP 400 RequestTimeout 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
 
 仅需要在原有两个对象前缀范围增授四项 CAM action：`cos:InitiateMultipartUpload`、`cos:UploadPart`、`cos:CompleteMultipartUpload`、`cos:AbortMultipartUpload`。不需要 List、Copy、ACL、公开对象 DELETE 或扩大资源前缀。Init 与 Complete 都签入 `x-cos-forbid-overwrite: true`；官方文档明确该头不保护开启版本控制的桶，因此启用前必须核实桶版本控制仍为关闭。本模块不自行访问或修改桶配置。
