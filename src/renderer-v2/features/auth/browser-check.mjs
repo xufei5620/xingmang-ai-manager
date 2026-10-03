@@ -2,9 +2,10 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
-import { createFixtureServer } from '../../../../e2e/harness.mjs'
+import { createFixtureServer, observeFixtureBootstrap } from '../../../../e2e/harness.mjs'
 import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
@@ -25,14 +26,51 @@ async function open(query = '', app = false) {
     if (url.hostname !== '127.0.0.1') return route.abort()
     await route.continue()
   })
-  await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
-  // Vite transforms the module graph on demand, so first paint can take seconds on
-  // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
-  // so a test whose first statement is one of them reads an empty page and fails on
-  // the value rather than on a timeout. Wait for the mount before handing the page over.
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
-  return page
+  const bootstrap = observeFixtureBootstrap(page, server)
+  try {
+    await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
+    // Vite transforms the module graph on demand, so first paint can take seconds on
+    // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
+    // so a test whose first statement is one of them reads an empty page and fails on
+    // the value rather than on a timeout. Wait for the mount before handing the page over.
+    await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
+    return page
+  } catch (error) {
+    const evidence = await bootstrap.snapshot().catch(() => ({ diagnosticsUnavailable: true }))
+    try { process.stderr.write(`[fixture-bootstrap] auth ${JSON.stringify(evidence)}\n`) } catch {}
+    await page.close().catch(() => {})
+    throw error
+  } finally { try { bootstrap.dispose() } catch {} }
 }
+
+test('bootstrap diagnostics capture failed modules without fixture secrets or filesystem details', async () => {
+  class DiagnosticPage extends EventEmitter {
+    mainFrame() { return null }
+    async evaluate() { return { readyState: 'complete', rootChildren: 0 } }
+  }
+  const page = new DiagnosticPage()
+  const bootstrap = observeFixtureBootstrap(page, { environments: { client: { depsOptimizer: { metadata: { optimized: {}, discovered: {} } } } } })
+  const privateValue = 'do-not-record-fixture-details'
+  const request = { resourceType: () => 'script', url: () => `http://127.0.0.1:1234/node_modules/.vite/deps/react.js?private=${privateValue}`, failure: () => ({ errorText: `net::ERR_ABORTED ${privateValue}` }) }
+  page.emit('request', request)
+  page.emit('response', { request: () => request, status: () => 504, url: request.url, statusText: () => 'Outdated Optimize Dep' })
+  page.emit('requestfailed', request)
+  page.emit('pageerror', new TypeError(privateValue))
+  page.emit('console', { type: () => 'error', text: () => `Failed to load module script ${privateValue}`, location: () => ({ url: `http://127.0.0.1:1234/@fs/${privateValue}` }) })
+  const socket = new EventEmitter()
+  page.emit('websocket', socket)
+  socket.emit('framereceived', { payload: JSON.stringify({ type: 'full-reload', private: privateValue }) })
+  const evidence = await bootstrap.snapshot()
+  assert.equal(evidence.failedResponses, 1)
+  assert.equal(evidence.requestFailures, 1)
+  assert.equal(evidence.pageErrors, 1)
+  assert.equal(evidence.fullReloads, 1)
+  assert.equal(evidence.events.find(event => event.kind === 'module-http-error').outdatedOptimizeDep, true)
+  assert.equal(JSON.stringify(evidence).includes(privateValue), false)
+  bootstrap.dispose()
+  assert.equal(page.listenerCount('response'), 0)
+  assert.equal(socket.listenerCount('framereceived'), 0)
+})
 // 「账号来源」默认收起：星芒账号不用点，历史账号先点底部那行（它会顺手选中历史账号）。
 async function chooseAccountSource(page, label) {
   const segment = page.getByTestId('auth-source')
