@@ -2506,6 +2506,49 @@ test('a Mac signature rejection offers the download page instead of reinstalling
   } finally { await page.close() }
 })
 
+// 下载停住、自动换直连重下也还是停住：有的公司网关先把整个安装包扣住查完才放行，再点
+//「重新下载」多半还是一样。更新页和首页气泡在「重新下载」旁边多给「打开下载页」；别的下载
+// 失败照旧只给「重新下载」。
+test('a stalled update download offers the download page next to downloading again', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'download',
+      error: { code: value.code, message: value.reason }, development: true,
+    }), { code, reason })
+    await emit('UPDATE_DOWNLOAD_STALLED')
+    const notice = updates.getByTestId('updates-failure-download')
+    await notice.getByText('下载更新失败', { exact: true }).waitFor()
+    await notice.getByText(reason, { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
+    const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
+    await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    const downloadPage = 'https://docs-new.solov.cc/guide/manager#download-installers'
+    await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage])
+    await bubble.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage, downloadPage])
+
+    // 同一句「超时」，没经过看门狗的不算停住。
+    await emit('ETIMEDOUT')
+    await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await expect.poll(() => bubble.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
 test('the updates page explains a full disk and still lets the user download', async () => {
