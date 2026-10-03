@@ -1,5 +1,5 @@
 import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
-import { snapshotErrorMessage } from '../../business-common'
+import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
 import { tools } from '../../registry/tools'
@@ -74,7 +74,7 @@ export function toolAvailability(
   if (status?.detectionFailed === true) {
     return {
       state: 'detectionFailed', label: '检测失败', tone: 'bad', versionFallback: '版本未读到',
-      reason: snapshotErrorMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
+      reason: detectionFailureMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
     }
   }
   if (statusUnknown) {
@@ -376,7 +376,7 @@ export function presentTools(
       configDirectoryReady: config.dataDirectoryExists === true,
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice, revertVersion,
-      error: status.detectionFailed ? snapshotErrorMessage(status.detectionError) ?? '工具检测没有完成' : null })
+      error: status.detectionFailed ? detectionFailureMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
 }

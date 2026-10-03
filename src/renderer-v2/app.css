@@ -20,6 +20,8 @@
 .v2-runtime-actions { padding: 4px 16px 12px; display: flex; flex-wrap: wrap; gap: 8px; }
 .v2-runtime-actions:empty { display: none; }
 .v2-runtime-hint { padding: 0 16px 4px; margin: 0; color: var(--warn); font-size: var(--font-small); line-height: 1.5; }
+/* 一个命令行工具都没用的客户，Node.js 只是可选：说明照给，不用橙字。 */
+.v2-runtime-hint.is-quiet { color: var(--text-2); }
 /* macOS 上 Node / Python 要客户自己装，步骤和可复制的命令都排在这张卡里。 */
 .v2-runtime-guide { padding: 0 16px 8px; font-size: var(--font-small); line-height: 1.6; }
 .v2-runtime-guide > p:first-child { margin: 0 0 6px; color: var(--warn); }

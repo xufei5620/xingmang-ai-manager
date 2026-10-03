@@ -76,6 +76,7 @@ import { AccountBalanceContext, useAccountBalanceStore, useUsableSubscription } 
 import { subscriptionSummaryText } from '../../electron/subscription-summary'
 import { createSpendSpikeWatch } from './features/app/spend-spike'
 import { hasPendingSettingsGroup, requestSettingsGroup } from './features/app/settings-group-intent'
+import { createTemplateFillRetry } from './features/app/template-fill-retry'
 import './business.css'
 
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
@@ -297,6 +298,28 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const dismissStartupNotice = useCallback((id: StartupCheckId) => {
     setStartupNotices((current) => withoutStartupNotice(current, id))
   }, [])
+  // 开机那轮工具开着、设置没补成的，隔一阵再要（第二十六批 E）；真补上了照样在角落说一句。
+  const templateFillRetry = useMemo(() => createTemplateFillRetry({
+    fill: () => native.fillToolTemplateDefaults(true),
+    filled: (providers) => {
+      const notice = toolTemplateFilledNotice(providers)
+      if (notice) noteStartupCheck(notice)
+    },
+  }), [native, noteStartupCheck])
+  useEffect(() => {
+    function foreground() {
+      if (document.visibilityState !== 'hidden') templateFillRetry.foreground()
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+      templateFillRetry.stop()
+    }
+  }, [templateFillRetry])
+  // 换了账号或退出登录：欠着的是上一个账号的，不再替它要（主进程那边也认账号）。
+  useEffect(() => { templateFillRetry.stop() }, [templateFillRetry, scope, session.authenticated])
   useEffect(() => {
     let current = true
     const eventsAtStart = sessionEvents.current
@@ -368,11 +391,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         logAccountBootstrap(describeAccountBootstrapResult(mode, result))
         // 开机恢复只核对连没连上、一个字不写，老客户因此拿不到后来加进模板的设置。
         // 这里让主进程给当前账号写过、版本落后的配置补一次缺省项；补不成只进日志，
-        // 真补了才在角落说一句。
+        // 真补了才在角落说一句。工具开着没补成的交给 templateFillRetry 隔一阵再要，
+        // 等结果这段时间换了账号就不跟了。
         if (mode === 'restore') {
+          const fillEpoch = accountEpoch.current
           void Promise.resolve().then(() => native.fillToolTemplateDefaults()).then((filled) => {
             const notice = toolTemplateFilledNotice(filled.filled)
             if (notice) noteStartupCheck(notice)
+            if (accountEpoch.current === fillEpoch) templateFillRetry.follow(filled)
           }).catch(() => undefined)
         }
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
@@ -404,7 +430,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     onlineResync.current = noteBootstrapOutcome(onlineResync.current, bootstrapScope, outcome)
     return outcome
-  }, [native, settings, toast.show, toolbox.refreshConfig, siteId, noteStartupCheck])
+  }, [native, settings, toast.show, toolbox.refreshConfig, siteId, noteStartupCheck, templateFillRetry])
   /**
    * 「重新写入 Key」与「Key 失效」的「一键修复」共用的入口：跑的就是装完工具后
    * 那条同样的重写流程（syncAfterToolInstalled 里的这一行），只是限定到指定的工具。

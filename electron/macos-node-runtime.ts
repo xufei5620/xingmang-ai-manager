@@ -16,6 +16,7 @@ import {
   normalizeNodeRuntimeArchitecture,
   parseNodeReleaseIndex,
   parseNodeShasums,
+  resolveNodeRuntimeNetworkRegion,
   type InstallNodeRuntimeOptions,
   type NodeRuntimeArchitecture,
   type NodeRuntimeDownloadSource,
@@ -289,7 +290,7 @@ export async function installDarwinNodeRuntime(
 
   const failures: Array<{ stage: FailureStage; detail: string }> = []
   try {
-    for (const source of nodeRuntimeDownloadSources(options.networkRegion)) {
+    for (const source of nodeRuntimeDownloadSources(await resolveNodeRuntimeNetworkRegion(options.networkRegion))) {
       throwIfAborted(options.signal)
       const stage: { current: FailureStage } = { current: 'network' }
       try {

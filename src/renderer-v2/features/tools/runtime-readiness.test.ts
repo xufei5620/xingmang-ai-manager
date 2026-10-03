@@ -101,10 +101,10 @@ describe('cliNeedsNodeRuntime', () => {
 })
 
 describe('cliNeedsPythonRuntime', () => {
-  it('drops Python for Gemini on Linux only, and falls back to the registry when the table is missing', () => {
+  it('drops Python for Gemini on every platform, and falls back to the registry when the table is missing', () => {
     const gemini = (platform: Parameters<typeof cliNeedsPythonRuntime>[0]) => cliNeedsPythonRuntime(platform, 'gemini', true)
-    expect(gemini(platformCapabilitiesFor('win32', 'x64'))).toBe(true)
-    expect(gemini(platformCapabilitiesFor('darwin', 'arm64'))).toBe(true)
+    expect(gemini(platformCapabilitiesFor('win32', 'x64'))).toBe(false)
+    expect(gemini(platformCapabilitiesFor('darwin', 'arm64'))).toBe(false)
     expect(gemini(platformCapabilitiesFor('linux', 'x64'))).toBe(false)
     expect(gemini({})).toBe(true)
     expect(gemini(null)).toBe(true)
@@ -112,22 +112,18 @@ describe('cliNeedsPythonRuntime', () => {
     expect(cliNeedsPythonRuntime(platformCapabilitiesFor('linux', 'x64'), 'claude', false)).toBe(false)
   })
 
-  it('lets a Linux Gemini install start without Python, where the app cannot install Python itself', () => {
-    const linux = platformCapabilitiesFor('linux', 'x64')
+  // 第二十八批 C：以前 Windows 上要先多装一个 Python 3.12（它没装上 Gemini 就不装），Mac 上直接拦下。
+  it('starts a Gemini install without Python on every platform, neither installing it first nor blocking', () => {
     const withoutPython = { ...runtime({}), python: { installed: false, version: null, path: null, installDirectory: null } }
-    expect(planCliInstall({
-      runtime: withoutPython,
-      needsPython: cliNeedsPythonRuntime(linux, 'gemini', true),
-      nodeInstall: linux.nodeRuntimeInstall,
-      pythonInstall: linux.pythonRuntimeInstall,
-    })).toEqual({ prepare: [], blocked: null })
-    const mac = platformCapabilitiesFor('darwin', 'arm64')
-    expect(planCliInstall({
-      runtime: withoutPython,
-      needsPython: cliNeedsPythonRuntime(mac, 'gemini', true),
-      nodeInstall: mac.nodeRuntimeInstall,
-      pythonInstall: mac.pythonRuntimeInstall,
-    }).blocked).toContain('Python')
+    for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'arm64'], ['linux', 'x64']] as const) {
+      const capabilities = platformCapabilitiesFor(platform, architecture)
+      expect(planCliInstall({
+        runtime: withoutPython,
+        needsPython: cliNeedsPythonRuntime(capabilities, 'gemini', true),
+        nodeInstall: capabilities.nodeRuntimeInstall,
+        pythonInstall: capabilities.pythonRuntimeInstall,
+      })).toEqual({ prepare: [], blocked: null })
+    }
   })
 })
 

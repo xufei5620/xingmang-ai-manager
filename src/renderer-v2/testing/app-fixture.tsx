@@ -141,8 +141,11 @@ if (query.has('nativeInstall')) {
 // 探针抛错时主进程给的就是这个形状（`buildToolStatusFromSettled`）：装没装没有结论，
 // 版本号也没有，只有一句原因。
 if (query.has('detectionFailed')) {
+  // =eperm：探针拿到的是系统给的英文原话（安全软件拦了读目录），界面要换成中文说法（第二十六批 D）。
   system.clis.claude = { ...system.clis.claude, installed: false, version: null, path: null,
-    detectionFailed: true, detectionError: '本地探针暂时不可用' }
+    detectionFailed: true, detectionError: query.get('detectionFailed') === 'eperm'
+      ? "EPERM: operation not permitted, scandir 'C:\\Users\\fixture\\AppData\\Roaming\\npm'"
+      : '本地探针暂时不可用' }
 }
 // 缺 Git（可选环境）：首页运行环境行给中文提示 + Windows「安装 Git」按钮，装完 Claude Code
 // 的第一条命令卡下面也补一句。
@@ -558,7 +561,10 @@ const methods = {
     ? { status: 'unavailable' as const, model: config.providers.claude.model, replacement: 'claude-opus-5-5' }
     : { status: 'skipped' as const },
   // templateFilled：开机恢复账号后给老配置补齐了新版设置，角落该说一句。
-  fillToolTemplateDefaults: async () => ({ filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] }),
+  // templateDeferred：开机那轮 Codex 开着没补成，隔一阵再要（retry）时已经关了、补上了。
+  fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')
+    ? retry ? { filled: ['codex'] as ProviderId[] } : { filled: [] as ProviderId[], pending: ['codex'] as ProviderId[] }
+    : { filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] },
   getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {

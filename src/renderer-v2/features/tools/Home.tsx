@@ -23,7 +23,7 @@ import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
-import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
+import { elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 
 export interface HomeProps {
@@ -266,11 +266,21 @@ export function Home(props: HomeProps) {
   const nodeGuide = nodeMissing ? runtimeInstallGuide('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
   const pythonGuide = pythonMissing ? runtimeInstallGuide('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) : null
   const nodeManagedNotice = nodeMissing ? managedRuntimeNotice('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
-  // Windows 上 Node.js 是机器级 MSI，点「准备 Node.js」必然弹一次 UAC。说在点之前，
+  // 「在用」= 装了、正在装，或这次没查出来装没装（A4，不当没装）。正在装要算上：装工具时
+  // 星芒会顺带准备 Node.js，那会儿要看见的正是弹授权窗口那句。
+  const inUse = (tool: ToolPresentation) => tool.status.installed || tool.status.detectionFailed === true || Boolean(jobs[tool.id])
+  // 一个命令行工具都不在用（只装了 Codex 桌面端，它自带运行环境）时，Node.js 和 Python、Git 一样
+  // 只是可选：那一行不挂橙点，下面的说明也不用橙字。以前这类客户每次打开首页都是一个橙点、
+  // 两段橙字，像有两件事没办好（第二十七批 B，A014 截图）。
+  const nodeOptional = snapshot !== null && !tools.some((tool) => tool.id !== 'codexDesktop' && inUse(tool))
+  // 缺 Git 那段讲的是 Claude Code（插件市场、技能和插件里的命令），没装它的客户不用看。
+  const claudeInUse = tools.some((tool) => tool.id === 'claude' && inUse(tool))
+  // Windows 上 Node.js 是机器级 MSI，准备它必然弹一次 UAC。说在点之前，
   // 不是弹窗跳出来之后（Python 按当前用户装，没有这句）。
   const nodeElevationNotice = nodeMissing
-    ? elevatedInstallNotice('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall)
+    ? homeNodeElevationNotice(snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall, nodeOptional)
     : null
+  const runtimeHintClass = nodeOptional ? 'v2-runtime-hint is-quiet' : 'v2-runtime-hint'
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
   // 「接着聊」与记录页同一条规则(#292):续接参数是 CLI 按工作目录找最近一条,
@@ -519,7 +529,7 @@ export function Home(props: HomeProps) {
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>
           <div className="v2-runtime-list">{(['node', 'python', 'git'] as const).map((id) => {
             const status = snapshot?.system.runtime[id]
-            const optional = id === 'python' || id === 'git'
+            const optional = id !== 'node' || nodeOptional
             // 装工具用的那个组件（npm）是 Node.js 自带的，不单列一行，缺了才在 Node.js 这一行说。
             const partMissing = id === 'node' && nodeInstallerPartMissing(snapshot?.system.runtime)
             const text = jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))
@@ -527,10 +537,10 @@ export function Home(props: HomeProps) {
               <span>{partMissing && !jobs[id] && !loading ? `${text} · ${nodeInstallerPartMissingNote}` : text}</span>
             </div>
           })}</div>
-          {gitMissing && !jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingHomeNotice(gitHost)}</p>}
+          {gitMissing && !jobs.git && claudeInUse && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingHomeNotice(gitHost)}</p>}
           {gitHost === 'macos' && jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-waiting">{gitMacInstallWaitingHint}</p>}
-          {nodeElevationNotice && <p className="v2-runtime-hint" data-testid="home-runtime-node-elevation">{nodeElevationNotice}</p>}
-          {nodeManagedNotice && !jobs.node && <p className="v2-runtime-hint" data-testid="home-runtime-node-managed">{nodeManagedNotice}</p>}
+          {nodeElevationNotice && <p className={runtimeHintClass} data-testid="home-runtime-node-elevation">{nodeElevationNotice}</p>}
+          {nodeManagedNotice && !jobs.node && <p className={runtimeHintClass} data-testid="home-runtime-node-managed">{nodeManagedNotice}</p>}
           {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} />}
           {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}

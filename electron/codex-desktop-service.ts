@@ -282,13 +282,16 @@ export function describeCodexDesktopLaunchWait(
   elapsedSeconds: number,
 ): string {
   if (stage === 'preparing') return `正在准备打开 Codex 桌面端，已经等了 ${elapsedSeconds} 秒。`
+  // 窗口已经在客户眼前，星芒还在给它换中文。以前这段照旧说「正在等窗口出现」，
+  // 满 20 秒还叫人去开始菜单找它（第二十七批 D），所以这一段不带开始菜单那句。
+  if (stage === 'switching-language') return `Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 ${elapsedSeconds} 秒。`
   const head = `正在等 Codex 桌面端的窗口出现，已经等了 ${elapsedSeconds} 秒。Codex 第一次打开有时要一分钟`
   return elapsedSeconds >= codexDesktopLaunchStartMenuHintSeconds
     ? `${head}，可以先去开始菜单看看它有没有弹出来。`
     : `${head}。`
 }
 
-export type CodexDesktopLaunchWaitStage = 'preparing' | 'waiting-window'
+export type CodexDesktopLaunchWaitStage = 'preparing' | 'waiting-window' | 'switching-language'
 
 export interface CodexDesktopLaunchProgress {
   elapsedSeconds: number
@@ -3443,6 +3446,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       ))
     }
     if (cdpPort !== null) {
+      // Codex 已经起来了：下面等的是给它换中文（等调试端口、核对端口归属），不是等窗口。
+      heartbeat?.setStage('switching-language')
       try {
         const injection = await injectCodexDesktopChineseLocale(cdpPort, {
           expectedProcessId: cdpActivationProcessId,
