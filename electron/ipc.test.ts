@@ -1794,6 +1794,14 @@ describe('registerIpcHandlers', () => {
     expect(updaterService.startup).toHaveBeenCalledTimes(1)
   })
 
+  it('logs an update install request as handed over, not as installed', async () => {
+    const updaterService = updaterStub()
+    const { runtimeLog } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService })
+    await expect(Promise.resolve(electronMocks.handlers.get('update:install')!(trustedEvent()))).resolves.toEqual({ accepted: true })
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
+    expect(logged).toEqual([['info', 'ipc', 'update:install', '已把新版本交给安装程序，装没装上看下一条更新状态', expect.any(Object)]])
+  })
+
   it('refreshes only the network location through trusted IPC', async () => {
     const service = serviceStub()
     const location = {

@@ -103,11 +103,13 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 同日六分钟预算运行仍出现分块 HTTP 400；原日志没有 COS 错误码，不能将其认定为 RequestTimeout。现在仅对固定 COS HTTPS 域名的分块请求读取错误正文，限制为 4 KiB 和五秒（更短调用方正文预算优先），只从严格 XML 的唯一顶层 Code 提取固定白名单 `cosErrorCode`，不记录 Message、Resource、RequestId、TraceId、正文或认证数据。解析失败、超限、慢正文和断流仍保留原 HTTP 状态；重定向不读取或跟随。
 
-诊断白名单包括官方定义的 UserNetworkTooSlow、IncompleteBody、EntitySizeNotMatch、MissingRequestBodyError、BadRequest、InvalidRequest、UnexpectedContent、EntityTooLarge 和 MalformedXML。无法提取 Code 时，`cosErrorBodyStatus` 区分未知错误码、空正文、UTF-8/XML 格式、额外或重复字段、实体、编码、长度、超限、超时和断流；`cosErrorBodyBytes` 是读取字节数（最多记 4096，超限由状态表示），`cosErrorContentType` 仅为 missing/xml/json/html/text/other 固定分类。未知 Code 与原始响应头仍不输出。新增错误码只提供诊断，重试范围仍限下文明确列出的条件；此前未记录 Code 的真实 HTTP 400 原因仍未确定。
+诊断白名单包括官方定义的 UserNetworkTooSlow、IncompleteBody、EntitySizeNotMatch、MissingRequestBodyError、BadRequest、InvalidRequest、UnexpectedContent、EntityTooLarge 和 MalformedXML。无法提取 Code 时，`cosErrorBodyStatus` 区分未知错误码、空正文、UTF-8/XML 格式、额外或重复字段、实体、编码、长度、超限、超时和断流；`cosErrorBodyBytes` 是读取字节数（最多记 4096，超限由状态表示），`cosErrorContentType` 仅为 missing/xml/json/html/text/other 固定分类。未知 Code 与原始响应头仍不输出。诊断集合与重试集合分别限定，只有下文明确列出的条件可重试；此前未记录 Code 的真实 HTTP 400 原因仍未确定。
 
 同日运行 `37134516231` 在 Windows x64 上传 291543056 字节包的阶段于 130954 毫秒失败，安全诊断为分块 PUT 等待响应头时 ECONNRESET（当时每块 4 MiB）；Complete 尚未开始，完整公共回读为 404，latest 未写。这证明该次出现连接断开，不能确认此前 HTTP 400 为 UserNetworkTooSlow。现将单块缩至 1 MiB，以减少一次失败需要重发的数据；请求数约增至四倍，实际可靠性与吞吐仍需真实运行验收。
 
-同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、私有分块 PUT 网络错误 ETIMEDOUT 或 ECONNRESET，或安全识别为 HTTP 400 RequestTimeout 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
+随后 ChatGPT 运行 `37136334139` 的 Windows x64 作业明确返回 HTTP 400 UserNetworkTooSlow，469 字节 XML 已被安全识别。Claude 运行 `37137350933` 的 Mac 作业完成 377037896 字节 DMG 的完整回读和 HEAD 验收后，384935158 字节 PKG 在已提交 304087040 字节时遇到分块 PUT EPIPE；DMG/PKG 原生验证已过，但 PKG 未开始 Complete，完整公共 GET 为 404，latest 未写。依据这两种已观察到的错误，分块重试集合补充 EPIPE 与 HTTP 400 UserNetworkTooSlow，不将未知 HTTP 400 推定为可重试。
+
+同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、私有分块 PUT 网络错误 ETIMEDOUT、ECONNRESET 或 EPIPE，或安全识别为 HTTP 400 RequestTimeout / UserNetworkTooSlow 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
 
 仅需要在原有两个对象前缀范围增授四项 CAM action：`cos:InitiateMultipartUpload`、`cos:UploadPart`、`cos:CompleteMultipartUpload`、`cos:AbortMultipartUpload`。不需要 List、Copy、ACL、公开对象 DELETE 或扩大资源前缀。Init 与 Complete 都签入 `x-cos-forbid-overwrite: true`；官方文档明确该头不保护开启版本控制的桶，因此启用前必须核实桶版本控制仍为关闭。本模块不自行访问或修改桶配置。
 

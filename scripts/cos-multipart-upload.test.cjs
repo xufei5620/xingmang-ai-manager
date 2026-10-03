@@ -30,7 +30,7 @@ async function fixture(t, size = THRESHOLD_BYTES + 123) {
   await fs.writeFile(filePath, body)
   return { filePath, body, input: { expectedBytes: size, expectedSha256: digest(body, 'sha256'), contentType: 'application/x-rpm' } }
 }
-function memoryMultipart({ loseComplete = false, errorComplete = false, completeHttpError = false, corruptReadback = false, existing = null, failPart = false, partFault, now = function () { return 1000 } } = {}) {
+function memoryMultipart({ loseComplete = false, errorComplete = false, completeHttpError = false, corruptReadback = false, existing = null, failPart = false, partFault, operationFault, now = function () { return 1000 } } = {}) {
   const calls = []
   const parts = new Map()
   const attempts = new Map()
@@ -40,8 +40,9 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
   let peak = 0
   function requestImpl(url, input, callback) {
     const chunks = []
-    const request = new Writable({ autoDestroy: false, write(chunk, encoding, done) { chunks.push(Buffer.from(chunk)); done() } })
-    const call = { url, ...input }
+    const buffers = []
+    const request = new Writable({ autoDestroy: false, write(chunk, encoding, done) { buffers.push(chunk); chunks.push(Buffer.from(chunk)); done() } })
+    const call = { url, ...input, buffers }
     calls.push(call)
     request.on('finish', () => {
       call.body = Buffer.concat(chunks)
@@ -57,6 +58,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
       }
       if (input.method === 'POST' && Object.hasOwn(query, 'uploads')) {
         assert.equal(input.headers['x-cos-forbid-overwrite'], 'true')
+        if (operationFault?.({ operation: 'init', call, callback, request })) return
         return callback(response(initXml()))
       }
       if (input.method === 'PUT' && query.uploadId) {
@@ -76,6 +78,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
         return
       }
       if (input.method === 'PUT') {
+        if (operationFault?.({ operation: 'single', call, callback, request })) return
         object = call.body
         contentType = input.headers['content-type']
         return callback(response(Buffer.alloc(0)))
@@ -85,6 +88,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
         assert.equal(input.headers['x-cos-forbid-overwrite'], 'true')
         const numbers = [...call.body.toString().matchAll(/<PartNumber>(\d+)<\/PartNumber>/g)].map(match => Number(match[1]))
         assert.deepEqual(numbers, [...parts.keys()].sort((a, b) => a - b))
+        if (operationFault?.({ operation: 'complete', call, callback, request })) return
         if (errorComplete) return callback(response(Buffer.from('<Error><Code>SECRET</Code></Error>')))
         if (completeHttpError) return callback(response(Buffer.from('<Error><Code>RequestTimeout</Code></Error>'), 400))
         object = Buffer.concat(numbers.map(number => parts.get(number)))
@@ -94,6 +98,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
       if (input.method === 'DELETE') {
         assert.equal(active, 0)
         assert.deepEqual(query, { uploadId })
+        if (operationFault?.({ operation: 'abort', call, callback, request })) return
         return callback(response(Buffer.alloc(0), 204))
       }
       assert.equal(url.search, '')
@@ -257,12 +262,13 @@ test('failed parts all settle before aborting only the owned session with no com
 
 test('a saved part with a lost reply retries identical bytes and digests with a fresh signature', async t => {
   const data = await fixture(t)
-  for (const code of ['ETIMEDOUT', 'ECONNRESET']) {
+  for (const code of ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'UserNetworkTooSlow']) {
     let now = 1000
-    const transport = memoryMultipart({ now: () => now, partFault: function ({ call, request, attempt }) {
+    const transport = memoryMultipart({ now: () => now, partFault: function ({ call, callback, request, attempt }) {
       if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
       now = 1010
-      request.destroy(Object.assign(new Error('SECRET response lost'), { code }))
+      if (code === 'UserNetworkTooSlow') callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+      else request.destroy(Object.assign(new Error('SECRET response lost'), { code }))
       return true
     } })
     const progress = []
@@ -271,6 +277,10 @@ test('a saved part with a lost reply retries identical bytes and digests with a 
     const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
     assert.equal(attempts.length, 2)
     assert.equal(attempts[0].url.href, attempts[1].url.href)
+    assert.equal(attempts[0].url.searchParams.get('uploadId'), uploadId)
+    assert.equal(attempts[0].buffers.length, 1)
+    assert.equal(attempts[1].buffers.length, 1)
+    assert.equal(attempts[0].buffers[0], attempts[1].buffers[0])
     assert.deepEqual(attempts[0].body, attempts[1].body)
     assert.equal(attempts[0].headers['content-md5'], attempts[1].headers['content-md5'])
     assert.equal(digest(attempts[0].body, 'sha256'), digest(attempts[1].body, 'sha256'))
@@ -282,23 +292,24 @@ test('a saved part with a lost reply retries identical bytes and digests with a 
   }
 })
 
-test('only a diagnosed HTTP 400 RequestTimeout retries and each part stops after three attempts', async t => {
+test('only diagnosed HTTP 400 timeout or slow-network errors retry and each part stops after three attempts', async t => {
   const data = await fixture(t)
-  for (const [code, failCount, expectedAttempts, succeeds] of [
+  for (const [code, failCount, expectedAttempts, succeeds, status = 400] of [
     ['RequestTimeout', 2, 3, true], ['RequestTimeout', 3, 3, false],
+    ['UserNetworkTooSlow', 2, 3, true], ['UserNetworkTooSlow', 1, 1, false, 503],
     ['BadDigest', 1, 1, false], ['InvalidDigest', 1, 1, false], ['UnknownSECRET', 1, 1, false],
-    ...['UserNetworkTooSlow', 'IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'].map(code => [code, 1, 1, false]),
+    ...['IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'].map(code => [code, 1, 1, false]),
   ]) {
     const transport = memoryMultipart({ partFault: function ({ call, callback, attempt }) {
       if (call.url.searchParams.get('partNumber') !== '1' || attempt > failCount) return false
-      callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+      callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), status))
       return true
     } })
     const run = store(transport).publishFile(key, data.filePath, data.input)
     if (succeeds) await run
     else await assert.rejects(run, error => {
       const diagnostic = safeSyncFailure(error)
-      assert.equal(diagnostic.put.put.status, 400)
+      assert.equal(diagnostic.put.put.status, status)
       assert.equal(diagnostic.put.put.cosErrorCode, code === 'UnknownSECRET' ? undefined : code)
       assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|authorization|upload-123/)
       return true
@@ -306,6 +317,82 @@ test('only a diagnosed HTTP 400 RequestTimeout retries and each part stops after
     assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, expectedAttempts)
     assert.equal(transport.calls.filter(call => call.method === 'POST').length, succeeds ? 2 : 1)
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, succeeds ? 0 : 1)
+  }
+})
+
+test('broken-pipe and slow-network part failures stop after three attempts before a settled abort', async t => {
+  const data = await fixture(t)
+  for (const code of ['EPIPE', 'UserNetworkTooSlow']) {
+    const transport = memoryMultipart({ partFault: function ({ call, callback, request }) {
+      if (call.url.searchParams.get('partNumber') !== '1') return false
+      if (code === 'EPIPE') request.destroy(Object.assign(new Error('SECRET broken pipe'), { code }))
+      else callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+      return true
+    } })
+    await assert.rejects(store(transport).publishFile(key, data.filePath, data.input), error => {
+      const diagnostic = safeSyncFailure(error)
+      assert.equal(diagnostic.put.multipartState, 'not-completed')
+      assert.equal(diagnostic.put.put.multipartOperation, 'part')
+      assert.equal(diagnostic.put.put.method, 'PUT')
+      assert.equal(diagnostic.put.put.code, code === 'EPIPE' ? 'network-request-failed' : 'http-status')
+      if (code === 'EPIPE') assert.equal(diagnostic.put.put.transportCode, code)
+      else {
+        assert.equal(diagnostic.put.put.status, 400)
+        assert.equal(diagnostic.put.put.cosErrorCode, code)
+      }
+      assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|authorization|upload-123/)
+      return true
+    })
+    const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
+    assert.equal(attempts.length, 3)
+    for (const attempt of attempts) {
+      assert.equal(attempt.url.href, attempts[0].url.href)
+      assert.equal(attempt.buffers[0], attempts[0].buffers[0])
+    }
+    assert.equal(transport.calls.filter(call => call.method === 'POST').length, 1)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1)
+    assert.deepEqual(transport.calls.slice(-2).map(call => call.method), ['DELETE', 'GET'])
+  }
+})
+
+test('broken-pipe and slow-network failures never retry init, complete, abort or latest writes', async t => {
+  const data = await fixture(t)
+  for (const operation of ['init', 'complete', 'abort', 'single']) {
+    for (const code of ['EPIPE', 'UserNetworkTooSlow']) {
+      let faultCount = 0
+      const transport = memoryMultipart({ failPart: operation === 'abort', operationFault: function ({ operation: current, callback, request }) {
+        if (current !== operation) return false
+        faultCount += 1
+        if (code === 'EPIPE') request.destroy(Object.assign(new Error('SECRET broken pipe'), { code }))
+        else callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+        return true
+      } })
+      const client = store(transport)
+      const run = operation === 'single'
+        ? client.publishJson('chatgpt/latest.json', { schemaVersion: 1 }, { overwrite: true })
+        : client.publishFile(key, data.filePath, data.input)
+      await assert.rejects(run, error => {
+        const diagnostic = safeSyncFailure(error)
+        const failure = operation === 'single' ? diagnostic.put : operation === 'abort' ? diagnostic.put.abort : diagnostic.put.put
+        assert.equal(failure.code, code === 'EPIPE' ? 'network-request-failed' : 'http-status')
+        assert.equal(failure.multipartOperation, operation === 'single' ? undefined : operation)
+        if (code === 'EPIPE') assert.equal(failure.transportCode, code)
+        else {
+          assert.equal(failure.status, 400)
+          assert.equal(failure.cosErrorCode, operation === 'single' ? undefined : code)
+        }
+        if (operation === 'complete') assert.equal(diagnostic.put.multipartState, 'complete-unconfirmed')
+        assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|authorization|upload-123/)
+        return true
+      })
+      assert.equal(faultCount, 1)
+      assert.equal(transport.calls.at(-1).method, 'GET')
+      if (operation === 'single') assert.deepEqual(transport.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+      else {
+        assert.equal(transport.calls.filter(call => call.method === 'POST').length, operation === 'complete' ? 2 : 1)
+        assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, operation === 'abort' ? 1 : 0)
+      }
+    }
   }
 })
 
