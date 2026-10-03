@@ -110,9 +110,9 @@ export function toolInstallDirectory(snapshot: ToolboxSnapshot | null, tool: Too
 }
 
 /**
- * 这台机器上这个工具的安装归不归本程序管。macOS 上 Codex 桌面端是 'external'：
- * 官方在 Mac 上只给自己下载的安装包，按钮点下去只能把人带到教程那一章，所以
- * 按钮不能再写「安装」，点完也不算一次失败（第七批 3）。
+ * 这台机器上这个工具的安装归不归本程序管。'external' 的（认不出芯片的 Mac 上的
+ * Codex 桌面端）按钮点下去只能把人带到教程那一章，所以按钮不能写「安装」，点完
+ * 也不算一次失败（第七批 3）。
  */
 export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolId): boolean {
   if (!snapshot) return false
