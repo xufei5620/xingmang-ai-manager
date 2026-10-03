@@ -111,15 +111,15 @@ export function RequiredUpdateGate({ update, windows, linux = false, actions }: 
         </div>}
         {gate.failure && <div role="alert" data-testid="required-update-failure">
           <p><strong>{gate.failureTitle}。</strong>{userFacingErrorMessage(gate.failure)}</p>
-          {!gate.manualReinstall && <p>试了还是不行，点「打开下载页」下载适合这台电脑的安装包，装好后打开就行。</p>}
+          <p>试了还是不行，点「打开下载页」下载适合这台电脑的安装包，装好后打开就行。</p>
         </div>}
       </div>
       <footer>
         <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>联系客服</Button>
-        {gate.failure && <Button variant={gate.manualReinstall ? 'primary' : 'secondary'} testId="required-update-download-page" onClick={actions.openDownloadPage}>打开下载页</Button>}
+        {gate.failure && <Button testId="required-update-download-page" onClick={actions.openDownloadPage}>打开下载页</Button>}
         {/* 空间是估算的：他清出了一点、或者就想试一次，由他决定，和更新页一样。 */}
         {gate.diskShortfall && <Button testId="required-update-download-anyway" disabled={busy} onClick={() => start('download', { ignoreDiskSpace: true })}>仍要下载</Button>}
-        {!gate.manualReinstall && <Button variant="primary" testId="required-update-start" disabled={busy} loading={busy} onClick={() => { if (gate.action) start(gate.action) }}>{gate.label}</Button>}
+        <Button variant="primary" testId="required-update-start" disabled={busy} loading={busy} onClick={() => { if (gate.action) start(gate.action) }}>{gate.label}</Button>
       </footer>
     </div>
   </GateDialog>

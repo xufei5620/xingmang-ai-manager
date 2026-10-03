@@ -1,6 +1,5 @@
 import type { UpdateDiskShortfall, UpdateSnapshot } from '../../../../electron/ipc-contract'
 import { updateDownloadDetail, updateFailureLabel } from '../../registry/business'
-import { updateNeedsManualReinstall } from './update-retry'
 
 /** 「必须更新」那层提示上，主按钮点下去要做的事。 */
 export type RequiredUpdateAction = 'check' | 'download' | 'install'
@@ -24,11 +23,6 @@ export interface RequiredUpdateGateState {
    * 要说清为什么没动、清出空间再点；没有缺口时为 null。
    */
   diskShortfall: UpdateDiskShortfall | null
-  /**
-   * Mac 验签没通过：主按钮「重新安装」是死路，门里只留「打开下载页」，原因句里已经说了点它，
-   * 门自己那句「试了还是不行…」也不再重复。
-   */
-  manualReinstall: boolean
 }
 
 type GateSnapshot = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'error' | 'failedStep' | 'development' | 'rollback' | 'progress' | 'requiredVersion' | 'diskShortfall' | 'installMethod'>
@@ -54,7 +48,6 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     failure: null,
     failureTitle: null,
     diskShortfall: null,
-    manualReinstall: false,
   }
   switch (update.phase) {
     case 'checking':
@@ -73,7 +66,6 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
       return { ...base, action: null, label: `正在下载 ${percent}%`, percent, progressDetail: updateDownloadDetail(update.progress) }
     }
     case 'downloaded':
-      if (updateNeedsManualReinstall(update)) return { ...base, action: null, ...gateFailure(update), manualReinstall: true }
       if (update.error) return { ...base, action: 'install', ...gateFailure(update) }
       return installing
         // Linux 交给系统安装窗口，软件只关掉不重开，不能说「重启」。

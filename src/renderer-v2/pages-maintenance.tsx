@@ -1247,16 +1247,13 @@ export function UpdatesPage({
         下载更新
       </Button>
     ) : update?.phase === 'downloaded' ? (
-      // 验签没通过时「重启安装」和失败卡里去掉的「重新安装」是同一条死路，下一步只在失败卡的「打开下载页」。
-      manualReinstall ? null : (
-        <Button
-          variant="primary"
-          icon={RefreshCw}
-          onClick={() => setConfirm(true)}
-        >
-          {updateInstallActionLabel(update.installMethod)}
-        </Button>
-      )
+      <Button
+        variant="primary"
+        icon={RefreshCw}
+        onClick={() => setConfirm(true)}
+      >
+        {updateInstallActionLabel(update.installMethod)}
+      </Button>
     ) : (
       <Button
         variant="primary"

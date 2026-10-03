@@ -81,17 +81,6 @@ describe('RequiredUpdateGate', () => {
     expect(html).not.toContain('「更新」页')
   })
 
-  it('leaves only the download page when a Mac rejected the update signature', () => {
-    const message = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
-    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message } })} windows={false} actions={actions} />)
-    expect(html).toContain(`安装更新失败。</strong>${message}`)
-    expect(html).toContain('data-testid="required-update-download-page"')
-    expect(html).not.toContain('required-update-start')
-    expect(html).not.toContain('重新安装')
-    // 原因句已经叫他点「打开下载页」，门自己那句不再说第二遍。
-    expect(html).not.toContain('试了还是不行')
-  })
-
   it('tells the user the disk is full, how much to free, and offers a retry and a download-anyway', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ diskShortfall: { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 } })} windows actions={actions} />)
     expect(html).toContain('data-testid="required-update-disk"')
