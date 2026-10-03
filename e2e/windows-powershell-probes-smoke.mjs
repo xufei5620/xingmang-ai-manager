@@ -267,7 +267,7 @@ const {
 } = compiled('claude-desktop-msix-installer')
 const { claudeDesktopPolicyReadScript } = compiled('claude-desktop-policy')
 const { buildReadProxyScopesScript, readWindowsProxyScopes, windowsProxyPowerShellTimeoutMs } = compiled('stale-proxy-environment')
-const { windowsSystemProxyScript, windowsSystemProxyCommandTimeoutMs } = compiled('platform/windows-system-proxy')
+const { parseWindowsProxySnapshot, windowsSystemProxyScript, windowsSystemProxyCommandTimeoutMs } = compiled('platform/windows-system-proxy')
 const {
   appInstallerQueryScript,
   inspectWindowsRestartRequired,
@@ -296,6 +296,9 @@ fs.mkdirSync(path.join(scratch, 'tree', 'nested'), { recursive: true })
 const manifestPath = path.join(scratch, 'AppxManifest.xml')
 fs.writeFileSync(manifestPath, '<?xml version="1.0" encoding="utf-8"?><Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Claude" Version="1.0.0.0" ProcessorArchitecture="x64" Publisher="CN=Test"/></Package>')
 const systemProxyRequest = Buffer.from(JSON.stringify({ operation: 'owner', pid: process.pid }), 'utf8').toString('base64')
+// Read-only: the reading every acceleration start takes, WinInet included. Nothing here writes
+// the runner's proxy; windows-uninstall-smoke.yml does that.
+const systemProxyReadRequest = Buffer.from(JSON.stringify({ operation: 'inspect', pid: process.pid }), 'utf8').toString('base64')
 const claudePackagePath = path.join(scratch, 'Claude-x64.msix')
 fs.writeFileSync(claudePackagePath, storedZip('AppxManifest.xml', fs.readFileSync(manifestPath)))
 const programFilesCandidate = path.join(machinePaths.programFiles, 'Common Files')
@@ -396,6 +399,12 @@ const trustedProbes = [
     assert.match(String(parsed.startedAt), /^\d+$/)
     return 'owner found'
   }],
+  ['system proxy reading', windowsSystemProxyCommandTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], trustedEnv({ XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }))).trim())
+    assert.match(String(parsed.owner?.startedAt), /^\d+$/)
+    // Only the flags reach the log: the proxy strings are the runner's settings, not ours.
+    return `flags=${parseWindowsProxySnapshot(parsed.snapshot).flags}`
+  }],
   ['pending restart', nodeRuntimeWindowsProbeTimeoutMs, async () => {
     const status = await inspectWindowsRestartRequired()
     return `required=${status.required}`
@@ -456,6 +465,7 @@ const trustedProbeScripts = [
   ['Claude desktop package inspection', buildClaudeDesktopPackageInspectionScript(claudePackagePath), {}],
   ['proxy settings', buildReadProxyScopesScript(), {}],
   ['system proxy owner lookup', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }],
+  ['system proxy reading', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }],
   ['pending restart', windowsRestartStatusScript, {}],
   ['App Installer package', appInstallerQueryScript, {}],
   ['Node.js installer signature', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: process.execPath }],

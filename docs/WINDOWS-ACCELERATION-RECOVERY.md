@@ -42,7 +42,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Apply
 
 ## 验证范围
 
-Windows 代理和后台停止测试使用模拟系统调用，不更改开发机的系统代理。客户脚本在真实 Windows PowerShell 5.1 中编译 WinInet 互操作代码，33 项模拟检查验证绕过列表保留、原代理恢复、并发编辑拒绝、失败回滚及重试；另外使用临时 APPDATA 和模拟 WinInet 完整验证只读/恢复入口、先备份后写入、保留恢复记录以及桌面 TXT 导出。
+Windows 代理和后台停止测试使用模拟系统调用，不更改开发机的系统代理。客户脚本在真实 Windows PowerShell 5.1 中加载、WinInet 读写换成模拟，33 项检查验证绕过列表保留、原代理恢复、并发编辑拒绝、失败回滚及重试；真实系统代理上的 WinInet 读写由 `windows-uninstall-smoke` 工作流验证；另外使用临时 APPDATA 和模拟 WinInet 完整验证只读/恢复入口、先备份后写入、保留恢复记录以及桌面 TXT 导出。
 
 真实 Electron 43.6.0 临时目录冒烟测试还验证了两个并发辅助进程各自拥有独立的 `Local State`，主程序的 `Local State` 字节不变，重启后合成账号密文仍能解密。`npm run typecheck` 的四套配置检查通过。
 
