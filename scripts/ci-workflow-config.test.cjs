@@ -82,12 +82,13 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
   }
 })
 
-test('browser-backed tests install Chromium first on every job that runs npm test', () => {
+test('browser-backed tests install Chromium first on every job that runs them', () => {
   for (const [jobName, testCommand, installCommand] of [
     ['macos-test', 'npm test', 'npx --no-install playwright install chromium'],
     // Linux also needs Chromium's apt libraries; that half is its own bounded
     // step, pinned by the test below.
     ['linux-test', 'npm test', 'npx --no-install playwright install chromium'],
+    ['linux-renderer-v2-browser', 'npm run test:v2:browser:fixture', 'npx --no-install playwright install chromium'],
   ]) {
     const commands = runSteps(jobName)
     const installIndex = commands.indexOf(installCommand)
@@ -114,25 +115,7 @@ test('browser-backed tests install Chromium first on every job that runs npm tes
 // sitting in a wedged `apt-get update` until the 30-minute job cap cancelled
 // it. The apt half now carries its own bound, and each attempt a shorter one,
 // so a bad mirror ends in a retry and then a named failure.
-test('the Linux job bounds and retries the apt install of Chromium system libraries', () => {
-  const job = workflow.jobs['linux-test']
-  const steps = job.steps
-  const commands = runSteps('linux-test')
-
-  assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
-    'the apt install must not ride along with the unbounded browser download')
-
-  const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
-  assert.notEqual(depsIndex, -1, 'linux-test must install Chromium system libraries')
-  assert.ok(depsIndex < steps.findIndex((step) => step.run === 'npm test'),
-    'system libraries must be installed before npm test')
-
-  const depsStep = steps[depsIndex]
-  assert.equal(typeof depsStep['timeout-minutes'], 'number', 'the apt step must carry its own bound')
-  assert.ok(depsStep['timeout-minutes'] <= 13, 'a wedged mirror must not eat the time the tests need')
-  assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
-  assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
-
+test('the Linux jobs bound and retry the apt install of Chromium system libraries', () => {
   // The script's own worst case — every attempt, each one's kill grace, and the
   // lock wait between them — has to fit under the step cap, or the cap fires
   // mid-retry and the job reports a cancellation instead of a named failure.
@@ -142,8 +125,32 @@ test('the Linux job bounds and retries the apt install of Chromium system librar
   const killGrace = Number(installer.match(/timeout --kill-after=(\d+)s/)[1])
   assert.equal(attempts.length, 2, 'one retry, matching the project rule of at most one re-run')
   const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait
-  assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
-    `the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
+
+  // Both Linux browser jobs install the libraries, so both carry the bound.
+  for (const [jobName, firstBrowserCommand] of [
+    ['linux-test', 'npm test'],
+    ['linux-renderer-v2-browser', 'npm run test:v2:browser:fixture'],
+  ]) {
+    const job = workflow.jobs[jobName]
+    const steps = job.steps
+    const commands = runSteps(jobName)
+
+    assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
+      `${jobName}: the apt install must not ride along with the unbounded browser download`)
+
+    const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
+    assert.notEqual(depsIndex, -1, `${jobName} must install Chromium system libraries`)
+    assert.ok(depsIndex < steps.findIndex((step) => step.run === firstBrowserCommand),
+      `${jobName}: system libraries must be installed before ${firstBrowserCommand}`)
+
+    const depsStep = steps[depsIndex]
+    assert.equal(typeof depsStep['timeout-minutes'], 'number', `${jobName}: the apt step must carry its own bound`)
+    assert.ok(depsStep['timeout-minutes'] <= 13, `${jobName}: a wedged mirror must not eat the time the tests need`)
+    assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
+    assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
+    assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
+      `${jobName}: the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
+  }
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
@@ -358,17 +365,41 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   // M-03: test:v2 and test:canvas ran only on windows-latest, the slowest and
   // least reliable job in the matrix, so one Defender timeout took the renderer
   // that actually ships out of a pull request's coverage entirely.
-  const steps = workflow.jobs['linux-test'].steps
-  const commands = runSteps('linux-test')
-  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
-
-  assert.notEqual(dirtyCheckIndex, -1, 'linux-test must still guard against a dirty working tree')
-  for (const command of ['npm run test:v2', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2']) {
-    const index = commands.indexOf(command)
-    assert.notEqual(index, -1, `linux-test must run ${command}`)
-    assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
-      `${command} must run before the dirty-tree guard`)
+  //
+  // test:v2 itself is spread over two Linux jobs, because run back to back it
+  // made linux-test the pipeline's wall clock. The fixture browser suites run
+  // in linux-renderer-v2-browser along the seam the Windows matrix already
+  // uses; its parts have to add up to the whole, which the Windows split test
+  // above pins for the scripts themselves.
+  const placement = {
+    'linux-test': ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2'],
+    'linux-renderer-v2-browser': ['npm run test:v2:browser:fixture'],
   }
+  for (const [jobName, expected] of Object.entries(placement)) {
+    const steps = workflow.jobs[jobName].steps
+    const commands = runSteps(jobName)
+    const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
+
+    assert.notEqual(dirtyCheckIndex, -1, `${jobName} must still guard against a dirty working tree`)
+    for (const command of expected) {
+      const index = commands.indexOf(command)
+      assert.notEqual(index, -1, `${jobName} must run ${command}`)
+      assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
+        `${command} must run before the dirty-tree guard`)
+    }
+  }
+  const linuxCommands = [...runSteps('linux-test'), ...runSteps('linux-renderer-v2-browser')]
+  const v2Leaves = packageJson.scripts['test:v2'].split('&&').map((part) => part.trim())
+  assert.deepEqual(v2Leaves, ['npm run test:v2:vitest', 'npm run test:v2:browser'])
+  // Neither the whole nor its browser half may also run whole, or the split
+  // would have doubled the minutes instead of halving the wall clock.
+  for (const whole of ['npm run test:v2', 'npm run test:v2:browser']) {
+    assert.equal(linuxCommands.includes(whole), false, `${whole} must not also run whole on Linux`)
+  }
+  for (const part of ['npm run test:v2:vitest', 'npm run test:v2:browser:fixture', 'npm run test:v2:browser:e2e']) {
+    assert.equal(linuxCommands.filter((command) => command === part).length, 1, `Linux must run ${part} exactly once`)
+  }
+  const commands = runSteps('linux-test')
 
   // T-S4: check:v2 only earns its place in front of that guard while it stays
   // report-free. Passing --report here would write three generatedAt-stamped
@@ -653,7 +684,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -695,7 +726,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit', 'cli-relay-probe'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -705,7 +736,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results) => {
     const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit']) {
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
@@ -727,8 +758,12 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   // One red architecture fails the whole matrix job, which is what this sees.
   assert.equal(verify('true', 'success', { 'linux-package': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-package': 'skipped' }), false)
+  // The Linux fixture browser suites left linux-test for a job of their own;
+  // they still block exactly as they did when linux-test ran them.
+  assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'skipped' }), false)
   assert.equal(verify('false', 'success', Object.fromEntries(
-    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit'].map(name => [name, 'skipped']),
+    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
   )), true)
   // The relay probe runs only when the verified-version list moves, so its
   // skip is a pass; a red one is the whole reason it exists and must block.
