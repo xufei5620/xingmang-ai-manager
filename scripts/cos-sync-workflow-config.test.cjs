@@ -83,7 +83,7 @@ test('Windows signature checks run on Windows and credentials are scoped to the 
   assert.equal(credentialSteps[0].run, 'node scripts/sync-chatgpt-official-cos.cjs')
   assert.equal(credentialSteps[0].env.COS_SECRET_ID, '${{ secrets.COS_SECRET_ID }}')
   assert.equal(credentialSteps[0].env.COS_SECRET_KEY, '${{ secrets.COS_SECRET_KEY }}')
-  assert.equal(credentialSteps[0].env.CHATGPT_SYNC_PLATFORMS, "${{ inputs.platforms || 'all' }}")
+  assert.equal(credentialSteps[0].env.CHATGPT_SYNC_PLATFORMS, '${{ matrix.platform }}')
   assert.doesNotMatch(credentialSteps[0].run, /inputs\.|secrets\./)
   for (const step of job.steps.filter((entry) => entry.uses)) {
     assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)

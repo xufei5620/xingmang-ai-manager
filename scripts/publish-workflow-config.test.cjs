@@ -114,6 +114,8 @@ test('COS synchronization runs explicitly after the release and keeps its creden
     COS_REGION: "${{ vars.COS_REGION || 'ap-shanghai' }}",
     COS_SECRET_ID: '${{ secrets.COS_SECRET_ID }}',
     COS_SECRET_KEY: '${{ secrets.COS_SECRET_KEY }}',
+    XINGMANG_COS_MULTIPART_ENABLED: "${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}",
+    XINGMANG_COS_MULTIPART_CONCURRENCY: "${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}",
   })
   const readers = allJobs.flatMap((job) => job.steps)
     .filter((step) => /secrets\.COS_SECRET_(?:ID|KEY)/.test(YAML.stringify(step)))

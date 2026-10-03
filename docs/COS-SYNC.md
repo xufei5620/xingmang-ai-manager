@@ -91,14 +91,28 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 ### 官方 ChatGPT 包
 
+#### 大包分块上传（默认关闭）
+
+真实运行中，官方源下载正常而 COS 单连接 PUT 约为 50 KiB/s，大包可能超过既有上传期限。实现提供分块上传，而不是增加原 PUT 超时：`XINGMANG_COS_MULTIPART_ENABLED` 缺省或 `false` 保持原流程。负责人现场确认权限及存储桶版本控制关闭后，才在受保护环境设置为 `true`；本改动不修改线上变量、凭据或权限。
+
+启用后，16 MiB 及以上的不可变文件使用 4 MiB 分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 32 MiB。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多三分钟，分块调度总期限三十分钟（已发出的请求收拢后退出），合并正文至多十分钟；其它既有网络和作业限额保留。该预算考虑当前约 509 MB 包以八路约 50 KiB/s 上传时的耗时，不保证所有接近 2 GiB 的包在该网络下都能完成。
+
+仅需要在原有两个对象前缀范围增授四项 CAM action：`cos:InitiateMultipartUpload`、`cos:UploadPart`、`cos:CompleteMultipartUpload`、`cos:AbortMultipartUpload`。不需要 List、Copy、ACL、公开对象 DELETE 或扩大资源前缀。Init 与 Complete 都签入 `x-cos-forbid-overwrite: true`；官方文档明确该头不保护开启版本控制的桶，因此启用前必须核实桶版本控制仍为关闭。本模块不自行访问或修改桶配置。
+
+Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文并严格核对 XML 根、唯一字段及桶/对象身份，拒绝 Error、DTD/实体注入和重复字段。响应 Location 不用于下载，最终仍从固定 COS HTTPS 公共地址完整 GET 核对大小、SHA-256 和类型，成功后上层才可发布 latest。Complete 结果未知时不再 Complete、PUT、覆盖或回滚，也不中止可能仍在合并的会话；先回读，无法确认时停止并由负责人核实远程状态。分块失败只会在全部在途分块结束后 Abort 本次成功初始化且身份匹配的 UploadId；Abort 失败保留主错误，且不会删除公开对象。初始化回执未知时不猜测 UploadId 或列举其它会话，需负责人核查残留未完成分块。
+
+协议依据：[初始化](https://cloud.tencent.com/document/product/436/7746)、[上传分块](https://cloud.tencent.com/document/product/436/7750)、[合并](https://cloud.tencent.com/document/product/436/7742)、[中止](https://cloud.tencent.com/document/product/436/7740)、[上传概览](https://cloud.tencent.com/document/product/436/65935)。这是本地 mock 验证的能力，不能当作实际上传速度或生产权限已验收。
+
 1. 合并工作流后，打开 **Actions → sync-chatgpt-official-cos → Run workflow**。
-2. 分支选 `main`。首次及最终验收选 `all`，目标为八个平台包及两个 Windows 许可对象。手动入口也支持 `windows`、`macos`、`linux` 和八个精确平台标识，便于定位单项故障。
+2. 分支选 `main`。首次及最终验收选 `all`，目标为八个平台包及两个 Windows 许可对象。选择器将其展开为八个固定平台作业，`max-parallel: 1` 顺次运行，各自保留 90 分钟期限及原 Windows 校验环境；整个工作流只有八项全成功才算成功。手动入口也支持 `windows`、`macos`、`linux` 和八个精确平台标识，便于定位单项故障。
 3. 观察 `[chatgpt-sync]` 日志的阶段、平台、耗时、传输方法及字节数。首次会下载、校验和上传大包，后续没有变化时仅检查小清单与响应头。日志只输出固定阶段与白名单错误分类，不输出请求认证、签名 URL 或服务器正文。
 4. 成功后访问 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/chatgpt/latest.json`，检查文件地址、大小、SHA-256 和验证范围。
 
 已有手动上传的 `chatgpt/windows-x64/26.930.2377.0/ChatGPT-x64.msix` 及同目录许可可以保留；同步会校验完整内容后复用，不会把同名不同内容默默替换。
 
 若运行已经写入部分不可变包、最后一个平台失败，先核对失败阶段和远端对象状态。可选精确标识（例如 `linux-rpm-arm64`）定位恢复，再运行 `all` 完成验收。单项同步会保留已有索引中的其它平台和许可；首次没有索引时，单项成功仅代表该平台已入库，不能当成八个平台全部成功。
+
+每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此八项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台，新 Windows 共享版本会按既有规则移除尚未刷新到新版本的另一架构，直到它自己的作业成功。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含八个平台及配对的两份 Windows 许可，因长时间版本切换缺项时仍失败并保留部分索引，按精确平台恢复，不把八项曾经各自成功当作最终索引完整。
 
 安全错误分类区分响应头超时、正文超时、HTTP 状态、断流、ETag/大小/摘要不一致，以及 PUT 与公共完整回读的各自原因。`latestState: write-unconfirmed` 表示最新索引写入结果未知，需要先读取远端状态；`published-and-read-back` 表示索引已发布并回读确认，即使随后临时目录清理失败。清理失败不会盖掉此前的主错误。
 

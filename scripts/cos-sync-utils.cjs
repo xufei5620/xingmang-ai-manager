@@ -6,12 +6,13 @@ const path = require('node:path')
 const { performance } = require('node:perf_hooks')
 const { Writable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
+const { readMultipartOptions, uploadMultipart, THRESHOLD_BYTES, PART_BYTES, MAX_XML_BYTES } = require('./cos-multipart-upload.cjs')
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_JSON_BYTES = 1024 * 1024
 const DEFAULT_BUCKET = 'xingmang-downloads-1342302199'
 const DEFAULT_REGION = 'ap-shanghai'
-const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed'])
+const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed', 'cos-multipart-unconfirmed'])
 const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
 const failureDetails = new WeakMap()
 
@@ -26,7 +27,9 @@ function readSafeSyncFailure(error, seen, depth) {
   if (!value || !FAILURE_CODES.has(value.code) || seen.has(error) || depth > 3) return { code: 'operation-failed' }
   seen.add(error)
   const result = { code: value.code }
-  if (['GET', 'HEAD', 'PUT'].includes(value.method)) result.method = value.method
+  if (['GET', 'HEAD', 'PUT', 'POST', 'DELETE'].includes(value.method)) result.method = value.method
+  if (['init', 'part', 'complete', 'abort'].includes(value.multipartOperation)) result.multipartOperation = value.multipartOperation
+  if (['not-completed', 'complete-unconfirmed'].includes(value.multipartState)) result.multipartState = value.multipartState
   if (['response-headers', 'upload-body', 'response-body'].includes(value.phase)) result.phase = value.phase
   if (TRANSPORT_CODES.has(value.transportCode)) result.transportCode = value.transportCode
   if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status
@@ -37,6 +40,7 @@ function readSafeSyncFailure(error, seen, depth) {
   // exception, message, URL, response body, headers, or credentials.
   if (value.put) result.put = readSafeSyncFailure(value.put, seen, depth + 1)
   if (value.readback) result.readback = readSafeSyncFailure(value.readback, seen, depth + 1)
+  if (value.abort) result.abort = readSafeSyncFailure(value.abort, seen, depth + 1)
   return result
 }
 
@@ -44,19 +48,24 @@ function safeSyncFailure(error) {
   return readSafeSyncFailure(error, new WeakSet(), 0)
 }
 
-function readCosConfiguration(env = process.env) {
+function readCosLocation(env = process.env) {
   const bucket = env.COS_BUCKET || DEFAULT_BUCKET
   const region = env.COS_REGION || DEFAULT_REGION
   if (!/^[a-z0-9][a-z0-9-]{0,49}-[0-9]{5,20}$/.test(bucket) || !/^[a-z]{2}-[a-z]+(?:-[a-z]+)?$/.test(region)) {
     throw new Error('COS 存储桶或地域格式不合法')
   }
+  return { bucket, region, publicBaseUrl: `https://${bucket}.cos.${region}.myqcloud.com` }
+}
+
+function readCosConfiguration(env = process.env) {
+  const location = readCosLocation(env)
   const secretId = env.COS_SECRET_ID
   const secretKey = env.COS_SECRET_KEY
   if (typeof secretId !== 'string' || !/^[A-Za-z0-9]{8,128}$/.test(secretId) ||
       typeof secretKey !== 'string' || !/^[A-Za-z0-9+/=]{8,128}$/.test(secretKey)) {
     throw new Error('请配置有效的 COS_SECRET_ID 和 COS_SECRET_KEY')
   }
-  return { bucket, region, publicBaseUrl: `https://${bucket}.cos.${region}.myqcloud.com`, secretId, secretKey }
+  return { ...location, secretId, secretKey, multipart: readMultipartOptions(env) }
 }
 
 function validateObjectKey(key) {
@@ -165,7 +174,7 @@ async function performRequest(input, options = {}) {
   function details(extra = {}) {
     const expectedBytes = phase === 'response-body' ? input.expectedBytes ?? responseDeclaredBytes
       : method === 'PUT' ? input.uploadBytes : input.expectedBytes
-    return { method, phase, transferredBytes, ...(expectedBytes === undefined ? {} : { expectedBytes }), ...extra }
+    return { method, phase, transferredBytes, multipartOperation: input.multipartOperation, ...(expectedBytes === undefined ? {} : { expectedBytes }), ...extra }
   }
   let request
   let response
@@ -411,6 +420,7 @@ function validatePublicationOptions(key, input) {
 
 function createCosStore(configuration, options = {}) {
   const config = readCosConfiguration({ COS_BUCKET: configuration.bucket, COS_REGION: configuration.region, COS_SECRET_ID: configuration.secretId, COS_SECRET_KEY: configuration.secretKey })
+  const multipart = readMultipartOptions({ XINGMANG_COS_MULTIPART_ENABLED: configuration.multipart?.enabled === true ? 'true' : 'false', XINGMANG_COS_MULTIPART_CONCURRENCY: configuration.multipart?.concurrency })
   const host = new URL(config.publicBaseUrl).hostname
 
   function publicUrl(key) {
@@ -469,6 +479,7 @@ function createCosStore(configuration, options = {}) {
     const hash = await hashFile(filePath)
     if (input.expectedBytes !== undefined && hash.bytes !== input.expectedBytes) throw new Error('上传文件大小与预校验结果不一致')
     if (input.expectedSha256 !== undefined && hash.sha256 !== input.expectedSha256) throw new Error('上传文件 SHA256 与预校验结果不一致')
+    if (multipart.enabled && !input.overwrite && hash.bytes >= THRESHOLD_BYTES) return publishMultipartFile(key, filePath, hash, input)
     return publish(key, hash, async () => {
       const opened = await openRegularFile(filePath, MAX_FILE_BYTES)
       if (opened.stat.size !== hash.bytes) {
@@ -482,6 +493,51 @@ function createCosStore(configuration, options = {}) {
       // Bound upload reads to the hashed length even if another process grows the source file.
       return opened.handle.createReadStream({ start: 0, end: hash.bytes - 1, autoClose: true })
     }, input)
+  }
+
+  async function publishMultipartFile(key, filePath, hash, input) {
+    validateObjectKey(key)
+    validatePublicationOptions(key, input)
+    if (await inspect(key)) return verify(key, hash, input)
+    const opened = await openRegularFile(filePath, MAX_FILE_BYTES)
+    let uploadError
+    try {
+      await uploadMultipart({ handle: opened.handle, stat: opened.stat, hash, bucket: config.bucket, key, concurrency: multipart.concurrency,
+        failure: function (error, multipartState, abort) { return transferFailure('cos-multipart-unconfirmed', 'COS 分块上传未确认；请核对远程状态', { put: error, multipartState, abort }) },
+        onPartCommitted: function (transferredBytes) { input.onProgress?.({ method: 'PUT', phase: 'upload-body', transferredBytes, expectedBytes: hash.bytes }) },
+        request: async function (operation, method, query, body) {
+          const url = new URL(publicUrl(key))
+          url.search = Object.entries(query).map(([name, value]) => `${encodeComponent(name)}=${encodeComponent(value)}`).join('&')
+          const headers = { host, 'content-length': String(body.length) }
+          if (operation !== 'abort') {
+            headers['content-type'] = operation === 'init' ? input.contentType : operation === 'complete' ? 'application/xml' : 'application/octet-stream'
+            headers['content-md5'] = crypto.createHash('md5').update(body).digest('base64')
+          }
+          if (operation === 'init') {
+            headers['x-cos-meta-sha256'] = hash.sha256
+            headers['cache-control'] = input.cacheControl || 'public, max-age=31536000, immutable'
+          }
+          if (operation === 'init' || operation === 'complete') headers['x-cos-forbid-overwrite'] = 'true'
+          if (operation === 'part') headers['x-cos-psize-max'] = String(PART_BYTES)
+          headers.authorization = buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method, pathname: decodeURIComponent(url.pathname), query, headers, now: options.now ? options.now() : Math.floor(Date.now() / 1000) })
+          try {
+            const result = await performRequest({ url: url.href, allowedHosts: [host], method, headers, body, uploadBytes: body.length, maxBytes: MAX_XML_BYTES, collectBody: true, multipartOperation: operation }, { ...options, headerTimeoutMs: operation === 'part' ? Math.min(options.headerTimeoutMs ?? 3 * 60 * 1000, 3 * 60 * 1000) : options.headerTimeoutMs, bodyTimeoutMs: Math.min(options.bodyTimeoutMs ?? (operation === 'complete' ? 10 * 60 * 1000 : 30000), operation === 'complete' ? 10 * 60 * 1000 : 30000) })
+            if (operation === 'abort' && (result.status !== 204 || result.bytes !== 0)) throw new Error('COS 分块中止响应无效')
+            return result
+          } catch (error) {
+            // An already-finished owned upload session may respond 404 to abort.
+            if (operation === 'abort' && error.status === 404) return null
+            throw error
+          }
+        },
+      })
+    } catch (error) { uploadError = error } finally { await opened.handle.close().catch(() => {}) }
+    // Complete can return 200 before merging finishes, or lose its final reply.
+    // There is never a second complete/PUT, rollback, or abort after complete.
+    try { return await verify(key, hash, input) } catch (readbackError) {
+      if (uploadError) throw transferFailure('cos-upload-unconfirmed', 'COS 分块上传未确认成功；已尝试完整公共回读，请核对远程状态', { put: uploadError, readback: readbackError })
+      throw transferFailure('cos-readback-failed', 'COS 分块上传后的完整公共下载核验失败', { readback: readbackError })
+    }
   }
 
   async function publishJson(key, value, input = {}) {
@@ -506,6 +562,7 @@ module.exports = {
   inspectResource,
   readBoundedRegularFile,
   readCosConfiguration,
+  readCosLocation,
   safeSyncFailure,
   validateObjectKey,
 }
