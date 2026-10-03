@@ -14,7 +14,10 @@ const APT_ROOT = 'https://downloads.claude.ai/claude-desktop/apt/stable/'
 const OFFICIAL_HOSTS = Object.freeze(['claude.ai', 'downloads.claude.ai'])
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_METADATA_BYTES = 1024 * 1024
-const LATEST_KEY = 'claude/latest.json'
+// Keep emergency packages within the previously authorized manager prefix,
+// separate from formal manager releases and their latest pointer.
+const OFFLINE_PREFIX = 'xingmang/offline/claude'
+const LATEST_KEY = `${OFFLINE_PREFIX}/latest.json`
 const SOURCES = Object.freeze({
   'windows-x64': Object.freeze({ platform: 'windows', architecture: 'x64', format: 'msix', fileName: 'Claude-x64.msix', type: 'application/vnd.ms-appx', requestUrl: `${API_ROOT}win32/x64/msix/latest/redirect`, verification: 'windows-authenticode-msix-identity' }),
   'windows-arm64': Object.freeze({ platform: 'windows', architecture: 'arm64', format: 'msix', fileName: 'Claude-arm64.msix', type: 'application/vnd.ms-appx', requestUrl: `${API_ROOT}win32/arm64/msix/latest/redirect`, verification: 'windows-authenticode-msix-identity' }),
@@ -153,7 +156,7 @@ function parseDebianPackages(text, architecture) {
 
 function artifactKey(id, sha256) {
   if (!Object.hasOwn(SOURCES, id) || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error('Claude 不可变对象参数无效')
-  return `claude/${id}/sha256-${sha256}/${SOURCES[id].fileName}`
+  return `${OFFLINE_PREFIX}/${id}/sha256-${sha256}/${SOURCES[id].fileName}`
 }
 
 function sourceRecord(source, resource) {
@@ -276,7 +279,7 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
     const manifest = { schemaVersion: 1, product: 'claude-desktop', generatedAt: now(), files: [...files.values()].sort(function (left, right) { return left.platformId.localeCompare(right.platformId, 'en') }) }
     validateIndex(manifest, store.publicUrl)
     const candidateDigest = createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
-    await store.publishJson(`claude/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' })
+    await store.publishJson(`${OFFLINE_PREFIX}/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' })
     const current = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
     if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('Claude COS 最新索引在同步期间变化，已保留现有指针')
     try {

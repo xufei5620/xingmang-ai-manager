@@ -10,8 +10,7 @@
       ],
       "resource": [
         "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/xingmang/*",
-        "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/chatgpt/*",
-        "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/claude/*"
+        "qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/chatgpt/*"
       ]
     }
   ]

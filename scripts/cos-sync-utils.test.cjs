@@ -293,12 +293,14 @@ test('reports unknown write state without blindly retrying or logging injected c
 test('publishes each of the three fixed latest pointers with complete public readback', async () => {
   const mock = memoryCos()
   const store = createCosStore(config, mock)
-  for (const key of ['xingmang/latest.json', 'chatgpt/latest.json', 'claude/latest.json']) {
+  for (const key of ['xingmang/latest.json', 'chatgpt/latest.json', 'xingmang/offline/claude/latest.json']) {
     const manifest = { version: '1', key }
     await store.publishJson(key, manifest, { overwrite: true })
     assert.deepEqual(await store.readJson(key), manifest)
   }
   assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 3)
+  await assert.rejects(store.publishJson('claude/latest.json', {}, { overwrite: true }), /固定/)
+  await assert.rejects(store.publishJson('xingmang/offline/other/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('claude/v1/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('other/latest.json', {}, { overwrite: true }), /固定/)
   assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 3)

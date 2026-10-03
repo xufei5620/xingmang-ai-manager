@@ -83,7 +83,7 @@ function fixture() {
     },
     async publishJson(key, manifest, input) {
       if (key !== LATEST_KEY) {
-        assert.match(key, /^claude\/indexes\/[a-f0-9]{64}\.json$/)
+        assert.match(key, /^xingmang\/offline\/claude\/indexes\/[a-f0-9]{64}\.json$/)
         assert.equal(input.overwrite, undefined)
         if (value.candidateError) throw new Error('Mock candidate verification failed')
         value.candidates.push(clone(manifest))
@@ -199,6 +199,22 @@ test('preserves other platforms during serialized native runner supplements', as
   const downloads = value.downloads.length
   assert.equal((await value.run('all')).changed, false)
   assert.equal(value.downloads.length, downloads)
+})
+
+test('keeps every Claude write within the existing manager permission without using manager release paths', async () => {
+  const value = fixture()
+  const result = await value.run('all')
+  assert.equal(LATEST_KEY, 'xingmang/offline/claude/latest.json')
+  assert.equal(value.candidates.length, 1)
+  assert.equal(value.pointers.length, 1)
+  for (const publication of value.publications) {
+    assert.match(publication.key, /^xingmang\/offline\/claude\/(?:windows|macos|linux)-[a-z0-9-]+\/sha256-[a-f0-9]{64}\/[A-Za-z0-9._-]+$/)
+    assert.equal(publication.key.startsWith('xingmang/releases/'), false)
+  }
+  const oldPrefix = clone(result.manifest)
+  oldPrefix.files[0].key = oldPrefix.files[0].key.replace('xingmang/offline/claude/', 'claude/')
+  oldPrefix.files[0].url = value.store.publicUrl(oldPrefix.files[0].key)
+  assert.throws(() => validateIndex(oldPrefix, value.store.publicUrl), /无效平台/)
 })
 
 test('rejects bad native verification, magic, bytes, ETag or SHA256 before any remote writes', async () => {

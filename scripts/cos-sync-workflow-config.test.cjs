@@ -90,7 +90,7 @@ test('Windows signature checks run on Windows and credentials are scoped to the 
   }
 })
 
-test('the CAM policy grants object data access only inside the three distribution prefixes', () => {
+test('the CAM policy retains only the two previously authorized distribution prefixes', () => {
   const policy = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'cos-sync-policy.json'), 'utf8'))
   assert.equal(policy.version, '2.0')
   assert.equal(policy.statement.length, 1)
@@ -99,6 +99,5 @@ test('the CAM policy grants object data access only inside the three distributio
   assert.deepEqual(policy.statement[0].resource, [
     'qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/xingmang/*',
     'qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/chatgpt/*',
-    'qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/claude/*',
   ])
 })

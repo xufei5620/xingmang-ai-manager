@@ -337,7 +337,7 @@ function contentTypesMatch(actual, expected, accepted = []) {
 function validatePublicationOptions(key, input) {
   if (typeof input.contentType !== 'string' || !/^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+(?:; charset=utf-8)?$/.test(input.contentType)) throw new Error('上传 Content-Type 不合法')
   if (input.cacheControl !== undefined && (typeof input.cacheControl !== 'string' || input.cacheControl.length > 128 || /[\r\n]/.test(input.cacheControl))) throw new Error('上传缓存配置不合法')
-  if (input.overwrite && !['xingmang/latest.json', 'chatgpt/latest.json', 'claude/latest.json'].includes(key)) throw new Error('仅允许覆盖固定的 latest 指针')
+  if (input.overwrite && !['xingmang/latest.json', 'chatgpt/latest.json', 'xingmang/offline/claude/latest.json'].includes(key)) throw new Error('仅允许覆盖固定的 latest 指针')
   if (input.ifMatch !== undefined || input.ifNoneMatch !== undefined) throw new Error('COS 目标条件写入尚未验证，不能使用条件头')
 }
 

@@ -14,7 +14,7 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | --- | --- | --- |
 | 星芒 AI 管理工具 | `publish-release` 正式发布完成后，显式执行 COS 同步 | `xingmang/latest.json` |
 | 官方 ChatGPT 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-chatgpt-official-cos` | `chatgpt/latest.json` |
-| 官方 Claude 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-claude-official-cos` | `claude/latest.json` |
+| 官方 Claude 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-claude-official-cos` | `xingmang/offline/claude/latest.json` |
 
 星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流。同步步骤直接接在既有发布作业末尾，保留 `release` 环境的发布批准和 `update-feed` 串行规则。
 
@@ -32,12 +32,14 @@ Claude 同步在 Windows、macOS、Linux 各自的原生 runner 上验证，同�
 
 Claude Windows 检查 MSIX 产品身份和有效 Authenticode；Mac 原生读取应用/PKG 元数据并核对签名；Linux 核对官方索引大小、SHA-256 和 DEB 包头，记录未执行 APT GPG 验签。文档中的下载接口已核实，真实版本、最终 CDN、签名及安装结果以首轮 Actions 验收为准。
 
+Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`，不可变候选清单保存在同一前缀的 `indexes/`。它们与星芒正式发布的 `xingmang/releases/` 和 `xingmang/latest.json` 分开，使用现有 `xingmang/*` 授权即可同步，无需扩大 CAM 权限。
+
 官方源没有变化且已验证的 COS 对象指纹也没有变化时，跳过大包下载。没有经过校验的旧索引时，先完整下载官方原包；手动上传的同名对象必须与原包完整字节一致才可复用。
 
 ## 1. 准备 COS 上传身份
 
 1. 在腾讯云 CAM 创建专用于安装包同步的子账号，并为其准备 API 访问凭据。
-2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*`、`chatgpt/*` 和 `claude/*` 前缀执行 GetObject、HeadObject、PutObject。
+2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`。
 3. 把策略关联给该子账号。同步脚本不需要删除文件、修改 ACL、管理存储桶或操作其它云产品的权限。
 4. 存储桶使用标准存储、公有读私有写，版本控制保持关闭。不可变版本目录和 `x-cos-forbid-overwrite` 用于防止包被覆盖；COS 的这项防覆盖头在开启桶版本控制后无效。
 
@@ -94,7 +96,7 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 ### Claude 桌面备用包
 
-打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。也可只重跑 `windows`、`macos` 或 `linux`；平台作业保留索引中的其它已发布平台。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/claude/latest.json`。CAM 策略须包含 `claude/` 的 GetObject、HeadObject、PutObject；本配置不需要为第三产品再创建一组密钥。
+打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。也可只重跑 `windows`、`macos` 或 `linux`；平台作业保留索引中的其它已发布平台。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/claude/latest.json`。沿用现有 `xingmang/*` 的 GetObject、HeadObject、PutObject 权限和 GitHub Secrets，不增加 `claude/*` 授权或创建新密钥。
 
 ## 校验、顺序与失败恢复
 
