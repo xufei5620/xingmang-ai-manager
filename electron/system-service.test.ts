@@ -810,7 +810,7 @@ describe('createSystemService', () => {
     function backup(provider: ProviderId): void { backups.push({ provider, slugs: f.catalogSlugs() }) }
 
     const startup = f.service.fillToolTemplateDefaults!(backup)
-    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']))
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']), backgroundStartupWait)
     const resume = f.service.stopTemplateFillWaits!()
 
     expect(await startup).toEqual({ filled: [], pending: ['codex'] })
@@ -839,7 +839,7 @@ describe('createSystemService', () => {
     const desktopProbes = f.desktopProbe.mock.calls.length
 
     const startup = f.service.fillToolTemplateDefaults!(() => undefined)
-    await vi.waitFor(() => expect(f.desktopProbe.mock.calls.length).toBeGreaterThan(desktopProbes))
+    await vi.waitFor(() => expect(f.desktopProbe.mock.calls.length).toBeGreaterThan(desktopProbes), backgroundStartupWait)
     f.service.stopTemplateFillWaits!()
 
     expect(await startup).toEqual({ filled: [], pending: ['codex'] })

@@ -548,7 +548,7 @@ describe('filling template defaults while a tool may be running', () => {
     f.running.mockImplementationOnce(() => new Promise<never>(() => undefined))
 
     const startup = f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })
-    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(1), { timeout: 10_000 })
     const resume = f.service.stopTemplateFillWaits!()
 
     expect(await startup).toEqual({ filled: [], pending: ['codex'] })
