@@ -33,3 +33,11 @@ export function describeChineseLocaleResult(result: CodexDesktopLocaleResult, os
   if (result.needsRestart) return '中文设置已保存，请从星芒重新打开 Codex 桌面端以应用。'
   return '中文设置已保存。'
 }
+
+/**
+ * 点「信任当前文件夹」之后那句。Windows 上主进程会替人重开开着的 Codex，Mac 上不会，
+ * 所以只在 Mac 上、而且这次真的新加了信任时，才说怎么让开着的 Codex 读到（第二十九批 A 的后续）。
+ */
+export function describeWorkspaceTrustResult(changed: boolean, os: WindowOs): string {
+  return os === 'mac' && changed ? `文件夹信任已保存。Codex 开着的话，${macQuitThenOpen}` : '文件夹信任已保存'
+}

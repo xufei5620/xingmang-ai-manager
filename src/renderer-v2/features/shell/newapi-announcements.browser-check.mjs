@@ -4,7 +4,7 @@ import { after, before, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
-import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 
 let server, browser, page
 const externalRequests = []
@@ -21,11 +21,12 @@ before(async () => {
     externalRequests.push(url)
     return route.abort()
   })
-  await page.goto(`${origin}/src/renderer-v2/testing/app.html?noticeEmpty=1`)
   // The import below is the first thing Vite has to transform on demand, and it
   // runs inside a before() hook, so a cold open takes the whole suite down with
-  // a message about the parser rather than about the mount.
-  await waitForFixtureMount(page, { what: 'the announcement parser fixture' })
+  // a message about the parser rather than about the mount. A lost navigation
+  // would take it down the same way, so the budget is spent as up to three.
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?noticeEmpty=1`,
+    (timeout) => waitForFixtureMount(page, { timeout, what: 'the announcement parser fixture' }), { label: 'announcement parser fixture' })
   await page.evaluate(async () => {
     window.parseNewApiNoticeFixture = (await import('/src/renderer-v2/features/shell/newapi-announcements.ts'))
       .parseNewApiAnnouncementCollection

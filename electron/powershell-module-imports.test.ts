@@ -19,7 +19,7 @@ import {
   windowsRestartStatusModules,
   windowsRestartStatusScript,
 } from './node-runtime'
-import { windowsSystemProxyModules, windowsSystemProxyScript } from './platform/windows-system-proxy'
+import { windowsSystemProxyCompiledScript, windowsSystemProxyModules, windowsSystemProxyScript } from './platform/windows-system-proxy'
 import {
   authenticodeSignatureModules,
   buildPowerShellModuleImportStatement,
@@ -87,6 +87,7 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['Claude desktop policy reader', claudeDesktopPolicyReadScript, claudeDesktopPowerShellModules, 'by-name'],
   ['proxy settings reader', buildReadProxyScopesScript(), readProxyScopesModules, 'by-name'],
   ['system proxy switch', windowsSystemProxyScript, windowsSystemProxyModules, 'by-name'],
+  ['system proxy switch, compiled fallback', windowsSystemProxyCompiledScript, windowsSystemProxyModules, 'by-name'],
   ['pending restart probe', windowsRestartStatusScript, windowsRestartStatusModules, 'by-name'],
   ['App Installer package probe', appInstallerQueryScript, appInstallerQueryModules, 'by-name'],
   ['Node.js installer signature check', nodeInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
