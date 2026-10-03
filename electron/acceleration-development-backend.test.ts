@@ -841,6 +841,33 @@ describe('core kept for connections in flight after an automatic session stops',
     expect(test.scheduled.size).toBe(0)
   })
 
+  it('keeps retrying the cleanup after a core that would not stop exits on its own', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    expect(await test.backend.isIdle()).toBe(false)
+    test.runtime.stop.mockClear()
+    await test.advance(5000)
+    // 进程没了，上次没清完的运行目录还得再清一次。
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('drops a pending cleanup retry once the app shuts down', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    await test.backend.dispose()
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(test.scheduled.size).toBe(0)
+  })
+
   it('does not let a pending retry cut the next drain short', async () => {
     const test = await setup()
     await test.backend.startAutomaticAcceleration(scope, 'system-proxy')

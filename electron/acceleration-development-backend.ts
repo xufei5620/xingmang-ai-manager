@@ -310,6 +310,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   let drainHeld = false
   let cancelDrain: (() => void) | null = null
   let drainGeneration = 0
+  // 收尾到点后没停掉的内核的重试。单独一格：内核随后自己退出、或下载线路重置时
+  // 收尾的持有会被作废，这份清理却还欠着。
+  let cancelCleanupRetry: (() => void) | null = null
   const lastErrors = new Map<string, string>()
   const lastConflicts = new Map<string, AccelerationConflictKind[]>()
   const lastSessionSeconds = new Map<string, number>()
@@ -528,30 +531,36 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   function holdCoreForDrain(current: Session) {
     if (current.billed || current.connectedAt === null || current.port === null || current.line === null
       || drainHeld || closing || disposed || !options.runtime.isRunning()) return
-    // 上一次收尾留下的重试定时器也在这一格里，先作废，免得它把这次收尾提前结束。
-    forgetDrain()
     downloadRoute ??= { port: current.port, line: current.line }
     drainHeld = true
-    finishDrainAfter(automaticSessionDrainMs)
-  }
-  /**
-   * 收尾到点：下载还握着内核就交给下载去停（stopDownloadRoute）；否则内核没人要了，
-   * 按探测留下的内核来清。停不掉时 stopStage 照记 core-stop，辅助进程也不算空闲，
-   * 下一次连接、停止、下载、检测线路或退出都会再清；另外像会话停不掉时一样五秒后再试。
-   */
-  function finishDrainAfter(milliseconds: number) {
     const generation = drainGeneration
     cancelDrain = schedule(() => {
       if (generation !== drainGeneration) return
       cancelDrain = null
       void enqueue(async () => {
-        if (generation !== drainGeneration || session || disposed) return
-        if (drainHeld) {
-          if (!endDrain()) return
-          probeNeedsCleanup = true
-        }
-        if (!probeNeedsCleanup) return
-        try { await stopSession() } catch { finishDrainAfter(5000) }
+        // 到点时下载还握着内核：交给下载去停（stopDownloadRoute）。
+        if (generation !== drainGeneration || !endDrain() || session) return
+        probeNeedsCleanup = true
+        await cleanUpUnownedCore()
+      }).catch(() => undefined)
+    }, automaticSessionDrainMs)
+  }
+  /**
+   * 收尾到点后内核没人要了，按探测留下的内核来清。停不掉时 stopStage 照记 core-stop，
+   * 辅助进程也不算空闲；像会话停不掉时一样五秒后再试，下一次连接、停止、下载、
+   * 检测线路或退出也会顺手再清。
+   */
+  async function cleanUpUnownedCore() {
+    try { await stopSession() } catch { retryCoreCleanupAfter(5000) }
+  }
+  function retryCoreCleanupAfter(milliseconds: number) {
+    cancelCleanupRetry?.()
+    cancelCleanupRetry = schedule(() => {
+      cancelCleanupRetry = null
+      void enqueue(async () => {
+        // 别处已经清掉了，或者又有了会话（建会话前必先清掉）：都不用再试。
+        if (session || disposed || !probeNeedsCleanup) return
+        await cleanUpUnownedCore()
       }).catch(() => undefined)
     }, milliseconds)
   }
@@ -876,6 +885,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           } catch { arm(5000); throw new Error(stopFailure) }
         }
         clearTimer()
+        cancelCleanupRetry?.()
+        cancelCleanupRetry = null
         disposed = true
       })
     },
