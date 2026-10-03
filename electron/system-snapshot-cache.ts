@@ -106,10 +106,14 @@ export function isCachedSystemSnapshot(value: unknown): value is SystemSnapshot 
 /** T 里不带 `?` 的那些字段，连同它们的类型。 */
 export type RequiredFields<T> = { [K in keyof T as {} extends Pick<T, K> ? never : K]: T[K] }
 
+/** T 里带 `?` 的那些字段名。 */
+export type OptionalKeys<T> = Exclude<keyof T, keyof RequiredFields<T>>
+
 /** 两边互相赋得过去才算同一个形状：多一个、少一个、换了类型都不行。 */
 export type SameShape<Actual, Pinned> = [Actual] extends [Pinned] ? [Pinned] extends [Actual] ? true : false : false
 
-type Pin<Matches extends true> = Matches
+/** 给的不是 true 就过不了类型检查。 */
+export type Pin<Matches extends true> = Matches
 
 /**
  * 别的版本写的文件也认，前提是快照结构没变：0.2.10 起每一版都只增减过可选字段。
@@ -117,8 +121,9 @@ type Pin<Matches extends true> = Matches
  * 改了其中一个（必填改可选、可选改必填也算），这里就过不了类型检查。改那份清单的
  * 同时把 SYSTEM_SNAPSHOT_CACHE_VERSION 加一，不然新版本会把上一版写的、缺了新字段的
  * 文件当成完整的结果交给首页。字段没变、意思变了（同一个布尔值换了判定方法）也要
- * 加一。可选字段的增减不用管，界面本来就当它可能没有。versionAdvice、revertVersion
- * 不在清单里：别的版本写的文件里，这两项整个不要（见 withoutVersionVerdicts）。
+ * 加一。可选字段的增减不用为这个加一，界面本来就当它可能没有（每家 CLI 的可选字段
+ * 另有一道分类，见 CliOptionalFields）。versionAdvice、revertVersion 不在清单里：
+ * 别的版本写的文件里，这两项整个不要（见 withoutVersionVerdicts）。
  */
 type SnapshotShapePins = [
   Pin<SameShape<RequiredFields<SystemSnapshot>, PinnedSystemSnapshot>>,
@@ -205,17 +210,29 @@ export function serializeSystemSnapshotCache(snapshot: SystemSnapshot, appVersio
  * （versionAdvice）、能退回哪一版（revertVersion）、算不算有更新（updateAvailable、
  * updateState）。新版本的名单可能已经换了推荐版本，而首页先摆上次结果的这几秒里
  * 「更新」「更新到推荐版本」是能点的：点下去版本号原样交给主进程，主进程见到点名的
- * 版本就直接装（resolveCliInstallVersion）。所以跨版本只留装没装、装在哪、什么版本
- * 这些事实，这类按钮等这次检测回来再出。
+ * 版本就直接装（resolveCliInstallVersion）。上次查到的最新版本号（latestVersion）也会
+ * 被「更新」当成点名的版本交过去。所以跨版本时每家 CLI 去掉这几项，这类按钮等这次
+ * 检测回来再出；装没装、装在哪、什么版本照留。桌面端整个照留：它的「更新」不点名
+ * 版本，装哪一版由主进程自己去和镜像比。
  */
 function withoutVersionVerdicts(snapshot: SystemSnapshot): SystemSnapshot {
   const clis = Object.fromEntries(providerIds.map((id) => {
     const { versionAdvice: _versionAdvice, revertVersion: _revertVersion, ...facts } = snapshot.clis[id]
-    const status: CliStatus = { ...facts, updateAvailable: false, updateState: 'unknown' }
+    const status: CliStatus = { ...facts, latestVersion: null, updateAvailable: false, updateState: 'unknown' }
     return [id, status]
   })) as Record<ProviderId, CliStatus>
   return { ...snapshot, clis }
 }
+
+/**
+ * 每家 CLI 的可选字段照抄一份。新加一个时这里过不了类型检查：先想清楚它是不是那一版
+ * 按自己的推荐版本名单算出来的、会不会被按钮当成要装的版本交给主进程，是就在
+ * withoutVersionVerdicts 里一起去掉，再把它记进这份清单。这一道只为分类，不用加格式版本号。
+ */
+type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'installTarget'
+  | 'updateSource' | 'updateCheck' | 'updateState' | 'updateCheckedAt' | 'updateError' | 'versionAdvice' | 'revertVersion'
+
+type CliOptionalFieldsSorted = Pin<SameShape<OptionalKeys<CliStatus>, CliOptionalFields>>
 
 /**
  * 读出来的快照带上 `cachedAt`（落盘时间），界面据此知道这是上次的结果。别的版本

@@ -9,6 +9,8 @@ import {
   createSystemSnapshotCache,
   parseSystemSnapshotCache,
   serializeSystemSnapshotCache,
+  type OptionalKeys,
+  type Pin,
   type RequiredFields,
   type SameShape,
 } from './system-snapshot-cache'
@@ -104,17 +106,17 @@ describe('system snapshot cache', () => {
     const sameVersion = parseSystemSnapshotCache(content, '0.2.14')
     const nextVersion = parseSystemSnapshotCache(content, '0.2.15')
     expect(nextVersion?.cachedAt).toBe('2026-10-02T10:00:05.000Z')
-    expect(nextVersion?.clis.claude).toMatchObject({ installed: true, version: '2.1.266', path: '/opt/cli', latestVersion: '2.1.288', updateAvailable: false, updateState: 'unknown' })
+    expect(nextVersion?.clis.claude).toMatchObject({ installed: true, version: '2.1.266', path: '/opt/cli', latestVersion: null, updateAvailable: false, updateState: 'unknown' })
     expect(nextVersion?.clis.claude.versionAdvice).toBeUndefined()
     expect(nextVersion?.clis.claude.revertVersion).toBeUndefined()
     expect(providerIds.filter((id) => nextVersion?.clis[id].updateAvailable !== false)).toEqual([])
     // 装没装、装在哪这些事实不分版本，照原样留下。
     expect({ ...nextVersion, clis: undefined }).toEqual({ ...sameVersion, clis: undefined })
-    // 同一版本写的，它自己下的判断照旧可信。
-    expect(sameVersion?.clis.claude).toMatchObject({ updateAvailable: true, updateState: 'available', revertVersion: '2.1.260', versionAdvice: { recommendedVersion: '2.1.270', rollbackAvailable: true } })
+    // 同一版本写的照旧原样用，和以前一样。
+    expect(sameVersion?.clis.claude).toMatchObject({ latestVersion: '2.1.288', updateAvailable: true, updateState: 'available', revertVersion: '2.1.260', versionAdvice: { recommendedVersion: '2.1.270', rollbackAvailable: true } })
   })
 
-  it('pins the required snapshot fields so a shape change cannot reach older files unnoticed', () => {
+  it('trips the shape pins when a required snapshot field changes or a CLI optional field goes unsorted', () => {
     // 真正的检查发生在 npm run typecheck：带 @ts-expect-error 的几行必须一直编译不过。
     const unchanged: SameShape<RequiredFields<ToolStatus>, RequiredFields<ToolStatus>> = true
     const optionalAdded: SameShape<RequiredFields<ToolStatus & { addedLater?: string }>, RequiredFields<ToolStatus>> = true
@@ -124,7 +126,11 @@ describe('system snapshot cache', () => {
     const madeOptional: SameShape<RequiredFields<Omit<ToolStatus, 'path'> & { path?: string | null }>, RequiredFields<ToolStatus>> = true
     // @ts-expect-error a retyped required field no longer matches what older files hold
     const retyped: SameShape<RequiredFields<Omit<ToolStatus, 'installed'> & { installed: string }>, RequiredFields<ToolStatus>> = true
-    expect([unchanged, optionalAdded, requiredAdded, madeOptional, retyped]).toEqual([true, true, true, true, true])
+    // @ts-expect-error a new optional field on a CLI status has to be sorted into facts or verdicts first
+    const optionalUnsorted: SameShape<OptionalKeys<CliStatus & { addedLater?: string }>, OptionalKeys<CliStatus>> = true
+    // @ts-expect-error a pin has to reject a shape that no longer matches
+    type Mismatch = Pin<false>
+    expect([unchanged, optionalAdded, requiredAdded, madeOptional, retyped, optionalUnsorted]).toEqual([true, true, true, true, true, true])
   })
 
   it('writes atomically to the data directory and reads it back once per process', async () => {
