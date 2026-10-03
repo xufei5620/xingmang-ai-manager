@@ -16,6 +16,253 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.15 - 2026-10-04
+
+- 第二十六批 D：`src/renderer-v2/business-common.tsx` 新增 `detectionFailureMessage`，把探针给的英文原话归成四句中文
+  （EPERM/EACCES、EBUSY、ENOENT、其他），原话本来是中文的照旧脱敏后显示。判中文之前先剥掉脱敏占位词「本地配置文件」、
+  引号段和路径片段，免得英文原话因为占位词或中文用户名被当成中文。首页工具行、安装卸载页、外部客户端行三处换用它。
+- `electron/ipc.ts`：`system:scan` 与 `external-clients:scan` 每次扫完，对检测失败的工具各记一条 warn
+  （`runtime` / `cli` / `desktop` / `external-client` 的 `.detection-failed`，原话过 `redactHomeDirectory`），
+  英文原因只进运行日志和反馈报告。走缓存的扫描不重复记。
+- 第二十六批 E：`ToolTemplateFillResult` 加可选 `pending`：工具可能开着、这次没补的；Codex 型号名单没按账号核对也记在
+  codex 头上。`config:fill-template-defaults` 收可选 `retry`：主进程按账号记下开机那轮欠下的，retry 只补那几样，
+  换了账号就什么都不做。型号名单「这次动不动」改为在本机看完再交回结果，按账号核对照旧放后台；不是当前账号写的 Codex
+  配置不再为型号名单起进程看它开没开。补做那几次的日志带 `retry: true`，型号名单补做记 `codex-model-catalog.sync-resumed`。
+- 渲染层 `features/app/template-fill-retry.ts`：有 pending 时每 10 分钟、或窗口回到前台（离上一次至少 2 分钟）带 retry
+  再要一次，补上、不欠了、换账号或满 6 次（约一小时）就停。真补上了照旧出「已把工具设置补齐到最新」，现在可能在用着时出现。
+- 打包器复用 Electron 43 已采用的 `@electron/get 5.0.0`，移除构建依赖中的旧 `got`、`cacheable-request` 和受 GHSA-ch52-4w7c-c8xp 影响的 `http-cache-semantics` 链；保持 npm 官方源、SHA-512 锁定和零漏洞审计门槛。
+- 固定 `electron-builder 26.15.3`，根据上游迁移补充构建下载的十分钟截止时间、标准代理/TLS 校验和服务端/临时网络错误重试；安装时核对原模块 SHA-256，未知源码或版本拒绝应用兼容补丁。
+- 本次只调整构建下载依赖，不改变 Electron 版本或客户端运行时依赖；验证包含依赖审计、编译和打包器兼容性。
+- CI：Electron 43 的 npm 包没有安装脚本，`npm ci` 不下二进制，要等第一个 `require('electron')` 的测试现场去下，只发一次请求、
+  不重试也不限时，网络一抖那个测试就带着「Electron failed to install correctly」红掉（#319 的 Windows vitest-1 撞上 GitHub
+  两次 HTTP 500，#796 的 linux-test 撞上 `fetch failed`）。现在用到二进制的作业在 `npm ci` 之后先跑
+  `scripts/ci-ensure-electron-binary.cjs`：每次限时 3 分钟，失败隔 10、30、60、120 秒再试，五次都不行才报中文错误；
+  重试成功也会在运行摘要里留一条警告。`quality` 里按系统、架构和 Electron 版本缓存下载包，命中时不连 GitHub（本地演练约 2 秒装好）；
+  缓存的是 @electron/get 自己的默认下载目录：`windows-package`、`macos-test` 后面打包时，electron-builder 照旧从这个目录拿同一份
+  zip，不用再下一遍。
+  只有推送到 main 的那轮在下载后立刻写缓存，PR 不各存一份。三个出包工作流（发布、测试包、已停用的签名构建）也加了这一步，不用缓存。
+  只给真用得到的作业加：Windows 只有两个 vitest 分片，其余四个分片和 Linux 浏览器作业实测不碰二进制，不多花解压时间。
+  `scripts/ci-ensure-electron-binary.test.cjs` 钉住重试节奏、最坏耗时在步骤时限内，以及「哪些作业装、装在哪一步、缓存怎么配」。
+- CI：`quality` 工作流的 `linux-test` 原先把 typecheck、`npm test`、`test:v2`、`test:ui` 等一路排队跑完，约 21 分钟，
+  是整条流水线最慢的一项（第二慢的 Windows 浏览器分片约 16～17 分钟）。`test:v2` 的夹具浏览器套件（`test:v2:browser:fixture`，
+  约 12 分钟）改到新作业 `linux-renderer-v2-browser` 与它同时跑，切法与 Windows 分片相同、不再往细拆（共用同一份
+  Vite 依赖预构建缓存）；`linux-test` 改跑 `test:v2:vitest` 与 `test:v2:browser:e2e`。一项检查没少、也没重复跑，
+  新作业已进 `quality-gate`。`scripts/ci-workflow-config.test.cjs` 钉住两个作业合起来正好等于 `npm run test:v2`。
+- CI：合进 main 后的那轮 `quality` 先在 `changes` 作业里停 10 分钟再开跑。原先每合一条就整套开跑，几分钟后下一条合进来又把它顶掉
+  （截至 10-3 的三天里 main 上 104 轮有 65 轮这样跑一半作废），白占十几台机器、其中两台 Mac，让开着的 PR 排队。现在连着合几条只取消
+  这一个在等的作业，整套只为最后一条跑一次；PR 上的检查不等。推送到 main 的那轮一律跑全套代码检查，不再按「只改了文档」跳过：
+  它要替被顶掉的那几轮一起把关，而推送事件只给出最后一条合并的改动（`scripts/ci-change-scope.cjs`）。
+  `scripts/ci-workflow-config.test.cjs` 钉住只有推送才等、等待排在最前、作业时限留够、只有这一处 sleep。
+- `acceleration-development-backend.ts`：不计时的会话（打开 Codex 桌面端时自动连的）停下时照旧先还原系统代理，
+  但内核不马上停，端口记成下载线路、单独握一份收尾持有（`drainHeld`，不进 `downloadHolders`），
+  `automaticSessionDrainMs`（10 分钟）后才停。#772 起用星芒 Key 的约两分钟就断，第一次提问的 `/responses`
+  流式返回很可能还走在本机端口上；沙箱里用 Codex 0.159 演过，代理端口一断它就报
+  `error decoding response body`、显示重新连接并重发整次请求。新请求按还原后的系统代理直连，不受影响。
+  用户自己点的、计时的会话停下时照旧马上停内核。
+- 收尾期间：同一条线路再连（后台或用户自己点）直接接管内核、不重起，收尾就此结束（放在建会话之后，
+  账本写入失败时收尾照旧到点停内核）；换线路照旧重起；下载临时加速共用内核，两边都放手才停；
+  检测线路时只剩收尾握着内核就让路；内核自己退出、退出软件时一并作废；辅助进程不算空闲。
+  到点时内核停不掉就记 `core-stop`、五秒后再试，和会话停不掉时一样。
+- COS 大型不可变安装包增加默认关闭的受限并发分块上传，保留原小文件和 latest 指针上传流程、源文件信任校验及完整公共回读；未知合并结果不盲重试，需先现场确认最小权限再启用。
+- 官方 ChatGPT 八个平台改为串行独立同步作业，各自校验后累计发布索引，避免全部大包共用一次 90 分钟作业；失败可精确平台恢复，整体成功要求所选作业全部通过。
+- Claude 桌面备用包、不可变候选清单和 latest 指针统一保存在 `xingmang/offline/claude/`，沿用已授权的 `xingmang/*`；示例 CAM 策略保持原有两个前缀，不扩大云权限。
+- COS 可覆盖对象仍只允许三个固定 latest 指针，拒绝旧 `claude/latest.json` 和其它备用目录；星芒正式发版目录及正常安装方式不变。
+- 使用官方客户端正常匿名 Mac 更新协议获取发布信息，严格验证独立 DMG/PKG 候选；不处理下载入口的人机验证，不借用 ZIP 摘要校验另一格式的文件。
+- 修正官方签名主体格式及 PKG 包壳版本误判，固定 Apple 链、Team、应用身份和原生双架构检查；发布前重读来源，补齐有界脱敏阶段诊断及未知 latest 写入确认。
+- Claude 官方下载入口改用有界匿名 GET 响应头探测，收到响应头即销毁正文，静态完整包仍以 HEAD 校验大小与 ETag；修复 Windows 入口不支持 HEAD 而返回 405 的兼容问题。
+- 重定向数量、固定主机及路径、无查询参数、完整下载摘要和原生签名校验保持原有边界；Mac 入口 403 仍是待验证限制，不省略 Mac 同步目标。
+- 官方 Codex 备用包同步增加脱敏阶段、字节进度和白名单网络失败分类，分别保留 PUT 与公共回读原因，清理错误不再覆盖主错误。
+- 手动入口支持平台分组及精确平台恢复，保留已有平台合并规则与最终八包两许可目标；发布最新索引前重新核对可变官方来源快照。
+- COS 分块上传诊断补齐 UserNetworkTooSlow、请求体长度和格式等官方上传错误码；无法提取 Code 时保留固定读取/解析原因、最多 4 KiB 的字节计数和固定内容类型分类，不输出未知错误码、服务端正文或认证信息。
+- 保持原超时、正文限制及分块重试集合，新增可识别错误码只用于诊断，不自动重试。
+- 星芒正式安装包导入和发布同步补齐白名单阶段诊断，保留底层安全错误分类和最新指针写入状态；临时目录清理失败不再覆盖原始同步错误，已发布后清理失败明确报告已完成回读。
+- COS 分块上传的单块响应头等待上限从三分钟调为六分钟，总分块调度上限从三十分钟调为七十五分钟，容纳已观察到的慢速大包上传；保留更短调用方超时、逐请求三十分钟签名、单次 PUT 预算、完整回读及不自动重试的失败边界，作业仍限九十分钟。
+- 依据真实同步日志，仅将分块 PUT 的 EPIPE 和已安全识别的 HTTP 400 UserNetworkTooSlow 纳入现有最多额外两次重试；复用同一已校验分块与会话，保持 1 MiB、并发、截止和非分块写入的原边界。
+- 官方 Codex、Claude 桌面备用包的定时、默认和 all 同步收窄为 Windows/macOS，保留历史 Linux 索引与对象兼容；Claude 支持按 Windows 架构或 Mac DMG/PKG 单项恢复。
+- COS 分块上传仅对明确超时的同一分块最多额外重试两次，复用已校验内容并保留总期限、并发收拢及 Complete 未确认后的完整回读边界。
+- 对可信 COS 分块 HTTP 错误以 4 KiB、5 秒上限提取白名单错误码，区分 RequestTimeout 与 BadDigest 等错误，保留 HTTP 状态且不记录错误正文或认证数据。
+- 新增可选的腾讯云 COS 分发同步：星芒正式发布后显式同步完整发布产物，Codex 和 Claude 官方安装包通过独立定时及手动流程同步；凭据仅在受限部署环境内使用。
+- 新增首次导入已发布星芒安装包的受限工作流，仅接受正式 GitHub Release 的真实安装包并核对大小及 SHA-256；正常发版仍校验完整发布产物。
+- Claude 备用包在对应原生 runner 上核对版本、架构和适用签名；三个平台串行维护公开索引，Linux DEB 同时核对官方 APT 大小、摘要及包头。
+- 同步前后校验文件身份、版本、内容哈希和下载类型，保存不可变版本目录并在完整公开读回后更新索引；Windows 官方 MSIX 额外验证系统签名，提供仅授权指定桶前缀的 CAM 配置说明。
+- 新版学习空间的下载入口由独立教程仓库接入同一份 COS 索引；客户端继续按完整 URL 白名单打开该入口。
+- 补齐下载代理测试对宿主 CLI 安装探测的隔离，保留原断言；下载页发布脚本测试通过私有输出流保留并核对日志，避免中文输出污染 Node 测试运行器。
+- COS 大包分块由 4 MiB 缩至 1 MiB，维持 2 GiB 文件、并发和时间上限，减少断连后需要重发的单块内容；最大 2048 块的合并请求独立于响应大小限制验证。
+- 仅将已确认的私有分块 PUT ECONNRESET 纳入现有最多额外两次重试；继续复用同一已校验内容与上传会话，普通写入、未知 HTTP 错误和 Complete 不扩大重试。
+- 反馈报告附的最近 600 条日志不再被刷屏（第二十六批 B）。两份真机报告里，Windows 那份有 505 条是下载更新时
+  每秒一条的「主程序更新状态：downloading」，Mac 那份有 508 条是公告、公告已读同步、订阅三个轮询的「完成」行，
+  更早发生的事反倒被挤出了报告。
+- 更新状态那条日志（`electron/update-state-log.ts`，由 `main.ts` 的 `broadcastUpdate` 调用）：只在阶段、找到的版本、
+  错误、失败步骤变了，或下载进度过了一档 10% 时记；下载中那条带整数 `percent`。一次下载从五百多条变成十来条，
+  界面照常收到每一份快照。
+- `electron/ipc.ts`：`account:get-notice`、`account:sync-local-notice-reads`、`account:get-subscription-self` 成功改记调试级
+  （照样写进本机日志文件，只是报告不附）。耗时 3 秒以上的、上一次失败之后的第一次成功照记 info，后者带
+  `recovered: true`；失败照旧记 error。
+- `electron/runtime-log.ts`：日志摘要另留一段只含调试级以外的尾部（`nonDebugEntries`，同样最多 2000 条），
+  反馈报告从这里取。以前从全部级别的最近 2000 条里再筛掉调试级，调试级一多，报告就附不满 600 条。
+- 反馈报告「最近一次自检」那段两份真机报告都是空的（第二十六批 C）：检查结果只在主进程内存里，客户导出前
+  看不到任何提醒。`runtime-logs:preview-feedback` 的结果多带 `selfChecked`（`FeedbackReportPreview`，可选，
+  缺省不提醒），由 `diagnosticsService.hasSelfCheckResult` 按 `feedback-self-check.ts` 的 `hasFeedbackSelfCheck`
+  判断，与报告里写不写「还没做过自检」同一个口径；过期重生成的预览同样带上。为 false 时预览弹窗在报告上面
+  显示提示和「去检查」（`feedback-report-unchecked` / `feedback-report-go-check`）。生成报告照旧不重跑检查。
+- 报告里给客服的那句改成「打开「检查」页，等它查完再导出」：新界面的检查页一打开就自动查，页上叫
+  「开始检查」的只有要花额度的「Codex 干活检查」。
+- `src/renderer-v2/business-common.tsx` 的 `ipcPrefixPattern` 剥 Electron 加在通道名后面的错误类名时，
+  不再只认 `…Error` 结尾：主进程 `CodexDesktopInstallFailure` 的类名以前跟着中文原因一起上屏。
+  每层只剥一个类名，原话开头的 `EPERM:`、`Error [ERR_TLS_*]:` 这类错误码照旧留给错误分类；
+  冒号后面必须有空格，没带类名、直接以 `C:\Users\…` 开头的原话不会被削掉盘符而躲过路径脱敏。
+- `runtimeStageFailureMessage` 改收原始错误，先过 `rawErrorMessage` 再拼句：以前 `App.tsx` 把
+  `cause.message` 拼进句子中间，「Error invoking remote method 'runtime:install-node': Error:」
+  留在错误框和「给客服看的原话」里。
+- 另两个不以 Error 结尾的类名（`download-retry.ts` 的 `ResumeRefused`、`ai-chat-service.ts` 的
+  `StreamFailure`）核过不会作为 IPC 拒绝到达界面，规则放宽后即使到达也会被剥掉。
+- `macos-desktop-app-installer.ts` 收录 Claude Desktop（Squirrel.Mac 更新接口，带随机 device_id
+  与真实 os_version，只认当前版本的通用 zip，下载后核对版本信息里的大小与 SHA-256）和 Codex 桌面端
+  （ChatGPT.app，Sparkle appcast，跳过增量包，挑系统够得上的最新构建，按 enclosure 的 length
+  核大小）。两家都按团队号钉签名要求（Q6L2SF6YDW / 2DC432GLL2）再过 Gatekeeper，2026-10-03 在
+  GitHub macOS 26 runner 上实际下载核对过。「应用程序」里是旧版 com.openai.chat 的 ChatGPT 时
+  换一句话说，仍不覆盖。
+- `codex-desktop-service.ts` 的 macOS 安装改调同一个安装器（走下载线路、可取消、root 下不装、
+  x64 版跑在 Rosetta 下装 arm64 包），失败句用 Mac 那套，不再套 Windows 的「去微软商店装」。
+  `platform-capabilities.ts` 里 Mac 两种芯片的 `codexDesktop.install` 改为 `managed`。
+- legacy 回滚版读的是同一个能力位：回滚到它时，Mac 上的新手引导会像 Windows 那样代装桌面端。
+  legacy 代码没动；三条拿 `darwin arm64` 当「客户自己装」例子的旧用例改用认不出的芯片
+  （`darwin ia32`）来演，断言不变（同 #761 的做法）。
+- 第二十九批 A：`App.tsx` 的 `requestLaunch` 碰上 Codex 桌面端已在运行时，改由 `features/tools/codex-desktop-open.ts` 判断要不要弹
+  「Codex 已在运行」，只有 Windows 弹。Mac 主进程一律拒绝 `restart`（`codex-desktop-service.ts`），框里只有「打开窗口」走得通，
+  所以直接走 `open`（菜单栏和快捷键走的是同一条路）。`locale-status.ts`、`ConfigDialog.tsx`、`running-tools.ts`
+  （`codexDesktopRunning === true && !canRestartCodexDesktop`）按 Mac 换成「Command + Q 完全退出再打开」的说法，Windows 文案不变；
+  教程两个系统共用一份，三处各在句尾补半句给 Mac。`account-bound-launch.browser-check.mjs` 钉住 Windows 照旧弹框、Mac 不弹且只发一次 `open`。
+- 第二十九批 B：`pages-account.tsx` 订单页的支付方式也走 `paymentMethodLabel`（#722 当时只改了充值页），任务详情的状态用和列表同一张 `taskStates`。
+- 第二十九批 A 的同一个原因：`system-service.ts` 的 `trustCodexWorkspaceForService` 写完信任后只在 Windows 上替人重启 Codex 桌面端。
+  Mac 主进程一律拒绝 `restart`（`codex-desktop-service.ts`），原来信任已经写进去了却抛出这句报错。
+  `system-service.locale.test.ts` 钉住 Windows 照旧重启、Mac 不再请求重启。
+- `electron/window-lifecycle.ts`：`installDownloadedUpdate` 可以返回 Promise，`runQuit` 先 `hide()` 再等它落定，
+  最多 20 秒，然后照常 `quit()`；安装器自己接手退出（will-quit 里 dispose）时不再叫第二遍。新增 `noteSystemPowerOff()`：
+  关机、重启、注销时不等，免得系统说本程序取消了关机。
+- `electron/main.ts`：只在 darwin 上返回 `waitForUpdateInstallFailure(updaterService)`（`quit-blocking-tasks.ts`），
+  交出去前先放掉画布、支付窗口并 `app.hide()`；安装看门狗的 `UPDATE_INSTALL_LAUNCH_TIMEOUT` 不算落定（慢的 Mac 还在验签）。
+  `powerMonitor` 的 `'shutdown'` 接到 `noteSystemPowerOff()`。
+  以前退出路径把更新交给 electron-updater 的 `MacUpdater.quitAndInstall()` 后马上 `app.quit()`，而 Squirrel.Mac 要在
+  本进程里从本机代理取包、解压、验签（10-2 真机日志约 1 秒）才自己退出重开，推测进程先退就什么也没装上。
+  Windows、Linux 的安装器是独立进程，不变。真机还没核，步骤见 `/mnt/project-files/0.2.15-真机新增/`。
+- `electron/updater.ts` 的 `safeError`：darwin 上认出 Squirrel.Mac 的「Code signature … did not pass validation」
+  （含系统中英文原因），给单独的错误代码 `UPDATE_SIGNATURE_REJECTED` 和中文正文，原话只进 `detail`。以前这句夹着
+  macOS 的中文原因，`describeUnrecognizedUpdateFailure` 把它当成本来就是中文整句上屏，路径还被打码成「本地配置文件」。
+- 渲染层 `features/app/update-retry.ts` 的 `updateNeedsManualReinstall` 按这个代码把更新页失败卡与首页气泡的主按钮
+  换成「打开下载页」（`appReleaseDownloadUrl`），更新页卡片头的「重启安装」与「必须更新」那道门的「重新安装」也去掉。
+  验签失败对这次安装是终局：同一个包每次重试结果一样。
+- 已知没覆盖：「自动更新」开着时，退出时自动装被拒，下次打开仍先显示「上次没装上…点「重新安装」」，点一次后才换成这句；
+  要在 pending-update 记录里带上失败原因，留作后续。
+- `electron/ipc.ts`：`update:install` 成功日志改为「已把新版本交给安装程序，装没装上看下一条更新状态」，
+  不再写「主程序更新安装完成」，免得反馈报告里先「完成」后失败。
+- `publish-release` 改成一开始就把这一版的 tag 占在要出包的 commit 上（新的第一个作业 `release-tag`：先判断、再用 API 建，出包作业都等它；它拿着写权限，所以不装任何依赖），收尾建 GitHub Release 时不再传 `--target`。原因：`GITHUB_TOKEN` 拿不到 `workflows` 权限，出包之后 main 只要合进改 `.github/workflows` 的提交，GitHub 就拒绝它在出包的 commit 上建 tag 和 Release，0.2.14 的收尾因此两次 HTTP 403，只能手工补。
+- 这个版本号已经从别的 commit 发过、线上清单已经比它高、或者在撤回名单里，`release-tag` 就停下，不再等一个多小时出完包才发现；上一次触发占了 tag、没发出去就取消的，重新触发会把 tag 挪到新的 commit 上（`scripts/release-tag-plan.cjs`）。出包期间 tag 被删了，上传前那道关检查都过了以后先补建再传，补建不了就停下、线上不动。
+- `scripts/update-release-utils.cjs` 改成用到时才加载 `yaml`，不装依赖的 `release-tag` 也能用它算更新地址、比版本号。
+- 第二十七批 B：`src/renderer-v2/features/tools/Home.tsx` 运行环境卡按「有没有在用的命令行工具」决定 Node.js 那行
+  是不是可选。装了、正在装（装工具时会顺带准备 Node.js，那时要看见弹授权窗口那句）、这次没查出来装没装（A4）都算在用；
+  Codex 桌面端不算。一个都不在用时 Node.js 行和 Python、Git 一样灰点「可选 · 未装」，Windows 管理员授权那段、
+  Mac/Linux「还没有 Node.js」那段用 `.v2-runtime-hint.is-quiet` 灰字。`home-runtime-git-hint` 只在 Claude Code
+  在用时出（插件市场、技能和插件里的命令都是 Claude Code 的事），按钮都不变。
+- `elevation-notice.ts` 新增 `homeNodeElevationNotice` 给首页用：在用时说「准备 Node.js 时」会弹窗（首页按钮叫
+  「准备 Node.js」，装工具时顺带准备的那次客户点的是工具行的「安装」），不在用时先说一般不用单独点。
+  「安装卸载」页的 `elevatedInstallNotice` 不变，那里的按钮就叫「安装」。
+- 第二十七批 D：`electron/codex-desktop-service.ts` 打开 Codex 桌面端的等待阶段加 `switching-language`：找到 Codex
+  进程、开始换中文（等调试端口、核对端口归属）之前切过去，心跳那句改成「Codex 桌面端已经打开，正在把它的界面换成中文，
+  已经等了 N 秒。」，不再满 20 秒就加「可以先去开始菜单看看」。只有 Windows、选了中文界面时走到。
+- 第二十七批 C：#741 起账号请求经系统代理超时、连接被断一次，`proxy-bypass.ts` 就把整个 defaultSession 改直连到重启，装工具
+  （npm 子进程代理按 defaultSession 的 `resolveProxy` 取）、拉插件市场、检查页「网络位置」都跟着丢了代理。现在只有「代理本身连不上」
+  （`proxy` 那一类）才整个改直连（#578、#741 原本要救的情形，不变）；`timeout`、`refused` 先在新的内存分区 `xingmang-site-direct`
+  （只设 direct，不落盘）上探 `/api/status`，通了就只让发往星芒站点（同一个 origin）的请求走它，defaultSession 一行不动。
+- 走哪条路由 `createSiteFetch` 按请求的 origin 决定：账号客户端和 `relayFetch`（AI 聊天、画图、视频、连通检查、查模型都用它）都换成它，
+  它们连的是同一个站点（`site-runtime.ts` 要求 AI 路由与账号同 origin），所以跟着一起改直连；视频下载等别的地址照旧走 defaultSession。
+  改直连的是出问题的账号客户端连的那个站点，不一定是当前选中的。main.ts 的接线收在 `createSiteRouting`，带单测。
+- 直连那一路在拿到回话之前失败就交还给系统代理；AI 请求被调用方自己中止（点「停止」、关窗口）不算，账号请求的中止只有 10 秒超时，算。
+  失败的那个请求随即再探一次，通了照样重发；探不通时站点这一路 1 分钟后再探（`siteProbeBackoffMs`），整个改直连仍是 5 分钟冷却。
+  每一轮改直连带编号，上一轮迟到的失败不会把刚探通的这一轮交还掉。
+- 站点改直连期间，站点请求不再经过系统代理，代理软件后来关了、崩了就没人发现：每 5 分钟借一次站点请求的时机经默认会话探一下，
+  代理本身连不上了就照 #578 整个改直连。已经在试整个改直连时，同一时刻超时的请求等它试完再决定重不重发。
+- 不加界面文字。设置「网络连接」那一行看的是默认会话：站点单独改直连时照旧写「通过转发连接」，「本次已自动绕开」只在整个改直连时出现。
+- 第二十七批 A：electron-updater 6.8.9 自带的 60 秒超时在 Electron 里从来不生效（builder-util-runtime 把它挂在
+  请求的 `socket` 事件上，Electron 的 net 请求不发这个事件），下载中途断网、代理不转发时就一直挂着，不报错也不重试。
+- 新模块 `electron/update-request-guard.ts`，`main.ts` 用它包住 electron-updater 的 `httpExecutor.createRequest`：
+  记下更新请求最近一次收到响应头或数据的时间；停住时让还开着的请求像断网一样以错误收场，再 `abort()` 放掉连接。
+  增量下载（只下改了的那几段）不认取消令牌，靠它才停得下来。它还给每个响应挂一个空的 `error` 监听：electron-updater
+  多段增量下载的那个响应没挂，连接中途断开就成了没人接的异常，`main.ts` 当主进程意外出错退出再重开（沙箱 Electron
+  43.6.0 实测，HTTP/1.1、HTTP/2 都会）。electron-updater 没读就拒掉的响应（几段一起要却回了 200 整个文件、
+  Content-Type 不对、HTTP 出错）不去读它：Electron 只在有人读时才往下收，读了就会在它改下整包的同时把被拒的
+  那份整个安装包也下完。
+- `electron/updater.ts` 的 `downloadWatched`：electron-updater 的进度和宿主看到的字节（`downloadReceivedAt`）都算动静。
+  还在传时 `updateDownloadStallMs`（45 秒，与 `download-retry.ts` 同一个数）、进度到过 100% 以后
+  `updateDownloadSettleMs`（180 秒：签名核对、改名重试都不报进度）没动静就算停住：取消令牌，经
+  `abortDownloadRequests` 掐断请求，照代理连不上那条路换直连重下一次整个安装包（`disableDifferentialDownload`）；
+  再停住就报 `UPDATE_DOWNLOAD_STALLED`，正文沿用更新那张表里「超时」那句，`failedStep` 为 `download`。
+- 掐断以后 10 秒没收尾、期间也没再来数据才不再等它（`unsettled: true`，不自动重下，再下 electron-updater 只会交回
+  同一次）；机器睡醒、时钟往前或往回跳都从那一刻重新计时。被放弃的那次之后发来的 `update-cancelled` 和进度不落进
+  快照，晚到的出错记在下载那一步（正在检查时来的出错仍算检查的），真下完了照常落到「已下载」。停住时每 5 秒按
+  「这段时间没进账」重算平均速度。
+- 不用 `session.closeAllConnections()`：沙箱实测它关不掉正在用的 HTTP/1.1 连接，HTTP/2 下又会触发上面那个没人接的异常。
+- 日志：`updater/download.stalled`（warn，带 `retrying`、`unsettled`、`fullPackage`、`transferEnded`、`transferred`、
+  `total`），`updater/download.requests.aborted`（info，掐断了几个请求），`updater/runtime.selected` 多了 `requestGuard`。
+- 验证：单测（假计时器）；沙箱 Electron 43.6.0 + 真的 electron-updater（Windows 的 `NsisUpdater`），计时缩短，对着
+  本地更新源（HTTP/1.1、HTTP/2）演过：多段增量下载停住一次换整包重下成功、停两次报下载失败，单段增量下载停住，
+  连接中途断开（不再有没人接的异常），单段增量下载慢但一直有数据（不误判），下完以后核对签名慢（不误判），
+  几段一起要却回了 200 整个文件（被拒的那份不再整个下完）。Windows / Mac 真机、线上更新源都没演过。
+- 第二十七批 E：`electron/new-api-client.ts` 的 `performRequest` 多一个 `idempotent` 选项（缺省按 GET 算），发验证码
+  （`GET /api/verification`）、发重置邮件（`GET /api/reset_password`）标 `false`，经代理失败后的直连重发规则改与 POST 相同：
+  只有代理本身连不上、通道没开（`proxy` 那一类，请求肯定没出这台电脑）才重发；等回复超时、连接中途被断分不清发没发到，不重发，
+  只照旧把会话改直连，原错误照常报。依据：new-api rc.24 `controller/misc.go` 先记码再同步寄信、最后才回话，
+  `common/verification.go` 按邮箱只留最后一个码，重发会顶掉第一封（线上定制版没核）。#741 起才有这个重发；历史账号那边没有，不受影响。
+- Codex 桌面端（`codex-desktop-service.ts`）：商店没走通（含没有商店）后先走 `downloadCodexDesktopOfficialPackage`，
+  从 `persistent.oaistatic.com` 的官方 MSIX 下载，版本取官方 `windows-store-update.json`；包进 `withDownloadAcceleration` 临时加速线路，
+  校验与镜像那一路同一套（`codexDesktopPackageValidationError`）。下不成、没过校验才换国内镜像，失败句多半句
+  「OpenAI 官网的离线安装包也没下成」；官网的包下好核过却装不上时直接报错，不再换镜像重下。安装尾段抽成
+  `installDownloadedCodexDesktopPackage` 两路共用。
+- Claude Desktop（新 `claude-desktop-msix-installer.ts`）：入口 `claude.ai/api/desktop/win32/<架构>/msix/latest/redirect`，
+  手动跟随至多三次跳转，只认 `claude.ai` 入口与 `downloads.claude.ai/releases/`；断点续传只找已落到的那个文件。
+  下载后用 PowerShell 只读核对 `AppxManifest.xml` 与 Authenticode 签名：包名 `Claude`、架构、发布者算出的 ID 等于
+  `Claude_pzs8sxrjxfjjc` 的后半截、签名 Valid 且签名者 `Anthropic, PBC`、签名主体与清单发布者一致。安装复用
+  `codex-desktop-appx.ts` 的 `addWindowsDesktopAppxPackage`（带后台服务的包要 UAC 授权）。
+- `external-client-runtime.ts`：Claude Desktop 在没有可信 winget 时也给「安装」；winget 除用户取消外怎么失败都先重新盘点，
+  没装上就换官网那一路。两路都失败时由 `claude-desktop-install-failure.ts` 归成一句大白话，原话挂 `originalError` 进运行日志；
+  渲染层新增 `claudeDesktopInstallFailed` 一类，按钮「去官网下载」打开 `https://claude.com/download`（已在外链白名单）。
+- `e2e/windows-powershell-probes-smoke.mjs` 在 Windows CI 上用一个未签名的替身包真跑一遍核对脚本。
+- 第二十八批 A：`electron/system-service.ts` 的 `runCliInstall`。Windows 普通权限（same-user）那条路没有暂存目录，
+  `npm install --global` 直接写进正在用的全局目录；以前平台主程序包（`@anthropic-ai/claude-code-win32-*`、
+  `@openai/codex-win32-*`）缺没缺要写完才查，查出缺了也不换源，旧版已经被盖掉。现在 `npm ci` 之后、写入之前先在
+  resolution 的 `node_modules` 里查（`findMissingCliNativePackage`），缺了记成这个源失败、换下一个源；写完后那两道
+  检查照旧留着兜底。托管那条路（Windows 管理员身份、macOS、Linux）也先查，省掉一次注定装不全的复制和安装，结果不变；
+  Grok 的两条 npm 通道照旧在自己的安装事务里核对。
+- 第二十八批 B：同一条路上，`lifecycle()` 那一段用 `managedPrefixSwapSealReason` 封住取消（Windows 的取消是
+  `taskkill /T /F`，npm 挪开的旧版来不及挪回去）。这个源没装成就解封，换下一个源时下载照样能取消；装成了就一直封到
+  结束，和托管那条路换进去以后一样。
+- 第二十八批 D：Windows 上装 Python（`python-runtime.ts`）、Node.js（`node-runtime.ts`）不再整段包在
+  `withDownloadAcceleration` 里。winget 自己下载、不走下载专用线路，以前先等线路（`acquireDownloadAcceleration`，最长
+  12 秒）再试 winget 是白等。两个安装器多一个可选的 `withDownloadRoute`，退到下安装包时才借：Python 只在查版本、
+  下载这两步握着，Node.js 握着 MSI 那一轮。`InstallNodeRuntimeOptions.networkRegion` 可以给函数，借到线路以后才问
+  （借到了就官方源优先，和以前整段借线路时一样）。macOS、Linux 装 Node.js 仍整段借线路，行为不变；CLI 安装里顺带
+  自动装 Node.js 那条路本来就在 CLI 安装的线路里，没动。
+- 第二十八批 C：`electron/platform-capabilities.ts` 的 `cliNeedsPythonRuntime` 里 Gemini 三个平台都是 false（Linux
+  版拆分 ③ 先去掉了 Linux）。Gemini 要 Python 只为现场编译可选依赖 `node-pty` / `@github/keytar`，编不出来 npm
+  照样装完；终端那块用的 `@lydell/node-pty` 有 win32-x64/arm64、darwin-x64/arm64 的现成包（0.60.0 的
+  optionalDependencies，没在 Windows、Mac 真机跑过）。渲染层 `planCliInstall` 因此不再把 Python 排进 Gemini 的
+  安装、Mac 上不再拦，新手引导选 Gemini 时不再出 Python 那一行。教程「进阶：安装与使用命令行工具」「Mac 上准备 Node.js 和 Python」、Mac 首页缺 Python
+  那段（`runtime-install-guide.ts`）的文字跟着改；注册表的 `requires` 和这几处 Python 分支留作没报表时的旧行为。
+- `platform/windows-system-proxy.ts`：WinInet 互操作不再用 `Add-Type` 现编 C#，改成用 Reflection.Emit 在内存里
+  声明三个系统函数（`InternetQueryOptionW`、`InternetSetOptionW`、`GlobalFree`，按 System32 全路径加载），
+  `INTERNET_PER_CONN_OPTION_LIST` 按 wininet.h 的排布手工读写（指针宽度取 `[IntPtr]::Size`）。Windows PowerShell
+  现编要起 csc.exe、往 %TEMP% 写 DLL 再载回来，每次调用都是第二个冷进程：Windows 打包检查里「查系统代理是谁设的」
+  一项在 #745、#796、#805 三次超过 15 秒上限（#805 是 18.6 秒，同一轮其余 30 项都在 1 秒上下）。查进程身份
+  （`owner`）现在完全不碰 WinInet；三个系统函数等读、写代理第一次用到时才声明。排布在 x86、x64、ARM64 三种 Windows
+  目标上用 clang 的静态断言核过，读写往返、释放和失败路径在沙箱里用 PowerShell 7 加一个按同样结构体编译的
+  替身库跑过；真机 WinInet 读写由 windows-uninstall-smoke 覆盖。
+- `scripts/windows-acceleration-recovery.ps1` 跟着换成同一份助手函数，测试改为比对从 `Initialize-WinInet` 到
+  `Same-State` 末尾的整段文字（原来只比对 C# 类型定义，`Read-State` / `Write-State` / `Same-State` 没人管）。
+  读不出系统代理时，客户报告里的原因从 `unexpected-system-error` 变成 `proxy-query-failed`（同样是固定代码，
+  不带系统原话）；写入失败照旧报 `proxy-restore-not-confirmed`。
+- `e2e/windows-powershell-probes-smoke.mjs` 加一项只读的「system proxy reading」，按 15 秒上限卡真正读系统代理的
+  那条路，日志只打 flags。
+
 ## 0.2.14 - 2026-10-02
 
 - `electron/sub2api-announcements.ts`：Sub2API 服务端按「未读在前、同状态按 ID 倒序」返回公告，最新一条读过后会排到
