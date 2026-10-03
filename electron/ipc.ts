@@ -1701,7 +1701,8 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
  * Mac 报告里三样一共占了 508 条，耗时中位 12 毫秒）。成功降到调试级：照样落盘，只是
  * 报告不附，要数一共成功几次去看本机日志文件。有两种成功照记 info，排查要用：慢的，
  * 报告里一眼看得出线路慢不慢；上一次失败之后的第一次成功，看得出什么时候恢复的。失败
- * 照旧一律记 error。
+ * 照旧一律记 error。已读同步除了跟着公告刷新，客户点开一条公告时也走它；那一下成功了
+ * 同样不必进报告，没成功照样记 error。
  */
 const pollingIpcChannels = new Set([
   'account:get-notice',

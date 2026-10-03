@@ -469,15 +469,23 @@ describe('registerIpcHandlers', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
       vi.setSystemTime(0)
+      const marker = `newapi-${'a'.repeat(64)}`
       const accountService = accountServiceStub()
       const getNotice = vi.fn(async () => null)
       accountService.getNotice = getNotice
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 7, username: 'notice-reader', group: null, role: 1, quota: 100, usedQuota: 0 },
+      })
       vi.mocked(accountService.getSubscriptionSelf).mockResolvedValue({ subscriptions: [] } as never)
-      const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+      const announcementReads = { sync: vi.fn(async (_scope: string, ids: string[]) => ids) }
+      const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { announcementReads })
       const readNotice = electronMocks.handlers.get('account:get-notice')!
       const readSubscription = electronMocks.handlers.get('account:get-subscription-self')!
+      const syncReads = electronMocks.handlers.get('account:sync-local-notice-reads')!
 
       await readNotice(trustedEvent())
+      await syncReads(trustedEvent(), 'xm-account:7', [marker])
       getNotice.mockImplementationOnce(async () => {
         vi.setSystemTime(Date.now() + 3_500)
         return null
@@ -485,20 +493,23 @@ describe('registerIpcHandlers', () => {
       await readNotice(trustedEvent())
       getNotice.mockRejectedValueOnce(new Error('账号服务请求超时'))
       await expect(readNotice(trustedEvent())).rejects.toThrow('账号服务请求超时')
-      await readNotice(trustedEvent())
-      await readNotice(trustedEvent())
+      // Another channel succeeding in between neither counts as nor clears the notice recovery.
       await readSubscription(trustedEvent())
+      await readNotice(trustedEvent())
+      await readNotice(trustedEvent())
 
+      const polled = new Set(['account:get-notice', 'account:sync-local-notice-reads', 'account:get-subscription-self'])
       const logged = vi.mocked(runtimeLog.log).mock.calls
-        .filter(([, , event]) => event === 'account:get-notice' || event === 'account:get-subscription-self')
+        .filter(([, , event]) => polled.has(event))
         .map(([level, , event, , detail]) => [event, level, (detail as { recovered?: boolean }).recovered === true])
       expect(logged).toEqual([
         ['account:get-notice', 'debug', false],
+        ['account:sync-local-notice-reads', 'debug', false],
         ['account:get-notice', 'info', false],
         ['account:get-notice', 'error', false],
+        ['account:get-subscription-self', 'debug', false],
         ['account:get-notice', 'info', true],
         ['account:get-notice', 'debug', false],
-        ['account:get-subscription-self', 'debug', false],
       ])
     } finally {
       vi.useRealTimers()
