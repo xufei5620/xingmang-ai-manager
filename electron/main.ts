@@ -18,7 +18,7 @@ import {
   shell,
   type WebContents,
 } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import { autoUpdater, CancellationToken } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
@@ -193,6 +193,7 @@ import {
 } from './system-service'
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
+import { createUpdateRequestGuard } from './update-request-guard'
 import { createUpdaterService } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
@@ -1544,6 +1545,11 @@ if (!hasSingleInstanceLock) {
         packageType: app.isPackaged ? readLinuxPackageType(process.resourcesPath) : null,
       })
       : undefined
+    // electron-updater 的请求在 Electron 里没有能用的超时，增量下载停住了也不认取消令牌，中途断网
+    // 还会抛没人接的异常：包住它建请求的那一处，看门狗才看得到数据还来不来、停住时掐得断
+    // （见 update-request-guard.ts）。httpExecutor 没写进 electron-updater 对外的类型，只能这样取；
+    // 取不到就只剩取消令牌。
+    const updateRequests = createUpdateRequestGuard(Reflect.get(autoUpdater, 'httpExecutor'))
     const updaterService = createUpdaterService(autoUpdater, {
       installMethod: updateInstallMethod,
       openSystemInstaller: updateInstallMethod === 'system-installer'
@@ -1607,6 +1613,24 @@ if (!hasSingleInstanceLock) {
           freeBytes: shortfall.freeBytes,
         })
       },
+      // 下载停住时看门狗靠它取消。得是 electron-updater 自己导出的这个类：它认「已取消」
+      // 靠 instanceof，别处来的令牌取消后会被当成下载出错。
+      createDownloadCancellation: () => new CancellationToken(),
+      downloadReceivedAt: () => updateRequests?.lastReceivedAt() ?? null,
+      abortDownloadRequests: (reason) => {
+        const aborted = updateRequests?.abortAll(reason) ?? 0
+        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted })
+      },
+      downloadStalled: (stall) => {
+        runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
+          retrying: stall.retrying,
+          transferred: stall.transferred,
+          total: stall.total,
+          unsettled: stall.unsettled,
+          fullPackage: stall.fullPackage,
+          transferEnded: stall.transferEnded,
+        })
+      },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
@@ -1667,6 +1691,7 @@ if (!hasSingleInstanceLock) {
       unsignedChannel,
       ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
+      requestGuard: updateRequests !== null,
     })
     if (unsignedChannel) {
       runtimeLog.log(
