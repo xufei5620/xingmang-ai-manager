@@ -32,7 +32,15 @@ Claude 同步在 Windows、macOS、Linux 各自的原生 runner 上验证，同�
 
 Claude Windows 检查 MSIX 产品身份和有效 Authenticode；Mac 原生读取应用/PKG 元数据并核对签名；Linux 核对官方索引大小、SHA-256 和 DEB 包头，记录未执行 APT GPG 验签。文档中的下载接口已核实，真实版本、最终 CDN、签名及安装结果以首轮 Actions 验收为准。
 
-Claude 固定 `latest/redirect` 入口使用匿名 GET，仅读取响应头后立即销毁正文；最终静态包仍使用 HEAD 获取大小与 ETag。2026-10-03 GitHub runner 公开探测确认 Windows 两个入口拒绝 HEAD（405），GET 则返回 307 到已允许的 `downloads.claude.ai/releases/`。此方法修复不代表完成包下载或原生验签；同轮 Mac DMG/PKG 入口的 GET 仍返回 403，六个平台目标及全部来源、格式、签名校验继续保留。
+Claude Windows 固定 `latest/redirect` 入口使用匿名 GET，仅读取响应头后立即销毁正文；最终静态包仍使用 HEAD 获取大小与 ETag。2026-10-03 GitHub runner 公开探测确认 Windows 两个入口拒绝 HEAD（405），GET 则返回 307 到已允许的 `downloads.claude.ai/releases/`。
+
+Claude Mac 的这两个浏览器下载入口在 runner 返回 403，并明确带有人机验证标记；同步器不会处理或绕过该验证。Mac 来源改用官方客户端公开 SDK 所使用的正常匿名更新协议：在原生 macOS runner，固定访问 `api.anthropic.com/api/desktop/darwin/<实际架构>/squirrel/update`，携带本次同步器自行生成的临时安装 UUID、已验证种子版本及 `sw_vers` 产品版本。不读取用户设备身份、账号配置或认证 Cookie；UUID 不出现在日志、COS 清单或公开下载页面。
+
+官方更新 JSON 的 `currentRelease` 必须对应唯一 `releases[].updateTo`，其中完整 Universal ZIP 的无查询参数地址、声明大小及 SHA-256 都须通过固定 schema。用该 Mac 发布版本和 release ID 构造两个独立的 DMG/PKG 候选地址；这个格式对应关系来自实际官方下载样本，并非厂商承诺的长期跨格式接口。任何候选不存在、官方元数据或包内版本变化，都停止发布并保留原 latest。ZIP 的 SHA-256 只作元数据溯源，不作为 DMG/PKG 的文件摘要。
+
+当前 `2.19675.0` 的两个候选还分别绑定正常官方浏览器下载后计算的大小和 SHA-256，依据保存在 `claude-mac-confirmed-sources.cjs`。将来官方更新 feed 给出新版本时自动解析新候选，不套用旧版浏览器摘要。DMG/PKG 均完整下载、原生验签后才可上传：固定 `Anthropic PBC`、Team `Q6L2SF6YDW`、Apple 根链和应用标识；PKG 还展开实际 payload，验证其中唯一应用的签名、Info.plist 版本及 Intel/Apple Silicon Mach-O。包壳的 PackageInfo 版本和 URL 中的 universal 字样不能代替这两项验证。
+
+发布 latest 前，使用本次同一个匿名安装 cohort 重新请求官方 feed，并重查候选 HEAD；版本、release ID、声明 ZIP 指纹或候选大小/ETag 变化时不切换指针。同步日志只含固定阶段、平台、耗时、字节数和自有脱敏错误分类；latest 写入结果未知时独立读回确认，不自动重试、覆盖或回滚，清理失败也不会掩盖此前的主错误。
 
 Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`，不可变候选清单保存在同一前缀的 `indexes/`。它们与星芒正式发布的 `xingmang/releases/` 和 `xingmang/latest.json` 分开，使用现有 `xingmang/*` 授权即可同步，无需扩大 CAM 权限。
 

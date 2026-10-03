@@ -6,6 +6,10 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
 const { createHash, randomUUID } = require('node:crypto')
+const { getConfirmedMacSource, validateConfirmedMacSourceRecord, sameConfirmedMacSourceResolution } = require('./claude-mac-confirmed-sources.cjs')
+const { createClaudeStageRunner, safeClaudeSyncFailure } = require('./claude-sync-diagnostics.cjs')
+const { SOURCE_MODE: MAC_UPDATE_SOURCE_MODE, createMacUpdateSourceDependencies, resolveMacUpdateReleaseCandidates,
+  validateMacUpdateSourceRecord, sameMacUpdateSourceResolution, validateMacUpdatePackageVersion, revalidateMacUpdateReleaseCandidates } = require('./claude-mac-update-source.cjs')
 
 const API_ROOT = 'https://claude.ai/api/desktop/'
 const APT_ROOT = 'https://downloads.claude.ai/claude-desktop/apt/stable/'
@@ -14,6 +18,8 @@ const APT_ROOT = 'https://downloads.claude.ai/claude-desktop/apt/stable/'
 const OFFICIAL_HOSTS = Object.freeze(['claude.ai', 'downloads.claude.ai'])
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_METADATA_BYTES = 1024 * 1024
+const CLAUDE_MAC_TEAM = 'Q6L2SF6YDW'
+const CLAUDE_MAC_ORGANIZATION = 'Anthropic PBC'
 // Keep emergency packages within the previously authorized manager prefix,
 // separate from formal manager releases and their latest pointer.
 const OFFLINE_PREFIX = 'xingmang/offline/claude'
@@ -185,12 +191,23 @@ function artifactKey(id, sha256) {
 }
 
 function sourceRecord(source, resource) {
-  // Public indexes retain the documented stable entry point, never a resolved
-  // CDN location or a redirect chain that could later acquire temporary tokens.
-  return { requestUrl: source.requestUrl || source.metadataUrl, ...validateHead(resource), resolvedHost: validateOfficialUrl(resource.url).hostname,
+  // Resolved Mac candidates have a separate, exact public-source schema. The
+  // private metadata request's installation identity is never persisted here.
+  return { requestUrl: resource.sourceResolution ? resource.url : source.requestUrl || source.metadataUrl, ...validateHead(resource), resolvedHost: validateOfficialUrl(resource.url).hostname,
     redirectCount: resource.redirects.length,
+    ...(resource.sourceResolution ? { sourceResolution: { ...resource.sourceResolution } } : {}),
     ...(source.metadataUrl ? { metadataUrl: source.metadataUrl, version: resource.version, expectedSha256: resource.expectedSha256, packageArchitecture: source.packageArchitecture } : {}),
   }
+}
+
+function validateMacSourceRecord(record, platformId, version, sha256) {
+  if (record?.sourceResolution?.mode === MAC_UPDATE_SOURCE_MODE) return validateMacUpdateSourceRecord(record, platformId, version, sha256)
+  return validateConfirmedMacSourceRecord(record, platformId, version, sha256)
+}
+
+function sameMacSourceResolution(left, right) {
+  if (left?.mode === MAC_UPDATE_SOURCE_MODE || right?.mode === MAC_UPDATE_SOURCE_MODE) return sameMacUpdateSourceResolution(left, right)
+  return sameConfirmedMacSourceResolution(left, right)
 }
 
 function validateIndex(value, publicUrl) {
@@ -208,10 +225,14 @@ function validateIndex(value, publicUrl) {
     validateVersion(file.version)
     validateHead(file.source)
     if (file.size !== file.source.bytes) throw new Error('COS Claude 版本索引大小不一致')
-    const allowedSourceFields = new Set(['requestUrl', 'bytes', 'etag', 'lastModified', 'resolvedHost', 'redirectCount', 'metadataUrl', 'version', 'expectedSha256', 'packageArchitecture'])
+    const allowedSourceFields = new Set(['requestUrl', 'bytes', 'etag', 'lastModified', 'resolvedHost', 'redirectCount', 'metadataUrl', 'version', 'expectedSha256', 'packageArchitecture', 'sourceResolution'])
     if (Object.keys(file.source).some(function (key) { return !allowedSourceFields.has(key) })
-      || file.source.requestUrl !== (source.requestUrl || source.metadataUrl)
+      || !Object.hasOwn(file.source, 'sourceResolution') && file.source.requestUrl !== (source.requestUrl || source.metadataUrl)
       || source.metadataUrl && file.source.metadataUrl !== source.metadataUrl) throw new Error('COS Claude 官方来源记录不匹配或包含非公开字段')
+    if (Object.hasOwn(file.source, 'sourceResolution')) {
+      if (source.platform !== 'macos' || file.source.redirectCount !== 0 || file.source.resolvedHost !== 'downloads.claude.ai') throw new Error('COS Claude 已确认来源平台或跳转记录无效')
+      validateMacSourceRecord(file.source, id, file.version, file.sha256)
+    }
     if (source.metadataUrl && (file.source.version !== file.version || file.source.expectedSha256 !== file.sha256 || file.source.packageArchitecture !== source.packageArchitecture)) throw new Error('COS Claude Linux 官方摘要、版本或架构记录不匹配')
     seen.add(id)
   }
@@ -233,30 +254,36 @@ function validateInspection(report, source, expectedVersion) {
     if (report?.package !== 'claude-desktop' || report.architecture !== source.packageArchitecture || report.version !== expectedVersion) throw new Error('Claude DEB 包头与官方索引身份或架构不匹配')
     return { version: validateVersion(report.version), verification: source.verification, aptSignatureVerified: false }
   }
-  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== 'Anthropic, PBC') throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
-  if (source.format === 'dmg' && (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)
-    || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64'))) throw new Error('Claude Mac 应用身份或 Universal 架构不匹配')
-  if (source.format === 'pkg' && report.architectureProof !== 'official-universal-endpoint') throw new Error('Claude Mac 企业 PKG 架构来源记录无效')
-  return { version: validateVersion(report.version), verification: source.verification, signatureStatus: 'Valid', ...(source.format === 'pkg' ? { architectureProof: report.architectureProof } : { architectures: ['arm64', 'x86_64'] }) }
+  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== CLAUDE_MAC_ORGANIZATION) throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
+  if (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)
+    || report.teamIdentifier !== CLAUDE_MAC_TEAM || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64')) throw new Error('Claude Mac 应用身份、固定 Team 或 Universal 架构不匹配')
+  if (source.format === 'pkg' && (report.architectureProof !== 'native-payload-mach-o' || report.installerTeamIdentifier !== CLAUDE_MAC_TEAM
+    || report.installerSignatureStatus !== 'Valid')) throw new Error('Claude Mac 企业 PKG 原生签名或实际架构记录无效')
+  return { version: validateVersion(report.version), verification: source.verification, signatureStatus: 'Valid', teamIdentifier: CLAUDE_MAC_TEAM,
+    architectures: ['arm64', 'x86_64'], ...(source.format === 'pkg' ? { architectureProof: report.architectureProof, installerTeamIdentifier: CLAUDE_MAC_TEAM, installerSignatureStatus: 'Valid' } : {}) }
 }
 
-async function synchronizeOfficialClaude({ store, platforms = 'all', dependencies, now = function () { return new Date().toISOString() } }) {
+async function synchronizeOfficialClaude({ store, platforms = 'all', dependencies, now = function () { return new Date().toISOString() }, progress }) {
   const ids = parsePlatforms(platforms)
-  const old = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
+  let latestState = 'not-written-by-this-run'
+  const stage = createClaudeStageRunner(progress, function () { return latestState })
+  const old = await stage('cos-read-latest', {}, async function () { return validateIndex(await store.readJson(LATEST_KEY), store.publicUrl) })
   const existing = new Map((old?.files || []).map(function (entry) { return [entry.platformId, entry] }))
   const resolved = new Map()
   for (const id of ids) {
     const source = SOURCES[id]
     let resource
     if (source.metadataUrl) {
-      const metadata = parseDebianPackages(await dependencies.fetchText({ url: source.metadataUrl, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_METADATA_BYTES }), source.packageArchitecture)
-      const head = validateHead(await dependencies.inspectResource({ url: metadata.url, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES }))
+      const metadata = await stage('source-resolve', { platform: id }, async function (onProgress) { return parseDebianPackages(await dependencies.fetchText({ url: source.metadataUrl, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_METADATA_BYTES, onProgress }), source.packageArchitecture) })
+      const head = await stage('source-head', { platform: id, expectedBytes: metadata.bytes }, async function () { return validateHead(await dependencies.inspectResource({ url: metadata.url, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES })) })
       if (head.bytes !== metadata.bytes) throw new Error('Claude Linux 索引与 HEAD 大小不一致')
       resource = { ...metadata, ...head, metadataUrl: source.metadataUrl, redirects: [] }
-    } else resource = await dependencies.resolveOfficialPackage(source.requestUrl)
-    validateOfficialUrl(resource.url)
-    validateHead(resource)
-    if (resource.version && existing.has(id) && compareVersions(resource.version, existing.get(id).version) < 0) throw new Error('Claude 官方版本倒退，已拒绝同步')
+    } else resource = await stage('source-resolve', source.platform === 'macos' ? {} : { platform: id }, async function () { return dependencies.resolveOfficialPackage(source.requestUrl) })
+    await stage('source-head', { platform: id }, async function () {
+      validateOfficialUrl(resource.url)
+      validateHead(resource)
+      if (resource.version && existing.has(id) && compareVersions(resource.version, existing.get(id).version) < 0) throw new Error('Claude 官方版本倒退，已拒绝同步')
+    })
     resolved.set(id, resource)
   }
   const reusable = new Map()
@@ -266,13 +293,15 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
     const record = sourceRecord(SOURCES[id], resource)
     if (!previous || previous.source.requestUrl !== record.requestUrl || previous.source.resolvedHost !== record.resolvedHost || previous.source.bytes !== resource.bytes || previous.source.etag !== resource.etag
       || previous.source.lastModified !== resource.lastModified || resource.version && resource.version !== previous.version
+      || !sameMacSourceResolution(previous.source.sourceResolution, record.sourceResolution)
       || resource.expectedSha256 && previous.sha256 !== resource.expectedSha256) continue
-    const remote = await store.inspect(previous.key)
+    const remote = await stage('cos-check-existing', { platform: id, expectedBytes: resource.bytes }, async function () { return store.inspect(previous.key) })
     if (remote && remote.bytes === previous.size && remote.etag === previous.cosEtag && remote.sha256 === previous.sha256 && remote.contentType?.split(';')[0] === previous.type) reusable.set(id, previous)
   }
   if (ids.every(function (id) { return reusable.has(id) })) return { changed: false, manifest: old, platforms: ids }
-  const directory = await dependencies.createWorkDirectory()
+  const directory = await stage('prepare-temp', {}, async function () { return dependencies.createWorkDirectory() })
   let preserveDirectory = false
+  let primaryFailure
   try {
     const prepared = []
     for (const id of ids) {
@@ -280,45 +309,87 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
       const source = SOURCES[id]
       const resource = resolved.get(id)
       const filePath = path.join(directory, source.fileName)
-      const downloaded = await dependencies.downloadResource({ url: resource.url, filePath, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES, expectedBytes: resource.bytes, expectedEtag: resource.etag, ...(resource.expectedSha256 ? { expectedSha256: resource.expectedSha256 } : {}) })
-      if (downloaded.bytes !== resource.bytes || downloaded.etag !== resource.etag || !/^[a-f0-9]{64}$/.test(downloaded.sha256)
-        || resource.expectedSha256 && resource.expectedSha256 !== downloaded.sha256) throw new Error('Claude 官方完整下载大小、ETag 或 SHA256 不一致')
-      await dependencies.validatePackageMagic(filePath, source.format, downloaded.bytes)
-      const inspection = validateInspection(await dependencies.inspectPackage({ filePath, source, resource, workDirectory: directory }), source, resource.version)
-      if (existing.has(id) && compareVersions(inspection.version, existing.get(id).version) < 0) throw new Error('Claude 包内版本倒退，已拒绝同步')
+      const downloaded = await stage('source-download', { platform: id, expectedBytes: resource.bytes }, async function (onProgress) {
+        const result = await dependencies.downloadResource({ url: resource.url, filePath, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES, expectedBytes: resource.bytes, expectedEtag: resource.etag, onProgress, ...(resource.expectedSha256 ? { expectedSha256: resource.expectedSha256 } : {}) })
+        if (result.bytes !== resource.bytes || result.etag !== resource.etag || !/^[a-f0-9]{64}$/.test(result.sha256)
+          || resource.expectedSha256 && resource.expectedSha256 !== result.sha256) throw new Error('Claude 官方完整下载大小、ETag 或 SHA256 不一致')
+        return result
+      })
+      const inspected = await stage('native-inspect', { platform: id, expectedBytes: resource.bytes }, async function () {
+        await dependencies.validatePackageMagic(filePath, source.format, downloaded.bytes)
+        return dependencies.inspectPackage({ filePath, source, resource, workDirectory: directory })
+      })
+      const inspection = await stage('native-validate', { platform: id }, async function () {
+        const result = validateInspection(inspected, source, resource.version)
+        if (resource.sourceResolution) {
+          validateMacSourceRecord(sourceRecord(source, resource), id, result.version, downloaded.sha256)
+          if (resource.sourceResolution.mode === MAC_UPDATE_SOURCE_MODE) validateMacUpdatePackageVersion(resource, result.version)
+        }
+        if (existing.has(id) && compareVersions(result.version, existing.get(id).version) < 0) throw new Error('Claude 包内版本倒退，已拒绝同步')
+        return result
+      })
       prepared.push({ id, source, resource, filePath, downloaded, inspection })
     }
     const files = new Map(existing)
     for (const [id, entry] of reusable) files.set(id, entry)
     for (const item of prepared) {
       const key = artifactKey(item.id, item.downloaded.sha256)
-      const published = await store.publishFile(key, item.filePath, { expectedBytes: item.downloaded.bytes, expectedSha256: item.downloaded.sha256, contentType: item.source.type, cacheControl: 'public, max-age=31536000, immutable' })
-      if (published.bytes !== item.downloaded.bytes || published.sha256 !== item.downloaded.sha256 || published.url !== store.publicUrl(key) || published.contentType?.split(';')[0] !== item.source.type) throw new Error('Claude COS 全匿名字节回读与已验完整包不一致')
-      const head = await store.inspect(key)
-      if (!head || head.bytes !== item.downloaded.bytes || head.etag !== published.etag || head.sha256 !== item.downloaded.sha256 || typeof head.etag !== 'string' || !head.etag) throw new Error('Claude COS 上传回读后的对象指纹发生变化')
+      const published = await stage('cos-publish-package', { platform: item.id, expectedBytes: item.downloaded.bytes }, async function (onProgress) {
+        const result = await store.publishFile(key, item.filePath, { expectedBytes: item.downloaded.bytes, expectedSha256: item.downloaded.sha256, contentType: item.source.type, cacheControl: 'public, max-age=31536000, immutable', onProgress })
+        if (result.bytes !== item.downloaded.bytes || result.sha256 !== item.downloaded.sha256 || result.url !== store.publicUrl(key) || result.contentType?.split(';')[0] !== item.source.type) throw new Error('Claude COS 全匿名字节回读与已验完整包不一致')
+        return result
+      })
+      const head = await stage('cos-head-package', { platform: item.id, expectedBytes: item.downloaded.bytes }, async function () {
+        const result = await store.inspect(key)
+        if (!result || result.bytes !== item.downloaded.bytes || result.etag !== published.etag || result.sha256 !== item.downloaded.sha256 || typeof result.etag !== 'string' || !result.etag) throw new Error('Claude COS 上传回读后的对象指纹发生变化')
+        return result
+      })
       files.set(item.id, { platformId: item.id, fileName: item.source.fileName, version: item.inspection.version, platform: item.source.platform, architecture: item.source.architecture,
         kind: 'installer', format: item.source.format, key, url: store.publicUrl(key), size: item.downloaded.bytes, sha256: item.downloaded.sha256, type: item.source.type,
         verification: item.inspection.verification, cosEtag: head.etag, source: sourceRecord(item.source, item.resource), inspection: item.inspection,
       })
     }
     const manifest = { schemaVersion: 1, product: 'claude-desktop', generatedAt: now(), files: [...files.values()].sort(function (left, right) { return left.platformId.localeCompare(right.platformId, 'en') }) }
-    validateIndex(manifest, store.publicUrl)
+    await stage('validate-latest', {}, async function () { validateIndex(manifest, store.publicUrl) })
+    const updateCandidates = ids.map(function (id) { return resolved.get(id) }).filter(function (resource) { return resource.sourceResolution?.mode === MAC_UPDATE_SOURCE_MODE })
+    if (updateCandidates.length) {
+      await stage('source-recheck', {}, async function () {
+        if (typeof dependencies.revalidateMacSources !== 'function') throw new Error('Claude Mac 官方更新来源缺少发布前复核')
+        return dependencies.revalidateMacSources(updateCandidates)
+      })
+    }
+    for (const id of ids) {
+      const resource = resolved.get(id)
+      if (!resource.sourceResolution || resource.sourceResolution.mode === MAC_UPDATE_SOURCE_MODE) continue
+      await stage('source-recheck', { platform: id, expectedBytes: resource.bytes }, async function () {
+        const current = validateHead(await dependencies.inspectResource({ url: resource.url, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES, expectedBytes: resource.bytes, expectedEtag: resource.etag }))
+        if (current.bytes !== resource.bytes || current.etag !== resource.etag || current.lastModified !== resource.lastModified) throw new Error('Claude Mac 已确认来源在同步期间变化，已保留原索引')
+      })
+    }
     const candidateDigest = createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
-    await store.publishJson(`${OFFLINE_PREFIX}/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' })
-    const current = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
-    if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('Claude COS 最新索引在同步期间变化，已保留现有指针')
-    try {
-      await store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate' })
-    } catch {
+    await stage('cos-publish-candidate', {}, async function () { return store.publishJson(`${OFFLINE_PREFIX}/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' }) })
+    await stage('cos-recheck-latest', {}, async function () {
+      const current = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
+      if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('Claude COS 最新索引在同步期间变化，已保留现有指针')
+    })
+    latestState = 'write-unconfirmed'
+    try { await stage('cos-publish-latest', {}, async function () { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate' }) }) }
+    catch {}
+    await stage('cos-confirm-latest', {}, async function () {
       const actual = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
       if (JSON.stringify(actual) !== JSON.stringify(manifest)) throw new Error('Claude COS 最新指针写入未确认；已回读，未重复写入或盲目回滚')
-    }
+    })
+    latestState = 'published-and-read-back'
     return { changed: true, manifest, platforms: ids }
   } catch (error) {
+    primaryFailure = error
     preserveDirectory = error?.preserveWorkDirectory === true
     throw error
   } finally {
-    if (!preserveDirectory) await dependencies.removeWorkDirectory(directory)
+    if (!preserveDirectory) {
+      try { await stage('cleanup-temp', {}, async function () { return dependencies.removeWorkDirectory(directory) }) }
+      catch (error) { if (!primaryFailure) throw error }
+    }
   }
 }
 
@@ -364,13 +435,13 @@ async function validatePackageMagic(filePath, format, bytes) {
 }
 
 function darwinClaudeRequirement(teamIdentifier) {
-  if (!/^[A-Z0-9]{10}$/.test(teamIdentifier)) throw new Error('Claude Mac 签名 Team 候选无效')
+  if (teamIdentifier !== CLAUDE_MAC_TEAM) throw new Error('Claude Mac 签名 Team 候选无效')
   return ['identifier "com.anthropic.claudefordesktop"', 'anchor apple generic',
     'certificate 1[field.1.2.840.113635.100.6.2.6] exists',
     'certificate leaf[field.1.2.840.113635.100.6.1.13] exists',
     `certificate leaf[subject.OU] = "${teamIdentifier}"`,
-    `certificate leaf[subject.O] = "Anthropic, PBC"`,
-    `certificate leaf[subject.CN] = "Developer ID Application: Anthropic, PBC (${teamIdentifier})"`,
+    `certificate leaf[subject.O] = "${CLAUDE_MAC_ORGANIZATION}"`,
+    `certificate leaf[subject.CN] = "Developer ID Application: ${CLAUDE_MAC_ORGANIZATION} (${teamIdentifier})"`,
   ].join(' and ')
 }
 
@@ -407,6 +478,63 @@ function unconfirmedDmgUnmount() {
   return error
 }
 
+function validateDarwinClaudeInstallerSignature(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_METADATA_BYTES) throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
+  const status = /^\s*Status:\s*([^\r\n]+)$/m.exec(text)?.[1]
+  const chain = [...text.matchAll(/^\s*\d+\.\s*([^\r\n]+)$/gm)].map(function (match) { return match[1] })
+  if (!['signed by a certificate trusted by macOS', 'signed by a developer certificate issued by Apple for distribution'].includes(status)
+    || chain.length !== 3 || chain[0] !== `Developer ID Installer: ${CLAUDE_MAC_ORGANIZATION} (${CLAUDE_MAC_TEAM})`
+    || chain[1] !== 'Developer ID Certification Authority' || chain[2] !== 'Apple Root CA') throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
+}
+
+async function inspectDarwinClaudeApplication(application, workDirectory, run, allowedPayloadRoot) {
+  const metadata = await runInspection('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], workDirectory, run)
+  const info = JSON.parse(metadata.stdout)
+  if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw new Error('Claude Mac 可执行文件名称无效')
+  const executable = path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)
+  if (allowedPayloadRoot) {
+    const canonical = await fs.realpath(executable)
+    const stat = await fs.lstat(executable)
+    if (!canonical.startsWith(allowedPayloadRoot + path.sep) || !stat.isFile() || stat.nlink !== 1) throw new Error('Claude PKG Mach-O 越出私有目录或不是单链接普通文件')
+  }
+  const identity = await runInspection('/usr/bin/codesign', ['--display', '--verbose=4', application], workDirectory, run)
+  const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic PBC \((Q6L2SF6YDW)\)$/gm)]
+  if (matches.length !== 1) throw new Error('Claude Mac 签名 Team 候选缺失或存在歧义')
+  // Display text only selects the pinned identity. Trust still requires the
+  // unchanged Apple anchor, Developer ID OIDs and strict deep native verify.
+  await runInspection('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinClaudeRequirement(matches[0][1])}`, application], workDirectory, run)
+  const architecture = await runInspection('/usr/bin/lipo', ['-archs', executable], workDirectory, run)
+  return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, signerOrganization: CLAUDE_MAC_ORGANIZATION,
+    teamIdentifier: CLAUDE_MAC_TEAM, signatureStatus: 'Valid', architectures: architecture.stdout.trim().split(/\s+/) }
+}
+
+async function findDarwinClaudePayloadApplication(expanded) {
+  const canonicalRoot = await fs.realpath(expanded)
+  const candidates = []
+  let visited = 0
+  async function collect(directory, depth = 0) {
+    if (depth > 8 || ++visited > 2048) throw new Error('Claude PKG 展开目录超过限制')
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    if (entries.length > 2048) throw new Error('Claude PKG 展开目录项超过限制')
+    for (const entry of entries) {
+      // Framework symlinks are normal, but never traverse them while locating
+      // the payload app. A package cannot redirect this search outside staging.
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+      const child = path.join(directory, entry.name)
+      if (entry.name === 'Claude.app') candidates.push(child)
+      else await collect(child, depth + 1)
+    }
+  }
+  await collect(expanded)
+  if (candidates.length !== 1) throw new Error('Claude PKG 必须包含唯一的实际 Claude.app')
+  const application = candidates[0]
+  const common = require('./cos-sync-utils.cjs')
+  const infoPath = path.join(application, 'Contents', 'Info.plist')
+  await common.readBoundedRegularFile(infoPath, { maxBytes: 256 * 1024 })
+  if (!(await fs.realpath(infoPath)).startsWith(canonicalRoot + path.sep)) throw new Error('Claude PKG 应用元数据越出私有目录')
+  return application
+}
+
 async function inspectPackage({ filePath, source, workDirectory, run = promisify(execFile), platform = process.platform }) {
   if (source.platform === 'windows') {
     if (platform !== 'win32') throw new Error('Claude Windows 签名检查必须在 Windows runner 运行')
@@ -424,32 +552,12 @@ async function inspectPackage({ filePath, source, workDirectory, run = promisify
   if (platform !== 'darwin') throw new Error('Claude Mac 签名和版本检查必须在 macOS runner 运行')
   if (source.format === 'pkg') {
     const signature = await runInspection('/usr/sbin/pkgutil', ['--check-signature', filePath], workDirectory, run)
-    if (!/^\s*Status: signed by a certificate trusted by macOS\s*$/m.test(signature.stdout)
-      || !/^\s*1\. Developer ID Installer: Anthropic, PBC \([A-Z0-9]{10}\)/m.test(signature.stdout)) throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
-    const expanded = path.join(workDirectory, 'claude-pkg-metadata')
-    await runInspection('/usr/sbin/pkgutil', ['--expand', filePath, expanded], workDirectory, run)
-    const common = require('./cos-sync-utils.cjs')
-    const candidates = []
-    async function collect(directory, depth = 0) {
-      if (depth > 4) throw new Error('Claude PKG 元数据目录超过限制')
-      const entries = await fs.readdir(directory, { withFileTypes: true })
-      if (entries.length > 64) throw new Error('Claude PKG 元数据文件过多')
-      for (const entry of entries) {
-        if (entry.isSymbolicLink()) throw new Error('Claude PKG 元数据包含链接')
-        const child = path.join(directory, entry.name)
-        if (entry.isDirectory()) await collect(child, depth + 1)
-        else if (entry.name === 'PackageInfo') {
-          const text = (await common.readBoundedRegularFile(child, { maxBytes: 256 * 1024 })).toString('utf8')
-          if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('Claude PKG 元数据包含不允许 XML')
-          const version = /<pkg-info\b[^>]*\bversion="([^"]+)"/.exec(text)?.[1]
-          const identifier = /<pkg-info\b[^>]*\bidentifier="([^"]+)"/.exec(text)?.[1]
-          if (identifier?.startsWith('com.anthropic.')) candidates.push(validateVersion(version))
-        }
-      }
-    }
-    await collect(expanded)
-    if (!candidates.length || new Set(candidates).size !== 1) throw new Error('Claude PKG 包内版本缺失或存在歧义')
-    return { version: candidates[0], signerOrganization: 'Anthropic, PBC', signatureStatus: 'Valid', architectureProof: 'official-universal-endpoint' }
+    validateDarwinClaudeInstallerSignature(signature.stdout)
+    const expanded = path.join(workDirectory, 'claude-pkg-expanded-full')
+    await runInspection('/usr/sbin/pkgutil', ['--expand-full', filePath, expanded], workDirectory, run)
+    const application = await findDarwinClaudePayloadApplication(expanded)
+    const inspected = await inspectDarwinClaudeApplication(application, workDirectory, run, await fs.realpath(expanded))
+    return { ...inspected, architectureProof: 'native-payload-mach-o', installerTeamIdentifier: CLAUDE_MAC_TEAM, installerSignatureStatus: 'Valid' }
   }
   const mountPoint = path.join(workDirectory, 'claude-dmg-readonly')
   await fs.mkdir(mountPoint)
@@ -458,18 +566,7 @@ async function inspectPackage({ filePath, source, workDirectory, run = promisify
     attachAttempted = true
     await runInspection('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mountPoint, filePath], workDirectory, run)
     const application = path.join(mountPoint, 'Claude.app')
-    const metadata = await runInspection('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], workDirectory, run)
-    const info = JSON.parse(metadata.stdout)
-    if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw new Error('Claude Mac 可执行文件名称无效')
-    const identity = await runInspection('/usr/bin/codesign', ['--display', '--verbose=4', application], workDirectory, run)
-    const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic, PBC \(([A-Z0-9]{10})\)$/gm)]
-    if (matches.length !== 1) throw new Error('Claude Mac 签名 Team 候选缺失或存在歧义')
-    // Display prose is untrusted. Only codesign's exit status evaluating the
-    // Apple chain, Developer ID OIDs, certificate subjects and fixed identifier
-    // establishes trust; a forged Authority line cannot satisfy this requirement.
-    await runInspection('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinClaudeRequirement(matches[0][1])}`, application], workDirectory, run)
-    const architecture = await runInspection('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)], workDirectory, run)
-    return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, signerOrganization: 'Anthropic, PBC', signatureStatus: 'Valid', architectures: architecture.stdout.trim().split(/\s+/) }
+    return await inspectDarwinClaudeApplication(application, workDirectory, run)
   } finally {
     if (attachAttempted) {
       // Attach can have mounted the volume before its reply is lost. Always
@@ -483,8 +580,27 @@ async function inspectPackage({ filePath, source, workDirectory, run = promisify
   }
 }
 
-function createRuntimeDependencies(common) {
-  return { fetchText: common.fetchText, inspectResource: common.inspectResource, downloadResource: common.downloadResource, resolveOfficialPackage, inspectPackage, validatePackageMagic,
+function createRuntimeDependencies(common, platforms = 'all') {
+  const macIds = parsePlatforms(platforms).filter(function (id) { return SOURCES[id].platform === 'macos' })
+  let macDependencies
+  let macResources
+  function getMacDependencies() {
+    macDependencies ||= createMacUpdateSourceDependencies({ inspectResource: common.inspectResource, getConfirmedMacSource })
+    return macDependencies
+  }
+  async function resolveRuntimePackage(requestUrl) {
+    const macId = Object.keys(SOURCES).find(function (id) { return SOURCES[id].platform === 'macos' && SOURCES[id].requestUrl === requestUrl })
+    if (!macId) return resolveOfficialPackage(requestUrl)
+    if (!macIds.includes(macId)) throw new Error('Claude Mac 官方更新来源不属于本次所选平台')
+    // One metadata cohort and one preparation snapshot for both requested
+    // formats. The final recheck uses readRelease again, never this cache.
+    macResources ||= resolveMacUpdateReleaseCandidates(macIds, getMacDependencies())
+    const resource = (await macResources).find(function (candidate) { return candidate.platformId === macId })
+    if (!resource) throw new Error('Claude Mac 官方更新来源缺少所选平台')
+    return resource
+  }
+  return { fetchText: common.fetchText, inspectResource: common.inspectResource, downloadResource: common.downloadResource, resolveOfficialPackage: resolveRuntimePackage, inspectPackage, validatePackageMagic,
+    revalidateMacSources: async function (resources) { return revalidateMacUpdateReleaseCandidates(resources, getMacDependencies()) },
     createWorkDirectory: async function () { return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-claude-cos-')) },
     removeWorkDirectory: async function (directory) {
       const resolved = path.resolve(directory)
@@ -499,13 +615,13 @@ async function main(argv = process.argv.slice(2)) {
   const common = require('./cos-sync-utils.cjs')
   const platforms = parsePlatforms(argv[0]?.slice('--platforms='.length) || process.env.CLAUDE_SYNC_PLATFORMS || 'all')
   const config = common.readCosConfiguration(process.env)
-  const result = await synchronizeOfficialClaude({ store: common.createCosStore(config), platforms, dependencies: createRuntimeDependencies(common) })
+  const result = await synchronizeOfficialClaude({ store: common.createCosStore(config), platforms, dependencies: createRuntimeDependencies(common, platforms),
+    progress: function (value) { console.log(`[claude-sync] ${JSON.stringify(value)}`) } })
   console.log(JSON.stringify({ changed: result.changed, platforms: result.platforms, product: 'claude-desktop' }))
 }
 
 if (require.main === module) main().catch(function (error) {
-  console.error('Claude 官方备用包同步失败；请核对受保护的 COS 配置、已核实下载域名与原生验签环境，未提前发布最新索引')
-  if (error?.code === 'CLAUDE_UNVERIFIED_SOURCE_HOST') console.error(`待核实官方重定向主机：${error.hostname}`)
+  console.error(`Claude 官方备用包同步失败；安全诊断：${JSON.stringify(safeClaudeSyncFailure(error))}`)
   process.exitCode = 1
 })
 
