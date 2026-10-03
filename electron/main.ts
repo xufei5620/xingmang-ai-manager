@@ -194,6 +194,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
@@ -2744,6 +2745,9 @@ if (!hasSingleInstanceLock) {
     }
     attachProxyBypassState(() => proxyBypass.active())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
+    // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
+    // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
+    const shouldLogUpdateState = createUpdateStateLogFilter()
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
       realmAccounts: accounts,
@@ -2782,12 +2786,9 @@ if (!hasSingleInstanceLock) {
       externalUrlAllowlist,
       updaterService,
       broadcastUpdate: (snapshot) => {
-        runtimeLog.log(snapshot.error ? 'error' : 'info', 'updater', 'state.changed', `主程序更新状态：${snapshot.phase}`, {
-          phase: snapshot.phase,
-          currentVersion: snapshot.currentVersion,
-          availableVersion: snapshot.availableVersion,
-          error: snapshot.error,
-        })
+        if (shouldLogUpdateState(snapshot)) {
+          runtimeLog.log(snapshot.error ? 'error' : 'info', 'updater', 'state.changed', `主程序更新状态：${snapshot.phase}`, buildUpdateStateLogDetail(snapshot))
+        }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send('update:state-changed', snapshot)
         }
