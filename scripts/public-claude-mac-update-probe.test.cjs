@@ -99,3 +99,71 @@ test('refuses nonnative or malformed fixture scope before issuing any network re
     assert.equal(value.calls.length, 0)
   }
 })
+
+function staticMetadata() {
+  return { currentRelease: '2.19675.0', releases: [{ version: '2.19675.0', updateTo: {
+    version: '2.19675.0', url: 'https://downloads.claude.ai/releases/darwin/universal/2.19675.0/Claude-public.zip',
+    name: '2.19675.0', pub_date: '2026-10-02T03:04:05Z', size: 377037896, sha256: 'a'.repeat(64), notes: 'SECRET',
+  } }] }
+}
+
+test('reads only the unique currentRelease updateTo using the official static JSON schema and keeps fields claimed', async () => {
+  const metadata = staticMetadata()
+  metadata.releases.unshift({ version: '2.19674.0', updateTo: { url: 'https://unknown.test/SECRET.zip', notes: 'SECRET' } })
+  const value = fixture({ body: JSON.stringify(metadata) })
+  const row = await probeMacUpdate(value.options)
+  assert.equal(value.calls.length, 1)
+  assert.equal(row.schema, 'squirrel-static-json')
+  assert.equal(row.releaseCount, 2)
+  assert.equal(row.matchingReleaseCount, 1)
+  assert.equal(row.selectedRelease.metadataPath, 'releases[].updateTo')
+  assert.equal(row.selectedRelease.claimedVersion, '2.19675.0')
+  assert.equal(row.selectedRelease.claimedName, '2.19675.0')
+  assert.equal(row.selectedRelease.claimedPubDate, '2026-10-02T03:04:05Z')
+  assert.equal(row.selectedRelease.claimedSize, 377037896)
+  assert.equal(row.selectedRelease.claimedSha256, 'a'.repeat(64))
+  assert.equal(row.selectedRelease.payload.eligibleAsPersistentSource, true)
+  assert.equal(row.claimScope, 'public-metadata-not-file-verification')
+  assert.doesNotMatch(JSON.stringify(row), /SECRET|unknown\.test|device_id|notes/)
+})
+
+test('refuses ambiguous or missing selections and mismatched updateTo versions', () => {
+  const duplicated = staticMetadata()
+  duplicated.releases.push(structuredClone(duplicated.releases[0]))
+  assert.equal(safeMetadata(duplicated).schema, 'squirrel-static-json-ambiguous-selection')
+  const missing = staticMetadata()
+  missing.currentRelease = '2.19676.0'
+  assert.equal(safeMetadata(missing).schema, 'squirrel-static-json-missing-selection')
+  const mismatch = staticMetadata()
+  mismatch.releases[0].updateTo.version = '2.19676.0'
+  assert.equal(safeMetadata(mismatch).schema, 'squirrel-static-json-version-mismatch')
+})
+
+test('bounds every array and object layer and does not descend into overdeep or malformed metadata', () => {
+  const oversized = staticMetadata()
+  oversized.releases = Array.from({ length: 17 }, () => structuredClone(oversized.releases[0]))
+  assert.deepEqual(safeMetadata(oversized), { schema: 'metadata-shape-rejected' })
+  const deep = staticMetadata()
+  deep.releases[0].updateTo.extra = { private: 'SECRET' }
+  assert.deepEqual(safeMetadata(deep), { schema: 'metadata-shape-rejected' })
+  const wide = staticMetadata()
+  for (let index = 0; index < 33; index += 1) wide[`extra-${index}`] = 'SECRET'
+  assert.deepEqual(safeMetadata(wide), { schema: 'metadata-shape-rejected' })
+  const malformed = staticMetadata()
+  malformed.releases[0].updateTo = []
+  assert.equal(safeMetadata(malformed).schema, 'squirrel-static-json-invalid-releases')
+})
+
+test('marks signed-query payloads as unsuitable for a persistent source and excludes unsafe nested sources', () => {
+  const signed = staticMetadata()
+  signed.releases[0].updateTo.url += '?sig=SECRET'
+  const row = safeMetadata(signed)
+  assert.equal(row.selectedRelease.payload.queryPresent, true)
+  assert.equal(row.selectedRelease.payload.eligibleAsPersistentSource, false)
+  assert.doesNotMatch(JSON.stringify(row), /SECRET|sig=/)
+  signed.releases[0].updateTo.url = 'https://unknown.test/SECRET.zip'
+  const unknown = safeMetadata(signed)
+  assert.equal(unknown.schema, 'squirrel-static-json-unverified-payload')
+  assert.equal(unknown.selectedRelease.payload, undefined)
+  assert.doesNotMatch(JSON.stringify(unknown), /SECRET|unknown\.test/)
+})

@@ -10,15 +10,45 @@ const MAX_METADATA_BYTES = 1024 * 1024
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 const NETWORK_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'])
 
-function safeMetadata(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return { schema: 'other-json' }
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isSafeVersion(value) {
+  return typeof value === 'string' && value.length <= 64 && /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(value)
+    && value.split('.').every(function (part) { return Number.isSafeInteger(Number(part)) && Number(part) <= 65535 })
+}
+
+function hasBoundedShape(value) {
+  const pending = [{ value, depth: 1 }]
+  const seen = new Set()
+  while (pending.length) {
+    const item = pending.pop()
+    if (!item.value || typeof item.value !== 'object') continue
+    if (item.depth > 4 || seen.has(item.value) || seen.size >= 256) return false
+    seen.add(item.value)
+    if (Array.isArray(item.value) && item.value.length > 16 || Object.keys(item.value).length > 32) return false
+    for (const child of Object.values(item.value)) {
+      if (child && typeof child === 'object') pending.push({ value: child, depth: item.depth + 1 })
+    }
+  }
+  return true
+}
+
+function safePayload(value) {
+  if (!isRecord(value)) return { schema: 'other-json' }
   const result = { schema: 'other-json-object', fields: {
     url: Object.hasOwn(value, 'url'), version: Object.hasOwn(value, 'version'), currentRelease: Object.hasOwn(value, 'currentRelease'),
-    name: Object.hasOwn(value, 'name'), size: Object.hasOwn(value, 'size'), sha256: Object.hasOwn(value, 'sha256'), delta: Object.hasOwn(value, 'delta'),
+    name: Object.hasOwn(value, 'name'), pubDate: Object.hasOwn(value, 'pub_date'), size: Object.hasOwn(value, 'size'),
+    sha256: Object.hasOwn(value, 'sha256'), delta: Object.hasOwn(value, 'delta'), releases: Object.hasOwn(value, 'releases'),
   } }
   for (const [key, target] of [['version', 'claimedVersion'], ['currentRelease', 'claimedCurrentRelease'], ['name', 'claimedNameVersion']]) {
-    if (typeof value[key] === 'string' && value[key].length <= 64 && /^\d+\.\d+\.\d+$/.test(value[key])) result[target] = value[key]
+    if (isSafeVersion(value[key])) result[target] = value[key]
   }
+  if (typeof value.name === 'string' && value.name.length <= 64 && /^(?:Claude(?: Desktop)? )?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(value.name)) result.claimedName = value.name
+  if (typeof value.pub_date === 'string' && value.pub_date.length <= 40
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value.pub_date)
+    && Number.isFinite(Date.parse(value.pub_date))) result.claimedPubDate = value.pub_date
   if (Number.isSafeInteger(value.size) && value.size > 0 && value.size <= MAX_PACKAGE_BYTES) result.claimedSize = value.size
   if (typeof value.sha256 === 'string' && /^[a-fA-F0-9]{64}$/.test(value.sha256)) result.claimedSha256 = value.sha256.toLowerCase()
   if (typeof value.url === 'string' && value.url.length <= 4096) {
@@ -28,11 +58,30 @@ function safeMetadata(value) {
       if (url.href === value.url && url.protocol === 'https:' && url.hostname === 'downloads.claude.ai' && !url.port && !url.username && !url.password && !url.hash
         && url.pathname.length <= 512 && /^\/releases\/[A-Za-z0-9._/-]+\.zip$/.test(url.pathname)) {
         result.schema = 'squirrel-server-json'
-        result.payload = { host: url.hostname, path: url.pathname, queryPresent: Boolean(url.search) }
+        result.payload = { host: url.hostname, path: url.pathname, queryPresent: Boolean(url.search), eligibleAsPersistentSource: !url.search }
       }
     } catch {}
   }
   return result
+}
+
+function safeMetadata(value) {
+  if (!hasBoundedShape(value)) return { schema: 'metadata-shape-rejected' }
+  const result = safePayload(value)
+  if (!isRecord(value) || !Object.hasOwn(value, 'releases')) return result
+  // The official static Squirrel schema uses only the entry whose version is
+  // currentRelease. Other rows and free-form release notes stay unreported.
+  if (!isSafeVersion(value.currentRelease) || !Array.isArray(value.releases)
+    || value.releases.some(function (entry) { return !isRecord(entry) || !isSafeVersion(entry.version) || !isRecord(entry.updateTo) })) return { ...result, schema: 'squirrel-static-json-invalid-releases' }
+  const selected = value.releases.filter(function (entry) { return entry.version === value.currentRelease })
+  const summary = { ...result, schema: 'squirrel-static-json', releaseCount: value.releases.length, matchingReleaseCount: selected.length }
+  if (selected.length !== 1) return { ...summary, schema: selected.length === 0 ? 'squirrel-static-json-missing-selection' : 'squirrel-static-json-ambiguous-selection' }
+  const release = selected[0]
+  const payload = safePayload(release.updateTo)
+  summary.selectedRelease = { metadataPath: 'releases[].updateTo', outerClaimedVersion: release.version, ...payload }
+  if (Object.hasOwn(release.updateTo, 'version') && release.updateTo.version !== release.version) summary.schema = 'squirrel-static-json-version-mismatch'
+  else if (payload.schema !== 'squirrel-server-json') summary.schema = 'squirrel-static-json-unverified-payload'
+  return summary
 }
 
 function readMetadataOnce(url, requestImpl, deadlineMs) {
