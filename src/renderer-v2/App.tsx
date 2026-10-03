@@ -744,7 +744,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
-    // Windows 上 Claude Desktop 两路都没装上时的出口；下载页在主进程外链白名单里（全等匹配）。
+    // Windows 上 Claude Desktop 一键安装没装上时的出口；下载页在主进程外链白名单里（全等匹配）。
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
   }, [app, navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys])

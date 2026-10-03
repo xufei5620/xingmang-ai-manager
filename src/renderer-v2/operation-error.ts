@@ -44,8 +44,8 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'codexDesktopTooOld', match: (message) => isCodexDesktopUnsupportedInstallFailure(message) },
   { key: 'codexDesktopInstallNoStore', match: (message) => isCodexDesktopNoStoreInstallFailure(message) },
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
-  // Windows 上 Claude Desktop 两路（系统自带的安装组件、Claude 官网的离线安装包）都没装上
-  // （主进程 claude-desktop-install-failure.ts 写好的整句）。同 Codex 那一类，那句话会说
+  // Windows 上 Claude Desktop 一键安装没装上（系统自带的安装组件、Claude 官网的离线安装包，
+  // 主进程 claude-desktop-install-failure.ts 写好的整句）。同 Codex 那一类，那句话会说
   //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「去官网下载」。
   { key: 'claudeDesktopInstallFailed', match: (message) => isClaudeDesktopInstallFailureMessage(message) },
   // Mac 上一键装桌面端没装成（主进程 macos-desktop-install-failure.ts 写好的整句，认法也
