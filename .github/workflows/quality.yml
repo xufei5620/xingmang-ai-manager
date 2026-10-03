@@ -8,12 +8,12 @@ on:
     branches: [main]
   pull_request:
 
-# Superseded runs are wasted minutes, and one run bills ~49 of them. main is
-# included: while the project is pre-release, a burst of merges would otherwise
-# run the full matrix once per merge with no way to supersede an obsolete one,
-# and only the final state actually needs validating. Revisit when releases
-# start — then every main commit wants its own verified run so a bad one can be
-# bisected out.
+# A superseded run only holds runners that open pull requests are queueing
+# for. main is included on purpose: every merge was already checked as its
+# pull request's merge commit before it landed, so after a burst of merges
+# only the final state needs another run. This used to be marked for review
+# once releases started; on 2026-10-03, with releases going out, yoyo kept it
+# and added the wait at the top of `changes` so a burst cancels cheaply.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,11 +24,23 @@ permissions:
 jobs:
   changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Ten of these minutes are the wait below; the other five are the bound
+    # this job had before it.
+    timeout-minutes: 15
     outputs:
       code: ${{ steps.scope.outputs.code }}
       cliVersions: ${{ steps.scope.outputs.cliVersions }}
     steps:
+      # A merge to main used to start the whole matrix at once, and the next
+      # merge a few minutes later cancelled it part way: 65 of the 104 main
+      # runs in the three days to 2026-10-03 were superseded like that, each
+      # still holding a dozen runners (two of them macOS, the scarcest) while
+      # open pull requests queued behind it. Waiting here first means a burst
+      # of merges cancels only this one cheap job, and the matrix runs once,
+      # for the last merge. Pull requests never wait.
+      - name: Let a burst of merges to main settle before the matrix starts
+        if: github.event_name == 'push'
+        run: sleep 600
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0

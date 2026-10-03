@@ -251,7 +251,16 @@ export interface SettingsSaveIssue {
   drive?: string
 }
 export type { ExternalDeepLink } from './external-deep-links'
-export interface FeedbackReportPreview { id: string; text: string; entries: number }
+export interface FeedbackReportPreview {
+  id: string
+  text: string
+  entries: number
+  /**
+   * false = 这份报告里还没有任何检查结果，界面在报告上面提醒客户先去「检查」页查一次。
+   * 缺省 = 不知道，不提醒。
+   */
+  selfChecked?: boolean
+}
 // Present only when the previewed report had expired or been superseded and
 // the main process captured a fresh one; the renderer swaps its dialog text.
 export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
