@@ -16,9 +16,10 @@ async function originalSource() {
 }
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-builder-fetch-test-'))
+  const temporaryBase = await fs.realpath(os.tmpdir())
+  const directory = await fs.mkdtemp(path.join(temporaryBase, 'xingmang-builder-fetch-test-'))
   t.after(async () => {
-    assert.equal(path.dirname(directory), os.tmpdir())
+    assert.equal(path.dirname(directory), temporaryBase)
     assert.ok(path.basename(directory).startsWith('xingmang-builder-fetch-test-'))
     await fs.rm(directory, { recursive: true, force: true })
   })
@@ -91,7 +92,12 @@ test('rejects hard-linked build modules without modifying either name', async (t
 })
 
 test('production-only installs can skip absent build dependencies', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-builder-fetch-test-'))
-  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const temporaryBase = await fs.realpath(os.tmpdir())
+  const directory = await fs.mkdtemp(path.join(temporaryBase, 'xingmang-builder-fetch-test-'))
+  t.after(async () => {
+    assert.equal(path.dirname(directory), temporaryBase)
+    assert.ok(path.basename(directory).startsWith('xingmang-builder-fetch-test-'))
+    await fs.rm(directory, { recursive: true, force: true })
+  })
   assert.deepEqual(await applyBuilderFetchCompatibility({ projectRoot: directory }), { skipped: true })
 })
