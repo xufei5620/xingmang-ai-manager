@@ -17,4 +17,13 @@ describe('paymentMethodLabel', () => {
   it('leaves unknown codes as they are', () => {
     expect(paymentMethodLabel({ name: 'paypal', type: 'paypal' })).toBe('paypal')
   })
+
+  it('names an order record the same way, though orders carry only the channel code', () => {
+    expect(paymentMethodLabel({ name: '', type: 'alipay' })).toBe('支付宝')
+    expect(paymentMethodLabel({ name: '', type: 'wxpay' })).toBe('微信支付')
+    expect(paymentMethodLabel({ name: '', type: 'qqpay' })).toBe('QQ 钱包')
+    expect(paymentMethodLabel({ name: '', type: 'stripe' })).toBe('Stripe')
+    expect(paymentMethodLabel({ name: '', type: 'paypal' })).toBe('paypal')
+    expect(paymentMethodLabel({ name: '', type: '' })).toBe('')
+  })
 })
