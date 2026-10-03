@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
+import { openFixturePage } from './fixture-readiness.mjs'
 import { createBrowserFixture, imageActionTimeoutMs, navigationTimeoutMs } from './harness.mjs'
 
 const localAvatar = createBrowserFixture({
@@ -18,10 +19,17 @@ after(async () => {
   await localAvatar.stop()
   localAvatar.assertNoPageErrors()
 })
+// This suite runs in the Windows renderer-v2-e2e shard, and its pages keep a 7s
+// action default for the image work, far shorter than a cold Vite open there.
+// Mount on the shared budget first, spent as up to three navigations so a lost
+// one is retried rather than reported as the button never appearing.
+async function openFixture(page, route, label) {
+  await openFixturePage(page, `${localAvatar.baseUrl}/e2e/${route}`, (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label })
+}
 async function fixture(init) {
   const page = await localAvatar.newPage()
   if (init) await page.addInitScript(init)
-  await page.goto(`${localAvatar.baseUrl}/e2e/v2-local-avatar-fixture.html`)
+  await openFixture(page, 'v2-local-avatar-fixture.html', 'local avatar fixture')
   await page.getByRole('button', { name: '更换头像', exact: true }).click()
   return page
 }
@@ -260,7 +268,7 @@ test('a discarded render of the next account does not block saving for the accou
 test('account header matches the return-and-identity layout and moves refresh into its menu', async () => {
   const page = await localAvatar.newPage()
   try {
-    await page.goto(`${localAvatar.baseUrl}/e2e/v2-business-fixture.html?page=account`)
+    await openFixture(page, 'v2-business-fixture.html?page=account', 'account header fixture')
     await page
       .getByText('管理你的星芒账号、余额与 Key。', { exact: true })
       .waitFor()

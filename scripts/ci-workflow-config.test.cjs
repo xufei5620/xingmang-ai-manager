@@ -47,6 +47,25 @@ function shardStepIndex() {
   return workflow.jobs['windows-test'].steps.findIndex((step) => String(step.run || '').includes('matrix.command'))
 }
 
+// The .mjs suites Windows actually runs: every file named by the commands
+// above, following `npm run` into package.json as far as it goes.
+function windowsSuites() {
+  const suites = new Set()
+  const followed = new Set()
+  const visit = (command) => {
+    for (const part of command.split('&&').map((piece) => piece.trim())) {
+      const script = part.match(/^npm run ([\w:-]+)/)?.[1]
+      if (script) {
+        if (!followed.has(script)) { followed.add(script); visit(packageJson.scripts[script]) }
+        continue
+      }
+      for (const token of part.split(/\s+/)) if (/^(?:e2e|src)\/\S+\.mjs$/.test(token)) suites.add(token)
+    }
+  }
+  for (const command of windowsCommands()) visit(command)
+  return [...suites].sort()
+}
+
 test('renderer v2 is the default and legacy remains an explicit rollback mode', () => {
   const scripts = packageJson.scripts
 
@@ -1059,6 +1078,10 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/ui/browser-check.mjs',
   'src/renderer-v2/styles/contrast.browser-check.mjs',
   'src/renderer-v2/features/shell/keyboard.browser-check.mjs',
+  // Opens its pages through the harness rather than browser.newPage(), so the
+  // scan below never saw it; it clicked straight after page.goto on a 7s action
+  // default. Found by the Windows-shard check further down.
+  'e2e/v2-local-avatar.test.mjs',
 ]
 
 // A hand-kept list only covers what someone remembered to add. These are the
@@ -1169,11 +1192,19 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
   // fixture that is merely slow still mounts on its first navigation.
   assert.ok(slice > 22_400, 'a single navigation must still outlast the slowest observed green mount')
 
-  for (const consumer of ['src/renderer-v2/testing/app-check.mjs', 'e2e/v2-business.test.mjs',
-    'e2e/maintenance-layout.test.mjs', 'src/renderer-v2/features/chat/browser-check.mjs',
-    'src/renderer-v2/ui/browser-check.mjs']) {
-    const source = fs.readFileSync(path.join(root, consumer), 'utf8')
-    assert.match(source, /openFixturePage\(/, `${consumer} must open its fixture through the shared retry`)
+  // This used to be a hand-kept list of five suites, and the auth fixture was not
+  // on it: #806's Windows shard (quality run 37146053083) lost its one navigation
+  // to net::ERR_NO_BUFFER_SPACE, the second time that open had died there, and
+  // five more suites Windows runs were still on a single navigation. Every suite
+  // a Windows job runs that opens a browser page is now held to it.
+  const pageSuites = windowsSuites().filter((suite) => /\.newPage\(/.test(fs.readFileSync(path.join(root, suite), 'utf8')))
+  for (const expected of ['src/renderer-v2/testing/app-check.mjs', 'src/renderer-v2/features/auth/browser-check.mjs',
+    'e2e/v2-business.test.mjs', 'e2e/account-commerce-interactions.test.mjs']) {
+    assert.ok(pageSuites.includes(expected), `the Windows suite scan must still reach ${expected}`)
+  }
+  for (const suite of pageSuites) {
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    assert.match(source, /openFixturePage\(/, `${suite} runs on Windows and must open its fixture through the shared retry`)
   }
 
   // Structure is not enough: retrying is only free while every attempt shares
