@@ -347,6 +347,13 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
+      # Electron 43 的 npm 包不带二进制：release:build 里的 npm test 第一次
+      # require('electron') 时才现下，只试一次，网络一抖就红（#319、#796）。这里先
+      # 限时、带重试地装好，见 scripts/ci-ensure-electron-binary.cjs。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+
       - name: Install the Chromium the layout tests need
         run: npx --no-install playwright install chromium
 
@@ -409,6 +416,11 @@ jobs:
           echo "version=$declared" >> "$GITHUB_OUTPUT"
 
       - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 同 windows-build：dist:mac:free 里的 npm test 要 Electron 二进制，先装好。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
 
       # dist:mac:free 自己会跑 npm test，其中的浏览器套件要这个。
       - run: npx --no-install playwright install chromium
@@ -518,6 +530,11 @@ jobs:
           fi
 
       - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 同 windows-build：下面的 npm test 要 Electron 二进制，先装好。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
 
       - run: npx --no-install playwright install chromium
 
