@@ -100,8 +100,9 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
   // acceptCached 只在开机首屏那一次为真：主进程先回上次落盘的检测结果，这里先把它
-  // 画出来（loading 保持为真，按钮照旧不可点），紧接着在同一个请求号下再读一次真的
-  // ——它接的是主进程开窗前就起好的那一轮，不会多扫一遍。
+  // 画出来（loading 保持为真；首页这时只放开「打开」「接着聊」，见 Home 的
+  // launchReadyBeforeScan），紧接着在同一个请求号下再读一次真的——它接的是主进程
+  // 开窗前就起好的那一轮，不会多扫一遍。
   const load = useCallback(async (force: boolean, acceptCached: boolean) => {
     if (!bridge) return
     // Login completion can retain this callback from the preceding render.
