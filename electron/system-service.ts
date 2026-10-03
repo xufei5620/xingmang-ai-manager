@@ -5003,6 +5003,9 @@ export function createSystemService(
     reloadDownloadProxyConfig,
     prepareAcceleration: serviceOptions.prepareCodexDesktopAcceleration,
     assertInstallDiskSpace,
+    // Mac 上的官方包在海外：和 OpenCode 一样走下载线路。Windows 那一路有国内镜像，用不着它。
+    withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    userHome: providerRoots.userHome,
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {

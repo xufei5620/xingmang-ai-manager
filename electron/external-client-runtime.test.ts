@@ -549,14 +549,38 @@ describe('macOS external desktop lifecycle', () => {
   it('offers one-click installation only for clients whose official Mac package has been verified', async () => {
     const f = macInstallFixture()
     const statuses = await f.runtime.scan()
-    expect(statuses.map((status) => [status.tool, status.installSupported])).toEqual([['workbuddy', false], ['claudeDesktop', false], ['opencode', true]])
+    expect(statuses.map((status) => [status.tool, status.installSupported])).toEqual([['workbuddy', false], ['claudeDesktop', true], ['opencode', true]])
+    expect(statuses[1].installHint).toBeNull()
     expect(statuses[2].installHint).toBeNull()
     expect(statuses[0].installHint).toContain('官网下载')
     // A bundle installed as root would belong to root, and the customer could never update it.
     const root = macInstallFixture({ getuid: () => 0 })
-    expect((await root.runtime.scan())[2]).toMatchObject({ installSupported: false })
+    expect((await root.runtime.scan()).map((status) => status.installSupported)).toEqual([false, false, false])
     await expect(root.runtime.install('opencode')).rejects.toThrow('官网下载')
+    await expect(root.runtime.install('claudeDesktop')).rejects.toThrow('官网下载')
     expect(root.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+  it('installs Claude Desktop through the same verified installer and detects it afterwards', async () => {
+    let placed = false
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: 'com.anthropic.claudefordesktop', CFBundleShortVersionString: '2.19675.0' }))
+      return commandResult(spec)
+    })
+    const verifyPath = vi.fn(async (candidate: string) => {
+      if (placed && candidate.startsWith('/Applications/Claude.app')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    const installMacosDesktopApp = vi.fn<NonNullable<ExternalClientRuntimeOptions['installMacosDesktopApp']>>(async () => {
+      placed = true
+      return { version: '2.19675.0', path: '/Applications/Claude.app' }
+    })
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'x64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501,
+      installMacosDesktopApp, assertDiskSpace: async () => undefined, fetch: vi.fn<typeof fetch>(),
+    })
+    const status = await runtime.install('claudeDesktop')
+    expect(status).toMatchObject({ tool: 'claudeDesktop', installed: true, version: '2.19675.0', path: '/Applications/Claude.app' })
+    expect(installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claudeDesktop', architecture: 'x64', userHome: '/Users/tester' }))
   })
   it('installs OpenCode from its official package inside the download route, then verifies it like any detected app', async () => {
     const f = macInstallFixture()
@@ -598,10 +622,11 @@ describe('macOS external desktop lifecycle', () => {
     for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
   })
   it('reports missing apps without inventing an automatic macOS installer', async () => {
-    const f = macFixture()
-    const status = (await f.runtime.scan())[1]
-    expect(status).toMatchObject({ installed: false, detectionError: null, installSupported: false })
-    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('官网下载')
+    // WorkBuddy is the one client without a Mac package the toolbox could verify.
+    const f = macFixture({ verifyPath: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) } })
+    const status = (await f.runtime.scan())[0]
+    expect(status).toMatchObject({ tool: 'workbuddy', installed: false, detectionError: null, installSupported: false })
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('官网下载')
   })
   it('refuses root launch and reports invalid signatures as failed detection', async () => {
     const root = macFixture({ getuid: () => 0 })

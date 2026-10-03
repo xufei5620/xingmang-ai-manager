@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { AppSettingsStore } from './app-settings'
@@ -50,6 +51,8 @@ import {
   type InstallCancellationOutcome,
 } from './install-cancellation'
 import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { installMacosDesktopApp, MacosDesktopInstallError, type MacosDesktopArchitecture } from './macos-desktop-app-installer'
+import { macosDesktopInstallFailedMessage } from './macos-desktop-install-failure'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
@@ -140,6 +143,8 @@ const maximumCodexDesktopManifestBytes = 1024 * 1024
 const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
+/** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
+const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
 // 之后既打不开也更新不了。这是拒绝取消时给用户看的原因。
 const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。'
@@ -2011,6 +2016,18 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
   )
 }
 
+/**
+ * Mac 上装不成时的那句话。macos-desktop-app-installer.ts 抛的已经是大白话，磁盘不够、
+ * 别重复点这类本来就是写给客户看的也原样交出；其余一律说「没装好」，原话进 detail。
+ * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「去微软商店装」。
+ */
+export function toCodexDesktopMacInstallFailure(error: unknown): Error {
+  if (error instanceof MacosDesktopInstallError) return error
+  const raw = error instanceof Error ? error.message : String(error)
+  if (isPlainCodexDesktopInstallMessage(raw)) return error instanceof Error ? error : new Error(raw)
+  return new MacosDesktopInstallError(macosDesktopInstallFailedMessage('Codex 桌面端'), raw, error)
+}
+
 export interface CodexDesktopWindowsProbes {
   match: StartAppEntry | null
   processes: WindowsProcessEntry[]
@@ -2212,6 +2229,21 @@ export interface CodexDesktopServiceOptions {
    * 照旧先走商店。缺省 = windows-store-app-launch.ts 那条异步探测。
    */
   inspectStoreAvailability?: (signal?: AbortSignal) => Promise<boolean | null>
+  /**
+   * Mac 上装 Codex 桌面端（官方包现在叫 ChatGPT）：下载、核签名、放进「应用程序」都在
+   * macos-desktop-app-installer.ts，和 OpenCode、Claude Desktop 同一套。测试换成假的。
+   */
+  installMacosDesktopApp?: typeof installMacosDesktopApp
+  /**
+   * 把 Mac 上那次下载包进下载线路（和 OpenCode 同一条，不改系统代理）。官方包在海外，
+   * 国内直连常常下不动。缺省 = 直接下（测试与旧调用方照旧）。
+   */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
+  /** Mac 上装进谁的 ~/Applications；缺省 = 当前用户。 */
+  userHome?: string
+  getuid?: () => number
+  /** Mac 上按哪种芯片挑安装包；缺省 = process.arch，测试换成假的。 */
+  architecture?: NodeJS.Architecture
   /** Optional seams used by tests; production uses the constrained CDP module. */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
@@ -2268,6 +2300,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     reloadDownloadProxyConfig,
     prepareAcceleration,
     assertInstallDiskSpace,
+    installMacosDesktopApp: installMacosApp = installMacosDesktopApp,
+    withDownloadRoute,
+    userHome = os.homedir(),
+    getuid = () => process.getuid?.() ?? -1,
+    architecture: processArchitecture = process.arch,
     resolveStoreInstaller = resolveSystemWingetExecutable,
     inspectStoreAvailability = (signal?: AbortSignal) => inspectWindowsStoreAvailability(signal ? { signal } : {}),
     activateCodexDesktop = activateCodexDesktopDefault,
@@ -2605,8 +2642,73 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       return await installCodexDesktopFromSources(target, attempt, cancellation)
     } catch (error) {
       if (isInstallCancelledError(error) || cancellation?.cancelled === true) throw error
+      if (platform === 'darwin') throw toCodexDesktopMacInstallFailure(error)
       throw toCodexDesktopInstallFailure(error, attempt)
     }
+  }
+
+  /**
+   * 工具箱的 x64 版在 Apple 芯片上靠 Rosetta 也能跑，这时 process.arch 是 x64，但该装的是
+   * arm64 那个包：那才是给这台机器的（x64 那个还声明了 LSRequiresNativeExecution）。
+   */
+  async function resolveMacosInstallArchitecture(): Promise<MacosDesktopArchitecture> {
+    if (processArchitecture === 'arm64') return 'arm64'
+    if (processArchitecture !== 'x64') {
+      throw new MacosDesktopInstallError(macosDesktopInstallFailedMessage('Codex 桌面端'), `不认识的处理器架构 ${processArchitecture}`)
+    }
+    try {
+      const result = await executeCommand({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, {
+        env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: 5_000, maxOutputBytes: 1024,
+      })
+      if (result.stdout.trim() === '1') return 'arm64'
+    } catch {
+      // Only a "1" proves Apple silicon. Intel Macs report 0 or lack the key,
+      // in which case sysctl exits non-zero; both mean the x64 package.
+    }
+    return 'x64'
+  }
+
+  /** Mac 上没有商店也没有国内镜像：官方包先下，下载走下载线路，核过签名才放进「应用程序」。 */
+  async function installCodexDesktopOnMac(
+    target: RendererMessageTarget,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<CodexDesktopInstallResult> {
+    // root 身份下装出来的应用归 root，客户自己的账号更新不了它（同 external-client-runtime）。
+    if (getuid() === 0) {
+      throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
+    }
+    const current = await detectMacosCodexApp().catch(() => null)
+    if (current?.app) {
+      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+      return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
+    }
+    const architecture = await resolveMacosInstallArchitecture()
+    cancellation?.throwIfCancelled()
+    const signal = cancellation?.signal
+    const install = () => installMacosApp({
+      tool: 'codexDesktop',
+      architecture,
+      userHome,
+      environment: process.env,
+      fetch: downloadFetch,
+      runProcess: (plan) => executeCommand({ executable: plan.executable, argv: [...plan.argv] }, {
+        env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024,
+        ...(signal ? { signal } : {}),
+      }),
+      onProgress: (event) => sendCodexDesktopInstallProgress(target, {
+        phase: event.phase === 'checking' ? 'validating' : event.phase,
+        percent: event.percent,
+        message: event.message,
+      }),
+      ...(signal ? { signal } : {}),
+    })
+    const installed = await (withDownloadRoute ? withDownloadRoute(install) : install())
+    sendCodexDesktopInstallProgress(target, {
+      phase: 'completed',
+      percent: 100,
+      message: `Codex 桌面端 ${installed.version} 装好了，在「应用程序」里叫 ChatGPT`,
+    })
+    return { action: 'installed', previousVersion: null, installedVersion: installed.version }
   }
 
   async function installCodexDesktopFromSources(
@@ -2618,9 +2720,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     cancellation?.throwIfCancelled()
     // 安装包有几百兆，磁盘快满时下到一半才失败最难受；读不到空间照常放行。
     await assertInstallDiskSpace?.('Codex 桌面端安装失败')
-    if (platform === 'darwin') {
-      throw new Error('macOS 上 Codex App 的安装由 Codex App 管理，请使用“打开”操作由已验证的 Codex CLI 完成安装或启动')
-    }
+    if (platform === 'darwin') return installCodexDesktopOnMac(target, cancellation)
     if (platform !== 'win32') throw new Error('Codex 桌面端安装目前仅支持 Windows')
     const architecture = process.arch === 'x64' || process.arch === 'arm64'
       ? process.arch

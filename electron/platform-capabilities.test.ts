@@ -66,7 +66,7 @@ describe('platformCapabilitiesFor', () => {
         grok: false,
       },
       codexDesktop: {
-        install: 'external',
+        install: 'managed',
         launch: true,
         uninstall: false,
         windowsStore: false,
@@ -75,6 +75,11 @@ describe('platformCapabilitiesFor', () => {
     expect(Object.isFrozen(capabilities)).toBe(true)
     expect(Object.isFrozen(capabilities.cliInstall)).toBe(true)
     expect(Object.isFrozen(capabilities.codexDesktop)).toBe(true)
+  })
+
+  it('installs the Codex desktop app on both Mac architectures and sends any other one to the guide', () => {
+    expect(platformCapabilitiesFor('darwin', 'x64').codexDesktop.install).toBe('managed')
+    expect(platformCapabilitiesFor('darwin', 'ia32').codexDesktop.install).toBe('external')
   })
 
   it('returns the exact Linux policy, with Node.js prepared by the app, Grok from npm and no Python for Gemini', () => {

@@ -74,8 +74,10 @@ export function platformCapabilitiesFor(
       gemini: !linux,
       grok: false,
     }),
+    // Mac 上官方包由本软件下载、核签名、放进「应用程序」（macos-desktop-app-installer.ts），
+    // 认不出的芯片才回到教程。
     codexDesktop: Object.freeze({
-      install: windows ? 'managed' : 'external',
+      install: windows || (macos && (architecture === 'arm64' || architecture === 'x64')) ? 'managed' : 'external',
       launch: windows || macos,
       uninstall: windows,
       windowsStore: windows,
