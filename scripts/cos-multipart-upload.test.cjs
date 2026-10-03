@@ -5,8 +5,8 @@ const os = require('node:os')
 const path = require('node:path')
 const { PassThrough, Readable, Writable } = require('node:stream')
 const { test } = require('node:test')
-const { PART_BYTES, THRESHOLD_BYTES, readMultipartOptions, parseMultipartXml, uploadMultipart } = require('./cos-multipart-upload.cjs')
-const { createCosStore, readCosConfiguration, buildCosAuthorization, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { PART_BYTES, THRESHOLD_BYTES, MAX_XML_BYTES, buildCompleteMultipartBody, readMultipartOptions, parseMultipartXml, uploadMultipart } = require('./cos-multipart-upload.cjs')
+const { MAX_FILE_BYTES, createCosStore, readCosConfiguration, buildCosAuthorization, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 const config = readCosConfiguration({ COS_SECRET_ID: 'TESTSECRETID123456', COS_SECRET_KEY: 'TESTSECRETKEY123456' })
 const key = 'chatgpt/linux-rpm-arm64/sha256-test/installer.rpm'
@@ -14,7 +14,7 @@ const uploadId = 'owned-upload-123'
 
 function digest(body, algorithm, encoding = 'hex') { return crypto.createHash(algorithm).update(body).digest(encoding) }
 function initXml() { return Buffer.from(`<InitiateMultipartUploadResult><Bucket>${config.bucket}</Bucket><Key>${key}</Key><UploadId>${uploadId}</UploadId></InitiateMultipartUploadResult>`) }
-function completeXml() { return Buffer.from(` <CompleteMultipartUploadResult><Location>http://untrusted.invalid/ignored</Location><Bucket>${config.bucket}</Bucket><Key>${key}</Key><ETag>&quot;${'a'.repeat(32)}-5&quot;</ETag></CompleteMultipartUploadResult>`) }
+function completeXml(partCount) { return Buffer.from(` <CompleteMultipartUploadResult><Location>http://untrusted.invalid/ignored</Location><Bucket>${config.bucket}</Bucket><Key>${key}</Key><ETag>&quot;${'a'.repeat(32)}-${partCount}&quot;</ETag></CompleteMultipartUploadResult>`) }
 function response(body, status = 200, headers = {}) {
   const result = Readable.from(body.length ? [body] : [])
   result.statusCode = status
@@ -89,7 +89,7 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
         if (completeHttpError) return callback(response(Buffer.from('<Error><Code>RequestTimeout</Code></Error>'), 400))
         object = Buffer.concat(numbers.map(number => parts.get(number)))
         if (loseComplete) return request.destroy(Object.assign(new Error('SECRET signed upload URL'), { code: 'ECONNRESET' }))
-        return callback(response(completeXml()))
+        return callback(response(completeXml(parts.size)))
       }
       if (input.method === 'DELETE') {
         assert.equal(active, 0)
@@ -126,6 +126,9 @@ test('strict XML rejects error bodies, entities, duplicate fields and unrelated 
 
 test('bounded parallel parts sign exact queries and MD5 then confirm the full public SHA256', async t => {
   const data = await fixture(t)
+  for (let offset = 0; offset < data.body.length; offset += PART_BYTES) data.body[offset] = offset / PART_BYTES
+  await fs.writeFile(data.filePath, data.body)
+  data.input.expectedSha256 = digest(data.body, 'sha256')
   const transport = memoryMultipart()
   const progress = []
   const result = await store(transport).publishFile(key, data.filePath, { ...data.input, onProgress: value => progress.push(value) })
@@ -136,6 +139,56 @@ test('bounded parallel parts sign exact queries and MD5 then confirm the full pu
   assert.equal(transport.calls.at(-1).method, 'GET')
   assert.equal(progress.findLast(value => value.phase === 'upload-body').transferredBytes, data.body.length)
   assert.doesNotMatch(JSON.stringify(progress), /uploadId|SECRET|authorization|url/)
+  assert.equal(PART_BYTES, 1024 * 1024)
+  const parts = transport.calls.filter(call => call.url.searchParams.has('partNumber')).sort((left, right) => Number(left.url.searchParams.get('partNumber')) - Number(right.url.searchParams.get('partNumber')))
+  assert.equal(parts.length, 17)
+  for (const [index, part] of parts.entries()) {
+    const expectedBytes = index === parts.length - 1 ? 123 : 1024 * 1024
+    assert.equal(part.url.searchParams.get('partNumber'), String(index + 1))
+    assert.equal(part.body.length, expectedBytes)
+    assert.equal(part.headers['content-length'], String(expectedBytes))
+    assert.equal(part.headers['x-cos-psize-max'], String(1024 * 1024))
+    assert.deepEqual(part.body, data.body.subarray(index * PART_BYTES, index * PART_BYTES + expectedBytes))
+  }
+  const complete = transport.calls.find(call => call.method === 'POST' && call.url.searchParams.has('uploadId'))
+  const completedParts = [...complete.body.toString().matchAll(/<Part><PartNumber>(\d+)<\/PartNumber><ETag>("[a-f0-9]{32}")<\/ETag><\/Part>/g)]
+  assert.deepEqual(completedParts.map(match => ({ number: Number(match[1]), etag: match[2] })), parts.map((part, index) => ({ number: index + 1, etag: `"${digest(part.body, 'md5')}"` })))
+  assert.deepEqual(Buffer.concat(parts.map(part => part.body)), data.body)
+})
+
+test('an exact multiple of one MiB completes without an empty trailing part', async t => {
+  const data = await fixture(t, THRESHOLD_BYTES)
+  const transport = memoryMultipart()
+  const result = await store(transport).publishFile(key, data.filePath, data.input)
+  assert.equal(result.sha256, data.input.expectedSha256)
+  const parts = transport.calls.filter(call => call.url.searchParams.has('partNumber'))
+  assert.equal(parts.length, 16)
+  for (const part of parts) {
+    assert.equal(part.body.length, 1024 * 1024)
+    assert.equal(part.headers['content-length'], String(1024 * 1024))
+    assert.equal(part.headers['x-cos-psize-max'], String(1024 * 1024))
+  }
+  assert.deepEqual(parts.map(part => Number(part.url.searchParams.get('partNumber'))).sort((left, right) => left - right), Array.from({ length: 16 }, (_, index) => index + 1))
+  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
+})
+
+test('the two GiB maximum creates an ordered 2048-part complete body beyond the response XML limit', () => {
+  assert.equal(MAX_FILE_BYTES, 2 * 1024 * 1024 * 1024)
+  assert.equal(PART_BYTES, 1024 * 1024)
+  const partCount = MAX_FILE_BYTES / PART_BYTES
+  assert.equal(partCount, 2048)
+  assert.ok(partCount < 10000)
+  const parts = Array.from({ length: partCount }, (_, index) => ({ etag: `"${(index + 1).toString(16).padStart(32, '0')}"` }))
+  const body = buildCompleteMultipartBody(parts)
+  assert.ok(Buffer.isBuffer(body))
+  assert.equal(body.length, 181216)
+  assert.ok(body.length > MAX_XML_BYTES)
+  const text = body.toString('utf8')
+  assert.match(text, /^<CompleteMultipartUpload>/)
+  assert.match(text, /<\/CompleteMultipartUpload>$/)
+  const entries = [...text.matchAll(/<Part><PartNumber>(\d+)<\/PartNumber><ETag>("[a-f0-9]{32}")<\/ETag><\/Part>/g)]
+  assert.equal(entries.length, partCount)
+  assert.deepEqual(entries.map(match => ({ number: Number(match[1]), etag: match[2] })), parts.map((part, index) => ({ number: index + 1, etag: part.etag })))
 })
 
 test('part response headers allow six minutes within each signature and honor shorter caller budgets', async t => {
@@ -204,27 +257,29 @@ test('failed parts all settle before aborting only the owned session with no com
 
 test('a saved part with a lost reply retries identical bytes and digests with a fresh signature', async t => {
   const data = await fixture(t)
-  let now = 1000
-  const transport = memoryMultipart({ now: () => now, partFault: function ({ call, request, attempt }) {
-    if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
-    now = 1010
-    request.destroy(Object.assign(new Error('SECRET response lost'), { code: 'ETIMEDOUT' }))
-    return true
-  } })
-  const progress = []
-  const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => now })
-  await client.publishFile(key, data.filePath, { ...data.input, onProgress: value => { if (value.method === 'PUT' && value.phase === 'upload-body') progress.push(value.transferredBytes) } })
-  const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
-  assert.equal(attempts.length, 2)
-  assert.equal(attempts[0].url.href, attempts[1].url.href)
-  assert.deepEqual(attempts[0].body, attempts[1].body)
-  assert.equal(attempts[0].headers['content-md5'], attempts[1].headers['content-md5'])
-  assert.equal(digest(attempts[0].body, 'sha256'), digest(attempts[1].body, 'sha256'))
-  assert.notEqual(attempts[0].headers.authorization, attempts[1].headers.authorization)
-  assert.equal(progress.at(-1), data.body.length)
-  assert.equal(progress.length, Math.ceil(data.body.length / PART_BYTES))
-  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
-  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+  for (const code of ['ETIMEDOUT', 'ECONNRESET']) {
+    let now = 1000
+    const transport = memoryMultipart({ now: () => now, partFault: function ({ call, request, attempt }) {
+      if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
+      now = 1010
+      request.destroy(Object.assign(new Error('SECRET response lost'), { code }))
+      return true
+    } })
+    const progress = []
+    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => now })
+    await client.publishFile(key, data.filePath, { ...data.input, onProgress: value => { if (value.method === 'PUT' && value.phase === 'upload-body') progress.push(value.transferredBytes) } })
+    const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
+    assert.equal(attempts.length, 2)
+    assert.equal(attempts[0].url.href, attempts[1].url.href)
+    assert.deepEqual(attempts[0].body, attempts[1].body)
+    assert.equal(attempts[0].headers['content-md5'], attempts[1].headers['content-md5'])
+    assert.equal(digest(attempts[0].body, 'sha256'), digest(attempts[1].body, 'sha256'))
+    assert.notEqual(attempts[0].headers.authorization, attempts[1].headers.authorization)
+    assert.equal(progress.at(-1), data.body.length)
+    assert.equal(progress.length, Math.ceil(data.body.length / PART_BYTES))
+    assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+  }
 })
 
 test('only a diagnosed HTTP 400 RequestTimeout retries and each part stops after three attempts', async t => {
@@ -254,9 +309,9 @@ test('only a diagnosed HTTP 400 RequestTimeout retries and each part stops after
   }
 })
 
-test('part checksum and certificate failures never retry', async t => {
+test('part checksum, certificate and refused connection failures never retry', async t => {
   const data = await fixture(t)
-  for (const failure of ['etag', 'CERT_HAS_EXPIRED', 'ECONNRESET']) {
+  for (const failure of ['etag', 'CERT_HAS_EXPIRED', 'ECONNREFUSED']) {
     const transport = memoryMultipart({ partFault: function ({ call, callback, request }) {
       if (call.url.searchParams.get('partNumber') !== '1') return false
       if (failure === 'etag') callback(response(Buffer.alloc(0), 200, { etag: '"wrong-md5"' }))
@@ -419,7 +474,7 @@ test('dispatch can finish beyond thirty minutes but stops at the seventy-five mi
           operations.push(operation)
           if (operation === 'init') { clock = elapsedMs; return { body: initXml() } }
           if (operation === 'part') return { bytes: 0, headers: { etag: `"${digest(body, 'md5')}"` } }
-          if (operation === 'complete') return { body: completeXml() }
+          if (operation === 'complete') return { body: completeXml(Math.ceil(data.body.length / PART_BYTES)) }
           return {}
         },
       })
