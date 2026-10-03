@@ -540,6 +540,36 @@ describe('filling template defaults while a tool may be running', () => {
     expect(backups).toEqual(['codex'])
   })
 
+  it('stops waiting for the running-tools check once an account change begins, and fills on a later try', async () => {
+    const f = await savedWhile(closed)
+    const before = f.makeOlder()
+    const backups: string[] = []
+    // 安全软件拖住了 PowerShell：看工具开没开这一下迟迟没有回音。
+    f.running.mockImplementationOnce(() => new Promise<never>(() => undefined))
+
+    const startup = f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(1))
+    f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+    expect(f.revision()).toBeUndefined()
+    // 换账号没成，还是这个账号：隔一阵再来要时照常看、照常补。
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) }, true)).toEqual({ filled: ['codex'] })
+    expect(backups).toEqual(['codex'])
+    expect(f.revision()).toBe(relayTemplateRevision)
+  })
+
+  it('checks as usual on a round that starts after an account change was let through', async () => {
+    const f = await savedWhile(closed)
+    f.makeOlder()
+    f.service.stopTemplateFillWaits!()
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: ['codex'] })
+    expect(f.running).toHaveBeenCalledTimes(1)
+  })
+
   it('only retries what the startup round had to leave behind', async () => {
     const f = await savedWhile(closed)
     expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })

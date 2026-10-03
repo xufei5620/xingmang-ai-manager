@@ -1995,6 +1995,8 @@ if (!hasSingleInstanceLock) {
         previous?.videoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
+        // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完（system-service.ts 的 stopTemplateFillWaits）。
+        systemService.stopTemplateFillWaits?.()
         await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
           previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
           previous.canvasRuns.whenIdle()] : [])])
