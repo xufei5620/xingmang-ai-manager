@@ -31,16 +31,16 @@ jobs:
         with:
           node-version: 22
 
-      - name: Read the six fixed Claude official source endpoints
+      - name: Read only two fixed Claude Mac initial response headers
         env:
-          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/claude-public-source-probe-${{ runner.os }}.json
-        run: node scripts/public-claude-source-probe.cjs
+          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/claude-mac-response-probe-${{ runner.os }}.json
+        run: node scripts/public-claude-mac-response-probe.cjs
 
       - name: Preserve only the fixed safe evidence rows
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: claude-public-source-probe-${{ runner.os }}
-          path: ${{ runner.temp }}/claude-public-source-probe-${{ runner.os }}.json
+          name: claude-mac-response-probe-${{ runner.os }}
+          path: ${{ runner.temp }}/claude-mac-response-probe-${{ runner.os }}.json
           if-no-files-found: warn
           retention-days: 3
