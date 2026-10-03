@@ -248,7 +248,7 @@ git push origin v0.2.7
 
 约定三条：tag 名固定为 `v` 加 `package.json` 里的版本号；用附注 tag（`-a`）而不是轻量 tag，让 tag 自带打标时间和打标人；tag 推上去之后不移动、不删除。本次产物有问题时提升版本号重新发布，按第 8 节回滚，不要让同一个 tag 指向另一个 commit。
 
-走 `publish-release` 工作流发布时这一步是自动的，但建出来的是**轻量 tag**，而且是**一开始就建好**，不是发完才打。原因是那条作业用的 `GITHUB_TOKEN` 是 GitHub App 令牌，没有、也拿不到 `workflows` 权限，GitHub 对它有一条服务端规则：要建的 ref、建 Release 时指定的提交（`target_commitish`），只要那个提交里 `.github/workflows/` 下的文件和 main 对不上就拒绝。`git push` 新 ref 撞过一次（0.2.8）；0.2.14 出包之后 main 合进了改工作流的 #774、#776，收尾时 `gh release create --target <出包的 commit>` 两次都是 HTTP 403，tag 和 Release 只能手工补。现在的做法：第一个作业 `release-tag` 用 API 把 tag 建在本次出包的 commit 上（触发那一刻它就是 main 的最新提交），出包作业都等它；收尾建 Release 时不再传 `--target`，挂到这个已有的 tag 上。手工发布时仍然用附注 tag。
+走 `publish-release` 工作流发布时这一步是自动的，但建出来的是**轻量 tag**，而且是**一开始就建好**，不是发完才打。原因是那条作业用的 `GITHUB_TOKEN` 是 GitHub App 令牌，没有、也拿不到 `workflows` 权限，GitHub 对它有一条服务端规则：要建的 ref、建 Release 时指定的提交（`target_commitish`），只要那个提交里 `.github/workflows/` 下的文件和 main 对不上就拒绝。`git push` 新 ref 撞过一次（0.2.8）；0.2.14 出包之后 main 合进了改工作流的 #774、#776，收尾时 `gh release create --target <出包的 commit>` 两次都是 HTTP 403，tag 和 Release 只能手工补。现在的做法：第一个作业 `release-tag` 用 API 把 tag 建在本次出包的 commit 上（触发那一刻它就是 main 的最新提交），出包作业都等它；收尾建 Release 时不再传 `--target`，挂到这个已有的 tag 上。上面「不移动、不删除」只有一个例外：工作流占好 tag 之后那一版没发出去就取消了，重新触发时 `release-tag` 会把它挪到新的 commit 上（见下面「触发时就占 tag」）。手工发布时仍然用附注 tag。
 
 #### 补打历史版本的 tag
 
@@ -292,7 +292,7 @@ git push origin v0.2.6
 
 这个顺序是发布正确性的一部分，不是风格问题：清单先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。`scripts/publish-workflow-config.test.cjs` 把它钉住了。
 
-**触发时就占 tag。** 触发后一两分钟内，`release-t**触发时就占 tag。** 第一个作业 `release-tag` 先看这一版的 tag 该建、该留还是该挪（判断逻辑在 `scripts/release-tag-plan.cjs`），再照做，出包作业都等它。它是批准之前唯一拿着写权限的作业，所以不装任何依赖，只跑 `gh`、`curl` 和仓库里两个不依赖第三方包的脚本。通常触发后一两分钟就跑完；排在前一次发布后面时，要等那一次跑完才轮到它。几种情况：
+**触发时就占 tag。** 第一个作业 `release-tag` 先看这一版的 tag 该建、该留还是该挪（判断逻辑在 `scripts/release-tag-plan.cjs`），再照做，出包作业都等它。它是批准之前唯一拿着写权限的作业，所以不装任何依赖，只跑 `gh`、`curl` 和仓库里两个不依赖第三方包的脚本。通常触发后一两分钟就跑完；排在前一次发布后面时，要等那一次跑完才轮到它。几种情况：
 
 - 这个版本号已经从别的 commit 发过（GitHub 上有它的 Release，或者线上清单已经是它）、线上清单已经比它高、或者它在撤回名单里：直接停下，不出包、不用批。原来要等一个多小时出完包、批过一次，到上传前那道关才发现。同一个 commit 上重跑、补发另一个平台照常放行。
 - 上一次触发占了 tag、没发出去就取消了（补进来重出包），合进修复后从 main 重新触发：tag 会挪到新的 commit 上。挪之前同样要确认那一版没有 Release、线上清单都比它旧。
@@ -301,7 +301,7 @@ git push origin v0.2.6
 - 出包期间有人把 tag 删了：上传前那道关检查都过了以后先补建，再往线上传；补建不了就停下，线上什么都不改。
 - 取消之后改了版本号再发，旧版本号的 tag 会留在仓库里，指向一个没发出去的 commit。它不影响发布；要清理就在仓库的 Tags 页面手动删掉。
 
-ard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 或 Linux 可以；某个平台已经发过这个版本，要重发就先提升版本号。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
+上传之前还有一道关（#493，`scripts/publish-guard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 或 Linux 可以；某个平台已经发过这个版本，要重发就先提升版本号。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
 
 **一次发布要批准两次。** 读 `.p12` 的 macOS 出包作业和上传的 publish 作业都挂 `environment: release`，运行会各停一次等你按 Approve。第一次批准之后什么都还没有对外发生，产物只躺在 Actions artifact 里——把包下下来装机验收，过了再批第二次。这两下就是本节开头说的「明确发布授权」。
 

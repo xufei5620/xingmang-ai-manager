@@ -174,7 +174,9 @@ jobs:
               echo "::error::查不了 $tag 有没有 Release；什么都没动，过几分钟重新触发"
               exit 1
             fi
-            if printf '%s\n' "$releases" | grep -Fxq "$tag"; then release_exists=true; fi
+            # 不经管道喂给 grep：grep -q 一找到就退出，列表长的话 printf 写到一半被 SIGPIPE
+            # 打断，pipefail 下整个判断算「没有」，tag 就会被当成没发过挪走。
+            if grep -Fxq -- "$tag" <<< "$releases"; then release_exists=true; fi
           fi
           base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
           base=${base%/}
@@ -294,7 +296,7 @@ jobs:
                   ;;
                 "$PLANNED_FROM")
                   if ! gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" --silent; then
-                    echo "::error::删不掉还指向 $PLANNED_FROM 的旧 $TAG；什么都还没发，过几分钟重新触发"
+                    echo "::error::删不掉还指向 $PLANNED_FROM 的旧 $TAG；什么都还没发，过几分钟重新触发。一直删不掉的话，在仓库的 Tags 页面手动删掉 $TAG 再触发（那一版没发出去过，删掉不影响客户）"
                     exit 1
                   fi
                   echo "$TAG 原来指向 $PLANNED_FROM（那一版没发出去过），已删掉"

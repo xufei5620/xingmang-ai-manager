@@ -605,6 +605,7 @@ function runPlanStep({
   annotated = false,
   lookupFails = false,
   releases = [],
+  olderReleases = 0,
   releasesFail = false,
   live = {},
   liveCodes = {},
@@ -625,6 +626,8 @@ function runPlanStep({
     : `printf 'refs/tags/v%s %s %s\\n' ${JSON.stringify(version)} ${annotated ? `tag ${JSON.stringify(TAG_OBJECT_SHA)}` : `commit ${JSON.stringify(tagSha)}`}`
   const [firstRelease, ...laterReleases] = releases
   const releasePage = (tags) => tags.map((tag) => `printf '%s\\n' ${JSON.stringify(tag)}`).join('; ') || ':'
+  // olderReleases：再在后面几页补上这么多个老版本，列表就有几百 KB 长。
+  const olderPages = olderReleases > 0 ? `; for index in $(seq 1 ${olderReleases}); do printf 'v0.0.%s\\n' "$index"; done` : ''
   const ghStub = `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
 paginate=''
@@ -634,7 +637,7 @@ case "$*" in
     ${lookupFails ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : `${firstRefPage}; if [ -n "$paginate" ]; then ${laterRefPages}; fi`} ;;
   *'/git/tags/'*) printf '%s\\n' ${JSON.stringify(tagSha || '')} ;;
   *'/releases'*)
-    ${releasesFail ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : `${releasePage(firstRelease ? [firstRelease] : [])}; if [ -n "$paginate" ]; then ${releasePage(laterReleases)}; fi`} ;;
+    ${releasesFail ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : `${releasePage(firstRelease ? [firstRelease] : [])}; if [ -n "$paginate" ]; then ${releasePage(laterReleases)}${olderPages}; fi`} ;;
 esac
 exit 0
 `
@@ -806,6 +809,15 @@ test('a version that already shipped is refused before anything is built', posix
   assert.notEqual(withdrawn.status, 0)
   assert.match(withdrawn.output, /::error::0\.2\.15 已经被撤回/)
   for (const run of [released, live, withdrawn]) assert.equal(run.outputs.action, undefined)
+})
+
+test('a long Release list cannot hide the Release this version already has', posixOnly, () => {
+  // 列表从新到旧排，这一版排在最前面。经管道喂给 grep -q 的话，它一找到就退出，后面
+  // 还没写完的几百 KB 让 printf 被 SIGPIPE 打断，pipefail 下判断算「没有」，tag 就被挪走。
+  const run = runPlanStep({ tagSha: EARLIER, releases: ['v0.2.15'], olderReleases: 50000 })
+  assert.notEqual(run.status, 0)
+  assert.match(run.output, /::error::v0\.2\.15 已经从 bbbbbbb 发过/)
+  assert.equal(run.outputs.action, undefined)
 })
 
 test('anything the plan cannot read stops it instead of being read as nothing there', posixOnly, () => {
