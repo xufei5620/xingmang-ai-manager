@@ -213,3 +213,34 @@ test('retries server, transient network and timeout errors but never authenticat
     assert.equal(helper.shouldRetryDownloadError(error), false)
   }
 })
+
+test('never retries an aborted caller total deadline from any supported signal slot', () => {
+  const helper = loadHelper()
+  for (const slot of ['config', 'configOptions', 'downloadOptions']) {
+    for (const reason of [new DOMException('caller total deadline', 'TimeoutError'), new Error('caller cancelled')]) {
+      const controller = new AbortController()
+      const config = { signal: slot === 'config' ? controller.signal : undefined, downloadOptions: { signal: slot === 'configOptions' ? controller.signal : undefined } }
+      const options = { signal: slot === 'downloadOptions' ? controller.signal : undefined }
+      const attempt = helper.buildAttemptConfig(config, options)
+      controller.abort(reason)
+      assert.equal(attempt.downloadOptions.signal.aborted, true)
+      assert.equal(attempt.downloadOptions.signal.reason, reason)
+      const callerSignals = [config.signal, config.downloadOptions.signal, options.signal]
+      for (const error of [reason, { response: { status: 503 } }, { cause: { code: 'ECONNRESET' } }]) {
+        assert.equal(helper.shouldRetryDownloadError(error, callerSignals), false)
+      }
+    }
+  }
+})
+
+test('an expired per-attempt deadline still retries while original caller signals remain active', async () => {
+  const helper = loadHelper()
+  const caller = new AbortController()
+  const config = { signal: caller.signal }
+  const options = { timeout: { request: 5 } }
+  const attempt = helper.buildAttemptConfig(config, options)
+  await new Promise(resolve => setTimeout(resolve, 15))
+  assert.equal(attempt.downloadOptions.signal.aborted, true)
+  assert.equal(caller.signal.aborted, false)
+  assert.equal(helper.shouldRetryDownloadError(attempt.downloadOptions.signal.reason, [config.signal]), true)
+})

@@ -43,12 +43,37 @@ test('backports fetch compatibility without changing source, checksum, cache or 
   const patched = buildPatchedSource(original, helperReference)
   assert.match(patched, /await xingmangFetch\.initializeProxyOnce\(get\)/)
   assert.equal(patched.split('xingmangFetch.buildAttemptConfig(').length - 1, 3)
-  assert.match(patched, /xingmangFetch\.shouldRetryDownloadError\(e\)/)
+  assert.match(patched, /xingmangFetch\.shouldRetryDownloadError\(e, callerSignals\)/)
   assert.doesNotMatch(patched, /agent: .*buildGotProxyAgent/)
   assert.doesNotMatch(patched, /rejectUnauthorized: false/)
   assert.match(patched, /构建下载必须验证 TLS 证书/)
   assert.equal(recoverOriginalSource(patched, helperReference), original)
   assert.throws(() => buildPatchedSource(original + '\n// unknown upstream change\n', helperReference), /SHA-256/)
+})
+
+test('the installed retry callback stops caller cancellation before its builder HttpError branch', async () => {
+  const patched = buildPatchedSource(await originalSource(), helperReference)
+  const start = patched.indexOf('shouldRetry: (e) => {') + 'shouldRetry: '.length
+  const end = patched.indexOf('\n                },', start)
+  assert.ok(start > 0 && end > start)
+  const helper = require('./builder-fetch-compat.cjs')
+  class HttpError extends Error {
+    isServerError() { return true }
+  }
+  const callbackFor = new Function('config', 'downloadOptions', 'xingmangFetch', 'builder_util_runtime_1', `return (${patched.slice(start, end)}\n                })`)
+  const reason = new DOMException('caller total deadline', 'TimeoutError')
+  for (const slot of ['config', 'configOptions', 'downloadOptions']) {
+    const controller = new AbortController()
+    const config = { signal: slot === 'config' ? controller.signal : undefined, downloadOptions: { signal: slot === 'configOptions' ? controller.signal : undefined } }
+    const options = { signal: slot === 'downloadOptions' ? controller.signal : undefined }
+    const callback = callbackFor(config, options, helper, { HttpError })
+    controller.abort(reason)
+    assert.equal(callback(reason), false)
+    assert.equal(callback(new HttpError('503')), false)
+  }
+  const active = callbackFor({ signal: new AbortController().signal }, {}, helper, { HttpError })
+  assert.equal(active(new DOMException('attempt expired', 'TimeoutError')), true)
+  assert.equal(active(new HttpError('503')), true)
 })
 
 test('applies once atomically and independently recognizes the exact already-patched bytes', async (t) => {

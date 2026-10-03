@@ -86,7 +86,8 @@ function buildAttemptConfig(config = {}, downloadOptions = {}) {
   }
 }
 
-function shouldRetryDownloadError(error) {
+function shouldRetryDownloadError(error, callerSignals = []) {
+  if (callerSignals.some(signal => signal?.aborted)) return false
   if (!error || typeof error !== 'object') return false
   const status = error.response?.status ?? error.response?.statusCode ?? error.statusCode
   if (typeof status === 'number') return status >= 500

@@ -15,6 +15,11 @@ function digest(value) {
 function replacementPlan(helperReference) {
   return [
     {
+      original: '                shouldRetry: (e) => {\n                    var _a;\n',
+      replacement: '                shouldRetry: (e) => {\n                    var _a;\n                    const callerSignals = [config.signal, config.downloadOptions?.signal, downloadOptions.signal];\n                    if (callerSignals.some(signal => signal?.aborted)) return false;\n',
+      count: 1,
+    },
+    {
       original: 'const get = require("@electron/get");',
       replacement: `const get = require("@electron/get");\nconst xingmangFetch = require(${JSON.stringify(helperReference)});`,
       count: 1,
@@ -51,7 +56,7 @@ function replacementPlan(helperReference) {
     },
     {
       original: '                    if (typeof ((_a = e === null || e === void 0 ? void 0 : e.response) === null || _a === void 0 ? void 0 : _a.statusCode) === "number") {\n                        return e.response.statusCode >= 500;\n                    }\n                    return typeof (e === null || e === void 0 ? void 0 : e.code) === "string" && ["ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EPIPE", "ENOENT"].includes(e.code);',
-      replacement: '                    return xingmangFetch.shouldRetryDownloadError(e);',
+      replacement: '                    return xingmangFetch.shouldRetryDownloadError(e, callerSignals);',
       count: 1,
     },
   ]
