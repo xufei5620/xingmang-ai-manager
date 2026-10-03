@@ -1,0 +1,32 @@
+name: claude-mac-dmg-native-proof
+
+on:
+  push:
+    branches:
+      - codex/claude-mac-dmg-native-proof-20261003
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/codex/claude-mac-dmg-native-proof-20261003' }}
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Verify one public DMG using fixed digest and real native inspection
+        run: node scripts/probe-claude-mac-dmg-native.cjs
+      - name: Save public proof only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: claude-mac-dmg-native-proof
+          path: ${{ runner.temp }}/xingmang-claude-mac-native-proof-results/claude-mac-native-proof.json
+          if-no-files-found: error
+          retention-days: 7
