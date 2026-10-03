@@ -1,5 +1,5 @@
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
-import type { ToolId, ToolPresentation } from './model'
+import { isExternallyManagedInstall, type ToolId, type ToolPresentation } from './model'
 
 /** 一个待更新的工具，以及这次要更到的版本。 */
 export interface ToolUpdateEntry {
@@ -22,6 +22,16 @@ export function pendingToolUpdates(tools: readonly ToolPresentation[]): ToolUpda
   return tools
     .filter((tool) => tool.status.installed && tool.updateAvailable)
     .map((tool) => ({ id: tool.id, version: tool.latestVersion ?? unknownVersion }))
+}
+
+/**
+ * 系统通知只说星芒自己更新得了的那几个：通知原话是「回到星芒的「你的工具」就能逐个
+ * 更新」。官方安装器或别的方式装的那份，首页那一行没有「更新」按钮
+ * （isExternallyManagedInstall），客户被叫回来也找不到地方点。角标和「N 个有更新」
+ * 照旧按 pendingToolUpdates 数：那里只说有新版本，那一行自己写着该怎么更新。
+ */
+export function inAppToolUpdates(tools: readonly ToolPresentation[]): ToolUpdateEntry[] {
+  return pendingToolUpdates(tools.filter((tool) => !isExternallyManagedInstall(tool.status)))
 }
 
 /**
