@@ -24,6 +24,7 @@ const CLAUDE_MAC_ORGANIZATION = 'Anthropic PBC'
 // separate from formal manager releases and their latest pointer.
 const OFFLINE_PREFIX = 'xingmang/offline/claude'
 const LATEST_KEY = `${OFFLINE_PREFIX}/latest.json`
+const DEFAULT_PLATFORMS = Object.freeze(['windows-x64', 'windows-arm64', 'macos-dmg-universal', 'macos-pkg-universal'])
 const SOURCES = Object.freeze({
   'windows-x64': Object.freeze({ platform: 'windows', architecture: 'x64', format: 'msix', fileName: 'Claude-x64.msix', type: 'application/vnd.ms-appx', requestUrl: `${API_ROOT}win32/x64/msix/latest/redirect`, verification: 'windows-authenticode-msix-identity' }),
   'windows-arm64': Object.freeze({ platform: 'windows', architecture: 'arm64', format: 'msix', fileName: 'Claude-arm64.msix', type: 'application/vnd.ms-appx', requestUrl: `${API_ROOT}win32/arm64/msix/latest/redirect`, verification: 'windows-authenticode-msix-identity' }),
@@ -34,7 +35,7 @@ const SOURCES = Object.freeze({
 })
 
 function parsePlatforms(value = 'all') {
-  const aliases = { all: Object.keys(SOURCES), windows: ['windows-x64', 'windows-arm64'], macos: ['macos-dmg-universal', 'macos-pkg-universal'], linux: ['linux-deb-x64', 'linux-deb-arm64'] }
+  const aliases = { all: DEFAULT_PLATFORMS, windows: ['windows-x64', 'windows-arm64'], macos: ['macos-dmg-universal', 'macos-pkg-universal'], linux: ['linux-deb-x64', 'linux-deb-arm64'] }
   if (typeof value === 'string' && Object.hasOwn(aliases, value)) return [...aliases[value]]
   const values = Array.isArray(value) ? value : String(value).split(',')
   const ids = [...new Set(values.map(function (item) { return String(item).trim() }))]
@@ -625,4 +626,4 @@ if (require.main === module) main().catch(function (error) {
   process.exitCode = 1
 })
 
-module.exports = { SOURCES, OFFICIAL_HOSTS, API_ROOT, APT_ROOT, MAX_PACKAGE_BYTES, LATEST_KEY, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, validateOfficialUrl, validateHead, validateVersion, compareVersions, requestHead, requestRedirectHeaders, resolveOfficialPackage, parseDebianPackages, artifactKey, sourceRecord, validateIndex, validateWindowsInspection, validateInspection, synchronizeOfficialClaude, safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectDmgMount, inspectPackage, createRuntimeDependencies, main }
+module.exports = { SOURCES, DEFAULT_PLATFORMS, OFFICIAL_HOSTS, API_ROOT, APT_ROOT, MAX_PACKAGE_BYTES, LATEST_KEY, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, validateOfficialUrl, validateHead, validateVersion, compareVersions, requestHead, requestRedirectHeaders, resolveOfficialPackage, parseDebianPackages, artifactKey, sourceRecord, validateIndex, validateWindowsInspection, validateInspection, synchronizeOfficialClaude, safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectDmgMount, inspectPackage, createRuntimeDependencies, main }

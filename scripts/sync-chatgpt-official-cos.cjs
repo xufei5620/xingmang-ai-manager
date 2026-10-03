@@ -13,7 +13,7 @@ const WINDOWS_PUBLISHER = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_LICENSE_BYTES = 1024 * 1024
 const LATEST_KEY = 'chatgpt/latest.json'
-const DEFAULT_PLATFORMS = Object.freeze(['windows-x64', 'windows-arm64'])
+const DEFAULT_PLATFORMS = Object.freeze(['windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64'])
 const SOURCES = Object.freeze({
   'windows-x64': Object.freeze({ fileName: 'ChatGPT-x64.msix', url: `${OFFICIAL_ROOT}ChatGPT-x64.msix`, platform: 'windows', architecture: 'x64', format: 'msix', contentType: 'application/vnd.ms-appx' }),
   'windows-arm64': Object.freeze({ fileName: 'ChatGPT-arm64.msix', url: `${OFFICIAL_ROOT}ChatGPT-arm64.msix`, platform: 'windows', architecture: 'arm64', format: 'msix', contentType: 'application/vnd.ms-appx' }),
@@ -122,9 +122,8 @@ $result | ConvertTo-Json -Depth 5 -Compress
 `
 
 function parsePlatforms(value) {
-  if (value === undefined || value === '' || value === 'windows') return [...DEFAULT_PLATFORMS]
-  if (value === 'all') return Object.keys(SOURCES)
-  if (value === 'macos' || value === 'linux') return Object.keys(SOURCES).filter(function (id) { return SOURCES[id].platform === value })
+  if (value === undefined || value === '' || value === 'all') return [...DEFAULT_PLATFORMS]
+  if (value === 'windows' || value === 'macos' || value === 'linux') return Object.keys(SOURCES).filter(function (id) { return SOURCES[id].platform === value })
   const values = Array.isArray(value) ? value : String(value).split(',')
   const result = [...new Set(values.map(function (item) { return String(item).trim() }))]
   if (!result.length || result.some(function (item) { return !Object.hasOwn(SOURCES, item) })) {

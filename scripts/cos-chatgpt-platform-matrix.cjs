@@ -1,7 +1,7 @@
-const { SOURCES, parsePlatforms } = require('./sync-chatgpt-official-cos.cjs')
+const { DEFAULT_PLATFORMS, parsePlatforms } = require('./sync-chatgpt-official-cos.cjs')
 
 function buildOfficialPackageMatrix(value = 'all') {
-  if (typeof value !== 'string' || !['all', 'windows', 'macos', 'linux'].includes(value) && !Object.hasOwn(SOURCES, value)) throw new Error('不支持的官方同步平台选择')
+  if (typeof value !== 'string' || !['all', 'windows', 'macos'].includes(value) && !DEFAULT_PLATFORMS.includes(value)) throw new Error('不支持的官方同步平台选择')
   return { include: parsePlatforms(value).map(platform => ({ platform })) }
 }
 

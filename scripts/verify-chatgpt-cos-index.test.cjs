@@ -29,10 +29,12 @@ function manifestFixture() {
   return { schemaVersion: 1, product: 'chatgpt', windows: { schemaVersion: 1, buildVersion: version, packageIdentity: 'OpenAI.Codex', storeProductId: '9PLM9XGG6VKS' }, platforms }
 }
 
-test('all success requires eight current entries and the two producer-verified Windows licenses', () => {
+test('all success requires four Windows and macOS entries and the two producer-verified Windows licenses', () => {
   const manifest = manifestFixture()
   const result = validateOfficialIndex(manifest)
-  assert.equal(result.platforms.length, 8)
+  assert.equal(result.platforms.length, 4)
+  for (const id of Object.keys(manifest.platforms)) if (id.startsWith('linux-')) delete manifest.platforms[id]
+  assert.deepEqual(validateOfficialIndex(manifest), result)
   assert.equal(result.windowsLicenses, 2)
   delete manifest.platforms['windows-x64']
   assert.throws(() => validateOfficialIndex(manifest), /缺少/)

@@ -827,14 +827,15 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
 describe('renderer-v2 home manual desktop install on macOS', () => {
   const missingStatus = { installed: false, version: null, detectionFailed: false, uninstall: { available: false, reason: null, manualCommand: null } }
-  function macSnapshot(): ToolboxSnapshot {
+  /** 'external' 是主进程认不出芯片的那台 Mac；认得出的两种芯片都是 'managed'。 */
+  function macSnapshot(codexDesktopInstall: 'managed' | 'external' = 'external'): ToolboxSnapshot {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     return {
       ...base,
       platform: {
         platform: 'macos', isMac: true, nodeRuntimeInstall: 'external', pythonRuntimeInstall: 'external',
         cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
-        codexDesktop: { install: 'external', launch: true, uninstall: false, windowsStore: false },
+        codexDesktop: { install: codexDesktopInstall, launch: true, uninstall: false, windowsStore: false },
       },
       system: { ...base.system, desktopApps: { codex: missingStatus } },
     } as unknown as ToolboxSnapshot
@@ -855,9 +856,22 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
   } as unknown as HomeProps['externalClients'][number]
 
   it('labels the Codex desktop button as a guide instead of promising an install', () => {
-    // macOS 上这颗按钮点下去只能把人带到教程，写「安装」是假的（第七批 3）。
+    // 主进程认不出芯片的 Mac 上这颗按钮点下去只能把人带到教程，写「安装」是假的（第七批 3）。
     const markup = render({}, undefined, { snapshot: macSnapshot() })
     expect(rowButton(markup, 'codexDesktop')).toContain('安装指南')
+  })
+
+  it('offers a real install of the Codex desktop app and Claude Desktop on a Mac the main process can install them on', () => {
+    const claudeDesktop = { ...macClient, tool: 'claudeDesktop', installSupported: true, installHint: null } as typeof macClient
+    const markup = render({}, undefined, { snapshot: macSnapshot('managed'), externalClients: [macClient, claudeDesktop] })
+    for (const tool of ['codexDesktop', 'claudeDesktop']) {
+      const button = rowButton(markup, tool)
+      expect(button, tool).toContain('安装')
+      expect(button, tool).not.toContain('安装指南')
+      expect(button, tool).not.toContain('disabled')
+    }
+    // WorkBuddy 还没有可核对的 Mac 官方包，照旧带去教程。
+    expect(clientButton(markup)).toContain('安装指南')
   })
 
   it('turns the dead 「暂不支持」 client button into a working guide link', () => {
