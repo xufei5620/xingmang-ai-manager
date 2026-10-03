@@ -465,6 +465,46 @@ describe('registerIpcHandlers', () => {
     expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
   })
 
+  it('keeps routine notice and subscription polling out of the feedback report but logs slow reads and recoveries', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(0)
+      const accountService = accountServiceStub()
+      const getNotice = vi.fn(async () => null)
+      accountService.getNotice = getNotice
+      vi.mocked(accountService.getSubscriptionSelf).mockResolvedValue({ subscriptions: [] } as never)
+      const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+      const readNotice = electronMocks.handlers.get('account:get-notice')!
+      const readSubscription = electronMocks.handlers.get('account:get-subscription-self')!
+
+      await readNotice(trustedEvent())
+      getNotice.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 3_500)
+        return null
+      })
+      await readNotice(trustedEvent())
+      getNotice.mockRejectedValueOnce(new Error('账号服务请求超时'))
+      await expect(readNotice(trustedEvent())).rejects.toThrow('账号服务请求超时')
+      await readNotice(trustedEvent())
+      await readNotice(trustedEvent())
+      await readSubscription(trustedEvent())
+
+      const logged = vi.mocked(runtimeLog.log).mock.calls
+        .filter(([, , event]) => event === 'account:get-notice' || event === 'account:get-subscription-self')
+        .map(([level, , event, , detail]) => [event, level, (detail as { recovered?: boolean }).recovered === true])
+      expect(logged).toEqual([
+        ['account:get-notice', 'debug', false],
+        ['account:get-notice', 'info', false],
+        ['account:get-notice', 'error', false],
+        ['account:get-notice', 'info', true],
+        ['account:get-notice', 'debug', false],
+        ['account:get-subscription-self', 'debug', false],
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('builds the acceleration change key from state fields only, ignoring the ticking remaining time', () => {
     const state = { scope: 'a', phase: 'active', mode: 'system-proxy', line: { id: 'jp-01' }, connectedAt: 'x', error: null }
     expect(accelerationStateLogKey({ ...state, remainingSeconds: 10 })).toBe(accelerationStateLogKey({ ...state, remainingSeconds: 9 }))

@@ -1695,11 +1695,28 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
   return /:(?:get|get-state|list|list-all|detail|status|inspect)$/.test(channel) ? 'debug' : 'info'
 }
 
+/**
+ * 公告、公告已读同步、订阅这三样，登录后每隔几分钟自己读一次。每次成功都记一条 info
+ * 的话，电脑开几天不关，反馈报告附的最近 600 条里就几乎只剩它们（第二十六批 B：一份
+ * Mac 报告里三样一共占了 508 条，耗时中位 12 毫秒）。成功降到调试级：照样落盘，只是
+ * 报告不附，要数一共成功几次去看本机日志文件。有两种成功照记 info，排查要用：慢的，
+ * 报告里一眼看得出线路慢不慢；上一次失败之后的第一次成功，看得出什么时候恢复的。失败
+ * 照旧一律记 error。
+ */
+const pollingIpcChannels = new Set([
+  'account:get-notice',
+  'account:sync-local-notice-reads',
+  'account:get-subscription-self',
+])
+const SLOW_POLLING_SUCCESS_MS = 3_000
+
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
   const startupGate = options.accountStartupGate
   const externalShell = options.externalShell ?? createExternalShellLauncher()
   let lastAccelerationStateLogKey: string | null = null
+  // 上一次失败了的轮询通道：下一次成功要照记 info，看得出什么时候恢复的。
+  const failedPollingChannels = new Set<string>()
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
   // 密钥和新密码 60 秒后自动从剪贴板清掉（第十三批 8）。
   const sensitiveClipboard = createSensitiveClipboard({ clipboard })
@@ -1729,15 +1746,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           })
           return
         }
+        const durationMs = Date.now() - startedAt
+        const polling = pollingIpcChannels.has(channel)
+        const recovered = polling && failedPollingChannels.delete(channel)
+        const routinePoll = polling && !recovered && durationMs < SLOW_POLLING_SUCCESS_MS
         options.runtimeLog.log(
-          ipcSuccessLevel(channel),
+          routinePoll ? 'debug' : ipcSuccessLevel(channel),
           'ipc',
           channel,
           ipcSuccessMessage(channel, args, result),
-          ipcLogDetail(channel, args, result, Date.now() - startedAt),
+          { ...ipcLogDetail(channel, args, result, durationMs), ...(recovered ? { recovered: true } : {}) },
         )
       }
       const recordFailure = (error: unknown) => {
+        if (pollingIpcChannels.has(channel)) failedPollingChannels.add(channel)
         if (quietIpcFailureChannels.has(channel)) return
         const reason = error instanceof Error ? error.message : String(error)
         const label = ipcOperationLabels[channel] ?? channel
