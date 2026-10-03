@@ -673,10 +673,44 @@ test('a branch push with an open pull request triggers exactly one run', () => {
 
 test('superseded runs are cancelled instead of billing a full matrix each', () => {
   assert.equal(workflow.concurrency.group, '${{ github.workflow }}-${{ github.ref }}')
-  // Includes main while the project is pre-release: a burst of merges would
-  // otherwise run the whole matrix once per merge with no way to supersede an
-  // obsolete one. Revisit once releases start.
+  // Includes main: every merge was checked as its pull request's merge commit
+  // before it landed, so a burst of merges only needs its final state run
+  // again. yoyo kept this once releases had started (2026-10-03).
   assert.equal(workflow.concurrency['cancel-in-progress'], true)
+})
+
+test('a burst of merges to main reaches the matrix once, and pull requests never wait', () => {
+  const job = workflow.jobs.changes
+  const [wait] = job.steps
+
+  // First in the only job everything else needs, so a newer merge cancels a
+  // runner that is asleep rather than one that has started checking.
+  assert.equal(wait.run, 'sleep 600')
+  assert.equal(wait.if, "github.event_name == 'push'", 'pull requests must not wait')
+  for (const [name, entry] of Object.entries(workflow.jobs)) {
+    if (name === 'changes') continue
+    assert.ok([].concat(entry.needs).includes('changes'), `${name} must not start before the wait is over`)
+  }
+  // The wait is spent inside the job's own bound; the rest took seconds.
+  assert.ok(job['timeout-minutes'] >= 13, 'the job bound must leave room after the ten-minute wait')
+  // The wait is only cheap if the next merge actually cancels it, and it is
+  // for merges to main, not a way to pace anything else.
+  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  const sleepers = Object.entries(workflow.jobs)
+    .filter(([, entry]) => entry.steps.some((step) => /\bsleep\b/i.test(String(step.run || ''))))
+    .map(([name]) => name)
+  assert.deepEqual(sleepers, ['changes'])
+
+  // The run that survives a burst stands in for every merge in it, but its
+  // push event only names the last one. A documentation-only merge landing
+  // last must not mark main green over the code merges it cancelled.
+  const { requiresCodeChecksForEvent } = require('./ci-change-scope.cjs')
+  assert.equal(requiresCodeChecksForEvent('push', ['docs/guide.md']), true)
+  assert.equal(requiresCodeChecksForEvent('pull_request', ['docs/guide.md']), false)
+  assert.equal(requiresCodeChecksForEvent('pull_request', ['electron/ipc.ts']), true)
+  assert.equal(requiresCodeChecksForEvent('pull_request', null), true)
+  const scopeSource = fs.readFileSync(path.join(root, 'scripts', 'ci-change-scope.cjs'), 'utf8')
+  assert.match(scopeSource, /const code = requiresCodeChecksForEvent\(process\.env\.GITHUB_EVENT_NAME, files\)/)
 })
 
 test('documentation-only changes do not build and package the app', () => {
