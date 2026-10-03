@@ -389,6 +389,18 @@ describe('Windows system proxy lease', () => {
     await f.service.restore()
   })
 
+  it('runs the compiled script once a call after switching to it, even when it fails as well', async () => {
+    const f = fixture()
+    const refusal = commandFailure('EXIT_NON_ZERO', 1, scriptBlockScanningRefusal)
+    f.execute.mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal)
+    await expect(f.service.enable(18765)).rejects.toThrow('Windows 系统代理操作未完成')
+    await expect(f.service.enable(18765)).rejects.toThrow('Windows 系统代理操作未完成')
+    expect(f.execute.mock.calls.map(([command]) => scriptOf(command.argv))).toEqual([
+      windowsSystemProxyScript, windowsSystemProxyCompiledScript, windowsSystemProxyCompiledScript,
+    ])
+    expect(f.mutations).toEqual([])
+  })
+
   it('reruns an owner lookup too, which a refusal of the whole script stops as well', async () => {
     const f = fixture()
     fs.writeFileSync(f.lockPath, JSON.stringify({ version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } }), 'utf8')
