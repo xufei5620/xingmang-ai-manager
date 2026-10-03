@@ -1940,15 +1940,19 @@ if (!hasSingleInstanceLock) {
     // 当前选中的那个。
     async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
       const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
-      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
-      if (direct) {
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
+      const retry = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
+      if (retry) {
+        // 直连那一路刚交还给系统代理时，重发走的是系统代理。
+        const scope = proxyBypass.active() ? 'app' : proxyBypass.siteDirect() ? 'site' : 'proxy'
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope === 'proxy'
+          ? '账号请求直接联网没走通，已改回跟随系统代理'
+          : '账号请求经系统代理没走通，已改直接联网', {
           reason: failure.reason,
           method: failure.method,
-          scope: proxyBypass.active() ? 'app' : 'site',
+          scope,
         })
       }
-      return direct
+      return retry
     }
     const accounts = createRealmAccountService({
       vault,

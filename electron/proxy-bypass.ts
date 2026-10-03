@@ -53,15 +53,18 @@ export interface ProxyBypassDependencies {
 export interface ProxyBypass {
   tryBypass(): Promise<ProxyBypassOutcome>
   /**
-   * 账号请求在网络层失败后问一句：要不要改直连再发一次。startedAt 是那次请求
-   * 发出的时刻，reason 是失败原因。返回 true 表示现在走直连、且那次请求走的是改直连
-   * 之前那条路，值得重发；false 表示别重发，按原错误报。代理本身连不上才整个改直连，
-   * 超时、连接被断只让连那个站点的请求改走专用的直连会话：siteProbeUrl 是那次请求
-   * 所连站点的探测地址，缺省用 probeUrl()。
+   * 账号请求在网络层失败后问一句：要不要换条路再发一次。startedAt 是那次请求
+   * 发出的时刻，reason 是失败原因。返回 true 表示现在走的路和那次请求走的不一样了，
+   * 值得重发：多半是改了直连、那次请求走的是改之前那条路，也可能是站点那一路刚交还
+   * 给系统代理、那次请求走的是交还掉的直连；false 表示别重发，按原错误报。代理本身
+   * 连不上才整个改直连，超时、连接被断只让连那个站点的请求改走专用的直连会话：
+   * siteProbeUrl 是那次请求所连站点的探测地址，缺省用 probeUrl()。
    */
   recoverFailedRequest(startedAt: number, reason: NetworkFailureReason, siteProbeUrl?: string): Promise<boolean>
   /** 本次运行是否已经整个改成直连。 */
   active(): boolean
+  /** 连星芒站点的请求现在是不是改走专用的直连会话（整个改了直连时不算）。 */
+  siteDirect(): boolean
   /**
    * 这个地址的请求该不该走连星芒站点专用的直连会话：该走就给出这一轮改直连的编号，
    * 不该（不是星芒站点、没改直连、已经整个改了直连）返回 null。
@@ -130,6 +133,19 @@ interface SiteRoute {
   id: number
 }
 
+/** 直连那一路出错以后正在做的那次再看。 */
+interface SiteRecheck {
+  /**
+   * 为这次失败来问的请求等的是它：交还了、开了新一轮，或者直连没通、先留在直连，
+   * 有了结论就答，不陪着把后面的事做完。
+   */
+  verdict: Promise<void>
+  /** 看的这一会儿又有请求在直连上失败了：最后留在直连的话，从这次失败重新算起。 */
+  failedAgain: boolean
+}
+
+const proxyAnswersMessage = '经系统代理现在连得上了，账号和 AI 请求改回跟随系统代理'
+
 export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyBypass {
   let active = false
   let activatedAt = 0
@@ -142,7 +158,7 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   let unreachableAt: number | null = null
   let pending: Promise<ProxyBypassOutcome> | null = null
   let sitePending: Promise<boolean> | null = null
-  let siteRecheck: Promise<void> | null = null
+  let siteRecheck: SiteRecheck | null = null
   let cancelSiteFollowUp: (() => void) | null = null
   // 站点那一路最近一次交还给系统代理是什么时候、交还的是哪个站点。
   let siteHandedBack: { probeUrl: string, at: number } | null = null
@@ -238,48 +254,56 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   // 照旧走直连：系统代理连得上星芒站点就交还给它（换到了必须走代理的网络，或者直连时好时坏、
   // 代理却好好的）；代理连不上而直连通，就开新一轮接着直连（刚才失败的请求是新一轮之前发出的，
   // 照样重发）；两条路都没连上，多半是网络还没缓过来，先留在直连，过一会儿再看。
-  async function recheckSiteRoute(current: SiteRoute, attempt: number): Promise<void> {
+  // 返回 true 表示两条路都没连上、还留在这一轮直连上。
+  async function recheckSiteRoute(current: SiteRoute, attempt: number, decide: () => void): Promise<boolean> {
     // 正在试整个改直连时默认会话已经切成直连：这时去看「走没走代理」只会得到「没走」，
     // 经默认会话探的也成了直连。等它试完；试成了，站点这一路就用不着了。
     if (pending) await pending.catch(() => undefined)
-    if (active) return
+    if (active) return false
     // 读不出系统代理时照样往下看：这里要知道的是哪条路连得上。
     const blocker = await bypassBlocker(current.probeUrl).catch(() => null)
     if (blocker) {
       if (site?.id === current.id) handBackSite('电脑不再走代理或星芒加速开着，账号和 AI 请求改回跟随系统代理', { blocker })
-      return
+      return false
     }
     const viaProxy = dependencies.probe(current.probeUrl).catch(() => false)
     const viaDirect = probeSite(current.probeUrl)
     // 谁先有结论听谁的：代理不转发星芒站点时，经它的那一探常常要等满超时，直连先通了就不陪着等。
     const first = await Promise.race([viaProxy.then((answered) => answered ? 'proxy' as const : viaDirect), viaDirect])
-    if (site?.id !== current.id) return
+    if (site?.id !== current.id) return false
     if (first === 'proxy') {
-      handBackSite('系统代理现在连得上星芒站点，账号和 AI 请求改回跟随系统代理')
-    } else if (first === 'reachable') {
+      handBackSite(proxyAnswersMessage)
+      return false
+    }
+    if (first === 'reachable') {
       const renewed: SiteRoute = { ...current, since: now(), id: ++siteRounds }
       site = renewed
       unreachableAt = null
       dependencies.log?.('info', 'proxy-bypass.site-direct-resumed', '账号和 AI 请求直接联网断了一下，再探已经通了，接着直接联网')
       // 经代理的那一探晚一步回来、说连得上，照样交还给代理。
       void viaProxy.then((answered) => {
-        if (answered && site?.id === renewed.id) handBackSite('系统代理现在连得上星芒站点，账号和 AI 请求改回跟随系统代理')
+        if (answered && site?.id === renewed.id) handBackSite(proxyAnswersMessage)
       })
-    } else if (await viaProxy) {
-      if (site?.id === current.id) handBackSite('系统代理现在连得上星芒站点，账号和 AI 请求改回跟随系统代理')
-    } else if (site?.id === current.id) {
-      // 不记退避，也不交还：交还给一个连不上星芒站点的代理，网络回来时正好撞上这次要修的毛病。
-      if (first === 'offline') {
-        dependencies.log?.('info', 'proxy-bypass.site-direct-kept', '账号和 AI 请求直接联网没走通，这台电脑这会儿没有网络，先接着直接联网', { attempt })
-      } else {
-        dependencies.log?.('warn', 'proxy-bypass.site-direct-kept', '账号和 AI 请求直接联网没走通，系统代理也连不上星芒站点，先接着直接联网', { attempt })
-      }
-      followUpSiteRecheck(current, attempt)
+      return false
     }
+    // 直连没通：这时还留在直连，为这次失败来问的请求是这一轮发出的，答案已经是「别重发」，
+    // 先答它，不陪着等经代理那一探超时；登录、下单这类失败也就不多转那几秒。
+    decide()
+    if (await viaProxy) {
+      if (site?.id === current.id) handBackSite(proxyAnswersMessage)
+      return false
+    }
+    if (site?.id !== current.id) return false
+    // 不记退避，也不交还：交还给一个连不上星芒站点的代理，网络回来时正好撞上这次要修的毛病。
+    if (first === 'offline') {
+      dependencies.log?.('info', 'proxy-bypass.site-direct-kept', '账号和 AI 请求直接联网没走通，这台电脑这会儿没有网络，先接着直接联网', { attempt })
+    } else {
+      dependencies.log?.('warn', 'proxy-bypass.site-direct-kept', '账号和 AI 请求直接联网没走通，经系统代理也没连上，先接着直接联网', { attempt })
+    }
+    return true
   }
 
-  // 两条路都没连上：过一会儿再看，次数有限（siteRecheckDelaysMs）。这期间又有请求在直连上
-  // 失败，就从那次失败重新算起。
+  // 两条路都没连上：过一会儿再看，次数有限（siteRecheckDelaysMs）。
   function followUpSiteRecheck(current: SiteRoute, attempt: number): void {
     if (attempt >= siteRecheckDelaysMs.length) return
     cancelSiteFollowUp = schedule(() => {
@@ -291,9 +315,17 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   function startSiteRecheck(current: SiteRoute, attempt: number): void {
     cancelSiteFollowUp?.()
     cancelSiteFollowUp = null
-    siteRecheck = recheckSiteRoute(current, attempt)
-      .catch(() => undefined)
-      .finally(() => { siteRecheck = null })
+    let decide = (): void => undefined
+    const recheck: SiteRecheck = { verdict: new Promise<void>((resolve) => { decide = () => resolve() }), failedAgain: false }
+    siteRecheck = recheck
+    void recheckSiteRoute(current, attempt, () => decide())
+      .catch(() => false)
+      .then((kept) => {
+        decide()
+        if (siteRecheck === recheck) siteRecheck = null
+        // 看的这一会儿又有请求在直连上失败了，就从那次失败重新算起。
+        if (kept) followUpSiteRecheck(current, recheck.failedAgain ? 0 : attempt)
+      })
   }
 
   async function checkSystemProxy(url: string): Promise<void> {
@@ -310,9 +342,9 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
       // 另一个请求正在试整个改直连：等它试完再答。试的那一会儿默认会话已经切成直连，
       // 这时去看「走没走代理」只会得到「没走」，这次请求就白白不重发了。
       if (pending) await pending.catch(() => undefined)
-      // 直连那一路刚失败、正在后台再看：等它看完再答，不然这次请求看到的还是断掉的那一轮。
+      // 直连那一路刚失败、正在后台再看：等它有了结论再答，不然这次请求看到的还是断掉的那一轮。
       // 直连还通，开的是新一轮，这次请求是新一轮之前发出的，下面照样重发。
-      if (siteRecheck) await siteRecheck
+      if (siteRecheck) await siteRecheck.verdict
       // 已经直连了还失败：要是那次请求是改直连之前发出的（几个请求一起卡在代理上，
       // 另一个先把会话切了），重发一次就走直连；之后发出的本来就是直连，重发没用。
       if (active) return startedAt < activatedAt
@@ -320,15 +352,18 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
       // 代理本身连不上（代理软件关了、崩了）时走代理的什么都通不了，这才整个改直连。
       if (reason === 'proxy') return !backingOff(automaticBypassCooldownMs) && await tryBypass() === 'direct'
       const url = siteProbeUrl ?? dependencies.probeUrl()
-      // 这次请求在站点交还给系统代理之前就发出了，失败在交还掉的那条直连上：交还时已经看过
-      // 代理连得上星芒站点（或者现在不该绕），不为它回头再探直连，不然刚交还就又分了出去。
-      if (siteHandedBack?.probeUrl === url && startedAt < siteHandedBack.at) return false
+      // 这次请求在站点交还给系统代理之前就发出了（同一毫秒也算），走的是交还掉的那条直连：交还时
+      // 已经看过系统代理连得上星芒站点（或者现在本来就不该绕），换现在这条路重发一次（重不重发还要
+      // 看请求本身，见 new-api-client 的 mayReplayOffProxy）。不为它回头再探直连，不然刚交还就又
+      // 分了出去。
+      if (siteHandedBack?.probeUrl === url && startedAt <= siteHandedBack.at) return true
       if (backingOff(siteProbeBackoffMs)) return false
       // 几个请求一起卡在代理上：同一时刻只探一次。
       if (!sitePending) sitePending = divertSiteRequests(url).finally(() => { sitePending = null })
       return sitePending
     },
     active: () => active,
+    siteDirect: () => site !== null && !active,
     routeSiteRequest(url) {
       if (!site || active || originOf(url) !== site.origin) return null
       if (!proxyCheck && now() - proxyCheckedAt >= systemProxyCheckIntervalMs) {
@@ -339,8 +374,13 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     },
     siteRouteFailed(route) {
       const current = site
-      // 上一轮迟到的失败不算；同一轮几个请求一起失败，只看一次。
-      if (current?.id !== route || siteRecheck) return
+      // 上一轮迟到的失败不算。
+      if (current?.id !== route) return
+      // 同一轮几个请求一起失败，只看一次；正看着的那次最后要是留在直连，从这次失败重新算起。
+      if (siteRecheck) {
+        siteRecheck.failedAgain = true
+        return
+      }
       startSiteRecheck(current, 0)
     },
   }
