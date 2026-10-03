@@ -979,6 +979,108 @@ describe('renderer-v2 home runtime card', () => {
   })
 })
 
+/**
+ * 第二十七批 B（A014 截图）：只装了 Codex 桌面端的客户。桌面端自带运行环境，Node.js 和 Python、Git
+ * 一样只是可选；缺 Git 那段讲的是 Claude Code。装了或正在装命令行工具时照旧。
+ */
+describe('renderer-v2 home runtime card when only the Codex desktop app is in use', () => {
+  const missing = { installed: false, version: null, detectionFailed: false }
+  const notInstalled = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
+  const optionalElevation = 'Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+  const requiredElevation = '这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+
+  function machine(platform: 'windows' | 'macos', clis: Record<string, unknown> = {}): ToolboxSnapshot {
+    const base = snapshot({ claude: notInstalled, codex: notInstalled, grok: notInstalled, gemini: notInstalled, ...clis })
+    return {
+      ...base,
+      platform: {
+        ...base.platform, platform, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: platform === 'windows' ? 'managed' : 'external',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { launch: true, install: platform === 'windows' ? 'managed' : 'external' },
+      },
+      system: { ...base.system, runtime: { node: missing, npm: missing, python: missing, git: missing } },
+    } as unknown as ToolboxSnapshot
+  }
+
+  function opening(markup: string, testId: string, close: string): string {
+    const at = markup.indexOf(`data-testid="${testId}"`)
+    if (at < 0) return ''
+    const start = markup.lastIndexOf('<', at)
+    return markup.slice(start, markup.indexOf(close, at))
+  }
+
+  it('shows Node.js as optional and drops the Claude Code Git paragraph on a Windows desktop-only machine', () => {
+    const markup = render({}, undefined, { snapshot: machine('windows') })
+    const node = opening(markup, 'home-runtime-row-node', '</div>')
+    expect(node).toContain('可选 · 未装')
+    expect(node).not.toContain('is-warn')
+    expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
+    expect(markup).not.toContain('Claude Code 的一部分功能')
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).toContain('is-quiet')
+    expect(elevation).toContain(optionalElevation)
+    expect(markup).not.toContain('这一步需要管理员授权')
+    // 按钮一颗不少：想先准备好的照样能点。
+    expect(markup).toContain('data-testid="home-runtime-node"')
+    expect(markup).toContain('data-testid="home-runtime-python"')
+    expect(markup).toContain('data-testid="home-runtime-git"')
+  })
+
+  it('keeps the warning and names the step by the home button once Claude Code is installed', () => {
+    const markup = render({}, undefined, { snapshot: machine('windows', { claude: cliStatus }) })
+    const node = opening(markup, 'home-runtime-row-node', '</div>')
+    expect(node).toContain('未安装')
+    expect(node).not.toContain('可选')
+    expect(node).toContain('is-warn')
+    expect(markup).toContain('data-testid="home-runtime-git-hint"')
+    expect(markup).toContain('Claude Code 的一部分功能')
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).not.toContain('is-quiet')
+    expect(elevation).toContain(requiredElevation)
+    expect(markup).not.toContain('点「安装」后')
+  })
+
+  it('treats a tool that is still installing as in use, so the UAC sentence is orange when the prompt is about to appear', () => {
+    const job = { label: '正在准备 Node.js 运行环境（1/2）', log: [] } as unknown as ToolJob
+    const markup = render({ claude: job }, undefined, { snapshot: machine('windows') })
+    expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).not.toContain('is-quiet')
+    expect(elevation).toContain(requiredElevation)
+    expect(markup).toContain('data-testid="home-runtime-git-hint"')
+  })
+
+  it('keeps the Git paragraph for Claude Code only, but still warns about Node.js for any other command-line tool', () => {
+    const markup = render({}, undefined, { snapshot: machine('windows', { codex: cliStatus }) })
+    expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+    expect(opening(markup, 'home-runtime-node-elevation', '</p>')).toContain(requiredElevation)
+    expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
+  })
+
+  it('does not take a failed probe for an uninstalled tool (A4)', () => {
+    const failed = { ...notInstalled, detectionFailed: true, detectionError: '本地探针暂时不可用' }
+    const markup = render({}, undefined, { snapshot: machine('windows', { claude: failed }) })
+    expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+    expect(markup).toContain('data-testid="home-runtime-git-hint"')
+  })
+
+  it('greys out the Mac Node.js paragraph without changing a word when nothing needs it', () => {
+    const quiet = render({}, undefined, { snapshot: machine('macos') })
+    const managed = opening(quiet, 'home-runtime-node-managed', '</p>')
+    expect(managed).toContain('is-quiet')
+    expect(managed).toContain('这台 Mac 上还没有 Node.js')
+    expect(opening(quiet, 'home-runtime-row-node', '</div>')).toContain('可选 · 未装')
+    expect(quiet).not.toContain('data-testid="home-runtime-git-hint"')
+    expect(quiet).not.toContain('data-testid="home-runtime-node-elevation"')
+
+    const inUse = render({}, undefined, { snapshot: machine('macos', { claude: cliStatus }) })
+    const warned = opening(inUse, 'home-runtime-node-managed', '</p>')
+    expect(warned).not.toContain('is-quiet')
+    expect(warned).toContain('这台 Mac 上还没有 Node.js')
+    expect(inUse).toContain('data-testid="home-runtime-git-hint"')
+  })
+})
+
 describe('Home balance card while a saved login is being restored', () => {
   it('does not ask the user to sign in when the login is still on this computer', () => {
     // 开机恢复联不上时登录还在，「登录后查看用量」会让人以为掉线了要重新登录。
