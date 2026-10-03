@@ -1108,6 +1108,20 @@ test('tool probe failures show a retry state instead of a third-party configurat
     await clean(page)
   } finally { await page.close() }
 })
+// 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，工具行和「安装卸载」页都换成同一句中文。
+test('an English probe failure reads as a plain Chinese sentence on the home row and the maintenance page', async () => {
+  const page = await open('detectionFailed=eperm')
+  try {
+    const sentence = '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText(sentence, { exact: true }).waitFor()
+    assert.doesNotMatch(await row.innerText(), /EPERM|operation not permitted/)
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect.poll(() => page.getByTestId('maintenance-reason-claude').innerText()).toBe(sentence)
+    await clean(page)
+  } finally { await page.close() }
+})
 test('the maintenance page does not reinstall over a CLI from the official installer', async () => {
   const page = await open('nativeInstall=1')
   try {
@@ -2109,6 +2123,44 @@ test('a restored login that filled newer tool settings says so once in the corne
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'fillToolTemplateDefaults').length), 1)
     await notice.getByRole('button', { name: '知道了', exact: true }).click()
     await expect.poll(() => page.getByTestId('startup-notice-template-filled').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 开机那轮 Codex 开着、设置没补成（第二十六批 E）：隔十分钟再要一次，这回补上了，角落照样
+// 说一句；补上以后就不再要，回到前台也不要。
+test('settings left unfilled while Codex was open get filled on a later try and announced then', async () => {
+  const page = await open('templateDeferred=1', true)
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const fills = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'fillToolTemplateDefaults').map((entry) => entry.args[0] ?? null))
+    await expect.poll(fills).toEqual([null])
+    assert.equal(await page.getByTestId('startup-notice-template-filled').count(), 0)
+    await page.clock.fastForward('10:00')
+    const notice = page.getByTestId('startup-notice-template-filled')
+    await notice.waitFor()
+    assert.match(await notice.textContent(), /补上了 Codex 的几项设置/)
+    assert.deepEqual(await fills(), [null, true])
+    await page.clock.fastForward('30:00')
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    assert.deepEqual(await fills(), [null, true])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('coming back to the window asks again for settings left unfilled, two minutes after the last try at the earliest', async () => {
+  const page = await open('templateDeferred=1', true)
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const fills = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'fillToolTemplateDefaults').map((entry) => entry.args[0] ?? null))
+    await expect.poll(fills).toEqual([null])
+    await page.clock.fastForward('01:00')
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    assert.deepEqual(await fills(), [null])
+    await page.clock.fastForward('01:00')
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.getByTestId('startup-notice-template-filled').waitFor()
+    assert.deepEqual(await fills(), [null, true])
     await clean(page)
   } finally { await page.close() }
 })

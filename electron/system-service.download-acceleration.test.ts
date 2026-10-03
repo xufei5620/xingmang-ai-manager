@@ -5,6 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { createSystemService, type SystemServiceOptions } from './system-service'
 import type { DownloadAccelerationLease } from './download-acceleration'
+import {
+  resolveNodeRuntimeNetworkRegion,
+  type InstallNodeRuntimeOptions,
+  type NodeRuntimeInstallResult,
+} from './node-runtime'
+import type { InstallPythonRuntimeOptions, PythonRuntimeInstallResult } from './python-runtime'
+import type { WindowsMachinePaths } from './windows-machine-paths'
 
 const temporaryDirectories: string[] = []
 
@@ -209,46 +216,180 @@ describe('installing a CLI with download acceleration', () => {
   })
 })
 
+function createRoute() {
+  const release = vi.fn(async () => {})
+  const acquire = vi.fn(async (): Promise<DownloadAccelerationLease> => ({
+    endpoint: { scheme: 'http', host: '127.0.0.1', port: 7890 },
+    accelerated: true,
+    release,
+  }))
+  return { acquire, release }
+}
+
 describe('installing Python with download acceleration', () => {
-  it.runIf(process.platform === 'win32')('holds a download route and hands the installer the fetch that uses it', async () => {
+  const installedFromPythonOrg: PythonRuntimeInstallResult = {
+    installed: true,
+    action: 'installed',
+    method: 'exe',
+    source: 'python-org',
+    version: 'Python 3.12',
+    architecture: 'x64',
+    pathRefreshRequired: true,
+  }
+
+  function createPythonService(
+    route: ReturnType<typeof createRoute>,
+    installPythonRuntime: NonNullable<SystemServiceOptions['installPythonRuntime']>,
+  ) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-python-download-acceleration-'))
     temporaryDirectories.push(directory)
-    const release = vi.fn(async () => {})
-    const acquire = vi.fn(async (): Promise<DownloadAccelerationLease> => ({
-      endpoint: { scheme: 'http', host: '127.0.0.1', port: 7890 },
-      accelerated: true,
-      release,
-    }))
     const downloadFetch = vi.fn() as unknown as typeof fetch
-    const installPythonRuntime = vi.fn(async () => {
-      // 下载那一刻线路必须还握在手里。
-      expect(release).not.toHaveBeenCalled()
-      return {
-        installed: true as const,
-        action: 'installed' as const,
-        method: 'exe' as const,
-        source: 'python-org' as const,
-        version: 'Python 3.12',
-        architecture: 'x64' as const,
-        pathRefreshRequired: true,
-      }
-    })
     const service = createSystemService(
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
       {
         platform: 'win32',
         windowsExecutionMode: 'same-user',
         findExecutable: async () => null,
-        acquireDownloadAcceleration: acquire,
+        acquireDownloadAcceleration: route.acquire,
         downloadFetch,
         installPythonRuntime,
         inspectInstalledPythonRuntime: async () => { throw new Error('Python 3.12 fixed install not found') },
       },
     )
+    return { service, downloadFetch }
+  }
+
+  it('borrows the download route only once the installer falls back to python.org', async () => {
+    const route = createRoute()
+    const installPythonRuntime = vi.fn(async (options: InstallPythonRuntimeOptions = {}) => {
+      // 先试商店：它自己下载、不走这条线路，不该等加速内核起来。
+      expect(route.acquire).not.toHaveBeenCalled()
+      if (!options.withDownloadRoute) throw new Error('退到 python.org 时要能借下载线路')
+      await options.withDownloadRoute(async () => {
+        // 下载那一刻线路必须还握在手里。
+        expect(route.acquire).toHaveBeenCalledTimes(1)
+        expect(route.release).not.toHaveBeenCalled()
+      })
+      expect(route.release).toHaveBeenCalledTimes(1)
+      return installedFromPythonOrg
+    })
+    const { service, downloadFetch } = createPythonService(route, installPythonRuntime)
 
     await service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })
-    expect(acquire).toHaveBeenCalledTimes(1)
     expect(installPythonRuntime).toHaveBeenCalledWith(expect.objectContaining({ dependencies: { fetch: downloadFetch } }))
-    expect(release).toHaveBeenCalledTimes(1)
+    expect(route.acquire).toHaveBeenCalledTimes(1)
+  })
+
+  it('never starts the route when the Microsoft Store installs Python', async () => {
+    const route = createRoute()
+    const { service } = createPythonService(route, vi.fn(async (): Promise<PythonRuntimeInstallResult> => ({
+      ...installedFromPythonOrg,
+      method: 'winget',
+      source: 'winget',
+    })))
+
+    await expect(service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() }))
+      .resolves.toMatchObject({ method: 'winget' })
+    expect(route.acquire).not.toHaveBeenCalled()
+  })
+})
+
+describe('installing Node.js with download acceleration', () => {
+  const testMachinePaths: WindowsMachinePaths = {
+    systemRoot: 'D:\\Windows',
+    system32: 'D:\\Windows\\System32',
+    programFiles: 'D:\\Program Files',
+    programFilesX86: 'D:\\Program Files (x86)',
+    programData: 'D:\\ProgramData',
+  }
+  const installedNode: NodeRuntimeInstallResult = {
+    installed: true,
+    action: 'installed',
+    method: 'msi',
+    source: 'official',
+    version: 'v24.19.0',
+    architecture: 'x64',
+    pathRefreshRequired: true,
+    systemRestartRequired: false,
+  }
+
+  /** 探测出来是中国大陆的一台没装 Node.js 的电脑：不借线路时镜像优先。 */
+  function createNodeService(
+    platform: NodeJS.Platform,
+    route: ReturnType<typeof createRoute>,
+    installNodeRuntime: NonNullable<SystemServiceOptions['installNodeRuntime']>,
+  ) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-download-acceleration-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cdn-cgi/trace')) return new Response('ip=203.0.113.8\nloc=CN\n', { status: 200 })
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+    return createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform,
+        windowsExecutionMode: 'same-user',
+        providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') },
+        findExecutable: async () => null,
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor: async () => 'x64',
+        resolveWindowsMachinePaths: () => testMachinePaths,
+        readWindowsLivePath: async () => null,
+        acquireDownloadAcceleration: route.acquire,
+        installNodeRuntime,
+      },
+    )
+  }
+
+  it('borrows the route only when Windows falls back to the installer, then prefers the official site', async () => {
+    const route = createRoute()
+    const installNodeRuntime = vi.fn(async (options: InstallNodeRuntimeOptions): Promise<NodeRuntimeInstallResult> => {
+      // 先试 winget：它自己下载、不走这条线路，不该等加速内核起来，先走哪个源也还没定。
+      expect(route.acquire).not.toHaveBeenCalled()
+      expect(await resolveNodeRuntimeNetworkRegion(options.networkRegion)).toBe('mainland-china')
+      if (!options.withDownloadRoute) throw new Error('Windows 退到安装包时要能借下载线路')
+      const region = await options.withDownloadRoute(() => resolveNodeRuntimeNetworkRegion(options.networkRegion))
+      // 借到线路以后再定顺序：线路就是为直连官方源准备的。
+      expect(region).toBe('outside-mainland-china')
+      expect(route.release).toHaveBeenCalledTimes(1)
+      return installedNode
+    })
+    const service = createNodeService('win32', route, installNodeRuntime)
+
+    await expect(service.installNodeRuntime({ isDestroyed: () => false, send: vi.fn() }))
+      .resolves.toMatchObject({ method: 'msi' })
+    expect(installNodeRuntime).toHaveBeenCalledOnce()
+    expect(route.acquire).toHaveBeenCalledTimes(1)
+  })
+
+  it('never starts the route when winget installs Node.js on Windows', async () => {
+    const route = createRoute()
+    const service = createNodeService('win32', route, vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      ...installedNode,
+      method: 'winget',
+      source: 'winget',
+    })))
+
+    await expect(service.installNodeRuntime({ isDestroyed: () => false, send: vi.fn() }))
+      .resolves.toMatchObject({ method: 'winget' })
+    expect(route.acquire).not.toHaveBeenCalled()
+  })
+
+  it('keeps holding the route for the whole install on macOS, where there is no winget', async () => {
+    const route = createRoute()
+    const installNodeRuntime = vi.fn(async (options: InstallNodeRuntimeOptions): Promise<NodeRuntimeInstallResult> => {
+      expect(route.acquire).toHaveBeenCalledTimes(1)
+      expect(options.withDownloadRoute).toBeUndefined()
+      expect(await resolveNodeRuntimeNetworkRegion(options.networkRegion)).toBe('outside-mainland-china')
+      expect(route.release).not.toHaveBeenCalled()
+      return { ...installedNode, method: 'archive' }
+    })
+    const service = createNodeService('darwin', route, installNodeRuntime)
+
+    await service.installNodeRuntime({ isDestroyed: () => false, send: vi.fn() })
+    expect(installNodeRuntime).toHaveBeenCalledOnce()
+    expect(route.release).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
+import { detectionFailureMessage, errorMessage, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
 
 describe('rawErrorMessage', () => {
   it('strips the Electron IPC prefix that would otherwise expose channel names', () => {
@@ -193,6 +193,55 @@ describe('snapshotErrorMessage', () => {
     expect(snapshotErrorMessage(null)).toBeNull()
     expect(snapshotErrorMessage(undefined)).toBeNull()
     expect(snapshotErrorMessage('   ')).toBeNull()
+  })
+})
+
+describe('detectionFailureMessage', () => {
+  const permission = '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
+  const busy = '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。'
+  const missing = '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
+  const other = '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
+
+  it('says in plain words that a permission error is most likely security software', () => {
+    expect(detectionFailureMessage("EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'")).toBe(permission)
+    expect(detectionFailureMessage("EACCES: permission denied, open '/Users/yoyo/Library/Application Support/WorkBuddy/config.json'")).toBe(permission)
+    expect(detectionFailureMessage('spawn EPERM')).toBe(permission)
+    expect(detectionFailureMessage("Access to the path 'C:\\Program Files\\WindowsApps' is denied.")).toBe(permission)
+  })
+
+  it('asks to close whatever holds a busy file', () => {
+    expect(detectionFailureMessage("EBUSY: resource busy or locked, open 'C:\\Users\\yoyo\\.codex\\config.toml'")).toBe(busy)
+    expect(detectionFailureMessage('The process cannot access the file because it is being used by another process.')).toBe(busy)
+  })
+
+  it('says a file went missing for ENOENT', () => {
+    expect(detectionFailureMessage("ENOENT: no such file or directory, stat 'C:\\Users\\yoyo\\AppData\\Roaming\\npm\\codex.cmd'")).toBe(missing)
+    expect(detectionFailureMessage('spawn codex ENOENT')).toBe(missing)
+  })
+
+  it('points anything else in English at the log instead of putting it on screen', () => {
+    expect(detectionFailureMessage('Unexpected token < in JSON at position 0')).toBe(other)
+    expect(detectionFailureMessage('UNKNOWN: unknown error, lstat')).toBe(other)
+  })
+
+  it('keeps a reason that was written in Chinese, with its path redacted', () => {
+    expect(detectionFailureMessage('读取 Node.js 安装位置时被拒绝')).toBe('读取 Node.js 安装位置时被拒绝')
+    expect(detectionFailureMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本地配置文件 失败')
+    expect(detectionFailureMessage('无法确认当前安装状态：/Applications/Codex.app')).toBe('无法确认当前安装状态：/Applications/Codex.app')
+  })
+
+  it('does not take an English error for Chinese because of the path placeholder or a Chinese user name', () => {
+    // 脱敏把路径换成了「本地配置文件」，中文用户名也只在路径里：句子本身还是英文。
+    expect(detectionFailureMessage("EPERM: operation not permitted, scandir 'C:\\Users\\张三\\AppData\\Roaming\\npm'")).toBe(permission)
+    // 用户名带空格时脱敏只剥到空格为止，剩下那截路径里的中文也不算。
+    expect(detectionFailureMessage("EACCES: permission denied, open 'C:\\Users\\张 三\\AppData\\Roaming\\npm'")).toBe(permission)
+    expect(detectionFailureMessage('spawn C:\\Users\\张 三\\AppData\\Roaming\\npm\\codex.cmd ENOENT')).toBe(missing)
+  })
+
+  it('reports nothing so callers keep their own fallback', () => {
+    expect(detectionFailureMessage(null)).toBeNull()
+    expect(detectionFailureMessage(undefined)).toBeNull()
+    expect(detectionFailureMessage('  ')).toBeNull()
   })
 })
 

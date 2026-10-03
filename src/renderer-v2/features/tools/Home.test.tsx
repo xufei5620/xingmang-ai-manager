@@ -451,11 +451,15 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(windows).not.toContain('data-testid="home-runtime-git-waiting"')
   })
 
-  it('gives Python its own block, including why the bundled one is not enough', () => {
+  // 第二十八批 C：四个命令行工具都不用 Python 了，这段改说「要装的话」，不再说 Gemini 要它、劝另装一份。
+  it('gives Python its own block, saying none of the four command-line tools needs it', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
     expect(markup).toContain('brew install python')
-    expect(markup).toContain('Gemini CLI')
+    expect(markup).toContain('四个命令行工具都用不到它，外接工具里个别要用它的才需要')
+    expect(markup).toContain('要装的话下面两种装法选一种就行')
+    expect(markup).not.toContain('Gemini CLI 需要它')
+    expect(markup).not.toContain('版本可能过旧')
     expect(markup).toContain('去官网下载 Python（可选环境）')
     expect(markup).toContain('data-testid="home-runtime-python"')
     expect(markup).toContain('data-testid="home-runtime-tutorial"')

@@ -273,7 +273,7 @@ const xingmangApi: XingmangApi = {
   repairCliHooks: (provider) => invoke('repairCliHooks', provider),
   inspectRunningTools: (providers) => invoke('inspectRunningTools', providers),
   checkToolModels: (provider) => invoke('checkToolModels', provider),
-  fillToolTemplateDefaults: () => invoke('fillToolTemplateDefaults'),
+  fillToolTemplateDefaults: (retry) => retry === undefined ? invoke('fillToolTemplateDefaults') : invoke('fillToolTemplateDefaults', retry),
   listModels: (apiKey) => invoke('listModels', apiKey),
   listConfiguredModels: (provider) => invoke('listConfiguredModels', provider),
   chooseWorkspace: (options) => options === undefined ? invoke('chooseWorkspace') : invoke('chooseWorkspace', options),
