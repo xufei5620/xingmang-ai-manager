@@ -1999,9 +1999,16 @@ if (!hasSingleInstanceLock) {
         previous?.videoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
-        await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
-          previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
-          previous.canvasRuns.whenIdle()] : [])])
+        // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完；叫停管到下面这段等完，
+        // 晚一步才开始的那次也不等（system-service.ts 的 stopTemplateFillWaits）。
+        const resumeTemplateFill = systemService.stopTemplateFillWaits?.()
+        try {
+          await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
+            previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
+            previous.canvasRuns.whenIdle()] : [])])
+        } finally {
+          resumeTemplateFill?.()
+        }
       },
       onChanged: (siteId, state) => {
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
