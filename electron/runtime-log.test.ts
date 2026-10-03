@@ -100,6 +100,26 @@ describe('summarizeRuntimeLogFile', () => {
     expect(summary.entries[0].message).toBe('第 2100 条')
     expect(summary.entries[1_999].message).toBe('第 4099 条')
   })
+
+  it('keeps a separate tail of non-debug entries so debug noise cannot push them out of the report', () => {
+    const line = (index: number, level: string) => JSON.stringify({
+      id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level,
+      source: 'ipc', event: 'entry', message: `第 ${index} 条`, detail: { apiKey: 'private-key' },
+    })
+    const summary = summarizeRuntimeLogFile([
+      line(0, 'info'),
+      line(1, 'warn'),
+      ...Array.from({ length: 2_500 }, (_, index) => line(index + 2, 'debug')),
+      line(2_502, 'error'),
+    ].join('\n'))
+
+    expect(summary.entries).toHaveLength(2_000)
+    expect(summary.entries.some((entry) => entry.message === '第 0 条')).toBe(false)
+    expect(summary.nonDebugEntries.map((entry) => entry.message)).toEqual(['第 0 条', '第 1 条', '第 2502 条'])
+    expect(summary.nonDebugEntries[0].detail).toEqual({ apiKey: '[REDACTED]' })
+    // The newest entry sits in both tails as one sanitized object.
+    expect(summary.nonDebugEntries[2]).toBe(summary.entries[1_999])
+  })
 })
 
 describe('RuntimeLogStore', () => {
@@ -341,6 +361,20 @@ describe('RuntimeLogStore', () => {
     const report = await store.captureFeedbackReport(3)
 
     expect(report.text).toContain('important early entry')
+  })
+
+  it('still fills the report from older files when thousands of debug polls came after them', async () => {
+    const store = createStore()
+    writeArchive(store, 1, '轮转前的登录记录')
+    fs.writeFileSync(store.filePath, Array.from({ length: 2_500 }, (_, index) => JSON.stringify({
+      id: `poll-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level: 'debug',
+      source: 'ipc', event: 'account:get-notice', message: `poll ${index}`, detail: { durationMs: 12 },
+    })).join('\n') + '\n', 'utf8')
+    const report = await store.captureFeedbackReport(600)
+
+    expect(report.text).toContain('轮转前的登录记录')
+    expect(report.text).not.toContain('poll 0')
+    expect(report.text).toContain('日志条数: 2501（附最近 1 条，调试级 2500 条未附）')
   })
 
   it('puts the runtime environment before tools and self-check, with home paths redacted', async () => {
