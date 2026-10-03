@@ -8,22 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 要同步的官方安装包
+        description: 要同步的 Windows/macOS 官方安装包（all 包含两种系统）
         type: choice
         default: all
         options:
           - all
           - windows
           - macos
-          - linux
           - windows-x64
           - windows-arm64
           - macos-arm64
           - macos-x64
-          - linux-deb-x64
-          - linux-deb-arm64
-          - linux-rpm-x64
-          - linux-rpm-arm64
 
 permissions:
   contents: read
