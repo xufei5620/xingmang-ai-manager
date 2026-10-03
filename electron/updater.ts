@@ -187,7 +187,11 @@ export interface UpdateDownloadStall {
    * 取消）。这时再下只会接回同一次，所以不自动重下。
    */
   unsettled: boolean
-  /** 停住的这次下的是整个安装包（停住一次以后的重下），不是只下改了的那几段。*/
+  /**
+   * true＝停住的是看门狗停过一次以后的那次重下，它关掉了增量下载，只下整个安装包。false＝头一次
+   * 下，可能是只下改了的那几段，也可能是整个安装包（没有旧安装包可比、增量下载失败时
+   * electron-updater 自己改下整包）。
+   */
   fullPackage: boolean
   /** 停住前最后一次进度是 100%：停在下完以后的核对、改名那几步，或者分批下载的下一批开头。*/
   transferEnded: boolean
@@ -511,8 +515,9 @@ class UpdateDownloadStalled extends Error {
 }
 
 /**
- * 看门狗交给宿主去掐断请求的错误（abortDownloadRequests）。electron-updater 下整个安装包时把它
- * 原样当成那次下载的失败；增量下载时自己接住它，改下整个安装包，再被已经取消的令牌当场结束。
+ * 看门狗交给宿主去掐断请求的错误（abortDownloadRequests）。下整个安装包时令牌已经让那次下载以
+ * 「已取消」收场，这个错误落空，宿主没给令牌时它才成了那次下载的失败。增量下载时 electron-updater
+ * 自己接住它，改下整个安装包，再被已经取消的令牌当场结束。
  */
 class UpdateDownloadAborted extends Error {
   constructor() {
@@ -1281,11 +1286,13 @@ export function createUpdaterService(
       // 给出的「重新安装」会当场被主进程以「更新尚未下载并校验完成」顶回来。真正
       // 的安装失败走 reportInstallFailure，那条路把阶段留在 downloaded。
       // 看门狗放弃的那次晚到的出错（比如它自己下完了、签名却对不上）也是下载那一步的，
-      // 哪怕界面已经报了失败、或者又在检查了。
+      // 哪怕界面已经报了失败。正在检查时来的出错算检查的：检查失败时 electron-updater 先发
+      // error 再让检查失败，check() 随后照样标成检查失败，中间不能闪一下「下载更新失败」。
       emit({
         phase: 'error',
         error: safeError(error, platform),
-        failedStep: abandonedDownloads.size > 0 || snapshot.phase === 'downloading' || snapshot.phase === 'downloaded'
+        failedStep: snapshot.phase !== 'checking'
+          && (abandonedDownloads.size > 0 || snapshot.phase === 'downloading' || snapshot.phase === 'downloaded')
           ? 'download'
           : 'check',
         progress: null,
@@ -1453,12 +1460,13 @@ export function createUpdaterService(
     }
     const timer = setInterval(() => {
       const at = Date.now()
-      // 机器睡着时什么也进不来，时钟往前跳的那一截也不是在等：都从这一刻重新算。
-      if (at - lastTickAt > 2 * updateDownloadWatchMs) lastActivityAt = at
+      // 机器睡着时什么也进不来，时钟往前、往回跳的那一截也不是在等：都从这一刻重新算。
+      if (at < lastTickAt || at - lastTickAt > 2 * updateDownloadWatchMs) lastActivityAt = at
       lastTickAt = at
       try {
         const received = runtime.downloadReceivedAt?.()
-        if (typeof received === 'number') noteActivity(received)
+        // 时钟往回跳以前记下的时间比现在还晚，不能把刚重新算的这一刻又推到后面去。
+        if (typeof received === 'number' && received <= at) noteActivity(received)
       } catch {
         // 读不到就只看进度。
       }

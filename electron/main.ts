@@ -1618,6 +1618,7 @@ if (!hasSingleInstanceLock) {
       },
       downloadStalled: (stall) => {
         runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
+          retrying: stall.retrying,
           transferred: stall.transferred,
           total: stall.total,
           unsettled: stall.unsettled,

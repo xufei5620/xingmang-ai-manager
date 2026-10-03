@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { createUpdateRequestGuard } from './update-request-guard'
 
@@ -24,11 +25,16 @@ class FakeExecutor {
   }
 }
 
-// What electron-updater does once it has a request: listen for its errors.
-function libraryRequest(executor: FakeExecutor) {
+// What electron-updater does with a request: it reads the body of a response it takes
+// inside the response callback, leaves one it turns down unread, and listens for the
+// request's errors.
+function libraryRequest(executor: FakeExecutor, takesResponse = true) {
   const responses: unknown[] = []
   const errors: unknown[] = []
-  const request = executor.createRequest({}, (response) => { responses.push(response) })
+  const request = executor.createRequest({}, (response) => {
+    responses.push(response)
+    if (takesResponse && response instanceof EventEmitter) response.on('data', () => {})
+  })
   request.on('error', (error) => { errors.push(error) })
   return { request, responses, errors }
 }
@@ -62,10 +68,29 @@ describe('update request guard', () => {
   it('keeps a response that fails mid-body from throwing for want of a listener', () => {
     const executor = new FakeExecutor()
     createUpdateRequestGuard(executor)
-    const { request } = libraryRequest(executor)
-    const response = new EventEmitter()
+    for (const takesResponse of [true, false]) {
+      const { request } = libraryRequest(executor, takesResponse)
+      const response = new EventEmitter()
+      request.emit('response', response)
+      expect(() => response.emit('error', new Error('net::ERR_CONNECTION_CLOSED'))).not.toThrow()
+    }
+  })
+
+  it('leaves a response electron-updater turned down unread and stops tracking it', () => {
+    let now = 1_000
+    const executor = new FakeExecutor()
+    const guard = createUpdateRequestGuard(executor, () => now)
+    const { request } = libraryRequest(executor, false)
+    // Electron's IncomingMessage is a Readable that pulls more of the body off the
+    // network only while something reads it.
+    const response = new Readable({ read() {} })
+    now = 2_000
     request.emit('response', response)
-    expect(() => response.emit('error', new Error('net::ERR_CONNECTION_CLOSED'))).not.toThrow()
+    expect(response.readableFlowing).toBeNull()
+    expect(response.listenerCount('data')).toBe(0)
+    expect(guard?.lastReceivedAt()).toBe(2_000)
+    expect(guard?.abortAll(new Error('update download stalled'))).toBe(0)
+    expect(request.aborted).toBe(false)
   })
 
   it('fails the requests still open the way a dropped connection would', () => {

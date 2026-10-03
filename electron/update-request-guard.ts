@@ -9,10 +9,11 @@
  *   就成了没人接的异常，main.ts 会把它当主进程意外出错，退出再重开。
  *
  * Wrapping the executor's createRequest closes all three from outside the library.
- * Every request it creates is tracked until its response ends. Bytes arriving on any
- * of them are timestamped for the stall watchdog in updater.ts, which otherwise only
- * sees progress events, and electron-updater sends none for blockmaps, for
- * single-range differential batches or for a response without a Content-Length.
+ * Every request it creates is tracked until its response ends, or until electron-updater
+ * turns the response down unread. Bytes arriving on the responses it reads are
+ * timestamped for the stall watchdog in updater.ts, which otherwise only sees progress
+ * events, and electron-updater sends none for blockmaps, for single-range differential
+ * batches or for a response without a Content-Length.
  * Each response gets a no-op 'error' listener: Electron reports the same failure as
  * an 'error' on the request, which every download path already rejects on, so the
  * response's copy only has to stop being uncaught. abortAll fails the tracked
@@ -43,8 +44,16 @@ interface TrackedRequest extends EventSource {
   abort(): void
 }
 
+interface Response extends EventSource {
+  listenerCount(event: string): number
+}
+
 function isEventSource(value: unknown): value is EventSource {
   return typeof value === 'object' && value !== null && 'on' in value && typeof value.on === 'function'
+}
+
+function isResponse(value: unknown): value is Response {
+  return isEventSource(value) && 'listenerCount' in value && typeof value.listenerCount === 'function'
 }
 
 function isTrackedRequest(value: unknown): value is TrackedRequest {
@@ -81,6 +90,17 @@ export function createUpdateRequestGuard(executor: unknown, now: () => number = 
       received()
       if (!isEventSource(response)) return
       response.on('error', () => {})
+      // electron-updater reads a body inside this same callback, before this listener
+      // runs, or it never reads it: it rejects a 200 to a range request, the wrong
+      // Content-Type or an HTTP error on a download and leaves the response unread.
+      // Electron only pulls more of a body off the network while someone reads it, so a
+      // 'data' listener here would download a turned-down installer in full, alongside
+      // the full download electron-updater falls back to, and its bytes would hide that
+      // one stalling.
+      if (!isResponse(response) || response.listenerCount('data') === 0) {
+        forget()
+        return
+      }
       response.on('data', received)
       response.on('end', forget)
       response.on('close', forget)

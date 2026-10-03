@@ -2560,6 +2560,34 @@ describe('stalled update downloads', () => {
     }
   })
 
+  it('keeps a check that fails while an abandoned download is still out on the check step', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service } = watchedService()
+      client.downloadUpdate.mockReturnValueOnce(new Promise<unknown>(() => undefined))
+      const first = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(first).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+
+      // 「重新下载」先检查一次，网还断着：electron-updater 先发 error，再让检查失败。界面上
+      // 不能先闪一下「下载更新失败」。
+      const offline = new Error('net::ERR_INTERNET_DISCONNECTED')
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('error', offline)
+        throw offline
+      })
+      const failedSteps: Array<string | null | undefined> = []
+      service.subscribe((state) => {
+        if (state.phase === 'error') failedSteps.push(state.failedStep)
+      })
+      await expect(service.check()).resolves.toMatchObject({ phase: 'error', failedStep: 'check' })
+      expect(failedSteps).toEqual(['check', 'check'])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('still lands on cancelled when nothing was abandoned', () => {
     const { client, service } = watchedService()
     client.emit('update-cancelled', updateInfo())
@@ -2583,6 +2611,36 @@ describe('stalled update downloads', () => {
       await vi.advanceTimersByTimeAsync(4 * updateDownloadWatchMs)
       // 睡了一小时：醒来那一拍不算已经停了一小时。
       vi.setSystemTime(Date.now() + 60 * 60_000)
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(true)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts the wait over after the clock is set back', async () => {
+    vi.useFakeTimers()
+    try {
+      let receivedAt: number | null = null
+      const { client, service, tokens } = watchedService({ downloadReceivedAt: () => receivedAt })
+      client.downloadUpdate.mockImplementationOnce((token) => {
+        client.emit('download-progress', progress(10))
+        return stalledFullDownload(client, token)
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(4 * updateDownloadWatchMs)
+      receivedAt = Date.now()
+      // 对时把时钟往回拨了一小时：拨之前记下的时间都比现在晚，不能让它一小时里都不算停住。
+      vi.setSystemTime(Date.now() - 60 * 60_000)
       await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
       expect(tokens[0]?.cancelled).toBe(false)
 
