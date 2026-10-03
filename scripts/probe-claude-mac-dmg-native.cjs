@@ -4,6 +4,7 @@ const os = require('node:os')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
+const { X509Certificate } = require('node:crypto')
 const common = require('./cos-sync-utils.cjs')
 const claude = require('./sync-claude-official-cos.cjs')
 
@@ -14,8 +15,15 @@ const PROOF_DIRECTORY = 'xingmang-claude-mac-native-proof-results'
 const MAX_BYTES = 2 * 1024 * 1024 * 1024
 
 function safeFailure(error) {
-  return { code: error?.preserveWorkDirectory === true ? 'mount-state-unconfirmed' : 'verification-failed',
+  return { code: error?.preserveWorkDirectory === true ? 'mount-state-unconfirmed'
+    : error?.message === 'Claude Mac 签名 Team 候选缺失或存在歧义' ? 'signature-authority-unrecognized' : 'verification-failed',
     ...(Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599 ? { status: error.status } : {}) }
+}
+
+function safePublicText(value, maximumBytes = 512) {
+  if (typeof value !== 'string' || !value || Buffer.byteLength(value) > maximumBytes
+    || /[\0-\x08\x0b-\x1f\x7f]|\bBearer\s|(?:api[_-]?key|access_token|token)=|sk-[A-Za-z0-9]|https?:\/\/|\/private\/|\/Users\/|\/var\/|[A-Za-z]:\\/i.test(value)) return undefined
+  return value
 }
 
 async function main() {
@@ -34,6 +42,32 @@ async function main() {
   let primaryError
   let authorityTeam
   let nativeRequirementVerified = false
+  let bundleMetadata
+  async function collectSignerMetadata(application, options) {
+    // Certificate subjects and architecture are public observations only.
+    // They never substitute for the publisher's unchanged --verify predicate.
+    if (bundleMetadata && /^[A-Za-z0-9._-]+$/.test(bundleMetadata.CFBundleExecutable || '')) {
+      try {
+        report.nativeCommands.push({ command: 'lipo', operation: 'metadata-archs' })
+        const result = await nativeRun('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', bundleMetadata.CFBundleExecutable)], options)
+        report.architecturesCandidate = result.stdout.trim().split(/\s+/).filter(value => /^[A-Za-z0-9_+-]{1,32}$/.test(value)).slice(0, 8)
+      } catch { report.architectureMetadataUnavailable = true }
+    }
+    try {
+      const prefix = path.join(directory, 'claude-public-cert-')
+      report.nativeCommands.push({ command: 'codesign', operation: 'extract-public-certificates' })
+      await nativeRun('/usr/bin/codesign', ['--display', `--extract-certificates=${prefix}`, application], options)
+      const certificates = []
+      for (let index = 0; index < 4; index += 1) {
+        let bytes
+        try { bytes = await common.readBoundedRegularFile(`${prefix}${index}`, { maxBytes: 64 * 1024 }) } catch { break }
+        const certificate = new X509Certificate(bytes)
+        certificates.push({ index, subject: safePublicText(certificate.subject, 2048), issuer: safePublicText(certificate.issuer, 2048),
+          ca: certificate.ca, validFrom: safePublicText(certificate.validFrom), validTo: safePublicText(certificate.validTo), trustedByPublisher: false })
+      }
+      report.publicCertificateMetadata = certificates
+    } catch { report.certificateMetadataUnavailable = true }
+  }
   async function observedRun(executable, args, options) {
     const operation = executable === '/usr/bin/codesign' ? args[0]
       : executable === '/usr/bin/hdiutil' ? args[0]
@@ -48,9 +82,22 @@ async function main() {
         ...(['SIGTERM', 'SIGKILL'].includes(error?.signal) ? { signal: error.signal } : {}) }
       throw error
     }
+    if (executable === '/usr/bin/plutil' && args.at(-1)?.endsWith('/Contents/Info.plist')) {
+      bundleMetadata = JSON.parse(result.stdout)
+      report.bundleMetadataCandidate = { identifier: safePublicText(bundleMetadata.CFBundleIdentifier),
+        shortVersion: safePublicText(bundleMetadata.CFBundleShortVersionString), buildVersion: safePublicText(bundleMetadata.CFBundleVersion), trustedByPublisher: false }
+    }
     if (executable === '/usr/bin/codesign' && args[0] === '--display') {
       const matches = [...result.stderr.matchAll(/^Authority=Developer ID Application: Anthropic, PBC \(([A-Z0-9]{10})\)$/gm)]
       if (matches.length === 1) authorityTeam = matches[0][1]
+      const authority = [...result.stderr.matchAll(/^Authority=([^\r\n]+)$/gm)].map(match => safePublicText(match[1])).filter(Boolean).slice(0, 16)
+      const identifier = /^Identifier=([^\r\n]+)$/m.exec(result.stderr)?.[1]
+      const team = /^TeamIdentifier=([^\r\n]+)$/m.exec(result.stderr)?.[1]
+      const signature = /^Signature=([^\r\n]+)$/m.exec(result.stderr)?.[1]
+      report.signatureMetadataCandidate = { identifier: safePublicText(identifier), teamIdentifier: safePublicText(team), authority,
+        signatureType: signature ? safePublicText(signature) : authority.length ? 'cms-signed-candidate' : 'unclassified',
+        existingAuthorityPredicateMatches: matches.length, trustedByPublisher: false }
+      await collectSignerMetadata(args.at(-1), options)
     }
     if (executable === '/usr/bin/codesign' && args[0] === '--verify' && authorityTeam
       && args.includes(`-R=${claude.darwinClaudeRequirement(authorityTeam)}`)) nativeRequirementVerified = true
@@ -101,4 +148,4 @@ async function main() {
 
 if (require.main === module) main().catch(function () { console.error('Mac 原生只读验证未完成，未输出原始异常或认证信息'); process.exitCode = 1 })
 
-module.exports = { SOURCE_URL, EXPECTED_BYTES, EXPECTED_SHA256, PROOF_DIRECTORY, MAX_BYTES, main }
+module.exports = { SOURCE_URL, EXPECTED_BYTES, EXPECTED_SHA256, PROOF_DIRECTORY, MAX_BYTES, safePublicText, main }
