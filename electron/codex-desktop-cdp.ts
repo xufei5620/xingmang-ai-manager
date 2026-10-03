@@ -407,21 +407,35 @@ function endpointPort(endpoint: string): number | null {
  * The PID is the last column, so a state translated into several words cannot
  * shift it. A listener whose PID cannot be read gives null rather than being
  * left out: dropping it could pass a port that someone else also listens on.
+ *
+ * Only the protocol, the two addresses and the PID are read. On Windows in
+ * other languages netstat writes its header in the console code page (GBK on
+ * Simplified Chinese Windows), which reaches us through execFile's UTF-8
+ * decoding as replacement characters, and German Windows translates the state
+ * too; none of the columns read here is ever translated.
  */
 export function parseCodexDesktopCdpPortOwners(output: string, port: number): number[] | null {
   assertCdpPort(port)
   const owners: number[] = []
+  let tcpRows = 0
   for (const line of output.split(/\r?\n/)) {
     const columns = line.trim().split(/\s+/)
     if (columns.length < 4 || !/^TCP(?:v6)?$/i.test(columns[0])) continue
-    if (endpointPort(columns[1]) !== port) continue
+    const localPort = endpointPort(columns[1])
+    if (localPort === null) continue
+    tcpRows += 1
+    if (localPort !== port) continue
     if (!listeningRemoteEndpoints.has(columns[2]) && columns[3].toUpperCase() !== 'LISTENING') continue
     const value = columns.length > 4 ? columns[columns.length - 1] : ''
     const processId = /^\d+$/.test(value) ? Number(value) : 0
     if (!Number.isSafeInteger(processId) || processId <= 0) return null
     if (!owners.includes(processId)) owners.push(processId)
   }
-  return owners
+  // Windows always listens on a few ports of its own (RPC on 135 among them),
+  // so output without a single TCP row is a table this parser cannot read, not
+  // an idle machine. Read as "nobody listens", it would wait out the whole
+  // deadline on every launch; as a failed lookup it gives up after three rounds.
+  return tcpRows ? owners : null
 }
 
 /**
