@@ -14,6 +14,31 @@ describe('rawErrorMessage', () => {
       .toBe('读取失败')
   })
 
+  it('strips a class name that does not end in Error', () => {
+    // 主进程的 CodexDesktopInstallFailure 以前带着这串英文进了 Windows 的错误框。
+    const reason = 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。'
+    expect(rawErrorMessage(new Error(`Error invoking remote method 'desktop:install-codex': CodexDesktopInstallFailure: ${reason}`)))
+      .toBe(reason)
+    expect(rawErrorMessage(new Error("Error invoking remote method 'a:one': Error: Error invoking remote method 'b:two': StreamFailure: 真正的原因")))
+      .toBe('真正的原因')
+  })
+
+  it('strips only the bare class name Electron adds, keeping the error codes the classifier reads', () => {
+    // 错误分类靠 EPERM、ERR_TLS 这些原词认出是哪一类，剥多了就认不出来。
+    expect(rawErrorMessage(new Error("Error invoking remote method 'cli:install': Error: EPERM: operation not permitted")))
+      .toBe('EPERM: operation not permitted')
+    expect(rawErrorMessage(new Error("Error invoking remote method 'account:login': Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")))
+      .toBe("Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")
+  })
+
+  it('does not take a drive letter for a class name, so the path is still redacted', () => {
+    // 没带类名的拒绝直接以路径开头时，「C:」不能当类名剥掉：剩下的 \Users\张三\…
+    // 躲得过盘符那条脱敏，账号名就上屏了（I13）。
+    const leak = new Error("Error invoking remote method 'config:save': C:\\Users\\张三\\.codex\\config.toml 写不进去")
+    expect(rawErrorMessage(leak)).toBe('C:\\Users\\张三\\.codex\\config.toml 写不进去')
+    expect(userFacingErrorMessage(leak)).toBe('本地配置文件 写不进去')
+  })
+
   it('keeps a business message that happens to start with an error class name', () => {
     // The class tag is only an Electron artifact when it follows the channel
     // name. Stripping it unconditionally would cut into ordinary copy.

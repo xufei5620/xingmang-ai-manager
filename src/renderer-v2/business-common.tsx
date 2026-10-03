@@ -27,12 +27,15 @@ export function beginBusinessOperation(label: string) {
   }
 }
 // Electron 给渲染进程收到的 IPC 拒绝包成「Error invoking remote method '通道名':
-// Error: 真正的原因」，通道名与错误类名都是实现细节，不该上屏。类名只在紧跟通道名时
-// 才剥，避免把一句本来就以 Error: 开头的业务文案削掉半截。legacy 的
-// src/error-message.ts 只剥前半截，v2 这边与 features/app/account-read-error.ts、
-// features/shell/Announcement.tsx 已有的处理保持一致。
+// 类名: 真正的原因」（主进程那边的 error.toString()），通道名与错误类名都是实现细节，
+// 不该上屏。类名只在紧跟通道名时才剥，避免把一句本来就以 Error: 开头的业务文案削掉
+// 半截。类名不限以 Error 结尾：以前只认 …Error，Codex 桌面端装不上时的
+// CodexDesktopInstallFailure 就带着英文类名进了错误框。每层只剥一个类名，原话开头的
+// EPERM: 这类错误码照旧留着给错误分类认。冒号后面必须有空格（Electron 总会写一个）：
+// 不然 C:\Users\… 的盘符会被当成类名剥掉，下面的路径脱敏就认不出这条路径了。
+// legacy 的 src/error-message.ts 只剥前半截。
 // 正则不带 g 标志以避免 lastIndex 状态问题。
-const ipcPrefixPattern = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z0-9_]*Error:\s*)?/
+const ipcPrefixPattern = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s+)?/
 
 /**
  * 只做取值与剥前缀，不做文案判断：`matchAccountErrorMessage` 与 `errorMessage` 的

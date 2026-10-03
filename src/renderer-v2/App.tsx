@@ -839,7 +839,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     } catch (cause) {
       // 原话留着不先翻成中文：外层的错误分类要靠 ENOSPC、ETIMEDOUT 这类原词认出
       //「磁盘满」「下载超时」，展示前 errorMessage 会统一脱敏。
-      throw new Error(runtimeStageFailureMessage(runtime, toolName, cause instanceof Error ? cause.message : String(cause)))
+      throw new Error(runtimeStageFailureMessage(runtime, toolName, cause))
     }
   }
   async function cancelInstall(id: ToolId) {

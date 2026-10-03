@@ -101,7 +101,7 @@ export interface MacosDesktopAppInstallResult {
 /**
  * 装不成时抛给界面的错误。message 是 macos-desktop-install-failure.ts 里那几句大白话；
  * detail 是原因原话，作为自有字段挂着，ipc.ts 记失败时会把它写进 runtime.jsonl
- * （同 CodexDesktopInstallFailure）。类名为什么以 Error 结尾见 macosDesktopInstallErrorName。
+ * （同 CodexDesktopInstallFailure）。
  */
 export class MacosDesktopInstallError extends Error {
   readonly detail: string

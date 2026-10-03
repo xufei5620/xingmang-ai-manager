@@ -10,8 +10,8 @@
 
 /**
  * 主进程抛出的错误类名。Electron 把 IPC 拒绝写成「Error invoking remote method '通道':
- * 类名: 原话」，渲染层（business-common.tsx 的 ipcPrefixPattern）只剥以 Error 结尾的
- * 类名，换成别的结尾，类名就会跟着那句话一起出现在错误框里。
+ * 类名: 原话」，渲染层（business-common.tsx 的 ipcPrefixPattern）把紧跟通道名的类名
+ * 剥掉才上屏；测试照它拼出 Electron 送来的那一串，核对错误框里只剩原话。
  */
 export const macosDesktopInstallErrorName = 'MacosDesktopInstallError'
 
