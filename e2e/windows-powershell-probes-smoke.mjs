@@ -267,7 +267,12 @@ const {
 } = compiled('claude-desktop-msix-installer')
 const { claudeDesktopPolicyReadScript } = compiled('claude-desktop-policy')
 const { buildReadProxyScopesScript, readWindowsProxyScopes, windowsProxyPowerShellTimeoutMs } = compiled('stale-proxy-environment')
-const { parseWindowsProxySnapshot, windowsSystemProxyScript, windowsSystemProxyCommandTimeoutMs } = compiled('platform/windows-system-proxy')
+const {
+  parseWindowsProxySnapshot,
+  windowsSystemProxyCommandTimeoutMs,
+  windowsSystemProxyCompiledScript,
+  windowsSystemProxyScript,
+} = compiled('platform/windows-system-proxy')
 const {
   appInstallerQueryScript,
   inspectWindowsRestartRequired,
@@ -451,6 +456,22 @@ for (const [name, limit, run] of trustedProbes) {
   }])
 }
 
+// What the app falls back to when the in-memory script fails, say on a machine
+// whose antivirus refuses it: the script 0.2.14 ran, which compiles WinInet with
+// Add-Type. Nothing on this runner refuses anything (Defender's script scanning
+// is off), so this only proves the two read the same proxy. The fallback starts
+// csc.exe in a cold process, the cost the main script dropped, so its time is
+// printed rather than held to the 15 s limit.
+checks.push(['the compiled fallback reads the system proxy exactly as the in-memory script does', async () => {
+  const env = trustedEnv({ XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest })
+  const startedAt = Date.now()
+  const fallback = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyCompiledScript)], env)).trim())
+  const elapsed = Date.now() - startedAt
+  const primary = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], env)).trim())
+  assert.deepEqual(parseWindowsProxySnapshot(fallback.snapshot), parseWindowsProxySnapshot(primary.snapshot))
+  console.log(`info system proxy reading through the compiled fallback: flags=${parseWindowsProxySnapshot(fallback.snapshot).flags} (${elapsed}ms; the app gives a call ${windowsSystemProxyCommandTimeoutMs}ms)`)
+}])
+
 // The same probes with autoloading switched off right after their imports, so
 // a forgotten module is named instead of costing the whole scan. Printed only.
 // The two ACL probes are left out: they call Microsoft.PowerShell.Security\Get-Acl
@@ -466,6 +487,7 @@ const trustedProbeScripts = [
   ['proxy settings', buildReadProxyScopesScript(), {}],
   ['system proxy owner lookup', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }],
   ['system proxy reading', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }],
+  ['system proxy reading, compiled fallback', windowsSystemProxyCompiledScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }],
   ['pending restart', windowsRestartStatusScript, {}],
   ['App Installer package', appInstallerQueryScript, {}],
   ['Node.js installer signature', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: process.execPath }],
@@ -521,6 +543,32 @@ async function reportUnimportedCommands() {
   }
 }
 
+// The in-memory WinInet declaration is the kind of script an antivirus may
+// refuse, and the app falls back when one does, but this runner cannot show it:
+// GitHub's Windows images switch Defender's scanning off. Printed only, so the
+// log says so outright rather than every check here passing as if it had been
+// scanned.
+async function reportDefenderOnThisRunner() {
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  $status = Get-MpComputerStatus
+  $preference = Get-MpPreference
+  [ordered]@{
+    mode = [string]$status.AMRunningMode
+    antivirus = $status.AntivirusEnabled
+    realTime = $status.RealTimeProtectionEnabled
+    behaviour = $status.BehaviorMonitorEnabled
+    scriptScanning = -not $preference.DisableScriptScanning
+    excludedPaths = @($preference.ExclusionPath | Where-Object { $_ }).Count
+    detections = @(Get-MpThreatDetection -ErrorAction SilentlyContinue).Count
+  } | ConvertTo-Json -Compress
+} catch { @{ unavailable = $_.Exception.GetType().Name } | ConvertTo-Json -Compress }
+`
+  try { console.log(`info Defender on this runner: ${(await runEncoded(script)).trim()}`) }
+  catch (error) { console.log(`info Defender on this runner: not readable (${String(error?.message ?? error).split('\n')[0]})`) }
+}
+
 async function reportTrustedEnvironmentTimings() {
   const availabilityStartedAt = Date.now()
   const available = await inspectWindowsStoreAvailability({ timeoutMs: probeBudgetMs })
@@ -542,6 +590,7 @@ for (const [name, check] of checks) {
 await reportTrustedEnvironmentTimings()
 await reportCodexSingleProbesWithoutAutoloading()
 await reportTrustedProbesWithoutAutoloading()
+await reportDefenderOnThisRunner()
 fs.rmSync(scratch, { recursive: true, force: true })
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
