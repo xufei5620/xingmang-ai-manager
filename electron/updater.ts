@@ -1,4 +1,5 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
+import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
@@ -791,9 +792,11 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
  * electron-updater 与 Node 的原话几乎都是英文（`ENOENT: no such file or directory…`），
  * 直接上屏客户看不懂。认得出的按原因说人话，认不出的也不贴原文，只说原话记进日志了；
  * 本来就是中文的（主进程自己抛的那些）原样保留。原话放在 detail 里进 runtime.jsonl。
+ * 是不是中文要去掉路径再看：Windows 的中文用户名、Mac 上的「星芒AI管理工具.app」都在
+ * 路径里，以前带着它们的英文原话整句上屏，脱敏后成了「…, open '本地配置文件」（第三十批跟进项）。
  */
 export function describeUnrecognizedUpdateFailure(source: string): string {
-  if (!source || /[\u4e00-\u9fff]/.test(source)) return source
+  if (!source || isChineseSentence(source)) return source
   if (/\bENOSPC\b|no space left/i.test(source)) return '电脑的磁盘空间不够了，清出一些空间后再试。'
   if (/\b(?:EPERM|EACCES|EBUSY)\b|operation not permitted|permission denied|resource busy/i.test(source)) {
     return '新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。'

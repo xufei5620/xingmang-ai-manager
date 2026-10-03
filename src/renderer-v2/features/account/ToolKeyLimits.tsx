@@ -136,7 +136,7 @@ export function ToolKeyLimits({
       meta="留空表示不限额。上限是这个工具还能再用多少，用完只停这一个工具，其余照常；额度不会自动恢复，重新填写即可放开。"
       testId="tool-key-limits"
     >
-      <ResultNotice error={resource.error || operation.error} message={operation.message} />
+      <ResultNotice error={resource.error || operation.error} detail={resource.error ? resource.detail : operation.detail} message={operation.message} />
       {resource.loading && !resource.data ? (
         <Skeleton rows={4} />
       ) : (

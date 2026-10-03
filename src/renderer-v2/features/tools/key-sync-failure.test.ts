@@ -15,6 +15,20 @@ describe('key sync failure wording', () => {
     expect(keySyncFailureReason('/home/alice/.claude/settings.json 写入失败')).not.toContain('alice')
   })
 
+  it('does not take an English failure for Chinese because its redacted path is', () => {
+    // 脱敏后的占位词「本地配置文件」本身是汉字，以前这两句英文原样上屏（第三十批 A）。
+    expect(keySyncFailureText('claude', "ENOENT: no such file or directory, open 'C:\\Users\\张三\\.claude\\settings.json'"))
+      .toBe('Claude Code：Key 没有写进去，点「重新同步」再试')
+    expect(keySyncFailureText('codex', "EISDIR: illegal operation on a directory, read '/Users/alice/.codex/config.toml'"))
+      .toBe('Codex CLI：Key 没有写进去，点「重新同步」再试')
+  })
+
+  it('masks keys in a Chinese reason it shows as is', () => {
+    const text = keySyncFailureText('gemini', '写入失败，密钥 sk-abcdefghijklmnopqrstuvwxyz0123456789 不对')
+    expect(text.startsWith('Gemini CLI：写入失败')).toBe(true)
+    expect(text).not.toContain('abcdefghijklmnopqrstuvwxyz')
+  })
+
   it('does not repeat the tool name the reason already starts with', () => {
     expect(keySyncFailureText('grok', 'Grok CLI 没有收到配置完成结果，请重新检测')).toBe('Grok CLI 没有收到配置完成结果，请重新检测')
   })

@@ -25,6 +25,8 @@ const valueImportable = [
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
+  // 一句报错本身是不是中文（去掉引号段和路径再看），按钮操作的报错与主进程更新失败那句共用一份（第三十批 A）。
+  'electron/chinese-sentence',
   // Windows 上 Claude Desktop 装不上那句话的开头和官网下载页，主进程与错误框共用一份。
   'electron/claude-desktop-install-failure',
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。

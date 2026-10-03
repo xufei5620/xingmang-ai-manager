@@ -1162,7 +1162,7 @@ export function FeedbackPage({
         }
       >
         <p>仅清除运行日志，不会删除工具配置、账号或对话记录。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
   )
@@ -1281,6 +1281,7 @@ export function UpdatesPage({
       <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
       <ResultNotice
         error={resource.error || operation.error}
+        detail={resource.error ? resource.detail : operation.detail}
         message={operation.message}
       />
       <div className="v2-business-update-grid">
@@ -1468,7 +1469,7 @@ export function UpdatesPage({
           : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
         {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
   )
@@ -1614,6 +1615,7 @@ export function MaintenancePage({
       />
       <ResultNotice
         error={resource.error || operation.error || cancelNotice}
+        detail={resource.error ? resource.detail : operation.detail}
         message={operation.message}
       />
       {failures.map((failure) => {
@@ -1946,7 +1948,7 @@ export function MaintenancePage({
         }
       >
         <p>卸载所选工具程序，保留账号与工具配置。需要时可重新安装。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       {manualUninstall && (
         <ManualUninstallDialog
@@ -3069,6 +3071,7 @@ export function SettingsPage({
       />
       <ResultNotice
         error={resource.error || saveError || systemError || operation.error}
+        detail={resource.error ? resource.detail : saveError || systemError ? undefined : operation.detail}
         message={operation.message || saved}
         revealPath={operation.message ? operation.revealPath : undefined}
         onReveal={(path) => api.revealExportedFile(path)}

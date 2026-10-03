@@ -591,6 +591,46 @@ describe('Skill discovery and managed mutations', () => {
   })
 })
 
+describe('Codex config.toml that no longer parses', () => {
+  // 客户自己（或照教程）往 config.toml 里加过外接工具，令牌就挨着写坏的那一行：最常见的是
+  // 英文引号打成了中文引号。解析器的原话会把这几行原样抄进来（第三十批 B）。
+  const broken = [
+    '[mcp_servers.github]',
+    'command = "npx"',
+    'env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_SECRET0123456789abcdefghij", MY_SERVICE_KEY = "plain-secret-value-42" }',
+    'startup_timeout_sec = “30”',
+    '',
+  ].join('\n')
+  const failureMessage = (work: Promise<unknown>) => work.then(
+    () => 'resolved',
+    (error: unknown) => error instanceof Error ? error.message : String(error),
+  )
+
+  it('names only the line when a Skill or MCP change reads it, never the lines around it', async () => {
+    const home = temporaryDirectory()
+    const skillPath = path.join(home, '.agents', 'skills', 'alpha', 'SKILL.md')
+    write(skillPath, '---\nname: Alpha\ndescription: Test\n---\n')
+    write(path.join(home, '.codex', 'config.toml'), broken)
+    const invoke: CodexInvoker = async (argv) => argv[0] === 'plugin' ? pluginCatalog() : argv[1] === 'add' ? '' : mcpList([])
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+    // 和保存配置那边同一句：只报行号，再指去「重置为初始状态」（第三十批 C）。
+    const expected = 'Codex 的配置文件里有写错的地方（第 4 行附近），星芒没有改动它。在首页 Codex 那一行点「…」里的「配置」，选「使用星芒账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「备份」页能找回），再重新生成。'
+
+    expect(await failureMessage(service.listSkills())).toBe(expected)
+    expect(await failureMessage(service.setSkillEnabled(skillPath, false))).toBe(expected)
+    expect(await failureMessage(service.listMcpServers())).toBe(expected)
+    expect(await failureMessage(service.addMcpServer({ type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'] }))).toBe(expected)
+  })
+
+  it('reports a read failure as itself rather than as a file that does not parse', async () => {
+    const home = temporaryDirectory()
+    write(path.join(home, '.codex', 'config.toml'), 'x'.repeat(2 * 1024 * 1024 + 1))
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+
+    expect(await failureMessage(service.listSkills())).toBe('Codex config.toml超过 2048 KB 安全上限')
+  })
+})
+
 describe('trusted Codex command resolution', () => {
   it.runIf(process.platform === 'darwin')('accepts a verified official standalone command before npm-only resolution', async () => {
     const home = temporaryDirectory()
