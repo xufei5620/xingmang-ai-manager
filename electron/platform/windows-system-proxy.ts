@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { runCommand, trustedCommandEnvironment } from '../command-runner'
+import { CommandRunnerError, runCommand, trustedCommandEnvironment } from '../command-runner'
 import { buildPowerShellModuleImportStatement } from '../powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from '../windows-elevation'
 import { platformCapabilitiesFor } from '../platform-capabilities'
@@ -82,12 +82,17 @@ export const windowsSystemProxyCommandTimeoutMs = 15_000
 //                                  dwOptionError 2P+4, pOptions 2P+8; 3P+8 bytes
 //   INTERNET_PER_CONN_OPTION       dwOption 0, value union P (8 bytes); P+8 bytes
 // with the four options (flags, server, bypass, PAC) straight after the list in
-// one block, which keeps them aligned on x86, x64 and ARM64 alike. Only the
-// operations that read or write the proxy declare it; the owner lookup does not.
+// one block, which keeps them aligned on x86, x64 and ARM64 alike. Every field
+// WinInet reads is written, padding aside, rather than the block being zeroed by
+// copying a byte array into it, which is how a shellcode loader fills its own.
+// Only the operations that read or write the proxy declare WinInet; the owner
+// lookup does not.
 //
-// scripts/windows-acceleration-recovery.ps1 carries this helper and the three
-// state functions after it verbatim, from Initialize-WinInet through Same-State
-// (windows-acceleration-recovery.test.cjs).
+// Declaring P/Invoke methods at run time is also how attack tooling stays off
+// disk, so an antivirus may refuse this script where it lets a compiled type
+// through, and CI cannot tell: GitHub's Windows runners have Defender's
+// real-time, behaviour and script scanning switched off. The service then falls
+// back to windowsSystemProxyCompiledScript below.
 export const windowsSystemProxyScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -105,11 +110,10 @@ function Initialize-WinInet {
 }
 function New-WinInetList([int]$extra) {
   Initialize-WinInet
-  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8;$bytes=$size+4*($p+8)+$extra
-  $list=$m::AllocHGlobal($bytes)
-  $m::Copy([byte[]]::new($bytes),0,$list,$bytes)
-  $m::WriteInt32($list,0,$size);$m::WriteInt32($list,2*$p,4);$m::WriteIntPtr($list,2*$p+8,[IntPtr]::Add($list,$size))
-  for($i=0;$i -lt 4;$i++){$m::WriteInt32($list,$size+$i*($p+8),$i+1)}
+  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8
+  $list=$m::AllocHGlobal($size+4*($p+8)+$extra)
+  $m::WriteInt32($list,0,$size);$m::WriteIntPtr($list,$p,[IntPtr]::Zero);$m::WriteInt32($list,2*$p,4);$m::WriteInt32($list,2*$p+4,0);$m::WriteIntPtr($list,2*$p+8,[IntPtr]::Add($list,$size))
+  for($i=0;$i -lt 4;$i++){$m::WriteInt32($list,$size+$i*($p+8),$i+1);$m::WriteInt64($list,$size+$i*($p+8)+$p,0)}
   return $list
 }
 function Read-WinInet {
@@ -219,6 +223,173 @@ switch($r.operation) {
   default {throw 'unsupported-operation'}
 }
 `
+
+// The script as 0.2.14 and every earlier version ran it on customers' machines,
+// kept byte for byte: Add-Type compiles its WinInet type on every run, slowly,
+// but this is the text their antivirus software has already seen. The service
+// falls back to it when windowsSystemProxyScript fails (see
+// shouldRetryWithCompiledScript), so leave it as it is rather than bringing it
+// in line with the script above. scripts/windows-acceleration-recovery.ps1, run
+// by hand with no time limit, carries its type definition and state functions
+// verbatim (windows-acceleration-recovery.test.cjs).
+export const windowsSystemProxyCompiledScript = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(windowsSystemProxyModules)}
+$r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XINGMANG_SYSTEM_PROXY_REQUEST)) | ConvertFrom-Json
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+public static class XingmangWinInet {
+  [StructLayout(LayoutKind.Explicit)] public struct Value {
+    [FieldOffset(0)] public uint number;
+    [FieldOffset(0)] public IntPtr text;
+    [FieldOffset(0)] public System.Runtime.InteropServices.ComTypes.FILETIME time;
+  }
+  [StructLayout(LayoutKind.Sequential)] public struct Option { public uint kind; public Value value; }
+  [StructLayout(LayoutKind.Sequential)] public struct List {
+    public uint size; public IntPtr connection; public uint count; public uint error; public IntPtr options;
+  }
+  public sealed class State { public int flags; public string server; public string bypass; public string autoConfigUrl; }
+  [DllImport("wininet.dll", EntryPoint="InternetQueryOptionW", SetLastError=true)]
+  static extern bool Query(IntPtr handle, uint option, ref List value, ref uint length);
+  [DllImport("wininet.dll", EntryPoint="InternetSetOptionW", SetLastError=true)]
+  static extern bool Set(IntPtr handle, uint option, ref List value, uint length);
+  [DllImport("wininet.dll", EntryPoint="InternetSetOptionW", SetLastError=true)]
+  static extern bool Notify(IntPtr handle, uint option, IntPtr value, uint length);
+  [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr memory);
+  public static State Read() {
+    int size = Marshal.SizeOf(typeof(Option));
+    IntPtr options = Marshal.AllocHGlobal(size * 4);
+    try {
+      for (int i=0; i<4; i++) Marshal.StructureToPtr(new Option { kind=(uint)i+1 }, IntPtr.Add(options,i*size),false);
+      var list = new List { size=(uint)Marshal.SizeOf(typeof(List)), count=4, options=options };
+      uint length=list.size;
+      if (!Query(IntPtr.Zero,75,ref list,ref length)) throw new InvalidOperationException("proxy-query-failed");
+      var result = new State();
+      for (int i=0; i<4; i++) {
+        var value=(Option)Marshal.PtrToStructure(IntPtr.Add(options,i*size),typeof(Option));
+        if (i==0) result.flags=(int)value.value.number;
+        else {
+          string text=value.value.text==IntPtr.Zero ? "" : Marshal.PtrToStringUni(value.value.text);
+          if (i==1) result.server=text;
+          if (i==2) result.bypass=text;
+          if (i==3) result.autoConfigUrl=text;
+          if (value.value.text!=IntPtr.Zero) GlobalFree(value.value.text);
+        }
+      }
+      return result;
+    } finally { Marshal.FreeHGlobal(options); }
+  }
+  public static void Write(int flags, string server, string bypass, string pac) {
+    int size=Marshal.SizeOf(typeof(Option));
+    IntPtr options=Marshal.AllocHGlobal(size*4);
+    IntPtr[] text=new IntPtr[3];
+    try {
+      string[] values={server,bypass,pac};
+      for(int i=0;i<4;i++) {
+        var option=new Option {kind=(uint)i+1};
+        if(i==0) option.value.number=(uint)flags;
+        else { text[i-1]=Marshal.StringToHGlobalUni(values[i-1] ?? ""); option.value.text=text[i-1]; }
+        Marshal.StructureToPtr(option,IntPtr.Add(options,i*size),false);
+      }
+      var list=new List {size=(uint)Marshal.SizeOf(typeof(List)), count=4, options=options};
+      if(!Set(IntPtr.Zero,75,ref list,list.size)) throw new InvalidOperationException("proxy-write-failed");
+    } finally {
+      foreach(IntPtr item in text) if(item!=IntPtr.Zero) Marshal.FreeHGlobal(item);
+      Marshal.FreeHGlobal(options);
+    }
+  }
+  public static void Refresh() {
+    if(!Notify(IntPtr.Zero,39,IntPtr.Zero,0) || !Notify(IntPtr.Zero,37,IntPtr.Zero,0))
+      throw new InvalidOperationException("proxy-notify-failed");
+  }
+}
+'@
+function Read-State {
+  $native=[XingmangWinInet]::Read()
+  $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',$false)
+  try {
+    $registry=[ordered]@{}
+    foreach($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
+      $value=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      if($null -ne $value) {
+        $kind=$key.GetValueKind($name)
+        if(($name -eq 'ProxyEnable' -and $kind -ne [Microsoft.Win32.RegistryValueKind]::DWord) -or
+           ($name -ne 'ProxyEnable' -and $kind -ne [Microsoft.Win32.RegistryValueKind]::String)) { throw 'unsupported-registry-kind' }
+      }
+      $registry[$name]=$value
+    }
+    return [ordered]@{flags=$native.flags;server=$native.server;bypass=$native.bypass;autoConfigUrl=$native.autoConfigUrl;registry=$registry}
+  } finally { if($null -ne $key){$key.Dispose()} }
+}
+function Write-State($state) {
+  [XingmangWinInet]::Write([int]$state.flags,[string]$state.server,[string]$state.bypass,[string]$state.autoConfigUrl)
+  $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',$true)
+  try {
+    foreach($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
+      $value=$state.registry.$name
+      if($null -eq $value){$key.DeleteValue($name,$false)}
+      elseif($name -eq 'ProxyEnable'){$key.SetValue($name,[int]$value,[Microsoft.Win32.RegistryValueKind]::DWord)}
+      else {$key.SetValue($name,[string]$value,[Microsoft.Win32.RegistryValueKind]::String)}
+    }
+  } finally { if($null -ne $key){$key.Dispose()} }
+  [XingmangWinInet]::Refresh()
+}
+function Same-State($left,$right) {
+  if([int]$left.flags -ne [int]$right.flags){return $false}
+  foreach($name in @('server','bypass','autoConfigUrl')) {
+    if(-not [string]::Equals([string]$left.$name,[string]$right.$name,[StringComparison]::Ordinal)){return $false}
+  }
+  foreach($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
+    if(($null -eq $left.registry.$name) -ne ($null -eq $right.registry.$name)){return $false}
+    if(-not [string]::Equals([string]$left.registry.$name,[string]$right.registry.$name,[StringComparison]::Ordinal)){return $false}
+  }
+  return $true
+}
+function Owner-Time([int]$processId) {
+  try { $p=[Diagnostics.Process]::GetProcessById($processId) }
+  catch [ArgumentException] { return $null }
+  try { return $p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture) }
+  finally {$p.Dispose()}
+}
+switch($r.operation) {
+  'inspect' {
+    $started=Owner-Time ([int]$r.pid)
+    if($null -eq $started){throw 'owner-not-found'}
+    @{owner=@{pid=[int]$r.pid;startedAt=$started};snapshot=(Read-State)} | ConvertTo-Json -Depth 8 -Compress
+  }
+  'owner' { @{startedAt=(Owner-Time ([int]$r.pid))} | ConvertTo-Json -Compress }
+  'apply' {
+    $before=Read-State
+    if(-not (Same-State $before $r.expected)) { @{changed=$false;snapshot=$before} | ConvertTo-Json -Depth 8 -Compress; break }
+    try {
+      Write-State $r.desired
+      $after=Read-State
+      if(-not (Same-State $after $r.desired)){throw 'proxy-readback-failed'}
+      @{changed=$true;snapshot=$after} | ConvertTo-Json -Depth 8 -Compress
+    } catch {
+      # A failed notification can follow a successful write. Restore only if
+      # all current values still equal the state this operation installed.
+      try { if(Same-State (Read-State) $r.desired){Write-State $before} } catch {}
+      throw 'proxy-apply-failed'
+    }
+  }
+  default {throw 'unsupported-operation'}
+}
+`
+
+/** Whether a failed run of windowsSystemProxyScript is to be repeated with
+ *  windowsSystemProxyCompiledScript: any exit with an error, be it script-block
+ *  scanning refusing the whole text, an antivirus ending the process over the
+ *  declaration, or a reading or writing the compiled script may still get
+ *  right. The error text is not read; PowerShell translates most of it. A
+ *  timeout never qualifies: the compiled script is the slower one. */
+export function shouldRetryWithCompiledScript(error: unknown): boolean {
+  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
+}
 
 const mutexScript = String.raw`
 $ErrorActionPreference='Stop'
@@ -368,13 +539,29 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
   const environment = options.commandEnvironment ?? trustedCommandEnvironment
   let ownedId: string | null = null
   let queue: Promise<unknown> = Promise.resolve()
+  // Once windowsSystemProxyScript has failed here, later calls go straight to
+  // the compiled script rather than failing, or being refused, first again.
+  let proxyScript = windowsSystemProxyScript
+
+  function runScript(script: string, encoded: string) {
+    return execute({ executable: executable(), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] }, {
+      env: { ...environment(), [requestEnvironmentKey]: encoded }, trustedOnly: true,
+      windowsHide: true, timeoutMs: options.commandTimeoutMs ?? windowsSystemProxyCommandTimeoutMs, maxOutputBytes: maximumJournalBytes, sensitiveValues: [encoded],
+    })
+  }
 
   async function invoke(request: Record<string, unknown>): Promise<Record<string, unknown>> {
     try {
       const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64')
-      const result = await execute({ executable: executable(), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsSystemProxyScript, 'utf16le').toString('base64')] }, {
-        env: { ...environment(), [requestEnvironmentKey]: encoded }, trustedOnly: true,
-        windowsHide: true, timeoutMs: options.commandTimeoutMs ?? windowsSystemProxyCommandTimeoutMs, maxOutputBytes: maximumJournalBytes, sensitiveValues: [encoded],
+      const attempted = proxyScript
+      const result = await runScript(attempted, encoded).catch((error: unknown) => {
+        // Running the same request again never writes over a write the failed
+        // run left in place: both scripts write only while the whole state still
+        // equals what the request expects, so the second run would find that
+        // write and report changed:false with it, as for any concurrent change.
+        if (attempted !== windowsSystemProxyScript || !shouldRetryWithCompiledScript(error)) throw error
+        proxyScript = windowsSystemProxyCompiledScript
+        return runScript(proxyScript, encoded)
       })
       const value: unknown = JSON.parse(result.stdout)
       if (!isRecord(value)) throw new Error('invalid response')
