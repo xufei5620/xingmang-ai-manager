@@ -7,6 +7,7 @@ const path = require('node:path')
 const test = require('node:test')
 const YAML = require('yaml')
 const utilities = require('./cos-sync-utils.cjs')
+const { safeManagerSyncFailure } = require('./cos-manager-sync-diagnostics.cjs')
 const { buildAllowedArtifacts, LATEST_KEY, syncManagerRelease } = require('./sync-manager-release-cos.cjs')
 const {
   REPOSITORY, parseArguments, releaseApiUrl, requestDownloadHead, resolveAssetDownloadUrl,
@@ -195,6 +196,49 @@ test('GitHub digests remain authoritative if installer bytes change before the p
   assert.equal(local.index(), null)
 })
 
+test('temporary cleanup failures cannot replace the primary publication error', async (t) => {
+  const local = fixture(t, publishedRelease(['windows']))
+  const canonicalBase = await fs.promises.realpath(local.temporaryBase)
+  const originalRemove = fs.promises.rm
+  t.mock.method(fs.promises, 'rm', async (directory, options) => {
+    if (path.dirname(directory) === canonicalBase) throw new Error('cleanup fixture failure')
+    return originalRemove(directory, options)
+  })
+  local.options.sync = async () => { throw new Error('primary publication fixture failure') }
+  const diagnostics = []
+  local.options.onDiagnostic = event => diagnostics.push(event)
+  try {
+    await assert.rejects(syncPublishedManagerRelease(local.options), error => {
+      assert.match(error.message, /primary publication fixture failure/)
+      assert.equal(safeManagerSyncFailure(error).stage, 'cos-manager-publication')
+      return true
+    })
+    assert.ok(diagnostics.some(event => event.stage === 'cleanup-temp' && event.event === 'stage-failed'))
+  } finally { t.mock.restoreAll() }
+})
+
+test('cleanup after confirmed publication reports the published pointer without exposing the filesystem error', async (t) => {
+  const local = fixture(t, publishedRelease(['windows']))
+  const canonicalBase = await fs.promises.realpath(local.temporaryBase)
+  const originalRemove = fs.promises.rm
+  t.mock.method(fs.promises, 'rm', async (directory, options) => {
+    if (path.dirname(directory) === canonicalBase) throw new Error('PRIVATE filesystem cleanup detail')
+    return originalRemove(directory, options)
+  })
+  const diagnostics = []
+  local.options.onDiagnostic = event => diagnostics.push(event)
+  try {
+    await assert.rejects(syncPublishedManagerRelease(local.options), error => {
+      const value = safeManagerSyncFailure(error)
+      assert.equal(value.stage, 'cleanup-temp')
+      assert.equal(value.latestState, 'published-and-read-back')
+      return true
+    })
+    assert.equal(local.index().version, VERSION)
+    assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE|temporaryBase|filePath|signature=mock|https:/)
+  } finally { t.mock.restoreAll() }
+})
+
 test('asset redirects allow GitHub storage only and reject credentials, repository switches and loops', async () => {
   const asset = validatePublishedRelease(publishedRelease(['windows']).value, TAG).assets[0]
   let calls = 0
@@ -232,7 +276,13 @@ test('download probing sends no authentication and rejects transport errors with
   assert.equal(seen[0].method, 'HEAD')
   assert.equal(seen[0].headers.authorization, undefined)
   assert.equal(seen[0].maxHeaderSize, 16384)
-  await assert.rejects(requestDownloadHead('https://github.com/example', { requestImpl: () => { throw new Error('secret signed URL') } }), (error) => !error.message.includes('secret'))
+  await assert.rejects(requestDownloadHead('https://github.com/example', { requestImpl: () => { throw Object.assign(new Error('secret signed URL'), { code: 'ECONNRESET' }) } }), (error) => {
+    const value = safeManagerSyncFailure(error).failure
+    assert.equal(value.code, 'github-head-network-failed')
+    assert.equal(value.transportCode, 'ECONNRESET')
+    assert.doesNotMatch(JSON.stringify(value), /secret|signed URL|https:/)
+    return !error.message.includes('secret')
+  })
   await assert.rejects(requestDownloadHead('https://github.com/example', {
     timeoutMs: 5,
     requestImpl: () => {
@@ -241,7 +291,33 @@ test('download probing sends no authentication and rejects transport errors with
       request.destroy = () => {}
       return request
     },
-  }), /超时/)
+  }), error => {
+    assert.match(error.message, /超时/)
+    assert.equal(safeManagerSyncFailure(error).failure.code, 'github-head-timeout')
+    return true
+  })
+})
+
+test('download location diagnostics distinguish HEAD HTTP status from every rejected redirect without logging locations', async () => {
+  const asset = validatePublishedRelease(publishedRelease(['windows']).value, TAG).assets[0]
+  const scenarios = [
+    { response: { status: 405 }, code: 'github-head-http-status' },
+    { response: { status: 403 }, code: 'github-head-http-status' },
+    { response: { status: 302 }, code: 'github-head-redirect-rejected', reason: 'missing-location' },
+    { response: { status: 302, location: 'https://evil.invalid/?token=PRIVATE' }, code: 'github-head-redirect-rejected', reason: 'invalid-target' },
+    { response: { status: 302, location: `https://github.com/attacker/repo/releases/download/${TAG}/setup.exe` }, code: 'github-head-redirect-rejected', reason: 'repository-switch' },
+    { response: { status: 302, location: 'https://release-assets.githubusercontent.com/asset?token=PRIVATE' }, code: 'github-head-redirect-rejected', reason: 'redirect-limit' },
+  ]
+  for (const scenario of scenarios) {
+    await assert.rejects(resolveAssetDownloadUrl(asset, { inspectHead: async () => scenario.response }), error => {
+      const value = safeManagerSyncFailure(error).failure
+      assert.equal(value.code, scenario.code)
+      assert.equal(value.status, scenario.response.status)
+      if (scenario.reason) assert.equal(value.reason, scenario.reason)
+      assert.doesNotMatch(JSON.stringify(value), /PRIVATE|https:|evil|attacker|"(?:location|token)":/)
+      return true
+    })
+  }
 })
 
 test('the manual import workflow stays owner-main gated, read-only and serialized with the release publisher', () => {

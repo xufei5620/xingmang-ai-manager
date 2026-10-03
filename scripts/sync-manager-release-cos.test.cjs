@@ -7,6 +7,7 @@ const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 const YAML = require('yaml')
 const { createCosStore } = require('./cos-sync-utils.cjs')
+const { safeManagerSyncFailure } = require('./cos-manager-sync-diagnostics.cjs')
 const {
   LATEST_KEY,
   buildAllowedArtifacts,
@@ -104,6 +105,31 @@ async function indexFor(options) {
 function optionsFor(local, store) {
   return { ...local, store, config: { publicBaseUrl: PUBLIC_BASE } }
 }
+
+test('publication diagnostics identify the platform and distinguish a file failure from an uncertain latest write', async (t) => {
+  const local = fixture(t)
+  const fileStore = memoryStore({ failKey: `xingmang/releases/${VERSION}/XingMang-AI-Manager-${VERSION}-Setup.exe` })
+  const diagnostics = []
+  await assert.rejects(syncManagerRelease({ ...optionsFor(local, fileStore), onDiagnostic: event => diagnostics.push(event) }), error => {
+    const value = safeManagerSyncFailure(error)
+    assert.equal(value.stage, 'cos-publish-file')
+    assert.equal(value.platform, 'windows')
+    assert.equal(value.architecture, 'x64')
+    assert.equal(value.latestState, 'not-written-by-this-run')
+    return true
+  })
+  assert.equal(fileStore.pointer(), null)
+  const pointerStore = memoryStore({ failPointerAfterWrite: true })
+  await assert.rejects(syncManagerRelease({ ...optionsFor(local, pointerStore), onDiagnostic: event => diagnostics.push(event) }), error => {
+    const value = safeManagerSyncFailure(error)
+    assert.equal(value.stage, 'cos-publish-latest')
+    assert.equal(value.latestState, 'write-unconfirmed')
+    return true
+  })
+  assert.equal(pointerStore.pointer().version, VERSION)
+  assert.equal(pointerStore.events.filter(event => event.key === LATEST_KEY).length, 1)
+  assert.doesNotMatch(JSON.stringify(diagnostics), /https:|filePath|mock upload|mock pointer/)
+})
 
 test('the complete release is verified and synchronized before the absolute latest index', async (t) => {
   const local = fixture(t, { platforms: ['windows', 'macos', 'linux'] })

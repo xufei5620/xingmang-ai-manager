@@ -12,6 +12,7 @@ const {
 } = require('./update-release-utils.cjs')
 const { ARCHITECTURES: MAC_ARCHITECTURES, releaseArtifactNames } = require('./macos-artifact-names.cjs')
 const { ARCHITECTURES: LINUX_ARCHITECTURES, debFileName, updateManifestName } = require('./linux-artifact-names.cjs')
+const { createManagerSyncDiagnostics, safeManagerSyncFailure } = require('./cos-manager-sync-diagnostics.cjs')
 
 const OBJECT_PREFIX = 'xingmang'
 const LATEST_KEY = `${OBJECT_PREFIX}/latest.json`
@@ -214,39 +215,54 @@ function buildManagerIndex(plan, previous, publicBaseUrl) {
 
 async function syncManagerRelease(options) {
   const utilities = options.utilities || require('./cos-sync-utils.cjs')
-  const config = options.config || utilities.readCosConfiguration(options.env || process.env)
-  const plan = await buildManagerReleasePlan(options.directory, options.version, { utilities, installersOnly: options.installersOnly })
-  const store = options.store || utilities.createCosStore(config)
-  const previous = await store.readJson(LATEST_KEY)
-  buildManagerIndex(plan, previous, config.publicBaseUrl)
+  let latestState = 'not-written-by-this-run'
+  const stage = createManagerSyncDiagnostics(options.onDiagnostic, function () { return latestState })
+  const { config, plan, store } = await stage('prepare-manager-plan', { version: options.version }, async function () {
+    const config = options.config || utilities.readCosConfiguration(options.env || process.env)
+    const plan = await buildManagerReleasePlan(options.directory, options.version, { utilities, installersOnly: options.installersOnly })
+    return { config, plan, store: options.store || utilities.createCosStore(config) }
+  })
+  const previous = await stage('cos-read-latest', { version: plan.version }, function () { return store.readJson(LATEST_KEY) })
+  await stage('cos-validate-index', { version: plan.version }, function () { return buildManagerIndex(plan, previous, config.publicBaseUrl) })
   // The updater manifests belong beside their relative payloads. The root
   // pointer is an independent JSON index with absolute URLs and is touched
   // only after every immutable object has passed a full public readback.
   const ordered = [...plan.files].sort((left, right) => Number(left.kind === 'manifest') - Number(right.kind === 'manifest'))
   for (const file of ordered) {
-    const published = await store.publishFile(file.key, file.path, {
-      contentType: file.type,
-      cacheControl: IMMUTABLE_CACHE_CONTROL,
-      expectedBytes: file.size,
-      expectedSha256: file.sha256,
+    await stage('cos-publish-file', { version: plan.version, platform: file.platform, architecture: file.architecture }, async function () {
+      const published = await store.publishFile(file.key, file.path, {
+        contentType: file.type,
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
+        expectedBytes: file.size,
+        expectedSha256: file.sha256,
+      })
+      if (published.bytes !== file.size || published.sha256 !== file.sha256 || published.contentType !== file.type
+        || published.url !== publicObjectUrl(config.publicBaseUrl, file.key)) {
+        throw new Error(`COS 上传回读与已验证产物不一致：${file.fileName}，未更新最新指针`)
+      }
     })
-    if (published.bytes !== file.size || published.sha256 !== file.sha256 || published.contentType !== file.type
-      || published.url !== publicObjectUrl(config.publicBaseUrl, file.key)) {
-      throw new Error(`COS 上传回读与已验证产物不一致：${file.fileName}，未更新最新指针`)
-    }
   }
   // Re-read before the mutable write so a CLI run or a platform supplement
   // cannot silently discard another successfully published platform.
-  const current = await store.readJson(LATEST_KEY)
-  const index = buildManagerIndex(plan, current, config.publicBaseUrl)
+  const index = await stage('cos-recheck-latest', { version: plan.version }, async function () {
+    const current = await store.readJson(LATEST_KEY)
+    return buildManagerIndex(plan, current, config.publicBaseUrl)
+  })
   const candidateDigest = createHash('sha256').update(JSON.stringify(index)).digest('hex')
   const candidateKey = `${OBJECT_PREFIX}/releases/${plan.version}/indexes/${candidateDigest}.json`
-  await store.publishJson(candidateKey, index, { cacheControl: IMMUTABLE_CACHE_CONTROL })
-  const beforeSwitch = await store.readJson(LATEST_KEY)
-  if (JSON.stringify(buildManagerIndex(plan, beforeSwitch, config.publicBaseUrl)) !== JSON.stringify(index)) {
-    throw new Error('COS 平台索引在候选清单核验期间发生变更，请重跑同步；未覆盖最新指针')
-  }
-  await store.publishJson(LATEST_KEY, index, { overwrite: true, cacheControl: 'no-cache' })
+  await stage('cos-publish-candidate', { version: plan.version }, function () { return store.publishJson(candidateKey, index, { cacheControl: IMMUTABLE_CACHE_CONTROL }) })
+  await stage('cos-recheck-candidate-state', { version: plan.version }, async function () {
+    const beforeSwitch = await store.readJson(LATEST_KEY)
+    if (JSON.stringify(buildManagerIndex(plan, beforeSwitch, config.publicBaseUrl)) !== JSON.stringify(index)) {
+      throw new Error('COS 平台索引在候选清单核验期间发生变更，请重跑同步；未覆盖最新指针')
+    }
+  })
+  latestState = 'write-unconfirmed'
+  await stage('cos-publish-latest', { version: plan.version }, async function () {
+    const result = await store.publishJson(LATEST_KEY, index, { overwrite: true, cacheControl: 'no-cache' })
+    latestState = 'published-and-read-back'
+    return result
+  })
   return index
 }
 
@@ -265,15 +281,15 @@ function parseArguments(argv) {
 }
 
 async function main(argv) {
-  const result = await syncManagerRelease(parseArguments(argv))
+  const result = await syncManagerRelease({ ...parseArguments(argv), onDiagnostic: function (event) { console.log(`[manager-sync] ${JSON.stringify(event)}`) } })
   console.log(`星芒 ${result.version} 已同步 COS，共 ${result.files.length} 个文件；现有客户端更新源保持不变`)
 }
 
 if (require.main === module) {
-  main(process.argv.slice(2)).catch(() => {
+  main(process.argv.slice(2)).catch((error) => {
     // COS errors can carry signed request details. The Actions log must never
     // include an upstream exception or credentials when publication fails.
-    console.error('::error::星芒 COS 同步失败，请检查配置与发布产物；安装包同步与最新指针需要核实后重跑')
+    console.error(`::error::星芒 COS 同步失败；安全诊断：${JSON.stringify(safeManagerSyncFailure(error))}`)
     process.exitCode = 1
   })
 }

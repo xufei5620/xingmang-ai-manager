@@ -1,5 +1,6 @@
 import type { PlatformCapabilities, ProviderId, SystemSnapshot } from '../../../../electron/ipc-contract'
 import { minimumSupportedNodeVersion } from '../../../../electron/versions'
+import { rawErrorMessage } from '../../business-common'
 
 type RuntimeSnapshot = SystemSnapshot['runtime']
 type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
@@ -100,8 +101,10 @@ export function cliInstallStageLabel(stage: InstallRuntimeId | 'tool', index: nu
 /**
  * 运行环境那一段失败时，前缀要让人一眼分清「环境没装上」还是「工具没装上」；
  * 主进程原话留在后面，错误分类（下载超时、磁盘满……）照旧认得出来。
+ * 原话要先剥掉 Electron 那层「Error invoking remote method '…': Error:」再接上：
+ * 拼进句子中间以后，上屏前的 errorMessage 只剥开头，这串英文就原样进了错误框。
  */
-export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, detail: string): string {
+export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, cause: unknown): string {
   const name = runtime === 'node' ? 'Node.js' : 'Python'
-  return `${name} 运行环境没装上，${toolName} 还没开始安装。${detail}`.trim()
+  return `${name} 运行环境没装上，${toolName} 还没开始安装。${rawErrorMessage(cause)}`.trim()
 }
