@@ -457,6 +457,27 @@ async function readBoundedRegularFile(filePath, { maxBytes = MAX_JSON_BYTES } = 
   return Buffer.concat(chunks)
 }
 
+// Downloads write through the FileHandle so it stays the descriptor's only owner. A WriteStream
+// given the raw fd still closes it on destroy() (autoClose only skips the automatic close) and
+// raced handle.close(): the loser threw EBADF from a stream nobody listened to yet, or closed a
+// descriptor number the process had already handed to another file. FileHandle.close() waits
+// for in-flight writes and closes once.
+function createFileHandleWriter(handle) {
+  return new Writable({
+    write(chunk, encoding, callback) {
+      writeFully(handle, chunk).then(() => callback(), callback)
+    },
+  })
+}
+
+async function writeFully(handle, chunk) {
+  for (let offset = 0; offset < chunk.length;) {
+    const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset)
+    if (!bytesWritten) throw new Error('写入下载文件失败')
+    offset += bytesWritten
+  }
+}
+
 async function downloadResource(input, options = {}) {
   validateResourceUrl(input.url, input.allowedHosts)
   await assertSafePath(input.filePath, false)
@@ -465,7 +486,7 @@ async function downloadResource(input, options = {}) {
   let output
   try {
     handle = await fsp.open(temporaryPath, 'wx', 0o600)
-    output = fs.createWriteStream(temporaryPath, { fd: handle.fd, autoClose: false })
+    output = createFileHandleWriter(handle)
     const result = await performRequest({ ...input, output }, options)
     await handle.sync()
     await handle.close()
