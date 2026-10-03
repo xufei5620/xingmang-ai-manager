@@ -826,6 +826,38 @@ describe('core kept for connections in flight after an automatic session stops',
     expect(test.runtime.isRunning()).toBe(true)
   })
 
+  it('logs a core that would not stop when the drain ran out and keeps trying', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    expect(test.onDiagnostic).toHaveBeenCalledWith('core-stop')
+    expect(test.runtime.isRunning()).toBe(true)
+    expect(await test.backend.isIdle()).toBe(false)
+    await test.advance(5000)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(await test.backend.isIdle()).toBe(true)
+    expect(test.scheduled.size).toBe(0)
+  })
+
+  it('does not let a pending retry cut the next drain short', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockRejectedValueOnce(new Error('still running'))
+    await test.advance(automaticSessionDrainMs)
+    // 下一次后台连接先把那个没停掉的内核清掉，再连、再断，开始新的一段收尾。
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    test.runtime.stop.mockClear()
+    await test.advance(5000)
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    expect(test.runtime.isRunning()).toBe(true)
+    await test.advance(automaticSessionDrainMs)
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+  })
+
   it('drops the drain when the core exits on its own or the app shuts down', async () => {
     const test = await setup()
     await test.backend.startAutomaticAcceleration(scope, 'system-proxy')

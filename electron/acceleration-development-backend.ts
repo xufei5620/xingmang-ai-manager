@@ -528,18 +528,32 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   function holdCoreForDrain(current: Session) {
     if (current.billed || current.connectedAt === null || current.port === null || current.line === null
       || drainHeld || closing || disposed || !options.runtime.isRunning()) return
+    // 上一次收尾留下的重试定时器也在这一格里，先作废，免得它把这次收尾提前结束。
+    forgetDrain()
     downloadRoute ??= { port: current.port, line: current.line }
     drainHeld = true
+    finishDrainAfter(automaticSessionDrainMs)
+  }
+  /**
+   * 收尾到点：下载还握着内核就交给下载去停（stopDownloadRoute）；否则内核没人要了，
+   * 按探测留下的内核来清。停不掉时 stopStage 照记 core-stop，辅助进程也不算空闲，
+   * 下一次连接、停止、下载、检测线路或退出都会再清；另外像会话停不掉时一样五秒后再试。
+   */
+  function finishDrainAfter(milliseconds: number) {
     const generation = drainGeneration
     cancelDrain = schedule(() => {
       if (generation !== drainGeneration) return
       cancelDrain = null
       void enqueue(async () => {
-        if (generation !== drainGeneration || !endDrain() || session) return
-        try { await options.runtime.stop() }
-        catch { /* 同 stopDownloadRoute：下一次 start / stop / dispose 会再清一次。 */ }
+        if (generation !== drainGeneration || session || disposed) return
+        if (drainHeld) {
+          if (!endDrain()) return
+          probeNeedsCleanup = true
+        }
+        if (!probeNeedsCleanup) return
+        try { await stopSession() } catch { finishDrainAfter(5000) }
       }).catch(() => undefined)
-    }, automaticSessionDrainMs)
+    }, milliseconds)
   }
   async function stopSession() {
     if (!session) {
