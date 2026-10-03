@@ -74,7 +74,7 @@ async function main() {
       const status = /^\s*Status:\s*([^\r\n]+)$/m.exec(result.stdout)?.[1]
       const certificates = [...result.stdout.matchAll(/^\s*\d+\.\s*([^\r\n]+)$/gm)].map(match => safePublicText(match[1])).filter(Boolean).slice(0, 8)
       report.signatureMetadataCandidate = { nativeTrustStatus: safePublicText(status), certificateNames: certificates, trustedByPublisher: false }
-      if (status === 'signed by a certificate trusted by macOS') {
+      if (status === 'signed by a certificate trusted by macOS' || status === 'signed by a developer certificate issued by Apple for distribution') {
         try { await inspectPayloadMetadata(args[1], options) } catch { report.payloadMetadataUnavailable = true }
       }
     }
