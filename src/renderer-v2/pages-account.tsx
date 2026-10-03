@@ -1977,7 +1977,7 @@ function AccountTasks({
             <dt>操作</dt>
             <dd>{selected.action}</dd>
             <dt>状态</dt>
-            <dd>{selected.status}</dd>
+            <dd>{taskStates[selected.status]?.label ?? '待确认'}</dd>
             <dt>失败原因</dt>
             <dd>{selected.failReason || '无'}</dd>
             <dt>结果链接</dt>
@@ -2050,7 +2050,7 @@ function AccountOrders({
               trade: order.tradeNo,
               amount: order.amount,
               paid: order.money.toFixed(2),
-              method: order.paymentMethod,
+              method: paymentMethodLabel({ name: '', type: order.paymentMethod }),
               time: displayDate(order.createdAt),
               status: (
                 <Pill tone={orderStateFor(order.status).tone}>

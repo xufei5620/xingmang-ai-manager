@@ -21,6 +21,7 @@ import { createToolsApi } from './features/tools/api'
 import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
+import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
@@ -1057,7 +1058,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if (id === 'codexDesktop') {
           const status = await native.getCodexDesktopStatus()
           if (!launchIsCurrent(request.epoch)) return
-          if (status.running) { setRestartDialog(true); return }
+          if (offersCodexDesktopRestartOnOpen(os, status.running)) { setRestartDialog(true); return }
           const asking = await askForChineseRuntimePatch(request.epoch)
           if (!launchIsCurrent(request.epoch) || asking) return
         }

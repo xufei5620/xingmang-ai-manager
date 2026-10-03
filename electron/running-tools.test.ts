@@ -164,6 +164,18 @@ describe('describeRunningTools', () => {
     const text = describeRunningTools(report({ running: ['claude', 'codex', 'gemini', 'grok'], unknown: [], codexDesktopRunning: true }), 'account')
     expect(text).not.toMatch(/solov|Sub2API|Key|PATH|npm|进程/)
   })
+
+  it('tells a Mac user that closing the desktop window is not enough when the app cannot reopen it', () => {
+    expect(describeRunningTools(report({ running: ['codex'], unknown: ['grok'], codexDesktopRunning: true, canRestartCodexDesktop: false }), 'official'))
+      .toBe('Codex CLI、Codex 桌面端 还开着，要关掉重开才会换回官方账号。Codex 桌面端只关窗口不算，要在它的窗口里按 Command + Q 完全退出再打开。如果 Grok CLI 还开着，也要关掉重开才会换回官方账号。')
+  })
+
+  it('keeps the quit hint to a desktop app confirmed open, so an unchecked Windows desktop never hears about Command + Q', () => {
+    expect(describeRunningTools(report({ codexDesktopRunning: true }), 'account'))
+      .toBe('Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(describeRunningTools(report({ codexDesktopRunning: null, canRestartCodexDesktop: false }), 'account'))
+      .toBe('如果 Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+  })
 })
 
 describe('offersCodexDesktopRestart', () => {
