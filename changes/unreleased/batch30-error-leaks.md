@@ -4,7 +4,9 @@
   英文显示在屏幕上，改说现成的中文；认得出是哪一类的，上面照旧写着「工具正在运行」「写不进安装目录」这类原因。
   英文原话照旧记在运行日志里，错误框和新手引导里也还能在「给客服看的原话」里看到。
 - 电脑用户名是中文时，更新没装上那句不再整句是英文，改说是哪一类问题、下一步怎么做。
-- Codex 的配置文件写坏了时，在「技能」页开关技能、在「外接工具」页给 Codex 加工具，报错只说第几行附近，
+- 工具的配置文件写坏了（比如英文引号打成了中文引号）时，保存配置、写 Key 不再只说「无法解析，未执行修改」：
+  改说哪个工具的配置文件有写错的地方（Codex、Grok CLI 还说大概在第几行）、星芒没有改动它，再告诉你去配置窗口
+  最下面「高级」里点「重置为初始状态」（会先备份原来的文件）。在「技能」页开关 Codex 的技能、在「外接工具」页给 Codex 加工具时也是这句，
   不再把出错那几行（可能带着令牌）显示出来。
 - 接入其他客户端：保存后连接自检没通过时，「配置已保存」那块改用提醒色，不再是绿色；账号密钥列表没读到那句不再多一个句号。
 
@@ -28,6 +30,13 @@
   （会抄出出错那行上下几行，客户自己加的外接工具令牌常在旁边）拼进报错；读文件自己的失败（超上限、读的时候被换掉、被拒绝）
   挪到 try 外照原样抛。`tomlErrorLocation` 从 `config-files.ts` 挪到新的 `electron/toml-error-location.ts`，两边共用。
   `errorMessage` 和 `keySyncFailureReason` 原样放行中文原话时也过一遍 `redactSecretPatterns`（新手引导和「给客服看的原话」早就打码）。
+- 第三十批 C：新增 `electron/broken-config-advice.ts`（`describeConfigReset`、`describeBrokenConfig`），读不懂原配置时的那句
+  统一从这里出：哪里坏了（TOML 只报「（第 N 行附近）」）、星芒没改、去首页工具行「…」→「配置」→「使用星芒账号」→「高级」→
+  「重置为初始状态」。`config-files.ts` 的 `requireJson` / `requireToml` / `requireGeminiJson` 加可选的 `brokenTool`，只有
+  merge 那几处（Claude Code、Gemini CLI、Grok CLI）传；Codex 的 config.toml、星芒替 Codex 存的那份、Grok 默认模型那句直接改；
+  `codex-extensions.ts`（B）那句也换成 Codex 那句。不传的地方（开机核对型号名单、画图登记、信任文件夹、切回官方账号）照旧。
+  行为不变：merge 照旧拒绝改坏的文件，reset 照旧先备份再重建。已知指不到路的：Gemini 没登录、或 Key 不是当前账号缓存里那把时，
+  配置窗口里没有「重置为初始状态」；Codex 的 auth.json 坏了 reset 也救不了，那句没改。
 - 第三十批 D：新增 `features/tools/external-client-notice.ts`：`externalClientSavedTone` 让「配置已保存」那块在自检结论为
   warn/bad 时用 `warn`，通过、未配置、这次没测成照旧 `ok`，字不改；`accountKeyListFailureText` 拼句前去掉原因结尾的句号。
 - 第三十批跟进项：`electron/updater.ts` 的 `describeUnrecognizedUpdateFailure` 判中文改用 `isChineseSentence`。以前判的是没脱路径

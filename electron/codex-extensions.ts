@@ -29,6 +29,7 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
 import { tomlErrorLocation } from './toml-error-location'
+import { describeBrokenConfig } from './broken-config-advice'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -526,8 +527,9 @@ function parseTomlFile(filePath: string): Record<string, unknown> {
     return TOML.parse(content) as Record<string, unknown>
   } catch (error) {
     // 解析器的原话会把出错那行连同上下几行原样抄进来，客户自己加的外接工具的令牌常常
-    // 就在旁边。这句会上屏、进运行日志和反馈报告，所以只报第几行（第三十批 B，I13）。
-    throw new Error(`Codex config.toml 无法解析，未执行修改${tomlErrorLocation(error)}`)
+    // 就在旁边。这句会上屏、进运行日志和反馈报告，所以只报第几行（第三十批 B，I13），
+    // 再和保存配置那边一样指去「重置为初始状态」（第三十批 C）。
+    throw new Error(describeBrokenConfig('Codex', tomlErrorLocation(error)))
   }
 }
 
