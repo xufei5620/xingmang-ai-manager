@@ -64,6 +64,7 @@ import {
   codexDesktopCatalogProbeFromPackage,
   createCachedProbe,
   settleWithin,
+  unlessStopped,
   nodeStillOutdatedAfterReplaceMessage,
   shouldReplaceNodeForCertificates,
   DarwinGrokRetainedPathsError,
@@ -796,6 +797,53 @@ describe('createSystemService', () => {
     expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
     expect(f.running.mock.calls.length).toBe(probes)
     expect(f.fetchModels.mock.calls.length).toBe(requests)
+  })
+
+  it('stops waiting for the Codex check once an account change begins, and still owes the catalog', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    // 安全软件拖住了 PowerShell：看 Codex 开没开这一下迟迟没有回音。
+    f.running.mockImplementation(() => new Promise<never>(() => undefined))
+    const requests = f.fetchModels.mock.calls.length
+    const backups: Array<{ provider: ProviderId; slugs: string[] }> = []
+    function backup(provider: ProviderId): void { backups.push({ provider, slugs: f.catalogSlugs() }) }
+
+    const startup = f.service.fillToolTemplateDefaults!(backup)
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']), backgroundStartupWait)
+    const resume = f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(backups).toEqual([])
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+
+    // 换账号那段等完了、没换成，还是这个账号：再来要时照常看，Codex 关着就按账号核对。
+    resume()
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+    await vi.waitFor(() => {
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
+  })
+
+  it('stops waiting for the startup check of the catalog once an account change begins', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    // 开机那次本机核对要重新问桌面端是哪一版，这一问迟迟没有回音。
+    letCatalogReaderProbesExpire()
+    f.desktopProbe.mockImplementation(() => new Promise<never>(() => undefined))
+    const desktopProbes = f.desktopProbe.mock.calls.length
+
+    const startup = f.service.fillToolTemplateDefaults!(() => undefined)
+    await vi.waitFor(() => expect(f.desktopProbe.mock.calls.length).toBeGreaterThan(desktopProbes), backgroundStartupWait)
+    f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).not.toHaveBeenCalled()
   })
 
   it('owes nothing for a Codex config the account did not write, even while Codex is open', async () => {
@@ -6051,5 +6099,30 @@ describe('telling which Codex builds would read the model catalog', () => {
       await expect(settleWithin(Promise.reject(new Error('收回失败')), 3_000)).resolves.toBeUndefined()
       await expect(settleWithin(Promise.resolve('done'), 3_000)).resolves.toBeUndefined()
     } finally { vi.useRealTimers() }
+  })
+
+  it('stops waiting once the signal stops but lets the work finish on its own', async () => {
+    let finish!: (value: string) => void
+    let finished = false
+    const work = new Promise<string>((resolve) => { finish = resolve }).then((value) => {
+      finished = true
+      return value
+    })
+    const stop = new AbortController()
+    const waiting = unlessStopped(() => work, stop.signal)
+    stop.abort()
+
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    expect(finished).toBe(false)
+    finish('done')
+    expect(await work).toBe('done')
+    expect(finished).toBe(true)
+
+    // 已经停了的不再起；没停的照常交回结果，或原样交回它自己的错。
+    const late = vi.fn(async () => 'late')
+    await expect(unlessStopped(late, stop.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(late).not.toHaveBeenCalled()
+    await expect(unlessStopped(async () => 'ok', new AbortController().signal)).resolves.toBe('ok')
+    await expect(unlessStopped(async () => { throw new Error('探测失败') }, new AbortController().signal)).rejects.toThrow('探测失败')
   })
 })
