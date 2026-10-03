@@ -7,14 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 要同步的官方备用安装包
+        description: 要同步的 Windows/macOS 官方备用安装包（all 包含两种系统）
         type: choice
         default: all
         options:
           - all
           - windows
           - macos
-          - linux
+          - windows-x64
+          - windows-arm64
+          - macos-dmg-universal
+          - macos-pkg-universal
 
 permissions:
   contents: read
@@ -39,10 +42,13 @@ jobs:
           const choices = {
             windows: { platform: 'windows', runner: 'windows-latest' },
             macos: { platform: 'macos', runner: 'macos-latest' },
-            linux: { platform: 'linux', runner: 'ubuntu-latest' },
+            'windows-x64': { platform: 'windows-x64', runner: 'windows-latest' },
+            'windows-arm64': { platform: 'windows-arm64', runner: 'windows-latest' },
+            'macos-dmg-universal': { platform: 'macos-dmg-universal', runner: 'macos-latest' },
+            'macos-pkg-universal': { platform: 'macos-pkg-universal', runner: 'macos-latest' },
           }
           const selected = process.env.PLATFORM_REQUEST
-          const include = selected === 'all' ? Object.values(choices) : choices[selected] ? [choices[selected]] : null
+          const include = selected === 'all' ? [choices.windows, choices.macos] : Object.hasOwn(choices, selected) ? [choices[selected]] : null
           if (!include) throw new Error('不支持的同步平台')
           require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`)
           NODE

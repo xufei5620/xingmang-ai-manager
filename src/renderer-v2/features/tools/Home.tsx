@@ -339,7 +339,7 @@ export function Home(props: HomeProps) {
     // 正在跑的那一行按钮写的是「打开中」「安装中」，这时不给下拉，但外面那层还在，
     // 按钮列的宽度就不会跟着一起跳。
     const lastWorkspace = job ? null : workspaces[0] ?? null
-    // macOS 上 Codex 桌面端归客户自己装，这颗按钮只能把人带到教程：写「安装」就是骗人。
+    // 归客户自己装的（认不出芯片的 Mac 上的 Codex 桌面端）这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed

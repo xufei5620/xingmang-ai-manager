@@ -5,12 +5,12 @@ const { test } = require('node:test')
 const YAML = require('yaml')
 const { buildOfficialPackageMatrix } = require('./cos-chatgpt-platform-matrix.cjs')
 
-test('all platforms become eight sequential independent jobs and group recovery stays within those identities', () => {
+test('all platforms become four Windows and macOS sequential independent jobs and group recovery stays within those identities', () => {
   const all = buildOfficialPackageMatrix()
-  assert.deepEqual(all.include.map(item => item.platform), ['windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64', 'linux-deb-x64', 'linux-deb-arm64', 'linux-rpm-x64', 'linux-rpm-arm64'])
-  for (const group of ['windows', 'macos', 'linux']) assert.ok(buildOfficialPackageMatrix(group).include.every(item => all.include.some(entry => entry.platform === item.platform) && item.platform.startsWith(group)))
+  assert.deepEqual(all.include.map(item => item.platform), ['windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64'])
+  for (const group of ['windows', 'macos']) assert.ok(buildOfficialPackageMatrix(group).include.every(item => all.include.some(entry => entry.platform === item.platform) && item.platform.startsWith(group)))
   for (const { platform } of all.include) assert.deepEqual(buildOfficialPackageMatrix(platform), { include: [{ platform }] })
-  for (const value of ['https://evil.invalid', 'windows-x64,linux-rpm-x64', '../escape', 'constructor', null, {}]) assert.throws(() => buildOfficialPackageMatrix(value))
+  for (const value of ['linux', 'linux-deb-x64', 'linux-deb-arm64', 'linux-rpm-x64', 'linux-rpm-arm64', 'https://evil.invalid', 'windows-x64,linux-rpm-x64', '../escape', 'constructor', null, {}]) assert.throws(() => buildOfficialPackageMatrix(value))
 })
 
 test('protected workflow serializes jobs under its existing group and requires every selected job to succeed', async () => {

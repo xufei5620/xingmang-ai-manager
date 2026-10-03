@@ -20,17 +20,18 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 
 星芒同步本次完整发布产物，包括安装包、Mac 更新 ZIP、blockmap 和 `latest*.yml`。按平台清单校验版本、文件名、大小与 SHA-512，再上传到 `xingmang/releases/<星芒版本>/`。单平台发布时，索引保留其它平台已经发布的下载；同版本补发另一平台会合并条目。同版本同文件名而内容不同的文件不能覆盖。
 
-官方同步的 `all` 模式覆盖：
+官方备用包的定时、默认及 `all` 同步只覆盖 Windows 与 macOS；不再同步 Linux。保留历史 Linux 对象与索引条目的读取兼容，不删除已存文件。星芒管理工具自身的 Linux 构建、发布开关与正常安装路径不受影响。
+
+OpenAI 官方同步的 `all` 模式覆盖：
 
 - Windows x64、ARM64：完整 MSIX 与离线许可；核对产品身份、四段版本、架构、Publisher 和 Windows Authenticode 有效签名。
 - Mac Apple Silicon、Intel：读取官方 Sparkle appcast 的主 enclosure，保存完整应用 ZIP。排除增量文件，使用官方清单实际给出的 URL；不拼猜未来 DMG 地址。这些 ZIP 可用于完整应用分发，不能描述成 DMG。
-- Linux x64、ARM64：官方 DEB、RPM。
 
-Mac/Linux 当前记录官方 HTTPS 来源、格式和完整 SHA-256 校验，没有声称已完成这些平台的应用签名或安装验收。每个平台单独记录自己的来源版本或指纹，不把 Windows 的版本号当成其它平台版本。
+Mac 当前记录官方 HTTPS 来源、格式和完整 SHA-256 校验，没有声称已完成这些平台的应用签名或安装验收。每个平台单独记录自己的来源版本或指纹，不把 Windows 的版本号当成其它平台版本。
 
-Claude 同步在 Windows、macOS、Linux 各自的原生 runner 上验证，同一工作流的三个平台作业串行维护索引。Windows x64/ARM64 保存官方完整 MSIX，不使用 setup 引导安装器，也不套用 OpenAI 的许可；Mac DMG/PKG 是兼容 Apple Silicon 和 Intel 的通用包；Linux beta 使用官方 APT 元数据所列的 x64/ARM64 DEB，不提供未经核实的 RPM。
+Claude 同步在 Windows、macOS 各自的原生 runner 上验证，同一工作流的两个平台作业串行维护索引。Windows x64/ARM64 保存官方完整 MSIX，不使用 setup 引导安装器，也不套用 OpenAI 的许可；Mac DMG/PKG 是兼容 Apple Silicon 和 Intel 的通用包。
 
-Claude Windows 检查 MSIX 产品身份和有效 Authenticode；Mac 原生读取应用/PKG 元数据并核对签名；Linux 核对官方索引大小、SHA-256 和 DEB 包头，记录未执行 APT GPG 验签。文档中的下载接口已核实，真实版本、最终 CDN、签名及安装结果以首轮 Actions 验收为准。
+Claude Windows 检查 MSIX 产品身份和有效 Authenticode；Mac 原生读取应用/PKG 元数据并核对签名。历史 Linux 条目保留原有官方索引与 DEB 包头校验标签，不升级为 APT GPG 验签。文档中的下载接口已核实，真实版本、最终 CDN、签名及安装结果以首轮 Actions 验收为准。
 
 Claude Windows 固定 `latest/redirect` 入口使用匿名 GET，仅读取响应头后立即销毁正文；最终静态包仍使用 HEAD 获取大小与 ETag。2026-10-03 GitHub runner 公开探测确认 Windows 两个入口拒绝 HEAD（405），GET 则返回 307 到已允许的 `downloads.claude.ai/releases/`。
 
@@ -103,11 +104,13 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 同日六分钟预算运行仍出现分块 HTTP 400；原日志没有 COS 错误码，不能将其认定为 RequestTimeout。现在仅对固定 COS HTTPS 域名的分块请求读取错误正文，限制为 4 KiB 和五秒（更短调用方正文预算优先），只从严格 XML 的唯一顶层 Code 提取固定白名单 `cosErrorCode`，不记录 Message、Resource、RequestId、TraceId、正文或认证数据。解析失败、超限、慢正文和断流仍保留原 HTTP 状态；重定向不读取或跟随。
 
-诊断白名单包括官方定义的 UserNetworkTooSlow、IncompleteBody、EntitySizeNotMatch、MissingRequestBodyError、BadRequest、InvalidRequest、UnexpectedContent、EntityTooLarge 和 MalformedXML。无法提取 Code 时，`cosErrorBodyStatus` 区分未知错误码、空正文、UTF-8/XML 格式、额外或重复字段、实体、编码、长度、超限、超时和断流；`cosErrorBodyBytes` 是读取字节数（最多记 4096，超限由状态表示），`cosErrorContentType` 仅为 missing/xml/json/html/text/other 固定分类。未知 Code 与原始响应头仍不输出。新增错误码只提供诊断，重试范围仍限下文明确列出的条件；此前未记录 Code 的真实 HTTP 400 原因仍未确定。
+诊断白名单包括官方定义的 UserNetworkTooSlow、IncompleteBody、EntitySizeNotMatch、MissingRequestBodyError、BadRequest、InvalidRequest、UnexpectedContent、EntityTooLarge 和 MalformedXML。无法提取 Code 时，`cosErrorBodyStatus` 区分未知错误码、空正文、UTF-8/XML 格式、额外或重复字段、实体、编码、长度、超限、超时和断流；`cosErrorBodyBytes` 是读取字节数（最多记 4096，超限由状态表示），`cosErrorContentType` 仅为 missing/xml/json/html/text/other 固定分类。未知 Code 与原始响应头仍不输出。诊断集合与重试集合分别限定，只有下文明确列出的条件可重试；此前未记录 Code 的真实 HTTP 400 原因仍未确定。
 
 同日运行 `37134516231` 在 Windows x64 上传 291543056 字节包的阶段于 130954 毫秒失败，安全诊断为分块 PUT 等待响应头时 ECONNRESET（当时每块 4 MiB）；Complete 尚未开始，完整公共回读为 404，latest 未写。这证明该次出现连接断开，不能确认此前 HTTP 400 为 UserNetworkTooSlow。现将单块缩至 1 MiB，以减少一次失败需要重发的数据；请求数约增至四倍，实际可靠性与吞吐仍需真实运行验收。
 
-同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、私有分块 PUT 网络错误 ETIMEDOUT 或 ECONNRESET，或安全识别为 HTTP 400 RequestTimeout 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
+随后 ChatGPT 运行 `37136334139` 的 Windows x64 作业明确返回 HTTP 400 UserNetworkTooSlow，469 字节 XML 已被安全识别。Claude 运行 `37137350933` 的 Mac 作业完成 377037896 字节 DMG 的完整回读和 HEAD 验收后，384935158 字节 PKG 在已提交 304087040 字节时遇到分块 PUT EPIPE；DMG/PKG 原生验证已过，但 PKG 未开始 Complete，完整公共 GET 为 404，latest 未写。依据这两种已观察到的错误，分块重试集合补充 EPIPE 与 HTTP 400 UserNetworkTooSlow，不将未知 HTTP 400 推定为可重试。
+
+同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、私有分块 PUT 网络错误 ETIMEDOUT、ECONNRESET 或 EPIPE，或安全识别为 HTTP 400 RequestTimeout / UserNetworkTooSlow 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
 
 仅需要在原有两个对象前缀范围增授四项 CAM action：`cos:InitiateMultipartUpload`、`cos:UploadPart`、`cos:CompleteMultipartUpload`、`cos:AbortMultipartUpload`。不需要 List、Copy、ACL、公开对象 DELETE 或扩大资源前缀。Init 与 Complete 都签入 `x-cos-forbid-overwrite: true`；官方文档明确该头不保护开启版本控制的桶，因此启用前必须核实桶版本控制仍为关闭。本模块不自行访问或修改桶配置。
 
@@ -116,15 +119,15 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 协议依据：[初始化](https://cloud.tencent.com/document/product/436/7746)、[上传分块](https://cloud.tencent.com/document/product/436/7750)、[合并](https://cloud.tencent.com/document/product/436/7742)、[中止](https://cloud.tencent.com/document/product/436/7740)、[错误码](https://cloud.tencent.com/document/product/436/7730)、[上传概览](https://cloud.tencent.com/document/product/436/65935)。这是本地 mock 验证的能力，不能当作实际上传速度或生产权限已验收。
 
 1. 合并工作流后，打开 **Actions → sync-chatgpt-official-cos → Run workflow**。
-2. 分支选 `main`。首次及最终验收选 `all`，目标为八个平台包及两个 Windows 许可对象。选择器将其展开为八个固定平台作业，`max-parallel: 1` 顺次运行，各自保留 90 分钟期限及原 Windows 校验环境；整个工作流只有八项全成功才算成功。手动入口也支持 `windows`、`macos`、`linux` 和八个精确平台标识，便于定位单项故障。
+2. 分支选 `main`。首次及最终验收选 `all`，目标为四个 Windows/macOS 平台包及两个 Windows 许可对象。选择器将其展开为四个固定平台作业，`max-parallel: 1` 顺次运行，各自保留 90 分钟期限及原 Windows 校验环境；整个工作流只有四项全成功才算成功。手动入口也支持 `windows`、`macos` 和四个 Windows/macOS 精确平台标识，便于定位单项故障。
 3. 观察 `[chatgpt-sync]` 日志的阶段、平台、耗时、传输方法及字节数。首次会下载、校验和上传大包，后续没有变化时仅检查小清单与响应头。日志只输出固定阶段与白名单错误分类，不输出请求认证、签名 URL 或服务器正文。
 4. 成功后访问 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/chatgpt/latest.json`，检查文件地址、大小、SHA-256 和验证范围。
 
 已有手动上传的 `chatgpt/windows-x64/26.930.2377.0/ChatGPT-x64.msix` 及同目录许可可以保留；同步会校验完整内容后复用，不会把同名不同内容默默替换。
 
-若运行已经写入部分不可变包、最后一个平台失败，先核对失败阶段和远端对象状态。可选精确标识（例如 `linux-rpm-arm64`）定位恢复，再运行 `all` 完成验收。单项同步会保留已有索引中的其它平台和许可；首次没有索引时，单项成功仅代表该平台已入库，不能当成八个平台全部成功。
+若运行已经写入部分不可变包、最后一个平台失败，先核对失败阶段和远端对象状态。可选精确标识（例如 `macos-arm64`）定位恢复，再运行 `all` 完成验收。单项同步会保留已有索引中的其它平台和许可；首次没有索引时，单项成功仅代表该平台已入库，不能当成四个 Windows/macOS 平台全部成功。
 
-每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此八项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台，新 Windows 共享版本会按既有规则移除尚未刷新到新版本的另一架构，直到它自己的作业成功。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含八个平台及配对的两份 Windows 许可，因长时间版本切换缺项时仍失败并保留部分索引，按精确平台恢复，不把八项曾经各自成功当作最终索引完整。
+每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此四项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台，新 Windows 共享版本会按既有规则移除尚未刷新到新版本的另一架构，直到它自己的作业成功。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含四个 Windows/macOS 平台及配对的两份 Windows 许可，因长时间版本切换缺项时仍失败并保留部分索引，按精确平台恢复，不把四项曾经各自成功当作最终索引完整。
 
 安全错误分类区分响应头超时、正文超时、HTTP 状态、断流、ETag/大小/摘要不一致，以及 PUT 与公共完整回读的各自原因。`latestState: write-unconfirmed` 表示最新索引写入结果未知，需要先读取远端状态；`published-and-read-back` 表示索引已发布并回读确认，即使随后临时目录清理失败。清理失败不会盖掉此前的主错误。
 
@@ -138,7 +141,7 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 ### Claude 桌面备用包
 
-打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。也可只重跑 `windows`、`macos` 或 `linux`；平台作业保留索引中的其它已发布平台。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/claude/latest.json`。沿用现有 `xingmang/*` 的 GetObject、HeadObject、PutObject 权限和 GitHub Secrets，不增加 `claude/*` 授权或创建新密钥。
+打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。定时与 `all` 覆盖 Windows x64/ARM64 和 Mac 通用 DMG/PKG 四个安装包。也可只重跑 `windows`、`macos`，或精确选择 `windows-x64`、`windows-arm64`、`macos-dmg-universal`、`macos-pkg-universal`；精确选择沿用同一来源、原生验证和完整公共回读流程，平台作业保留索引中的其它已发布平台（包括历史 Linux 条目）。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/claude/latest.json`。沿用现有 `xingmang/*` 的 GetObject、HeadObject、PutObject 权限和 GitHub Secrets，不增加 `claude/*` 授权或创建新密钥。
 
 ## 校验、顺序与失败恢复
 
@@ -155,7 +158,7 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 2026-10-03 核实的实际教程来源是独立仓库 `xufei5620/codex-tutorial-cn`，Learning Studio v5.6。两站管理工具教程分别位于 `https://docs-new.solov.cc/guide/manager`、`https://docs-sub.solov.cc/guide/manager`；原 `dl-landing/` 是旧注册下载页，不能作为新版学习空间的实现来源。
 
-客户端的手动下载入口指向 `https://docs-new.solov.cc/guide/manager#download-installers`。新版教程按产品、系统和架构直接提供下载按钮，读取对应 COS 索引，提供管理工具、Codex 桌面端和 Claude 桌面端的下载直链。Windows、Mac、Linux 只展示索引里实际已提供的平台；Codex Windows 许可与 MSIX 架构、版本对应，Mac 完整应用 ZIP 不称为 DMG；Claude MSIX 不需要该许可，Mac 的通用 DMG/PKG 不拆成虚构的独立架构包。
+客户端的手动下载入口指向 `https://docs-new.solov.cc/guide/manager#download-installers`。新版教程按产品、系统和架构直接提供下载按钮，读取对应 COS 索引，提供管理工具、Codex 桌面端和 Claude 桌面端的下载直链。官方备用下载仅提供 Windows、Mac，并按索引里实际已提供的文件启用按钮；Codex Windows 许可与 MSIX 架构、版本对应，Mac 完整应用 ZIP 不称为 DMG；Claude MSIX 不需要该许可，Mac 的通用 DMG/PKG 不拆成虚构的独立架构包。
 
 教程站使用已有 Cloudflare Pages 部署，通过三个限定的同源 Functions 路由读取 COS 索引。只获取固定桶的公开 JSON，不转发用户 Cookie、Authorization 或查询参数；请求和响应体均有上限。浏览器不需要 COS CORS 配置，下载文件直接来自 COS。
 

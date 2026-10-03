@@ -4428,11 +4428,15 @@ describe('Darwin Codex Desktop integration', () => {
     expect(fs.existsSync(fixture.executionMarker)).toBe(false)
   })
 
-  it('rejects managed install operations with actionable macOS guidance', async () => {
-    const { service } = await createDarwinService()
+  it('sends a macOS Codex desktop install to the Mac installer, which leaves an app that is already there alone', async () => {
+    // 以前 Mac 上这一步直接拒绝（「由 Codex App 管理」）；现在走 Mac 安装器，认得出的那份不重装。
+    const { service, execute } = await createDarwinService()
     const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(service.installCodexDesktop(target)).rejects.toThrow('由 Codex App 管理')
+    await expect(service.installCodexDesktop(target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.727.51351', installedVersion: '26.727.51351' })
+    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('rejects managed uninstall operations with actionable macOS guidance', async () => {
