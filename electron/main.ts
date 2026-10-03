@@ -3127,6 +3127,7 @@ if (!hasSingleInstanceLock) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
         app.hide()
+        runtimeLog.log('info', 'updater', 'install.quit-wait', '退出前等 Mac 安装器准备好新版本，最多 20 秒')
         return waitForUpdateInstallFailure(updaterService)
       },
       // 开着加速时系统代理指着本机端口：关机前不还原，下次开机整台电脑上不了网。
