@@ -35,8 +35,12 @@ export interface WindowLifecycleOptions {
    * 拉起已经下载好的更新的安装器，只在 confirmQuit 选了 'install-update' 之后
    * 调用。安装器自己会让程序退出，所以它必须在 quitting 置位之后才跑，否则那次
    * 退出会被这套流程再拦一遍。抛错也不能否决用户已经做出的退出选择。
+   *
+   * 返回 Promise 表示安装器还要在本进程里做完准备才会自己退出（Mac）：先藏起窗口
+   * 等它，落定（装不上）或等满 updateHandoffBudgetMs 再照常退出。缺省 = 旧行为，
+   * 交出去马上退出。
    */
-  installDownloadedUpdate?(): void
+  installDownloadedUpdate?(): void | Promise<void>
   /**
    * Windows 关机 / 重启 / 注销时，退出前的清理还有没有必须做完的事（开着加速时
    * 系统代理还指着本机端口）。返回 true 就先推迟关机，把 prepareToQuit 跑完再退；
@@ -72,6 +76,12 @@ const quitCleanupBudgetMs = 2_000
 // cold PowerShell or two in the acceleration helper; the budget covers that
 // without holding the user's shutdown indefinitely.
 const shutdownCleanupBudgetMs = 10_000
+// Squirrel.Mac fetches, unpacks and verifies the update inside this process
+// before it quits the app itself; quitting first kills that work and nothing
+// gets installed. A real Mac mini reached a verdict in about a second; the cap
+// leaves a slower Mac room past the updater's 10 s launch watchdog without
+// keeping an invisible process around for long.
+const updateHandoffBudgetMs = 20_000
 
 export interface WindowLifecycle {
   readonly isQuitting: boolean
@@ -85,6 +95,11 @@ export interface WindowLifecycle {
   prepareUpdateQuit(): Promise<void> | undefined
   /** 安装器没起来，程序照常开着：撤掉 prepareUpdateQuit 的放行。 */
   abortUpdateQuit(): void
+  /**
+   * 系统要关机 / 重启 / 注销（Mac 的 powerMonitor 'shutdown'）。退出时正在等安装器
+   * 的话立刻不等了：拖住退出，系统会说本程序取消了关机。
+   */
+  noteSystemPowerOff(): void
   attach(window: WindowCloseSource, application: ApplicationQuitSource): () => void
   dispose(): void
 }
@@ -97,6 +112,8 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
   let inFlight: Promise<WindowCloseResult> | null = null
   let shutdownQuit: Promise<WindowCloseResult> | null = null
   let updateQuit = false
+  let powerOff = false
+  let endUpdateHandoff: (() => void) | null = null
   const detachListeners = new Set<() => void>()
 
   const reportError = (error: unknown) => {
@@ -124,6 +141,24 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       if (timer) clearTimeout(timer)
     }
   }
+  const waitForUpdateHandoff = async (handoff: Promise<void>): Promise<void> => {
+    if (powerOff) return
+    // 用户已经选了退出：窗口先收起来，等安装器的这几秒看着就是已经退了。
+    try { options.hide() } catch (error) { reportError(error) }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        handoff.catch(reportError),
+        new Promise<void>((resolve) => {
+          endUpdateHandoff = resolve
+          timer = setTimeout(resolve, updateHandoffBudgetMs)
+        }),
+      ])
+    } finally {
+      endUpdateHandoff = null
+      if (timer) clearTimeout(timer)
+    }
+  }
   const runQuit = async (installUpdate: boolean, budgetMs: number): Promise<WindowCloseResult> => {
     // The user already chose to quit. Saving placement or cleaning up a
     // background task must never veto that choice or wait on a renderer.
@@ -134,7 +169,13 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     // 安装器自己会结束进程，所以它排在 quitting 之后、app.quit() 之前：这一段
     // 里 close / before-quit 都已经放行，安装器发出的退出不会再被拦一次。
     if (installUpdate && options.installDownloadedUpdate) {
-      try { options.installDownloadedUpdate() } catch (error) { reportError(error) }
+      let handoff: void | Promise<void> = undefined
+      try { handoff = options.installDownloadedUpdate() } catch (error) { reportError(error) }
+      if (handoff) {
+        await waitForUpdateHandoff(handoff)
+        // 安装器已经接手退出（will-quit 里会 dispose）：不再叫第二遍。
+        if (disposed) return 'quit-requested'
+      }
     }
     options.quit()
     return 'quit-requested'
@@ -226,6 +267,10 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       if (!updateQuit || disposed) return
       updateQuit = false
       quitting = false
+    },
+    noteSystemPowerOff() {
+      powerOff = true
+      endUpdateHandoff?.()
     },
     attach(window, application) {
       if (disposed) return () => {}

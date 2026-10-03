@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
 function snapshot(activeKey: string | null, pendingKeys: string[] = []) {
@@ -84,5 +84,72 @@ describe('update ready to install on quit', () => {
 
   it('still offers the install when the snapshot carries no version to name', () => {
     expect(resolveInstallableUpdateOnQuit(updateSnapshot({ availableVersion: null }))).toEqual({ version: null })
+  })
+})
+
+describe('waiting on the Mac installer at quit', () => {
+  function updates() {
+    const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
+    return {
+      listeners,
+      subscribe(listener: (snapshot: UpdateSnapshot) => void) {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      emit(snapshot: UpdateSnapshot) {
+        for (const listener of [...listeners]) listener(snapshot)
+      },
+    }
+  }
+
+  it('settles once the installer reports it could not install, and stops listening', async () => {
+    const source = updates()
+    let settled = false
+    const waiting = waitForUpdateInstallFailure(source).then(() => { settled = true })
+    source.emit(updateSnapshot())
+    source.emit(updateSnapshot({ phase: 'downloading' }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    source.emit(updateSnapshot({ error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' }, failedStep: 'install' }))
+    await waiting
+    expect(settled).toBe(true)
+    expect(source.listeners.size).toBe(0)
+  })
+
+  it('keeps waiting through a failure in another step, which the installer did not report', async () => {
+    const source = updates()
+    let settled = false
+    void waitForUpdateInstallFailure(source).then(() => { settled = true })
+    source.emit(updateSnapshot({ phase: 'error', error: { code: 'UPDATE_ERROR', message: '下载失败' }, failedStep: 'download' }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(source.listeners.size).toBe(1)
+  })
+
+  it('keeps waiting through the launch watchdog, which only means the installer has not quit yet', async () => {
+    const source = updates()
+    let settled = false
+    void waitForUpdateInstallFailure(source).then(() => { settled = true })
+    source.emit(updateSnapshot({ error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: '新版本没装上：安装程序没起来。' }, failedStep: 'install' }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    // 看门狗之后才到的验签结果照样算数（updater.ts 的 macInstallHandoffRegistered 那条）。
+    source.emit(updateSnapshot({ error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' }, failedStep: 'install' }))
+    await Promise.resolve()
+    expect(settled).toBe(true)
+  })
+
+  it('copes with a source that reports its current state while subscribing', async () => {
+    const failed = updateSnapshot({ error: { code: 'UPDATE_ERROR', message: '没装上' }, failedStep: 'install' })
+    const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
+    const source = {
+      subscribe(listener: (snapshot: UpdateSnapshot) => void) {
+        listeners.add(listener)
+        listener(failed)
+        return () => { listeners.delete(listener) }
+      },
+    }
+    await waitForUpdateInstallFailure(source)
+    expect(listeners.size).toBe(0)
   })
 })

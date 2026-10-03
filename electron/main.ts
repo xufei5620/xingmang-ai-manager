@@ -56,7 +56,7 @@ import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
@@ -3117,6 +3117,17 @@ if (!hasSingleInstanceLock) {
         // 安装器装完会自己打开新版本，再拉起一次旧进程会和安装器抢同一个目录。
         relaunchRequested = false
         updaterService.install()
+        if (process.platform !== 'darwin') return
+        // Mac 的安装器在本进程里取包、校验，准备好了才自己退出重开；马上退出等于
+        // 把它一起关掉，什么也装不上。等它给结果，期间窗口都收起来。和更新页那条
+        // 一样先放掉画布、支付窗口，不然安装器发起的退出会被它们拦住。
+        try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+        try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+        }
+        app.hide()
+        return waitForUpdateInstallFailure(updaterService)
       },
       // 开着加速时系统代理指着本机端口：关机前不还原，下次开机整台电脑上不了网。
       needsShutdownCleanup: () => {
@@ -3150,6 +3161,13 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
+    // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：
+    // 退出时正在等安装器的，听到这一声就不等了。
+    if (process.platform === 'darwin') {
+      const onPowerOff = () => { lifecycle.noteSystemPowerOff() }
+      powerMonitor.on('shutdown', onPowerOff)
+      app.once('will-quit', () => { powerMonitor.off('shutdown', onPowerOff) })
+    }
     requestRelaunch = async () => {
       relaunchRequested = true
       runtimeLog.log('info', 'window', 'relaunch.requested', '用户要求重开软件')

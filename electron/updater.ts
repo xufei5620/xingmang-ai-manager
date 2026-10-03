@@ -726,6 +726,8 @@ function hasChannelManifestUrl(description: string, channelFile: string): boolea
 // that pins another one. Only a manual reinstall gets the machine back.
 // 渲染层 features/app/update-retry.ts 按这个代码把「重新安装」换成「打开下载页」，两边字面量要一致。
 export const updateSignatureRejectedCode = 'UPDATE_SIGNATURE_REJECTED'
+/** 安装看门狗等不到安装器退出时报的错误代码：说的是「还没退」，不是「装不上」。 */
+export const updateInstallLaunchTimeoutCode = 'UPDATE_INSTALL_LAUNCH_TIMEOUT'
 
 const updateSignatureRejectedMessage = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
 
@@ -1075,7 +1077,7 @@ export function createUpdaterService(
     installWatchdogTimer = setTimeout(() => {
       installWatchdogTimer = null
       if (!installRequested || disposed) return
-      reportInstallFailure({ code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message })
+      reportInstallFailure({ code: updateInstallLaunchTimeoutCode, message })
     }, installLaunchTimeoutMs)
     installWatchdogTimer.unref?.()
   }
