@@ -159,6 +159,13 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
+      # Electron 43 的 npm 包不带二进制:release:build 里的 npm test 第一次
+      # require('electron') 时才现下,只试一次,网络一抖就红(#319、#796)。这里先
+      # 限时、带重试地装好,见 scripts/ci-ensure-electron-binary.cjs。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+
       - name: Install the Chromium the layout tests need
         # 发布门禁跑 npm test,其中 e2e/maintenance-layout.test.mjs 用
         # @playwright/test 的 chromium 做真实布局断言。npm ci 只装 npm 包,

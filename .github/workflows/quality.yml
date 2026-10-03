@@ -93,13 +93,16 @@ jobs:
           # The vitest half of `npm test`: ~10 of its ~11 minutes. Almost all
           # of that is per-file environment setup rather than assertions, so
           # splitting by file count — which is what --shard does — splits the
-          # time with it.
+          # time with it. Its electron/ suites load the Electron binary, so
+          # these two shards install it first (`electron`, see the steps).
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15
+            electron: true
           - shard: vitest-2
             command: npm run test:vitest:2
             timeout: 15
+            electron: true
           # The node --test half of `npm test`: the build and release script
           # suites, then the two browser suites that ride along with them. Under
           # a minute together, so they share one runner rather than a shard each.
@@ -143,6 +146,39 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # Electron 43 has no install script: `npm ci` leaves its binary out, and
+      # the first require('electron') downloads it on the spot in one fetch,
+      # with no retry and no timeout. One network blip then failed whichever
+      # test file happened to load Electron first: #319's vitest-1 on a GitHub
+      # HTTP 500, #796's linux-test on `fetch failed`. Every job that loads
+      # Electron installs it in these steps instead, from this cache when the
+      # version is unchanged and otherwise from GitHub with bounded, spaced
+      # retries (scripts/ci-ensure-electron-binary.cjs). Only a push to main
+      # writes the cache, right after the download: a pull request's cache can
+      # be read by that pull request alone, so a copy per pull request would
+      # only crowd the npm caches out of the repository's 10 GB, and saving
+      # before the tests run means a cancelled main run still leaves it behind.
+      - name: Restore the Electron download for this version
+        if: matrix.electron
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        if: matrix.electron
+        # Above the script's worst case (every attempt timing out, plus every
+        # wait), so a dead download ends in its own named error.
+        timeout-minutes: 20
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-download-cache
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: matrix.electron && github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       - run: npx --no-install playwright install chromium
       - name: Enable Windows Developer Mode for symlink security tests
         shell: pwsh
@@ -183,9 +219,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The same three Electron steps as windows-test, for the smokes below.
+      - name: Restore the Electron download for this version
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        timeout-minutes: 20
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-download-cache
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       # No `npx playwright install chromium` here on purpose: every smoke below
       # drives the application through _electron.launch, which uses the
-      # Electron binary the install already placed, not a downloaded Chromium.
+      # Electron binary installed above, not a downloaded Chromium.
       - run: npm run typecheck
       - run: npm run compile
       - name: Verify the default compile selected renderer v2
@@ -338,6 +392,24 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The same three Electron steps as windows-test.
+      - name: Restore the Electron download for this version
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        timeout-minutes: 20
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-download-cache
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
       - run: npm test
@@ -468,6 +540,24 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The same three Electron steps as windows-test.
+      - name: Restore the Electron download for this version
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        timeout-minutes: 20
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-download-cache
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/electron-download-cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       # The browser download and its apt-installed system libraries are two
       # steps, because only the second one has ever hung. On #653 (runs
       # 36728268598 attempts 1 and 2) `playwright install --with-deps` went
