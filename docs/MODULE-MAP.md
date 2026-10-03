@@ -63,7 +63,8 @@
 - `codex-sessions.ts` (1427) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
 - `provider-sessions.ts` (1199) — 四工具统一会话视图
 - `codex-desktop.ts` (497) — 桌面端清单/包解析的纯函数层
-- `codex-desktop-service.ts` (2211) — 桌面端探测、镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）
+- `codex-desktop-service.ts` (2211) — 桌面端探测、OpenAI 官网离线安装包与镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）；Windows 上的安装顺序是微软商店 → 官网离线安装包 → 国内镜像
+- `claude-desktop-msix-installer.ts` / `claude-desktop-install-failure.ts` — Windows 上 Claude Desktop 的第二路：系统 winget 装不上或没有时，从 Claude 官网下离线 MSIX（只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）；失败那句话主进程与渲染层共用
 
 **账号与计费（新增）**
 - `new-api-client.ts` (3377) — **唯一对账号后端出网的模块**，I10 的参考实现：`performRequest` 超时 + 体积上限 + `redirect:'manual'` 且拒绝 3xx 且校验响应 origin（三重）+ 强制 https 拒内嵌凭据；上游文案 `redactCommandText` 脱敏 + 剥控制字符 + 截 300 字

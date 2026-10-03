@@ -25,6 +25,8 @@ const valueImportable = [
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
+  // Windows 上 Claude Desktop 装不上那句话的开头和官网下载页，主进程与错误框共用一份。
+  'electron/claude-desktop-install-failure',
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',

@@ -6,6 +6,7 @@ import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarge
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
+import { claudeDesktopDownloadPageUrl } from '../../electron/claude-desktop-install-failure'
 import { codexDesktopStoreUrl } from '../../electron/codex-desktop-install-failure'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createChatTransfer } from './features/chat/transfer'
@@ -713,9 +714,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [navigate, scope])
   // 商店链接在主进程外链白名单里（全等匹配）。系统没接住时说清楚自己去哪儿找，
   // 不留一颗按了没反应的按钮。打不开多半是这台电脑没有商店（第二十一批 2），
-  // 那就别再叫人去开始菜单里找它，回星芒重装会直接走国内线路。
+  // 那就别再叫人去开始菜单里找它，回星芒重装会改走 OpenAI 官网的离线安装包或国内线路。
   const openCodexDesktopStore = useCallback(async () => {
-    if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店，这台电脑可能没有它。回星芒再点一次安装，星芒会用国内线路装；还不行就找客服。')
+    if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店，这台电脑可能没有它。回星芒再点一次安装，星芒会改用 OpenAI 官网的离线安装包或国内线路装；还不行就找客服。')
   }, [app])
   // 错误框里的「重置 Codex」：清掉的是 Codex 桌面端自己的登录和缓存，先问一句再动手；
   // 重置完接着把刚才没打开的那一次再跑一遍，客户不用再回首页点「打开」。
@@ -743,8 +744,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
+    // Windows 上 Claude Desktop 两路都没装上时的出口；下载页在主进程外链白名单里（全等匹配）。
+    else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
-  }, [navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys])
+  }, [app, navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
   //（引导自己有）。去充值、去备份页会离开引导，进度照旧留着；换 Node.js 不离开，
   // 换完接着重跑引导里失败的那一步。
@@ -760,8 +763,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
+    else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
-  }, [navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys])
+  }, [app, navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys])
   // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；
   // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
   function switchToCodexCli() {

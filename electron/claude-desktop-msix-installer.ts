@@ -40,6 +40,8 @@ const maximumClaudeDesktopManifestBytes = 512 * 1024
 const claudeDesktopPublisherId = 'pzs8sxrjxfjjc'
 const claudeDesktopSignerName = 'Anthropic, PBC'
 const crockfordBase32 = '0123456789abcdefghjkmnpqrstvwxyz'
+// 签名核对要把整个包读一遍，冷启动的老电脑上要几十秒。
+export const claudeDesktopPackageInspectionTimeoutMs = 120_000
 
 export function claudeDesktopMsixEntryUrl(architecture: 'x64' | 'arm64'): string {
   return claudeDesktopMsixEntryUrls[architecture]
@@ -358,8 +360,7 @@ async function inspectClaudeDesktopPackage(
       trustedPaths: [packagePath],
       machinePaths,
       windowsHide: true,
-      // 签名核对要把整个包读一遍，冷启动的老电脑上要几十秒。
-      timeoutMs: 120_000,
+      timeoutMs: claudeDesktopPackageInspectionTimeoutMs,
       maxOutputBytes: 64 * 1024,
       ...(options.signal ? { signal: options.signal } : {}),
     })
