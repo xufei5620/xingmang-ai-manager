@@ -28,6 +28,7 @@ import {
 } from './windows-elevation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
+import { tomlErrorLocation } from './toml-error-location'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -519,15 +520,14 @@ function parseTomlFile(filePath: string): Record<string, unknown> {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) {
     throw new Error('Codex config.toml 必须是单链接普通文件')
   }
+  // 读文件自己的失败（超过上限、读的时候被换掉、被拒绝访问）照原样抛，那不是「无法解析」。
+  const content = readBoundedUtf8FileSync(filePath, MAX_CONFIG_BYTES, 'Codex config.toml')
   try {
-    return TOML.parse(readBoundedUtf8FileSync(
-      filePath,
-      MAX_CONFIG_BYTES,
-      'Codex config.toml',
-    )) as Record<string, unknown>
+    return TOML.parse(content) as Record<string, unknown>
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`Codex config.toml 无法解析，未执行修改：${detail}`)
+    // 解析器的原话会把出错那行连同上下几行原样抄进来，客户自己加的外接工具的令牌常常
+    // 就在旁边。这句会上屏、进运行日志和反馈报告，所以只报第几行（第三十批 B，I13）。
+    throw new Error(`Codex config.toml 无法解析，未执行修改${tomlErrorLocation(error)}`)
   }
 }
 

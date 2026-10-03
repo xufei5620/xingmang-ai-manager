@@ -6,6 +6,7 @@ import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { tomlErrorLocation } from './toml-error-location'
 import {
   defaultProviderConfigRoots,
   providerConfigRoot,
@@ -231,17 +232,6 @@ function readText(filePath: string): string | null {
  */
 function withoutByteOrderMark(content: string): string {
   return content.replace(/^\uFEFF/, '')
-}
-
-/**
- * @iarna/toml's message quotes the lines around the failure, and in these
- * files those lines are often `api_key = "..."` or an MCP server's token. The
- * message reaches the screen, the runtime log and the feedback export (I13),
- * so only the row number is kept -- the same reason requireJson drops V8's.
- */
-function tomlErrorLocation(error: unknown): string {
-  const line = error && typeof error === 'object' && 'line' in error ? error.line : null
-  return typeof line === 'number' && Number.isInteger(line) && line >= 0 ? `（第 ${line + 1} 行附近）` : ''
 }
 
 function requireConfigText(

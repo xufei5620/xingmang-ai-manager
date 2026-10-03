@@ -273,7 +273,7 @@ export function SavedAccounts({
         }
       >
         <p>只移除本机保存的登录信息。已写入工具的密钥不会改变。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </div>
   )

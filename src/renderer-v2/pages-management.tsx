@@ -1939,7 +1939,7 @@ export function ExtensionsPage({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         {curatedForm?.inputs.map((input) => (
           <Notice
             key={input.key}
@@ -2129,7 +2129,7 @@ export function ExtensionsPage({
             ) : undefined}
           />
         )}
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
@@ -2166,7 +2166,7 @@ export function ExtensionsPage({
         }
       >
         <p>此操作会从当前工具中移除该项。需要时可从原来源重新添加。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Drawer
         open={Boolean(selected)}
@@ -2535,7 +2535,7 @@ export function BackupsPage({
             testId="backups-restore-key-warning"
           />
         )}
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
@@ -2567,7 +2567,7 @@ export function BackupsPage({
         }
       >
         <p>当前工具配置不受影响。这份备份删除后无法恢复。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
   )

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectionFailureMessage, errorMessage, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
+import { detectionFailureMessage, errorMessage, failureWithDetail, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, speaksChinese, userFacingErrorMessage } from './business-common'
 
 describe('rawErrorMessage', () => {
   it('strips the Electron IPC prefix that would otherwise expose channel names', () => {
@@ -173,6 +173,47 @@ describe('errorMessage', () => {
   it('keeps its own generic fallback when the caller passes none', () => {
     expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试或查看反馈日志。')
   })
+
+  it('does not take an English failure for Chinese because of a redacted path', () => {
+    // 脱敏后的占位词「本地配置文件」本身是汉字。以前这几句都以半个引号的英文原样上屏（第三十批 A）。
+    const ipc = (reason: string) => new Error(`Error invoking remote method 'config:save': Error: ${reason}`)
+    const failures = [
+      "EPERM: operation not permitted, open 'C:\\Users\\yoyo\\.codex\\config.toml'",
+      "EPERM: operation not permitted, rename 'C:\\Users\\yoyo\\.codex\\config.toml.tmp' -> 'C:\\Users\\yoyo\\.codex\\config.toml'",
+      "EACCES: permission denied, open '/Users/yoyo/.claude/settings.json'",
+      "EBUSY: resource busy or locked, rename 'D:\\Users\\yoyo\\.gemini\\settings.json'",
+      "ENOENT: no such file or directory, open 'C:\\Users\\张三\\.codex\\auth.json'",
+      "EISDIR: illegal operation on a directory, read 'C:\\Users\\张 三\\.grok\\config.toml'",
+      "EPERM: operation not permitted, open \"/home/yoyo/.codex/config.toml\"",
+    ]
+    for (const reason of failures) {
+      expect(errorMessage(ipc(reason), '保存配置没有成功')).toBe('保存配置没有成功')
+      expect(errorMessage(ipc(reason))).toBe('操作没有成功，请重试或查看反馈日志。')
+    }
+  })
+
+  it('treats an English failure with or without a path the same way', () => {
+    expect(errorMessage(new Error("ENOSPC: no space left on device, write 'C:\\Users\\yoyo\\.codex\\config.toml'"), '保存配置没有成功'))
+      .toBe(errorMessage(new Error('ENOSPC: no space left on device, write'), '保存配置没有成功'))
+  })
+
+  it('masks keys in a Chinese reason it shows as is', () => {
+    // 主进程把第三方原话拼在中文后面时（读不懂的配置里挨着出错那行的令牌），屏幕上也要打码（第三十批 B）。
+    const shown = errorMessage(new Error('Codex 配置读不懂：api_key = "sk-abcdefghijklmnopqrstuvwxyz0123" 附近，令牌 ghp_abcdefghijklmnopqrstuvwxyz0123456789'))
+    expect(shown).toContain('Codex 配置读不懂')
+    expect(shown).not.toMatch(/sk-abcdef|ghp_abcdef/)
+    expect(shown).toContain('[REDACTED]')
+  })
+})
+
+describe('speaksChinese', () => {
+  it('reads the sentence itself, not the path placeholder, quoted parts or a Chinese user name', () => {
+    expect(speaksChinese("EPERM: operation not permitted, open '本地配置文件")).toBe(false)
+    expect(speaksChinese("ENOENT: no such file or directory, open '本地配置文件 三\\.codex\\config.toml'")).toBe(false)
+    expect(speaksChinese('Error: user "张三" not found')).toBe(false)
+    expect(speaksChinese('保存 Codex 配置失败：本地配置文件')).toBe(true)
+    expect(speaksChinese('Codex config.toml 无法解析，未执行修改（第 4 行附近）')).toBe(true)
+  })
 })
 
 describe('snapshotErrorMessage', () => {
@@ -261,6 +302,15 @@ describe('operationFailureFrom', () => {
       .toEqual({ message: '打开 Codex 桌面端没有完成', detail: 'spawn EPERM' })
   })
 
+  it('folds an English failure that names a file into detail instead of showing it', () => {
+    // 错误框以前把这句当成中文放在醒目处，不留 detail（第三十批 A）。
+    const cause = new Error("Error invoking remote method 'config:rewrite-key': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\.codex\\config.toml'")
+    expect(operationFailureFrom(cause, '重新写入 Key')).toEqual({
+      message: '重新写入 Key没有完成',
+      detail: "EPERM: operation not permitted, open '本地配置文件",
+    })
+  })
+
   it('leaves no detail when the message already explains the cause', () => {
     expect(operationFailureFrom(new Error('配置文件写入失败：磁盘只读'), '保存')).toEqual({ message: '配置文件写入失败：磁盘只读' })
     expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
@@ -278,5 +328,21 @@ describe('operationFailureFrom', () => {
     expect(failure.message).toBe('操作没有完成')
     expect(failure.detail).toHaveLength(160)
     expect(operationFailureFrom(new Error(''))).toEqual({ message: '操作没有完成' })
+  })
+})
+
+describe('failureWithDetail', () => {
+  it('keeps the generic banner sentence and hands the redacted original over for classification', () => {
+    // useOperation 交给页头红条的两样东西：上屏那句照旧，原话只拿来认类别。
+    const failure = failureWithDetail(new Error("EBUSY: resource busy or locked, rename 'C:\\Users\\yoyo\\.codex\\config.toml' api_key=abc123"))
+    expect(failure.message).toBe('操作没有成功，请重试或查看反馈日志。')
+    expect(failure.detail).toContain('EBUSY: resource busy or locked')
+    expect(failure.detail).not.toMatch(/yoyo|abc123/)
+  })
+
+  it('leaves no detail when the shown sentence already explains the cause', () => {
+    expect(failureWithDetail(new Error('配置文件写入失败：磁盘只读'))).toEqual({ message: '配置文件写入失败：磁盘只读' })
+    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
+    expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试或查看反馈日志。' })
   })
 })

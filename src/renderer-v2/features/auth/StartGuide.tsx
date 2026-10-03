@@ -7,7 +7,7 @@ import { FirstRunSteps } from '../tools/FirstRun'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
 import { classifyOperationError, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
-import { supportDetailOf, userFacingErrorMessage } from '../../business-common'
+import { speaksChinese, supportDetailOf, userFacingErrorMessage } from '../../business-common'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { buildSupportBundle, type SupportFailure, type SupportIdentityInput } from '../app/SupportIdentity'
 import { errors } from '../../registry/errors'
@@ -173,7 +173,8 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
     const { title, body } = errors[key]
     return { message: `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }
   }
-  if (/[\u3400-\u9fff]/.test(message)) return { message: redactSecretPatterns(message) }
+  // 脱完路径的占位词「本地配置文件」本身是汉字，带路径的英文不能因为它就算成中文（第三十批 A）。
+  if (speaksChinese(message)) return { message: redactSecretPatterns(message) }
   const detail = guideDetail(error, '')
   return { message: `${action}没有成功${detail ? unrecognized : ''}。${guideFailureTail(Boolean(detail), copyable)}`, detail }
 }

@@ -890,7 +890,7 @@ function AccountOverview({
         }
       >
         <p>工具里已写入的配置继续保留。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={passwordOpen}
@@ -943,7 +943,7 @@ function AccountOverview({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         {accountSiteId(session) === 'solov-api' && <p>修改密码后当前登录会失效，请使用新密码重新登录。</p>}
         <Input
           label="当前密码"
@@ -1405,7 +1405,7 @@ function AccountKeys({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         <ResultNotice error={groupsError} />
         <Input
           label="名称"
@@ -1505,7 +1505,7 @@ function AccountKeys({
               : `${keyToolName(removing.managedProvider)} 正在用这把密钥，撤销后它会停止工作。`
             : '使用这把密钥的工具会停止请求，需要重新配置有效密钥。'}
         </p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(revealed)}
@@ -1567,7 +1567,7 @@ function AccountKeys({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         <Select
           aria-label="选择工具"
           options={tools
@@ -2602,7 +2602,7 @@ function AccountRecharge({
           （支付渠道币种以支付页面为准）
         </p>
         <p>支付方式：{paymentMethod ? paymentMethodLabel(paymentMethod) : ''}</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={redeemOpen}
@@ -2638,7 +2638,7 @@ function AccountRecharge({
         }
       >
         <p>兑换成功后，相应余额或权益会应用到当前账号。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(purchase)}
@@ -2676,7 +2676,7 @@ function AccountRecharge({
           value={purchaseMethod}
           onChange={(event) => setPurchaseMethod(event.target.value)}
         />
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
   )
@@ -2794,7 +2794,7 @@ function AccountInvite({
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
         />
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
   )
@@ -2890,7 +2890,7 @@ function AccountDevices({
           该设备需要重新登录才能查看账户信息。工具里已经写入的 API Key
           不受影响。
         </p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
   )

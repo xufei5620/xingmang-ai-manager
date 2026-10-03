@@ -11,9 +11,10 @@ import {
 } from 'lucide-react'
 import { Button, Empty, Pill } from './ui'
 import { errors } from './registry/errors'
-import { presentOperationError } from './operation-error'
+import { presentOperationFailure } from './operation-error'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
+import { isChineseSentence } from '../../electron/chinese-sentence'
 
 const pendingOperations = new Map<symbol, string>()
 export function pendingBusinessOperations() {
@@ -97,16 +98,16 @@ const detectionFailureCopy = {
 }
 
 /**
- * 原话是不是中文，不能直接看脱敏后的句子：路径已经换成了「本地配置文件」，Windows 的中文
- * 用户名也在路径里，看整句的话英文报错一样会被当成中文。去掉占位词、引号里的那段和带
- * 斜杠的路径片段（用户名带空格时脱敏只剥到空格为止），剩下的才是句子本身。路径片段遇到
- * 中文标点就断开，「无法确认安装状态：/Applications/…」前半句的中文留得下来。判不准时宁可
- * 当成英文：那样只是换成「原因已经记进日志」那句，不会把英文端上屏。
+ * 原话是不是中文，不能直接看脱敏后的句子：路径已经换成了「本地配置文件」，这个占位词本身
+ * 就是汉字，看整句的话英文报错一样会被当成中文。去掉占位词，剩下的交给主进程更新失败那句
+ * 也在用的 isChineseSentence（去掉引号段和路径片段再看；用户名带空格时脱敏只剥到空格为止，
+ * 剩下那截路径也算路径）。判不准时宁可当成英文：那样只是换成调用点自己的中文兜底句。
+ *
+ * 收的是已经脱过路径的句子（userFacingErrorMessage 的结果）。检测失败那句小字、按钮操作
+ * （errorMessage）、新手引导、Key 同步原因都按它判（第三十批 A），别再各写一个「有没有汉字」。
  */
-function speaksChinese(safe: string) {
-  const words = safe.replaceAll('本地配置文件', ' ')
-    .replace(/'[^']*'|"[^"]*"|[^\s'"：；，。！？、（）]*[\\/][^\s'"：；，。！？、（）]*/g, ' ')
-  return /[\u3400-\u9fff]/.test(words)
+export function speaksChinese(safe: string) {
+  return isChineseSentence(safe.replaceAll('本地配置文件', ' '))
 }
 
 /**
@@ -126,16 +127,21 @@ export function detectionFailureMessage(value: string | null | undefined) {
   return detectionFailureCopy.other
 }
 
-export function errorMessage(error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') {
+const genericFailure = '操作没有成功，请重试或查看反馈日志。'
+
+export function errorMessage(error: unknown, fallback = genericFailure) {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
   // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；
   // 中文原文虽然会原样透出，但也少了该怎么办的那半句。两种都让用户只能反复重试。
   const known = matchAccountErrorMessage(rawErrorMessage(error))
   if (known) return known
   // 判断语言与类别之前先脱敏：主进程抛的中文错误常带着绝对路径，不脱敏就会把用户名
-  // 连同“原因”一起端上屏。
+  // 连同“原因”一起端上屏。是不是中文要按 speaksChinese 判：占位词「本地配置文件」本身
+  // 就是汉字，只看有没有汉字的话，「EPERM: operation not permitted, open 'C:\…」这类
+  // 带路径的英文会被当成中文原样上屏（第三十批 A）。原样上屏的中文也过一遍 Key 打码表：
+  // 主进程把第三方的原话拼在中文后面时，不能连 Key 一起端上屏（第三十批 B，I13）。
   const safe = userFacingErrorMessage(error)
-  if (/[\u3400-\u9fff]/.test(safe)) return safe
+  if (speaksChinese(safe)) return redactSecretPatterns(safe)
   if (/401|unauthorized/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
   // 限流与超时是两回事：超时让人去查网络，限流只需要等几秒。没有这条，new-api 的英文
   // 限流原文会掉进最后的通用兜底，把「稍等几秒」说成「请重试或查看反馈日志」。
@@ -170,7 +176,15 @@ export function dollars(amount: number | null | undefined) {
  * 再过日志和反馈报告同一张 Key 打码表（redaction-patterns.ts），只留前 160 字。
  */
 export function operationFailureFrom(error: unknown, action?: string): { message: string; detail?: string } {
-  const fallback = action ? `${action}没有完成` : '操作没有完成'
+  return failureWithDetail(error, action ? `${action}没有完成` : '操作没有完成')
+}
+/**
+ * `errorMessage` 加上被兜底句换掉的原话：错误框（operationFailureFrom）和页头红条
+ * （useOperation → ResultNotice）共用这一份。带路径的英文（「EPERM: …, open 'C:\…」）
+ * 换成兜底句以后，认得出是哪一类（文件被占用、磁盘满……）的记号只剩原话里有，
+ * 页头红条要靠它保住原来的标题（第三十批 A）。
+ */
+export function failureWithDetail(error: unknown, fallback = genericFailure): { message: string; detail?: string } {
   const message = errorMessage(error, fallback)
   if (message !== fallback) return { message }
   const raw = supportDetailOf(error)
@@ -225,6 +239,8 @@ export function useOperation() {
   const [message, setMessage] = useState('')
   const [revealPath, setRevealPath] = useState('')
   const [error, setError] = useState('')
+  // 页头红条只认上屏那句时，落到兜底句的失败就认不出类别了；原话跟着交给 ResultNotice。
+  const [detail, setDetail] = useState('')
   const lock = useRef(false)
   const execute = async <T,>(
     name: string,
@@ -238,6 +254,7 @@ export function useOperation() {
     const finish = beginBusinessOperation(name)
     setBusy(name)
     setError('')
+    setDetail('')
     setMessage('')
     setRevealPath('')
     try {
@@ -254,7 +271,9 @@ export function useOperation() {
       }
       return true
     } catch (cause) {
-      setError(errorMessage(cause))
+      const failure = failureWithDetail(cause)
+      setError(failure.message)
+      setDetail(failure.detail ?? '')
       return false
     } finally {
       finish()
@@ -267,11 +286,13 @@ export function useOperation() {
     message,
     revealPath,
     error,
+    detail,
     execute,
     clear: () => {
       setMessage('')
       setRevealPath('')
       setError('')
+      setDetail('')
     },
   }
 }
@@ -320,12 +341,18 @@ function RevealExportedFile({
 }
 export function ResultNotice({
   error,
+  detail,
   message,
   revealPath,
   onReveal,
   onSupport,
 }: {
   error?: string
+  /**
+   * 被兜底句换掉的原话（useOperation 给的），只拿来认类别，不上屏：上屏那句认不出时
+   * 再看它，和错误框一个认法（presentOperationFailure）。
+   */
+  detail?: string
   message?: string
   revealPath?: string
   onReveal?: (path: string) => Promise<unknown>
@@ -335,7 +362,7 @@ export function ResultNotice({
   // A raw npm/OS failure reaching this banner is unreadable on its own; when
   // the catalog can name it, its wording leads and the backend sentence stays
   // underneath, because support still needs the original text.
-  const hint = error ? presentOperationError(error) : null
+  const hint = error ? presentOperationFailure({ message: error, detail }) : null
   return error ? (
     <div className="v2-business-notice is-error" role="alert">
       <Pill tone="bad">未完成</Pill>
