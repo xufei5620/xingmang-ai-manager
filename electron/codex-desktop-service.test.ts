@@ -72,11 +72,14 @@ import {
   inspectCodexDesktopPackageFile,
   parseCodexDesktopCombinedProbeJson,
   validateCodexDesktopResourceUrl,
+  toCodexDesktopMacInstallFailure,
   type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { MacosDesktopInstallError } from './macos-desktop-app-installer'
+import { isMacosDesktopInstallFailure } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const temporaryDirectories: string[] = []
@@ -1963,6 +1966,172 @@ describe('Codex Desktop launch acceleration', () => {
     await fixture.service.launchCodexDesktop('open', fixture.target)
 
     expect(fixture.order).toEqual(['launch'])
+  })
+})
+
+describe('Codex Desktop install on macOS', () => {
+  function macInstallFixture(overrides: Partial<CodexDesktopServiceOptions> = {}) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-install-'))
+    temporaryDirectories.push(directory)
+    const routed: string[] = []
+    const downloadFetch = vi.fn<typeof fetch>()
+    const executeCommand = vi.fn<CodexDesktopServiceOptions['executeCommand']>(async (spec) => ({
+      executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+      stdout: spec.executable === '/usr/sbin/sysctl' ? '1\n' : '', stderr: '', outputBytes: 0, durationMs: 1,
+    }))
+    const installMacosDesktopApp = vi.fn<NonNullable<CodexDesktopServiceOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.930.31730', percent: 40 })
+      options.onProgress?.({ phase: 'checking', message: '正在检查下载下来的安装包是不是完整的官方版', percent: null })
+      await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
+    })
+    const service = createCodexDesktopService({
+      platform: 'darwin',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      executeCommand,
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch,
+      installMacosDesktopApp,
+      withDownloadRoute: async (operation) => {
+        routed.push('start')
+        try { return await operation() } finally { routed.push('end') }
+      },
+      userHome: '/Users/tester',
+      getuid: () => 501,
+      architecture: 'arm64',
+      ...overrides,
+    })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    function progress(): unknown[][] {
+      return target.send.mock.calls
+        .filter(([channel]) => channel === 'desktop:codex-install-progress')
+        .map(([, event]) => [event.phase, event.percent, event.message])
+    }
+    return { service, target, installMacosDesktopApp, executeCommand, downloadFetch, routed, progress }
+  }
+
+  it('installs the official package through the shared Mac installer, inside the download route', async () => {
+    const f = macInstallFixture()
+
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
+      tool: 'codexDesktop', architecture: 'arm64', userHome: '/Users/tester', fetch: f.downloadFetch, signal: expect.any(AbortSignal),
+    }))
+    expect(f.progress()).toEqual([
+      ['downloading', 40, '正在下载 Codex 桌面端 26.930.31730'],
+      ['validating', null, '正在检查下载下来的安装包是不是完整的官方版'],
+      ['installing', null, '正在放进「应用程序」'],
+      ['completed', 100, 'Codex 桌面端 26.930.31730 装好了，在「应用程序」里叫 ChatGPT'],
+    ])
+    // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
+    expect(f.executeCommand).toHaveBeenCalledWith(
+      { executable: '/usr/bin/codesign', argv: ['--verify'] },
+      expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000, signal: expect.any(AbortSignal) }),
+    )
+    for (const [, options] of f.executeCommand.mock.calls) expect(options?.trustedOnly).toBe(false)
+  })
+
+  it('installs the Apple silicon package when an Intel build of the toolbox runs under Rosetta', async () => {
+    const rosetta = macInstallFixture({ architecture: 'x64' })
+    await rosetta.service.installCodexDesktop(rosetta.target)
+    expect(rosetta.executeCommand).toHaveBeenCalledWith({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, expect.objectContaining({ trustedOnly: false }))
+    expect(rosetta.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64' }))
+
+    // Intel Macs report 0, or have no such key and sysctl fails.
+    for (const answer of [async () => '0\n', async (): Promise<string> => { throw new Error('unknown oid') }]) {
+      const intel = macInstallFixture({
+        architecture: 'x64',
+        executeCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: spec.executable === '/usr/sbin/sysctl' ? await answer() : '', stderr: '', outputBytes: 0, durationMs: 1,
+        }),
+      })
+      await intel.service.installCodexDesktop(intel.target)
+      expect(intel.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'x64' }))
+    }
+  })
+
+  it('leaves an installed desktop app alone', async () => {
+    const f = macInstallFixture({
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+  })
+
+  it('will not install for root, whose copy the customer could never update', async () => {
+    const f = macInstallFixture({ getuid: () => 0 })
+    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。')
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('tells root that an app already there is installed instead of refusing', async () => {
+    const f = macInstallFixture({
+      getuid: () => 0,
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('passes the Mac wording on as it is, never the Windows one that points at the Microsoft Store', async () => {
+    const failure = new MacosDesktopInstallError('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。', 'fetch failed')
+    const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
+    await expect(failing.service.installCodexDesktop(failing.target)).rejects.toBe(failure)
+    expect(failing.progress().at(-1)).toEqual(['error', null, failure.message])
+
+    const unexpected = macInstallFixture({ withDownloadRoute: async () => { throw new Error('连接超时') } })
+    const error = await unexpected.service.installCodexDesktop(unexpected.target).then(() => null, (reason: unknown) => reason)
+    expect(error).toBeInstanceOf(MacosDesktopInstallError)
+    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect((error as MacosDesktopInstallError).detail).toBe('连接超时')
+  })
+
+  it('says why a Mac install failed in plain words, keeping the ones already written for customers', () => {
+    const disk = new Error('Codex 桌面端安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
+    expect(toCodexDesktopMacInstallFailure(disk)).toBe(disk)
+    const failure = toCodexDesktopMacInstallFailure(new Error('HTTP 503'))
+    expect(failure.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect(isMacosDesktopInstallFailure(failure.message)).toBe(true)
+    expect(failure.message).not.toContain('Codex 桌面端没装上')
+  })
+
+  it('stops a cancelled install and reports it as cancelled', async () => {
+    let release = (): void => {}
+    const f = macInstallFixture({
+      installMacosDesktopApp: async (options) => {
+        await new Promise<void>((resolve) => { release = resolve })
+        options.signal?.throwIfAborted()
+        return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
+      },
+    })
+    const install = f.service.installCodexDesktop(f.target)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    release()
+    const error = await install.then(() => null, (reason: unknown) => reason)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
   })
 })
 

@@ -247,7 +247,8 @@ describe('prepareCodexEnvironment', () => {
     await expect(prepareCodexEnvironment(
       api,
       listener.value,
-      platformCapabilitiesFor('darwin', 'arm64'),
+      // Mac 两种芯片上的桌面端已由本软件安装，「客户自己装」改用认不出的芯片来演，用例原意不变。
+      platformCapabilitiesFor('darwin', 'ia32'),
     )).resolves.toEqual({ outcome: 'ready', status: cliReady })
     expect(api.installCodexDesktop).not.toHaveBeenCalled()
   })
@@ -340,7 +341,8 @@ describe('prepareCodexEnvironmentAutomatically', () => {
     await expect(prepareCodexEnvironmentAutomatically(
       api,
       callbacks().value,
-      platformCapabilitiesFor('darwin', 'arm64'),
+      // Mac 两种芯片上的桌面端已由本软件安装，「客户自己装」改用认不出的芯片来演，用例原意不变。
+      platformCapabilitiesFor('darwin', 'ia32'),
     )).resolves.toEqual({ outcome: 'ready', status: missingRuntime })
     expect(api.installCodexDesktop).not.toHaveBeenCalled()
   })

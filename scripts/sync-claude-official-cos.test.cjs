@@ -105,8 +105,9 @@ function fixture() {
   return value
 }
 
-test('exposes only the six documented platforms and supports native runner aliases', () => {
-  assert.equal(parsePlatforms('all').length, 6)
+test('defaults to four Windows and macOS packages and retains historical Linux identifiers', () => {
+  assert.deepEqual(parsePlatforms(), ['windows-x64', 'windows-arm64', 'macos-dmg-universal', 'macos-pkg-universal'])
+  assert.deepEqual(parsePlatforms('all'), parsePlatforms())
   assert.deepEqual(parsePlatforms('macos'), ['macos-dmg-universal', 'macos-pkg-universal'])
   assert.deepEqual(parsePlatforms('linux'), ['linux-deb-x64', 'linux-deb-arm64'])
   assert.throws(() => parsePlatforms('linux-rpm-x64'), /平台无效/)
@@ -244,10 +245,11 @@ test('downloads and validates all candidates before any upload then publishes im
   const value = fixture()
   const result = await value.run('all')
   assert.equal(result.manifest.product, 'claude-desktop')
-  assert.equal(result.manifest.files.length, 6)
-  assert.equal(value.downloads.length, 6)
-  assert.equal(value.inspections.length, 6)
-  assert.equal(value.publications.length, 6)
+  assert.equal(result.manifest.files.length, 4)
+  assert.equal(value.downloads.length, 4)
+  assert.equal(value.inspections.length, 4)
+  assert.equal(value.publications.length, 4)
+  assert.ok(result.manifest.files.every(entry => entry.platform !== 'linux'))
   assert.equal(value.candidates.length, 1)
   assert.equal(value.pointers.length, 1)
   for (const entry of result.manifest.files) {

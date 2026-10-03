@@ -7,7 +7,7 @@ import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureRea
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
   macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
-  macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage,
+  macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage, macosLegacyChatgptMessage,
 } from '../../electron/macos-desktop-install-failure'
 import { operationFailureFrom } from './business-common'
 
@@ -283,6 +283,11 @@ describe('renderer-v2 operation error classification', () => {
       macosDesktopNotOfficialMessage,
       macosDesktopNameTakenMessage('OpenCode'),
       macosDesktopInstallFailedMessage('OpenCode'),
+      macosDesktopDownloadFailedMessage('Claude Desktop'),
+      macosDesktopDownloadFailedMessage('Codex 桌面端'),
+      macosDesktopInstallFailedMessage('Codex 桌面端'),
+      macosDesktopNameTakenMessage('ChatGPT'),
+      macosLegacyChatgptMessage,
     ]) {
       const hint = presentOperationError(message)
       expect([message, hint?.key]).toEqual([message, 'macDesktopInstallFailed'])
@@ -307,6 +312,16 @@ describe('renderer-v2 operation error classification', () => {
     const failure = operationFailureFrom(rejected, '安装客户端')
     expect(failure).toEqual({ message })
     expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
+  })
+
+  it('gives a failed Codex desktop install on a Mac the install guide, never the Microsoft Store', () => {
+    const message = macosDesktopDownloadFailedMessage('Codex 桌面端')
+    expect(message).toBe('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。')
+    const rejected = new Error(`Error invoking remote method 'desktop:install-codex': ${macosDesktopInstallErrorName}: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装 Codex 桌面端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
+    expect(presentOperationError(macosDesktopSystemTooOldMessage('Codex 桌面端', '14.0'))?.key).toBe('macDesktopTooOld')
   })
 
   it('puts a failed Codex desktop install on screen without its class name, which does not end in Error', () => {

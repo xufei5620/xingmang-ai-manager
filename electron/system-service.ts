@@ -5048,8 +5048,10 @@ export function createSystemService(
     reloadDownloadProxyConfig,
     prepareAcceleration: serviceOptions.prepareCodexDesktopAcceleration,
     assertInstallDiskSpace,
-    // 商店没走通后从 OpenAI 官网下离线安装包：和命令行工具的下载一样临时接上加速。
+    // 官方包在海外：Mac 上那次下载、Windows 上商店没走通后的官网离线安装包，都和 OpenCode
+    // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    userHome: providerRoots.userHome,
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
