@@ -50,9 +50,9 @@ export function cliNeedsNodeRuntime(platform: Pick<PlatformCapabilities, 'cliNee
 }
 
 /**
- * Gemini 要 Python 只为没有预编译包时现场编译一个可选组件；Linux 上缺了它照样能装能用，
- * 主进程按平台报这张表（Linux 版拆分 ③）。没报（旧版本）时按注册表的 requires 判断，
- * 就是原来的行为。
+ * Gemini 要 Python 只为没有预编译包时现场编译一个可选组件，缺了它照样能装能用。主进程按平台
+ * 报这张表：Linux 先去掉（Linux 版拆分 ③），Windows、Mac 跟着去掉（第二十八批 C），现在四家
+ * 都不要。没报（旧版本）时按注册表的 requires 判断，就是原来的行为。
  */
 export function cliNeedsPythonRuntime(platform: Pick<PlatformCapabilities, 'cliNeedsPythonRuntime'> | null | undefined, provider: ProviderId, requiresPython: boolean): boolean {
   return platform?.cliNeedsPythonRuntime?.[provider] ?? requiresPython

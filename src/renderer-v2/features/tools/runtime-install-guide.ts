@@ -65,10 +65,17 @@ export function runtimeInstallButtonShown(
 /** Linux 版只出 deb 包，能装上它的系统都有 apt。 */
 export const linuxPythonInstallCommand = 'sudo apt install python3'
 
+// Python 四个命令行工具都用不到了（第二十八批 C，platform-capabilities 的 cliNeedsPythonRuntime），
+// 只剩外接工具里个别连接要它（添加时那一页会提示，pages-management 的 mcpRuntimeNotice），
+// 所以说成「要装的话」，别让客户以为非装不可。
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
     ? '四个命令行工具都靠它来安装和启动'
-    : 'Gemini CLI 需要它；macOS 自带的那份版本可能过旧，建议另装一份'
+    : '四个命令行工具都用不到它，外接工具里个别要用它的才需要'
+}
+
+function ifWanted(runtime: ManagedRuntimeId): string {
+  return runtime === 'python' ? '要装的话' : ''
 }
 
 function verifyStep(runtime: ManagedRuntimeId): string {
@@ -108,7 +115,7 @@ export function runtimeInstallGuide(
   const name = runtimeDisplayName(runtime)
   if (platform === 'macos') {
     return {
-      summary: `这台 Mac 上没有找到 ${name}（${whyNeeded(runtime)}）。星芒不会替你装它，下面两种装法选一种就行。`,
+      summary: `这台 Mac 上没有找到 ${name}（${whyNeeded(runtime)}）。星芒不会替你装它，${ifWanted(runtime)}下面两种装法选一种就行。`,
       steps: [
         '装过 Homebrew 的：打开「终端」，粘贴下面这条命令回车，等它跑完。',
         `没装过 Homebrew 的：点下面的「${runtimeButtonLabel(runtime, 'external')}」，在网页上选 macOS 的安装包（.pkg），下载后双击一路下一步。`,
@@ -129,7 +136,7 @@ export function runtimeInstallGuide(
     }
   }
   return {
-    summary: `这台电脑上没有找到 ${name}（${whyNeeded(runtime)}）。星芒不会替你装它，请自己装上。`,
+    summary: `这台电脑上没有找到 ${name}（${whyNeeded(runtime)}）。星芒不会替你装它，${ifWanted(runtime)}请自己装上。`,
     steps: [
       `用系统自带的包管理器装上 ${name}，或者点下面的「${runtimeButtonLabel(runtime, 'external')}」。`,
       verifyStep(runtime),

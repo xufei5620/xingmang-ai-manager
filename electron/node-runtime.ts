@@ -131,13 +131,22 @@ export interface NodeRuntimeInstallerDependencies {
 }
 
 export interface InstallNodeRuntimeOptions {
-  networkRegion: NodeRuntimeNetworkRegion
+  /**
+   * 先走国内镜像还是官方源。可以给一个到要下载时才问的函数：Windows 先试 winget，没装成、
+   * 借到下载专用线路以后才定（借到了就官方源优先），先算好就算早了（第二十八批 D）。
+   */
+  networkRegion: NodeRuntimeNetworkRegion | (() => Promise<NodeRuntimeNetworkRegion>)
   architecture?: NodeJS.Architecture
   signal?: AbortSignal
   onProgress?: (progress: NodeRuntimeInstallProgress) => void
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
   dependencies?: Partial<NodeRuntimeInstallerDependencies>
+  /**
+   * 退到下安装包时才借下载专用线路。只有 Windows 这一份认它：winget 自己下载、不走这条线路；
+   * macOS、Linux 一开始就是下载，由调用方整段包住。缺省 = 不借。
+   */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 export interface AuthenticodeSignature {
@@ -450,6 +459,12 @@ export function nodeRuntimeDownloadSources(
   return region === 'outside-mainland-china'
     ? [sources.official, sources.npmmirror]
     : [sources.npmmirror, sources.official]
+}
+
+export function resolveNodeRuntimeNetworkRegion(
+  region: InstallNodeRuntimeOptions['networkRegion'],
+): Promise<NodeRuntimeNetworkRegion> {
+  return typeof region === 'function' ? region() : Promise.resolve(region)
 }
 
 /**
@@ -1435,34 +1450,42 @@ export async function installNodeRuntime(
     throw new Error(message)
   }
   try {
-    for (const source of nodeRuntimeDownloadSources(options.networkRegion)) {
-      throwIfAborted(options.signal)
-      try {
-        const result = await installFromSource(
-          source,
-          architecture,
-          temporaryDirectory,
-          options,
-          dependencies,
-        )
-        report(options, {
-          phase: 'complete',
-          source: source.id,
-          message: `Node.js ${result.version ?? 'LTS'} 安装完成，重启本程序后即可使用`,
-          percent: 100,
-        })
-        return result
-      } catch (error) {
-        failures.push(`${source.label}：${errorText(error)}`)
-        if (options.signal?.aborted) throw error
-        report(options, {
-          phase: 'resolving',
-          source: source.id,
-          message: `${source.label}安装失败，正在尝试备用下载源`,
-          percent: null,
-        })
+    // 到这里才真要下载，这时才借下载专用线路，借到以后再问先走哪个源（第二十八批 D）。
+    const installFromSources = async (): Promise<NodeRuntimeInstallResult | null> => {
+      for (const source of nodeRuntimeDownloadSources(await resolveNodeRuntimeNetworkRegion(options.networkRegion))) {
+        throwIfAborted(options.signal)
+        try {
+          const result = await installFromSource(
+            source,
+            architecture,
+            temporaryDirectory,
+            options,
+            dependencies,
+          )
+          report(options, {
+            phase: 'complete',
+            source: source.id,
+            message: `Node.js ${result.version ?? 'LTS'} 安装完成，重启本程序后即可使用`,
+            percent: 100,
+          })
+          return result
+        } catch (error) {
+          failures.push(`${source.label}：${errorText(error)}`)
+          if (options.signal?.aborted) throw error
+          report(options, {
+            phase: 'resolving',
+            source: source.id,
+            message: `${source.label}安装失败，正在尝试备用下载源`,
+            percent: null,
+          })
+        }
       }
+      return null
     }
+    const installed = await (options.withDownloadRoute
+      ? options.withDownloadRoute(installFromSources)
+      : installFromSources())
+    if (installed) return installed
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)
   }

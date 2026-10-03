@@ -177,6 +177,26 @@ describe('Linux managed Node.js runtime', () => {
     expect(progress).toContain('正在解压 Node.js')
   })
 
+  // 本软件把「先走哪个源」做成到要下载时才问：整段装在借到的下载线路里，问的时候线路已经在了。
+  it.skipIf(process.platform === 'win32')('asks for the source order only once it is about to download', async () => {
+    const home = temporaryHome()
+    const network = fakeNetwork()
+    const networkRegion = vi.fn(async () => 'outside-mainland-china' as const)
+    const installed = await installLinuxNodeRuntime({
+      networkRegion,
+      architecture: 'x64',
+      environment: { HOME: home },
+      dependencies: { fetch: network.fetch },
+      linux: { runProcess: fakeProcesses().runProcess, resolveTar: () => '/usr/bin/tar', pinnedRelease: () => pinned },
+    })
+
+    expect(installed.source).toBe('official')
+    expect(network.requested).toEqual([
+      `https://nodejs.org/dist/${linuxNodeRuntimeVersion}/node-${linuxNodeRuntimeVersion}-linux-x64.tar.gz`,
+    ])
+    expect(networkRegion).toHaveBeenCalledOnce()
+  })
+
   it.skipIf(process.platform === 'win32')('follows XDG_DATA_HOME for the runtime location', async () => {
     const home = temporaryHome()
     const dataHome = path.join(home, 'data')

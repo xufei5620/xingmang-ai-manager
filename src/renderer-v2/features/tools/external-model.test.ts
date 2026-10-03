@@ -45,9 +45,13 @@ describe('external client lifecycle presentation', () => {
 
   it('redacts the local path either snapshot error carries onto the client row (R-S7b)', () => {
     // Both fields reach the screen as the row subtitle without passing through
-    // errorMessage, so I13's redaction has to happen here.
+    // errorMessage, so I13's redaction has to happen here. An English detection
+    // failure is not shown at all: the row says it in Chinese and the original
+    // goes to the runtime log (ipc.ts).
     expect(present({ installed: true, detectionError: "EACCES: permission denied, open 'C:\\Users\\yoyo\\AppData\\Local\\WorkBuddy\\config.json'" }).detail)
-      .toBe("EACCES: permission denied, open '本地配置文件")
+      .toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。')
+    expect(present({ installed: true, detectionError: '读取 C:\\Users\\yoyo\\AppData\\Local\\WorkBuddy 失败' }).detail)
+      .toBe('读取 本地配置文件 失败')
     // 现有脱敏以空白收尾，带空格的目录名只剥到空格为止；要紧的用户名这一段已经去掉。
     const configuration = present({ installed: true, configurationSource: 'unknown', configurationError: '读取 /Users/yoyo/Library/Application Support/config.json 失败' }).detail
     expect(configuration).toBe('读取 本地配置文件 Support/config.json 失败')

@@ -42,3 +42,23 @@ export function elevatedInstallShortNotice(
   if (!elevatedInstallNotice(subject, platform, management)) return null
   return '安装时需要管理员授权，Windows 会弹一次授权窗口'
 }
+
+/**
+ * 首页运行环境卡用的那一句。`elevatedInstallNotice` 是给「安装卸载」页的，那里的按钮就叫「安装」；
+ * 首页这张卡上的按钮叫「准备 Node.js」，左边工具列表里又有一排「安装」，照抄「点「安装」后」
+ * 客户分不清说的是哪颗（第二十七批 B）。装命令行工具时星芒也会顺带准备 Node.js，那时客户点的
+ * 是工具那一行的「安装」，所以这里不说点哪颗，只说「准备 Node.js 时」会弹窗。
+ *
+ * 一个命令行工具都不在用（只装了 Codex 桌面端）时 Node.js 是可选的：不说「这一步需要」，
+ * 先说清它是做什么的、一般不用单独点，弹窗那句照样提前说。
+ */
+export function homeNodeElevationNotice(
+  platform: PlatformFamily | undefined,
+  management: InstallManagement | undefined,
+  optional: boolean,
+): string | null {
+  if (!elevatedInstallNotice('node', platform, management)) return null
+  return optional
+    ? 'Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+    : '这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+}

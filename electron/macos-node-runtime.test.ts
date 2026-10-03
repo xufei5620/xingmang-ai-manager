@@ -189,6 +189,27 @@ describe('macOS managed Node.js runtime', () => {
     expect(progress).toContain('正在解压 Node.js')
   })
 
+  // 本软件把「先走哪个源」做成到要下载时才问：整段装在借到的下载线路里，问的时候线路已经在了。
+  it.skipIf(process.platform === 'win32')('asks for the source order only once it is about to download', async () => {
+    const home = temporaryHome()
+    const network = fakeNetwork()
+    let asked = 0
+    const installed = await installDarwinNodeRuntime({
+      networkRegion: async () => {
+        asked += 1
+        return 'outside-mainland-china'
+      },
+      architecture: 'arm64',
+      environment: { HOME: home },
+      dependencies: { fetch: network.fetch },
+      darwin: { runProcess: fakeProcesses().runProcess },
+    })
+
+    expect(installed.source).toBe('official')
+    expect(network.requested[0]).toBe('https://nodejs.org/dist/index.json')
+    expect(asked).toBe(1)
+  })
+
   it.skipIf(process.platform === 'win32')('replaces an earlier copy and falls back to the second source', async () => {
     const home = temporaryHome()
     const target = managedNodeRuntimeRoot({ HOME: home }, 'darwin')
