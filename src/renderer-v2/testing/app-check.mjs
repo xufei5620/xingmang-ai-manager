@@ -2338,6 +2338,8 @@ test('a Mac signature rejection offers the download page instead of reinstalling
     await notice.getByText(reason, { exact: true }).waitFor()
     await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
     assert.equal(await notice.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
+    // 卡片头上的「重启安装」是同一条死路，也不能留。
+    assert.equal(await updates.getByRole('button', { name: '重启安装', exact: true }).count(), 0)
     const bubble = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
     assert.equal(await bubble.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
