@@ -1038,6 +1038,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
             ? { ...current, config: { ...current.config, rememberedWorkspace } }
             : current)
+          // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
+          // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。
+          if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
         }
       })
       return launchIsCurrent(epoch) && started

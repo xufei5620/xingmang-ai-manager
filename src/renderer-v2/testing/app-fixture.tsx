@@ -194,6 +194,10 @@ let holdConfigRead = false
 let releaseConfigRead: () => void = () => undefined
 let holdScan = query.has('holdFirstScan')
 let releaseScan: () => void = () => undefined
+/** ?cachedScan：开机那一轮还没跑完。同主进程，这时谁来要真结果（首页、账号 Key 同步）都接这同一轮，releaseScan 一起放行。 */
+let startupScan: Promise<void> | null = null
+/** ?launchRemembers：同主进程，打开过一次之后读配置也带着那个目录。 */
+let launchedWorkspace: string | undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
@@ -374,16 +378,18 @@ const methods = {
     if (options?.acceptCached && query.has('cachedScan')) {
       const cached = structuredClone(system)
       cached.clis.grok = { ...cached.clis.grok, installed: false, version: null }
-      holdScan = true
+      startupScan = new Promise<void>((resolve) => { releaseScan = () => { startupScan = null; resolve() } })
       return { ...cached, cachedAt: '2026-09-21T10:00:00.000Z' }
     }
     if (query.has('desktopEvent')) window.v2Test.emit('onCodexDesktopStatus', { status: { ...system.desktopApps.codex, appVersion: '9.9.9' } })
     const result = structuredClone(system)
-    if (holdScan) { holdScan = false; await new Promise<void>((resolve) => { releaseScan = resolve }) }
+    if (startupScan) await startupScan
+    else if (holdScan) { holdScan = false; await new Promise<void>((resolve) => { releaseScan = resolve }) }
     return result
   },
   getConfig: async () => {
     const result = structuredClone(config)
+    if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -482,7 +488,13 @@ const methods = {
   listBackups: async () => [],
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
-  launchCli: async () => query.has('launchRemembers') ? { rememberedWorkspace: config.workspace } : query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
+  launchCli: async () => {
+    if (query.has('launchRemembers')) {
+      launchedWorkspace = config.workspace
+      return { rememberedWorkspace: launchedWorkspace }
+    }
+    return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
+  },
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
@@ -588,7 +600,10 @@ const methods = {
   },
   listModels: async () => detectedModels,
   syncManagedCliKeys: async () => {
-    const result = { ready: (['claude', 'codex', 'grok', 'gemini'] as ProviderId[]).map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [] }
+    // ?regrouped=claude：这个工具的 Key 换了分组（买了订阅、订阅到期），开机这一轮要给已连好的它换 Key。
+    const providers = ['claude', 'codex', 'grok', 'gemini'] as ProviderId[]
+    const regrouped = providers.filter((provider) => query.get('regrouped') === provider)
+    const result = { ready: providers.map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [], ...(regrouped.length ? { regrouped } : {}) }
     if (!query.has('bootstrapPending')) return result
     return new Promise<typeof result>((resolve) => { releaseBootstrap = () => resolve(result) })
   },
