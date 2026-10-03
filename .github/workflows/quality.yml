@@ -439,6 +439,13 @@ jobs:
     # These are the cheapest billed minutes in the matrix, so the coverage the
     # shipping renderer needs belongs here rather than behind the one job that
     # Defender timeouts already make unreliable.
+    #
+    # Everything here used to run back to back, and at ~21 minutes this job was
+    # the whole pipeline's wall clock: every other job had finished by minute
+    # 14 while test:v2 (~14 minutes on its own) still had most of its browser
+    # suites to go. The fixture half of those suites now runs beside it in
+    # linux-renderer-v2-browser, split along the same seam the Windows matrix
+    # uses, so nothing is skipped and nothing is run twice.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -473,8 +480,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no
-      # Electron and no display server here.
-      - run: npm run test:v2
+      # Electron and no display server here. These two steps and
+      # linux-renderer-v2-browser's one add up to exactly `npm run test:v2`.
+      - run: npm run test:v2:vitest
+      - run: npm run test:v2:browser:e2e
       - run: npm run test:canvas
       # The legacy rollback UI suites. They assert rendered markup only, so one
       # platform answers the question three platforms used to.
@@ -493,6 +502,45 @@ jobs:
         # Windows path math evaluated on a POSIX host yields a backslash
         # relative name, which lands as a stray directory in the repository
         # root instead of under the temporary directory it was meant for.
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is dirty after the test run"
+            git status --porcelain
+            exit 1
+          fi
+
+  # The fixture half of linux-test's renderer v2 browser suites: ~11 of the
+  # ~14 minutes test:v2 took there, and on its own about as long as the slowest
+  # Windows shard, so it no longer sits on the pipeline's critical path after
+  # everything else linux-test runs. It is cut where windows-test cuts it, and
+  # for the same reason it is not cut any finer: these files share one
+  # node_modules/.vite dependency cache that the earlier ones warm for
+  # app-check.mjs, which runs last (see the renderer-v2-browser shard above).
+  linux-renderer-v2-browser:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - run: npx --no-install playwright install chromium
+      - name: Install Chromium's system libraries
+        # Same bounded installer as linux-test, for the same reason (#653).
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
+      - run: npm run test:v2:browser:fixture
+      - name: Fail if the test run left files in the working tree
         shell: bash
         run: |
           if [ -n "$(git status --porcelain)" ]; then
@@ -645,7 +693,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-package, audit, cli-relay-probe]
+    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -658,7 +706,7 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
           // `test` folds the Windows shards together and applies that same
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.
