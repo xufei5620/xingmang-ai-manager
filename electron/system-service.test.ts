@@ -755,7 +755,7 @@ describe('createSystemService', () => {
     expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
   })
 
-  it('leaves the catalog for the next startup while Codex may still be open', async () => {
+  it('leaves the catalog for a later try while Codex may still be open, and says it is still owed', async () => {
     const f = codexCatalogFixture()
     await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
     f.account.models.push('gpt-6-astra')
@@ -763,13 +763,48 @@ describe('createSystemService', () => {
     const requests = f.fetchModels.mock.calls.length
     const backup = vi.fn()
 
-    await f.service.fillToolTemplateDefaults!(backup)
-    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']), backgroundStartupWait)
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).toHaveBeenCalledWith(['codex'])
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(f.fetchModels.mock.calls.length).toBe(requests)
     expect(backup).not.toHaveBeenCalled()
     expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('brings the catalog up to the account on a later try once Codex has been closed', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+    const backups: Array<{ provider: ProviderId; slugs: string[] }> = []
+    function backup(provider: ProviderId): void { backups.push({ provider, slugs: f.catalogSlugs() }) }
+    await f.service.fillToolTemplateDefaults!(backup)
+
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [], pending: ['codex'] })
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
+    // 核对过就不欠了：再来要不再起进程看 Codex 开没开，也不再问中转。
+    const probes = f.running.mock.calls.length
+    const requests = f.fetchModels.mock.calls.length
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+    expect(f.running.mock.calls.length).toBe(probes)
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+  })
+
+  it('owes nothing for a Codex config the account did not write, even while Codex is open', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    expect(f.running).not.toHaveBeenCalled()
   })
 
   it('takes the catalog back at startup once the Codex desktop app turns out to predate it, without an account', async () => {

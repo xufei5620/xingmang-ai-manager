@@ -594,8 +594,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '选一个命令行工具，看看缺不缺运行环境',
         where: '工具箱首页 → 运行环境',
-        detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，不用自己去下载；Windows 上只装 Grok 用不到它。用 Gemini CLI 还要 Python，它要你点一下才装。',
-        bullets: [`Windows 用 Gemini CLI 时，点运行环境卡里的「${runtimeButtonLabel('python', 'managed')}」。`, 'Mac 要装 Python 的，按「Mac 上准备 Node.js 和 Python」操作。'],
+        detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，不用自己去下载；Windows 上只装 Grok 用不到它。四个命令行工具都不用装 Python。',
+        bullets: ['外接工具里个别要用 Python 的，那一页会提示；Mac 上怎么装看「Mac 上准备 Node.js 和 Python」。'],
         expected: '所需运行环境显示版本号。',
         extra: [{ title: 'Claude Code 为什么提示 Git？', detail: 'Windows 上部分技能、插件命令和首次添加官方插件市场需要 Git，按「检查」页的指引安装。' }],
         illustration: 'install',
@@ -843,7 +843,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '先看首页缺哪一个',
         where: '工具箱首页 → 运行环境',
-        detail: '命令行工具需要 Node.js，Gemini CLI 还要 Python。',
+        detail: '命令行工具需要 Node.js。Python 四个命令行工具都用不到，外接工具里个别要用它的才装。',
         bullets: ['查看哪项没有版本号。', '只安装要用的环境，已装好的不用重复装。'],
         expected: '知道这次缺少 Node.js 还是 Python。',
         illustration: 'install',
