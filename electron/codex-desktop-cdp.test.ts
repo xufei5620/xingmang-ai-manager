@@ -4,12 +4,12 @@ import {
   buildCodexDesktopCdpArguments,
   classifyCodexDesktopCdpPortOwnership,
   codexChineseRuntimeScript,
-  codexDesktopCdpPortOwnerModules,
-  codexDesktopCdpPortOwnerScript,
+  codexDesktopCdpPortOwnerArguments,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
   parseCodexDesktopCdpPortOwners,
   parseCodexDesktopActivationProcessId,
+  resolveCodexDesktopCdpPortOwners,
   validateCodexDesktopAppUserModelId,
   validateCodexDesktopCdpPort,
   validateCodexDesktopCdpTarget,
@@ -18,11 +18,37 @@ import {
 
 const codexProcessId = 4321
 // What execFile puts in the message when it stops the owner lookup at its limit.
-const powerShellCommandLine = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand JABFAHIAcgBvAHIA'
+const ownerLookupCommandLine = 'C:\\Windows\\System32\\netstat.exe -a -n -o'
 const codexPortOwner = {
   expectedProcessId: codexProcessId,
   resolvePortOwnerProcessIds: async () => [codexProcessId],
 }
+const windowsMachinePaths = {
+  systemRoot: 'C:\\Windows',
+  system32: 'C:\\Windows\\System32',
+  programFiles: 'C:\\Program Files',
+  programFilesX86: 'C:\\Program Files (x86)',
+  programData: 'C:\\ProgramData',
+}
+// `netstat -a -n -o` as English Windows prints it, with Codex (4321) on 9222.
+const netstatTable = [
+  '',
+  'Active Connections',
+  '',
+  '  Proto  Local Address          Foreign Address        State           PID',
+  '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1060',
+  '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50123        ESTABLISHED     4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50124        TIME_WAIT       0',
+  '  TCP    127.0.0.1:19222        0.0.0.0:0              LISTENING       5555',
+  '  TCP    127.0.0.1:50123        127.0.0.1:9222         ESTABLISHED     2468',
+  '  TCP    192.168.1.5:9222       52.1.2.3:443           ESTABLISHED     7788',
+  '  TCP    [::]:135               [::]:0                 LISTENING       1060',
+  '  TCP    [::1]:9222             [::]:0                 LISTENING       4321',
+  '  UDP    0.0.0.0:9222           *:*                                    8888',
+  '  UDP    [::]:9222              *:*                                    8888',
+  '',
+].join('\r\n')
 
 function target(overrides: Partial<CodexDesktopCdpTarget> = {}): CodexDesktopCdpTarget {
   return {
@@ -569,25 +595,86 @@ describe('Codex Desktop Chinese CDP injection', () => {
 })
 
 describe('Codex Desktop CDP debugging port ownership', () => {
-  it('reads every listening owner reported for the port and ignores non-numeric output', () => {
-    expect(parseCodexDesktopCdpPortOwners('\r\n4321\r\n4321\r\n7788\r\n')).toEqual([4321, 7788])
-    expect(parseCodexDesktopCdpPortOwners('Get-NetTCPConnection : 找不到对象\n0\n-1\n')).toEqual([])
+  it('reads only the rows listening on the port from the netstat table', () => {
+    // The accepted connection, the one closing in TIME_WAIT, the client end
+    // pointing at the port and another process's outgoing connection that
+    // happens to use 9222 on another address all share the number without
+    // listening on it; 19222 and the UDP rows are different sockets altogether.
+    expect(parseCodexDesktopCdpPortOwners(netstatTable, 9222)).toEqual([4321])
+    expect(parseCodexDesktopCdpPortOwners(netstatTable, 135)).toEqual([1060])
+    expect(parseCodexDesktopCdpPortOwners(netstatTable, 50123)).toEqual([])
   })
 
-  it('ends the owner query with a clean exit so an empty listener table is not a failure', () => {
-    const lines = codexDesktopCdpPortOwnerScript.trim().split('\n')
-    expect(lines.at(-1)).toBe('exit 0')
-    expect(codexDesktopCdpPortOwnerScript).toContain("$ErrorActionPreference = 'Stop'")
+  it('names every process listening on the port, on any address', () => {
+    const squatted = [
+      '  TCP    0.0.0.0:9222           0.0.0.0:0              LISTENING       7788',
+      '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+      '  TCP    [::]:9222              [::]:0                 LISTENING       9999',
+      '  TCP    [fe80::1c2d:3e4f:5a6b:7c8d%12]:9222  [::]:0                 LISTENING       1111',
+    ].join('\r\n')
+    const owners = parseCodexDesktopCdpPortOwners(squatted, 9222)
+    expect(owners).toEqual([7788, 4321, 9999, 1111])
+    expect(classifyCodexDesktopCdpPortOwnership(owners ?? [], 4321)).toBe('foreign')
   })
 
-  it('imports Utility and then NetTCPIP by name before querying the port', () => {
-    // The list names only NetTCPIP; the import statement puts Utility in front of it.
-    expect(codexDesktopCdpPortOwnerModules).toEqual(['NetTCPIP'])
-    const importAt = codexDesktopCdpPortOwnerScript.indexOf(
-      "Import-Module -Name 'Microsoft.PowerShell.Utility', 'NetTCPIP' -ErrorAction SilentlyContinue",
-    )
-    expect(importAt).toBeGreaterThan(0)
-    expect(codexDesktopCdpPortOwnerScript.indexOf('Get-NetTCPConnection')).toBeGreaterThan(importAt)
+  it('recognises a listener whatever language the state column is printed in', () => {
+    const german = [
+      '',
+      'Aktive Verbindungen',
+      '',
+      '  Proto  Lokale Adresse         Remoteadresse          Status           PID',
+      '  TCP    127.0.0.1:9222         0.0.0.0:0              ABHÖREN         4321',
+      '  TCP    192.168.1.5:9222       52.1.2.3:443           HERGESTELLT     7788',
+    ].join('\r\n')
+    expect(parseCodexDesktopCdpPortOwners(german, 9222)).toEqual([4321])
+    // A header in the console code page, read as UTF-8, and a state written as
+    // several words: the PID is still the last column.
+    const severalWords = [
+      '\uFFFD\uFFFD\uFFFD\uFFFD',
+      '  \uFFFD\uFFFD  \uFFFD\uFFFD\uFFFD\uFFFD          \uFFFD\uFFFD\uFFFD\uFFFD        \uFFFD\uFFFD           PID',
+      '  TCP    [::1]:9222             [::]:0                 EN ESCUCHA      4321',
+      '  TCP    127.0.0.1:9222         127.0.0.1:50124        EN ESPERA       0',
+    ].join('\n')
+    expect(parseCodexDesktopCdpPortOwners(severalWords, 9222)).toEqual([4321])
+  })
+
+  it('refuses to answer for a listener whose process it cannot read', () => {
+    expect(parseCodexDesktopCdpPortOwners('', 9222)).toEqual([])
+    // Dropping such a row could pass a port another process also listens on.
+    expect(parseCodexDesktopCdpPortOwners([
+      '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+      '  TCP    [::1]:9222             [::]:0                 LISTENING',
+    ].join('\r\n'), 9222)).toBeNull()
+    expect(parseCodexDesktopCdpPortOwners('  TCP    0.0.0.0:9222    0.0.0.0:0    LISTENING    0', 9222)).toBeNull()
+    expect(() => parseCodexDesktopCdpPortOwners(netstatTable, 0)).toThrow('端口无效')
+  })
+
+  it('reads the table with the system netstat.exe under the trusted environment', async () => {
+    const calls: Array<{ executable: string; argv: readonly string[]; env: NodeJS.ProcessEnv }> = []
+    const owners = await resolveCodexDesktopCdpPortOwners(9222, {
+      platform: 'win32',
+      machinePaths: windowsMachinePaths,
+      env: { Path: 'C:\\Users\\Tester\\bin;C:\\Windows\\System32', NODE_OPTIONS: '--require C:\\Users\\Tester\\hook.js' },
+      run: async (executable, argv, env) => {
+        calls.push({ executable, argv, env })
+        return netstatTable
+      },
+    })
+    expect(owners).toEqual([4321])
+    expect(calls.map(({ executable, argv }) => ({ executable, argv }))).toEqual([
+      { executable: 'C:\\Windows\\System32\\netstat.exe', argv: ['-a', '-n', '-o'] },
+    ])
+    expect(codexDesktopCdpPortOwnerArguments).toEqual(['-a', '-n', '-o'])
+    expect(Object.values(calls[0].env).join('\n')).not.toContain('Tester')
+  })
+
+  it('fails the lookup instead of guessing when a listener cannot be attributed', async () => {
+    await expect(resolveCodexDesktopCdpPortOwners(9222, {
+      platform: 'win32',
+      machinePaths: windowsMachinePaths,
+      run: async () => '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING',
+    })).rejects.toThrow('监听进程无法识别')
+    await expect(resolveCodexDesktopCdpPortOwners(9222, { platform: 'linux' })).rejects.toThrow('仅支持 Windows')
   })
 
   it('treats an empty listener table as a port Codex has not bound yet', () => {
@@ -646,7 +733,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       expectedProcessId: 4321,
       resolvePortOwnerProcessIds: async () => {
         lookups += 1
-        if (lookups === 1) throw new Error(`Command failed: ${powerShellCommandLine}`)
+        if (lookups === 1) throw new Error(`Command failed: ${ownerLookupCommandLine}`)
         return [4321]
       },
       fetch: async () => {
@@ -667,7 +754,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       expectedProcessId: 4321,
       resolvePortOwnerProcessIds: async () => {
         lookups += 1
-        throw new Error(`Command failed: ${powerShellCommandLine}`)
+        throw new Error(`Command failed: ${ownerLookupCommandLine}`)
       },
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
       delay: async () => undefined,
@@ -685,7 +772,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       resolvePortOwnerProcessIds: async () => {
         const answer = answers[lookups]
         lookups += 1
-        if (!answer) throw new Error(`Command failed: ${powerShellCommandLine}`)
+        if (!answer) throw new Error(`Command failed: ${ownerLookupCommandLine}`)
         return answer
       },
       fetch: async () => new Response(JSON.stringify([target()])),
@@ -703,7 +790,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       expectedProcessId: 4321,
       resolvePortOwnerProcessIds: async () => {
         lookups += 1
-        if (lookups === 1) throw new Error(`Command failed: ${powerShellCommandLine}`)
+        if (lookups === 1) throw new Error(`Command failed: ${ownerLookupCommandLine}`)
         return [7788]
       },
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
