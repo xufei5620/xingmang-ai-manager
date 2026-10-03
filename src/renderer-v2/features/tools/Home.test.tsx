@@ -247,6 +247,102 @@ describe('renderer-v2 home launch button with a folder picked earlier', () => {
   })
 })
 
+// 第三十一批 A：开机先摆的是上次的检测结果（cachedAt），真结果还在路上。这时只放开
+// 「打开」这一类：点下去配置现读、工具由主进程现找；别的按钮照旧等真结果。
+describe('renderer-v2 home before the startup scan finishes', () => {
+  const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } as HomeProps['account']
+  function cached(base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })): ToolboxSnapshot {
+    return { ...base, system: { ...base.system, cachedAt: '2026-09-21T10:00:00.000Z' } } as ToolboxSnapshot
+  }
+  /** 带这个 testid 的那颗按钮（或这个 testid 下面的第一颗）的开始标签。 */
+  function buttonTag(markup: string, testId: string): string {
+    const index = markup.indexOf(`data-testid="${testId}"`)
+    expect(index, `没有渲染出 ${testId}`).toBeGreaterThan(-1)
+    const opening = markup.lastIndexOf('<', index)
+    const start = markup.startsWith('<button', opening) ? opening : markup.indexOf('<button', index)
+    return markup.slice(start, markup.indexOf('>', start) + 1)
+  }
+  function disabled(markup: string, testId: string): boolean {
+    return buttonTag(markup, testId).includes(' disabled=""')
+  }
+  function whileChecking(overrides: Partial<HomeProps> = {}): string {
+    return render({}, undefined, { snapshot: cached(), loading: true, ...overrides })
+  }
+
+  it('opens a connected tool from the last saved scan', () => {
+    const markup = whileChecking()
+    expect(markup).toContain('data-testid="home-cached-scan"')
+    expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+  })
+
+  it('keeps every button waiting during an ordinary rescan', () => {
+    const markup = render({}, undefined, { loading: true })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(true)
+  })
+
+  it('keeps install, retry and connect waiting for the real result', () => {
+    const missing = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
+    const failed = { ...cliStatus, detectionFailed: true, detectionError: '命令入口无法安全执行' }
+    const base = snapshot({ claude: cliStatus, codex: failed, grok: missing, gemini: cliStatus })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const markup = render({}, undefined, { snapshot: cached({ ...base, platform } as ToolboxSnapshot), loading: true })
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*安装/)
+    expect(disabled(markup, 'tool-grok-primary')).toBe(true)
+    expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*重新检测/)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(true)
+    // 夹具里的 Gemini 没配 API Key 模式，算没连上：「连接账号」照旧等。
+    expect(markup).toMatch(/data-testid="tool-gemini-primary"[^>]*>(?:<[^>]+>)*连接账号/)
+    expect(disabled(markup, 'tool-gemini-primary')).toBe(true)
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+  })
+
+  it('keeps 重新配置 waiting when the configuration could not be read', () => {
+    const markup = render({}, undefined, { snapshot: cached(unreadableConfig()), loading: true, failures: configFailure })
+    expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*重新配置/)
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+  })
+
+  it('lets the folder dropdown open next to an enabled 打开', () => {
+    const base = cached()
+    const markup = whileChecking({ snapshot: { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } } as ToolboxSnapshot })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it('keeps 打开 waiting while another tool is being opened', () => {
+    const markup = whileChecking({ jobs: { 'launch:codex': { label: '正在打开', log: [] } } })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+  })
+
+  it('waits while the saved login is still being restored', () => {
+    expect(disabled(whileChecking({ accountRestoring: true }), 'tool-claude-primary')).toBe(true)
+  })
+
+  it('waits while the account key sync has not said which tools change their key', () => {
+    expect(disabled(whileChecking({ account }), 'tool-claude-primary')).toBe(true)
+    const syncing = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    expect(disabled(whileChecking({ account, bootstrap: syncing }), 'tool-claude-primary')).toBe(true)
+  })
+
+  it('waits only on the tool whose account key changes this startup', () => {
+    const bootstrap = { phase: 'inspecting' as const, label: '正在检查已安装工具和连接来源', percent: 40, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const markup = whileChecking({ account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+  })
+
+  it('opens once the account key round has finished', () => {
+    const bootstrap = {
+      phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope',
+      result: { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false },
+    }
+    expect(disabled(whileChecking({ account, bootstrap }), 'tool-claude-primary')).toBe(false)
+  })
+})
+
 // 官方安装器/其他来源装的 CLI：如实标源，且不给 npm 更新按钮，改用被动提示。
 describe('renderer-v2 home native install source', () => {
   const nativeClaude = { ...cliStatus, installSource: 'native', updateAvailable: true, latestVersion: '9.9.9' }
