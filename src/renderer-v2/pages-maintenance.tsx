@@ -98,7 +98,7 @@ import {
 } from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
-import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm } from './features/app/update-retry'
+import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
@@ -1213,6 +1213,8 @@ export function UpdatesPage({
   const failure = updateFailureLabel(update?.failedStep)
   const releaseNotes = releaseNotesSection(update)
   const retryFailedStep = () => retryFailedUpdateStep(update?.failedStep, { check, redownload, confirmInstall: () => setConfirm(true) })
+  const manualReinstall = updateNeedsManualReinstall(update)
+  const openDownloadPage = () => void operation.execute('download-page', async () => { await api.openExternal(appReleaseDownloadUrl) }, '')
   // 首页气泡上点了「重新安装」：跳过来直接弹确认框。
   useEffect(() => subscribeUpdateInstallConfirm(() => {
     if (takeUpdateInstallConfirm()) setConfirm(true)
@@ -1223,13 +1225,16 @@ export function UpdatesPage({
         下载更新
       </Button>
     ) : update?.phase === 'downloaded' ? (
-      <Button
-        variant="primary"
-        icon={RefreshCw}
-        onClick={() => setConfirm(true)}
-      >
-        {updateInstallActionLabel(update.installMethod)}
-      </Button>
+      // 验签没通过时「重启安装」和失败卡里去掉的「重新安装」是同一条死路，下一步只在失败卡的「打开下载页」。
+      manualReinstall ? null : (
+        <Button
+          variant="primary"
+          icon={RefreshCw}
+          onClick={() => setConfirm(true)}
+        >
+          {updateInstallActionLabel(update.installMethod)}
+        </Button>
+      )
     ) : (
       <Button
         variant="primary"
@@ -1347,13 +1352,19 @@ export function UpdatesPage({
               testId={`updates-failure-${update.failedStep ?? 'unknown'}`}
               actions={
                 <>
-                  <Button
-                    size="sm"
-                    icon={!update.failedStep || update.failedStep === 'download' ? Download : RefreshCw}
-                    onClick={retryFailedStep}
-                  >
-                    {failure.retry}
-                  </Button>
+                  {manualReinstall ? (
+                    <Button size="sm" icon={ExternalLink} onClick={openDownloadPage}>
+                      打开下载页
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      icon={!update.failedStep || update.failedStep === 'download' ? Download : RefreshCw}
+                      onClick={retryFailedStep}
+                    >
+                      {failure.retry}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     icon={FileText}
@@ -1375,7 +1386,7 @@ export function UpdatesPage({
                 <Button
                   size="sm"
                   icon={ExternalLink}
-                  onClick={() => void operation.execute('download-page', async () => { await api.openExternal(appReleaseDownloadUrl) }, '')}
+                  onClick={openDownloadPage}
                 >
                   打开下载页
                 </Button>

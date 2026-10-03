@@ -56,6 +56,14 @@ describe('requiredUpdateGate', () => {
       .toMatchObject({ action: 'install', label: '重新安装', failure: '没能启动安装', failureTitle: '安装更新失败' })
   })
 
+  it('drops the reinstall action when a Mac rejected the update signature', () => {
+    const message = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message } })))
+      .toMatchObject({ action: null, manualReinstall: true, failure: message, failureTitle: '安装更新失败' })
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'X', message: '没能启动安装' } })))
+      .toMatchObject({ action: 'install', manualReinstall: false })
+  })
+
   it('titles and labels a failure exactly like the updates page and the home bubble', () => {
     // 原因句里说「点「重新安装」」「点「重新下载」」，门里的按钮就得叫这个名字。
     for (const step of ['check', 'download', 'install'] as const) {

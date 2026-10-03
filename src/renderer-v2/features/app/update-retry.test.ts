@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { UpdateSnapshot } from '../../../../electron/ipc-contract'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureTone } from './update-retry'
+import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureTone, updateNeedsManualReinstall } from './update-retry'
 
 function snapshot(patch: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
   return {
@@ -70,6 +70,16 @@ describe('updateFailureTone', () => {
   it('uses the warning tone for a startup check that only ran out of time', () => {
     expect(updateFailureTone(snapshot({ error: { code: 'STARTUP_UPDATE_TIMEOUT', message: '网络有点慢' } }))).toBe('warn')
     expect(updateFailureTone(snapshot({ error: { code: 'ENOTFOUND', message: '连不上' } }))).toBe('bad')
+  })
+})
+
+describe('updateNeedsManualReinstall', () => {
+  // 主进程 updater.test.ts 钉住同一个字面量，两边改一边就会红。
+  it('sends only a Mac signature rejection to the download page', () => {
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_ERROR', message: '更新程序未能启动' } }))).toBe(false)
+    expect(updateNeedsManualReinstall(snapshot())).toBe(false)
+    expect(updateNeedsManualReinstall(null)).toBe(false)
   })
 })
 

@@ -1596,6 +1596,9 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
   if (channel === 'desktop:reset-codex') return 'Codex 桌面端重置已完成'
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
+  // 这个调用只是把安装交出去，真装没装上要等安装程序回话；写「完成」会让客服看反馈报告时
+  // 以为已经装好了，紧跟着的失败反而像是另一回事。
+  if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
   }

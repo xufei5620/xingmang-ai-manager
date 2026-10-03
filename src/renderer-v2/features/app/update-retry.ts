@@ -33,6 +33,15 @@ export async function redownloadUpdate(api: UpdateRetryApi): Promise<UpdateSnaps
 }
 
 /**
+ * Mac 校验新版本签名没通过（主进程 updater.ts 的 updateSignatureRejectedCode，两边字面量
+ * 要一致）：同一个包装多少遍都一样，「重新安装」是死路，更新页和首页气泡都改给「打开下载页」，
+ * 让客户手动装一次。按错误代码判断而不看 failedStep，哪一步报上来的都一样处理。
+ */
+export function updateNeedsManualReinstall(update: Pick<UpdateSnapshot, 'error'> | null | undefined): boolean {
+  return update?.error?.code === 'UPDATE_SIGNATURE_REJECTED'
+}
+
+/**
  * 开机那次检查超过时限只是放开了启动界面，真正的请求还在后台跑，算不上「失败」，
  * 气泡用提醒色，不用报错的红色。
  */

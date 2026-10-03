@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateSignatureRejectedCode, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -1862,6 +1862,46 @@ describe('describeUnrecognizedUpdateFailure', () => {
     for (const source of ['ENOSPC', 'EACCES: permission denied', 'ENOENT', 'weird']) {
       expect(describeUnrecognizedUpdateFailure(source)).not.toMatch(/[A-Za-z]/)
     }
+  })
+})
+
+describe('Mac update signature rejection', () => {
+  // 10-2 一台 Mac 的反馈报告原话：装的是测试包，正式版的签名比不上它钉住的那张证书。
+  const rejection = 'Code signature at URL file:///Users/alex/Library/Caches/com.xingmang.ai.manager.ShipIt/update.LokvtZX/%E6%98%9F%E8%8A%92AI%E7%AE%A1%E7%90%86%E5%B7%A5%E5%85%B7.app/ did not pass validation: 代码未能满足指定的代码要求'
+
+  it('uses the code the renderer swaps the reinstall button on', () => {
+    // 渲染层 features/app/update-retry.test.ts 钉住同一个字面量。
+    expect(updateSignatureRejectedCode).toBe('UPDATE_SIGNATURE_REJECTED')
+  })
+
+  it('recognizes the Squirrel.Mac wording in either system language', () => {
+    expect(isMacUpdateSignatureRejection(rejection)).toBe(true)
+    expect(isMacUpdateSignatureRejection('Code signature at URL file:///x.app/ did not pass validation: code failed to satisfy specified code requirement(s)')).toBe(true)
+    expect(isMacUpdateSignatureRejection('ENOSPC: no space left on device, write')).toBe(false)
+    expect(isMacUpdateSignatureRejection('更新尚未下载并校验完成')).toBe(false)
+  })
+
+  it('tells the user to reinstall from the download page and keeps the original only in the detail', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    client.emit('error', new Error(rejection))
+    const state = service.getState()
+    expect(state).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { code: updateSignatureRejectedCode } })
+    expect(state.error?.message).toBe('新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。')
+    expect(state.error?.detail).toContain('did not pass validation')
+    service.dispose()
+  })
+
+  it('leaves the same wording alone on other platforms', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32' })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    client.emit('error', new Error(rejection))
+    expect(service.getState().error?.code).not.toBe(updateSignatureRejectedCode)
+    service.dispose()
   })
 })
 
