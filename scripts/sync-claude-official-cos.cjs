@@ -14,6 +14,8 @@ const APT_ROOT = 'https://downloads.claude.ai/claude-desktop/apt/stable/'
 const OFFICIAL_HOSTS = Object.freeze(['claude.ai', 'downloads.claude.ai'])
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_METADATA_BYTES = 1024 * 1024
+const CLAUDE_MAC_TEAM = 'Q6L2SF6YDW'
+const CLAUDE_MAC_ORGANIZATION = 'Anthropic PBC'
 // Keep emergency packages within the previously authorized manager prefix,
 // separate from formal manager releases and their latest pointer.
 const OFFLINE_PREFIX = 'xingmang/offline/claude'
@@ -233,9 +235,10 @@ function validateInspection(report, source, expectedVersion) {
     if (report?.package !== 'claude-desktop' || report.architecture !== source.packageArchitecture || report.version !== expectedVersion) throw new Error('Claude DEB 包头与官方索引身份或架构不匹配')
     return { version: validateVersion(report.version), verification: source.verification, aptSignatureVerified: false }
   }
-  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== 'Anthropic, PBC') throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
+  const expectedOrganization = source.format === 'dmg' ? CLAUDE_MAC_ORGANIZATION : 'Anthropic, PBC'
+  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== expectedOrganization) throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
   if (source.format === 'dmg' && (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)
-    || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64'))) throw new Error('Claude Mac 应用身份或 Universal 架构不匹配')
+    || report.teamIdentifier !== CLAUDE_MAC_TEAM || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64'))) throw new Error('Claude Mac 应用身份、固定 Team 或 Universal 架构不匹配')
   if (source.format === 'pkg' && report.architectureProof !== 'official-universal-endpoint') throw new Error('Claude Mac 企业 PKG 架构来源记录无效')
   return { version: validateVersion(report.version), verification: source.verification, signatureStatus: 'Valid', ...(source.format === 'pkg' ? { architectureProof: report.architectureProof } : { architectures: ['arm64', 'x86_64'] }) }
 }
@@ -364,13 +367,13 @@ async function validatePackageMagic(filePath, format, bytes) {
 }
 
 function darwinClaudeRequirement(teamIdentifier) {
-  if (!/^[A-Z0-9]{10}$/.test(teamIdentifier)) throw new Error('Claude Mac 签名 Team 候选无效')
+  if (teamIdentifier !== CLAUDE_MAC_TEAM) throw new Error('Claude Mac 签名 Team 候选无效')
   return ['identifier "com.anthropic.claudefordesktop"', 'anchor apple generic',
     'certificate 1[field.1.2.840.113635.100.6.2.6] exists',
     'certificate leaf[field.1.2.840.113635.100.6.1.13] exists',
     `certificate leaf[subject.OU] = "${teamIdentifier}"`,
-    `certificate leaf[subject.O] = "Anthropic, PBC"`,
-    `certificate leaf[subject.CN] = "Developer ID Application: Anthropic, PBC (${teamIdentifier})"`,
+    `certificate leaf[subject.O] = "${CLAUDE_MAC_ORGANIZATION}"`,
+    `certificate leaf[subject.CN] = "Developer ID Application: ${CLAUDE_MAC_ORGANIZATION} (${teamIdentifier})"`,
   ].join(' and ')
 }
 
@@ -462,14 +465,14 @@ async function inspectPackage({ filePath, source, workDirectory, run = promisify
     const info = JSON.parse(metadata.stdout)
     if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw new Error('Claude Mac 可执行文件名称无效')
     const identity = await runInspection('/usr/bin/codesign', ['--display', '--verbose=4', application], workDirectory, run)
-    const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic, PBC \(([A-Z0-9]{10})\)$/gm)]
+    const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic PBC \((Q6L2SF6YDW)\)$/gm)]
     if (matches.length !== 1) throw new Error('Claude Mac 签名 Team 候选缺失或存在歧义')
     // Display prose is untrusted. Only codesign's exit status evaluating the
     // Apple chain, Developer ID OIDs, certificate subjects and fixed identifier
     // establishes trust; a forged Authority line cannot satisfy this requirement.
     await runInspection('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinClaudeRequirement(matches[0][1])}`, application], workDirectory, run)
     const architecture = await runInspection('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)], workDirectory, run)
-    return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, signerOrganization: 'Anthropic, PBC', signatureStatus: 'Valid', architectures: architecture.stdout.trim().split(/\s+/) }
+    return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, signerOrganization: CLAUDE_MAC_ORGANIZATION, teamIdentifier: CLAUDE_MAC_TEAM, signatureStatus: 'Valid', architectures: architecture.stdout.trim().split(/\s+/) }
   } finally {
     if (attachAttempted) {
       // Attach can have mounted the volume before its reply is lost. Always

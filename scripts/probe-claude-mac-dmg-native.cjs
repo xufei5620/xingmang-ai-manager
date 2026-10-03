@@ -88,7 +88,7 @@ async function main() {
         shortVersion: safePublicText(bundleMetadata.CFBundleShortVersionString), buildVersion: safePublicText(bundleMetadata.CFBundleVersion), trustedByPublisher: false }
     }
     if (executable === '/usr/bin/codesign' && args[0] === '--display') {
-      const matches = [...result.stderr.matchAll(/^Authority=Developer ID Application: Anthropic, PBC \(([A-Z0-9]{10})\)$/gm)]
+      const matches = [...result.stderr.matchAll(/^Authority=Developer ID Application: Anthropic PBC \((Q6L2SF6YDW)\)$/gm)]
       if (matches.length === 1) authorityTeam = matches[0][1]
       const authority = [...result.stderr.matchAll(/^Authority=([^\r\n]+)$/gm)].map(match => safePublicText(match[1])).filter(Boolean).slice(0, 16)
       const identifier = /^Identifier=([^\r\n]+)$/m.exec(result.stderr)?.[1]
