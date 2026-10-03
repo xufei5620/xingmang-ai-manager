@@ -6,6 +6,8 @@
   下载那一段照旧可以取消。
 - Windows 上一键装 Python、Node.js 时，先直接用系统自带的应用安装组件，不再先等下载加速准备好（以前最多会白等十来秒）；
   它装不上、改下官方安装包时才用加速。
+- 装 Gemini CLI 不再要求先装 Python：Windows 上不再顺带多装一个 Python，Mac 上没有 Python 也能直接装。
+  首页运行环境里 Python 那一行和按钮还在，外接工具里个别连接用得上。
 
 ## 开发
 
@@ -24,3 +26,9 @@
   下载这两步握着，Node.js 握着 MSI 那一轮。`InstallNodeRuntimeOptions.networkRegion` 可以给函数，借到线路以后才问
   （借到了就官方源优先，和以前整段借线路时一样）。macOS、Linux 装 Node.js 仍整段借线路，行为不变；CLI 安装里顺带
   自动装 Node.js 那条路本来就在 CLI 安装的线路里，没动。
+- 第二十八批 C：`electron/platform-capabilities.ts` 的 `cliNeedsPythonRuntime` 里 Gemini 三个平台都是 false（Linux
+  版拆分 ③ 先去掉了 Linux）。Gemini 要 Python 只为现场编译可选依赖 `node-pty` / `@github/keytar`，编不出来 npm
+  照样装完；终端那块用的 `@lydell/node-pty` 有 win32-x64/arm64、darwin-x64/arm64 的现成包（0.60.0 的
+  optionalDependencies，没在 Windows、Mac 真机跑过）。渲染层 `planCliInstall` 因此不再把 Python 排进 Gemini 的
+  安装、Mac 上不再拦，新手引导选 Gemini 时不再出 Python 那一行。教程「进阶：安装与使用命令行工具」「Mac 上准备 Node.js 和 Python」、Mac 首页缺 Python
+  那段（`runtime-install-guide.ts`）的文字跟着改；注册表的 `requires` 和这几处 Python 分支留作没报表时的旧行为。
