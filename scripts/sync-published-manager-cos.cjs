@@ -4,6 +4,7 @@ const https = require('node:https')
 const os = require('node:os')
 const path = require('node:path')
 const { buildAllowedArtifacts, buildManagerReleasePlan, syncManagerRelease } = require('./sync-manager-release-cos.cjs')
+const { createManagerProbeFailure, createManagerSyncDiagnostics, safeManagerSyncFailure } = require('./cos-manager-sync-diagnostics.cjs')
 
 const REPOSITORY = 'xufei5620/xingmang-ai-manager'
 const API_ROOT = `https://api.github.com/repos/${REPOSITORY}`
@@ -79,18 +80,20 @@ function validateDownloadUrl(value) {
 }
 
 function requestDownloadHead(url, { requestImpl = https.request, timeoutMs = 30000 } = {}) {
-  validateDownloadUrl(url)
+  try { validateDownloadUrl(url) } catch (error) {
+    throw createManagerProbeFailure('github-head-redirect-rejected', error.message, { reason: 'invalid-start' })
+  }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('GitHub 下载探测超时无效')
   return new Promise((resolve, reject) => {
     let request
     const timer = setTimeout(() => {
       if (request) request.destroy()
-      reject(new Error('GitHub 下载探测超时'))
+      reject(createManagerProbeFailure('github-head-timeout', 'GitHub 下载探测超时'))
     }, timeoutMs)
-    function fail() {
+    function fail(error) {
       clearTimeout(timer)
       if (request) request.destroy()
-      reject(new Error('GitHub 下载探测失败，未记录服务器正文或签名地址'))
+      reject(createManagerProbeFailure('github-head-network-failed', 'GitHub 下载探测失败，未记录服务器正文或签名地址', { transportCode: error?.code }))
     }
     try {
       request = requestImpl(url, {
@@ -104,40 +107,55 @@ function requestDownloadHead(url, { requestImpl = https.request, timeoutMs = 300
       })
       request.on('error', fail)
       request.end()
-    } catch { fail() }
+    } catch (error) { fail(error) }
   })
 }
 
 async function resolveAssetDownloadUrl(asset, options = {}) {
-  let url = validateDownloadUrl(asset.url)
-  if (url.hostname !== 'github.com' || url.search) throw new Error('GitHub 安装包必须从已验证的仓库附件地址开始下载')
+  let url
+  try {
+    url = validateDownloadUrl(asset.url)
+    if (url.hostname !== 'github.com' || url.search) throw new Error('GitHub 安装包必须从已验证的仓库附件地址开始下载')
+  } catch (error) { throw createManagerProbeFailure('github-head-redirect-rejected', error.message, { reason: 'invalid-start' }) }
   const inspect = options.inspectHead || requestDownloadHead
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     const result = await inspect(url, options)
     if (result.status === 200) return url.href
-    if (!REDIRECT_STATUSES.has(result.status) || typeof result.location !== 'string' || redirects === MAX_REDIRECTS) {
-      throw new Error('GitHub 安装包下载探测失败或重定向次数超限')
+    if (!REDIRECT_STATUSES.has(result.status)) {
+      throw createManagerProbeFailure('github-head-http-status', 'GitHub 安装包下载探测失败或重定向次数超限', { status: result.status })
     }
-    const target = validateDownloadUrl(new URL(result.location, url).href)
+    if (typeof result.location !== 'string' || redirects === MAX_REDIRECTS) {
+      throw createManagerProbeFailure('github-head-redirect-rejected', 'GitHub 安装包下载探测失败或重定向次数超限', { status: result.status, reason: typeof result.location !== 'string' ? 'missing-location' : 'redirect-limit' })
+    }
+    let target
+    try { target = validateDownloadUrl(new URL(result.location, url).href) } catch (error) {
+      throw createManagerProbeFailure('github-head-redirect-rejected', error.message, { status: result.status, reason: 'invalid-target' })
+    }
     // Once on GitHub's asset storage, another repository URL must not become
     // a new trust anchor. No authorization headers are sent on any hop.
     if (target.hostname === 'github.com' && (target.pathname !== url.pathname || target.search)) {
-      throw new Error('GitHub 安装包重定向不能切换仓库附件')
+      throw createManagerProbeFailure('github-head-redirect-rejected', 'GitHub 安装包重定向不能切换仓库附件', { status: result.status, reason: 'repository-switch' })
     }
     url = target
   }
-  throw new Error('GitHub 安装包重定向次数超限')
+  throw createManagerProbeFailure('github-head-redirect-rejected', 'GitHub 安装包重定向次数超限', { reason: 'redirect-limit' })
 }
 
 async function syncPublishedManagerRelease(options = {}) {
   const tag = options.tag || undefined
   const utilities = options.utilities || require('./cos-sync-utils.cjs')
-  const metadata = await utilities.fetchJson({
-    url: releaseApiUrl(tag), allowedHosts: ['api.github.com'], headers: REQUEST_HEADERS, maxBytes: MAX_RELEASE_JSON_BYTES,
-  }, { headerTimeoutMs: 30000, bodyTimeoutMs: 30000, requestImpl: options.requestImpl })
-  const release = validatePublishedRelease(metadata, tag)
-  const temporaryBase = await fs.realpath(options.temporaryBase || os.tmpdir())
-  const directory = await fs.mkdtemp(path.join(temporaryBase, 'xingmang-published-cos-'))
+  let latestState = 'not-written-by-this-run'
+  const stage = createManagerSyncDiagnostics(options.onDiagnostic, function () { return latestState })
+  const release = await stage('github-release-metadata', {}, async function () {
+    const metadata = await utilities.fetchJson({
+      url: releaseApiUrl(tag), allowedHosts: ['api.github.com'], headers: REQUEST_HEADERS, maxBytes: MAX_RELEASE_JSON_BYTES,
+    }, { headerTimeoutMs: 30000, bodyTimeoutMs: 30000, requestImpl: options.requestImpl })
+    return validatePublishedRelease(metadata, tag)
+  })
+  const { temporaryBase, directory } = await stage('prepare-temp', { version: release.version }, async function () {
+    const temporaryBase = await fs.realpath(options.temporaryBase || os.tmpdir())
+    return { temporaryBase, directory: await fs.mkdtemp(path.join(temporaryBase, 'xingmang-published-cos-')) }
+  })
   const expectedFiles = new Map(release.assets.map((asset) => [path.join(directory, asset.fileName), asset]))
   const anchoredUtilities = {
     ...utilities,
@@ -151,30 +169,45 @@ async function syncPublishedManagerRelease(options = {}) {
       return digest
     },
   }
+  let primaryError
   try {
     for (const asset of release.assets) {
-      const url = await resolveAssetDownloadUrl(asset, options)
+      const context = { version: release.version, platform: asset.platform, architecture: asset.architecture }
+      const url = await stage('github-download-location', context, function () { return resolveAssetDownloadUrl(asset, options) })
       const filePath = path.join(directory, asset.fileName)
-      await utilities.downloadResource({
+      await stage('github-download-installer', context, function () { return utilities.downloadResource({
         url, allowedHosts: DOWNLOAD_HOSTS, filePath, maxBytes: asset.size,
         expectedBytes: asset.size, expectedSha256: asset.sha256,
-      }, { headerTimeoutMs: 30000, bodyTimeoutMs: 15 * 60 * 1000, requestImpl: options.requestImpl })
-      await anchoredUtilities.hashFile(filePath, { maxBytes: asset.maxBytes })
+      }, { headerTimeoutMs: 30000, bodyTimeoutMs: 15 * 60 * 1000, requestImpl: options.requestImpl }) })
+      await stage('verify-github-installer', context, function () { return anchoredUtilities.hashFile(filePath, { maxBytes: asset.maxBytes }) })
     }
     // Keep GitHub's digest authoritative during the publisher's second plan
     // read as well, rather than blessing bytes changed after download checks.
-    await buildManagerReleasePlan(directory, release.version, { utilities: anchoredUtilities, installersOnly: true })
+    await stage('prepare-manager-plan', { version: release.version }, function () { return buildManagerReleasePlan(directory, release.version, { utilities: anchoredUtilities, installersOnly: true }) })
     const synchronize = options.sync || syncManagerRelease
-    return await synchronize({
-      ...options.syncOptions, directory, version: release.version, installersOnly: true, utilities: anchoredUtilities,
+    return await stage('cos-manager-publication', { version: release.version }, async function () {
+      const result = await synchronize({
+        ...options.syncOptions, directory, version: release.version, installersOnly: true, utilities: anchoredUtilities,
+        ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
+      })
+      latestState = 'published-and-read-back'
+      return result
     })
+  } catch (error) {
+    primaryError = error
+    latestState = safeManagerSyncFailure(error).latestState
+    throw error
   } finally {
     // The directory is created by this run under one canonical temp root.
     // Verify the deletion target before recursive cleanup on Windows too.
-    if (path.dirname(directory) !== temporaryBase || !path.basename(directory).startsWith('xingmang-published-cos-')) {
-      throw new Error('导入临时目录校验失败，未清理目录')
-    }
-    await fs.rm(directory, { recursive: true, force: true })
+    try {
+      await stage('cleanup-temp', { version: release.version }, async function () {
+        if (path.dirname(directory) !== temporaryBase || !path.basename(directory).startsWith('xingmang-published-cos-')) {
+          throw new Error('导入临时目录校验失败，未清理目录')
+        }
+        await fs.rm(directory, { recursive: true, force: true })
+      })
+    } catch (error) { if (!primaryError) throw error }
   }
 }
 
@@ -189,13 +222,13 @@ function parseArguments(argv, env = process.env) {
 }
 
 async function main(argv) {
-  const result = await syncPublishedManagerRelease(parseArguments(argv))
+  const result = await syncPublishedManagerRelease({ ...parseArguments(argv), onDiagnostic: function (event) { console.log(`[manager-sync] ${JSON.stringify(event)}`) } })
   console.log(`已将 GitHub 正式版本 ${result.version} 的安装包导入 COS，未重新发布版本或修改客户端更新源`)
 }
 
 if (require.main === module) {
-  main(process.argv.slice(2)).catch(() => {
-    console.error('::error::已发布安装包导入 COS 失败，请核对正式版本、GitHub 摘要及 COS 配置后重跑；未记录凭据或签名地址')
+  main(process.argv.slice(2)).catch((error) => {
+    console.error(`::error::已发布安装包导入 COS 失败；安全诊断：${JSON.stringify(safeManagerSyncFailure(error))}`)
     process.exitCode = 1
   })
 }
