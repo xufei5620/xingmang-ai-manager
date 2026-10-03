@@ -16,7 +16,7 @@ const workflows = new Map(fs.readdirSync(workflowDirectory)
 // themselves, through Playwright's _electron or a direct import, as opposed to
 // a browser fixture or the packaged app.
 const electronE2eScripts = new Set(fs.readdirSync(path.join(root, 'e2e'))
-  .filter((name) => /\.m?js$/.test(name))
+  .filter((name) => /\.[cm]?js$/.test(name))
   .filter((name) => /_electron\b|from ['"]electron['"]|require\(['"]electron['"]\)/.test(fs.readFileSync(path.join(root, 'e2e', name), 'utf8')))
   .map((name) => `e2e/${name}`))
 
@@ -28,7 +28,25 @@ const electronE2eScripts = new Set(fs.readdirSync(path.join(root, 'e2e'))
 function needsElectronBinary(command) {
   if (/\bnpm (?:run )?test(?![\w:-])/.test(command)) return true
   if (/\bnpm run (?:test:vitest|test:mac:dev-origin|release:build|dist:mac:free)\b/.test(command)) return true
-  return [...command.matchAll(/\bnode (e2e\/[\w.-]+)/g)].some((match) => electronE2eScripts.has(match[1]))
+  // The local all-in-one builds run `npm test` first; their :ci and :dir siblings do not.
+  if (/\bnpm run build(?::mac|:linux)?(?![\w:-])/.test(command)) return true
+  return [...command.matchAll(/\bnode (?:--test )?(?:\.\/)?(e2e\/[\w.-]+)/g)].some((match) => electronE2eScripts.has(match[1]))
+}
+
+// @electron/get's default download folder (env-paths 'electron', no suffix) on
+// each hosted runner; XDG_CACHE_HOME is unset on the Ubuntu ones, where
+// Playwright's browsers land in /home/runner/.cache/ms-playwright.
+// electron-builder downloads Electron through the same library into the same
+// folder, which is what lets the packaging steps reuse the restored zip.
+const electronCacheByRunner = [
+  [/^windows-/, '~/AppData/Local/electron/Cache'],
+  [/^macos-/, '~/Library/Caches/electron'],
+  [/^ubuntu-/, '~/.cache/electron'],
+]
+
+function defaultElectronCache(runsOn) {
+  const match = electronCacheByRunner.find(([pattern]) => pattern.test(String(runsOn)))
+  return match ? match[1] : null
 }
 
 // windows-test runs one interpolated command; what it runs is the matrix.
@@ -180,18 +198,20 @@ test('quality restores the download by Electron version and only a push to main 
   const qualityJobs = electronJobs().filter(({ file }) => file === 'quality.yml')
   assert.ok(qualityJobs.length > 0)
 
-  for (const { name, steps } of qualityJobs) {
+  for (const { name, job, steps } of qualityJobs) {
     const install = installIndex(steps)
     const [restore, save] = [steps[install - 1], steps[install + 1]]
-    const cachePath = steps[install].env?.electron_config_cache
+    const cachePath = defaultElectronCache(job['runs-on'])
 
     assert.match(String(restore.uses), /^actions\/cache\/restore@[0-9a-f]{40}$/, `${name}: the restore must sit right before the install`)
     assert.match(String(save.uses), /^actions\/cache\/save@[0-9a-f]{40}$/, `${name}: the save must sit right after the install`)
     assert.equal(restore.uses.split('@')[1], save.uses.split('@')[1], `${name}: restore and save must come from one release`)
     assert.equal(restore.if, steps[install].if, `${name}: the restore must run exactly when the install does`)
-    // Outside the checkout, where the dirty-tree checks would see it.
-    assert.match(String(cachePath), /^\$\{\{ runner\.temp \}\}\//, `${name}: the install must read the restored directory`)
-    assert.equal(restore.with.path, cachePath)
+    // Pointing install.js elsewhere would leave electron-builder, which only
+    // looks in the default folder, downloading the same zip a second time.
+    assert.equal(steps[install].env?.electron_config_cache, undefined, `${name}: the install must use the default download folder`)
+    assert.notEqual(cachePath, null, `${name}: no known download folder for ${job['runs-on']}`)
+    assert.equal(restore.with.path, cachePath, `${name}: the cache must hold @electron/get's own folder`)
     assert.equal(save.with.path, cachePath)
     // One entry per OS, architecture and Electron version: the zip changes
     // with nothing else.

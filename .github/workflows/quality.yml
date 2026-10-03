@@ -153,9 +153,13 @@ jobs:
       # HTTP 500, #796's linux-test on `fetch failed`. Every job that loads
       # Electron installs it in these steps instead, from this cache when the
       # version is unchanged and otherwise from GitHub with bounded, spaced
-      # retries (scripts/ci-ensure-electron-binary.cjs). Only a push to main
-      # writes the cache, right after the download: a pull request's cache can
-      # be read by that pull request alone, so a copy per pull request would
+      # retries (scripts/ci-ensure-electron-binary.cjs). The cached folder is
+      # @electron/get's own default for the runner's OS, not one passed in:
+      # electron-builder downloads Electron through the same library into the
+      # same folder, so the packaging steps later in windows-package and
+      # macos-test reuse this zip instead of fetching it again. Only a push to
+      # main writes the cache, right after the download: a pull request's cache
+      # can be read by that pull request alone, so a copy per pull request would
       # only crowd the npm caches out of the repository's 10 GB, and saving
       # before the tests run means a cancelled main run still leaves it behind.
       - name: Restore the Electron download for this version
@@ -163,21 +167,19 @@ jobs:
         id: electron-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/AppData/Local/electron/Cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Install the Electron binary before any test loads it
         if: matrix.electron
         # Above the script's worst case (every attempt timing out, plus every
         # wait), so a dead download ends in its own named error.
         timeout-minutes: 20
-        env:
-          electron_config_cache: ${{ runner.temp }}/electron-download-cache
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: matrix.electron && github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       - run: npx --no-install playwright install chromium
       - name: Enable Windows Developer Mode for symlink security tests
@@ -224,18 +226,16 @@ jobs:
         id: electron-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/AppData/Local/electron/Cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Install the Electron binary before any test loads it
         timeout-minutes: 20
-        env:
-          electron_config_cache: ${{ runner.temp }}/electron-download-cache
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       # No `npx playwright install chromium` here on purpose: every smoke below
       # drives the application through _electron.launch, which uses the
@@ -397,18 +397,16 @@ jobs:
         id: electron-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/Library/Caches/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Install the Electron binary before any test loads it
         timeout-minutes: 20
-        env:
-          electron_config_cache: ${{ runner.temp }}/electron-download-cache
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/Library/Caches/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
@@ -545,18 +543,16 @@ jobs:
         id: electron-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Install the Electron binary before any test loads it
         timeout-minutes: 20
-        env:
-          electron_config_cache: ${{ runner.temp }}/electron-download-cache
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/electron-download-cache
+          path: ~/.cache/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       # The browser download and its apt-installed system libraries are two
       # steps, because only the second one has ever hung. On #653 (runs

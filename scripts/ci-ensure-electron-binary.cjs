@@ -15,8 +15,10 @@ const path = require('node:path')
 const { setTimeout: delay } = require('node:timers/promises')
 
 const retryDelaysSeconds = [10, 30, 60, 120]
-// 一次是从 GitHub 发布页下一个约 130 MB 的 zip，托管 runner 上几秒钟；这个时限
-// 只管连接挂住不动的情况。
+// 每次尝试（下载约 130 MB 的 zip 再解压）的总时限，不是测连接停没停。托管 runner 上
+// 这一步通常十几秒，3 分钟够慢到约 0.7 MB/s 的线路下完；再慢，或连接挂住不动
+// （@electron/get 自己不限时），就截断重来。五次都截断才报错，比一声不吭地等到作业
+// 超时更早说清卡在哪。
 const attemptTimeoutMs = 3 * 60 * 1000
 
 function describeAttempt(result) {
