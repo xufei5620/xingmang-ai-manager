@@ -7,7 +7,8 @@
 
 - `src/renderer-v2/business-common.tsx` 的 `ipcPrefixPattern` 剥 Electron 加在通道名后面的错误类名时，
   不再只认 `…Error` 结尾：主进程 `CodexDesktopInstallFailure` 的类名以前跟着中文原因一起上屏。
-  每层只剥一个类名，原话开头的 `ENOENT:`、`TypeError [ERR_*]:` 这类错误码照旧留给错误分类。
+  每层只剥一个类名，原话开头的 `EPERM:`、`Error [ERR_TLS_*]:` 这类错误码照旧留给错误分类；
+  冒号后面必须有空格，没带类名、直接以 `C:\Users\…` 开头的原话不会被削掉盘符而躲过路径脱敏。
 - `runtimeStageFailureMessage` 改收原始错误，先过 `rawErrorMessage` 再拼句：以前 `App.tsx` 把
   `cause.message` 拼进句子中间，「Error invoking remote method 'runtime:install-node': Error:」
   留在错误框和「给客服看的原话」里。

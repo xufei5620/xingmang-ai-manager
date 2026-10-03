@@ -24,11 +24,19 @@ describe('rawErrorMessage', () => {
   })
 
   it('strips only the bare class name Electron adds, keeping the error codes the classifier reads', () => {
-    // 错误分类靠 ENOENT、ERR_* 这些原词认出是哪一类，剥多了就认不出来。
-    expect(rawErrorMessage(new Error("Error invoking remote method 'cli:install': Error: ENOENT: no such file or directory")))
-      .toBe('ENOENT: no such file or directory')
-    expect(rawErrorMessage(new Error("Error invoking remote method 'cli:install': TypeError [ERR_INVALID_URL]: Invalid URL")))
-      .toBe('TypeError [ERR_INVALID_URL]: Invalid URL')
+    // 错误分类靠 EPERM、ERR_TLS 这些原词认出是哪一类，剥多了就认不出来。
+    expect(rawErrorMessage(new Error("Error invoking remote method 'cli:install': Error: EPERM: operation not permitted")))
+      .toBe('EPERM: operation not permitted')
+    expect(rawErrorMessage(new Error("Error invoking remote method 'account:login': Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")))
+      .toBe("Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")
+  })
+
+  it('does not take a drive letter for a class name, so the path is still redacted', () => {
+    // 没带类名的拒绝直接以路径开头时，「C:」不能当类名剥掉：剩下的 \Users\张三\…
+    // 躲得过盘符那条脱敏，账号名就上屏了（I13）。
+    const leak = new Error("Error invoking remote method 'config:save': C:\\Users\\张三\\.codex\\config.toml 写不进去")
+    expect(rawErrorMessage(leak)).toBe('C:\\Users\\张三\\.codex\\config.toml 写不进去')
+    expect(userFacingErrorMessage(leak)).toBe('本地配置文件 写不进去')
   })
 
   it('keeps a business message that happens to start with an error class name', () => {

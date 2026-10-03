@@ -31,9 +31,11 @@ export function beginBusinessOperation(label: string) {
 // 不该上屏。类名只在紧跟通道名时才剥，避免把一句本来就以 Error: 开头的业务文案削掉
 // 半截。类名不限以 Error 结尾：以前只认 …Error，Codex 桌面端装不上时的
 // CodexDesktopInstallFailure 就带着英文类名进了错误框。每层只剥一个类名，原话开头的
-// ENOENT: 这类错误码照旧留着给错误分类认。legacy 的 src/error-message.ts 只剥前半截。
+// EPERM: 这类错误码照旧留着给错误分类认。冒号后面必须有空格（Electron 总会写一个）：
+// 不然 C:\Users\… 的盘符会被当成类名剥掉，下面的路径脱敏就认不出这条路径了。
+// legacy 的 src/error-message.ts 只剥前半截。
 // 正则不带 g 标志以避免 lastIndex 状态问题。
-const ipcPrefixPattern = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s*)?/
+const ipcPrefixPattern = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s+)?/
 
 /**
  * 只做取值与剥前缀，不做文案判断：`matchAccountErrorMessage` 与 `errorMessage` 的
