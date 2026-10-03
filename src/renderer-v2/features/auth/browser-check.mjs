@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createFixtureServer, observeFixtureBootstrap } from '../../../../e2e/harness.mjs'
-import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
+import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-auth-v2')
@@ -28,12 +28,18 @@ async function open(query = '', app = false) {
   })
   const bootstrap = observeFixtureBootstrap(page, server)
   try {
-    await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
     // Vite transforms the module graph on demand, so first paint can take seconds on
     // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
     // so a test whose first statement is one of them reads an empty page and fails on
     // the value rather than on a timeout. Wait for the mount before handing the page over.
-    await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
+    //
+    // Quality run 37146053083 (#806) lost this open outright: the request for
+    // Splash.tsx failed with net::ERR_NO_BUFFER_SPACE, nothing mounted, and the one
+    // navigation spent the whole budget on an empty page while the next login case
+    // passed in a second. openFixturePage spends the same budget as up to three
+    // navigations instead.
+    await openFixturePage(page, `${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`,
+      (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label: 'auth fixture' })
     return page
   } catch (error) {
     const evidence = await bootstrap.snapshot().catch(() => ({ diagnosticsUnavailable: true }))
