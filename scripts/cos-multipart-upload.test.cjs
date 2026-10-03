@@ -1,0 +1,250 @@
+const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
+const fs = require('node:fs/promises')
+const os = require('node:os')
+const path = require('node:path')
+const { Readable, Writable } = require('node:stream')
+const { test } = require('node:test')
+const { PART_BYTES, THRESHOLD_BYTES, readMultipartOptions, parseMultipartXml, uploadMultipart } = require('./cos-multipart-upload.cjs')
+const { createCosStore, readCosConfiguration, buildCosAuthorization, safeSyncFailure } = require('./cos-sync-utils.cjs')
+
+const config = readCosConfiguration({ COS_SECRET_ID: 'TESTSECRETID123456', COS_SECRET_KEY: 'TESTSECRETKEY123456' })
+const key = 'chatgpt/linux-rpm-arm64/sha256-test/installer.rpm'
+const uploadId = 'owned-upload-123'
+
+function digest(body, algorithm, encoding = 'hex') { return crypto.createHash(algorithm).update(body).digest(encoding) }
+function initXml() { return Buffer.from(`<InitiateMultipartUploadResult><Bucket>${config.bucket}</Bucket><Key>${key}</Key><UploadId>${uploadId}</UploadId></InitiateMultipartUploadResult>`) }
+function completeXml() { return Buffer.from(` <CompleteMultipartUploadResult><Location>http://untrusted.invalid/ignored</Location><Bucket>${config.bucket}</Bucket><Key>${key}</Key><ETag>&quot;${'a'.repeat(32)}-5&quot;</ETag></CompleteMultipartUploadResult>`) }
+function response(body, status = 200, headers = {}) {
+  const result = Readable.from(body.length ? [body] : [])
+  result.statusCode = status
+  result.headers = { 'content-length': String(body.length), ...headers }
+  result.on('end', () => { result.complete = true })
+  return result
+}
+async function fixture(t, size = THRESHOLD_BYTES + 123) {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-multipart-test-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const filePath = path.join(directory, 'installer.rpm')
+  const body = Buffer.alloc(size, 71)
+  await fs.writeFile(filePath, body)
+  return { filePath, body, input: { expectedBytes: size, expectedSha256: digest(body, 'sha256'), contentType: 'application/x-rpm' } }
+}
+function memoryMultipart({ loseComplete = false, errorComplete = false, corruptReadback = false, existing = null, failPart = false } = {}) {
+  const calls = []
+  const parts = new Map()
+  let object = existing
+  let contentType = 'application/x-rpm'
+  let active = 0
+  let peak = 0
+  function requestImpl(url, input, callback) {
+    const chunks = []
+    const request = new Writable({ write(chunk, encoding, done) { chunks.push(Buffer.from(chunk)); done() } })
+    const call = { url, ...input }
+    calls.push(call)
+    request.on('finish', () => {
+      call.body = Buffer.concat(chunks)
+      const query = Object.fromEntries(url.searchParams)
+      if (input.headers.authorization) {
+        const headers = { ...input.headers }
+        delete headers.authorization
+        // The common transport adds identity encoding after signing; COS v5
+        // signs the explicitly declared header-list, not every wire header.
+        delete headers['accept-encoding']
+        assert.equal(input.headers.authorization, buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: input.method, pathname: decodeURIComponent(url.pathname), query, headers, now: 1000 }))
+        if (input.method !== 'DELETE') assert.equal(headers['content-md5'], digest(call.body, 'md5', 'base64'))
+      }
+      if (input.method === 'POST' && Object.hasOwn(query, 'uploads')) {
+        assert.equal(input.headers['x-cos-forbid-overwrite'], 'true')
+        return callback(response(initXml()))
+      }
+      if (input.method === 'PUT' && query.uploadId) {
+        assert.equal(query.uploadId, uploadId)
+        assert.ok(call.body.length <= PART_BYTES)
+        active += 1
+        peak = Math.max(peak, active)
+        setTimeout(() => {
+          active -= 1
+          if (failPart && query.partNumber === '1') return callback(response(Buffer.alloc(0), 403))
+          parts.set(Number(query.partNumber), call.body)
+          callback(response(Buffer.alloc(0), 200, { etag: `"${digest(call.body, 'md5')}"` }))
+        }, 100)
+        return
+      }
+      if (input.method === 'PUT') {
+        object = call.body
+        contentType = input.headers['content-type']
+        return callback(response(Buffer.alloc(0)))
+      }
+      if (input.method === 'POST' && query.uploadId) {
+        assert.equal(query.uploadId, uploadId)
+        assert.equal(input.headers['x-cos-forbid-overwrite'], 'true')
+        const numbers = [...call.body.toString().matchAll(/<PartNumber>(\d+)<\/PartNumber>/g)].map(match => Number(match[1]))
+        assert.deepEqual(numbers, [...parts.keys()].sort((a, b) => a - b))
+        if (errorComplete) return callback(response(Buffer.from('<Error><Code>SECRET</Code></Error>')))
+        object = Buffer.concat(numbers.map(number => parts.get(number)))
+        if (loseComplete) return request.destroy(Object.assign(new Error('SECRET signed upload URL'), { code: 'ECONNRESET' }))
+        return callback(response(completeXml()))
+      }
+      if (input.method === 'DELETE') {
+        assert.equal(active, 0)
+        assert.deepEqual(query, { uploadId })
+        return callback(response(Buffer.alloc(0), 204))
+      }
+      assert.equal(url.search, '')
+      if (!object) return callback(response(Buffer.alloc(0), 404))
+      const body = corruptReadback ? Buffer.alloc(object.length, 82) : object
+      callback(response(input.method === 'HEAD' ? Buffer.alloc(0) : body, 200, { 'content-length': String(body.length), 'content-type': contentType, etag: '"public-object"' }))
+    })
+    return request
+  }
+  return { requestImpl, calls, get peak() { return peak } }
+}
+function store(transport, enabled = true, concurrency = 4) {
+  return createCosStore({ ...config, multipart: { enabled, concurrency } }, { requestImpl: transport.requestImpl, now: () => 1000 })
+}
+
+test('multipart is disabled by default and concurrency stays inside four to eight workers', () => {
+  assert.deepEqual(readMultipartOptions({}), { enabled: false, concurrency: 8 })
+  assert.equal(readMultipartOptions({ XINGMANG_COS_MULTIPART_ENABLED: 'false' }).enabled, false)
+  for (const value of ['TRUE', '1']) assert.throws(() => readMultipartOptions({ XINGMANG_COS_MULTIPART_ENABLED: value }))
+  for (const value of ['3', '9', '4.5', 'NaN']) assert.throws(() => readMultipartOptions({ XINGMANG_COS_MULTIPART_CONCURRENCY: value }))
+})
+
+test('strict XML rejects error bodies, entities, duplicate fields and unrelated identities', () => {
+  const fields = ['Bucket', 'Key', 'UploadId']
+  for (const value of ['<!DOCTYPE x><InitiateMultipartUploadResult/>', '<Error><Code>SECRET</Code></Error>', initXml().toString().replace('<Key>', '<Bucket>other</Bucket><Key>'), initXml().toString().replace(uploadId, '&xxe;'), '<InitiateMultipartUploadResult><UploadId>x</UploadId></InitiateMultipartUploadResult>']) {
+    assert.throws(() => parseMultipartXml(Buffer.from(value), 'InitiateMultipartUploadResult', fields))
+  }
+  assert.equal(parseMultipartXml(initXml(), 'InitiateMultipartUploadResult', fields).UploadId, uploadId)
+})
+
+test('bounded parallel parts sign exact queries and MD5 then confirm the full public SHA256', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart()
+  const progress = []
+  const result = await store(transport).publishFile(key, data.filePath, { ...data.input, onProgress: value => progress.push(value) })
+  assert.equal(result.sha256, data.input.expectedSha256)
+  assert.equal(transport.peak, 4)
+  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+  assert.equal(transport.calls.at(-1).method, 'GET')
+  assert.equal(progress.findLast(value => value.phase === 'upload-body').transferredBytes, data.body.length)
+  assert.doesNotMatch(JSON.stringify(progress), /uploadId|SECRET|authorization|url/)
+})
+
+test('a lost complete response is never retried or aborted and matching public content recovers', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart({ loseComplete: true })
+  assert.equal((await store(transport).publishFile(key, data.filePath, data.input)).sha256, data.input.expectedSha256)
+  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+})
+
+test('HTTP 200 Error remains an uncertain complete and never permits latest publication', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart({ errorComplete: true })
+  await assert.rejects(store(transport).publishFile(key, data.filePath, data.input), error => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.put.multipartState, 'complete-unconfirmed')
+    assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|upload-123|authorization|https?:/)
+    return true
+  })
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+  assert.equal(transport.calls.at(-1).method, 'GET')
+})
+
+test('failed parts all settle before aborting only the owned session with no complete', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart({ failPart: true })
+  await assert.rejects(store(transport).publishFile(key, data.filePath, data.input))
+  assert.equal(transport.calls.filter(call => call.method === 'POST').length, 1)
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1)
+})
+
+test('an existing conflicting immutable object is fully read and never starts multipart', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart({ existing: Buffer.alloc(data.body.length, 90) })
+  await assert.rejects(store(transport).publishFile(key, data.filePath, data.input), /SHA256/)
+  assert.deepEqual(transport.calls.map(call => call.method), ['HEAD', 'GET'])
+})
+
+test('a completed object with corrupt public content fails the unchanged full readback gate', async t => {
+  const data = await fixture(t)
+  const transport = memoryMultipart({ corruptReadback: true })
+  await assert.rejects(store(transport).publishFile(key, data.filePath, data.input), /公共下载核验失败/)
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+})
+
+test('part buffers bind to the prehashed inode snapshot before any complete', async t => {
+  const data = await fixture(t, PART_BYTES * 2)
+  const handle = await fs.open(data.filePath, 'r')
+  t.after(() => handle.close())
+  const stat = await handle.stat()
+  const operations = []
+  await assert.rejects(uploadMultipart({ handle, stat, hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+    failure: error => error,
+    request: async function (operation) {
+      operations.push(operation)
+      if (operation === 'init') { await fs.writeFile(data.filePath, Buffer.alloc(data.body.length, 70)); return { body: initXml() } }
+      if (operation === 'abort') return {}
+      throw new Error('unexpected publication')
+    },
+  }), /源文件内容发生变化/)
+  assert.deepEqual(operations, ['init', 'abort'])
+})
+
+test('all protected workflows expose disabled-by-default multipart without granting new credentials', async () => {
+  for (const name of ['publish-release.yml', 'sync-chatgpt-official-cos.yml', 'sync-claude-official-cos.yml', 'sync-published-manager-cos.yml']) {
+    const text = await fs.readFile(path.join(__dirname, '../.github/workflows', name), 'utf8')
+    assert.match(text, /XINGMANG_COS_MULTIPART_ENABLED: \$\{\{ vars\.XINGMANG_COS_MULTIPART_ENABLED \|\| 'false' \}\}/)
+    assert.match(text, /XINGMANG_COS_MULTIPART_CONCURRENCY: \$\{\{ vars\.XINGMANG_COS_MULTIPART_CONCURRENCY \|\| '8' \}\}/)
+  }
+})
+
+test('disabled large files and enabled latest JSON both preserve the single PUT path', async t => {
+  const data = await fixture(t)
+  const disabled = memoryMultipart()
+  await store(disabled, false).publishFile(key, data.filePath, data.input)
+  assert.deepEqual(disabled.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  const latest = memoryMultipart()
+  await store(latest).publishJson('chatgpt/latest.json', { schemaVersion: 1 }, { overwrite: true })
+  assert.deepEqual(latest.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  assert.equal(latest.calls[1].headers['x-cos-forbid-overwrite'], undefined)
+})
+
+test('twenty-one minute transfers can complete but thirty-one minute dispatch cannot publish', async t => {
+  const data = await fixture(t, PART_BYTES + 123)
+  for (const minutes of [21, 31]) {
+    const handle = await fs.open(data.filePath, 'r')
+    const stat = await handle.stat()
+    let clock = 0
+    const operations = []
+    try {
+      const run = uploadMultipart({ handle, stat, hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+        monotonicNow: () => clock, failure: error => error,
+        request: async function (operation, method, query, body) {
+          operations.push(operation)
+          if (operation === 'init') { clock = minutes * 60 * 1000; return { body: initXml() } }
+          if (operation === 'part') return { bytes: 0, headers: { etag: `"${digest(body, 'md5')}"` } }
+          if (operation === 'complete') return { body: completeXml() }
+          return {}
+        },
+      })
+      if (minutes === 21) { await run; assert.ok(operations.includes('complete')) }
+      else { await assert.rejects(run, /总时间限制/); assert.deepEqual(operations, ['init', 'abort']) }
+    } finally { await handle.close() }
+  }
+})
+
+test('wrong initiation identity never authorizes abort for an unowned upload id', async t => {
+  const data = await fixture(t, 123)
+  const handle = await fs.open(data.filePath, 'r')
+  try {
+    const operations = []
+    await assert.rejects(uploadMultipart({ handle, stat: await handle.stat(), hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+      failure: error => error, request: async function (operation) { operations.push(operation); return { body: Buffer.from(initXml().toString().replace(config.bucket, 'wrong-bucket')) } },
+    }), /身份不匹配/)
+    assert.deepEqual(operations, ['init'])
+  } finally { await handle.close() }
+})
