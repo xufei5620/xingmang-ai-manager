@@ -14,6 +14,8 @@ const DEFAULT_BUCKET = 'xingmang-downloads-1342302199'
 const DEFAULT_REGION = 'ap-shanghai'
 const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed', 'cos-multipart-unconfirmed'])
 const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
+const COS_ERROR_CODES = new Set(['RequestTimeout', 'BadDigest', 'InvalidDigest', 'AccessDenied', 'SignatureDoesNotMatch', 'NoSuchUpload', 'EntityTooSmall', 'InvalidPart', 'InvalidPartOrder', 'InvalidArgument'])
+const MAX_COS_ERROR_BYTES = 4096
 const failureDetails = new WeakMap()
 
 function transferFailure(code, message, details = {}) {
@@ -32,6 +34,7 @@ function readSafeSyncFailure(error, seen, depth) {
   if (['not-completed', 'complete-unconfirmed'].includes(value.multipartState)) result.multipartState = value.multipartState
   if (['response-headers', 'upload-body', 'response-body'].includes(value.phase)) result.phase = value.phase
   if (TRANSPORT_CODES.has(value.transportCode)) result.transportCode = value.transportCode
+  if (COS_ERROR_CODES.has(value.cosErrorCode)) result.cosErrorCode = value.cosErrorCode
   if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status
   for (const name of ['transferredBytes', 'expectedBytes']) {
     if (Number.isSafeInteger(value[name]) && value[name] >= 0 && value[name] <= MAX_FILE_BYTES) result[name] = value[name]
@@ -150,6 +153,61 @@ function validateTimeout(value, fallback) {
   return timeout
 }
 
+function parseCosErrorCode(body) {
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(body).trim()
+    .replace(/^<\?xml\s+version=["']1\.0["'](?:\s+encoding=["']UTF-8["'])?\s*\?>\s*/i, '')
+  const root = /^<Error>\s*([\s\S]*?)\s*<\/Error>$/.exec(text)
+  if (!root) return undefined
+  const seen = new Set()
+  let remaining = root[1]
+  let code
+  while (remaining.trim()) {
+    const field = /^\s*<(Code|Message|Resource|RequestId|TraceId)>([^<]*)<\/\1>\s*/.exec(remaining)
+    if (!field || seen.has(field[1]) || /&(?!amp;|lt;|gt;|quot;|apos;)/.test(field[2])) return undefined
+    seen.add(field[1])
+    if (field[1] === 'Code') code = field[2]
+    remaining = remaining.slice(field[0].length)
+  }
+  return COS_ERROR_CODES.has(code) ? code : undefined
+}
+
+function isCosMultipartRequest(input, url) {
+  const methods = { init: 'POST', part: 'PUT', complete: 'POST', abort: 'DELETE' }
+  return Object.hasOwn(methods, input.multipartOperation) && methods[input.multipartOperation] === input.method &&
+    /^[a-z0-9][a-z0-9-]{0,49}-[0-9]{5,20}\.cos\.[a-z]{2}-[a-z]+(?:-[a-z]+)?\.myqcloud\.com$/.test(url.hostname)
+}
+
+async function readCosErrorCode(response, timeoutMs) {
+  let timer
+  try {
+    if (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity') return undefined
+    const declaredBytes = parseContentLength(response.headers)
+    if (declaredBytes !== null && declaredBytes > MAX_COS_ERROR_BYTES) return undefined
+    const chunks = []
+    let bytes = 0
+    timer = setTimeout(() => response.destroy(), Math.min(timeoutMs, 5000))
+    await pipeline(response, new Writable({ write(chunk, encoding, callback) {
+      bytes += chunk.length
+      if (bytes > MAX_COS_ERROR_BYTES) return callback(new Error('COS 错误响应超出大小限制'))
+      chunks.push(Buffer.from(chunk))
+      callback()
+    } }))
+    if (declaredBytes !== null && bytes !== declaredBytes) return undefined
+    return parseCosErrorCode(Buffer.concat(chunks))
+  } catch {
+    // Diagnostics never replace the original HTTP failure or retain server text.
+    return undefined
+  } finally { clearTimeout(timer) }
+}
+
+function isRetryablePartFailure(error) {
+  const details = failureDetails.get(error)
+  if (!details || details.method !== 'PUT' || details.multipartOperation !== 'part') return false
+  return details.code === 'response-header-timeout' || details.code === 'response-body-timeout' ||
+    (details.code === 'network-request-failed' && details.transportCode === 'ETIMEDOUT') ||
+    (details.code === 'http-status' && details.status === 400 && details.cosErrorCode === 'RequestTimeout')
+}
+
 async function performRequest(input, options = {}) {
   const url = validateResourceUrl(input.url, input.allowedHosts)
   const maxBytes = validateByteLimit(input.maxBytes)
@@ -221,6 +279,10 @@ async function performRequest(input, options = {}) {
     if (!Number.isInteger(status) || status < 200 || status >= 300) {
       const error = transferFailure(status >= 300 && status < 400 ? 'redirect-rejected' : 'http-status', status >= 300 && status < 400 ? '服务器重定向已拒绝' : `服务器请求失败（HTTP ${Number.isInteger(status) ? status : 0}）`, details({ status }))
       error.status = status
+      if (Number.isInteger(status) && status >= 400 && status <= 599 && isCosMultipartRequest(input, url)) {
+        const cosErrorCode = await readCosErrorCode(response, bodyTimeoutMs)
+        if (cosErrorCode) failureDetails.get(error).cosErrorCode = cosErrorCode
+      }
       throw error
     }
     const headers = Object.fromEntries(Object.entries(response.headers || {}).map(([key, value]) => [key.toLowerCase(), value]))
@@ -503,6 +565,7 @@ function createCosStore(configuration, options = {}) {
     let uploadError
     try {
       await uploadMultipart({ handle: opened.handle, stat: opened.stat, hash, bucket: config.bucket, key, concurrency: multipart.concurrency,
+        shouldRetryPart: isRetryablePartFailure,
         failure: function (error, multipartState, abort) { return transferFailure('cos-multipart-unconfirmed', 'COS 分块上传未确认；请核对远程状态', { put: error, multipartState, abort }) },
         onPartCommitted: function (transferredBytes) { input.onProgress?.({ method: 'PUT', phase: 'upload-body', transferredBytes, expectedBytes: hash.bytes }) },
         request: async function (operation, method, query, body) {
@@ -533,7 +596,7 @@ function createCosStore(configuration, options = {}) {
       })
     } catch (error) { uploadError = error } finally { await opened.handle.close().catch(() => {}) }
     // Complete can return 200 before merging finishes, or lose its final reply.
-    // There is never a second complete/PUT, rollback, or abort after complete.
+    // There is never a second complete, rollback, or abort after complete.
     try { return await verify(key, hash, input) } catch (readbackError) {
       if (uploadError) throw transferFailure('cos-upload-unconfirmed', 'COS 分块上传未确认成功；已尝试完整公共回读，请核对远程状态', { put: uploadError, readback: readbackError })
       throw transferFailure('cos-readback-failed', 'COS 分块上传后的完整公共下载核验失败', { readback: readbackError })
