@@ -397,6 +397,93 @@ describe('window close coordination', () => {
     expect(options.quit).toHaveBeenCalledOnce()
   })
 
+  it('waits out of sight for an installer that prepares the update in this process, then quits if it gives up', async () => {
+    const handoff = deferred<void>()
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate: () => handoff.promise,
+    })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    // Squirrel.Mac 还在本进程里取包、校验：这时退出就把它一起关掉了。
+    expect(options.hide).toHaveBeenCalledOnce()
+    expect(options.quit).not.toHaveBeenCalled()
+    expect(lifecycle.isQuitting).toBe(true)
+    handoff.resolve()
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the quit to the installer once it takes over', async () => {
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate: () => new Promise<void>(() => {}),
+    })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    // 安装器自己退出时 will-quit 会 dispose 这套流程。
+    lifecycle.dispose()
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).not.toHaveBeenCalled()
+  })
+
+  it('stops waiting for a silent installer after twenty seconds', async () => {
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate: () => new Promise<void>(() => {}),
+    })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(19_999)
+    expect(options.quit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('still quits when the installer handoff fails', async () => {
+    const failure = new Error('handoff failed')
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate: () => Promise.reject(failure),
+    })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('does not hold a Mac power-off for the installer', async () => {
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate: () => new Promise<void>(() => {}),
+    })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).not.toHaveBeenCalled()
+    lifecycle.noteSystemPowerOff()
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('does not start waiting for the installer once a Mac power-off was announced', async () => {
+    const installDownloadedUpdate = vi.fn(() => new Promise<void>(() => {}))
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate,
+    })
+    lifecycle.noteSystemPowerOff()
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(installDownloadedUpdate).toHaveBeenCalledOnce()
+    expect(options.hide).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
   it('does not start an installer once Windows reports the session is ending', async () => {
     const window = new EventEmitter()
     const application = new EventEmitter()

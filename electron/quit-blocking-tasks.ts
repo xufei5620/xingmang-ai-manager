@@ -1,6 +1,6 @@
 import { cliCatalog, isProviderId } from './catalog'
 import type { InstallationQueueSnapshot } from './installation-queue'
-import type { UpdateSnapshot } from './updater'
+import { updateInstallLaunchTimeoutCode, type UpdateSnapshot } from './updater'
 
 export interface InterruptibleInstallTask {
   /** 队列 key，只用于日志与测试，不面向用户。 */
@@ -59,4 +59,25 @@ export interface InstallableUpdateOnQuit {
 export function resolveInstallableUpdateOnQuit(snapshot: UpdateSnapshot): InstallableUpdateOnQuit | null {
   if (snapshot.phase !== 'downloaded' || snapshot.error || snapshot.development) return null
   return { version: snapshot.availableVersion }
+}
+
+/**
+ * 退出时把下好的更新交给 Mac 的安装器以后，等它给结果：装得上它会自己退出重开，
+ * 这里永远等不到；装不上（比如校验没通过）时更新器会把失败记在安装那一步，这时
+ * 落定，让退出照常走完。安装看门狗 10 秒报的「没起来」不算：慢一点的 Mac 还在
+ * 校验，这时退出就把它掐断了，交给退出流程自己的上限去等。
+ */
+export function waitForUpdateInstallFailure(updates: { subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void }): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+    let unsubscribe: (() => void) | null = null
+    unsubscribe = updates.subscribe((snapshot) => {
+      if (settled || snapshot.failedStep !== 'install' || !snapshot.error) return
+      if (snapshot.error.code === updateInstallLaunchTimeoutCode) return
+      settled = true
+      unsubscribe?.()
+      resolve()
+    })
+    if (settled) unsubscribe()
+  })
 }
