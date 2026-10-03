@@ -1,0 +1,31 @@
+name: manager-github-public-source-probe
+on:
+  push:
+    branches: [codex/manager-github-read-only-probe-20261003]
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/codex/manager-github-read-only-probe-20261003' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install locked script dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify GitHub source assets and stop before COS publication
+        env:
+          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/manager-github-public-source-Linux.json
+        run: node scripts/probe-published-manager-public-source.cjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: manager-github-public-source-Linux
+          path: ${{ runner.temp }}/manager-github-public-source-Linux.json
+          if-no-files-found: warn
+          retention-days: 3
