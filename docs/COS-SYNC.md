@@ -81,6 +81,8 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 运行 `sync-published-manager-cos`，选择 `main`；留空版本号导入最新正式 GitHub Release，也可指定正规发布标签。仅接受同一仓库的正式发布和安装包资产，下载后核对 GitHub 提供的大小及 SHA-256，再按安装包模式同步 COS。该模式不重新发布星芒、不修改 R2，也不伪造 GitHub Release 中没有的更新 companion 文件。未来正式发版仍同步完整发布产物。
 
+观察 `[manager-sync]` 的固定阶段：GitHub 发布清单、下载位置、安装包下载/摘要、COS 文件完整回读、候选索引、latest 切换及清理。失败只输出阶段、已验证版本/平台和安全白名单分类；HEAD 探测分别标记超时、网络失败、HTTP 状态和被拒的重定向原因，绝不输出原异常、堆栈、文件路径、URL、Location 或认证正文。`not-written-by-this-run` 不表示此前的不可变文件未上传；`write-unconfirmed` 需要先读取远端状态；`published-and-read-back` 表示 latest 已完整回读确认，即使之后清理临时目录失败。清理错误单独记录，不盖掉原始同步失败；诊断不自动重试或改变上传行为。
+
 ### 官方 ChatGPT 包
 
 #### 大包分块上传（默认关闭）
