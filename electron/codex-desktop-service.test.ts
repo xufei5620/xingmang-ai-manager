@@ -2047,6 +2047,20 @@ describe('Codex Desktop install on macOS', () => {
     expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
   })
 
+  it('tells root that an app already there is installed instead of refusing', async () => {
+    const f = macInstallFixture({
+      getuid: () => 0,
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
   it('passes the Mac wording on as it is, never the Windows one that points at the Microsoft Store', async () => {
     const failure = new MacosDesktopInstallError('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。', 'fetch failed')
     const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })

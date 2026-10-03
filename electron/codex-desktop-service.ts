@@ -2673,14 +2673,15 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
-    // root 身份下装出来的应用归 root，客户自己的账号更新不了它（同 external-client-runtime）。
-    if (getuid() === 0) {
-      throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
-    }
     const current = await detectMacosCodexApp().catch(() => null)
     if (current?.app) {
       sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
       return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
+    }
+    // root 身份下装出来的应用归 root，客户自己的账号更新不了它（同 external-client-runtime）。
+    // 已经装好的那份不动它，照上面说一句就行，所以放在后面。
+    if (getuid() === 0) {
+      throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
     }
     const architecture = await resolveMacosInstallArchitecture()
     cancellation?.throwIfCancelled()
