@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest]
+        runner: [macos-latest]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
@@ -31,16 +31,16 @@ jobs:
         with:
           node-version: 22
 
-      - name: Read only two fixed Claude Mac initial response headers
+      - name: Read one fixed Claude Mac official update metadata response
         env:
-          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/claude-mac-response-probe-${{ runner.os }}.json
-        run: node scripts/public-claude-mac-response-probe.cjs
+          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/claude-mac-update-probe-${{ runner.os }}.json
+        run: node scripts/public-claude-mac-update-probe.cjs
 
       - name: Preserve only the fixed safe evidence rows
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: claude-mac-response-probe-${{ runner.os }}
-          path: ${{ runner.temp }}/claude-mac-response-probe-${{ runner.os }}.json
+          name: claude-mac-update-probe-${{ runner.os }}
+          path: ${{ runner.temp }}/claude-mac-update-probe-${{ runner.os }}.json
           if-no-files-found: warn
           retention-days: 3
