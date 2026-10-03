@@ -61,7 +61,7 @@ function fixture() {
       if (value.badInspection) return { signatureStatus: 'Invalid' }
       if (input.source.platform === 'windows') return windowsReport(input.source.architecture, value.windowsVersion || '1.1.42.0')
       if (input.source.platform === 'linux') return { package: 'claude-desktop', architecture: input.source.packageArchitecture, version: value.linuxVersion || '1.1.42' }
-      return { version: '1.1.42', signerOrganization: input.source.format === 'dmg' ? 'Anthropic PBC' : 'Anthropic, PBC', teamIdentifier: 'Q6L2SF6YDW', signatureStatus: 'Valid', bundleIdentifier: 'com.anthropic.claudefordesktop', architectures: ['arm64', 'x86_64'], architectureProof: 'official-universal-endpoint' }
+      return { version: '1.1.42', signerOrganization: 'Anthropic PBC', teamIdentifier: 'Q6L2SF6YDW', signatureStatus: 'Valid', bundleIdentifier: 'com.anthropic.claudefordesktop', architectures: ['arm64', 'x86_64'], architectureProof: 'native-payload-mach-o', installerTeamIdentifier: 'Q6L2SF6YDW', installerSignatureStatus: 'Valid' }
     },
     async createWorkDirectory() { return path.join(os.tmpdir(), 'mock-claude-sync') },
     async removeWorkDirectory(directory) { value.removed.push(directory) },

@@ -235,12 +235,13 @@ function validateInspection(report, source, expectedVersion) {
     if (report?.package !== 'claude-desktop' || report.architecture !== source.packageArchitecture || report.version !== expectedVersion) throw new Error('Claude DEB 包头与官方索引身份或架构不匹配')
     return { version: validateVersion(report.version), verification: source.verification, aptSignatureVerified: false }
   }
-  const expectedOrganization = source.format === 'dmg' ? CLAUDE_MAC_ORGANIZATION : 'Anthropic, PBC'
-  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== expectedOrganization) throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
-  if (source.format === 'dmg' && (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)
-    || report.teamIdentifier !== CLAUDE_MAC_TEAM || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64'))) throw new Error('Claude Mac 应用身份、固定 Team 或 Universal 架构不匹配')
-  if (source.format === 'pkg' && report.architectureProof !== 'official-universal-endpoint') throw new Error('Claude Mac 企业 PKG 架构来源记录无效')
-  return { version: validateVersion(report.version), verification: source.verification, signatureStatus: 'Valid', ...(source.format === 'pkg' ? { architectureProof: report.architectureProof } : { architectures: ['arm64', 'x86_64'] }) }
+  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== CLAUDE_MAC_ORGANIZATION) throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
+  if (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)
+    || report.teamIdentifier !== CLAUDE_MAC_TEAM || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64')) throw new Error('Claude Mac 应用身份、固定 Team 或 Universal 架构不匹配')
+  if (source.format === 'pkg' && (report.architectureProof !== 'native-payload-mach-o' || report.installerTeamIdentifier !== CLAUDE_MAC_TEAM
+    || report.installerSignatureStatus !== 'Valid')) throw new Error('Claude Mac 企业 PKG 原生签名或实际架构记录无效')
+  return { version: validateVersion(report.version), verification: source.verification, signatureStatus: 'Valid', teamIdentifier: CLAUDE_MAC_TEAM,
+    architectures: ['arm64', 'x86_64'], ...(source.format === 'pkg' ? { architectureProof: report.architectureProof, installerTeamIdentifier: CLAUDE_MAC_TEAM, installerSignatureStatus: 'Valid' } : {}) }
 }
 
 async function synchronizeOfficialClaude({ store, platforms = 'all', dependencies, now = function () { return new Date().toISOString() } }) {
@@ -410,6 +411,63 @@ function unconfirmedDmgUnmount() {
   return error
 }
 
+function validateDarwinClaudeInstallerSignature(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_METADATA_BYTES) throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
+  const status = /^\s*Status:\s*([^\r\n]+)$/m.exec(text)?.[1]
+  const chain = [...text.matchAll(/^\s*\d+\.\s*([^\r\n]+)$/gm)].map(function (match) { return match[1] })
+  if (!['signed by a certificate trusted by macOS', 'signed by a developer certificate issued by Apple for distribution'].includes(status)
+    || chain.length !== 3 || chain[0] !== `Developer ID Installer: ${CLAUDE_MAC_ORGANIZATION} (${CLAUDE_MAC_TEAM})`
+    || chain[1] !== 'Developer ID Certification Authority' || chain[2] !== 'Apple Root CA') throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
+}
+
+async function inspectDarwinClaudeApplication(application, workDirectory, run, allowedPayloadRoot) {
+  const metadata = await runInspection('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], workDirectory, run)
+  const info = JSON.parse(metadata.stdout)
+  if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw new Error('Claude Mac 可执行文件名称无效')
+  const executable = path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)
+  if (allowedPayloadRoot) {
+    const canonical = await fs.realpath(executable)
+    const stat = await fs.lstat(executable)
+    if (!canonical.startsWith(allowedPayloadRoot + path.sep) || !stat.isFile() || stat.nlink !== 1) throw new Error('Claude PKG Mach-O 越出私有目录或不是单链接普通文件')
+  }
+  const identity = await runInspection('/usr/bin/codesign', ['--display', '--verbose=4', application], workDirectory, run)
+  const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic PBC \((Q6L2SF6YDW)\)$/gm)]
+  if (matches.length !== 1) throw new Error('Claude Mac 签名 Team 候选缺失或存在歧义')
+  // Display text only selects the pinned identity. Trust still requires the
+  // unchanged Apple anchor, Developer ID OIDs and strict deep native verify.
+  await runInspection('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinClaudeRequirement(matches[0][1])}`, application], workDirectory, run)
+  const architecture = await runInspection('/usr/bin/lipo', ['-archs', executable], workDirectory, run)
+  return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, signerOrganization: CLAUDE_MAC_ORGANIZATION,
+    teamIdentifier: CLAUDE_MAC_TEAM, signatureStatus: 'Valid', architectures: architecture.stdout.trim().split(/\s+/) }
+}
+
+async function findDarwinClaudePayloadApplication(expanded) {
+  const canonicalRoot = await fs.realpath(expanded)
+  const candidates = []
+  let visited = 0
+  async function collect(directory, depth = 0) {
+    if (depth > 8 || ++visited > 2048) throw new Error('Claude PKG 展开目录超过限制')
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    if (entries.length > 2048) throw new Error('Claude PKG 展开目录项超过限制')
+    for (const entry of entries) {
+      // Framework symlinks are normal, but never traverse them while locating
+      // the payload app. A package cannot redirect this search outside staging.
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+      const child = path.join(directory, entry.name)
+      if (entry.name === 'Claude.app') candidates.push(child)
+      else await collect(child, depth + 1)
+    }
+  }
+  await collect(expanded)
+  if (candidates.length !== 1) throw new Error('Claude PKG 必须包含唯一的实际 Claude.app')
+  const application = candidates[0]
+  const common = require('./cos-sync-utils.cjs')
+  const infoPath = path.join(application, 'Contents', 'Info.plist')
+  await common.readBoundedRegularFile(infoPath, { maxBytes: 256 * 1024 })
+  if (!(await fs.realpath(infoPath)).startsWith(canonicalRoot + path.sep)) throw new Error('Claude PKG 应用元数据越出私有目录')
+  return application
+}
+
 async function inspectPackage({ filePath, source, workDirectory, run = promisify(execFile), platform = process.platform }) {
   if (source.platform === 'windows') {
     if (platform !== 'win32') throw new Error('Claude Windows 签名检查必须在 Windows runner 运行')
@@ -427,32 +485,12 @@ async function inspectPackage({ filePath, source, workDirectory, run = promisify
   if (platform !== 'darwin') throw new Error('Claude Mac 签名和版本检查必须在 macOS runner 运行')
   if (source.format === 'pkg') {
     const signature = await runInspection('/usr/sbin/pkgutil', ['--check-signature', filePath], workDirectory, run)
-    if (!/^\s*Status: signed by a certificate trusted by macOS\s*$/m.test(signature.stdout)
-      || !/^\s*1\. Developer ID Installer: Anthropic, PBC \([A-Z0-9]{10}\)/m.test(signature.stdout)) throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
-    const expanded = path.join(workDirectory, 'claude-pkg-metadata')
-    await runInspection('/usr/sbin/pkgutil', ['--expand', filePath, expanded], workDirectory, run)
-    const common = require('./cos-sync-utils.cjs')
-    const candidates = []
-    async function collect(directory, depth = 0) {
-      if (depth > 4) throw new Error('Claude PKG 元数据目录超过限制')
-      const entries = await fs.readdir(directory, { withFileTypes: true })
-      if (entries.length > 64) throw new Error('Claude PKG 元数据文件过多')
-      for (const entry of entries) {
-        if (entry.isSymbolicLink()) throw new Error('Claude PKG 元数据包含链接')
-        const child = path.join(directory, entry.name)
-        if (entry.isDirectory()) await collect(child, depth + 1)
-        else if (entry.name === 'PackageInfo') {
-          const text = (await common.readBoundedRegularFile(child, { maxBytes: 256 * 1024 })).toString('utf8')
-          if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('Claude PKG 元数据包含不允许 XML')
-          const version = /<pkg-info\b[^>]*\bversion="([^"]+)"/.exec(text)?.[1]
-          const identifier = /<pkg-info\b[^>]*\bidentifier="([^"]+)"/.exec(text)?.[1]
-          if (identifier?.startsWith('com.anthropic.')) candidates.push(validateVersion(version))
-        }
-      }
-    }
-    await collect(expanded)
-    if (!candidates.length || new Set(candidates).size !== 1) throw new Error('Claude PKG 包内版本缺失或存在歧义')
-    return { version: candidates[0], signerOrganization: 'Anthropic, PBC', signatureStatus: 'Valid', architectureProof: 'official-universal-endpoint' }
+    validateDarwinClaudeInstallerSignature(signature.stdout)
+    const expanded = path.join(workDirectory, 'claude-pkg-expanded-full')
+    await runInspection('/usr/sbin/pkgutil', ['--expand-full', filePath, expanded], workDirectory, run)
+    const application = await findDarwinClaudePayloadApplication(expanded)
+    const inspected = await inspectDarwinClaudeApplication(application, workDirectory, run, await fs.realpath(expanded))
+    return { ...inspected, architectureProof: 'native-payload-mach-o', installerTeamIdentifier: CLAUDE_MAC_TEAM, installerSignatureStatus: 'Valid' }
   }
   const mountPoint = path.join(workDirectory, 'claude-dmg-readonly')
   await fs.mkdir(mountPoint)
@@ -461,18 +499,7 @@ async function inspectPackage({ filePath, source, workDirectory, run = promisify
     attachAttempted = true
     await runInspection('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mountPoint, filePath], workDirectory, run)
     const application = path.join(mountPoint, 'Claude.app')
-    const metadata = await runInspection('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], workDirectory, run)
-    const info = JSON.parse(metadata.stdout)
-    if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw new Error('Claude Mac 可执行文件名称无效')
-    const identity = await runInspection('/usr/bin/codesign', ['--display', '--verbose=4', application], workDirectory, run)
-    const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic PBC \((Q6L2SF6YDW)\)$/gm)]
-    if (matches.length !== 1) throw new Error('Claude Mac 签名 Team 候选缺失或存在歧义')
-    // Display prose is untrusted. Only codesign's exit status evaluating the
-    // Apple chain, Developer ID OIDs, certificate subjects and fixed identifier
-    // establishes trust; a forged Authority line cannot satisfy this requirement.
-    await runInspection('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinClaudeRequirement(matches[0][1])}`, application], workDirectory, run)
-    const architecture = await runInspection('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)], workDirectory, run)
-    return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, signerOrganization: CLAUDE_MAC_ORGANIZATION, teamIdentifier: CLAUDE_MAC_TEAM, signatureStatus: 'Valid', architectures: architecture.stdout.trim().split(/\s+/) }
+    return await inspectDarwinClaudeApplication(application, workDirectory, run)
   } finally {
     if (attachAttempted) {
       // Attach can have mounted the volume before its reply is lost. Always
