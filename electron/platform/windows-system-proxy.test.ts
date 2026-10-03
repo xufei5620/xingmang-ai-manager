@@ -3,7 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { runCommand } from '../command-runner'
-import { buildWindowsLoopbackProxySnapshot, createWindowsSystemProxy, parseWindowsProxySnapshot, type WindowsProxySnapshot } from './windows-system-proxy'
+import { scanPowerShell, unbalancedBracket } from '../powershell-script-scan.test-support'
+import { buildWindowsLoopbackProxySnapshot, createWindowsSystemProxy, parseWindowsProxySnapshot, windowsSystemProxyScript, type WindowsProxySnapshot } from './windows-system-proxy'
 
 const directories: string[] = []
 afterEach(() => { for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }) })
@@ -269,11 +270,24 @@ describe('Windows system proxy lease', () => {
       expect(script).not.toContain('Start-Process calc')
       expect(script).toContain('InternetQueryOptionW')
       expect(script).toContain('InternetSetOptionW')
-      expect(script).toContain('DefaultDllImportSearchPaths(DllImportSearchPath.System32)')
+      expect(script).toContain('[IO.Path]::Combine([Environment]::SystemDirectory,')
       expect(script).not.toContain('DefaultConnectionSettings')
       expect(options).toMatchObject({ trustedOnly: true, windowsHide: true, timeoutMs: 15_000, maxOutputBytes: 96 * 1024 })
     }
     await f.service.restore()
+  })
+
+  it('declares WinInet in memory by its System32 path instead of compiling it on every call', () => {
+    const { code, literals, unterminated } = scanPowerShell(windowsSystemProxyScript)
+    expect(unterminated).toBe(false)
+    expect(unbalancedBracket(code)).toBeNull()
+    // A type definition makes Windows PowerShell start csc.exe and load the DLL it writes under
+    // %TEMP%: a second cold process per call, 18.6 s against the 15 s limit on a CI runner (#805).
+    expect(code).not.toMatch(/Add-Type|DllImport/)
+    expect(code).toContain('$type.DefinePInvokeMethod($call[0],[IO.Path]::Combine([Environment]::SystemDirectory,$call[1]),$call[2],')
+    expect(literals).toEqual(expect.arrayContaining(['wininet.dll', 'InternetQueryOptionW', 'InternetSetOptionW', 'kernel32.dll', 'GlobalFree']))
+    // The owner lookup reads only the process start time, so it never declares WinInet.
+    expect(/'owner' \{([^\n]*)\}/.exec(windowsSystemProxyScript)?.[1]).not.toMatch(/State|WinInet/)
   })
 
   it('lets a caller on a cold PowerShell raise the per-command limit without changing the default', async () => {

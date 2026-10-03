@@ -39,10 +39,11 @@ export const uninstallCleanupExitCodes = {
   cliHooksRemain: 64,
 } as const
 
-// 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动，第一次编译
-// WinInet 互操作代码在 CI runner 上实测超过辅助进程用的 15 秒，45 秒也被撞穿过
-// （同一份清理有一次整段 55 秒通过，另一次第一条命令就超过 45 秒）。慢机器上
-// 这里超时的代价是整台电脑断网，比卸载界面多停一会儿重得多。
+// 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动。以前每条命令还要
+// 先现编 WinInet 互操作代码，在 CI runner 上实测超过辅助进程用的 15 秒，45 秒也被
+// 撞穿过（同一份清理有一次整段 55 秒通过，另一次第一条命令就超过 45 秒）；现编已经
+// 去掉（见 platform/windows-system-proxy.ts），上限照旧留着。慢机器上这里超时的
+// 代价是整台电脑断网，比卸载界面多停一会儿重得多。
 const proxyCommandTimeoutMs = 90_000
 // 还原最多是：等系统代理锁 12 秒，再加三次 PowerShell。正常一分钟以内；
 // 这个上限只防卸载界面一直停在「正在清理」。

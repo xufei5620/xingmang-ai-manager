@@ -49,8 +49,8 @@ export interface WindowsSystemProxyOptions {
   powerShellExecutable?: () => string
   commandEnvironment?: () => NodeJS.ProcessEnv
   withOperationLock?: <T>(operation: () => Promise<T>) => Promise<T>
-  // 卸载清理在刚被强行结束一批进程的机器上冷启动 PowerShell，首次编译 WinInet
-  // 互操作代码可能超过 15 秒；辅助进程沿用缺省值。
+  // 卸载清理在刚被强行结束一批进程的机器上冷启动 PowerShell，可能超过 15 秒；
+  // 辅助进程沿用缺省值。
   commandTimeoutMs?: number
 }
 
@@ -64,90 +64,90 @@ const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-
 //
 // Under trustedCommandEnvironment() a cmdlet left to autoloading costs the
 // whole System32 module scan (20 s and more on the CI runner, see
-// buildPowerShellModuleImportStatement), on top of compiling the interop type,
-// against a 15 s limit; so the one module it calls into is imported by name.
+// buildPowerShellModuleImportStatement) against a 15 s limit; so the one
+// module it calls into is imported by name.
 export const windowsSystemProxyModules = ['Microsoft.PowerShell.Utility'] as const
 
 export const windowsSystemProxyCommandTimeoutMs = 15_000
 
+// WinInet is declared in memory through Reflection.Emit, never compiled from
+// source. Windows PowerShell compiles a type definition by starting csc.exe,
+// which writes a DLL under %TEMP% and loads it back: a second cold process on
+// every call, which took 18.6 s of the 15 s limit on a fresh CI runner (#745,
+// #796, #805) while the rest of this script needs well under a second, and
+// which a customer's antivirus also gets to scan. Each library is named by its
+// full System32 path. The structures are laid out by hand as wininet.h
+// declares them, P being [IntPtr]::Size:
+//   INTERNET_PER_CONN_OPTION_LIST  dwSize 0, pszConnection P, dwOptionCount 2P,
+//                                  dwOptionError 2P+4, pOptions 2P+8; 3P+8 bytes
+//   INTERNET_PER_CONN_OPTION       dwOption 0, value union P (8 bytes); P+8 bytes
+// with the four options (flags, server, bypass, PAC) straight after the list in
+// one block, which keeps them aligned on x86, x64 and ARM64 alike. Only the
+// operations that read or write the proxy declare it; the owner lookup does not.
+//
+// scripts/windows-acceleration-recovery.ps1 carries this helper verbatim, from
+// Initialize-WinInet up to Read-State (windows-acceleration-recovery.test.cjs).
 export const windowsSystemProxyScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ${buildPowerShellModuleImportStatement(windowsSystemProxyModules)}
 $r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XINGMANG_SYSTEM_PROXY_REQUEST)) | ConvertFrom-Json
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-public static class XingmangWinInet {
-  [StructLayout(LayoutKind.Explicit)] public struct Value {
-    [FieldOffset(0)] public uint number;
-    [FieldOffset(0)] public IntPtr text;
-    [FieldOffset(0)] public System.Runtime.InteropServices.ComTypes.FILETIME time;
+function Initialize-WinInet {
+  if($null -ne $script:XingmangWinInet){return}
+  $type=[Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly([Reflection.AssemblyName]::new('XingmangWinInet'),[Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('XingmangWinInet').DefineType('XingmangWinInet',[Reflection.TypeAttributes]'Public, Sealed, Abstract')
+  foreach($call in @(@('Query','wininet.dll','InternetQueryOptionW',[bool],[IntPtr],[uint32],[IntPtr],[IntPtr]),@('Set','wininet.dll','InternetSetOptionW',[bool],[IntPtr],[uint32],[IntPtr],[uint32]),@('GlobalFree','kernel32.dll','GlobalFree',[IntPtr],[IntPtr]))) {
+    $method=$type.DefinePInvokeMethod($call[0],[IO.Path]::Combine([Environment]::SystemDirectory,$call[1]),$call[2],[Reflection.MethodAttributes]'Public, Static, PinvokeImpl',[Reflection.CallingConventions]::Standard,$call[3],[Type[]]$call[4..($call.Count-1)],[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
+    $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
   }
-  [StructLayout(LayoutKind.Sequential)] public struct Option { public uint kind; public Value value; }
-  [StructLayout(LayoutKind.Sequential)] public struct List {
-    public uint size; public IntPtr connection; public uint count; public uint error; public IntPtr options;
-  }
-  public sealed class State { public int flags; public string server; public string bypass; public string autoConfigUrl; }
-  [DllImport("wininet.dll", EntryPoint="InternetQueryOptionW", SetLastError=true)]
-  static extern bool Query(IntPtr handle, uint option, ref List value, ref uint length);
-  [DllImport("wininet.dll", EntryPoint="InternetSetOptionW", SetLastError=true)]
-  static extern bool Set(IntPtr handle, uint option, ref List value, uint length);
-  [DllImport("wininet.dll", EntryPoint="InternetSetOptionW", SetLastError=true)]
-  static extern bool Notify(IntPtr handle, uint option, IntPtr value, uint length);
-  [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr memory);
-  public static State Read() {
-    int size = Marshal.SizeOf(typeof(Option));
-    IntPtr options = Marshal.AllocHGlobal(size * 4);
-    try {
-      for (int i=0; i<4; i++) Marshal.StructureToPtr(new Option { kind=(uint)i+1 }, IntPtr.Add(options,i*size),false);
-      var list = new List { size=(uint)Marshal.SizeOf(typeof(List)), count=4, options=options };
-      uint length=list.size;
-      if (!Query(IntPtr.Zero,75,ref list,ref length)) throw new InvalidOperationException("proxy-query-failed");
-      var result = new State();
-      for (int i=0; i<4; i++) {
-        var value=(Option)Marshal.PtrToStructure(IntPtr.Add(options,i*size),typeof(Option));
-        if (i==0) result.flags=(int)value.value.number;
-        else {
-          string text=value.value.text==IntPtr.Zero ? "" : Marshal.PtrToStringUni(value.value.text);
-          if (i==1) result.server=text;
-          if (i==2) result.bypass=text;
-          if (i==3) result.autoConfigUrl=text;
-          if (value.value.text!=IntPtr.Zero) GlobalFree(value.value.text);
-        }
-      }
-      return result;
-    } finally { Marshal.FreeHGlobal(options); }
-  }
-  public static void Write(int flags, string server, string bypass, string pac) {
-    int size=Marshal.SizeOf(typeof(Option));
-    IntPtr options=Marshal.AllocHGlobal(size*4);
-    IntPtr[] text=new IntPtr[3];
-    try {
-      string[] values={server,bypass,pac};
-      for(int i=0;i<4;i++) {
-        var option=new Option {kind=(uint)i+1};
-        if(i==0) option.value.number=(uint)flags;
-        else { text[i-1]=Marshal.StringToHGlobalUni(values[i-1] ?? ""); option.value.text=text[i-1]; }
-        Marshal.StructureToPtr(option,IntPtr.Add(options,i*size),false);
-      }
-      var list=new List {size=(uint)Marshal.SizeOf(typeof(List)), count=4, options=options};
-      if(!Set(IntPtr.Zero,75,ref list,list.size)) throw new InvalidOperationException("proxy-write-failed");
-    } finally {
-      foreach(IntPtr item in text) if(item!=IntPtr.Zero) Marshal.FreeHGlobal(item);
-      Marshal.FreeHGlobal(options);
+  $script:XingmangWinInet=$type.CreateType()
+}
+function New-WinInetList([int]$extra) {
+  Initialize-WinInet
+  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8;$bytes=$size+4*($p+8)+$extra
+  $list=$m::AllocHGlobal($bytes)
+  $m::Copy([byte[]]::new($bytes),0,$list,$bytes)
+  $m::WriteInt32($list,0,$size);$m::WriteInt32($list,2*$p,4);$m::WriteIntPtr($list,2*$p+8,[IntPtr]::Add($list,$size))
+  for($i=0;$i -lt 4;$i++){$m::WriteInt32($list,$size+$i*($p+8),$i+1)}
+  return $list
+}
+function Read-WinInet {
+  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8
+  $list=New-WinInetList 4
+  try {
+    $length=[IntPtr]::Add($list,$size+4*($p+8))
+    $m::WriteInt32($length,0,$size)
+    if(-not $script:XingmangWinInet::Query([IntPtr]::Zero,75,$list,$length)){throw 'proxy-query-failed'}
+    $text=@('','','')
+    for($i=1;$i -lt 4;$i++){
+      $value=$m::ReadIntPtr($list,$size+$i*($p+8)+$p)
+      if($value -ne [IntPtr]::Zero){$text[$i-1]=$m::PtrToStringUni($value);[void]$script:XingmangWinInet::GlobalFree($value)}
     }
-  }
-  public static void Refresh() {
-    if(!Notify(IntPtr.Zero,39,IntPtr.Zero,0) || !Notify(IntPtr.Zero,37,IntPtr.Zero,0))
-      throw new InvalidOperationException("proxy-notify-failed");
+    return @{flags=$m::ReadInt32($list,$size+$p);server=$text[0];bypass=$text[1];autoConfigUrl=$text[2]}
+  } finally {$m::FreeHGlobal($list)}
+}
+function Write-WinInet([int]$flags,[string]$server,[string]$bypass,[string]$pac) {
+  $m=[Runtime.InteropServices.Marshal];$p=[IntPtr]::Size;$size=3*$p+8
+  $list=New-WinInetList 0
+  $text=@()
+  try {
+    $m::WriteInt32($list,$size+$p,$flags)
+    foreach($value in @($server,$bypass,$pac)){
+      $text+=$m::StringToHGlobalUni($value)
+      $m::WriteIntPtr($list,$size+$text.Count*($p+8)+$p,$text[-1])
+    }
+    if(-not $script:XingmangWinInet::Set([IntPtr]::Zero,75,$list,$size)){throw 'proxy-write-failed'}
+  } finally {
+    foreach($item in $text){$m::FreeHGlobal($item)}
+    $m::FreeHGlobal($list)
   }
 }
-'@
+function Update-WinInet {
+  Initialize-WinInet
+  if(-not $script:XingmangWinInet::Set([IntPtr]::Zero,39,[IntPtr]::Zero,0) -or -not $script:XingmangWinInet::Set([IntPtr]::Zero,37,[IntPtr]::Zero,0)){throw 'proxy-notify-failed'}
+}
 function Read-State {
-  $native=[XingmangWinInet]::Read()
+  $native=Read-WinInet
   $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',$false)
   try {
     $registry=[ordered]@{}
@@ -164,7 +164,7 @@ function Read-State {
   } finally { if($null -ne $key){$key.Dispose()} }
 }
 function Write-State($state) {
-  [XingmangWinInet]::Write([int]$state.flags,[string]$state.server,[string]$state.bypass,[string]$state.autoConfigUrl)
+  Write-WinInet ([int]$state.flags) ([string]$state.server) ([string]$state.bypass) ([string]$state.autoConfigUrl)
   $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Internet Settings',$true)
   try {
     foreach($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
@@ -174,7 +174,7 @@ function Write-State($state) {
       else {$key.SetValue($name,[string]$value,[Microsoft.Win32.RegistryValueKind]::String)}
     }
   } finally { if($null -ne $key){$key.Dispose()} }
-  [XingmangWinInet]::Refresh()
+  Update-WinInet
 }
 function Same-State($left,$right) {
   if([int]$left.flags -ne [int]$right.flags){return $false}

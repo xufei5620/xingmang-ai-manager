@@ -7,12 +7,12 @@ const { test } = require('node:test')
 const recoveryPath = path.resolve(__dirname, 'windows-acceleration-recovery.ps1')
 const productProxyPath = path.resolve(__dirname, '..', 'electron', 'platform', 'windows-system-proxy.ts')
 
-function winInetTypeDefinition(file) {
+function winInetHelper(file) {
   // The .ps1 is checked out with CRLF (.gitattributes) and the .ts with the platform default.
   const source = fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n')
-  const start = source.indexOf("Add-Type -TypeDefinition @'")
-  const end = source.indexOf("\n'@", start)
-  assert.ok(start >= 0 && end > start, 'WinInet type definition not found')
+  const start = source.indexOf('function Initialize-WinInet {')
+  const end = source.indexOf('\nfunction Read-State {', start)
+  assert.ok(start >= 0 && end > start, 'WinInet helper not found')
   return source.slice(start, end)
 }
 
@@ -22,16 +22,15 @@ test('customer recovery source is UTF-8 without BOM and remains readable in Wind
   assert.ok([...bytes].every((value) => value < 128))
 })
 
-// The logic test below stubs every native read and write, so it no longer compiles the WinInet
-// helper: Add-Type starts csc.exe, a second cold .NET process on top of powershell.exe, and on a
-// busy windows-latest runner the pair outlasted the 30-second budget (run 35885043224). The
-// helper is still compiled and driven against the real system proxy by
-// windows-uninstall-smoke.yml, which dot-sources this script and runs on every change to it or
-// to windows-system-proxy.ts; the app ships the same text, and this keeps the two in step.
-test('customer recovery carries the same WinInet helper the app itself compiles', () => {
-  const recovery = winInetTypeDefinition(recoveryPath)
-  assert.equal(recovery, winInetTypeDefinition(productProxyPath))
-  assert.match(recovery, /public static class XingmangWinInet/)
+// The logic test below stubs every native read and write, so no test here touches the real
+// system proxy. The helper is driven against it by windows-uninstall-smoke.yml, which
+// dot-sources this script and runs on every change to it or to windows-system-proxy.ts; the
+// app ships the same text, and this keeps the two in step.
+test('customer recovery carries the same WinInet helper the app itself runs', () => {
+  const recovery = winInetHelper(recoveryPath)
+  assert.equal(recovery, winInetHelper(productProxyPath))
+  assert.match(recovery, /'InternetQueryOptionW'/)
+  assert.match(recovery, /'InternetSetOptionW'/)
 })
 
 test('Windows recovery preserves bypass edits and refuses conflicting or unverified proxy writes', { skip: process.platform !== 'win32' }, () => {
