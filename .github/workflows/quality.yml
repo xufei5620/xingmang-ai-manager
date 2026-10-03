@@ -441,9 +441,9 @@ jobs:
     # Defender timeouts already make unreliable.
     #
     # Everything here used to run back to back, and at ~21 minutes this job was
-    # the whole pipeline's wall clock: every other job had finished by minute
-    # 14 while test:v2 (~14 minutes on its own) still had most of its browser
-    # suites to go. The fixture half of those suites now runs beside it in
+    # the whole pipeline's wall clock, ~5 minutes behind the next slowest job
+    # (the Windows renderer-v2-browser shard); test:v2 alone took ~14 of those
+    # minutes. The fixture half of its browser suites now runs beside it in
     # linux-renderer-v2-browser, split along the same seam the Windows matrix
     # uses, so nothing is skipped and nothing is run twice.
     timeout-minutes: 30
@@ -510,13 +510,13 @@ jobs:
             exit 1
           fi
 
-  # The fixture half of linux-test's renderer v2 browser suites: ~11 of the
-  # ~14 minutes test:v2 took there, and on its own about as long as the slowest
-  # Windows shard, so it no longer sits on the pipeline's critical path after
-  # everything else linux-test runs. It is cut where windows-test cuts it, and
-  # for the same reason it is not cut any finer: these files share one
-  # node_modules/.vite dependency cache that the earlier ones warm for
-  # app-check.mjs, which runs last (see the renderer-v2-browser shard above).
+  # The fixture half of linux-test's renderer v2 browser suites: ~12 of the
+  # ~14 minutes test:v2 took there. Beside linux-test instead of after it, the
+  # two finished in ~13 and ~10 minutes on #780, both before the slowest
+  # Windows shard. It is cut where windows-test cuts it, and for the same
+  # reason it is not cut any finer: these files share one node_modules/.vite
+  # dependency cache that the earlier ones warm for app-check.mjs, which runs
+  # last (see the renderer-v2-browser shard above).
   linux-renderer-v2-browser:
     needs: changes
     if: needs.changes.outputs.code == 'true'
