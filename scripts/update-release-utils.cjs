@@ -2,7 +2,6 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { gunzipSync } = require('node:zlib')
-const YAML = require('yaml')
 const {
   ARCHITECTURES: MACOS_ARCHITECTURES,
   releaseArtifactNames,
@@ -256,6 +255,9 @@ function parseLatestMetadata(text, metadataFile = 'latest.yml') {
     )
   }
 
+  // yaml 到用时才加载：publish-release 占 tag 的作业不装任何依赖，也要用这个模块里的版本
+  // 比较和更新地址。放在 try 外面，缺依赖时报的是缺依赖，不是「清单不是 YAML」。
+  const YAML = require('yaml')
   let value
   try {
     value = YAML.parse(text, { maxAliasCount: 0, uniqueKeys: true })

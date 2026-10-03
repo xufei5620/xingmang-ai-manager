@@ -292,8 +292,9 @@ test('the requested version must match package.json before anything is built', (
 
 test('a single-platform publish does not silently skip the publish job', () => {
   // 被跳过的 needs 默认会把依赖它的作业也跳过，表现是「跑完了但什么都没发」。
-  assert.deepEqual(publishJob.needs, ['windows-build', 'macos-build', 'linux-checks', 'linux-build'])
+  assert.deepEqual(publishJob.needs, ['release-tag', 'windows-build', 'macos-build', 'linux-checks', 'linux-build'])
   assert.match(String(publishJob.if), /!cancelled\(\)/)
+  assert.match(String(publishJob.if), /needs\.release-tag\.result == 'success'/)
   assert.match(String(publishJob.if), /windows-build\.result != 'failure'/)
   assert.match(String(publishJob.if), /macos-build\.result != 'failure'/)
   assert.match(String(publishJob.if), /== 'success'/)
@@ -331,7 +332,7 @@ test('each platform choice builds exactly its own jobs', () => {
   }
   for (const platforms of workflow.on.workflow_dispatch.inputs.platforms.options) {
     const started = Object.entries(workflow.jobs)
-      .filter(([, job]) => job.if && !job.needs)
+      .filter(([, job]) => job.if && job.needs === 'release-tag')
       .filter(([, job]) => evaluateCondition(job.if, { inputs: { platforms } }))
       .map(([id]) => id)
     assert.deepEqual(started, expected[platforms], platforms)
@@ -341,7 +342,12 @@ test('each platform choice builds exactly its own jobs', () => {
 })
 
 test('Linux only reaches customers once the repository switch is on', () => {
-  const publishes = (needs, vars = {}, platforms = 'all') => evaluateCondition(publishJob.if, { needs, vars, inputs: { platforms } })
+  // tag 占好（release-tag 成功）是发布的前提，下面单独有一条测它；这里只看平台。
+  const publishes = (needs, vars = {}, platforms = 'all') => evaluateCondition(publishJob.if, {
+    needs: { 'release-tag': 'success', ...needs },
+    vars,
+    inputs: { platforms },
+  })
   const ok = { 'windows-build': 'success', 'macos-build': 'success' }
   const linuxOk = { 'linux-checks': 'success', 'linux-build': 'success' }
   const linuxBuildRed = { 'linux-checks': 'success', 'linux-build': 'failure' }
@@ -421,20 +427,607 @@ test('every job that writes the update feed shares one concurrency group', () =>
   assert.deepEqual(writers, ['publish-release.yml#publish', 'rollback-release.yml#rollback', 'service-status.yml#publish'])
 })
 
-// 这一步排在上传产物与覆盖更新清单**之后**。它失败时线上已经是新版本了，作业却
+// tag 在触发时就占上（0.2.14 的收尾两次都是 HTTP 403）：作业用的 GITHUB_TOKEN 拿不到
+// workflows 权限，出包之后 main 只要合进一个改 .github/workflows 的提交，GitHub 就不让
+// 它在出包的 commit 上建 tag，建 Release 时传的 target_commitish 也一样被拒，原因见
+// scripts/release-tag-plan.cjs 开头。占 tag 的是第一个作业 release-tag，先判断、再动手，
+// 出包作业都等它。
+const { ReleaseTagPlanError, planReleaseTag } = require('./release-tag-plan.cjs')
+
+const tagJob = workflow.jobs['release-tag']
+const planStep = tagJob.steps.find((step) => step.id === 'plan')
+const reserveStep = tagJob.steps.find((step) => /Reserve the release tag/.test(step.name || ''))
+const SHIPPED = 'a'.repeat(40)
+const EARLIER = 'b'.repeat(40)
+// 附注 tag 的 ref 指向 tag 对象而不是 commit，要再解一层。
+const TAG_OBJECT_SHA = 'f'.repeat(40)
+
+// 注释行不算：注释里会说明为什么不用某种写法。
+function commandLines(script) {
+  return String(script || '').split('\n').filter((line) => line.trim() && !/^\s*#/.test(line))
+}
+
+test('the release tag is reserved before anything is built', () => {
+  // 出包作业不等它的话，tag 要到一个多小时之后才建，又回到 0.2.14 的样子。
+  assert.equal(tagJob.needs, undefined)
+  for (const job of [windowsJob, macosJob, linuxChecksJob]) {
+    assert.equal(job.needs, 'release-tag')
+    // if 里写了 always() 之类，占 tag 失败了照样出包。
+    assert.doesNotMatch(String(job.if), /always\(\)|failure\(\)|cancelled\(\)/)
+  }
+  // 不设 if：被跳过会把后面的作业全部带着跳过，表现是「什么都没出」。
+  assert.equal(tagJob.if, undefined)
+  // 先判断、再动手，判断失败时动手那一步不跑。
+  assert.ok(tagJob.steps.indexOf(planStep) >= 0 && tagJob.steps.indexOf(reserveStep) > tagJob.steps.indexOf(planStep))
+  for (const step of [planStep, reserveStep]) {
+    assert.equal(step.if, undefined)
+    assert.equal(step['continue-on-error'], undefined)
+  }
+  // tag 没占好时收尾那一步不能跑起来，那样它又要自己去建 tag。
+  const publishes = (reserved) => evaluateCondition(publishJob.if, {
+    needs: { 'release-tag': reserved, 'windows-build': 'success', 'macos-build': 'success' },
+    inputs: { platforms: 'both' },
+  })
+  assert.equal(publishes('success'), true)
+  for (const reserved of ['failure', 'skipped', 'cancelled']) assert.equal(publishes(reserved), false, reserved)
+})
+
+test('only the tag job and the approved publish job can write to the repository', () => {
+  const writers = Object.entries(workflow.jobs)
+    .filter(([, job]) => job.permissions?.contents === 'write')
+    .map(([id]) => id)
+  assert.deepEqual(writers, ['release-tag', 'publish'])
+  assert.deepEqual(tagJob.permissions, { contents: 'write' })
+  assert.equal(tagJob.environment, undefined)
+  assert.doesNotMatch(YAML.stringify(tagJob), /secrets\./)
+})
+
+test('the tag job installs nothing, so no third-party code ever holds its write token', () => {
+  // 批准之前就拿着写权限的只有它。装了依赖，任何一个包的安装脚本、被 require 到的代码
+  // 都拿得到这个令牌，所以它只跑 gh、curl 和仓库里不依赖第三方包的脚本；下面跑判断那一步
+  // 时也不给它 node_modules。
+  for (const step of tagJob.steps) {
+    for (const line of commandLines(step.run)) assert.doesNotMatch(line, /^\s*(?:npm|npx|yarn|pnpm|corepack)\b/, line)
+    if (/actions\/setup-node@/.test(String(step.uses || ''))) assert.equal(step.with?.cache, undefined)
+    if (/actions\/checkout@/.test(String(step.uses || ''))) assert.equal(step.with?.['persist-credentials'], false)
+  }
+  for (const line of commandLines(reserveStep.run)) {
+    assert.doesNotMatch(line, /^\s*(?:node|git)\b/, line)
+    // 不用 PATCH 改 ref：那等于推一次从旧提交到新提交的更新，两次触发之间合进过改
+    // 工作流的提交就会被拒。
+    assert.doesNotMatch(line, /--method PATCH|force=/, line)
+  }
+  for (const line of commandLines(planStep.run)) assert.doesNotMatch(line, /--method|^\s*git\b|gh release/, line)
+  // 线上每一份清单都要看：漏一个平台，那个平台已经发过这一版也会被当成没发过。
+  assert.ok(String(planStep.run).includes(MANIFEST_LOOP), `判断那一步要列全清单：「${MANIFEST_LOOP}」`)
+})
+
+test('the tag plan creates, keeps or moves the tag only while the version has never shipped', () => {
+  const plan = (options) => planReleaseTag({ version: '0.2.15', shippedSha: SHIPPED, ...options })
+  const older = {
+    'latest.yml': manifestText('0.2.14', 'windows'),
+    'latest-mac.yml': manifestText('0.2.14', 'mac', 'XingMang-AI-Manager-0.2.14-arm64-mac.zip'),
+  }
+  assert.deepEqual(plan({}), { action: 'create' })
+  assert.deepEqual(plan({ liveManifests: older, statusText: JSON.stringify({ badVersions: ['0.2.10'] }) }), { action: 'create' })
+  // 重跑，或者同一个提交上补发另一个平台：Release 和线上清单都已经是这一版也照样留着。
+  assert.deepEqual(plan({ tagTarget: SHIPPED, releaseExists: true, liveManifests: { 'latest.yml': manifestText('0.2.15', 'windows') } }), { action: 'keep' })
+  // 上一次触发占了 tag、没发出去就取消，合进修复后重新触发（「补进来重出包」）。
+  assert.deepEqual(plan({ tagTarget: EARLIER, liveManifests: older }), { action: 'move', from: EARLIER })
+  // 这个作业不装 yaml，清单只读最外层的 version 一行；带引号、带注释也认得。
+  assert.deepEqual(plan({ tagTarget: EARLIER, liveManifests: { 'latest.yml': "version: '0.2.14' # 上一版\nfiles: []\n" } }), { action: 'move', from: EARLIER })
+})
+
+test('the tag plan refuses a version that already shipped or was withdrawn', () => {
+  const plan = (options) => planReleaseTag({ version: '0.2.15', shippedSha: SHIPPED, ...options })
+  // GitHub 上已经有这一版的 Release：tag 指着当初发的那个提交，绝不挪。
+  assert.throws(() => plan({ tagTarget: EARLIER, releaseExists: true }), /v0\.2\.15 已经从 bbbbbbb 发过/)
+  // 没有 Release 却已经上过更新源（收尾那一步失败过）：一样不挪。
+  assert.throws(
+    () => plan({ tagTarget: EARLIER, liveManifests: { 'latest-mac.yml': manifestText('0.2.15', 'mac', 'XingMang-AI-Manager-0.2.15-arm64-mac.zip') } }),
+    /v0\.2\.15 已经从 bbbbbbb 上过更新源/,
+  )
+  // 线上是这一版却没有 tag：说不清当初是从哪个提交发的，建在这次的提交上可能就建错了。
+  assert.throws(() => plan({ liveManifests: { 'latest.yml': manifestText('0.2.15', 'windows') } }), /仓库里却没有 v0\.2\.15/)
+  assert.throws(
+    () => plan({ liveManifests: { 'latest-linux-arm64.yml': manifestText('0.2.16', 'deb', 'xingmang-ai-manager_0.2.16_arm64.deb') } }),
+    /更高的 0\.2\.16/,
+  )
+  // #548：撤回过的版本。
+  assert.throws(() => plan({ statusText: JSON.stringify({ badVersions: ['v0.2.15'] }) }), /0\.2\.15 已经被撤回/)
+  assert.throws(() => plan({ tagTarget: EARLIER, statusText: JSON.stringify({ badVersions: ['0.2.15'] }) }), /已经被撤回/)
+  // tag 就在这次的提交上也一样：撤回过的、线上已经更高的版本，同一个提交也不能再发。
+  assert.throws(() => plan({ tagTarget: SHIPPED, statusText: JSON.stringify({ badVersions: ['0.2.15'] }) }), /已经被撤回/)
+  assert.throws(() => plan({ tagTarget: SHIPPED, liveManifests: { 'latest.yml': manifestText('0.2.16', 'windows') } }), /更高的 0\.2\.16/)
+  // 查不清的一律当成「不能动」，不当成「没有」。
+  assert.throws(() => plan({ liveManifests: { 'latest.yml': '<!doctype html><html></html>' } }), /latest\.yml 读回来看不懂/)
+  // 没有 version 那一行、有两行、只在缩进里出现、或者不是版本号，都算看不懂。
+  for (const text of ['files: []\n', 'version: 0.2.14\nversion: 0.2.15\n', 'files:\n  - version: 0.2.15\n', 'version: 0.2.x\n']) {
+    assert.throws(() => plan({ liveManifests: { 'latest.yml': text } }), /latest\.yml 读回来看不懂/, JSON.stringify(text))
+  }
+  assert.throws(() => plan({ statusText: '<!doctype html><html></html>' }), /service-status\.json 读回来看不懂/)
+  assert.throws(() => plan({ statusText: JSON.stringify({ badVersions: '0.2.15' }) }), /撤回名单格式不对/)
+  const malformed = [
+    { version: '0.2' },
+    { version: '0.2.15\naction=move' },
+    { shippedSha: 'main' },
+    { tagTarget: 'refs/heads/main' },
+    { tagTarget: `${EARLIER}\n` },
+  ]
+  for (const options of malformed) assert.throws(() => plan(options), ReleaseTagPlanError, JSON.stringify(options))
+})
+
+// 下面把工作流里的那几段 `run` 真的跑起来，所以要一个 POSIX shell 和能当可执行文件用的
+// 打桩脚本。这几个作业都 runs-on: ubuntu-latest，这些脚本永远不会在 Windows 上执行，
+// 所以 Windows 分片上跳过的是「跑不起来的环境」，不是「在 Windows 上不成立的断言」——
+// Linux 与 macOS 分片照跑，覆盖没有减少。
+const SHELL_PATH = '/bin/bash'
+const shellUnavailable = process.platform === 'win32' || !fs.existsSync(SHELL_PATH)
+const posixOnly = { skip: shellUnavailable && `需要 ${SHELL_PATH}，这几个作业只在 ubuntu-latest 上跑` }
+
+function readOutputs(file) {
+  const outputs = {}
+  if (!fs.existsSync(file)) return outputs
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    const separator = line.indexOf('=')
+    if (separator > 0) outputs[line.slice(0, separator)] = line.slice(separator + 1)
+  }
+  return outputs
+}
+
+// 判断那一步在没有 node_modules 的地方跑：这个作业不装依赖，脚本哪天在顶层 require 了
+// 第三方包，要到发布那天才会在这一步炸掉。复制一份 scripts 而不是链接过去：Node 顺着
+// 链接的真实路径往上找，还是会找到仓库里的 node_modules。
+let scriptsWithoutDependencies = null
+test.after(() => {
+  if (scriptsWithoutDependencies) fs.rmSync(path.dirname(scriptsWithoutDependencies), { recursive: true, force: true })
+})
+
+function copyScriptsWithoutDependencies() {
+  if (!scriptsWithoutDependencies) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-scripts-'))
+    fs.cpSync(path.join(root, 'scripts'), path.join(directory, 'scripts'), { recursive: true })
+    scriptsWithoutDependencies = path.join(directory, 'scripts')
+  }
+  return scriptsWithoutDependencies
+}
+
+// 判断那一步：gh 桩按 matching-refs / git/tags / releases 回话，curl 桩从一个本地「更新
+// 目录」取文件，取不到时和真的服务器一样把 404 页面写进输出文件。两个列表接口都分页：
+// 不带 --paginate 只回第一页，而要找的那一项总排在后面。
+function runPlanStep({
+  version = '0.2.15',
+  confirm = version,
+  platforms = 'all',
+  publishLinux = '',
+  ref = 'refs/heads/main',
+  tagSha = null,
+  annotated = false,
+  lookupFails = false,
+  releases = [],
+  releasesFail = false,
+  live = {},
+  liveCodes = {},
+} = {}) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-plan-'))
+  const binDirectory = path.join(workspace, 'bin')
+  const served = path.join(workspace, 'served')
+  for (const directory of [binDirectory, served]) fs.mkdirSync(directory)
+  fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ version }))
+  fs.symlinkSync(copyScriptsWithoutDependencies(), path.join(workspace, 'scripts'))
+  for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(served, name), text)
+  const logPath = path.join(workspace, 'commands.log')
+  const outputPath = path.join(workspace, 'github-output')
+  // matching-refs 按前缀匹配：v0.2.150 也会被列出来，只能认完整的 ref 名。
+  const firstRefPage = `printf 'refs/tags/v%s0 commit %s\\n' ${JSON.stringify(version)} ${JSON.stringify('c'.repeat(40))}`
+  const laterRefPages = tagSha === null
+    ? ':'
+    : `printf 'refs/tags/v%s %s %s\\n' ${JSON.stringify(version)} ${annotated ? `tag ${JSON.stringify(TAG_OBJECT_SHA)}` : `commit ${JSON.stringify(tagSha)}`}`
+  const [firstRelease, ...laterReleases] = releases
+  const releasePage = (tags) => tags.map((tag) => `printf '%s\\n' ${JSON.stringify(tag)}`).join('; ') || ':'
+  const ghStub = `#!/bin/bash
+printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
+paginate=''
+case " $* " in *' --paginate '*) paginate=1 ;; esac
+case "$*" in
+  *'/git/matching-refs/tags/'*)
+    ${lookupFails ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : `${firstRefPage}; if [ -n "$paginate" ]; then ${laterRefPages}; fi`} ;;
+  *'/git/tags/'*) printf '%s\\n' ${JSON.stringify(tagSha || '')} ;;
+  *'/releases'*)
+    ${releasesFail ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : `${releasePage(firstRelease ? [firstRelease] : [])}; if [ -n "$paginate" ]; then ${releasePage(laterReleases)}; fi`} ;;
+esac
+exit 0
+`
+  // 最后一个参数是地址；liveCodes 里点了名的文件回那个状态码，其余按文件名去 served
+  // 目录里找，没有就是 404。
+  const forced = Object.entries(liveCodes)
+    .map(([name, code]) => `  ${JSON.stringify(name)}) printf '<html>%s</html>' ${code} > "$output"; printf ${code}; exit 0 ;;`)
+  const curlStub = `#!/bin/bash
+printf 'curl %s\\n' "$*" >> ${JSON.stringify(logPath)}
+output=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  shift
+done
+name=$(basename "$1")
+case "$name" in
+${forced.join('\n')}
+esac
+if [ -f ${JSON.stringify(served)}/"$name" ]; then
+  cp ${JSON.stringify(served)}/"$name" "$output"
+  printf 200
+else
+  printf '<!doctype html><html><body>404 Not Found</body></html>' > "$output"
+  printf 404
+fi
+`
+  for (const [name, body] of [['gh', ghStub], ['curl', curlStub]]) {
+    const executable = path.join(binDirectory, name)
+    fs.writeFileSync(executable, body)
+    fs.chmodSync(executable, 0o755)
+  }
+  const result = spawnSync(SHELL_PATH, ['-c', planStep.run], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: {
+      PATH: `${binDirectory}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+      HOME: workspace,
+      RUNNER_TEMP: workspace,
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
+      GH_TOKEN: 'stub',
+      CONFIRM_VERSION: confirm,
+      PLATFORMS: platforms,
+      PUBLISH_LINUX: publishLinux,
+      DISPATCH_REF: ref,
+      SHIPPED_SHA: SHIPPED,
+    },
+  })
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  const outputs = readOutputs(outputPath)
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { status: result.status, output: result.stdout + result.stderr, log, outputs }
+}
+
+test('a Linux-only run with Linux publishing off neither checks nor reserves a tag', posixOnly, () => {
+  for (const publishLinux of ['', 'false']) {
+    const run = runPlanStep({ platforms: 'linux', publishLinux })
+    assert.equal(run.status, 0, run.output)
+    assert.deepEqual(run.outputs, { action: 'none' })
+    assert.equal(run.log, '')
+  }
+  // 开关照 GitHub 表达式的规矩不分大小写：TRUE 也算打开，这次要对外发，就得占 tag。
+  const on = runPlanStep({ platforms: 'linux', publishLinux: 'TRUE' })
+  assert.equal(on.status, 0, on.output)
+  assert.deepEqual(on.outputs, { tag: 'v0.2.15', action: 'create' })
+})
+
+test('the tag is reserved whenever the publish job could run', posixOnly, () => {
+  // 判断那一步只在「这次什么都不对外发」时不占 tag。它和 publish 作业的 if 各写各的，
+  // 对不上的话 publish 照样跑起来，收尾时才去建 tag，又回到 0.2.14 的样子。
+  const results = (job, platforms) => (evaluateCondition(job.if, { inputs: { platforms } })
+    ? ['success', 'failure', 'cancelled', 'skipped']
+    : ['skipped'])
+  for (const platforms of workflow.on.workflow_dispatch.inputs.platforms.options) {
+    for (const publishLinux of ['', 'false', 'true', 'TRUE']) {
+      let couldPublish = false
+      for (const windows of results(windowsJob, platforms)) {
+        for (const macos of results(macosJob, platforms)) {
+          // linux-build 只在 linux-checks 跑了时才可能不是 skipped。
+          for (const linux of results(linuxChecksJob, platforms)) {
+            const needs = { 'release-tag': 'success', 'windows-build': windows, 'macos-build': macos, 'linux-build': linux }
+            const vars = { XINGMANG_PUBLISH_LINUX: publishLinux }
+            if (evaluateCondition(publishJob.if, { inputs: { platforms }, vars, needs })) couldPublish = true
+          }
+        }
+      }
+      const run = runPlanStep({ platforms, publishLinux })
+      const label = `${platforms}，开关 ${JSON.stringify(publishLinux)}`
+      assert.equal(run.status, 0, `${label}\n${run.output}`)
+      assert.equal(run.outputs.action === 'none', !couldPublish, label)
+    }
+  }
+})
+
+test('a release is only dispatched from main, for the version package.json declares', posixOnly, () => {
+  // release 环境只放行 main：从别处触发，Mac 出包和上传都会被环境拒掉，tag 却已经占在
+  // 一个发不出去的提交上了。从这一版自己的 tag 触发也一样不行。
+  for (const ref of ['refs/heads/claude/fix', 'refs/tags/v0.2.14', 'refs/tags/v0.2.15']) {
+    const run = runPlanStep({ ref, tagSha: SHIPPED })
+    assert.notEqual(run.status, 0, ref)
+    assert.ok(run.output.includes(`::error::正式发布只能从 main 触发，这次是 ${ref}`), run.output)
+    assert.equal(run.log, '', ref)
+  }
+
+  const mismatch = runPlanStep({ confirm: '0.2.16' })
+  assert.notEqual(mismatch.status, 0)
+  assert.match(mismatch.output, /::error::版本不一致：package\.json 是 0\.2\.15，本次触发填的是 0\.2\.16/)
+  assert.equal(mismatch.log, '')
+  // 下一步要把 tag 名拼进接口地址，版本号先按整串对一遍格式。
+  const malformed = runPlanStep({ version: '0.2' })
+  assert.notEqual(malformed.status, 0)
+  assert.match(malformed.output, /::error::0\.2 不是有效的版本号/)
+  assert.equal(malformed.log, '')
+})
+
+test('the first run of a new version plans to create its tag', posixOnly, () => {
+  // Linux 两份清单线上没有：curl 桩和真的服务器一样把 404 页面写进文件，判断那一步要
+  // 把它删掉，否则会被当成一份看不懂的清单。
+  const run = runPlanStep({
+    live: {
+      'latest.yml': manifestText('0.2.14', 'windows'),
+      'latest-mac.yml': manifestText('0.2.14', 'mac', 'XingMang-AI-Manager-0.2.14-arm64-mac.zip'),
+      'service-status.json': JSON.stringify({ badVersions: ['0.2.10'] }),
+    },
+  })
+  assert.equal(run.status, 0, run.output)
+  assert.deepEqual(run.outputs, { tag: 'v0.2.15', action: 'create' })
+  for (const manifest of UPDATE_MANIFEST_NAMES) assert.ok(run.log.includes(`/${manifest}\n`), `判断要读线上的 ${manifest}`)
+  assert.doesNotMatch(run.log, /--method/)
+})
+
+test('a rerun on the commit the tag already points at keeps it unless the version was withdrawn or overtaken', posixOnly, () => {
+  // 同一个提交上重跑、补发另一个平台：线上已经是这一版也照样留着。
+  for (const annotated of [false, true]) {
+    const run = runPlanStep({ tagSha: SHIPPED, annotated, live: { 'latest.yml': manifestText('0.2.15', 'windows') } })
+    assert.equal(run.status, 0, run.output)
+    assert.deepEqual(run.outputs, { tag: 'v0.2.15', action: 'keep' })
+  }
+  // 留着 tag 也要看线上：撤回过的、已经被更高版本盖过的，同一个提交也不能再出包，否则要
+  // 等一个多小时、批过一次，到上传前那道关才停。
+  const withdrawn = runPlanStep({ tagSha: SHIPPED, live: { 'service-status.json': JSON.stringify({ badVersions: ['0.2.15'] }) } })
+  assert.notEqual(withdrawn.status, 0)
+  assert.match(withdrawn.output, /::error::0\.2\.15 已经被撤回/)
+  const overtaken = runPlanStep({ tagSha: SHIPPED, live: { 'latest.yml': manifestText('0.2.16', 'windows') } })
+  assert.notEqual(overtaken.status, 0)
+  assert.match(overtaken.output, /::error::线上的 latest\.yml 已经是更高的 0\.2\.16/)
+  for (const run of [withdrawn, overtaken]) assert.equal(run.outputs.action, undefined)
+})
+
+test('a tag left by a run that never shipped is planned to move to the commit being built', posixOnly, () => {
+  // 只认完整的 tag 名：v0.2.150 的 Release 不算这一版的。
+  const run = runPlanStep({ tagSha: EARLIER, releases: ['v0.2.150', 'v0.2.14'], live: { 'latest.yml': manifestText('0.2.14', 'windows') } })
+  assert.equal(run.status, 0, run.output)
+  assert.deepEqual(run.outputs, { tag: 'v0.2.15', action: 'move', from: EARLIER })
+})
+
+test('a version that already shipped is refused before anything is built', posixOnly, () => {
+  // 原来要等一个多小时出完包、批过一次，到上传前那道关才发现。这一版的 Release 排在
+  // 第二页：不带 --paginate 就看不见它，会被当成没发过、把 tag 挪走。
+  const released = runPlanStep({ tagSha: EARLIER, releases: ['v0.2.150', 'v0.2.15'] })
+  assert.notEqual(released.status, 0)
+  assert.match(released.output, /::error::v0\.2\.15 已经从 bbbbbbb 发过/)
+
+  const live = runPlanStep({ tagSha: EARLIER, live: { 'latest-mac.yml': manifestText('0.2.15', 'mac', 'XingMang-AI-Manager-0.2.15-arm64-mac.zip') } })
+  assert.notEqual(live.status, 0)
+  assert.match(live.output, /::error::v0\.2\.15 已经从 bbbbbbb 上过更新源/)
+
+  const withdrawn = runPlanStep({ live: { 'service-status.json': JSON.stringify({ badVersions: ['0.2.15'] }) } })
+  assert.notEqual(withdrawn.status, 0)
+  assert.match(withdrawn.output, /::error::0\.2\.15 已经被撤回/)
+  for (const run of [released, live, withdrawn]) assert.equal(run.outputs.action, undefined)
+})
+
+test('anything the plan cannot read stops it instead of being read as nothing there', posixOnly, () => {
+  const lookup = runPlanStep({ lookupFails: true })
+  assert.notEqual(lookup.status, 0)
+  assert.match(lookup.output, /::error::查不了 v0\.2\.15 是否已存在/)
+
+  const releases = runPlanStep({ tagSha: EARLIER, releasesFail: true })
+  assert.notEqual(releases.status, 0)
+  assert.match(releases.output, /::error::查不了 v0\.2\.15 有没有 Release/)
+
+  const manifest = runPlanStep({ liveCodes: { 'latest-mac.yml': 502 } })
+  assert.notEqual(manifest.status, 0)
+  assert.match(manifest.output, /::error::读取线上 latest-mac\.yml 失败（HTTP 502）/)
+
+  const status = runPlanStep({ liveCodes: { 'service-status.json': 500 } })
+  assert.notEqual(status.status, 0)
+  assert.match(status.output, /::error::读取线上 service-status\.json 失败（HTTP 500）/)
+  for (const run of [lookup, releases, manifest, status]) assert.equal(run.outputs.action, undefined)
+})
+
+// 动手的那一步：gh 桩记着 tag 现在指向哪里（空串是没有），建、删都会改它，后面的查询
+// 读到的就是改过之后的样子。raceTo：建 tag 被拒的同时，别处刚好把它建在了这个提交上。
+function runReserveStep({
+  action,
+  tag = 'v0.2.15',
+  confirm = '0.2.15',
+  from = '',
+  current = '',
+  annotated = false,
+  lookupFails = false,
+  createFails = false,
+  raceTo = '',
+  deleteFails = false,
+}) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-reserve-'))
+  const binDirectory = path.join(workspace, 'bin')
+  fs.mkdirSync(binDirectory)
+  const logPath = path.join(workspace, 'commands.log')
+  const statePath = path.join(workspace, 'tag-target')
+  fs.writeFileSync(statePath, current)
+  const create = createFails
+    ? `${raceTo ? `printf '%s' ${JSON.stringify(raceTo)} > "$state"; ` : ''}echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; exit 1`
+    : `for argument in "$@"; do case "$argument" in sha=*) printf '%s' "\${argument#sha=}" > "$state" ;; esac; done; exit 0`
+  const lookup = lookupFails
+    ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1`
+    : `printf 'refs/tags/%s0 commit %s\\n' "$TAG" ${JSON.stringify('c'.repeat(40))}
+    target=$(cat "$state")
+    if [ -n "$target" ]; then printf 'refs/tags/%s %s\\n' "$TAG" ${annotated ? `"tag ${TAG_OBJECT_SHA}"` : '"commit $target"'}; fi`
+  const ghStub = `#!/bin/bash
+printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
+state=${JSON.stringify(statePath)}
+case "$*" in
+  *'--method POST '*)
+    ${create} ;;
+  *'--method DELETE '*)
+    ${deleteFails ? `echo 'gh: Not Found (HTTP 404)' >&2; exit 1` : `: > "$state"; exit 0`} ;;
+  *'/git/matching-refs/tags/'*)
+    ${lookup} ;;
+  *'/git/tags/'*) cat "$state"; echo ;;
+esac
+exit 0
+`
+  const executable = path.join(binDirectory, 'gh')
+  fs.writeFileSync(executable, ghStub)
+  fs.chmodSync(executable, 0o755)
+  const result = spawnSync(SHELL_PATH, ['-c', reserveStep.run], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: {
+      PATH: `${binDirectory}:/usr/bin:/bin`,
+      HOME: workspace,
+      GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
+      GH_TOKEN: 'stub',
+      ACTION: action,
+      TAG: tag,
+      PLANNED_FROM: from,
+      CONFIRM_VERSION: confirm,
+      SHIPPED_SHA: SHIPPED,
+    },
+  })
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  const target = fs.readFileSync(statePath, 'utf8')
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { status: result.status, output: result.stdout + result.stderr, log, target }
+}
+
+const CREATE_TAG = `gh api --method POST repos/xufei5620/xingmang-ai-manager/git/refs -f ref=refs/tags/v0.2.15 -f sha=${SHIPPED} --silent`
+const DELETE_TAG = 'gh api --method DELETE repos/xufei5620/xingmang-ai-manager/git/refs/tags/v0.2.15 --silent'
+
+test('nothing is reserved when nothing will be published', posixOnly, () => {
+  const run = runReserveStep({ action: 'none', tag: '' })
+  assert.equal(run.status, 0, run.output)
+  assert.equal(run.log, '')
+})
+
+test('the reservation refuses a malformed plan and never passes it to the API', posixOnly, () => {
+  const cases = [
+    [{ action: '' }, /看不懂上一步给的结论/],
+    [{ action: 'delete' }, /看不懂上一步给的结论/],
+    [{ action: 'create', tag: '' }, /tag 名字不对/],
+    [{ action: 'create', tag: 'main' }, /tag 名字不对/],
+    [{ action: 'create', tag: 'v0.2.15/../../heads/main' }, /tag 名字不对/],
+    // grep 按行匹配，夹一个换行就能混过去；这里必须按整串对。
+    [{ action: 'create', tag: 'v0.2.15\nmain' }, /tag 名字不对/],
+    // 只动这一次要发的那个版本的 tag。
+    [{ action: 'create', tag: 'v0.2.14' }, /tag 名字不对/],
+    [{ action: 'move', from: '' }, /原来指向哪个提交不对/],
+    [{ action: 'move', from: `${EARLIER}\nmain` }, /原来指向哪个提交不对/],
+  ]
+  for (const [options, message] of cases) {
+    const run = runReserveStep(options)
+    const label = JSON.stringify(options)
+    assert.notEqual(run.status, 0, label)
+    assert.match(run.output, message, label)
+    assert.equal(run.log, '', label)
+  }
+})
+
+test('create puts the tag on the commit being built, through the API', posixOnly, () => {
+  // GITHUB_TOKEN 推不了新 ref（0.2.8 的 git push 就是这样红的），走 API。
+  const run = runReserveStep({ action: 'create' })
+  assert.equal(run.status, 0, run.output)
+  assert.equal(run.target, SHIPPED)
+  assert.ok(run.log.split('\n').includes(CREATE_TAG), run.log)
+  // 判断之后、动手之前，别处刚好把它建在了这次的提交上：不再建。
+  const again = runReserveStep({ action: 'create', current: SHIPPED })
+  assert.equal(again.status, 0, again.output)
+  assert.doesNotMatch(again.log, /--method/)
+})
+
+test('create stops when the tag appeared on another commit after the plan', posixOnly, () => {
+  const run = runReserveStep({ action: 'create', current: EARLIER })
+  assert.notEqual(run.status, 0)
+  assert.match(run.output, /::error::v0\.2\.15 在检查之后被建在了 b{40} 上/)
+  assert.doesNotMatch(run.log, /--method/)
+  assert.equal(run.target, EARLIER)
+})
+
+test('a refused create tells the owner to dispatch again from the latest main', posixOnly, () => {
+  // 触发到占 tag 之间通常只有一两分钟（排在前一次发布后面时要等它跑完），这期间 main 又
+  // 合进改工作流的提交，GitHub 就不让这个令牌在这次的提交上建 tag。什么都还没发，重新
+  // 触发就好。
+  const refused = runReserveStep({ action: 'create', createFails: true })
+  assert.notEqual(refused.status, 0)
+  assert.match(refused.output, /::error::GitHub 不让在 a{40} 上建 v0\.2\.15/)
+  assert.match(refused.output, /从最新的 main 重新触发/)
+  assert.equal(refused.target, '')
+  // 建不上是因为别处刚好建在了同一个提交上：照样算占好。
+  const raced = runReserveStep({ action: 'create', createFails: true, raceTo: SHIPPED })
+  assert.equal(raced.status, 0, raced.output)
+  const lost = runReserveStep({ action: 'create', createFails: true, raceTo: EARLIER })
+  assert.notEqual(lost.status, 0)
+  assert.match(lost.output, /::error::GitHub 不让在 a{40} 上建 v0\.2\.15/)
+})
+
+test('keep only passes while the tag still points at the commit being built', posixOnly, () => {
+  for (const annotated of [false, true]) {
+    const run = runReserveStep({ action: 'keep', current: SHIPPED, annotated })
+    assert.equal(run.status, 0, run.output)
+    assert.doesNotMatch(run.log, /--method/)
+    if (annotated) assert.match(run.log, /gh api repos\/.*\/git\/tags\/f{40}/)
+  }
+  for (const current of [EARLIER, '']) {
+    const run = runReserveStep({ action: 'keep', current })
+    assert.notEqual(run.status, 0, current)
+    assert.match(run.output, /::error::v0\.2\.15 在检查之后变了/)
+    assert.doesNotMatch(run.log, /--method/)
+  }
+})
+
+test('move deletes the tag a cancelled run left and recreates it on the commit being built', posixOnly, () => {
+  const run = runReserveStep({ action: 'move', from: EARLIER, current: EARLIER })
+  assert.equal(run.status, 0, run.output)
+  assert.equal(run.target, SHIPPED)
+  const lines = run.log.split('\n')
+  assert.ok(lines.indexOf(DELETE_TAG) >= 0 && lines.indexOf(CREATE_TAG) > lines.indexOf(DELETE_TAG), run.log)
+  // 判断之后、动手之前，别处刚好把它挪到了这次的提交上：什么都不做。
+  const done = runReserveStep({ action: 'move', from: EARLIER, current: SHIPPED })
+  assert.equal(done.status, 0, done.output)
+  assert.doesNotMatch(done.log, /--method/)
+})
+
+test('move leaves the tag alone when it changed since the plan or cannot be deleted', posixOnly, () => {
+  const changed = runReserveStep({ action: 'move', from: EARLIER, current: 'c'.repeat(40) })
+  assert.notEqual(changed.status, 0)
+  assert.match(changed.output, /::error::v0\.2\.15 在检查之后变了（现在指向 c{40}）/)
+  assert.doesNotMatch(changed.log, /--method/)
+  assert.equal(changed.target, 'c'.repeat(40))
+  // 判断时还在、这会儿不在了：有人在动它，不接着建。判断和动手在同一个作业里，重跑时
+  // 一起重来，那时它会被判成「还没有」直接建。
+  const vanished = runReserveStep({ action: 'move', from: EARLIER, current: '' })
+  assert.notEqual(vanished.status, 0)
+  assert.match(vanished.output, /::error::v0\.2\.15 在检查之后变了（现在指向 （没有））/)
+  assert.doesNotMatch(vanished.log, /--method/)
+
+  const stuck = runReserveStep({ action: 'move', from: EARLIER, current: EARLIER, deleteFails: true })
+  assert.notEqual(stuck.status, 0)
+  assert.match(stuck.output, /::error::删不掉还指向 b{40} 的旧 v0\.2\.15/)
+  assert.doesNotMatch(stuck.log, /--method POST/)
+  assert.equal(stuck.target, EARLIER)
+
+  // 删掉之后建不上：那一版本来就没发出去过，从最新的 main 重新触发会直接建。
+  const refused = runReserveStep({ action: 'move', from: EARLIER, current: EARLIER, createFails: true })
+  assert.notEqual(refused.status, 0)
+  assert.match(refused.output, /从最新的 main 重新触发/)
+})
+
+test('a failing lookup is never read as no tag when reserving', posixOnly, () => {
+  for (const action of ['create', 'keep', 'move']) {
+    const run = runReserveStep({ action, from: EARLIER, current: EARLIER, lookupFails: true })
+    assert.notEqual(run.status, 0, action)
+    assert.match(run.output, /::error::查不了 v0\.2\.15 现在指向哪里/, action)
+    assert.doesNotMatch(run.log, /--method/, action)
+  }
+})
+
+// 收尾那一步排在上传产物与覆盖更新清单**之后**。它失败时线上已经是新版本了，作业却
 // 报红，而「究竟发出去没有」是发布现场最不该需要人去猜的一件事。platforms 选单个
 // 平台时一个版本要分两次发，第二次跑到这里 tag 与 Release 都已经存在——原来的写法
 // 会在那里直接炸。
-//
-// 这几条把工作流里的那段 `run` 真的跑起来，所以要一个 POSIX shell 和能当可执行文件
-// 用的打桩脚本。publish 作业本身 runs-on: ubuntu-latest，这段脚本永远不会在 Windows
-// 上执行，所以 Windows 分片上跳过的是「跑不起来的环境」，不是「在 Windows 上不成立
-// 的断言」——Linux 与 macOS 分片照跑，覆盖没有减少。
-const SHELL_PATH = '/bin/bash'
-const shellUnavailable = process.platform === 'win32' || !fs.existsSync(SHELL_PATH)
-const posixOnly = { skip: shellUnavailable && `需要 ${SHELL_PATH}，publish 作业只在 ubuntu-latest 上跑` }
-
-function runTagStep({ existingTagSha, releaseExists, assets = true, annotated = false }) {
+function runTagStep({ existingTagSha = null, releaseExists = false, assets = true, annotated = false, lookupFails = false, createFails = false }) {
   // assets：true 是 Windows 与 Mac 各一个包，'linux' 是只有 Linux 两个架构的 deb。
   const step = publishJob.steps.find((entry) => /Tag the commit that shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-tag-'))
@@ -461,18 +1054,18 @@ exit 0
   // 0.1.x 那批 tag 是 git tag -a 推上去的附注 tag，ref 指向 tag 对象而不是 commit；
   // 现在建的是轻量 tag，ref 直接指向 commit。补发一个平台时两种都可能撞上，所以
   // 桩要能演出两种形状，解引用漏掉一层会让比对永远不相等、把补发判成版本号撞车。
-  const TAG_OBJECT_SHA = 'f'.repeat(40)
-  const refResponse = existingTagSha === null
-    ? 'exit 1'
-    : (annotated
-      ? `printf 'tag %s\\n' ${JSON.stringify(TAG_OBJECT_SHA)}`
-      : `printf 'commit %s\\n' ${JSON.stringify(existingTagSha)}`)
+  // matching-refs 按前缀匹配，v9.9.90 也会被列出来，只能认完整的 ref 名。
+  const refLines = [`printf 'refs/tags/v9.9.90 commit %s\\n' ${JSON.stringify('c'.repeat(40))}`]
+  if (existingTagSha !== null) {
+    refLines.push(`printf 'refs/tags/v9.9.9 %s\\n' ${JSON.stringify(annotated ? `tag ${TAG_OBJECT_SHA}` : `commit ${existingTagSha}`)}`)
+  }
   const ghStub = `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
 if [ "$1" = 'api' ]; then
-  case "$2" in
-    */git/ref/tags/*) ${refResponse} ;;
-    */git/tags/*) printf '%s\\n' ${JSON.stringify(existingTagSha || '')} ;;
+  case "$*" in
+    *'--method POST '*) exit ${createFails ? '1' : '0'} ;;
+    *'/git/matching-refs/tags/'*) ${lookupFails ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : refLines.join('; ')} ;;
+    *'/git/tags/'*) printf '%s\\n' ${JSON.stringify(existingTagSha || '')} ;;
   esac
   exit 0
 fi
@@ -498,7 +1091,7 @@ exit 0
       HOME: workspace,
       RUNNER_TEMP: workspace,
       PACKAGE_VERSION: '9.9.9',
-      SHIPPED_SHA: 'a'.repeat(40),
+      SHIPPED_SHA: SHIPPED,
       GH_TOKEN: 'stub',
       GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
     },
@@ -508,25 +1101,55 @@ exit 0
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, log }
 }
 
-test('a first release of a version tags the commit that shipped and creates the Release', posixOnly, () => {
+test('the Release is created on the tag reserved at dispatch, without naming a commit', posixOnly, () => {
+  // 0.2.8 的收尾停在 tag 和 Release 之间，补发时 tag 已经在了而 Release 还没有；现在 tag
+  // 触发时就占好了，这就是正常的那一支，不能报红。
+  const run = runTagStep({ existingTagSha: SHIPPED, releaseExists: false })
+
+  assert.equal(run.status, 0, run.stderr)
+  const create = run.log.split('\n').find((line) => line.startsWith('gh release create '))
+  assert.match(create, /^gh release create v9\.9\.9 --verify-tag --title 9\.9\.9 --notes-file /)
+  assert.match(create, /release-artifacts\/XingMang-AI-Manager-9\.9\.9-Setup\.exe/)
+  // 0.2.14 两次 403 都是因为传了 --target：GitHub 按它指向的提交判断工作流文件，出包
+  // 之后 main 改过工作流就拒绝。不传时按默认分支的最新提交判断，必然一致。
+  assert.doesNotMatch(run.log, /--target|target_commitish/)
+  assert.doesNotMatch(run.log, /--method|gh release upload/)
+})
+
+test('a reserved tag that went missing is recreated on the shipped commit through the API', posixOnly, () => {
   const run = runTagStep({ existingTagSha: null, releaseExists: false })
 
   assert.equal(run.status, 0, run.stderr)
-  // tag 由 --target 建出来，指向本次出包的那个 commit。
-  assert.match(run.log, new RegExp(`gh release create v9\\.9\\.9 --target ${'a'.repeat(40)}`))
-  assert.doesNotMatch(run.log, /gh release upload/)
+  const lines = run.log.split('\n')
+  const recreate = lines.indexOf(`gh api --method POST repos/xufei5620/xingmang-ai-manager/git/refs -f ref=refs/tags/v9.9.9 -f sha=${SHIPPED} --silent`)
+  const release = lines.findIndex((line) => line.startsWith('gh release create v9.9.9 --verify-tag '))
+  assert.ok(recreate >= 0 && release > recreate, run.log)
+  // GITHUB_TOKEN 推不了新 ref（0.2.8 的 git push 就是这样红的）。
+  assert.doesNotMatch(run.log, /^git /m)
+  assert.doesNotMatch(run.log, /--target/)
 })
 
-test('the release tag is created through the API instead of git push', posixOnly, () => {
-  // GITHUB_TOKEN 是 GitHub App 令牌，推新 ref 会被「没有 workflows 权限就不许创建或
-  // 更新 .github/workflows/*」拒掉，而那个权限给不了。0.2.8 就是这样红在最后一步的。
-  const run = runTagStep({ existingTagSha: null, releaseExists: false })
+test('a missing tag that cannot be recreated stops with the command to run by hand', posixOnly, () => {
+  // 出包之后 main 改过工作流文件，这个令牌补建不了。更新源已经是新版本，只差发布页。
+  const run = runTagStep({ existingTagSha: null, releaseExists: false, createFails: true })
 
-  assert.doesNotMatch(run.log, /^git /m)
+  assert.notEqual(run.status, 0)
+  const output = run.stdout + run.stderr
+  assert.match(output, /::error::v9\.9\.9 不在了/)
+  assert.ok(output.includes(`gh api --method POST repos/xufei5620/xingmang-ai-manager/git/refs -f ref=refs/tags/v9.9.9 -f sha=${SHIPPED}`), output)
+  assert.doesNotMatch(run.log, /gh release (create|upload)/)
+})
+
+test('a failing tag lookup at the finish is never read as a missing tag', posixOnly, () => {
+  const run = runTagStep({ lookupFails: true })
+
+  assert.notEqual(run.status, 0)
+  assert.match(run.stdout + run.stderr, /::error::查不了 v9\.9\.9 指向哪里/)
+  assert.doesNotMatch(run.log, /--method|gh release/)
 })
 
 test('re-publishing the same version adds its assets instead of failing on the existing tag', posixOnly, () => {
-  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true })
+  const run = runTagStep({ existingTagSha: SHIPPED, releaseExists: true })
 
   assert.equal(run.status, 0, run.stderr)
   // 先发 Windows、之后补发 macOS 是被支持的发布方式；第二次不该在收尾炸掉。
@@ -536,7 +1159,7 @@ test('re-publishing the same version adds its assets instead of failing on the e
 })
 
 test('a Linux-only publish attaches both debs to the Release and nothing else', posixOnly, () => {
-  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, assets: 'linux' })
+  const run = runTagStep({ existingTagSha: SHIPPED, releaseExists: true, assets: 'linux' })
 
   assert.equal(run.status, 0, run.stderr)
   const upload = run.log.split('\n').find((line) => /gh release upload/.test(line))
@@ -547,7 +1170,7 @@ test('a Linux-only publish attaches both debs to the Release and nothing else', 
 })
 
 test('an annotated tag from an older release is dereferenced before it is compared', posixOnly, () => {
-  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, annotated: true })
+  const run = runTagStep({ existingTagSha: SHIPPED, releaseExists: true, annotated: true })
 
   // 漏掉解引用那一层，比对的就是 tag 对象的 id，永远不等于出包的 commit，
   // 补发会被判成「同一个版本号发过两份不同的产物」而停掉。
@@ -556,31 +1179,24 @@ test('an annotated tag from an older release is dereferenced before it is compar
   assert.match(run.log, /gh release upload v9\.9\.9 .*--clobber/)
 })
 
-test('a tag left behind by a failed finish still gets its Release', posixOnly, () => {
-  // 0.2.8 的收尾就停在两者之间：tag 推上去之前失败，Release 也没建。补发时
-  // tag 可能已经在了而 Release 还没有，这一支不能报红。
-  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: false })
-
-  assert.equal(run.status, 0, run.stderr)
-  assert.match(run.log, /gh release create v9\.9\.9/)
-})
-
 test('a tag that already points somewhere else stops the job instead of being moved', posixOnly, () => {
-  const run = runTagStep({ existingTagSha: 'b'.repeat(40), releaseExists: true })
+  const run = runTagStep({ existingTagSha: EARLIER, releaseExists: true })
 
   // 同一个版本号发过两份不同的产物，这必须有人来看。
   assert.notEqual(run.status, 0)
-  assert.match(run.stdout + run.stderr, /::error::/)
-  assert.doesNotMatch(run.log, /gh release (create|upload)/)
+  assert.match(run.stdout + run.stderr, /::error::v9\.9\.9 已存在且指向 b{40}/)
+  assert.doesNotMatch(run.log, /--method|gh release (create|upload)/)
 })
 
-test('the release tag is never moved or force-pushed', () => {
+test('the finish never moves, deletes or retargets the release tag', () => {
   const step = publishJob.steps.find((entry) => /Tag the commit that shipped/.test(entry.name || ''))
+  const commands = commandLines(step.run).join('\n')
 
   // 移动一个已发布的 tag 会让所有按 tag 取源码的人拿到和当初不同的东西。
-  assert.doesNotMatch(String(step.run), /git tag -f|--force|-d\s+"?v?\$/)
-  // 注释里提到 git push 是在说明为什么不走它，所以只认行首的真命令。
-  assert.doesNotMatch(String(step.run), /^\s*git push/m)
+  assert.doesNotMatch(commands, /git tag -f|--force|-d\s+"?v?\$|--method (?:DELETE|PATCH)/)
+  assert.doesNotMatch(commands, /^\s*git push/m)
+  // 也不指定 Release 挂哪个提交：见上面 0.2.14 那一条。
+  assert.doesNotMatch(commands, /--target|target_commitish/)
 })
 
 
@@ -708,7 +1324,7 @@ test('the publish guard allows a first release, an upgrade and a rerun of the sa
   assert.throws(() => assessPublish(linux, null, 'latest-linux-ia32.yml'), PublishGuardError)
 })
 
-function runGuardStep({ existingTagSha = null, tagLookupFails = false, live = {}, artifacts }) {
+function runGuardStep({ existingTagSha = null, tagLookupFails = false, createFails = false, live = {}, artifacts }) {
   const step = publishJob.steps.find((entry) => /Refuse to overwrite a version that already shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-guard-'))
   const binDirectory = path.join(workspace, 'bin')
@@ -720,9 +1336,12 @@ function runGuardStep({ existingTagSha = null, tagLookupFails = false, live = {}
   const liveDirectory = path.join(workspace, 'live')
   fs.mkdirSync(liveDirectory)
   for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(liveDirectory, name), text)
+  const logPath = path.join(workspace, 'commands.log')
   const ghStub = `#!/bin/bash
-case "$2" in
-  */git/matching-refs/tags/*) ${tagLookupFails
+printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
+case "$*" in
+  *'--method POST '*) ${createFails ? `echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; exit 1` : 'exit 0'} ;;
+  *'/git/matching-refs/tags/'*) ${tagLookupFails
     ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1`
     // 按前缀匹配：v0.2.110 也会被列出来，只能认完整的 ref 名。
     : `printf 'refs/tags/v0.2.110 commit %s\\n' ${JSON.stringify('c'.repeat(40))}${existingTagSha ? `; printf 'refs/tags/v0.2.11 commit %s\\n' ${JSON.stringify(existingTagSha)}` : ''}`} ;;
@@ -731,6 +1350,7 @@ exit 0
 `
   // 最后一个参数是地址；按文件名去 live 目录里找，没有就是 404。
   const curlStub = `#!/bin/bash
+printf 'curl %s\\n' "$*" >> ${JSON.stringify(logPath)}
 output=''
 while [ "$#" -gt 1 ]; do
   if [ "$1" = '--output' ]; then output=$2; shift; fi
@@ -763,8 +1383,9 @@ fi
       GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
     },
   })
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
   fs.rmSync(workspace, { recursive: true, force: true })
-  return { status: result.status, output: result.stdout + result.stderr }
+  return { status: result.status, output: result.stdout + result.stderr, log }
 }
 
 test('a macOS-only publish of a version that already shipped stops before any upload', posixOnly, () => {
@@ -826,6 +1447,41 @@ test('a failing tag lookup stops the publish instead of being read as no tag', p
   assert.notEqual(run.status, 0)
   assert.match(run.output, /::error::查不了 v0\.2\.11 是否已存在/)
   assert.doesNotMatch(run.output, /可以发/)
+})
+
+test('a tag that went missing is recreated before the upload, or nothing is published', posixOnly, () => {
+  // tag 一开始就由 release-tag 占好了，这会儿不在多半是有人删了。等传完、覆盖完清单再去
+  // 补建，建不上时线上已经是新版本了，GitHub 上却没有 tag。
+  const ours = manifestText('0.2.11', 'mac build', 'XingMang-AI-Manager-0.2.11-arm64-mac.zip')
+  const live = { 'latest-mac.yml': manifestText('0.2.10', 'old mac build', 'XingMang-AI-Manager-0.2.10-arm64-mac.zip') }
+  const createTag = `gh api --method POST repos/xufei5620/xingmang-ai-manager/git/refs -f ref=refs/tags/v0.2.11 -f sha=${SHIPPED} --silent`
+  const recreated = runGuardStep({ live, artifacts: { 'latest-mac.yml': ours } })
+  assert.equal(recreated.status, 0, recreated.output)
+  assert.ok(recreated.log.split('\n').includes(createTag), recreated.log)
+  assert.match(recreated.output, /v0\.2\.11 不在了，已补建在本次出包的 a{40} 上/)
+
+  // 补建不了：这一步失败，后面的上传都不会跑。
+  const refused = runGuardStep({ createFails: true, live, artifacts: { 'latest-mac.yml': ours } })
+  assert.notEqual(refused.status, 0)
+  assert.match(refused.output, /::error::v0\.2\.11 不在了，这个令牌也补建不了/)
+  assert.match(refused.output, /线上什么都没改/)
+
+  // 别的检查先停下的，不把别人删掉的 tag 又建回来。
+  const withdrawn = runGuardStep({
+    live: { ...live, 'service-status.json': JSON.stringify({ badVersions: ['0.2.11'] }) },
+    artifacts: { 'latest-mac.yml': ours },
+  })
+  assert.notEqual(withdrawn.status, 0)
+  assert.match(withdrawn.output, /0\.2\.11 已经被撤回/)
+  assert.doesNotMatch(withdrawn.log, /--method/)
+
+  // 正常情况：tag 在，指着这次的提交，不再建。
+  const present = runGuardStep({ existingTagSha: SHIPPED, live, artifacts: { 'latest-mac.yml': ours } })
+  assert.equal(present.status, 0, present.output)
+  assert.doesNotMatch(present.log, /--method/)
+  // 只会补建，不挪也不删。
+  const step = publishJob.steps.find((entry) => /Refuse to overwrite a version that already shipped/.test(entry.name || ''))
+  assert.doesNotMatch(commandLines(step.run).join('\n'), /--method (?:DELETE|PATCH)|--target|target_commitish|force=/)
 })
 
 test('the tag lookup never swallows errors from the GitHub API', () => {
