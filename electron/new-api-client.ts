@@ -122,9 +122,10 @@ export interface NewApiClientOptions {
   onCredentialRotation?: (persistable: NewApiPersistableSession) => void | Promise<void>
   // Main process only. Asked once after a request fails at the network layer
   // (timeout, proxy, connection failure): resolve true when the host has just
-  // taken the session off a system proxy that stopped forwarding, so the same
-  // request is worth one more try. The host owns the proxy decision; this
-  // client only decides which failures may be replayed safely.
+  // taken this client's requests off a system proxy that stopped forwarding,
+  // so the same request is worth one more try. The host owns the proxy
+  // decision (and which session the next request goes through); this client
+  // only decides which failures may be replayed safely.
   retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
 }
 
@@ -1149,7 +1150,8 @@ const proxyRetryReasons: ReadonlySet<NetworkFailureReason> = new Set(['timeout',
 // is replayed only when the proxy itself refused the tunnel, i.e. the request
 // provably never reached the service: after a timeout or a reset mid-flight it
 // may already have happened, and sending it again could do it twice. Those
-// still flip the session to direct, so the user's next attempt goes through.
+// still take the requests off the proxy, so the user's next attempt goes
+// through.
 function mayReplayOffProxy(init: PerformRequestInit, reason: NetworkFailureReason): boolean {
   return (init.idempotent ?? init.method === 'GET') || reason === 'proxy'
 }
