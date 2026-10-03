@@ -62,7 +62,8 @@ test('official package synchronization supports a timer and manual retry without
   assert.deepEqual(Object.keys(workflow.on).sort(), ['schedule', 'workflow_dispatch'])
   assert.equal(workflow.on.schedule.length, 1)
   assert.equal(workflow.on.schedule[0].cron, '17 */6 * * *')
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows'])
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows', 'macos', 'linux',
+    'windows-x64', 'windows-arm64', 'macos-arm64', 'macos-x64', 'linux-deb-x64', 'linux-deb-arm64', 'linux-rpm-x64', 'linux-rpm-arm64'])
   assert.equal(workflow.on.workflow_dispatch.inputs.platforms.default, 'all')
 })
 

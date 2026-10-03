@@ -14,6 +14,16 @@ on:
         options:
           - all
           - windows
+          - macos
+          - linux
+          - windows-x64
+          - windows-arm64
+          - macos-arm64
+          - macos-x64
+          - linux-deb-x64
+          - linux-deb-arm64
+          - linux-rpm-x64
+          - linux-rpm-arm64
 
 permissions:
   contents: read

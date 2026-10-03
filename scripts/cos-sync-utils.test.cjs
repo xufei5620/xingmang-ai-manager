@@ -17,7 +17,115 @@ const {
   readBoundedRegularFile,
   readCosConfiguration,
   validateObjectKey,
+  safeSyncFailure,
 } = require('./cos-sync-utils.cjs')
+
+test('safe diagnostics recognize owned errors and never trust forged fields or raw transport details', async () => {
+  const forged = new Error('Bearer SECRET signed-url')
+  Object.defineProperty(forged, 'syncFailure', { get() { throw new Error('must not read forged diagnostics') } })
+  assert.deepEqual(safeSyncFailure(forged), { code: 'operation-failed' })
+  const cyclic = { syncFailure: { code: 'http-status', status: 403 } }
+  cyclic.syncFailure.put = cyclic
+  assert.deepEqual(safeSyncFailure(cyclic), { code: 'operation-failed' })
+  const mock = mockRequest((call, callback, request) => {
+    request.destroy(Object.assign(new Error('Authorization=SECRET https://signed.invalid/?token=SECRET'), { code: 'ECONNRESET' }))
+  })
+  await assert.rejects(fetchText({ url: `${config.publicBaseUrl}/a`, allowedHosts: [host] }, mock), (error) => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.code, 'network-request-failed')
+    assert.equal(diagnostic.transportCode, 'ECONNRESET')
+    assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|signed\.invalid|Authorization/)
+    return true
+  })
+})
+
+test('bounded network diagnostics identify HTTP failures and both timeout phases without response bodies', async () => {
+  const forbidden = mockRequest((call, callback) => callback(response(Buffer.from('SECRET server body'), 403)))
+  await assert.rejects(fetchText({ url: `${config.publicBaseUrl}/a`, allowedHosts: [host] }, forbidden), (error) => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.code, 'http-status')
+    assert.equal(diagnostic.status, 403)
+    assert.equal(diagnostic.method, 'GET')
+    assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET/)
+    return true
+  })
+  const neverHeaders = mockRequest(() => {})
+  await assert.rejects(fetchText({ url: `${config.publicBaseUrl}/a`, allowedHosts: [host] }, { ...neverHeaders, headerTimeoutMs: 20 }), (error) => safeSyncFailure(error).code === 'response-header-timeout')
+  const neverBody = mockRequest((call, callback) => {
+    const stream = new PassThrough()
+    stream.statusCode = 200
+    stream.headers = { 'content-length': '64' }
+    callback(stream)
+    stream.write('abc')
+  })
+  await assert.rejects(fetchText({ url: `${config.publicBaseUrl}/a`, allowedHosts: [host], expectedBytes: 64 }, { ...neverBody, bodyTimeoutMs: 20 }), (error) => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.code, 'response-body-timeout')
+    assert.equal(diagnostic.phase, 'response-body')
+    assert.equal(diagnostic.transferredBytes, 3)
+    assert.equal(diagnostic.expectedBytes, 64)
+    return true
+  })
+})
+
+test('integrity failures retain safe ETag, size and digest categories', async () => {
+  const body = Buffer.from('package')
+  for (const [fields, code] of [
+    [{ expectedEtag: 'different' }, 'etag-changed'],
+    [{ expectedBytes: body.length + 1 }, 'size-mismatch'],
+    [{ expectedSha256: '0'.repeat(64) }, 'digest-mismatch'],
+  ]) {
+    const mock = mockRequest((call, callback) => callback(response(body, 200, { 'content-length': String(body.length), etag: 'current' })))
+    await assert.rejects(fetchText({ url: `${config.publicBaseUrl}/a`, allowedHosts: [host], ...fields }, mock), (error) => safeSyncFailure(error).code === code)
+  }
+})
+
+test('publication progress distinguishes upload bytes from complete public readback without exposing signed requests', async (t) => {
+  const file = await fixture(t)
+  const mock = memoryCos()
+  const events = []
+  const store = createCosStore(config, mock)
+  await store.publishFile('chatgpt/test/app.msix', file.filePath, { contentType: 'application/vnd.ms-appx', onProgress: (event) => events.push(event) })
+  assert.ok(events.some((event) => event.method === 'PUT' && event.phase === 'response-headers'
+    && event.transferredBytes === file.body.length && event.expectedBytes === file.body.length))
+  assert.ok(events.some((event) => event.method === 'GET' && event.phase === 'complete'
+    && event.transferredBytes === file.body.length))
+  assert.doesNotMatch(JSON.stringify(events), /authorization|q-sign|SECRET|myqcloud|filePath|https:/i)
+})
+
+test('failed PUT and readback preserve separate safe causes without retrying the immutable write', async (t) => {
+  const file = await fixture(t)
+  const mock = memoryCos({ lostPut: true, corruptGet: true })
+  const store = createCosStore(config, mock)
+  await assert.rejects(store.publishFile('chatgpt/test/app.msix', file.filePath, { contentType: 'application/vnd.ms-appx' }), (error) => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.code, 'cos-upload-unconfirmed')
+    assert.equal(diagnostic.put.code, 'network-request-failed')
+    assert.equal(diagnostic.readback.code, 'digest-mismatch')
+    return true
+  })
+  assert.equal(mock.calls.filter((call) => call.method === 'PUT').length, 1)
+})
+
+test('an empty stalled PUT response counts received bytes independently of uploaded bytes', async (t) => {
+  const file = await fixture(t)
+  const mock = mockRequest((call, callback) => {
+    if (call.method !== 'PUT') { callback(response(Buffer.alloc(0), 404)); return }
+    const stream = new PassThrough()
+    stream.statusCode = 200
+    stream.headers = { 'content-length': '0' }
+    callback(stream)
+  })
+  const store = createCosStore(config, { ...mock, bodyTimeoutMs: 20 })
+  await assert.rejects(store.publishFile('chatgpt/test/app.msix', file.filePath, { contentType: 'application/vnd.ms-appx' }), (error) => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.put.code, 'response-body-timeout')
+    assert.equal(diagnostic.put.phase, 'response-body')
+    assert.equal(diagnostic.put.transferredBytes, 0)
+    assert.equal(diagnostic.put.expectedBytes, 0)
+    return true
+  })
+})
 
 const config = readCosConfiguration({ COS_SECRET_ID: 'TESTSECRETID123456', COS_SECRET_KEY: 'TESTSECRETKEY123456' })
 const host = new URL(config.publicBaseUrl).hostname

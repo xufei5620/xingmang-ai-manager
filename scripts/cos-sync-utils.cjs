@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const https = require('node:https')
 const path = require('node:path')
+const { performance } = require('node:perf_hooks')
 const { Writable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 
@@ -10,6 +11,38 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_JSON_BYTES = 1024 * 1024
 const DEFAULT_BUCKET = 'xingmang-downloads-1342302199'
 const DEFAULT_REGION = 'ap-shanghai'
+const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed'])
+const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
+const failureDetails = new WeakMap()
+
+function transferFailure(code, message, details = {}) {
+  const error = new Error(message)
+  failureDetails.set(error, { code, ...details })
+  return error
+}
+
+function readSafeSyncFailure(error, seen, depth) {
+  const value = failureDetails.get(error)
+  if (!value || !FAILURE_CODES.has(value.code) || seen.has(error) || depth > 3) return { code: 'operation-failed' }
+  seen.add(error)
+  const result = { code: value.code }
+  if (['GET', 'HEAD', 'PUT'].includes(value.method)) result.method = value.method
+  if (['response-headers', 'upload-body', 'response-body'].includes(value.phase)) result.phase = value.phase
+  if (TRANSPORT_CODES.has(value.transportCode)) result.transportCode = value.transportCode
+  if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status
+  for (const name of ['transferredBytes', 'expectedBytes']) {
+    if (Number.isSafeInteger(value[name]) && value[name] >= 0 && value[name] <= MAX_FILE_BYTES) result[name] = value[name]
+  }
+  // Only publisher-created suberrors are inspected. Never serialize an
+  // exception, message, URL, response body, headers, or credentials.
+  if (value.put) result.put = readSafeSyncFailure(value.put, seen, depth + 1)
+  if (value.readback) result.readback = readSafeSyncFailure(value.readback, seen, depth + 1)
+  return result
+}
+
+function safeSyncFailure(error) {
+  return readSafeSyncFailure(error, new WeakSet(), 0)
+}
 
 function readCosConfiguration(env = process.env) {
   const bucket = env.COS_BUCKET || DEFAULT_BUCKET
@@ -94,9 +127,12 @@ function parseContentLength(headers) {
   return Number(value)
 }
 
-function networkFailure() {
+function networkFailure(cause, details) {
   // Never attach a raw transport error: an injected proxy can include authorization or signed URLs.
-  return new Error('网络请求失败，未记录服务器正文或认证信息')
+  return transferFailure('network-request-failed', '网络请求失败，未记录服务器正文或认证信息', {
+    ...details,
+    ...(TRANSPORT_CODES.has(cause?.code) ? { transportCode: cause.code } : {}),
+  })
 }
 
 function validateTimeout(value, fallback) {
@@ -111,6 +147,26 @@ async function performRequest(input, options = {}) {
   const headerTimeoutMs = validateTimeout(options.headerTimeoutMs, input.method === 'PUT' ? 20 * 60 * 1000 : 30000)
   const bodyTimeoutMs = validateTimeout(options.bodyTimeoutMs, 20 * 60 * 1000)
   const requestImpl = options.requestImpl || https.request
+  const method = input.method || 'GET'
+  const started = performance.now()
+  let transferredBytes = 0
+  let phase = 'response-headers'
+  let responseDeclaredBytes
+  let lastProgressBytes = 0
+  let lastProgressAt = started
+  function reportProgress(phase, bytes, expectedBytes, force = false) {
+    if (typeof input.onProgress !== 'function') return
+    const now = performance.now()
+    if (!force && bytes - lastProgressBytes < 16 * 1024 * 1024 && now - lastProgressAt < 15000) return
+    lastProgressBytes = bytes
+    lastProgressAt = now
+    try { input.onProgress({ phase, method, transferredBytes: bytes, expectedBytes, elapsedMs: Math.round(now - started) }) } catch {}
+  }
+  function details(extra = {}) {
+    const expectedBytes = phase === 'response-body' ? input.expectedBytes ?? responseDeclaredBytes
+      : method === 'PUT' ? input.uploadBytes : input.expectedBytes
+    return { method, phase, transferredBytes, ...(expectedBytes === undefined ? {} : { expectedBytes }), ...extra }
+  }
   let request
   let response
   let headerTimer
@@ -125,45 +181,54 @@ async function performRequest(input, options = {}) {
         if (input.body && typeof input.body.destroy === 'function') input.body.destroy()
       }
       headerTimer = setTimeout(() => {
-        timerError = new Error('网络请求等待响应头超时')
+        timerError = transferFailure('response-header-timeout', '网络请求等待响应头超时', details())
         fail(timerError)
       }, headerTimeoutMs)
       try {
         request = requestImpl(url, { method: input.method || 'GET', headers: { 'accept-encoding': 'identity', ...input.headers }, agent: false, maxHeaderSize: 16 * 1024 }, resolve)
-        request.on('error', () => fail(timerError || networkFailure()))
+        request.on('error', (error) => fail(timerError || networkFailure(error, details())))
         if (input.body && typeof input.body.pipe === 'function') {
-          input.body.on('error', () => {
-            uploadError = networkFailure()
+          input.body.on('data', (chunk) => {
+            phase = 'upload-body'
+            transferredBytes += chunk.length
+            reportProgress('upload-body', transferredBytes, input.uploadBytes)
+          })
+          input.body.on('error', (error) => {
+            uploadError = networkFailure(error, details())
             fail(uploadError)
           })
           input.body.pipe(request)
         } else {
           request.end(input.body)
         }
-      } catch {
-        fail(networkFailure())
+      } catch (error) {
+        fail(networkFailure(error, details()))
       }
     })
     clearTimeout(headerTimer)
+    reportProgress('response-headers', transferredBytes, method === 'PUT' ? input.uploadBytes : input.expectedBytes, true)
     const status = response.statusCode
     // Redirects are rejected even for public GETs so credentials can never cross a host boundary.
     if (!Number.isInteger(status) || status < 200 || status >= 300) {
-      const error = new Error(status >= 300 && status < 400 ? '服务器重定向已拒绝' : `服务器请求失败（HTTP ${Number.isInteger(status) ? status : 0}）`)
+      const error = transferFailure(status >= 300 && status < 400 ? 'redirect-rejected' : 'http-status', status >= 300 && status < 400 ? '服务器重定向已拒绝' : `服务器请求失败（HTTP ${Number.isInteger(status) ? status : 0}）`, details({ status }))
       error.status = status
       throw error
     }
     const headers = Object.fromEntries(Object.entries(response.headers || {}).map(([key, value]) => [key.toLowerCase(), value]))
     if (headers['content-encoding'] && headers['content-encoding'] !== 'identity') throw new Error('服务器返回了不支持的压缩正文')
     const declaredBytes = parseContentLength(headers)
-    if (declaredBytes !== null && declaredBytes > maxBytes) throw new Error('下载内容超过大小上限')
-    if (input.expectedEtag !== undefined && headers.etag !== input.expectedEtag) throw new Error('下载期间上游 ETag 发生变化')
-    if (input.expectedBytes !== undefined && declaredBytes !== null && declaredBytes !== input.expectedBytes) throw new Error('下载文件大小与预期不一致')
+    responseDeclaredBytes = declaredBytes
+    if (declaredBytes !== null && declaredBytes > maxBytes) throw transferFailure('response-too-large', '下载内容超过大小上限', details())
+    if (input.expectedEtag !== undefined && headers.etag !== input.expectedEtag) throw transferFailure('etag-changed', '下载期间上游 ETag 发生变化', details())
+    if (input.expectedBytes !== undefined && declaredBytes !== null && declaredBytes !== input.expectedBytes) throw transferFailure('size-mismatch', '下载文件大小与预期不一致', details())
     if (input.method === 'HEAD') {
       response.resume()
       return { bytes: declaredBytes, etag: headers.etag, lastModified: headers['last-modified'], contentType: headers['content-type'], headers, status }
     }
+    phase = 'response-body'
+    transferredBytes = 0
     bodyTimer = setTimeout(() => {
-      timerError = new Error('网络请求读取正文超时')
+      timerError = transferFailure('response-body-timeout', '网络请求读取正文超时', details())
       response.destroy(timerError)
       request.destroy()
     }, bodyTimeoutMs)
@@ -173,7 +238,9 @@ async function performRequest(input, options = {}) {
     const sink = new Writable({
       write(chunk, encoding, callback) {
         bytes += chunk.length
-        if (bytes > maxBytes) return callback(new Error('下载内容超过大小上限'))
+        transferredBytes = bytes
+        if (bytes > maxBytes) return callback(transferFailure('response-too-large', '下载内容超过大小上限', details()))
+        reportProgress('response-body', bytes, input.expectedBytes ?? declaredBytes)
         for (const hash of Object.values(hashes)) hash.update(chunk)
         if (input.collectBody) chunks.push(chunk)
         if (input.output) input.output.write(chunk, callback)
@@ -187,14 +254,15 @@ async function performRequest(input, options = {}) {
     if (input.output) input.output.on('error', () => sink.destroy(new Error('写入下载文件失败')))
     try { await pipeline(response, sink) } catch (error) {
       if (timerError) throw timerError
-      if (error && error.message === '下载内容超过大小上限') throw error
-      throw networkFailure()
+      if (failureDetails.get(error)?.code === 'response-too-large') throw error
+      throw networkFailure(error, details())
     }
     if (uploadError) throw uploadError
-    if (declaredBytes !== null && bytes !== declaredBytes) throw new Error('下载正文大小与响应头不一致')
-    if (input.expectedBytes !== undefined && bytes !== input.expectedBytes) throw new Error('下载文件大小与预期不一致')
+    if (declaredBytes !== null && bytes !== declaredBytes) throw transferFailure('size-mismatch', '下载正文大小与响应头不一致', details({ expectedBytes: declaredBytes }))
+    if (input.expectedBytes !== undefined && bytes !== input.expectedBytes) throw transferFailure('size-mismatch', '下载文件大小与预期不一致', details())
     const result = { bytes, sha256: hashes.sha256.digest('hex'), sha512: hashes.sha512.digest('base64'), md5Base64: hashes.md5.digest('base64'), headers, etag: headers.etag, status }
-    if (input.expectedSha256 !== undefined && result.sha256 !== input.expectedSha256) throw new Error('下载文件 SHA256 与预期不一致')
+    if (input.expectedSha256 !== undefined && result.sha256 !== input.expectedSha256) throw transferFailure('digest-mismatch', '下载文件 SHA256 与预期不一致', details())
+    reportProgress('complete', bytes, input.expectedBytes ?? declaredBytes, true)
     if (input.collectBody) result.body = Buffer.concat(chunks)
     return result
   } finally {
@@ -365,7 +433,7 @@ function createCosStore(configuration, options = {}) {
   }
 
   async function verify(key, hash, input) {
-    const result = await performRequest({ url: publicUrl(key), allowedHosts: [host], maxBytes: hash.bytes, expectedBytes: hash.bytes, expectedSha256: hash.sha256 }, options)
+    const result = await performRequest({ url: publicUrl(key), allowedHosts: [host], maxBytes: hash.bytes, expectedBytes: hash.bytes, expectedSha256: hash.sha256, onProgress: input.onProgress }, options)
     if (!contentTypesMatch(result.headers['content-type'], input.contentType, input.acceptedContentTypes)) throw new Error('COS 文件的 Content-Type 与预期不一致')
     return { key, url: publicUrl(key), bytes: hash.bytes, sha256: hash.sha256, contentType: result.headers['content-type'], etag: result.etag }
   }
@@ -388,12 +456,12 @@ function createCosStore(configuration, options = {}) {
     headers.authorization = buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: 'PUT', pathname: decodeURIComponent(url.pathname), headers, now: options.now ? options.now() : Math.floor(Date.now() / 1000) })
     let putError
     try {
-      await performRequest({ url: url.href, allowedHosts: [host], method: 'PUT', headers, body: await createBody(), maxBytes: MAX_JSON_BYTES }, options)
+      await performRequest({ url: url.href, allowedHosts: [host], method: 'PUT', headers, body: await createBody(), uploadBytes: hash.bytes, onProgress: input.onProgress, maxBytes: MAX_JSON_BYTES }, options)
     } catch (error) { putError = error }
     // A lost PUT response does not justify another write: first confirm the complete public object.
-    try { return await verify(key, hash, input) } catch {
-      if (putError) throw new Error('COS 上传未确认成功；已尝试读取核验，请检查远程状态后再重试')
-      throw new Error('COS 上传后的公共下载核验失败，请检查远程状态')
+    try { return await verify(key, hash, input) } catch (readbackError) {
+      if (putError) throw transferFailure('cos-upload-unconfirmed', 'COS 上传未确认成功；已尝试读取核验，请检查远程状态后再重试', { put: putError, readback: readbackError })
+      throw transferFailure('cos-readback-failed', 'COS 上传后的公共下载核验失败，请检查远程状态', { readback: readbackError })
     }
   }
 
@@ -438,5 +506,6 @@ module.exports = {
   inspectResource,
   readBoundedRegularFile,
   readCosConfiguration,
+  safeSyncFailure,
   validateObjectKey,
 }
