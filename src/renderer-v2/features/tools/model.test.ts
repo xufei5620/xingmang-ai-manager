@@ -219,19 +219,21 @@ describe('renderer tool source', () => {
     expect(snapshot).toEqual(before)
   })
 
-  it('redacts the local path a failed detection puts in the home tool row (R-S7b)', () => {
-    // status.detectionError is whatever describeProbeFailure got from the probe,
-    // and the home row prints it verbatim as the row subtitle.
+  it('says a failed detection in Chinese on the home tool row and keeps the English reason off screen', () => {
+    // status.detectionError is whatever describeProbeFailure got from the probe.
+    // The English original goes to the runtime log (ipc.ts), not the row subtitle.
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
     const status = { installed: true, version: '1.0.0', path: '/fixture' }
     const failed = { ...status, detectionFailed: true, detectionError: "EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'" }
     const rows = presentTools({ config: { providers }, platform: { codexDesktop: { launch: true } },
       system: { clis: { claude: failed, codex: { ...status, detectionFailed: true, detectionError: null }, grok: status, gemini: status },
-        desktopApps: { codex: { ...status, appVersion: '1.0.0' } } },
+        desktopApps: { codex: { ...status, appVersion: '1.0.0', detectionFailed: true, detectionError: '读取 C:\\Users\\yoyo\\AppData 失败' } } },
     } as unknown as ToolboxSnapshot, memoryStorage())
     const claude = rows.find((row) => row.id === 'claude')
-    expect(claude?.error).toBe("EPERM: operation not permitted, scandir '本地配置文件")
-    expect(claude?.error).not.toContain('yoyo')
+    expect(claude?.error).toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。')
+    expect(claude?.error).not.toContain('EPERM')
+    // 主进程本来就说中文的照旧显示，只把路径脱敏（R-S7b）。
+    expect(rows.find((row) => row.id === 'codexDesktop')?.error).toBe('读取 本地配置文件 失败')
     // 探测失败但主进程没给原因时,原来的中文兜底文案不变。
     expect(rows.find((row) => row.id === 'codex')?.error).toBe('工具检测没有完成')
     expect(rows.find((row) => row.id === 'grok')?.error).toBeNull()
@@ -438,6 +440,11 @@ describe('renderer tool availability', () => {
     expect(availability.reason).toBe('npm 查询超时')
     // 没探到不是「未找到版本」,那是一个这次并没有得出的结论。
     expect(availability.versionFallback).toBe('版本未读到')
+  })
+
+  it('puts an English probe failure into plain words on the install page as well', () => {
+    expect(toolAvailability({ installed: false, detectionFailed: true, detectionError: "EBUSY: resource busy or locked, open 'C:\\Users\\yoyo\\.codex\\config.toml'" }).reason)
+      .toBe('这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。')
   })
 
   it('still says the probe failed when the main process sent no reason', () => {
