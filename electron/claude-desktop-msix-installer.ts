@@ -424,7 +424,8 @@ export async function installClaudeDesktopFromOfficial(options: ClaudeDesktopMsi
     })
     return inspected
   } finally {
-    // 同 Codex 桌面端：Add-AppxPackage 装完后可能还攥着文件一会儿，放到后台删。
+    // 同 Codex 桌面端：Add-AppxPackage 装完后可能还攥着文件一会儿，放到后台删。这回没删掉的，
+    // 由 install-leftovers.ts 按目录名前缀（xingmang-claude-desktop- / claude-desktop-）以后再清。
     void fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
   }
 }

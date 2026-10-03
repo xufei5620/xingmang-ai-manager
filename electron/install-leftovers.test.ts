@@ -46,6 +46,9 @@ describe('install leftover names', () => {
     expect(isInstallLeftoverName('xingmang-my-project-Ab12Cd', userTemporaryLeftoverPrefixes)).toBe(false)
     expect(isInstallLeftoverName('npm-transaction-Ab12Cd', userTemporaryLeftoverPrefixes)).toBe(false)
     expect(isInstallLeftoverName('npm-transaction-Ab12Cd', trustedCacheLeftoverPrefixes)).toBe(true)
+    // Claude Desktop 官网离线安装包那一路（claude-desktop-msix-installer.ts）两种身份下建的目录。
+    expect(isInstallLeftoverName('xingmang-claude-desktop-Ab12Cd', userTemporaryLeftoverPrefixes)).toBe(true)
+    expect(isInstallLeftoverName('claude-desktop-Ab12Cd', trustedCacheLeftoverPrefixes)).toBe(true)
   })
 })
 

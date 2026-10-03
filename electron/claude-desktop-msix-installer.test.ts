@@ -85,7 +85,12 @@ async function fixture(overrides: Partial<ClaudeDesktopMsixInstallOptions> = {})
 
 afterEach(async () => {
   vi.restoreAllMocks()
-  await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.promises.rm(directory, { recursive: true, force: true })))
+  // 安装器装完会在后台删它自己的临时目录（就是 fixture 建的这个），和这里的删除撞在一起；
+  // Windows 上两边同时删、或杀毒软件还攥着刚写下的包时，rmdir 会报 EPERM（Windows CI 上
+  // 出过），所以和 install-leftovers.ts 一样让 rm 自己重试几次。
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.promises.rm(directory, {
+    recursive: true, force: true, maxRetries: 10, retryDelay: 50,
+  })))
 })
 
 describe('Claude Desktop official MSIX download addresses', () => {
