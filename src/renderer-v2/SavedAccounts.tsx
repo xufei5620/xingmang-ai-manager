@@ -213,7 +213,7 @@ export function SavedAccounts({
       <details className="v2-business-account-sync" open>
         <summary>同步到工具</summary>
         <p>勾上的工具会一起换成要切过去的账号，不勾的保持原样。</p>
-        <ResultNotice error={sync.error} />
+        <ResultNotice error={sync.error} detail={sync.detail} />
         {sync.loading && <p role="status">正在检查工具配置…</p>}
         {candidates.map((candidate) => (
           <Input
@@ -273,7 +273,7 @@ export function SavedAccounts({
         }
       >
         <p>只移除本机保存的登录信息。已写入工具的密钥不会改变。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </div>
   )

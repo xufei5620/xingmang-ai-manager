@@ -30,6 +30,7 @@ export function AppUninstallDialog({
   removeTools,
   busy,
   error,
+  detail,
   message,
   onClearRecords,
   onRemoveTools,
@@ -41,6 +42,8 @@ export function AppUninstallDialog({
   removeTools: boolean
   busy: boolean
   error: string
+  /** 被兜底句换掉的原话，只拿来认类别（同 ResultNotice 的 detail）。 */
+  detail?: string
   message: string
   onClearRecords: (checked: boolean) => void
   onRemoveTools: (checked: boolean) => void
@@ -88,7 +91,7 @@ export function AppUninstallDialog({
         testId="app-uninstall-remove-tools"
         onChange={(event) => onRemoveTools(event.target.checked)}
       />
-      <ResultNotice error={error} message={message} />
+      <ResultNotice error={error} detail={detail} message={message} />
     </Dialog>
   )
 }
@@ -149,6 +152,7 @@ export function AppUninstallRow({
         removeTools={removeTools}
         busy={operation.busy === 'uninstall-app'}
         error={operation.error}
+        detail={operation.detail}
         message={operation.message}
         onClearRecords={setClearRecords}
         onRemoveTools={setRemoveTools}
