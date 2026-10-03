@@ -4,7 +4,7 @@ const { performance } = require('node:perf_hooks')
 const PART_BYTES = 4 * 1024 * 1024
 const THRESHOLD_BYTES = 16 * 1024 * 1024
 const MAX_XML_BYTES = 64 * 1024
-const TOTAL_UPLOAD_MS = 30 * 60 * 1000
+const TOTAL_UPLOAD_MS = 75 * 60 * 1000
 
 function readMultipartOptions(env = process.env) {
   const enabled = env.XINGMANG_COS_MULTIPART_ENABLED
@@ -62,7 +62,7 @@ function partDigest(body) {
   return { md5: crypto.createHash('md5').update(body).digest('hex'), sha256: crypto.createHash('sha256').update(body).digest('hex') }
 }
 
-async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, request, failure, onPartCommitted, monotonicNow = function () { return performance.now() } }) {
+async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, request, failure, onPartCommitted, shouldRetryPart = function () { return false }, monotonicNow = function () { return performance.now() } }) {
   if (!Number.isInteger(concurrency) || concurrency < 4 || concurrency > 8 || hash.bytes !== stat.size ||
       !Number.isSafeInteger(hash.bytes) || hash.bytes < 1 || hash.bytes > 2 * 1024 * 1024 * 1024) throw new Error('COS 分块上传参数无效')
   // Hash the same trusted, open inode used by positional part reads. Part SHA256
@@ -102,7 +102,19 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
           const body = await readPart(handle, part.offset, part.bytes)
           const digest = partDigest(body)
           if (digest.sha256 !== part.sha256) throw new Error('分块上传的源文件内容发生变化')
-          const result = await request('part', 'PUT', { partNumber: String(index + 1), uploadId }, body)
+          let result
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            checkDeadline()
+            if (primaryError) throw primaryError
+            try {
+              // COS overwrites the same UploadId/partNumber. Reuse this verified
+              // buffer so even a saved part with a lost reply is idempotent.
+              result = await request('part', 'PUT', { partNumber: String(index + 1), uploadId }, body)
+              break
+            } catch (error) {
+              if (attempt === 2 || !shouldRetryPart(error)) throw error
+            }
+          }
           if (result.bytes !== 0 || result.headers.etag !== `"${digest.md5}"`) throw new Error('COS 分块响应 ETag 与实际分块 MD5 不一致')
           part.etag = result.headers.etag
           committedBytes += part.bytes
@@ -111,7 +123,7 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
       }
     }
     // Every outstanding part settles before abort: late writes must never race
-    // an abort for the upload session we own. No part/complete write is retried.
+    // an abort for the upload session we own. Complete is never retried.
     await Promise.all(Array.from({ length: concurrency }, () => worker()))
     if (primaryError) throw primaryError
     assertSourceStat(stat, await handle.stat())
