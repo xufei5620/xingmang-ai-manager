@@ -6,7 +6,7 @@
 
 | 对象 | 基线 |
 | --- | --- |
-| 星芒初始研究源码 | 0.2.14，1eee5f0f2dbc3020e3dd6a6130912437d7e464d3 |
+| 星芒初始研究源码 | main，1eee5f0f2dbc3020e3dd6a6130912437d7e464d3（#778，在 v0.2.14 发布之后，package.json 仍是 0.2.14） |
 | 方案 PR 基线 | main，4cbd71730d1fc59553670d820e1662b99c72a7a1 |
 | Windows 安装包 | OpenAI.Codex 26.930.3930.0 |
 | 应用内部版本 | 26.930.31730，build 12947 |
@@ -19,11 +19,13 @@
 
 ## 2. 官方目录与登录方式
 
-`target_curated_marketplace` 根据认证模式选择目录。API Key 走 `openai-api-curated`，使用 `.tmp/plugins/.agents/plugins/api_marketplace.json`；ChatGPT 身份的远程目录有独立分支。模型中转 base URL 不改变这个身份选择。[固定源码](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core-plugins/src/manager.rs#L660)
+`target_curated_marketplace` 根据认证模式选择目录。API Key 与未登录都走 `openai-api-curated`，使用 `.tmp/plugins/.agents/plugins/api_marketplace.json`；ChatGPT 身份的远程目录有独立分支。模型中转 base URL 不改变这个身份选择。[固定源码](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core-plugins/src/manager.rs#L660)
 
-启动同步会尝试 Git、GitHub HTTP、ChatGPT export；每种方式有约 30 秒预算。已有快照会保留作为网络失败回退。[启动同步实现](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core-plugins/src/startup_sync.rs#L96)
+启动同步依次尝试 Git、GitHub HTTP、ChatGPT export。30 秒超时按每条 git 命令／每个 HTTP 请求计，不是每种方式合计 30 秒；ChatGPT export 只在本机还没有快照时才用，不拿它刷新已有快照。每种方式都先解到临时目录、成功才换上；失败时旧快照原样保留，只记一条警告。`.tmp/plugins/.agents/plugins/marketplace.json` 与 `.tmp/plugins.sha` 都在才算已有快照。[启动同步实现](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core-plugins/src/startup_sync.rs#L96)
 
 固定公开清单：API 版 50 项，其中 47 local、2 url、1 git-subdir；完整市场 65 项。远程三项为 crowdstrike-falcon-foundry、crowdstrike-falcon-fusion、qodo。这些数值只用于该提交的事实，不等于云端所有账号、所有版本的全部目录。[固定 API 清单](https://github.com/openai/plugins/blob/5fd93af4cd0c623e020d0cc7e9ce178b4ac1f70f/.agents/plugins/api_marketplace.json)
+
+同一提交里 64 份插件 manifest（62 个插件加 2 个测试夹具）有 8 份写 `Proprietary`（如 codex-security、openai-developers），11 份没写许可证，1 份写 `UNLICENSED`。能否随星芒转发要逐项落实，见方案 4.4。
 
 OpenAI 文档说明 API Key 支持部分精选插件，某些 OAuth 能力不可用。因此资源存在不能证明完整官方集合在 API Key 模式下都可见，更不能证明账号功能都可使用。[官方可用性说明](https://learn.chatgpt.com/docs/plugins#api-key-availability)
 
@@ -59,13 +61,13 @@ d0645a113226732720a95664f87be4282a9ca8a9465e8c63c6ecaba4e2e1af72
 
 ## 4. 文件安装链路
 
-Local source 使用现成目录后原子复制到 cache；Git source 才 clone，npm source 才 materialize。CLI `plugin add` 和 native `plugin_install_response` 都调用 PluginsManager.install_plugin。[source 分支](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core-plugins/src/loader.rs#L1739)、[native 安装](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/app-server/src/request_processors/plugins.rs#L1462)
+Local source 直接用清单里的现成目录；Git source 先 clone 到临时目录，npm source 先按包名、版本和 registry 取到临时目录；三种最后都由 `replace_plugin_root_atomically` 复制进 cache 再改名到位。CLI `plugin add` 和 native `plugin_install_response`（本地市场路径）都调用 PluginsManager.install_plugin；带 remoteMarketplaceName 的请求走远程安装分支。[source 分支](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/core-plugins/src/loader.rs#L1739)、[native 安装](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/app-server/src/request_processors/plugins.rs#L1462)
 
 原生安装随后还处理 cache 刷新、配置重读、MCP/hooks 和需要授权的 Apps。安装文件成功与远程能力授权是两件事。Curated cache 版本可来自快照 SHA 前八位，不能把所有本地插件版本一概写成 local。
 
 个人、项目和注册的本地市场是支持的入口。稳定 CLI `plugin marketplace add <root> --json` 可以注册专属来源，避免覆盖用户个人市场。[命令文档](https://learn.chatgpt.com/docs/developer-commands#codex-plugin-marketplace)、[本地市场规范](https://developers.openai.com/plugins/build/plugins)
 
-Native `plugin/list` 的 forceRefetch 主要控制远程目录缓存，并非官方 GitHub 快照强制下载命令；官方快照由另一个 startup sync 流程管理。[列表处理](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/app-server/src/request_processors/plugins.rs#L546)
+Native `plugin/list` 的 forceRefetch 主要控制远程目录缓存，并非官方 GitHub 快照强制下载命令；官方快照由另一个 startup sync 流程管理，只在启动时、且远程全局目录没启用时才跑，plugin/list 不会触发它。[列表处理](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/app-server/src/request_processors/plugins.rs#L546)
 
 ## 5. 隔离验证记录
 
@@ -115,13 +117,13 @@ Windows 的 skills 扫描会读操作系统 home 的 `.agents/skills`，不完�
 
 - `inspectCodexPluginCatalog` 检查市场清单和版本 marker；没有证明清单引用的每个插件实体都完整。
 - `ensureCodexPluginCatalog` 已有下载限制、staging、原子发布和回滚，但完整快照直接 present；缺少强制刷新及随包输入。
-- 当前入口是 `ProviderExtensionService.ensureMarketplace('codex')`，由星芒插件市场页触发；原生桌面启动和单纯 list 不主动准备。
+- 当前入口是 `ProviderExtensionService.ensureMarketplace('codex')`，由星芒「插件 → 市场 → Codex」页触发（目录缺了进页自动下一次，失败后留按钮手动再点）；原生桌面启动和单纯 list 不主动准备。
 - `createCodexDesktopAccelerationCoordinator` 对 API relay 的自动会话在约两分钟后收回；不能把这个时限当作后续插件下载保障。
 - 下载专用 lease 只设置星芒下载分区，不自动作用于另一个 native 进程。
-- Windows AppModel/Explorer 启动没有显式传入解析后的 codexEnv；macOS 路径有显式 CODEX_HOME。需在真正使用的用户 root 对账。
-- 现有精选目录的类型与来源表只为 Claude 插件市场提供配置，不能直接作为全量官方 Codex 插件交付实现。
+- Windows 走 `buildCodexDesktopLaunchPlan`（Explorer 打开 AppsFolder）或 AppModel 激活，都没有显式传入解析后的 codexEnv；macOS 的 `buildMacosCodexAppLaunchPlan` 用 `open --env CODEX_HOME=…` 显式传。需在真正使用的用户 root 对账。
+- 现有「星芒精选」的插件市场来源表 `curatedMarketplaceSources` 只有 Claude 官方市场一条（精选里的 MCP 与技能另算），不能直接作为全量官方 Codex 插件交付实现。
 
-对应位置：`electron/codex-plugin-catalog.ts`、`electron/provider-extensions.ts`、`electron/main.ts`、`electron/codex-home.ts`、`electron/codex-desktop-service.ts`、`electron/codex-desktop-acceleration.ts`、`src/renderer-v2/registry/curated-extensions.ts`。引用符号与相对路径，避免让行号承担版本契约。
+对应位置：`electron/codex-plugin-catalog.ts`、`electron/provider-extensions.ts`、`electron/main.ts`、`electron/codex-home.ts`、`electron/codex-desktop-service.ts`、`electron/macos-codex-app.ts`、`electron/codex-desktop-acceleration.ts`、`src/renderer-v2/registry/curated-extensions.ts`、`src/renderer-v2/pages-management.tsx`。引用符号与相对路径，避免让行号承担版本契约。以上七条在 main 8756f9d（#813）上逐条对过代码。
 
 ## 7. 容量统计与结论限制
 

@@ -8,7 +8,7 @@
 
 本方案采用**完整资源随星芒安装包交付、当前用户自动初始化、ChatGPT 原生页面展示与安装、后续国内通道自动更新**。首次可见不能依赖客户机再访问 GitHub 下载资源。
 
-交付平台同时包括 **Windows x64、macOS Apple Silicon arm64、macOS Intel x64**，Mac 不是以后再补的附加项。本文“ChatGPT 桌面端”指用户当前使用的、承载 Codex 功能与原生插件页的官方桌面产品；Windows 研究对象包标识是 OpenAI.Codex，macOS 需独立确认对应官方 bundle 与内置运行时。其他独立客户端不能直接套用本研究的目录机制。
+交付平台同时包括 **Windows x64、macOS Apple Silicon arm64、macOS Intel x64**，Mac 不是以后再补的附加项。本文“ChatGPT 桌面端”指用户当前使用的、承载 Codex 功能与原生插件页的官方桌面产品，也就是本仓代码与界面里说的「Codex 桌面端」（`electron/codex-desktop-service.ts`；Mac 上应用名就叫 ChatGPT）；Windows 研究对象包标识是 OpenAI.Codex，macOS 需独立确认对应官方 bundle 与内置运行时。其他独立客户端不能直接套用本研究的目录机制。
 
 “预置”指资源已经在电脑上；不代表自动安装并启用所有插件。默认由用户在 ChatGPT 原生页决定安装，插件所需的账号登录、授权和运行环境另行显示。星芒精选和第三方扩展不替代本次全量官方目标，也不作为本次第一版范围。
 
