@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, ExternalToolId, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
 import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
@@ -37,6 +37,15 @@ export const installedToolSyncLabel = '安装完成，正在同步账号 Key 并
  */
 export function planConfigRefresh(input: { hasSnapshot: boolean; scansInFlight: boolean }): 'config-only' | 'rescan' {
   return input.hasSnapshot || input.scansInFlight ? 'config-only' : 'rescan'
+}
+
+/**
+ * 刚打开的那个客户端先写成「运行中」：后台那次悄悄重扫回来之前，那一行就该是这样（第三十一批 C）。
+ * 别的行原样不动，已经是「运行中」的不换新数组。
+ */
+export function withExternalRunning(statuses: ExternalClientStatus[], tool: ExternalToolId): ExternalClientStatus[] {
+  if (!statuses.some((entry) => entry.tool === tool && !entry.running)) return statuses
+  return statuses.map((entry) => entry.tool === tool ? { ...entry, running: true } : entry)
 }
 
 /**
@@ -87,18 +96,30 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     externalRequest.current++
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
-  const refreshExternal = useCallback(async (force = false) => {
+  // quiet 只给打开客户端之后那一次：重扫换来的只是那一行的「运行中」，不该让三行按钮一起变灰、
+  // 右上角转圈。没读到就留着上次的结果，不出红条（第三十一批 C）。
+  const refreshExternal = useCallback(async (force = false, options: { quiet?: boolean } = {}) => {
     if (!bridge || currentScope.current !== scope) return
     const id = ++externalRequest.current
-    setExternalLoading(true); setExternalError('')
+    if (!options.quiet) { setExternalLoading(true); setExternalError('') }
     try {
       const statuses = await createToolsApi(bridge).readExternal(force)
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalClients(statuses)
+      if (active.current && currentScope.current === scope && id === externalRequest.current) {
+        setExternalClients(statuses)
+        if (options.quiet) setExternalError('')
+      }
     } catch (cause) {
+      if (options.quiet) return
       if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
+  // 打开客户端以后：先把那一行写成「运行中」，再在后台悄悄核一次（主进程打开后已作废缓存）。
+  const noteExternalLaunched = useCallback((tool: ExternalToolId) => {
+    if (currentScope.current !== scope) return
+    setExternalClients((current) => withExternalRunning(current, tool))
+    void refreshExternal(false, { quiet: true })
+  }, [refreshExternal, scope])
   // acceptCached 只在开机首屏那一次为真：主进程先回上次落盘的检测结果，这里先把它
   // 画出来（loading 保持为真；首页这时只放开「打开」「接着聊」，见 Home 的
   // launchReadyBeforeScan），紧接着在同一个请求号下再读一次真的——它接的是主进程
@@ -277,5 +298,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     return outcome
   }, [markCancelling])
-  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, noteExternalLaunched, jobs, run, cancel, setSnapshot }
 }

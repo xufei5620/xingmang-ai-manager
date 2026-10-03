@@ -344,6 +344,57 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+// 第三十一批 C：打开以后那一行先写「运行中」，后台悄悄核一次，三行按钮不跟着变灰、右上角不转圈。
+test('opening a desktop client marks its row running and leaves the client rows usable while it rechecks', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    const opener = page.getByTestId('tool-workbuddy-primary')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await expect(opener).toBeEnabled()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await page.evaluate(() => window.v2Test.holdNextExternalScan())
+    await opener.click()
+    await row.getByText(/运行中/).waitFor()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').at(-1).args), [false])
+    for (const id of ['tool-workbuddy-primary', 'home-client-claudeDesktop', 'home-client-opencode']) assert.equal(await page.getByTestId(id).isEnabled(), true, id)
+    assert.notEqual(await page.getByTestId('home-rescan').getAttribute('aria-busy'), 'true')
+    await page.evaluate(async () => {
+      window.v2Test.releaseExternalScan()
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await row.getByText(/运行中/).count(), 1)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a background recheck that fails after opening a desktop client keeps the last result without an error bar', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    const opener = page.getByTestId('tool-workbuddy-primary')
+    const unread = page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' })
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await expect(opener).toBeEnabled()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await page.evaluate(() => { window.v2Test.fail = 'scanExternalClients' })
+    await opener.click()
+    await row.getByText(/运行中/).waitFor()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await unread.count(), 0)
+    assert.equal(await row.getByText('已配好', { exact: true }).count(), 1)
+    await expect(opener).toBeEnabled()
+    // 客户自己点「重新检测」没读到的，照旧出红条。
+    await page.getByTestId('home-rescan').click()
+    await unread.waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('every tool row offers configuration in exactly one place', async () => {
   const page = await open('externalInstalled=1&externalReady=workbuddy&externalAccountOwned=workbuddy')
   try {
