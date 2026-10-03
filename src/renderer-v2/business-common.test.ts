@@ -192,6 +192,11 @@ describe('errorMessage', () => {
     }
   })
 
+  it('still shows a Chinese reason whose group name carries a slash', () => {
+    // 分组名「GPT-中转/订阅」带斜杠，不能因此把整句当成路径换成兜底句（第三十批 A）。
+    expect(errorMessage(new Error('当前账号不可使用分组「GPT-中转/订阅」'), '保存配置没有成功')).toBe('当前账号不可使用分组「GPT-中转/订阅」')
+  })
+
   it('treats an English failure with or without a path the same way', () => {
     expect(errorMessage(new Error("ENOSPC: no space left on device, write 'C:\\Users\\yoyo\\.codex\\config.toml'"), '保存配置没有成功'))
       .toBe(errorMessage(new Error('ENOSPC: no space left on device, write'), '保存配置没有成功'))
@@ -211,8 +216,11 @@ describe('speaksChinese', () => {
     expect(speaksChinese("EPERM: operation not permitted, open '本地配置文件")).toBe(false)
     expect(speaksChinese("ENOENT: no such file or directory, open '本地配置文件 三\\.codex\\config.toml'")).toBe(false)
     expect(speaksChinese('Error: user "张三" not found')).toBe(false)
+    expect(speaksChinese('spawn 本地配置文件 三\\AppData\\Roaming\\npm\\codex.cmd ENOENT')).toBe(false)
     expect(speaksChinese('保存 Codex 配置失败：本地配置文件')).toBe(true)
+    expect(speaksChinese('配置文件 本地配置文件 不是单链接普通文件')).toBe(true)
     expect(speaksChinese('Codex config.toml 无法解析，未执行修改（第 4 行附近）')).toBe(true)
+    expect(speaksChinese('当前账号不可使用分组「GPT-中转/订阅」')).toBe(true)
   })
 })
 

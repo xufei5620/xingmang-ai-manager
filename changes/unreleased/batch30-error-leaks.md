@@ -10,16 +10,20 @@
 
 ## 开发
 
-- 第三十批 A：新增零依赖的 `electron/chinese-sentence.ts`（`isChineseSentence`：去掉引号段和带斜杠的路径片段再看有没有汉字），
-  已登记进 `scripts/verify-renderer-boundary.test.cjs`。渲染层 `business-common.tsx` 的 `speaksChinese`（第二十六批 D）改为先剥
-  占位词「本地配置文件」再交给它，并导出；`errorMessage`、`StartGuide.tsx` 的 `guideStepFailure`、`key-sync-failure.ts` 的
-  `keySyncFailureReason` 三处原来的「有没有汉字」都换成它。以前占位词本身是汉字，带路径的英文原话（EPERM/EACCES/EBUSY/ENOENT
-  加 `open 'C:\…'`）全被当成中文原样上屏；改后和不带路径的英文一样落到各自现成的中文兜底句，没有新加文案。
-- 页头红条保住归类：`business-common.tsx` 新增 `failureWithDetail`（`operationFailureFrom` 改为调它），`useOperation` 落到兜底句时
-  把原话（`supportDetailOf`：脱路径、打码、160 字）记成 `detail`；`ResultNotice` 收可选 `detail`，改用错误框同一个认法
-  `presentOperationFailure`，原话只拿来认类别、不上屏。`{...operation}` 展开的页面自动带上；直接写 `error={operation.error}`
-  的 19 处和与 `resource.error` 等拼起来的 4 处（拼起来的只在显示的正是这次操作的报错时才给），以及 Mac 卸载框都补传了 `detail`。
-  顺带：不带路径、但认得出类别的英文（例如 ENOSPC），页头红条现在也有标题，和错误框一个说法。
+- 第三十批 A：新增零依赖的 `electron/chinese-sentence.ts`（`isChineseSentence`：去掉引号段和路径再看有没有汉字），
+  已登记进 `scripts/verify-renderer-boundary.test.cjs`。路径从第一个斜杠前的那截算起，那截里不许有汉字，遇到空白、引号、
+  中文标点和括号断开，紧跟在后面、自己也带斜杠的几截（用户名带空格）算同一条路径；第二十六批 D 原来的写法会把
+  「当前账号不可使用分组「GPT-中转/订阅」」这种不带空格、带斜杠的中文整句当成路径去掉。渲染层 `business-common.tsx` 的
+  `speaksChinese` 改为把占位词「本地配置文件」换成一个斜杠再交给它，并导出；`errorMessage`、`StartGuide.tsx` 的
+  `guideStepFailure`、`key-sync-failure.ts` 的 `keySyncFailureReason` 三处原来的「有没有汉字」都换成它。以前占位词本身是汉字，
+  带路径的英文原话（EPERM/EACCES/EBUSY/ENOENT 加 `open 'C:\…'`）全被当成中文原样上屏；改后和不带路径的英文一样落到各自
+  现成的中文兜底句，没有新加文案。
+- 页头红条保住归类：`business-common.tsx` 新增 `failureWithDetail`（`operationFailureFrom` 改为调它），`useOperation` 和
+  `useResource` 落到兜底句时把原话（`supportDetailOf`：脱路径、打码、160 字）记成 `detail`；`ResultNotice` 收可选 `detail`，
+  改用错误框同一个认法 `presentOperationFailure`，原话只拿来认类别、不上屏。`{...operation}` 展开的页面自动带上；直接写
+  `error={operation.error}` 的 19 处、`error={resource.error}` 的 7 处、两者拼起来的 6 处（谁的报错在显示就给谁的 `detail`，
+  设置页的保存失败和系统信息失败不给），以及 Mac 卸载框都补传了 `detail`。顺带：不带路径、但认得出类别的英文（例如 ENOSPC），
+  页头红条现在也有标题，和错误框一个说法。
 - 第三十批 B：`electron/codex-extensions.ts` 的 `parseTomlFile` 解析失败时只报「（第 N 行附近）」，不再把 @iarna/toml 的原话
   （会抄出出错那行上下几行，客户自己加的外接工具令牌常在旁边）拼进报错；读文件自己的失败（超上限、读的时候被换掉、被拒绝）
   挪到 try 外照原样抛。`tomlErrorLocation` 从 `config-files.ts` 挪到新的 `electron/toml-error-location.ts`，两边共用。

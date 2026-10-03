@@ -566,7 +566,7 @@ export function AccountPage({
             }}
             testId="account-tabs"
           />
-          <ResultNotice error={resource.error} />
+          <ResultNotice error={resource.error} detail={resource.detail} />
           {resource.loading && !resource.data ? (
             <p role="status">正在读取账号…</p>
           ) : (
@@ -1668,7 +1668,7 @@ function AccountUsage({ api, balance, session }: { api: V2Bridge; balance: Balan
           />
         }
       />
-      <ResultNotice error={resource.error} />
+      <ResultNotice error={resource.error} detail={resource.detail} />
       <Card padding="none">
         <Table
           columns={[
@@ -1756,7 +1756,7 @@ function AccountDashboard({
           </Button>
         }
       />
-      <ResultNotice error={resource.error} />
+      <ResultNotice error={resource.error} detail={resource.detail} />
       <div className="v2-business-stat-grid">
         <Card title="消耗">
           <strong className="v2-business-amount">
@@ -1905,6 +1905,7 @@ function AccountTasks({
       />
       <ResultNotice
         error={resource.error || operation.error}
+        detail={resource.error ? resource.detail : operation.detail}
         message={operation.message}
       />
       <Card padding="none">
@@ -2033,7 +2034,7 @@ function AccountOrders({
           </Button>
         }
       />
-      <ResultNotice error={resource.error} />
+      <ResultNotice error={resource.error} detail={resource.detail} />
       <Card padding="none">
         <Table
           columns={[
@@ -2302,6 +2303,7 @@ function AccountRecharge({
     <>
       <ResultNotice
         error={resource.error || operation.error}
+        detail={resource.error ? resource.detail : operation.detail}
         message={payment || paymentTerminal ? '' : operation.message === '兑换码已兑换' ? redemptionMessage : operation.message}
       />
       <div className="v2-business-recharge-grid">

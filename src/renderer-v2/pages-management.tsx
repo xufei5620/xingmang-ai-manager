@@ -1093,7 +1093,7 @@ export function SessionsPage({
             <dd>{selected.model || '未记录'}</dd>
           </dl>
         )}
-        <ResultNotice error={detailResource.error} />
+        <ResultNotice error={detailResource.error} detail={detailResource.detail} />
         {detailResource.error && (
           <Button
             size="sm"

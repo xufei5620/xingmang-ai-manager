@@ -213,7 +213,7 @@ export function SavedAccounts({
       <details className="v2-business-account-sync" open>
         <summary>同步到工具</summary>
         <p>勾上的工具会一起换成要切过去的账号，不勾的保持原样。</p>
-        <ResultNotice error={sync.error} />
+        <ResultNotice error={sync.error} detail={sync.detail} />
         {sync.loading && <p role="status">正在检查工具配置…</p>}
         {candidates.map((candidate) => (
           <Input

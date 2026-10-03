@@ -99,15 +99,16 @@ const detectionFailureCopy = {
 
 /**
  * 原话是不是中文，不能直接看脱敏后的句子：路径已经换成了「本地配置文件」，这个占位词本身
- * 就是汉字，看整句的话英文报错一样会被当成中文。去掉占位词，剩下的交给主进程更新失败那句
- * 也在用的 isChineseSentence（去掉引号段和路径片段再看；用户名带空格时脱敏只剥到空格为止，
- * 剩下那截路径也算路径）。判不准时宁可当成英文：那样只是换成调用点自己的中文兜底句。
+ * 就是汉字，看整句的话英文报错一样会被当成中文。占位词换回一个斜杠再交给主进程更新失败那句
+ * 也在用的 isChineseSentence（去掉引号段和路径再看）：它本来就站在路径的位置上，用户名带空格时
+ * 脱敏只剥到空格为止，紧跟在后面的那截（「三\.codex\…」）要靠它才算同一条路径。判不准时宁可
+ * 当成英文：那样只是换成调用点自己的中文兜底句。
  *
  * 收的是已经脱过路径的句子（userFacingErrorMessage 的结果）。检测失败那句小字、按钮操作
  * （errorMessage）、新手引导、Key 同步原因都按它判（第三十批 A），别再各写一个「有没有汉字」。
  */
 export function speaksChinese(safe: string) {
-  return isChineseSentence(safe.replaceAll('本地配置文件', ' '))
+  return isChineseSentence(safe.replaceAll('本地配置文件', '/'))
 }
 
 /**
@@ -180,7 +181,7 @@ export function operationFailureFrom(error: unknown, action?: string): { message
 }
 /**
  * `errorMessage` 加上被兜底句换掉的原话：错误框（operationFailureFrom）和页头红条
- * （useOperation → ResultNotice）共用这一份。带路径的英文（「EPERM: …, open 'C:\…」）
+ * （useOperation、useResource → ResultNotice）共用这一份。带路径的英文（「EPERM: …, open 'C:\…」）
  * 换成兜底句以后，认得出是哪一类（文件被占用、磁盘满……）的记号只剩原话里有，
  * 页头红条要靠它保住原来的标题（第三十批 A）。
  */
@@ -202,17 +203,24 @@ export function supportDetailOf(error: unknown): string {
 export function useResource<T>(load: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState('')
+  // 同 useOperation：落到兜底句的读取失败，原话跟着交给 ResultNotice 认类别。
+  const [detail, setDetail] = useState('')
   const [loading, setLoading] = useState(true)
   const sequence = useRef(0)
   const reload = useCallback(async () => {
     const id = ++sequence.current
     setLoading(true)
     setError('')
+    setDetail('')
     try {
       const result = await load()
       if (id === sequence.current) setData(result)
     } catch (cause) {
-      if (id === sequence.current) setError(errorMessage(cause))
+      if (id === sequence.current) {
+        const failure = failureWithDetail(cause)
+        setError(failure.message)
+        setDetail(failure.detail ?? '')
+      }
     } finally {
       if (id === sequence.current) setLoading(false)
     }
@@ -224,7 +232,7 @@ export function useResource<T>(load: () => Promise<T>) {
       sequence.current++
     }
   }, [reload])
-  return { data, setData, loading, error, reload }
+  return { data, setData, loading, error, detail, reload }
 }
 /**
  * 导出类操作成功后，除了那句话还要带上写出的文件，好让提示条给一颗「打开所在

@@ -1278,7 +1278,7 @@ export function UpdatesPage({
       <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
       <ResultNotice
         error={resource.error || operation.error}
-        detail={resource.error ? undefined : operation.detail}
+        detail={resource.error ? resource.detail : operation.detail}
         message={operation.message}
       />
       <div className="v2-business-update-grid">
@@ -1612,7 +1612,7 @@ export function MaintenancePage({
       />
       <ResultNotice
         error={resource.error || operation.error || cancelNotice}
-        detail={resource.error ? undefined : operation.detail}
+        detail={resource.error ? resource.detail : operation.detail}
         message={operation.message}
       />
       {failures.map((failure) => {
@@ -3068,7 +3068,7 @@ export function SettingsPage({
       />
       <ResultNotice
         error={resource.error || saveError || systemError || operation.error}
-        detail={resource.error || saveError || systemError ? undefined : operation.detail}
+        detail={resource.error ? resource.detail : saveError || systemError ? undefined : operation.detail}
         message={operation.message || saved}
         revealPath={operation.message ? operation.revealPath : undefined}
         onReveal={(path) => api.revealExportedFile(path)}
