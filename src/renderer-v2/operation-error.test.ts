@@ -3,6 +3,7 @@ import { classifyOperationError, operationFallbackActions, operationLogPage, pre
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
   macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
@@ -27,6 +28,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
   codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
+  // 主进程 claude-desktop-install-failure.ts 的 buildClaudeDesktopInstallFailureMessage。
+  claudeDesktopInstallFailed: { sample: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。' },
   // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
   macDesktopInstallFailed: { sample: macosDesktopDownloadFailedMessage('OpenCode') },
   macDesktopTooOld: { sample: macosDesktopSystemTooOldMessage('OpenCode', '13.0') },
@@ -242,6 +245,35 @@ describe('renderer-v2 operation error classification', () => {
       expect([message, hint?.key]).toEqual([message, 'codexDesktopTooOld'])
       expect(hint?.actions.map((action) => action.id)).toEqual(['log', 'support'])
     }
+  })
+
+  it('gives every failed Windows Claude Desktop install a retry, the download page, the log and support', () => {
+    // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
+    for (const reason of Object.keys(claudeDesktopInstallFailureReasons) as ClaudeDesktopInstallFailureReason[]) {
+      for (const wingetTried of [true, false]) {
+        const message = buildClaudeDesktopInstallFailureMessage(reason, { wingetTried })
+        const hint = presentOperationError(message)
+        expect([message, hint?.key]).toEqual([message, 'claudeDesktopInstallFailed'])
+        expect(hint?.actions).toEqual([
+          { id: 'retry', label: '重试' },
+          { id: 'claudeDesktopDownload', label: '去官网下载' },
+          { id: 'log', label: '查看日志' },
+          { id: 'support', label: '找客服' },
+        ])
+        // 原话（签名、HTTP 状态码）只记在运行日志里。
+        expect(operationLogPage({ message, tool: 'claudeDesktop' })).toBe('feedback')
+      }
+    }
+    // 授权、磁盘这几句各有自己的下一步，主进程原样放行，这里也不归到这一类。
+    expect(classifyOperationError('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')).not.toBe('claudeDesktopInstallFailed')
+  })
+
+  it('puts a failed Claude Desktop install on screen without the class name Electron adds to the rejection', () => {
+    const message = buildClaudeDesktopInstallFailureMessage('damaged', { wingetTried: true })
+    const failure = operationFailureFrom(new Error(`Error invoking remote method 'external-clients:install': Error: ${message}`), '安装客户端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('claudeDesktopInstallFailed')
   })
 
   it('gives every failed one-click Mac desktop install a retry and the install guide, ahead of the network rules', () => {

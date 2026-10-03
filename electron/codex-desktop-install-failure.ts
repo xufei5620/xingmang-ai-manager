@@ -31,6 +31,12 @@ export type CodexDesktopInstallFailureReason = 'unsupported' | 'blocked' | 'dama
  */
 export const codexDesktopNoStoreNotice = '这台电脑没有微软商店'
 
+/**
+ * 第二路（OpenAI 官网的离线安装包）也没下成、换到国内镜像时，接在商店那半句后面的话。
+ * 进度提示和失败句共用这一句，免得两处说法对不上。
+ */
+export const codexDesktopOfficialPackageFailedNotice = 'OpenAI 官网的离线安装包也没下成'
+
 export const codexDesktopInstallFailureReasons: Readonly<Record<CodexDesktopInstallFailureReason, string>> = {
   unsupported: '这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。',
   blocked: '这台电脑不让装（Windows 拒绝了这次安装）。可能留下了装到一半的程序，点「重试」会重新装一遍。',
@@ -74,6 +80,8 @@ export interface CodexDesktopInstallFailureContext {
   storeTried: boolean
   /** 这台电脑没有微软商店，这次直接走的国内线路。缺省 = 不知道或有商店。 */
   storeUnavailable?: boolean
+  /** 商店之后还试过 OpenAI 官网的离线安装包，没下成才换的国内镜像。缺省 = 没走那一路。 */
+  officialTried?: boolean
   /** 本机已经装着一版，这次是更新。 */
   updating: boolean
 }
@@ -85,9 +93,10 @@ export function buildCodexDesktopInstallFailureMessage(
   const store = context.storeUnavailable
     ? `${codexDesktopNoStoreNotice}，`
     : context.storeTried ? '微软商店这次没装上，' : ''
+  const official = context.officialTried ? `${codexDesktopOfficialPackageFailedNotice}，` : ''
   // Windows 拒绝安装时旧版本可能已经被动过，不能说「照常能用」。
   const unaffected = context.updating && reason !== 'blocked' ? '原来那一版照常能用。' : ''
-  return `${codexDesktopInstallFailedPrefix}：${store}${codexDesktopInstallFailureReasons[reason]}${unaffected}`
+  return `${codexDesktopInstallFailedPrefix}：${store}${official}${codexDesktopInstallFailureReasons[reason]}${unaffected}`
 }
 
 export function isCodexDesktopInstallFailureMessage(message: string): boolean {

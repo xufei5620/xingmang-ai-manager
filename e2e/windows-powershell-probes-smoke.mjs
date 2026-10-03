@@ -259,6 +259,12 @@ const { resolveCodexDesktopCdpPortOwners, codexDesktopCdpCommandTimeoutMs } = co
 const { externalClientSystemCommandTimeoutMs } = compiled('external-client-runtime')
 const { uninstallAccountProbeScript } = compiled('uninstall-cleanup')
 const { buildClaudeDesktopManifestInspectionScript, claudeDesktopPowerShellTimeoutMs } = compiled('claude-desktop-manifest')
+const {
+  buildClaudeDesktopPackageInspectionScript,
+  claudeDesktopPackageInspectionTimeoutMs,
+  validateClaudeDesktopPackageInspection,
+  windowsPackagePublisherId,
+} = compiled('claude-desktop-msix-installer')
 const { claudeDesktopPolicyReadScript } = compiled('claude-desktop-policy')
 const { buildReadProxyScopesScript, readWindowsProxyScopes, windowsProxyPowerShellTimeoutMs } = compiled('stale-proxy-environment')
 const { windowsSystemProxyScript, windowsSystemProxyCommandTimeoutMs } = compiled('platform/windows-system-proxy')
@@ -290,10 +296,49 @@ fs.mkdirSync(path.join(scratch, 'tree', 'nested'), { recursive: true })
 const manifestPath = path.join(scratch, 'AppxManifest.xml')
 fs.writeFileSync(manifestPath, '<?xml version="1.0" encoding="utf-8"?><Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Claude" Version="1.0.0.0" ProcessorArchitecture="x64" Publisher="CN=Test"/></Package>')
 const systemProxyRequest = Buffer.from(JSON.stringify({ operation: 'owner', pid: process.pid }), 'utf8').toString('base64')
+const claudePackagePath = path.join(scratch, 'Claude-x64.msix')
+fs.writeFileSync(claudePackagePath, storedZip('AppxManifest.xml', fs.readFileSync(manifestPath)))
 const programFilesCandidate = path.join(machinePaths.programFiles, 'Common Files')
 
 function trustedEnv(extra = {}) {
   return { ...trustedCommandEnvironment(), ...extra }
+}
+
+// An unsigned stand-in for the Claude Desktop MSIX: a zip holding only the
+// manifest, stored without compression so no zip library is needed here.
+function storedZip(name, data) {
+  let crc = 0xffffffff
+  for (const byte of data) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  crc = (crc ^ 0xffffffff) >>> 0
+  const fileName = Buffer.from(name, 'utf8')
+  const local = Buffer.alloc(30)
+  local.writeUInt32LE(0x04034b50, 0)
+  local.writeUInt16LE(20, 4)
+  local.writeUInt16LE(0x21, 12)
+  local.writeUInt32LE(crc, 14)
+  local.writeUInt32LE(data.length, 18)
+  local.writeUInt32LE(data.length, 22)
+  local.writeUInt16LE(fileName.length, 26)
+  const central = Buffer.alloc(46)
+  central.writeUInt32LE(0x02014b50, 0)
+  central.writeUInt16LE(20, 4)
+  central.writeUInt16LE(20, 6)
+  central.writeUInt16LE(0x21, 14)
+  central.writeUInt32LE(crc, 16)
+  central.writeUInt32LE(data.length, 20)
+  central.writeUInt32LE(data.length, 24)
+  central.writeUInt16LE(fileName.length, 28)
+  const centralOffset = local.length + fileName.length + data.length
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(1, 8)
+  end.writeUInt16LE(1, 10)
+  end.writeUInt32LE(central.length + fileName.length, 12)
+  end.writeUInt32LE(centralOffset, 16)
+  return Buffer.concat([local, fileName, data, central, fileName, end])
 }
 
 // [name, limit, run]; run returns a short description for the log.
@@ -330,6 +375,17 @@ const trustedProbes = [
   ['Claude desktop policy', claudeDesktopPowerShellTimeoutMs, async () => {
     const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(claudeDesktopPolicyReadScript)], trustedEnv())).trim())
     return `${(parsed.machine ?? []).length + (parsed.user ?? []).length} policy value(s)`
+  }],
+  ['Claude desktop package inspection', claudeDesktopPackageInspectionTimeoutMs, async () => {
+    const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(buildClaudeDesktopPackageInspectionScript(claudePackagePath))], trustedEnv())
+    const parsed = JSON.parse(output.trim())
+    assert.deepEqual(
+      [parsed.name, parsed.version, parsed.architecture, parsed.publisher, parsed.publisherCanonical, parsed.hasSignature],
+      ['Claude', '1.0.0.0', 'x64', 'CN=Test', 'CN=Test', false],
+    )
+    // Every identity field was read; the unsigned stand-in is refused for its signature alone.
+    assert.throws(() => validateClaudeDesktopPackageInspection(output, 'x64', windowsPackagePublisherId('CN=Test')), /缺少有效的 Anthropic 签名/)
+    return `signature=${parsed.signatureStatus}`
   }],
   ['proxy settings', windowsProxyPowerShellTimeoutMs, async () => {
     const scopes = await readWindowsProxyScopes()
@@ -397,6 +453,7 @@ const trustedProbeScripts = [
   ['uninstall desktop account', uninstallAccountProbeScript, {}],
   ['Claude desktop manifest', buildClaudeDesktopManifestInspectionScript(manifestPath, '1.0.0.0', 'x64'), {}],
   ['Claude desktop policy', claudeDesktopPolicyReadScript, {}],
+  ['Claude desktop package inspection', buildClaudeDesktopPackageInspectionScript(claudePackagePath), {}],
   ['proxy settings', buildReadProxyScopesScript(), {}],
   ['system proxy owner lookup', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }],
   ['pending restart', windowsRestartStatusScript, {}],

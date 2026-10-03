@@ -317,11 +317,9 @@ describe('external desktop client lifecycle', () => {
       onWingetUnavailable, now: () => clock,
     })
     const statuses = await f.runtime.scan()
-    for (const tool of [statuses[1], statuses[2]]) {
-      expect(tool.installHint).toBe(externalClientWingetUnavailableHint)
-      expect(tool.installHint).not.toMatch(/winget|ENOENT|App Installer/i)
-    }
-    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, 'https://claude.com/download', 'https://opencode.ai/download'])
+    expect(statuses[2].installHint).toBe(externalClientWingetUnavailableHint)
+    expect(statuses[2].installHint).not.toMatch(/winget|ENOENT|App Installer/i)
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, null, 'https://opencode.ai/download'])
     clock += 10 * 60_000
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls).toEqual([[reason]])
@@ -503,6 +501,160 @@ describe('external desktop client lifecycle', () => {
       identity.mockReturnValue(false)
       await expect(verifyExternalClientPath(file, 'appx-file')).rejects.toThrow('路径身份')
     } finally { identity.mockRestore(); parents.mockRestore(); lstat.mockRestore(); realpath.mockRestore() }
+  })
+})
+
+describe('Windows Claude Desktop official package route', () => {
+  /** 官网那一路装好后，下一次盘点就能看到当前用户注册的 Claude 包。 */
+  function claudeFixture(overrides: ExternalClientRuntimeOptions = {}) {
+    const claudeOfficial = vi.fn<NonNullable<ExternalClientRuntimeOptions['installClaudeDesktopFromOfficial']>>()
+    const routed: string[] = []
+    const assertDiskSpace = vi.fn(async (_subject: string) => undefined)
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const f = fixture({
+      installClaudeDesktopFromOfficial: claudeOfficial, assertDiskSpace, fetch,
+      withDownloadRoute: async (operation) => { routed.push('start'); try { return await operation() } finally { routed.push('end') } },
+      ...overrides,
+    })
+    claudeOfficial.mockImplementation(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在从 Claude 官网下载离线安装包（42%）', percent: 42 })
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    const inventoryCommand = f.execute.getMockImplementation()!
+    function failWinget(failure: unknown) {
+      f.execute.mockImplementation(async (spec, options) => {
+        if (spec.executable === winget) throw failure
+        return inventoryCommand(spec, options)
+      })
+    }
+    return { ...f, claudeOfficial, routed, assertDiskSpace, fetch, inventoryCommand, failWinget }
+  }
+  const noWinget = { resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) }
+
+  it('offers one-click installation without winget and installs from the Claude website inside the download route', async () => {
+    const f = claudeFixture({ ...noWinget, windowsExecutionMode: 'same-user' })
+    expect((await f.runtime.scan())[1]).toMatchObject({ installSupported: true, installHint: null, officialDownloadUrl: null })
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).resolves.toMatchObject({ installed: true, version: '2.110.1.0' })
+    expect(f.claudeOfficial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      architecture: 'x64', wingetTried: false, windowsExecutionMode: 'same-user', runCommand: f.execute, fetch: f.fetch,
+      env: expect.objectContaining({ NODE_OPTIONS: '--require evil.cjs' }),
+    }))
+    expect(f.assertDiskSpace).toHaveBeenCalledWith('Claude Desktop 安装失败')
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
+    expect(progress.map((event) => event.message)).toEqual([
+      'Claude Desktop 已加入安装队列', '正在检测 Claude Desktop', '正在从 Claude 官网下载离线安装包（0%）',
+      '正在从 Claude 官网下载离线安装包（42%）', '正在验证安装结果', 'Claude Desktop 安装完成',
+    ])
+    expect(progress.find((event) => event.percent === 42)).toMatchObject({ tool: 'claudeDesktop', phase: 'downloading' })
+  })
+
+  it('installs the arm64 package on arm64 computers and defaults to trusted-only checks', async () => {
+    const f = claudeFixture({ ...noWinget, architecture: 'arm64' })
+    expect((await f.runtime.scan())[1]).toMatchObject({ installSupported: true, installHint: null })
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64', windowsExecutionMode: 'trusted-only' }))
+  })
+
+  it.each([
+    ['a source connection failure', {}],
+    ['a timeout', { code: 'TIMED_OUT' }],
+    ['an installer failure', { exitCode: 1 }],
+    ['a terminated installer', { signal: 'SIGTERM' }],
+  ] satisfies Array<[string, Partial<CommandErrorDetails>]>)('falls back to the Claude website after %s', async (_label, details) => {
+    const f = claudeFixture()
+    f.failWinget(wingetError(details))
+    const progress: string[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event.message))).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wingetTried: true }))
+    expect(progress).toContain('系统自带的安装组件这次没装上，正在从 Claude 官网下载离线安装包（0%）')
+    expect(progress.at(-1)).toBe('Claude Desktop 安装完成')
+  })
+
+  it('falls back even after winget reported that the installer had started', async () => {
+    const f = claudeFixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) {
+        options?.onOutput?.({ stream: 'stdout', text: 'Starting package install...' })
+        throw wingetError({ exitCode: 0x80073cf3 })
+      }
+      return f.inventoryCommand(spec, options)
+    })
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledOnce()
+  })
+
+  it.each([{ code: 'ABORTED' }, { exitCode: 1223 }, { exitCode: 0x800704c7 }] satisfies Partial<CommandErrorDetails>[])('never replaces a cancelled winget installation: %j', async (details) => {
+    const f = claudeFixture()
+    f.failWinget(wingetError(details))
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('安装已取消。')
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+  })
+
+  it.each(['installed', 'unknown'] as const)('rechecks Claude Desktop after a winget failure and avoids the fallback when status is %s', async (state) => {
+    const f = claudeFixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) {
+        f.setInventory(state === 'installed' ? [appx()] : [], state === 'unknown' ? { claudeDesktop: '无法读取当前用户 Claude 桌面端的 AppX 注册信息' } : {})
+        throw wingetError({ exitCode: 1 })
+      }
+      return f.inventoryCommand(spec, options)
+    })
+    if (state === 'installed') await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    else await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('无法确认当前安装状态：无法读取当前用户 Claude 桌面端的 AppX 注册信息')
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+  })
+
+  it('words a failed fallback in one plain sentence, keeps both raw causes for the log and permits a retry', async () => {
+    const f = claudeFixture()
+    const network = wingetError()
+    const official = new Error('Claude 官网返回 HTTP 503')
+    f.failWinget(network)
+    f.claudeOfficial.mockRejectedValue(official)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(f.runtime.install('claudeDesktop')).rejects.toMatchObject({
+        message: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。',
+        originalError: { winget: network, official },
+      })
+    }
+    expect(f.claudeOfficial).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves the system installer out of the sentence when the computer never had one', async () => {
+    const f = claudeFixture(noWinget)
+    const official = new Error('Claude 官网的安装包缺少有效的 Anthropic 签名')
+    f.claudeOfficial.mockRejectedValue(official)
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).rejects.toMatchObject({
+      message: 'Claude Desktop 没装上：下载下来的安装包不完整或不是官方原版，已经删掉了。',
+      originalError: official,
+    })
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'Claude Desktop 没装上：下载下来的安装包不完整或不是官方原版，已经删掉了。' })
+  })
+
+  it.each([
+    '已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。',
+    '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。',
+  ])('passes a sentence that already says what to do through unchanged: %s', async (message) => {
+    const f = claudeFixture(noWinget)
+    f.claudeOfficial.mockRejectedValue(new Error(message))
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow(message)
+    await expect(f.runtime.install('claudeDesktop')).rejects.not.toThrow('没装上')
+  })
+
+  it('checks the disk before anything is downloaded', async () => {
+    const f = claudeFixture({ ...noWinget, assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试`) } })
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试')
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.routed).toEqual([])
+  })
+
+  it('does not mistake a finished official installation for a verified installed client', async () => {
+    const f = claudeFixture(noWinget)
+    f.claudeOfficial.mockResolvedValue({ version: '2.110.1.0' })
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('未检测到客户端')
   })
 })
 

@@ -8,6 +8,7 @@ import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
+import { InstallCancelledError, isInstallCancelledError } from './install-cancellation'
 import { parseWindowsProcessesJson } from './codex-desktop'
 import type { NativeConfigInspection } from './config-files'
 import {
@@ -51,6 +52,7 @@ import {
   codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopOfficialDownload,
   describeCodexDesktopStoreNotice,
   describeCodexDesktopStoreFailure,
   codexDesktopStoreExitCode,
@@ -62,6 +64,8 @@ import {
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
+  downloadCodexDesktopOfficialPackage,
+  buildCodexDesktopOfficialPackageSource,
   fetchCodexDesktopManifestCandidate,
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
@@ -74,7 +78,6 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
-import { isInstallCancelledError } from './install-cancellation'
 import { MacosDesktopInstallError } from './macos-desktop-app-installer'
 import { isMacosDesktopInstallFailure } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -2184,7 +2187,7 @@ describe('Codex Desktop Microsoft Store install', () => {
   it('says how much longer the Store gets before switching to the fallback download', () => {
     const timeoutMs = 15 * 60_000
     expect(buildCodexDesktopStoreWaitMessage(12 * 60_000, null, timeoutMs))
-      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换国内下载线路接着装，请别关窗口')
+      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换 OpenAI 官网的离线安装包接着装，请别关窗口')
     expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等 1 分钟')
     expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等 1 分钟')
     expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已经等了 11 分 00 秒')
@@ -2204,6 +2207,286 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(shouldTryCodexDesktopStoreUpdate('26.900.1.0', '26.917.9434.0')).toBe(true)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', '26.917.9434.0')).toBe(false)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', null)).toBe(true)
+  })
+})
+
+describe('Codex Desktop official offline package', () => {
+  const manifestUrl = 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'
+  const packageUrl = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix'
+
+  function officialMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
+    return {
+      name: 'OpenAI.Codex',
+      version,
+      architecture: 'x64',
+      publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B',
+      hasSignature: true,
+      ...overrides,
+    }
+  }
+
+  function officialFetch(options: { version?: string; contentType?: string | null; manifestStatus?: number } = {}) {
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x43)
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      requested.push(url)
+      let response: Response
+      if (url === manifestUrl) {
+        response = new Response(JSON.stringify({
+          schemaVersion: 1,
+          buildVersion: options.version ?? '26.930.1.0',
+          storeProductId: '9PLM9XGG6VKS',
+          packageIdentity: 'OpenAI.Codex',
+        }), { status: options.manifestStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
+      } else if (url === packageUrl) {
+        const headers: Record<string, string> = { 'Content-Length': String(bytes.byteLength) }
+        if (options.contentType !== null) headers['Content-Type'] = options.contentType ?? 'application/octet-stream'
+        response = new Response(bytes, { headers })
+      } else {
+        throw new Error(`unexpected request ${url}`)
+      }
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    return { bytes, requested, fetchMock }
+  }
+
+  function officialDestination(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-msix-'))
+    temporaryDirectories.push(directory)
+    return path.join(directory, 'ChatGPT-x64.msix')
+  }
+
+  it('words the official download step the way the customer was told', () => {
+    const storeFailed = { storeFailure: '连不上微软商店' }
+    expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 12 }))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（12%）')
+    expect(describeCodexDesktopOfficialDownload({ storeFailure: null, storeUnavailable: true }, '26.930.1.0'))
+      .toBe('这台电脑没有微软商店，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（0%）')
+    expect(describeCodexDesktopOfficialDownload({
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+    }, '26.930.1.0', { percent: 40 }))
+      .toBe('微软商店少一个安装组件，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（40%）')
+    expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 40, resuming: true }))
+      .toBe('网络断了一下，正在接着从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（已下 40%）')
+    // 接线路、读官网清单那几秒还不知道版本：先把「正在等微软商店」换掉。
+    expect(describeCodexDesktopOfficialDownload(storeFailed, null))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端的离线安装包')
+  })
+
+  it('names the failed official package, without the store reason, before every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    const official = 'OpenAI 官网连接或下载超时'
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: '连不上微软商店', officialFailure: official }))
+      .toBe('微软商店这次没装上，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: null, storeUnavailable: true, officialFailure: official }))
+      .toBe('这台电脑没有微软商店，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+      officialFailure: official,
+    })).toBe('微软商店少一个安装组件，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: '连不上微软商店', officialFailure: official })).not.toContain(official)
+  })
+
+  it('keeps install jargon out of every official download line', () => {
+    const attempts = [
+      { storeFailure: '连不上微软商店' },
+      { storeFailure: null, storeUnavailable: true },
+      { storeFailure: '这台电脑上的微软商店安装组件用不了', storeInstallerMissing: true },
+    ]
+    for (const attempt of attempts) {
+      for (const message of [
+        describeCodexDesktopOfficialDownload(attempt, null),
+        describeCodexDesktopOfficialDownload(attempt, '26.930.1.0', { percent: 3 }),
+        describeCodexDesktopOfficialDownload(attempt, '26.930.1.0', { percent: 3, resuming: true }),
+        describeCodexDesktopStoreNotice({ ...attempt, officialFailure: 'OpenAI 官网返回 HTTP 403' }),
+      ]) {
+        expect(message).not.toMatch(/winget|msstore|appx|msix|app installer|powershell|HTTP \d{3}/i)
+      }
+    }
+  })
+
+  it('downloads the package for this processor from the official site and checks it is the signed OpenAI build', async () => {
+    const destination = officialDestination()
+    const { bytes, requested, fetchMock } = officialFetch()
+    const events: string[] = []
+    const inspected: string[] = []
+
+    const result = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      onVersion: (version) => events.push(`version ${version}`),
+      onProgress: (version, progress) => {
+        if (progress.percent === 100) events.push(`downloaded ${version}`)
+      },
+      onValidating: () => events.push('validating'),
+      inspectPackage: async (packagePath) => {
+        inspected.push(packagePath)
+        return officialMetadata('26.930.1.0')
+      },
+    })
+
+    expect(requested).toEqual([manifestUrl, packageUrl])
+    expect(result).toEqual({
+      status: 'downloaded',
+      version: '26.930.1.0',
+      download: {
+        transferred: bytes.byteLength,
+        total: bytes.byteLength,
+        sha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+    })
+    expect(events).toEqual(['version 26.930.1.0', 'downloaded 26.930.1.0', 'validating'])
+    expect(inspected).toEqual([destination])
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(buildCodexDesktopOfficialPackageSource('arm64').url)
+      .toBe('https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix')
+  })
+
+  it('installs the newer build the official package turns out to carry', async () => {
+    const { fetchMock } = officialFetch({ version: '26.930.1.0' })
+
+    const result = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.900.1.0',
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      inspectPackage: async () => officialMetadata('26.931.2.0'),
+    })
+
+    expect(result.status === 'downloaded' && result.version).toBe('26.931.2.0')
+  })
+
+  it('accepts whatever binary type the official CDN sends but not a web page', async () => {
+    for (const contentType of [null, 'application/x-msix', 'application/vnd.ms-appx']) {
+      const { fetchMock } = officialFetch({ contentType })
+      await expect(downloadCodexDesktopOfficialPackage({
+        architecture: 'x64',
+        destination: officialDestination(),
+        installedVersion: null,
+        knownVersion: '26.930.1.0',
+        fetchImplementation: fetchMock,
+        inspectPackage: async () => officialMetadata('26.930.1.0'),
+      })).resolves.toMatchObject({ status: 'downloaded' })
+    }
+
+    const destination = officialDestination()
+    const page = officialFetch({ contentType: 'text/html; charset=utf-8' })
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: page.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+    })).rejects.toThrow('OpenAI 官网返回的不是 MSIX 文件（Content-Type: text/html; charset=utf-8）')
+    expect(fs.existsSync(destination)).toBe(false)
+
+    // 国内镜像那一路照旧只认 MSIX 与二进制流。
+    const mirror = officialFetch({ contentType: null })
+    await expect(downloadCodexDesktopPackage(
+      { label: '国内镜像', url: packageUrl },
+      officialDestination(),
+      () => undefined,
+      mirror.fetchMock,
+    )).rejects.toThrow('国内镜像返回的不是 MSIX 文件（Content-Type: 缺失）')
+  })
+
+  it('skips the download when the official build is not newer than the installed one', async () => {
+    const asked = officialFetch({ version: '26.930.1.0' })
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.930.1.0',
+      knownVersion: null,
+      fetchImplementation: asked.fetchMock,
+    })).resolves.toEqual({ status: 'not-newer', version: '26.930.1.0' })
+    expect(asked.requested).toEqual([manifestUrl])
+
+    const known = officialFetch()
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.931.0.0',
+      knownVersion: '26.930.1.0',
+      fetchImplementation: known.fetchMock,
+    })).resolves.toEqual({ status: 'not-newer', version: '26.930.1.0' })
+    expect(known.requested).toEqual([])
+  })
+
+  it('uses the version read when the install started instead of asking the official site again', async () => {
+    const { requested, fetchMock } = officialFetch()
+
+    await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.900.1.0',
+      knownVersion: '26.930.1.0',
+      fetchImplementation: fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+    })
+
+    expect(requested).toEqual([packageUrl])
+  })
+
+  it('deletes the download and gives up on this route when the package is not the official build', async () => {
+    for (const [metadata, reason] of [
+      [officialMetadata('26.930.1.0', { publisher: 'CN=Someone Else' }), '发布者身份不匹配'],
+      [officialMetadata('26.930.1.0', { name: 'Contoso.Codex' }), '产品身份不是 OpenAI.Codex'],
+      [officialMetadata('26.930.1.0', { hasSignature: false }), '缺少 Appx 签名'],
+      [officialMetadata('26.930.1.0', { architecture: 'arm64' }), '架构 arm64 与本机 x64 不匹配'],
+      [officialMetadata('26.929.0.0'), '低于更新清单 26.930.1.0'],
+    ] as const) {
+      const destination = officialDestination()
+      const { fetchMock } = officialFetch()
+      await expect(downloadCodexDesktopOfficialPackage({
+        architecture: 'x64',
+        destination,
+        installedVersion: null,
+        knownVersion: null,
+        fetchImplementation: fetchMock,
+        inspectPackage: async () => metadata,
+      })).rejects.toThrow(reason)
+      expect(fs.existsSync(destination)).toBe(false)
+    }
+  })
+
+  it('says why the route failed when the official version list cannot be read', async () => {
+    const { requested, fetchMock } = officialFetch({ manifestStatus: 403 })
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+    })).rejects.toThrow('OpenAI 官网版本清单读取失败：返回 HTTP 403')
+    expect(requested).toEqual([manifestUrl])
+  })
+
+  it('reports a cancellation as a cancellation and asks nothing more', async () => {
+    const controller = new AbortController()
+    controller.abort(new InstallCancelledError())
+    const { requested, fetchMock } = officialFetch()
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      signal: controller.signal,
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(requested).toEqual([])
   })
 })
 

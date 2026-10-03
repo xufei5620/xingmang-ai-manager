@@ -3,6 +3,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  buildClaudeDesktopInstallFailureMessage, classifyClaudeDesktopInstallFailure, isPlainClaudeDesktopInstallMessage,
+} from './claude-desktop-install-failure'
+import { describeClaudeDesktopMsixDownload, installClaudeDesktopFromOfficial } from './claude-desktop-msix-installer'
+import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
   type CommandSpec, type RunCommandOptions,
 } from './command-runner'
@@ -68,9 +72,10 @@ export interface ExternalClientRuntimeOptions {
   verifyPath?: (candidate: string, kind: 'file' | 'directory' | 'appx-file') => Promise<string>
   launchProcess?: (plan: LaunchPlan) => Promise<void>
   installWorkBuddyFromOfficial?: typeof installWorkBuddyFromOfficial
-  /** Mac 上一键装桌面端时下载用的 fetch；system-service 传接好系统代理的那个。 */
+  installClaudeDesktopFromOfficial?: typeof installClaudeDesktopFromOfficial
+  /** 星芒自己下官方安装包时用的 fetch（Mac 上各家、Windows 上的 Claude Desktop）；system-service 传接好系统代理的那个。 */
   fetch?: typeof fetch
-  /** 把 Mac 上那次下载包进临时加速线路（同命令行工具的安装）；缺省直接下。 */
+  /** 把星芒自己下官方安装包的那次下载包进临时加速线路（同命令行工具的安装）；缺省直接下。 */
   withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
   /** 下载之前先看一眼盘，不够时抛出那句「磁盘空间不足」。 */
   assertDiskSpace?: (subject: string) => Promise<void>
@@ -105,17 +110,33 @@ function officialDownloadUrl(tool: ExternalToolId): string | null {
   return urls[tool] ?? null
 }
 
+/**
+ * 这台电脑没有可信的系统 winget 时各家的出路。WorkBuddy 换腾讯官方安装包，首页灰字
+ * 交代一句；Claude Desktop 换 Claude 官网的离线安装包，和有 winget 时一样只给「安装」；
+ * 其余没有星芒核对过的官方安装包，只能去官网自己下载。
+ */
+function windowsWithoutWinget(tool: ExternalToolId): { hint: string | null; official: boolean } {
+  if (tool === 'workbuddy') return { hint: '将使用腾讯官方安装包', official: true }
+  if (tool === 'claudeDesktop') return { hint: null, official: true }
+  return { hint: externalClientWingetUnavailableHint, official: false }
+}
+
 function wingetNetworkFailure(error: unknown): boolean {
   if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.exitCode === null || error.signal) return false
   // WinINet timeout, name resolution, connection and connection-reset failures.
   return [0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(error.exitCode >>> 0)
 }
 
+function wingetCancelled(error: unknown): boolean {
+  return error instanceof CommandRunnerError
+    && (error.code === 'ABORTED' || error.exitCode !== null && [1223, 0x800704c7].includes(error.exitCode >>> 0))
+}
+
 function wingetFailureMessage(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) return errorText(error)
   const exitCode = error.exitCode === null ? '' : `（错误码 0x${(error.exitCode >>> 0).toString(16)}）`
   if (wingetNetworkFailure(error)) return `连不上微软的软件下载源${exitCode}，请检查网络连接后重试。`
-  if (error.code === 'ABORTED' || error.exitCode !== null && [1223, 0x800704c7].includes(error.exitCode >>> 0)) return '安装已取消。'
+  if (wingetCancelled(error)) return '安装已取消。'
   if (error.code === 'TIMED_OUT') return '安装超时，请重新检测客户端状态后再尝试安装。'
   return `安装没有完成${exitCode}，请查看运行日志中的安装器输出。`
 }
@@ -422,17 +443,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
     const client = inspection.clients.find((item) => item.tool === tool)
     const platformHint = noInstallHint(tool)
-    const officialDownload = platform === 'win32' && architecture === 'x64' && tool === 'workbuddy'
-    const hint = platformHint ?? (platform === 'win32' && !winget.executable ? officialDownload ? '将使用腾讯官方安装包' : externalClientWingetUnavailableHint : null)
-    const manualDownload = platform === 'win32' && platformHint === null && !winget.executable && !officialDownload
+    const fallback = platform === 'win32' && platformHint === null && !winget.executable ? windowsWithoutWinget(tool) : null
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
       running: client?.running ?? false,
-      installSupported: platformHint === null && (platform === 'darwin' || (platform === 'win32' && Boolean(winget.executable || officialDownload))),
+      installSupported: platformHint === null && (platform === 'darwin' || (platform === 'win32' && Boolean(winget.executable || fallback?.official))),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && !runningAsRoot())),
-      detectionError: inspection.errors[tool] ?? null, installHint: hint,
-      officialDownloadUrl: manualDownload ? officialDownloadUrl(tool) : null,
+      detectionError: inspection.errors[tool] ?? null, installHint: platformHint ?? fallback?.hint ?? null,
+      officialDownloadUrl: fallback && !fallback.official ? officialDownloadUrl(tool) : null,
     }
   }
   function invalidateScan() {
@@ -462,6 +481,32 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       onProgress: (event) => report(event.phase, event.message, event.percent),
     })
     await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
+  }
+  /**
+   * Windows 上 Claude Desktop 的第二路：系统自带的安装组件没装上，或这台电脑根本没有它时，
+   * 从 Claude 官网下离线安装包装。两路都没装上时把原因归成客户分得清的一句，原话挂在
+   * originalError 上进运行日志。
+   */
+  async function installClaudeDesktopOnWindows(wingetFailure: unknown, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void): Promise<void> {
+    const wingetTried = wingetFailure !== undefined
+    try {
+      await options.assertDiskSpace?.(`${definitions.claudeDesktop.name} 安装失败`)
+      // 接上加速线路要一会儿，先换上这一路的第一句，免得还停在上一路那句。
+      report('downloading', describeClaudeDesktopMsixDownload(wingetTried, { percent: 0 }), 0)
+      const run = () => (options.installClaudeDesktopFromOfficial ?? installClaudeDesktopFromOfficial)({
+        architecture, wingetTried, fetch: options.fetch ?? fetch,
+        windowsExecutionMode: options.windowsExecutionMode ?? 'trusted-only', runCommand: execute, env: options.env,
+        resolveMachinePaths, resolvePowerShellExecutable: options.resolvePowerShellExecutable,
+        onProgress: (event) => report(event.phase, event.message, event.percent),
+      })
+      await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      const message = isPlainClaudeDesktopInstallMessage(detail)
+        ? errorText(error)
+        : buildClaudeDesktopInstallFailureMessage(classifyClaudeDesktopInstallFailure(detail), { wingetTried })
+      throw installationError(message, wingetTried ? { winget: wingetFailure, official: error } : error)
+    }
   }
   function install(tool: ExternalToolId, onProgress?: (event: ExternalClientInstallProgress) => void): Promise<ExternalClientRuntimeStatus> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
@@ -509,14 +554,22 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
               },
             })
           } catch (error) {
-            if (tool !== 'workbuddy' || installerStarted || !wingetNetworkFailure(error)) throw installationError(wingetFailureMessage(error), error)
+            // Claude 官网的离线安装包是 MSIX：Windows 的应用部署要么整个装上、要么什么都不留，
+            // 前一路装到一半也不会和它打架，所以除了客户自己取消，怎么没装上都换它接着装。
+            const claudeFallback = tool === 'claudeDesktop' && !wingetCancelled(error)
+            if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetNetworkFailure(error))) throw installationError(wingetFailureMessage(error), error)
             sourceFailure = error
             const recheck = status(tool, await inspect(), winget)
-            if (recheck.detectionError) throw installationError(`连不上微软的软件下载源，且无法确认客户端安装状态：${recheck.detectionError}`, error)
+            if (recheck.detectionError) {
+              throw installationError(claudeFallback
+                ? `无法确认当前安装状态：${recheck.detectionError}`
+                : `连不上微软的软件下载源，且无法确认客户端安装状态：${recheck.detectionError}`, error)
+            }
             officialDownloadNeeded = !recheck.installed
           }
         }
-        if (officialDownloadNeeded) {
+        if (officialDownloadNeeded && tool === 'claudeDesktop') await installClaudeDesktopOnWindows(sourceFailure, report)
+        else if (officialDownloadNeeded) {
           report('downloading', sourceFailure ? '连不上微软的软件下载源，正在切换到腾讯官方下载' : '正在使用腾讯官方安装包')
           try {
             await (options.installWorkBuddyFromOfficial ?? installWorkBuddyFromOfficial)({

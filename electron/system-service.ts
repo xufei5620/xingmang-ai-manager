@@ -5048,7 +5048,8 @@ export function createSystemService(
     reloadDownloadProxyConfig,
     prepareAcceleration: serviceOptions.prepareCodexDesktopAcceleration,
     assertInstallDiskSpace,
-    // Mac 上的官方包在海外：和 OpenCode 一样走下载线路。Windows 那一路有国内镜像，用不着它。
+    // 官方包在海外：Mac 上那次下载、Windows 上商店没走通后的官网离线安装包，都和 OpenCode
+    // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     userHome: providerRoots.userHome,
   })

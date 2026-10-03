@@ -1,4 +1,5 @@
 import type { ProviderId } from './catalog'
+import { claudeDesktopDownloadPageUrl } from './claude-desktop-install-failure'
 import type { ExternalClientCheckResult } from './external-client-connection'
 import type { ExternalToolId } from './external-tool-config'
 
@@ -25,7 +26,7 @@ export interface ExternalClientRuntimeStatus {
  * （I12 全等匹配），所以这里只放完整网址，不拼接。WorkBuddy 有腾讯官方安装包兜底，不在此列。
  */
 export const externalClientOfficialDownloadUrls = {
-  claudeDesktop: 'https://claude.com/download',
+  claudeDesktop: claudeDesktopDownloadPageUrl,
   opencode: 'https://opencode.ai/download',
 } as const satisfies Partial<Record<ExternalToolId, string>>
 
