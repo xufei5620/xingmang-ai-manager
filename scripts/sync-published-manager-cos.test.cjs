@@ -198,9 +198,10 @@ test('GitHub digests remain authoritative if installer bytes change before the p
 
 test('temporary cleanup failures cannot replace the primary publication error', async (t) => {
   const local = fixture(t, publishedRelease(['windows']))
+  const canonicalBase = await fs.promises.realpath(local.temporaryBase)
   const originalRemove = fs.promises.rm
   t.mock.method(fs.promises, 'rm', async (directory, options) => {
-    if (path.dirname(directory) === local.temporaryBase) throw new Error('cleanup fixture failure')
+    if (path.dirname(directory) === canonicalBase) throw new Error('cleanup fixture failure')
     return originalRemove(directory, options)
   })
   local.options.sync = async () => { throw new Error('primary publication fixture failure') }
@@ -218,9 +219,10 @@ test('temporary cleanup failures cannot replace the primary publication error', 
 
 test('cleanup after confirmed publication reports the published pointer without exposing the filesystem error', async (t) => {
   const local = fixture(t, publishedRelease(['windows']))
+  const canonicalBase = await fs.promises.realpath(local.temporaryBase)
   const originalRemove = fs.promises.rm
   t.mock.method(fs.promises, 'rm', async (directory, options) => {
-    if (path.dirname(directory) === local.temporaryBase) throw new Error('PRIVATE filesystem cleanup detail')
+    if (path.dirname(directory) === canonicalBase) throw new Error('PRIVATE filesystem cleanup detail')
     return originalRemove(directory, options)
   })
   const diagnostics = []
