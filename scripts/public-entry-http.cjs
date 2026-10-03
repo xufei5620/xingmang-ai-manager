@@ -234,4 +234,15 @@ async function publicRequest(label, phase, requestImpl) {
   }, { headerTimeoutMs: 15000, bodyTimeoutMs: 15000, requestImpl })
 }
 
-module.exports = { RESOURCES, MAX_PUBLIC_BYTES, publicRequest, safeSyncFailure }
+const CLAUDE_INDEXES = Object.freeze({
+  'linux-deb-x64': 'https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages',
+  'linux-deb-arm64': 'https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-arm64/Packages',
+})
+
+async function readClaudeIndex(label, requestImpl) {
+  if (!Object.hasOwn(CLAUDE_INDEXES, label)) throw new Error('Claude index is outside the fixed scope')
+  return performRequest({ url: CLAUDE_INDEXES[label], method: 'GET', allowedHosts: ['downloads.claude.ai'],
+    maxBytes: 1024 * 1024, collectBody: true }, { headerTimeoutMs: 15000, bodyTimeoutMs: 30000, requestImpl })
+}
+
+module.exports = { RESOURCES, MAX_PUBLIC_BYTES, publicRequest, safeSyncFailure, readClaudeIndex }

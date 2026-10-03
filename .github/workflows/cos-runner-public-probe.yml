@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, ubuntu-latest]
+        runner: [ubuntu-latest]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
@@ -31,16 +31,16 @@ jobs:
         with:
           node-version: 22
 
-      - name: Read fixed public small-resource endpoints
+      - name: Read the six fixed Claude official source endpoints
         env:
-          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/cos-public-entry-probe-${{ runner.os }}.json
-        run: node scripts/public-cos-entry-probe.cjs
+          PUBLIC_PROBE_OUTPUT: ${{ runner.temp }}/claude-public-source-probe-${{ runner.os }}.json
+        run: node scripts/public-claude-source-probe.cjs
 
       - name: Preserve only the fixed safe evidence rows
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cos-public-entry-probe-${{ runner.os }}
-          path: ${{ runner.temp }}/cos-public-entry-probe-${{ runner.os }}.json
+          name: claude-public-source-probe-${{ runner.os }}
+          path: ${{ runner.temp }}/claude-public-source-probe-${{ runner.os }}.json
           if-no-files-found: warn
           retention-days: 3
