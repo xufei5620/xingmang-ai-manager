@@ -10,7 +10,7 @@ const {
   LATEST_KEY, MAX_PACKAGE_BYTES, WINDOWS_INSPECTION_SCRIPT, parsePlatforms,
   compareWindowsVersions, validateWindowsMetadata, validateHead, parseMacAppcast,
   validateWindowsInspection, sanitizedWindowsEnvironment, synchronizeOfficialChatgpt,
-  validatePackageMagic, createRuntimeDependencies,
+  validatePackageMagic, createRuntimeDependencies, safeOfficialSyncFailure,
 } = require('./sync-chatgpt-official-cos.cjs')
 
 test('runtime temp aliases resolve to safe files and cleanup preserves neighboring directories', async function () {
@@ -175,9 +175,107 @@ test('defaults to Windows packages and allows only fixed platform identifiers', 
   assert.deepEqual(parsePlatforms(), ['windows-x64', 'windows-arm64'])
   assert.deepEqual(parsePlatforms('windows'), ['windows-x64', 'windows-arm64'])
   assert.equal(parsePlatforms('all').length, 8)
+  assert.deepEqual(parsePlatforms('macos'), ['macos-arm64', 'macos-x64'])
+  assert.deepEqual(parsePlatforms('linux'), ['linux-deb-x64', 'linux-deb-arm64', 'linux-rpm-x64', 'linux-rpm-arm64'])
+  assert.deepEqual(parsePlatforms('linux-rpm-arm64'), ['linux-rpm-arm64'])
   assert.ok(parsePlatforms('all').includes('macos-x64'))
   assert.throws(function () { parsePlatforms('https://evil.invalid/package') }, /平台无效/)
   assert.throws(function () { parsePlatforms('windows-x64,../escape') }, /平台无效/)
+})
+
+test('exact platform recovery merges the other seven verified entries and retains both Windows licenses', async function () {
+  const fixture = createFixture()
+  await fixture.run('all')
+  const previous = clone(fixture.latest)
+  const url = SOURCES['linux-rpm-arm64'].url
+  fixture.resources.set(url, { ...fixture.resources.get(url), etag: '"new-source"' })
+  const before = fixture.downloads.length
+  const result = await fixture.run('linux-rpm-arm64')
+  assert.equal(fixture.downloads.length, before + 1)
+  assert.equal(Object.keys(result.manifest.platforms).length, 8)
+  for (const [id, entry] of Object.entries(previous.platforms)) {
+    if (id !== 'linux-rpm-arm64') assert.deepEqual(result.manifest.platforms[id], entry)
+  }
+  assert.ok(result.manifest.platforms['windows-x64'].license)
+  assert.ok(result.manifest.platforms['windows-arm64'].license)
+})
+
+test('source changes after object publication stop the latest pointer and identify the changed platform', async function () {
+  const fixture = createFixture()
+  const inspect = fixture.dependencies.inspectResource
+  fixture.dependencies.inspectResource = async function (input) {
+    const head = await inspect(input)
+    return fixture.publications.length && input.url === SOURCES['linux-rpm-arm64'].url
+      ? { ...head, etag: '"changed-after-upload"' } : head
+  }
+  await assert.rejects(fixture.run('all'), (error) => {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.stage, 'source-recheck-package')
+    assert.equal(diagnostic.platform, 'linux-rpm-arm64')
+    assert.equal(diagnostic.latestState, 'not-written-by-this-run')
+    return true
+  })
+  assert.equal(fixture.publications.length, 10)
+  assert.equal(fixture.pointers.length, 0)
+})
+
+test('Mac appcast size validation remains inside the reported HEAD phase', async function () {
+  const fixture = createFixture()
+  fixture.dependencies.fetchText = async function () { return appcast('arm64', { bytes: 65 }) }
+  await assert.rejects(fixture.run('macos-arm64'), (error) => {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.stage, 'source-head-package')
+    assert.equal(diagnostic.platform, 'macos-arm64')
+    return true
+  })
+  assert.equal(fixture.downloads.length, 0)
+})
+
+test('safe stages report transfer counts and preserve the primary error when cleanup also fails', async function () {
+  const fixture = createFixture()
+  const events = []
+  const download = fixture.dependencies.downloadResource
+  fixture.dependencies.downloadResource = async function (input) {
+    input.onProgress({ phase: 'response-body', method: 'GET', transferredBytes: 32, expectedBytes: 64,
+      url: 'https://signed.invalid/?token=SECRET', authorization: 'Bearer SECRET' })
+    return download(input)
+  }
+  fixture.store.publishFile = async function () { throw new Error('PRIMARY-SECRET signed URL and authorization') }
+  fixture.dependencies.removeWorkDirectory = async function () { throw new Error('CLEANUP-SECRET') }
+  await assert.rejects(synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies,
+    platforms: 'linux-rpm-arm64', progress: (event) => events.push(event) }), (error) => {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.stage, 'cos-publish-package')
+    assert.equal(diagnostic.platform, 'linux-rpm-arm64')
+    assert.equal(diagnostic.latestState, 'not-written-by-this-run')
+    return true
+  })
+  assert.ok(events.some((event) => event.event === 'transfer' && event.transferredBytes === 32 && event.transferExpectedBytes === 64))
+  assert.ok(events.some((event) => event.event === 'stage-failed' && event.stage === 'cleanup-temp'))
+  assert.doesNotMatch(JSON.stringify(events), /SECRET|signed\.invalid|authorization|filePath|Bearer/i)
+  assert.equal(fixture.pointers.length, 0)
+  assert.deepEqual(safeOfficialSyncFailure({ stage: 'SECRET', syncFailure: { code: 'http-status' } }),
+    { stage: 'setup', latestState: 'not-written-by-this-run', failure: { code: 'operation-failed' } })
+})
+
+test('latest write uncertainty and cleanup after confirmed publication are reported honestly', async function () {
+  const uncertain = createFixture()
+  uncertain.pointerError = true
+  await assert.rejects(uncertain.run('linux-rpm-arm64'), (error) => {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.stage, 'cos-publish-latest')
+    assert.equal(diagnostic.latestState, 'write-unconfirmed')
+    return true
+  })
+  const cleanup = createFixture()
+  cleanup.dependencies.removeWorkDirectory = async function () { throw new Error('cleanup failed') }
+  await assert.rejects(cleanup.run('linux-rpm-arm64'), (error) => {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.stage, 'cleanup-temp')
+    assert.equal(diagnostic.latestState, 'published-and-read-back')
+    return true
+  })
+  assert.equal(cleanup.pointers.length, 1)
 })
 
 test('validates official Windows identity and numeric version precedence', function () {
@@ -291,9 +389,26 @@ test('rejects Windows downgrade before downloading or publishing', async functio
   const old = clone(fixture.latest)
   fixture.metadata.buildVersion = '26.929.100.0'
   const downloadCount = fixture.downloads.length
-  await assert.rejects(fixture.run(), /拒绝倒退/)
+  await assert.rejects(fixture.run(), (error) => {
+    assert.match(error.message, /拒绝倒退/)
+    assert.equal(safeOfficialSyncFailure(error).stage, 'source-windows-metadata')
+    return true
+  })
   assert.equal(fixture.downloads.length, downloadCount)
   assert.deepEqual(fixture.latest, old)
+})
+
+test('existing download URLs are validated before the latest-read stage reports success', async function () {
+  const fixture = createFixture()
+  await fixture.run()
+  fixture.latest.platforms['windows-x64'].artifact.url += '?unexpected'
+  const before = fixture.downloads.length
+  await assert.rejects(fixture.run(), (error) => {
+    assert.match(error.message, /下载地址与当前存储桶不一致/)
+    assert.equal(safeOfficialSyncFailure(error).stage, 'cos-read-latest')
+    return true
+  })
+  assert.equal(fixture.downloads.length, before)
 })
 
 test('rejects official metadata mismatch without remote writes', async function () {
