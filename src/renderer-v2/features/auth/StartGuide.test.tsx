@@ -336,6 +336,13 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接').message).not.toContain('alice')
   })
 
+  it('does not show an English failure as is because its redacted path reads as Chinese', () => {
+    // 脱敏后的占位词「本地配置文件」本身是汉字，以前这句英文整句上屏（第三十批 A）。
+    const failure = guideStepFailure(new Error("ENOENT: no such file or directory, open 'C:\\Users\\张三\\.codex\\auth.json'"), '确认连接', true)
+    expect(failure.message).toBe('确认连接没有成功（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.detail).toBe("ENOENT: no such file or directory, open '本地配置文件")
+  })
+
   it('never borrows the login wording', () => {
     for (const reason of ['fetch failed', 'something odd', 'Node.js 下载超时，请检查网络后重试', '请先确认账号连接，再打开工具。']) {
       expect(guideStepFailure(new Error(reason), '打开工具').message).not.toMatch(/星芒服务器|输入已保留/)

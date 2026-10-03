@@ -6,6 +6,8 @@ import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { tomlErrorLocation } from './toml-error-location'
+import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
 import {
   defaultProviderConfigRoots,
   providerConfigRoot,
@@ -233,17 +235,6 @@ function withoutByteOrderMark(content: string): string {
   return content.replace(/^\uFEFF/, '')
 }
 
-/**
- * @iarna/toml's message quotes the lines around the failure, and in these
- * files those lines are often `api_key = "..."` or an MCP server's token. The
- * message reaches the screen, the runtime log and the feedback export (I13),
- * so only the row number is kept -- the same reason requireJson drops V8's.
- */
-function tomlErrorLocation(error: unknown): string {
-  const line = error && typeof error === 'object' && 'line' in error ? error.line : null
-  return typeof line === 'number' && Number.isInteger(line) && line >= 0 ? `（第 ${line + 1} 行附近）` : ''
-}
-
 function requireConfigText(
   filePath: string,
   label: string,
@@ -285,7 +276,9 @@ function readToml(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function requireJson(filePath: string, label: string): Record<string, unknown> {
+// `brokenTool`：读不懂时指给客户去哪重置（broken-config-advice.ts），传首页那一行的工具名。只有保存、
+// 写 Key（merge）那几处传；不传照旧报 label 那句，开机核对、画图登记这些多半只进日志（第三十批 C）。
+function requireJson(filePath: string, label: string, brokenTool?: string): Record<string, unknown> {
   const content = requireConfigText(filePath, label)
   if (content === null) return {}
   try {
@@ -300,18 +293,20 @@ function requireJson(filePath: string, label: string): Record<string, unknown> {
     // flows into the on-screen failure reason, the runtime log, and the
     // feedback export (I13). The label already names the file; the byte
     // offset does not help a non-technical user.
-    throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+    throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 无法解析为 JSON，未执行修改`)
   }
-  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+  throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
-function requireToml(filePath: string, label: string): Record<string, unknown> {
+function requireToml(filePath: string, label: string, brokenTool?: string): Record<string, unknown> {
   const content = requireConfigText(filePath, label)
   if (content === null) return {}
   try {
     return TOML.parse(content)
   } catch (error) {
-    throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
+    throw new Error(brokenTool
+      ? describeBrokenConfig(brokenTool, tomlErrorLocation(error))
+      : `${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
   }
 }
 
@@ -324,7 +319,7 @@ function requireToml(filePath: string, label: string): Record<string, unknown> {
  * rejects them). Duplicate keys are refused on this path only, because the
  * comment-preserving write edits one occurrence while Gemini reads the last.
  */
-function parseGeminiJsonObject(content: string, label: string): Record<string, unknown> {
+function parseGeminiJsonObject(content: string, label: string, brokenTool?: string): Record<string, unknown> {
   let parsed: unknown
   try {
     parsed = JSON.parse(content) as unknown
@@ -333,12 +328,12 @@ function parseGeminiJsonObject(content: string, label: string): Record<string, u
     const tree = parseTree(content, errors, { allowTrailingComma: false, disallowComments: false })
     // Same reason as requireJson for not surfacing the parser's own message.
     if (!tree || errors.length || hasDuplicateProperties(tree)) {
-      throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+      throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 无法解析为 JSON，未执行修改`)
     }
     parsed = getNodeValue(tree) as unknown
   }
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+  throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
 function hasDuplicateProperties(node: Node): boolean {
@@ -363,9 +358,9 @@ function readGeminiJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function requireGeminiJson(filePath: string, label: string): { parsed: Record<string, unknown>, original: string | null } {
+function requireGeminiJson(filePath: string, label: string, brokenTool?: string): { parsed: Record<string, unknown>, original: string | null } {
   const original = requireConfigText(filePath, label)
-  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label), original }
+  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label, brokenTool), original }
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -1128,7 +1123,8 @@ function readStoredCodexConfig(filePath: string, label: string): string | null {
   try {
     TOML.parse(text)
   } catch {
-    throw new Error(`${label} 无法解析，未执行修改`)
+    // 只在 merge 时读它（切回当前账号要用这份），读不懂就指去重置（第三十批 C）。
+    throw new Error(describeConfigReset('Codex', '星芒替 Codex 存的那份配置读不出来了'))
   }
   return withTrailingNewline(text)
 }
@@ -1157,7 +1153,8 @@ function createCodexRelayConfigPlans(
       currentParsed = TOML.parse(currentText)
     } catch (error) {
       if (mode !== 'reset') {
-        throw new Error(`现有 Codex config.toml 无法解析，未执行修改${tomlErrorLocation(error)}`)
+        // Codex CLI 和 Codex 桌面端共用这一份，句子里只叫「Codex」（第三十批 C）。
+        throw new Error(describeBrokenConfig('Codex', tomlErrorLocation(error)))
       }
     }
   }
@@ -2314,7 +2311,7 @@ function createMergePlans(
       ]
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
-      const parsed = requireJson(paths[0], '现有 Claude settings.json')
+      const parsed = requireJson(paths[0], '现有 Claude settings.json', 'Claude Code')
       const env = ensureRecord(parsed, 'env')
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
@@ -2335,7 +2332,7 @@ function createMergePlans(
       if (!fs.existsSync(paths[0])) {
         plans.push(initial(paths[0]))
       } else {
-        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json', 'Gemini CLI')
         // Gemini CLI keeps the auth strategy in settings.json. Updating only
         // .env after a prior OAuth login leaves the UI looking configured while
         // the CLI continues to authenticate with Google, so merge must restore
@@ -2366,15 +2363,15 @@ function createMergePlans(
     }
     case 'grok': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
-      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      const parsed = requireToml(paths[0], '现有 Grok config.toml', 'Grok CLI')
       // 切回官方时整张中转模型表连同 models.default 一起拿掉（createOfficialAccountPlans）。
-      // 再切回当前账号时按初始模板补回，不让用户去点「重置为初始配置」。
+      // 再切回当前账号时按初始模板补回，不让用户去点「重置为初始状态」。
       if (!nestedString(parsed, ['models', 'default'])) addManagedGrokModel(parsed)
       const defaultModel = nestedString(parsed, ['models', 'default'])
       const models = ensureRecord(parsed, 'model')
       const target = models[defaultModel]
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
-        throw new Error('现有 Grok 默认模型配置无效，请选择“重置为初始配置”')
+        throw new Error(describeConfigReset('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对'))
       }
       const targetModel = target as Record<string, unknown>
       targetModel.api_key = apiKey

@@ -1137,6 +1137,31 @@ test('the maintenance page does not reinstall over a CLI from the official insta
     await clean(page)
   } finally { await page.close() }
 })
+test('the new-version notification only calls people back for updates the app can install', async () => {
+  // 通知在开机第一轮检测落地时就发，所以系统通知接口要在页面加载前装好。
+  function recordNotifications() {
+    window.__notified = []
+    window.xingmangPlatform = {
+      notifyActivity: async (kind, key) => { window.__notified.push([kind, key]); return 'requested' },
+      onStateChanged: () => () => undefined,
+      getState: () => new Promise(() => undefined),
+    }
+  }
+  for (const [query, expected] of [
+    ['cliUpdate=1', [['cliUpdate', 'cli-update:claude.2.0.0']]],
+    // 官方安装器装的那份首页没有「更新」按钮，通知却说「回到星芒就能逐个更新」。
+    ['cliUpdate=1&nativeInstall=1', []],
+  ]) {
+    const page = await open(query, false, recordNotifications)
+    try {
+      await page.getByTestId('tool-row-claude').waitFor()
+      // 记下「已提醒过」是同一段收尾的最后一步，写进去了就说明这一轮已经判过要不要通知。
+      await page.waitForFunction(() => localStorage.getItem('xingmang-v2-cli-update-notice') !== null)
+      assert.deepEqual(await page.evaluate(() => window.__notified.filter(([kind]) => kind === 'cliUpdate')), expected, query)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
 test('a failed probe offers a rescan on the maintenance page instead of an install', async () => {
   const page = await open('detectionFailed=1')
   try {

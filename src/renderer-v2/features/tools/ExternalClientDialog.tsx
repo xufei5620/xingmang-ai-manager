@@ -4,6 +4,7 @@ import type { AccountKey, AppConfigSummary, ExternalClientConfigResult, External
 import { Button, Confirm, Dialog, Input, Notice, Select } from '../../ui'
 import { clientConnections, clientKeySources } from '../../registry/clients'
 import { connectionCheckView } from './connection-check'
+import { accountKeyListFailureText, externalClientSavedTone } from './external-client-notice'
 import { accountKeyLabel, readAllAccountKeys } from './key-selection'
 import { beginBusinessOperation, errorMessage } from '../../business-common'
 
@@ -103,7 +104,7 @@ export function ExternalClientDialog({ api, tool, signedIn, onClose, onSaved }: 
         ...keys.map((key) => ({ value: `account:${key.id}`, label: accountKeyLabel(key) })),
         { value: 'manual', label: '自己填写星芒密钥' },
       ]} />
-        {keyError && <p role="status">账号密钥列表读取失败：{keyError}。可以使用已有工具密钥或自行填写。</p>}
+        {keyError && <p role="status">{accountKeyListFailureText(keyError)}</p>}
         {source === 'manual' && <Input label="星芒访问密钥" type="password" autoComplete="off" value={secret} onChange={(event) => { setSecret(event.target.value); setModels([]); setResult(null); setDirty(true) }} testId="external-client-secret" />}
       </div>
       <div className="v2-config-field"><Select label="使用模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '先检测这把密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null) }} disabled={!models.length} testId="external-client-model" />
@@ -115,7 +116,7 @@ export function ExternalClientDialog({ api, tool, signedIn, onClose, onSaved }: 
       <p>保存前会重新校验模型权限并备份已有配置。密钥只写入对应客户端的本地配置，现有配置内容不会返回界面。</p>
     </fieldset>
     {error && <p className="v2-callout is-bad" role="alert">{error}</p>}
-    {result && <Notice tone="ok" title="配置已保存" body={<><p>{result.message}</p>
+    {result && <Notice tone={externalClientSavedTone(connectionView)} title="配置已保存" body={<><p>{result.message}</p>
       {connectionView
         ? <><p data-testid="external-client-connection">连接自检：{connectionView.statusLabel} · {connectionView.title}</p><p>{connectionView.body}</p></>
         : <p data-testid="external-client-connection">连接自检：这次没测成。配置已经写好了，可以到「检查」页点一次「测试连接」。</p>}

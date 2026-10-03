@@ -246,8 +246,40 @@ describe('native CLI configuration files', () => {
     // Merge promises to preserve existing settings. It cannot honour that on a
     // file it cannot read, so it must fail rather than quietly reset the user.
     expect(() => saveProviderConfig('codex', 'sk-merge', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
-      .toThrow(/无法解析/)
+      .toThrow(/^Codex 的配置文件里有写错的地方（第 \d+ 行附近），星芒没有改动它。/)
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+  })
+
+  it('points the customer at the reset when a save cannot read the existing config', () => {
+    // 以前只说「现有 … 无法解析，未执行修改」，客户不知道「重置为初始状态」能救，只能反复重试（第三十批 C）。
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const reset = '星芒没有改动它。在首页 {tool} 那一行点「…」里的「配置」，选「使用星芒账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「备份」页能找回），再重新生成。'
+    const advice = (tool: string, problem: string) => `${problem}，${reset.replace('{tool}', tool)}`
+    const cases: Array<{ provider: ProviderId, content: string, expected: string }> = [
+      { provider: 'codex', content: 'model = “gpt-5.5”\n', expected: advice('Codex', 'Codex 的配置文件里有写错的地方（第 1 行附近）') },
+      { provider: 'claude', content: '{ "env": { "ANTHROPIC_MODEL": "claude-opus-4-6" }, }\n', expected: advice('Claude Code', 'Claude Code 的配置文件里有写错的地方') },
+      { provider: 'claude', content: '["not", "settings"]\n', expected: advice('Claude Code', 'Claude Code 的配置文件里有写错的地方') },
+      { provider: 'gemini', content: '{ "ui": { "theme": "GitHub", }, }\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
+      { provider: 'gemini', content: '[]\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
+      { provider: 'grok', content: '# 我的设置\ndefault = “grok-4.5”\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里有写错的地方（第 2 行附近）') },
+      { provider: 'grok', content: '[models]\ndefault = "missing"\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对') },
+    ]
+    for (const { provider, content, expected } of cases) {
+      const configPath = providerConfigPaths(provider, roots)[0]
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, content, 'utf8')
+      let message = ''
+      try {
+        saveProviderConfig(provider, 'sk-merge', testModels[provider], 'merge', roots, {}, providerBaseUrls)
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message).toBe(expected)
+      // 客户看不懂文件格式的名字；按钮叫法要和界面上的一字不差。
+      expect(message).not.toMatch(/toml|json/i)
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(content)
+    }
   })
 
   it('names only the row of a broken TOML config, never the lines around it', () => {
@@ -265,7 +297,7 @@ describe('native CLI configuration files', () => {
         message = error instanceof Error ? error.message : String(error)
       }
       // 全面检测 Q17：TOML 解析器的原文自带前后几行，截图发客服就带出 Key。
-      expect(message).toMatch(/无法解析，未执行修改（第 3 行附近）/)
+      expect(message).toMatch(/的配置文件里有写错的地方（第 3 行附近），星芒没有改动它。/)
       expect(message).not.toMatch(/xai-secret|ghp_secret|api_key/)
       expect(fs.readFileSync(configPath, 'utf8')).toBe(broken)
     }
@@ -1170,7 +1202,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(configs.relay, brokenRelay, 'utf8')
 
     expect(() => saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls))
-      .toThrow('已保存的星芒 Codex 配置 无法解析')
+      .toThrow('星芒替 Codex 存的那份配置读不出来了，星芒没有改动它。')
     expect(fs.readFileSync(configs.active, 'utf8')).toBe(official)
     const result = saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
 
@@ -2443,7 +2475,7 @@ describe('switching a provider back to the official subscription account', () =>
     for (const content of damaged) {
       fs.writeFileSync(settingsPath, content, 'utf8')
       expect(() => saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls))
-        .toThrow('现有 Gemini settings.json 无法解析为 JSON，未执行修改')
+        .toThrow('Gemini CLI 的配置文件里有写错的地方，星芒没有改动它。')
       expect(fs.readFileSync(settingsPath, 'utf8')).toBe(content)
     }
   })

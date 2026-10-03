@@ -80,7 +80,7 @@ export function ToolUsage({
         </Button>
       }
     >
-      <ResultNotice error={resource.error} />
+      <ResultNotice error={resource.error} detail={resource.detail} />
       {resource.loading && !resource.data ? (
         <Skeleton rows={4} />
       ) : (
