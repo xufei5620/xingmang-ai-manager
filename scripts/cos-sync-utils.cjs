@@ -521,7 +521,7 @@ function createCosStore(configuration, options = {}) {
           if (operation === 'part') headers['x-cos-psize-max'] = String(PART_BYTES)
           headers.authorization = buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method, pathname: decodeURIComponent(url.pathname), query, headers, now: options.now ? options.now() : Math.floor(Date.now() / 1000) })
           try {
-            const result = await performRequest({ url: url.href, allowedHosts: [host], method, headers, body, uploadBytes: body.length, maxBytes: MAX_XML_BYTES, collectBody: true, multipartOperation: operation }, { ...options, headerTimeoutMs: operation === 'part' ? Math.min(options.headerTimeoutMs ?? 3 * 60 * 1000, 3 * 60 * 1000) : options.headerTimeoutMs, bodyTimeoutMs: Math.min(options.bodyTimeoutMs ?? (operation === 'complete' ? 10 * 60 * 1000 : 30000), operation === 'complete' ? 10 * 60 * 1000 : 30000) })
+            const result = await performRequest({ url: url.href, allowedHosts: [host], method, headers, body, uploadBytes: body.length, maxBytes: MAX_XML_BYTES, collectBody: true, multipartOperation: operation }, { ...options, headerTimeoutMs: operation === 'part' ? Math.min(options.headerTimeoutMs ?? 6 * 60 * 1000, 6 * 60 * 1000) : options.headerTimeoutMs, bodyTimeoutMs: Math.min(options.bodyTimeoutMs ?? (operation === 'complete' ? 10 * 60 * 1000 : 30000), operation === 'complete' ? 10 * 60 * 1000 : 30000) })
             if (operation === 'abort' && (result.status !== 204 || result.bytes !== 0)) throw new Error('COS 分块中止响应无效')
             return result
           } catch (error) {
