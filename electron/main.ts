@@ -128,7 +128,7 @@ import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
-import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
+import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -1467,6 +1467,11 @@ if (!hasSingleInstanceLock) {
       // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
       // 来，主进程这一层只负责把它接到通道上。
       checkExternalConnection: (tool: ExternalToolId) => systemService.checkExternalClientConnection(tool),
+      // 预览反馈报告时据此提醒先去检查：与报告里写不写「还没做过自检」读的是同一份结果。
+      hasSelfCheckResult: () => hasFeedbackSelfCheck({
+        report: latestDiagnostics,
+        readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
+      }),
       exportLatest: () => {
         if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
         return createDiagnosticsExport(latestDiagnostics, {
