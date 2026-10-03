@@ -900,6 +900,8 @@ test('feedback copy and export retain the preview snapshot id', async () => {
       .getByRole('button', { name: '预览反馈报告', exact: true })
       .click()
     await page.getByTestId('feedback-report-text').waitFor()
+    // 报告里已经有检查结果时不提醒先去检查。
+    assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)
     await page.getByRole('button', { name: '复制报告', exact: true }).click()
     await page.getByRole('button', { name: '导出文件', exact: true }).click()
     await page.getByText('反馈报告已导出：').first().waitFor()
@@ -918,6 +920,28 @@ test('feedback copy and export retain the preview snapshot id', async () => {
         .filter((call) => ['copy-report', 'export-report', 'reveal-file'].includes(call.name))
         .map((call) => call.args),
       ['report-snapshot-7', 'report-snapshot-7', 'C:\test-report.txt'],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('the feedback preview sends the customer to the check page when the report has no check result', async () => {
+  const page = await fixture('page=feedback&selfCheckMissing')
+  try {
+    await page
+      .getByRole('button', { name: '预览反馈报告', exact: true })
+      .click()
+    const hint = page.getByTestId('feedback-report-unchecked')
+    await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
+    await hint.getByText('点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
+    await hint.getByRole('button', { name: '去检查', exact: true }).click()
+    await page.getByTestId('feedback-report-text').waitFor({ state: 'detached' })
+    assert.deepEqual(
+      (await calls(page))
+        .filter((call) => call.name === 'navigate')
+        .map((call) => call.args),
+      ['health'],
     )
   } finally {
     await page.close()
