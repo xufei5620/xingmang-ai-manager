@@ -28,7 +28,7 @@ export interface GuideToolState {
   /** 这台电脑上装它、用它都不需要 Node.js（Windows 版 Grok，第十八批 8）；缺省 = 需要。 */
   runtimeNotNeeded?: boolean
   pythonReady?: boolean
-  /** 这台电脑上装它、用它都不需要 Python（Linux 上的 Gemini，Linux 版拆分 ③）；缺省 = 按原来的判断。 */
+  /** 这台电脑上装它、用它都不需要 Python（Gemini：Linux 版拆分 ③ 先去掉，第二十八批 C 起 Windows、Mac 也是）；缺省 = 按原来的判断。 */
   pythonNotNeeded?: boolean
   /** 缺 Node.js 时「安装」会先把它装上（Windows 代装）；缺省 = 旧行为，先单独准备。 */
   runtimeAutoPrepare?: boolean

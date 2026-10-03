@@ -3587,7 +3587,11 @@ export function createSystemService(
       }
       const result = await installNodeRuntimeForService({
         ...(architecture ? { architecture } : {}),
-        networkRegion: await inspectNetworkRegion(),
+        // 到要下载时才问先走哪个源：Windows 借到线路以后才定，借到了就官方源优先。
+        networkRegion: inspectNetworkRegion,
+        // Windows 先试 winget，它自己下载、不走下载专用线路，退到下安装包时才借（第二十八批 D）；
+        // macOS、Linux 一开始就是下载，整段已经包在线路里（installNodeRuntime）。
+        withDownloadRoute: platform === 'win32' ? (operation) => withDownloadAcceleration(null, operation) : undefined,
         temporaryDirectoryMode: windowsExecutionMode,
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
@@ -3625,8 +3629,10 @@ export function createSystemService(
     target: RendererMessageTarget,
     request: NodeRuntimeInstallRequest = {},
   ): Promise<NodeRuntimeInstallResult> {
-    return installationQueue.enqueue('runtime:node',
-      () => withDownloadAcceleration(null, () => installNodeRuntimeOperation(target, request)))
+    // Windows 只在退到下安装包时借线路，见 installNodeRuntimeOperation 传下去的 withDownloadRoute。
+    return installationQueue.enqueue('runtime:node', () => platform === 'win32'
+      ? installNodeRuntimeOperation(target, request)
+      : withDownloadAcceleration(null, () => installNodeRuntimeOperation(target, request)))
       .then(async (result) => {
         // 等补完再回，首页随后那次刷新就不再显示「补上」。它自己兜住所有错误，不影响装运行环境的结果。
         if (platform === 'win32') await addMissingGrokHooks('runtime-installed')
@@ -3682,15 +3688,17 @@ export function createSystemService(
         return result
       }
       // 商店装不上时退到 python.org 下载，那是国外的站：和装 Node.js、Git 一样借一条
-      // 下载专用线路（不改系统代理），所以 fetch 也要换成认这条线路的那一个。
-      return await withDownloadAcceleration(null, () => installPythonRuntimeForService({
+      // 下载专用线路（不改系统代理），所以 fetch 也要换成认这条线路的那一个。商店那一步
+      // 自己下载、不走这条线路，所以退到 python.org 时才借（第二十八批 D）。
+      return await installPythonRuntimeForService({
         architecture: process.arch,
         temporaryDirectoryMode: windowsExecutionMode,
+        withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:python-install-progress', progress)
         },
         dependencies: { fetch: downloadFetch },
-      }))
+      })
     } finally {
       pythonRuntimeInstalling = false
     }
@@ -4457,6 +4465,15 @@ export function createSystemService(
             `--registry=${registry}`,
             '--replace-registry-host=always',
           ], resolution, cache)
+          // npm ci 跳过下载失败的平台主程序包也照样退出 0，所以下完就在它解出来的包里查。普通权限
+          // 那条路没有暂存目录，后面 npm 直接写进正在用的工具目录，写完再查就晚了，旧版已经被盖掉；
+          // 在这里查出缺了，记成这个源失败、换下一个源，旧版还没动（第二十八批 A）。Grok 的两条
+          // npm 通道在自己的安装事务里核对。
+          if (provider !== 'grok') {
+            await assertCliNativePackageInstalled(
+              path.join(resolution, 'node_modules', ...definition.packageName.split('/')),
+            )
+          }
           if (managedNpmLayout && attemptPrefix) {
             await fs.promises.cp(managedNpmLayout.prefix, attemptPrefix, {
               recursive: true,
@@ -4508,14 +4525,29 @@ export function createSystemService(
               }),
             })
           } else {
-            await lifecycle()
-            // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
-            // 而不是带着装不全的程序走到替换托管目录那一步。
-            const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
-            if (stagedPrefix) {
-              await assertCliNativePackageInstalled(
-                managedCliPackageDirectory(stagedPrefix, definition.packageName, platform),
-              )
+            // 普通权限这条路没有暂存目录：npm 在正在用的目录里先挪开旧版、再解新包、跑安装脚本，取消是
+            // 强行结束整棵进程树，它来不及挪回去，新旧两份都用不了。所以从这里起和暂存那条路换进去
+            // 以后一样不让取消，前面下载、对账照样能取消（第二十八批 B）。
+            const writesInPlace = !attemptPrefix
+            if (writesInPlace) {
+              cancellation?.throwIfCancelled()
+              cancellation?.seal(managedPrefixSwapSealReason)
+            }
+            try {
+              await lifecycle()
+              // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
+              // 而不是带着装不全的程序走到替换托管目录那一步。
+              const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
+              if (stagedPrefix) {
+                await assertCliNativePackageInstalled(
+                  managedCliPackageDirectory(stagedPrefix, definition.packageName, platform),
+                )
+              }
+            } catch (error) {
+              // 这个源没装成，换下一个源要重新下载，下载那段照样能取消。装成了就一直不让取消到结束：
+              // 新版已经写进去了，这时再取消，界面会以为没装上。
+              if (writesInPlace) cancellation?.unseal()
+              throw error
             }
           }
           installPrefix = attemptPrefix

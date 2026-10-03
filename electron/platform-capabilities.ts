@@ -37,7 +37,6 @@ export function platformCapabilitiesFor(
   const family = platformFamily(platform)
   const windows = family === 'windows'
   const macos = family === 'macos'
-  const linux = family === 'linux'
   return Object.freeze({
     platform: family,
     architecture,
@@ -67,11 +66,13 @@ export function platformCapabilitiesFor(
     // 等 Linux 加速（拆分 ⑫）落地再打开。
     acceleration: windows || macos,
     // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
-    // Linux 上缺了它照样能装能用，不该拦着（Linux 版拆分 ③）。Windows 和 Mac 不变。
+    // 缺了它照样能装能用，不该拦着。Linux 先去掉（Linux 版拆分 ③）；它自带的现成包也覆盖
+    // Windows 和 Mac，两边跟着去掉：Windows 不再顺带多装一个 Python，Mac 没装也不再拦着
+    // （第二十八批 C）。表留着，哪天又有工具真要 Python 时改这一处就行。
     cliNeedsPythonRuntime: Object.freeze({
       claude: false,
       codex: false,
-      gemini: !linux,
+      gemini: false,
       grok: false,
     }),
     codexDesktop: Object.freeze({
