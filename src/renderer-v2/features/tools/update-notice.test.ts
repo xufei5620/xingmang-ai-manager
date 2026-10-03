@@ -5,6 +5,7 @@ import { Home, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ToolsApi } from './api'
 import {
+  inAppToolUpdates,
   pendingToolUpdates,
   readAnnouncedToolUpdates,
   rememberAnnouncedToolUpdates,
@@ -86,6 +87,33 @@ describe('renderer-v2 pending CLI updates', () => {
       claude: { ...cliStatus, installed: false, latestVersion: '2.0.0', updateAvailable: true },
       codex: cliStatus, gemini: cliStatus, grok: cliStatus,
     })))).toEqual([])
+  })
+
+  it('keeps installs the app cannot update out of the notification while the badge still counts them', () => {
+    const state = snapshot({
+      claude: { ...cliStatus, latestVersion: '2.1.288', updateAvailable: true, installSource: 'native' },
+      codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true, installSource: 'npm' },
+      gemini: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'path' },
+      grok: cliStatus,
+    })
+    const tools = presentTools(state)
+    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Codex 那一行有「更新」按钮。
+    expect(inAppToolUpdates(tools)).toEqual([{ id: 'codex', version: '1.9.0' }])
+    // 角标和卡片上的数字照旧数全部：那两行自己写着该怎么更新。
+    expect(pendingToolUpdates(tools).map((entry) => entry.id)).toEqual(['claude', 'codex', 'gemini'])
+    const home = renderHome(state)
+    expect(home).toContain('3 个有更新')
+    expect(home).toContain('该版本由官方安装器管理，请用它自己的方式更新')
+    expect(home).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+  })
+
+  it('has nothing to announce when the only pending update belongs to the official installer', () => {
+    const tools = presentTools(snapshot({
+      claude: { ...cliStatus, latestVersion: '2.1.288', updateAvailable: true, installSource: 'native' },
+      codex: cliStatus, gemini: cliStatus, grok: cliStatus,
+    }))
+    expect(pendingToolUpdates(tools)).toEqual([{ id: 'claude', version: '2.1.288' }])
+    expect(inAppToolUpdates(tools)).toEqual([])
   })
 
   it('builds an event key the main process will accept, whatever the upstream version string looks like', () => {

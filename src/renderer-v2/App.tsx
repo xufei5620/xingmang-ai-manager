@@ -25,7 +25,7 @@ import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } fro
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
-import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
+import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
@@ -1248,15 +1248,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const toolUpdates = toolbox.snapshot ? pendingToolUpdates(presentTools(toolbox.snapshot)) : []
   // 启动扫描完成后把「有新版本」汇总成一条系统通知。同一个工具同一个目标版本
   // 只说一次，抑制状态留在本机，所以下次启动不会再念一遍；工具更完或者上游又
-  // 出了新版本，记录随之变化，才会再提醒。
-  const toolUpdateKey = updateNoticeKey(toolUpdates)
+  // 出了新版本，记录随之变化，才会再提醒。通知说「回到星芒就能逐个更新」，
+  // 所以只算星芒更新得了的那几个（inAppToolUpdates），角标照旧数全部。
+  const noticeUpdates = toolbox.snapshot ? inAppToolUpdates(presentTools(toolbox.snapshot)) : []
+  const toolUpdateKey = updateNoticeKey(noticeUpdates)
   useEffect(() => {
     // 开机先画出来的上次结果不算：那时说的「有新版本」可能早就更新过了。
     if (!toolbox.snapshot || toolbox.snapshot.system.cachedAt) return
-    if (unannouncedToolUpdates(toolUpdates, readAnnouncedToolUpdates()).length > 0) {
+    if (unannouncedToolUpdates(noticeUpdates, readAnnouncedToolUpdates()).length > 0) {
       void platformApi()?.notifyActivity('cliUpdate', toolUpdateKey).catch(() => undefined)
     }
-    rememberAnnouncedToolUpdates(toolUpdates)
+    rememberAnnouncedToolUpdates(noticeUpdates)
     // toolUpdateKey 已经把这一轮的工具与目标版本压成一个字符串，
     // 快照里别的字段变化（余额、运行环境）不该重新触发这段。
   }, [toolUpdateKey, Boolean(toolbox.snapshot), Boolean(toolbox.snapshot?.system.cachedAt)])
