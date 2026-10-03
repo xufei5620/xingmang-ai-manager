@@ -18,7 +18,7 @@ import {
   shell,
   type WebContents,
 } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import { autoUpdater, CancellationToken } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
@@ -121,14 +121,14 @@ import { hostNotifier } from './platform/host-notification-bridge'
 import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
-import { createProxyBypass, networkSettingsTarget, probeDirectConnection } from './proxy-bypass'
+import { createSiteRouting, networkSettingsTarget } from './proxy-bypass'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
-import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
+import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -193,6 +193,7 @@ import {
 } from './system-service'
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
+import { createUpdateRequestGuard } from './update-request-guard'
 import { createUpdaterService } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
@@ -1119,10 +1120,41 @@ if (!hasSingleInstanceLock) {
     const accelerationPreferences = createAccelerationPreferenceStore({
       filePath: path.join(managerDataDirectory, 'acceleration-preferences.json'),
     })
-    const relayFetch: typeof fetch = (input, init) => net.fetch(
+    const sessionFetch: typeof fetch = (input, init) => net.fetch(
       input instanceof URL ? input.href : input,
       init,
     )
+    // 代理软件活着、只是不转发星芒站点时，连星芒站点的请求（账号、余额、AI 聊天画图、连通
+    // 检查）改走的直连会话；默认会话照旧跟随系统代理，装工具、拉插件、检查页都不受影响。
+    // 非 persist: 前缀 = 内存分区，不落盘；这些请求自己带凭据（Key，或者账号那边
+    // credentials: 'omit' 的 cookie），换会话不影响登录。
+    const siteDirectSession = session.fromPartition('xingmang-site-direct')
+    let siteDirectProxy: Promise<void> | null = null
+    const siteDirectFetch: typeof fetch = (input, init) => {
+      // 设不上就下次再设，别把一次失败记一整个运行。
+      siteDirectProxy ??= siteDirectSession.setProxy({ mode: 'direct' }).catch((error: unknown) => {
+        siteDirectProxy = null
+        throw error
+      })
+      return siteDirectProxy.then(() => siteDirectSession.fetch(input instanceof URL ? input.href : input, init))
+    }
+    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    // AI 聊天画图、连通检查、查模型（relayFetch）都连星芒站点，账号请求（accountFetch）
+    // 改直连时跟着一起改，它们自己不触发改直连；别的地址照旧走默认会话。建在这里是因为
+    // relayFetch 马上就要用；站点设置、加速状态都是出了事才去读。
+    const { bypass: proxyBypass, relayFetch, accountFetch } = createSiteRouting({
+      probeUrl: () => {
+        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
+        catch { return null }
+      },
+      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
+      accelerationActive: accelerationRunning,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+      sessionFetch,
+      siteDirectFetch,
+    })
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecution = await windowsCliExecutionModePromise
@@ -1467,6 +1499,11 @@ if (!hasSingleInstanceLock) {
       // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
       // 来，主进程这一层只负责把它接到通道上。
       checkExternalConnection: (tool: ExternalToolId) => systemService.checkExternalClientConnection(tool),
+      // 预览反馈报告时据此提醒先去检查：与报告里写不写「还没做过自检」读的是同一份结果。
+      hasSelfCheckResult: () => hasFeedbackSelfCheck({
+        report: latestDiagnostics,
+        readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
+      }),
       exportLatest: () => {
         if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
         return createDiagnosticsExport(latestDiagnostics, {
@@ -1539,6 +1576,11 @@ if (!hasSingleInstanceLock) {
         packageType: app.isPackaged ? readLinuxPackageType(process.resourcesPath) : null,
       })
       : undefined
+    // electron-updater 的请求在 Electron 里没有能用的超时，增量下载停住了也不认取消令牌，中途断网
+    // 还会抛没人接的异常：包住它建请求的那一处，看门狗才看得到数据还来不来、停住时掐得断
+    // （见 update-request-guard.ts）。httpExecutor 没写进 electron-updater 对外的类型，只能这样取；
+    // 取不到就只剩取消令牌。
+    const updateRequests = createUpdateRequestGuard(Reflect.get(autoUpdater, 'httpExecutor'))
     const updaterService = createUpdaterService(autoUpdater, {
       installMethod: updateInstallMethod,
       openSystemInstaller: updateInstallMethod === 'system-installer'
@@ -1602,6 +1644,24 @@ if (!hasSingleInstanceLock) {
           freeBytes: shortfall.freeBytes,
         })
       },
+      // 下载停住时看门狗靠它取消。得是 electron-updater 自己导出的这个类：它认「已取消」
+      // 靠 instanceof，别处来的令牌取消后会被当成下载出错。
+      createDownloadCancellation: () => new CancellationToken(),
+      downloadReceivedAt: () => updateRequests?.lastReceivedAt() ?? null,
+      abortDownloadRequests: (reason) => {
+        const aborted = updateRequests?.abortAll(reason) ?? 0
+        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted })
+      },
+      downloadStalled: (stall) => {
+        runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
+          retrying: stall.retrying,
+          transferred: stall.transferred,
+          total: stall.total,
+          unsettled: stall.unsettled,
+          fullPackage: stall.fullPackage,
+          transferEnded: stall.transferEnded,
+        })
+      },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
@@ -1662,6 +1722,7 @@ if (!hasSingleInstanceLock) {
       unsignedChannel,
       ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
+      requestGuard: updateRequests !== null,
     })
     if (unsignedChannel) {
       runtimeLog.log(
@@ -1872,28 +1933,19 @@ if (!hasSingleInstanceLock) {
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
-    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
-    const proxyBypass = createProxyBypass({
-      probeUrl: () => {
-        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
-        catch { return null }
-      },
-      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
-      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
-      probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
-      accelerationActive: accelerationRunning,
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
     // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
     // 一直超时。客户端在网络层失败后来问这一句，和登没登录无关；所以兜底必须建在
     // 账号服务之前，开机恢复登录的头一个请求就用得上。
-    async function recoverAccountRequestOffProxy(failure: NewApiRetryOffProxyFailure): Promise<boolean> {
-      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt)
+    // 改直连的是这个客户端连的站点：切账号时另一个站点的登录框也在发请求，它不一定是
+    // 当前选中的那个。
+    async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
+      const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
+      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
       if (direct) {
         runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
           reason: failure.reason,
           method: failure.method,
+          scope: proxyBypass.active() ? 'app' : 'site',
         })
       }
       return direct
@@ -1911,8 +1963,8 @@ if (!hasSingleInstanceLock) {
             origin: 'https://xm.solov.cc', userId: String(persisted.userId), username: profile.username,
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
-        client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: relayFetch,
-          retryOffProxy: recoverAccountRequestOffProxy,
+        client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: accountFetch,
+          retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
             const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }

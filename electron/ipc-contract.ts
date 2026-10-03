@@ -251,7 +251,16 @@ export interface SettingsSaveIssue {
   drive?: string
 }
 export type { ExternalDeepLink } from './external-deep-links'
-export interface FeedbackReportPreview { id: string; text: string; entries: number }
+export interface FeedbackReportPreview {
+  id: string
+  text: string
+  entries: number
+  /**
+   * false = 这份报告里还没有任何检查结果，界面在报告上面提醒客户先去「检查」页查一次。
+   * 缺省 = 不知道，不提醒。
+   */
+  selfChecked?: boolean
+}
 // Present only when the previewed report had expired or been superseded and
 // the main process captured a fresh one; the renderer swaps its dialog text.
 export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
@@ -782,9 +791,10 @@ export interface XingmangInvokeContract {
   checkToolModels: IpcInvokeDefinition<'tools:check-models', [provider: ProviderId], ToolModelCheck>
   /**
    * 开机恢复账号后，给当前账号写过、但模板版本落后的工具配置补缺省项（用户写过的值不动）。
-   * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。
+   * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。工具可能正开着、这次没动的
+   * 在 pending 里，渲染层隔一阵带 retry = true 再要一次，主进程只补那几样（第二十六批 E）。
    */
-  fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [], ToolTemplateFillResult>
+  fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [retry?: boolean], ToolTemplateFillResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */

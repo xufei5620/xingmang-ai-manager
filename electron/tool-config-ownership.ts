@@ -13,6 +13,11 @@ import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File 
 /** 开机补模板缺省项的结果：真的改了文件的那几个工具。 */
 export interface ToolTemplateFillResult {
   filled: ProviderId[]
+  /**
+   * 工具可能正开着、这次没动的（Codex 的型号名单没按账号核对，也记在 codex 头上）。
+   * 缺省 = 什么都不欠；渲染层据此隔一阵再来要一次（第二十六批 E）。
+   */
+  pending?: ProviderId[]
 }
 
 export type ToolConfigOwnership = 'account' | 'manual' | 'unknown' | 'missing' | 'changed'

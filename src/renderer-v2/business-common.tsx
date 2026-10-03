@@ -89,6 +89,43 @@ export function snapshotErrorMessage(value: string | null | undefined) {
   return userFacingErrorMessage(value) || null
 }
 
+const detectionFailureCopy = {
+  permission: '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。',
+  busy: '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。',
+  missing: '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。',
+  other: '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。',
+}
+
+/**
+ * 原话是不是中文，不能直接看脱敏后的句子：路径已经换成了「本地配置文件」，Windows 的中文
+ * 用户名也在路径里，看整句的话英文报错一样会被当成中文。去掉占位词、引号里的那段和带
+ * 斜杠的路径片段（用户名带空格时脱敏只剥到空格为止），剩下的才是句子本身。路径片段遇到
+ * 中文标点就断开，「无法确认安装状态：/Applications/…」前半句的中文留得下来。判不准时宁可
+ * 当成英文：那样只是换成「原因已经记进日志」那句，不会把英文端上屏。
+ */
+function speaksChinese(safe: string) {
+  const words = safe.replaceAll('本地配置文件', ' ')
+    .replace(/'[^']*'|"[^"]*"|[^\s'"：；，。！？、（）]*[\\/][^\s'"：；，。！？、（）]*/g, ' ')
+  return /[\u3400-\u9fff]/.test(words)
+}
+
+/**
+ * 工具行「检测失败」的那句小字（第二十六批 D）。`detectionError` 是 `describeProbeFailure`
+ * 原样交过来的 `Error.message`，常是 `EPERM: operation not permitted, scandir 'C:\Users\…'`
+ * 这种英文，脱敏后连引号都只剩半个：客户看得到却看不懂。英文原话由主进程在扫描完记一条
+ * warn 进运行日志（ipc.ts 的 detection-failed），客服在反馈报告里看得到；这里只按错误码
+ * 分四类说人话。原话本来是中文的照旧显示（只脱敏）。原话为空时返回 null，调用点用 `??`
+ * 留自己的兜底句，同 `snapshotErrorMessage`。
+ */
+export function detectionFailureMessage(value: string | null | undefined) {
+  const safe = snapshotErrorMessage(value)
+  if (!safe || speaksChinese(safe)) return safe
+  if (/\b(?:EPERM|EACCES)\b|not permitted|permission denied|access\b.*\bis denied|unauthorized ?access/i.test(safe)) return detectionFailureCopy.permission
+  if (/\bEBUSY\b|resource busy|used by another process/i.test(safe)) return detectionFailureCopy.busy
+  if (/\bENOENT\b|no such file or directory|cannot find|does not exist/i.test(safe)) return detectionFailureCopy.missing
+  return detectionFailureCopy.other
+}
+
 export function errorMessage(error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
   // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；

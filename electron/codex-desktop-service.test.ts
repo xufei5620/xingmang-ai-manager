@@ -203,8 +203,38 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(describeCodexDesktopLaunchWait('preparing', 5)).toBe('正在准备打开 Codex 桌面端，已经等了 5 秒。')
     expect(describeCodexDesktopLaunchWait('waiting-window', 15)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 15 秒。Codex 第一次打开有时要一分钟。')
     expect(describeCodexDesktopLaunchWait('waiting-window', 20)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 20 秒。Codex 第一次打开有时要一分钟，可以先去开始菜单看看它有没有弹出来。')
-    for (const stage of ['preparing', 'waiting-window'] as const) {
-      expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID/i)
+    for (const stage of ['preparing', 'waiting-window', 'switching-language'] as const) {
+      expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID|调试端口|CDP/i)
+    }
+  })
+
+  it('says Codex is already open while its interface is switched to Chinese and never sends the customer to the start menu', () => {
+    expect(describeCodexDesktopLaunchWait('switching-language', 8)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 8 秒。')
+    expect(describeCodexDesktopLaunchWait('switching-language', 25)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。')
+    for (const elapsed of [5, 20, 45, 90]) {
+      const message = describeCodexDesktopLaunchWait('switching-language', elapsed)
+      expect(message).not.toContain('开始菜单')
+      expect(message).not.toContain('等 Codex 桌面端的窗口出现')
+    }
+  })
+
+  it('moves the heartbeat to the Chinese-switch sentence once the stage changes', () => {
+    vi.useFakeTimers()
+    try {
+      let clock = 0
+      const reports: Array<{ elapsedSeconds: number; message: string }> = []
+      const heartbeat = startCodexDesktopLaunchHeartbeat((progress) => reports.push(progress), { now: () => clock })
+      heartbeat.setStage('waiting-window')
+      clock = 4 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(4 * codexDesktopLaunchHeartbeatIntervalMs)
+      heartbeat.setStage('switching-language')
+      clock = 5 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports.at(-2)?.message).toBe(describeCodexDesktopLaunchWait('waiting-window', 20))
+      expect(reports.at(-1)).toEqual({ elapsedSeconds: 25, message: 'Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。' })
+      heartbeat.stop()
+    } finally {
+      vi.useRealTimers()
     }
   })
 

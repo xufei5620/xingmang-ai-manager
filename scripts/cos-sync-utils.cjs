@@ -238,7 +238,7 @@ function isRetryablePartFailure(error) {
   const details = failureDetails.get(error)
   if (!details || details.method !== 'PUT' || details.multipartOperation !== 'part') return false
   return details.code === 'response-header-timeout' || details.code === 'response-body-timeout' ||
-    (details.code === 'network-request-failed' && details.transportCode === 'ETIMEDOUT') ||
+    (details.code === 'network-request-failed' && ['ETIMEDOUT', 'ECONNRESET'].includes(details.transportCode)) ||
     (details.code === 'http-status' && details.status === 400 && details.cosErrorCode === 'RequestTimeout')
 }
 

@@ -42,11 +42,12 @@ describe('runtimeInstallGuide', () => {
     }
   })
 
-  it('says why Python is worth installing on a Mac that already ships one', () => {
+  // 第二十八批 C：四个命令行工具都不用 Python 了，Mac 上这段不再说 Gemini 要它、劝客户另装一份。
+  it('tells a Mac customer Python is only for the odd connection, and how to install it if they want', () => {
     const guide = runtimeInstallGuide('python', 'macos', 'external')
-    expect(guide?.summary).toContain('Gemini CLI')
-    expect(guide?.summary).toContain('版本可能过旧')
+    expect(guide?.summary).toBe('这台 Mac 上没有找到 Python（四个命令行工具都用不到它，外接工具里个别要用它的才需要）。星芒不会替你装它，要装的话下面两种装法选一种就行。')
     expect(guide?.command).toBe('brew install python')
+    expect(runtimeInstallGuide('node', 'macos', 'external')?.summary).toBe('这台 Mac 上没有找到 Node.js（四个命令行工具都靠它来安装和启动）。星芒不会替你装它，下面两种装法选一种就行。')
   })
 
   it('drops the Homebrew line on other external platforms rather than suggesting a wrong command', () => {

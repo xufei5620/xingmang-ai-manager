@@ -899,6 +899,7 @@ const apiMethods = {
     id: 'report-snapshot-7',
     text: '固定的脱敏报告内容',
     entries: 1,
+    selfChecked: !query.has('selfCheckMissing'),
   }),
   copyFeedbackReport: async (id?: string) => {
     record('copy-report', id)

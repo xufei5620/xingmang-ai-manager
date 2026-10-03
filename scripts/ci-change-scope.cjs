@@ -27,10 +27,19 @@ function changedFiles(event, eventName, git = execFileSync) {
   return git('git', ['diff', '--name-only', '-z', base, head, '--'], { encoding: 'utf8' }).split('\0').filter(Boolean)
 }
 
+// A push to main stands in for every merge since the last main run that got to
+// finish, but its `before` is only the commit right below this one. A burst of
+// merges cancels every run except the newest, so a documentation-only merge
+// that happened to land last would otherwise mark main green over code merges
+// whose own runs were cancelled before they checked anything.
+function requiresCodeChecksForEvent(eventName, files) {
+  return eventName === 'push' || files === null || requiresCodeChecks(files)
+}
+
 if (require.main === module) {
   const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
   const files = changedFiles(event, process.env.GITHUB_EVENT_NAME)
-  const code = files === null || requiresCodeChecks(files)
+  const code = requiresCodeChecksForEvent(process.env.GITHUB_EVENT_NAME, files)
   // Both default to true when the revision range is unknown: a check that
   // cannot tell what changed has to assume the worst, not skip itself.
   const cliVersions = files === null || touchesCliVersionList(files)
@@ -39,4 +48,4 @@ if (require.main === module) {
   console.log(cliVersions ? 'Verified-version list touched; the relay probe will run' : 'Verified-version list untouched; the relay probe will report skipped')
 }
 
-module.exports = { requiresCodeChecks, touchesCliVersionList, changedFiles }
+module.exports = { requiresCodeChecks, requiresCodeChecksForEvent, touchesCliVersionList, changedFiles }

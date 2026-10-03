@@ -892,6 +892,35 @@ describe('registerIpcHandlers', () => {
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })
 
+    it('tells the window whether the report carries any self-check result, also after regenerating it', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        let checked = false
+        const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+          diagnosticsService: {
+            run: vi.fn(),
+            checkConnection: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            exportLatest: vi.fn(),
+            hasSelfCheckResult: () => checked,
+          },
+        })
+        runtimeLog.captureFeedbackReport
+          .mockResolvedValueOnce({ text: 'before checking\n', entries: 1 })
+          .mockResolvedValueOnce({ text: 'after checking\n', entries: 2 })
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        expect(preview).toEqual({ id: expect.any(String), text: 'before checking\n', entries: 1, selfChecked: false })
+        // The customer went to the check page and came back after the preview expired.
+        checked = true
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({
+          entries: 2,
+          regenerated: { id: expect.any(String), text: 'after checking\n', entries: 2, selfChecked: true },
+        })
+      } finally { clock.mockRestore() }
+    })
+
     it('allows clipboard retry and save cancellation without changing the preview', async () => {
       const { runtimeLog } = register()
       const owner = trustedEvent()
@@ -1677,6 +1706,43 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
   })
 
+  it('logs each tool whose detection failed with its reason, home folder redacted, so the feedback report carries it', async () => {
+    const service = serviceStub()
+    const reason = "EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'"
+    const ok = { installed: true, version: '1.0.0', path: null }
+    vi.mocked(service.scanSystem).mockResolvedValueOnce({
+      checkedAt: '2026-10-03T00:00:00.000Z',
+      runtime: { node: { installed: false, version: null, path: null, detectionFailed: true, detectionError: reason }, npm: ok, python: ok, git: ok },
+      clis: { claude: { installed: false, version: null, path: null, detectionFailed: true, detectionError: reason }, codex: ok, grok: ok, gemini: ok },
+      desktopApps: { codex: { installed: false, version: null, appVersion: null, mirrorVersion: null, mirrorUpdateAvailable: null, mirrorError: null, path: null, running: false, detectionFailed: true, detectionError: null } },
+    } as never)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      providerRoots: { userHome: 'C:\\Users\\yoyo', codexHome: 'C:\\Users\\yoyo\\.codex' },
+    })
+
+    await electronMocks.handlers.get('system:scan')!(trustedEvent(), true)
+
+    const redacted = "EPERM: operation not permitted, scandir '%USERPROFILE%\\AppData\\Roaming\\npm'"
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'cli.detection-failed', `Claude Code 检测失败：${redacted}`, { provider: 'claude' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'runtime.detection-failed', `Node.js 检测失败：${redacted}`, { tool: 'node' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'desktop.detection-failed', 'Codex 桌面端 检测失败：没有给出原因', {})
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => String(call[2]).endsWith('detection-failed'))).toHaveLength(3)
+  })
+
+  it('logs an external client whose detection failed, and nothing for the ones that were read', async () => {
+    const service = serviceStub()
+    vi.mocked(service.scanExternalClients).mockResolvedValueOnce([
+      { tool: 'workbuddy', detectionError: 'Code signature check failed' },
+      { tool: 'opencode', detectionError: null },
+    ] as never)
+    const { runtimeLog } = register(service)
+
+    await expect(electronMocks.handlers.get('external-clients:scan')!(trustedEvent(), true)).resolves.toHaveLength(2)
+
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'external-client.detection-failed', 'WorkBuddy 检测失败：Code signature check failed', { tool: 'workbuddy' })
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toHaveLength(1)
+  })
+
   it('answers the first home page read with the last saved scan, only when asked and never for a forced rescan', async () => {
     const service = serviceStub()
     const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }
@@ -1834,6 +1900,30 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
 
     await expect(handler(trustedEvent())).resolves.toEqual({ filled: [] })
+  })
+
+  it('passes a later try through as a retry and keeps a plain call as the startup round', async () => {
+    const service = serviceStub()
+    const fill = vi.fn(async (_backup?: (provider: 'codex') => void, _retry?: boolean) => ({ filled: [], pending: ['codex' as const] }))
+    service.fillToolTemplateDefaults = fill
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: [], pending: ['codex'] })
+    await handler(trustedEvent(), true)
+
+    expect(fill.mock.calls.map((call) => call[1])).toEqual([false, true])
+  })
+
+  it('rejects a retry flag that is not a boolean before touching any tool config', async () => {
+    const service = serviceStub()
+    const fill = vi.fn(async (_backup?: (provider: 'codex') => void, _retry?: boolean) => ({ filled: [] }))
+    service.fillToolTemplateDefaults = fill
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('补设置参数格式错误')
+    expect(fill).not.toHaveBeenCalled()
   })
 
   it('skips the model check when the service cannot do it', async () => {

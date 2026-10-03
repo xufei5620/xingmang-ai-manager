@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { DiagnosticItem, DiagnosticsReport } from './diagnostics'
 import {
   buildFeedbackSelfCheckLines,
+  hasFeedbackSelfCheck,
   type FeedbackConnectionRecord,
 } from './feedback-self-check'
 
@@ -46,7 +47,8 @@ describe('buildFeedbackSelfCheckLines', () => {
       now,
     })
 
-    expect(lines).toEqual(['还没做过自检，可以在软件里打开「检查」页点一次「开始检查」，再导出一份报告。'])
+    // 新界面的检查页一打开就自动查；叫「开始检查」的按钮只有要花额度的 Codex 干活检查。
+    expect(lines).toEqual(['还没做过自检，可以在软件里打开「检查」页，等它查完再导出一份报告。'])
   })
 
   it('writes the check time and one line per diagnostic item', () => {
@@ -151,5 +153,31 @@ describe('buildFeedbackSelfCheckLines', () => {
 
     expect(lines.join('\n')).toContain('Codex CLI 连接自检: 未自检')
     expect(lines.join('\n')).toContain('Claude Code 连接自检: 正常')
+  })
+})
+
+describe('hasFeedbackSelfCheck', () => {
+  it('agrees with the report section on whether anything has been checked', () => {
+    const cases = [
+      { report: null, readConnection: () => null },
+      { report: report([item()]), readConnection: () => null },
+      { report: null, readConnection: (provider: string) => (provider === 'grok' ? connection() : null) },
+      { report: null, readConnection: (provider: string) => (provider === 'codex' ? connection({ ok: false, layer: 'credential' }) : null) },
+    ]
+
+    expect(cases.map((input) => hasFeedbackSelfCheck(input))).toEqual([false, true, true, true])
+    for (const input of cases) {
+      const notChecked = buildFeedbackSelfCheckLines({ ...input, now })[0].startsWith('还没做过自检')
+      expect(hasFeedbackSelfCheck(input)).toBe(!notChecked)
+    }
+  })
+
+  it('counts an unreadable connection record as not checked', () => {
+    expect(hasFeedbackSelfCheck({
+      report: null,
+      readConnection: () => {
+        throw new Error('结果表读不出来')
+      },
+    })).toBe(false)
   })
 })

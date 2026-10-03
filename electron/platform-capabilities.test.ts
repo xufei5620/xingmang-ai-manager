@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { platformCapabilitiesFor } from './platform-capabilities'
 
 describe('platformCapabilitiesFor', () => {
-  it('returns the exact managed Windows policy', () => {
+  it('returns the exact managed Windows policy, with no Python for Gemini', () => {
     expect(platformCapabilitiesFor('win32', 'x64')).toEqual({
       platform: 'windows',
       architecture: 'x64',
@@ -25,7 +25,7 @@ describe('platformCapabilitiesFor', () => {
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
-        gemini: true,
+        gemini: false,
         grok: false,
       },
       codexDesktop: {
@@ -37,7 +37,7 @@ describe('platformCapabilitiesFor', () => {
     })
   })
 
-  it('returns the exact managed macOS policy', () => {
+  it('returns the exact managed macOS policy, with no Python for Gemini', () => {
     const capabilities = platformCapabilitiesFor('darwin', 'arm64')
 
     expect(capabilities).toEqual({
@@ -62,7 +62,7 @@ describe('platformCapabilitiesFor', () => {
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
-        gemini: true,
+        gemini: false,
         grok: false,
       },
       codexDesktop: {
