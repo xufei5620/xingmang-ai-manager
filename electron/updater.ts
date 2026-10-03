@@ -719,6 +719,23 @@ function hasChannelManifestUrl(description: string, channelFile: string): boolea
   }
 }
 
+// Squirrel.Mac validates the unpacked update against the designated requirement
+// of the running app, which pins its signing certificate. A rejection is final for
+// this installation: the same package fails identically on every retry, and no
+// later release signed with the published certificate can satisfy a requirement
+// that pins another one. Only a manual reinstall gets the machine back.
+// 渲染层 features/app/update-retry.ts 按这个代码把「重新安装」换成「打开下载页」，两边字面量要一致。
+export const updateSignatureRejectedCode = 'UPDATE_SIGNATURE_REJECTED'
+
+const updateSignatureRejectedMessage = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+
+/** Squirrel.Mac 的原话是「Code signature at URL … did not pass validation: <系统给的原因>」，原因按系统语言走。 */
+export function isMacUpdateSignatureRejection(source: string): boolean {
+  return /did not pass validation/i.test(source)
+    || /failed to satisfy specified code requirement/i.test(source)
+    || source.includes('代码未能满足指定的代码要求')
+}
+
 function safeError(error: unknown, platform: NodeJS.Platform): { code: string; message: string; detail?: string } {
   const candidate = error as {
     code?: unknown
@@ -739,6 +756,11 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
   const redacted = redactSecretShapes(redactSecretQueryParameters(
     source.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@'),
   )).slice(0, 500)
+  // 原话里夹着系统给的中文原因，交给 describeUnrecognizedUpdateFailure 会被当成「本来就是
+  // 中文」整句上屏，客户看到半句英文和一个被打码成「本地配置文件」的路径。
+  if (platform === 'darwin' && isMacUpdateSignatureRejection(source)) {
+    return { code: updateSignatureRejectedCode, message: updateSignatureRejectedMessage, detail: redacted }
+  }
   const missingChannelManifest = code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
     || (
       isNotFound

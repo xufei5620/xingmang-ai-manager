@@ -2293,6 +2293,41 @@ test('the update failure bubble retries the failed step without a detour', async
   } finally { await page.close() }
 })
 
+// Mac 校验新版本签名没通过时，同一个包装多少遍都一样：更新页和首页气泡都不再给
+//「重新安装」，改给「打开下载页」，让客户手动装一次。
+test('a Mac signature rejection offers the download page instead of reinstalling', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const reason = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    await page.evaluate((message) => window.v2Test.emit('onUpdateState', {
+      phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'install',
+      error: { code: 'UPDATE_SIGNATURE_REJECTED', message }, development: true,
+    }), reason)
+    const notice = updates.getByTestId('updates-failure-install')
+    await notice.getByText('安装更新失败', { exact: true }).waitFor()
+    await notice.getByText(reason, { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
+    assert.equal(await notice.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
+    const bubble = page.getByRole('alert').filter({ hasText: '安装更新失败' })
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+    assert.equal(await bubble.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
+
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    const downloadPage = 'https://docs-new.solov.cc/guide/manager#download-installers'
+    await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage])
+    await bubble.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage, downloadPage])
+    assert.equal(await page.getByRole('dialog', { name: '重启并安装更新？' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
 test('the updates page explains a full disk and still lets the user download', async () => {
