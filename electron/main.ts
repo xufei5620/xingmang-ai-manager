@@ -18,7 +18,7 @@ import {
   shell,
   type WebContents,
 } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import { autoUpdater, CancellationToken } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
@@ -1600,6 +1600,16 @@ if (!hasSingleInstanceLock) {
         runtimeLog.log('warn', 'updater', 'download.skipped.disk', `磁盘空间不够，先不下载 ${version ?? '新版本'}`, {
           neededBytes: shortfall.neededBytes,
           freeBytes: shortfall.freeBytes,
+        })
+      },
+      // 下载停住时看门狗靠它取消。得是 electron-updater 自己导出的这个类：它认「已取消」
+      // 靠 instanceof，别处来的令牌取消后会被当成下载出错。
+      createDownloadCancellation: () => new CancellationToken(),
+      downloadStalled: (stall) => {
+        runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
+          transferred: stall.transferred,
+          total: stall.total,
+          unsettled: stall.unsettled,
         })
       },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
