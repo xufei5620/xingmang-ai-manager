@@ -88,6 +88,11 @@ export interface InstallPythonRuntimeOptions {
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
   dependencies?: Partial<PythonRuntimeInstallerDependencies>
+  /**
+   * 退到 python.org 下安装包时才借下载专用线路。winget 自己下载、不走这条线路，
+   * 一开始就借只会让客户干等加速内核起来（第二十八批 D）。缺省 = 不借。
+   */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 const releaseIndexUrl = 'https://www.python.org/api/v2/downloads/release/?version=3&is_published=true'
@@ -647,8 +652,14 @@ export async function installPythonRuntime(
       message: '正在查询 Python 3.12 最新稳定安装包',
       percent: null,
     })
-    const asset = await resolveLatestInstaller(architecture, dependencies, options.signal)
-    const download = await downloadInstaller(asset, temporaryDirectory, options, dependencies)
+    // 线路只在真正联网的这两步握着：后面核签名、静默安装都在本机，早点还回去，加速内核早点停。
+    const fetchInstaller = async () => {
+      const asset = await resolveLatestInstaller(architecture, dependencies, options.signal)
+      return { asset, download: await downloadInstaller(asset, temporaryDirectory, options, dependencies) }
+    }
+    const { asset, download } = await (options.withDownloadRoute
+      ? options.withDownloadRoute(fetchInstaller)
+      : fetchInstaller())
     report(options, {
       phase: 'verifying',
       source: 'python-org',

@@ -664,3 +664,85 @@ describe('Node.js package download after a dropped connection', () => {
     }
   })
 })
+
+// winget 自己下载、不走下载专用线路：Windows 上只在退到下安装包时才借线路，借到以后再定先走哪个源（第二十八批 D）。
+describe('Node.js installer and the download route on Windows', () => {
+  it.runIf(process.platform === 'win32')('neither borrows the route nor settles the source order when winget installs Node.js', async () => {
+    let routeCalls = 0
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeCalls += 1
+      return operation()
+    }
+    const networkRegion = vi.fn(async () => 'mainland-china' as const)
+
+    await expect(installNodeRuntime({
+      networkRegion,
+      withDownloadRoute,
+      dependencies: {
+        resolveWingetExecutable: async () => ({
+          executable: 'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+          reason: null,
+        }),
+        runProcess: vi.fn(successfulCommand),
+        inspectInstalledNodeRuntime: async () => ({
+          executable: 'D:\\Program Files\\nodejs\\node.exe',
+          version: 'v22.17.0',
+          signature: {
+            status: 'Valid',
+            subject: 'CN=OpenJS Foundation, O=OpenJS Foundation, C=US',
+          },
+        }),
+        fetch: vi.fn() as unknown as typeof fetch,
+        createTemporaryDirectory: async () => 'unused',
+        removeTemporaryDirectory: async () => undefined,
+      },
+    })).resolves.toMatchObject({ method: 'winget' })
+
+    expect(routeCalls).toBe(0)
+    expect(networkRegion).not.toHaveBeenCalled()
+  })
+
+  it('borrows the route once winget is out and settles the source order inside it', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    let routeHeld = false
+    let routeCalls = 0
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeCalls += 1
+      routeHeld = true
+      try {
+        return await operation()
+      } finally {
+        routeHeld = false
+      }
+    }
+    const events: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      events.push(`${routeHeld ? 'route' : 'direct'} ${String(input)}`)
+      throw new Error('offline')
+    }) as unknown as typeof fetch
+
+    await expect(installNodeRuntime({
+      networkRegion: async () => {
+        events.push(`${routeHeld ? 'route' : 'direct'} region`)
+        return 'outside-mainland-china'
+      },
+      temporaryDirectoryMode: 'same-user',
+      withDownloadRoute,
+      dependencies: {
+        resolveWingetExecutable: async () => {
+          events.push(`${routeHeld ? 'route' : 'direct'} winget`)
+          return { executable: null, reason: 'Microsoft App Installer 包身份或安装目录校验失败' }
+        },
+        fetch: fetchMock,
+      },
+    })).rejects.toThrow('Node.js LTS 自动安装失败')
+
+    expect(routeCalls).toBe(1)
+    expect(events.slice(0, 3)).toEqual([
+      'direct winget',
+      'route region',
+      'route https://nodejs.org/dist/index.json',
+    ])
+    expect(events.slice(2).every((event) => event.startsWith('route https://'))).toBe(true)
+  })
+})
