@@ -14,6 +14,23 @@ describe('rawErrorMessage', () => {
       .toBe('读取失败')
   })
 
+  it('strips a class name that does not end in Error', () => {
+    // 主进程的 CodexDesktopInstallFailure 以前带着这串英文进了 Windows 的错误框。
+    const reason = 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。'
+    expect(rawErrorMessage(new Error(`Error invoking remote method 'desktop:install-codex': CodexDesktopInstallFailure: ${reason}`)))
+      .toBe(reason)
+    expect(rawErrorMessage(new Error("Error invoking remote method 'a:one': Error: Error invoking remote method 'b:two': StreamFailure: 真正的原因")))
+      .toBe('真正的原因')
+  })
+
+  it('strips only the bare class name Electron adds, keeping the error codes the classifier reads', () => {
+    // 错误分类靠 ENOENT、ERR_* 这些原词认出是哪一类，剥多了就认不出来。
+    expect(rawErrorMessage(new Error("Error invoking remote method 'cli:install': Error: ENOENT: no such file or directory")))
+      .toBe('ENOENT: no such file or directory')
+    expect(rawErrorMessage(new Error("Error invoking remote method 'cli:install': TypeError [ERR_INVALID_URL]: Invalid URL")))
+      .toBe('TypeError [ERR_INVALID_URL]: Invalid URL')
+  })
+
   it('keeps a business message that happens to start with an error class name', () => {
     // The class tag is only an Electron artifact when it follows the channel
     // name. Stripping it unconditionally would cut into ordinary copy.

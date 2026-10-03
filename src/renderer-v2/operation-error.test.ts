@@ -277,6 +277,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
   })
 
+  it('puts a failed Codex desktop install on screen without its class name, which does not end in Error', () => {
+    const message = buildCodexDesktopInstallFailureMessage('unreachable', { storeTried: true, updating: false })
+    const rejected = new Error(`Error invoking remote method 'desktop:install-codex': CodexDesktopInstallFailure: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装 Codex 桌面端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('codexDesktopInstallFailed')
+  })
+
   it('offers neither a retry nor the install guide when the Mac is too old for the app', () => {
     const hint = presentOperationError(macosDesktopSystemTooOldMessage('OpenCode', '13.0'))
     expect(hint?.key).toBe('macDesktopTooOld')
