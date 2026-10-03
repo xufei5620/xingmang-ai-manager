@@ -46,7 +46,9 @@ function fixture() {
       return clone([...value.heads.values()].find(head => head.url === input.url))
     },
     async downloadResource(input) {
-      value.downloads.push(clone(input))
+      const { onProgress, ...request } = input
+      assert.equal(typeof onProgress, 'function')
+      value.downloads.push(clone(request))
       assert.deepEqual(input.allowedHosts, OFFICIAL_HOSTS)
       const head = [...value.heads.values()].find(head => head.url === input.url)
       assert.ok(head)
@@ -61,7 +63,8 @@ function fixture() {
       if (value.badInspection) return { signatureStatus: 'Invalid' }
       if (input.source.platform === 'windows') return windowsReport(input.source.architecture, value.windowsVersion || '1.1.42.0')
       if (input.source.platform === 'linux') return { package: 'claude-desktop', architecture: input.source.packageArchitecture, version: value.linuxVersion || '1.1.42' }
-      return { version: '1.1.42', signerOrganization: 'Anthropic, PBC', signatureStatus: 'Valid', bundleIdentifier: 'com.anthropic.claudefordesktop', architectures: ['arm64', 'x86_64'], architectureProof: 'official-universal-endpoint' }
+      return { version: '1.1.42', signerOrganization: 'Anthropic PBC', signatureStatus: 'Valid', bundleIdentifier: 'com.anthropic.claudefordesktop',
+        teamIdentifier: 'Q6L2SF6YDW', architectures: ['arm64', 'x86_64'], architectureProof: 'native-payload-mach-o', installerTeamIdentifier: 'Q6L2SF6YDW', installerSignatureStatus: 'Valid' }
     },
     async createWorkDirectory() { return path.join(os.tmpdir(), 'mock-claude-sync') },
     async removeWorkDirectory(directory) { value.removed.push(directory) },
@@ -344,7 +347,8 @@ test('detects a pointer change during candidate verification without overwriting
   await value.run('windows')
   const old = clone(value.latest)
   const concurrent = { ...clone(old), generatedAt: 'changed-by-other-job' }
-  value.readOverride = count => count === 3 ? old : concurrent
+  const initialRead = value.reads + 1
+  value.readOverride = count => count === initialRead ? old : concurrent
   await assert.rejects(value.run('macos'), /同步期间变化/)
   assert.equal(value.pointers.length, 1)
 })
@@ -413,7 +417,7 @@ async function macFixture(options = {}) {
       return { stdout: JSON.stringify({ images: value.mounted ? [{ 'system-entities': [{ 'mount-point': path.join(directory, 'claude-dmg-readonly') }] }] : [] }), stderr: '' }
     }
     if (executable === '/usr/bin/codesign') {
-      if (args[0] === '--display') return { stdout: '', stderr: 'Identifier=forged\nAuthority=Developer ID Application: Anthropic, PBC (TEAM000001)\nTeamIdentifier=TEAM000001\n' }
+      if (args[0] === '--display') return { stdout: '', stderr: 'Identifier=forged\nAuthority=Developer ID Application: Anthropic PBC (Q6L2SF6YDW)\nTeamIdentifier=Q6L2SF6YDW\n' }
       const requirement = args.find(arg => arg.startsWith('-R='))
       assert.ok(requirement, 'trust must be decided by an explicit requirement')
       for (const clause of ['anchor apple generic', '1.2.840.113635.100.6.2.6', '1.2.840.113635.100.6.1.13', 'subject.CN', 'subject.O', 'subject.OU', 'identifier "com.anthropic.claudefordesktop"']) assert.ok(requirement.includes(clause))
@@ -483,7 +487,8 @@ test('forged Authority prose or ad-hoc code cannot bypass the Apple certificate 
     assert.equal(value.mounted, false)
     assert.equal(value.calls.some(call => call.executable === '/usr/bin/lipo'), false)
     assert.throws(() => darwinClaudeRequirement('TEAM000001" or true'), /候选无效/)
-    const requirement = darwinClaudeRequirement('TEAM000001')
-    assert.ok(requirement.includes('certificate leaf[subject.CN] = "Developer ID Application: Anthropic, PBC (TEAM000001)"'))
+    assert.throws(() => darwinClaudeRequirement('TEAM000001'), /候选无效/)
+    const requirement = darwinClaudeRequirement('Q6L2SF6YDW')
+    assert.ok(requirement.includes('certificate leaf[subject.CN] = "Developer ID Application: Anthropic PBC (Q6L2SF6YDW)"'))
   } finally { await value.cleanup() }
 })
