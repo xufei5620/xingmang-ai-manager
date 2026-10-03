@@ -7,13 +7,14 @@ const { test } = require('node:test')
 const recoveryPath = path.resolve(__dirname, 'windows-acceleration-recovery.ps1')
 const productProxyPath = path.resolve(__dirname, '..', 'electron', 'platform', 'windows-system-proxy.ts')
 
-function winInetHelper(file) {
+function proxyStateFunctions(file) {
   // The .ps1 is checked out with CRLF (.gitattributes) and the .ts with the platform default.
   const source = fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n')
   const start = source.indexOf('function Initialize-WinInet {')
-  const end = source.indexOf('\nfunction Read-State {', start)
-  assert.ok(start >= 0 && end > start, 'WinInet helper not found')
-  return source.slice(start, end)
+  const last = source.indexOf('\nfunction Same-State(', start)
+  const end = source.indexOf('\n}\n', last)
+  assert.ok(start >= 0 && last > start && end > last, 'WinInet and state functions not found')
+  return source.slice(start, end + 2)
 }
 
 test('customer recovery source is UTF-8 without BOM and remains readable in Windows PowerShell 5.1', () => {
@@ -23,12 +24,15 @@ test('customer recovery source is UTF-8 without BOM and remains readable in Wind
 })
 
 // The logic test below stubs every native read and write, so no test here touches the real
-// system proxy. The helper is driven against it by windows-uninstall-smoke.yml, which
+// system proxy. These functions are driven against it by windows-uninstall-smoke.yml, which
 // dot-sources this script and runs on every change to it or to windows-system-proxy.ts; the
 // app ships the same text, and this keeps the two in step.
-test('customer recovery carries the same WinInet helper the app itself runs', () => {
-  const recovery = winInetHelper(recoveryPath)
-  assert.equal(recovery, winInetHelper(productProxyPath))
+test('customer recovery reads and writes the proxy with the same functions the app itself runs', () => {
+  const recovery = proxyStateFunctions(recoveryPath)
+  assert.equal(recovery, proxyStateFunctions(productProxyPath))
+  for (const name of ['Initialize-WinInet', 'Read-WinInet', 'Write-WinInet', 'Update-WinInet', 'Read-State', 'Write-State', 'Same-State']) {
+    assert.match(recovery, new RegExp(`^function ${name}\\b`, 'm'))
+  }
   assert.match(recovery, /'InternetQueryOptionW'/)
   assert.match(recovery, /'InternetSetOptionW'/)
 })

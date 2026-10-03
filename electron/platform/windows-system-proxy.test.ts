@@ -286,8 +286,12 @@ describe('Windows system proxy lease', () => {
     expect(code).not.toMatch(/Add-Type|DllImport/)
     expect(code).toContain('$type.DefinePInvokeMethod($call[0],[IO.Path]::Combine([Environment]::SystemDirectory,$call[1]),$call[2],')
     expect(literals).toEqual(expect.arrayContaining(['wininet.dll', 'InternetQueryOptionW', 'InternetSetOptionW', 'kernel32.dll', 'GlobalFree']))
-    // The owner lookup reads only the process start time, so it never declares WinInet.
+    // The owner lookup reads only the process start time, so it never declares WinInet: the
+    // two calls are the first read or write, never a top-level one every operation pays for.
     expect(/'owner' \{([^\n]*)\}/.exec(windowsSystemProxyScript)?.[1]).not.toMatch(/State|WinInet/)
+    expect(code.match(/^\s*Initialize-WinInet$/gm)).toHaveLength(2)
+    expect(code).toMatch(/function New-WinInetList\(\[int\]\$extra\) \{\n\s*Initialize-WinInet\n/)
+    expect(code).toMatch(/function Update-WinInet \{\n\s*Initialize-WinInet\n/)
   })
 
   it('lets a caller on a cold PowerShell raise the per-command limit without changing the default', async () => {

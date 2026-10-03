@@ -85,8 +85,9 @@ export const windowsSystemProxyCommandTimeoutMs = 15_000
 // one block, which keeps them aligned on x86, x64 and ARM64 alike. Only the
 // operations that read or write the proxy declare it; the owner lookup does not.
 //
-// scripts/windows-acceleration-recovery.ps1 carries this helper verbatim, from
-// Initialize-WinInet up to Read-State (windows-acceleration-recovery.test.cjs).
+// scripts/windows-acceleration-recovery.ps1 carries this helper and the three
+// state functions after it verbatim, from Initialize-WinInet through Same-State
+// (windows-acceleration-recovery.test.cjs).
 export const windowsSystemProxyScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
