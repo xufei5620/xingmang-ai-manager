@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { BusinessPage } from '../src/renderer-v2/pages-business'
 import { Shell } from '../src/renderer-v2/features/shell/Shell'
-import { BalanceTierProvider } from '../src/renderer-v2/ui'
+import { BalanceTierProvider, ToastProvider } from '../src/renderer-v2/ui'
 import type { V2Bridge, V2Page } from '../src/renderer-v2/types'
 import type {
   PlatformSystemState,
@@ -844,6 +844,12 @@ const apiMethods = {
       ...(patch.reducedMotion !== undefined
         ? { reducedMotion: patch.reducedMotion }
         : {}),
+      ...(patch.checkUpdatesOnStartup !== undefined
+        ? { checkUpdatesOnStartup: patch.checkUpdatesOnStartup }
+        : {}),
+      ...(patch.autoUpdate !== undefined
+        ? { autoUpdate: patch.autoUpdate }
+        : {}),
       // 只有显式关闭才留在记录里，和 app-settings.ts 的落盘语义一致。
       ...(patch.crashReporting === false
         ? { crashReporting: false as const }
@@ -923,6 +929,7 @@ const apiMethods = {
     progress: null,
     error: null,
     development: true,
+    ...(query.has('autoUpdate') ? { autoUpdateSupported: true } : {}),
   }),
   downloadUpdate: async () => {
     record('download-update')
@@ -997,8 +1004,16 @@ if (query.has('system')) {
   const guard = () => {
     if (fail === 'platform') throw new Error('平台设置写入失败')
   }
+  // fail=platform-read：第一次读系统状态失败，点「重新读取」再读就好了。
+  let platformReadFailures = fail === 'platform-read' ? 1 : 0
   const platform: XingmangPlatformApi = {
-    getState: async () => systemState,
+    getState: async () => {
+      if (platformReadFailures > 0) {
+        platformReadFailures -= 1
+        throw new Error('系统状态暂时读不到')
+      }
+      return systemState
+    },
     setThemePreference: async (themePreference) => {
       guard()
       record('platform-theme', themePreference)
@@ -1102,6 +1117,8 @@ const renderFixture = (paymentReturn?: {
   order: string | null
 }) =>
   root.render(
+    // 设置页存好了只弹小提示（不再挂在页顶），夹具要有地方弹出来，测试才看得到。
+    <ToastProvider>
     <Shell
       activePage={page}
       platform={query.get('os') === 'mac' ? 'mac' : 'win'}
@@ -1127,14 +1144,16 @@ const renderFixture = (paymentReturn?: {
           }
           accountRechargeAmount={query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined}
           paymentReturn={paymentReturn}
-          navigate={(next) => record('navigate', next)}
+          navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
+          switchAccount={() => record('open-account-switcher')}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}
         />
       </BalanceTierProvider>
-    </Shell>,
+    </Shell>
+    </ToastProvider>,
   )
 let paymentSequence = 0
 window.addEventListener('test-payment-return', () =>

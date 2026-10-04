@@ -1,4 +1,4 @@
-import { accountTabs, settingsGroups } from '../../registry/business'
+import { accountTabs, settingsGroups, settingsItems, type SettingsItem } from '../../registry/business'
 import { pageRegistry, pageSearchKeywords, type PageId } from '../../registry/pages'
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
 import { searchWords, tutorialSearchText } from '../tutorial/tutorial-search'
@@ -10,7 +10,7 @@ export interface CommandResult {
   group: CommandGroup
   label: string
   page: PageId
-  /** 那一页里要落的分页、分组或教程主题；缺省 = 只跳页。 */
+  /** 那一页里要落的分页、分组、设置里的某一行或教程主题；缺省 = 只跳页。 */
   section?: string
 }
 
@@ -19,6 +19,8 @@ export interface CommandSearchOptions {
   accountTabVisible?(tab: string): boolean
   /** 这台电脑上没有的页面（Linux 没有游戏加速）不出现在结果里；缺省 = 全部显示。 */
   pageVisible?(page: PageId): boolean
+  /** 这台电脑上没有的设置项（Windows 上的「卸载星芒」、不支持自动更新时的「自动更新」）不出现在结果里；缺省 = 全部显示。 */
+  settingsItemVisible?(item: SettingsItem): boolean
 }
 
 /** 结果按这个次序分组显示，回车打开的是排在最前面的那一项。 */
@@ -68,8 +70,15 @@ function accountEntries(options: CommandSearchOptions): Entry[] {
     .map(tab => ({ result: { key: `account:${tab.value}`, group: 'account', label: tab.label, page: 'account', section: tab.value }, label: tab.label, keywords: tab.keywords }))
 }
 
-function settingsEntries(): Entry[] {
-  return settingsGroups.map(group => ({ result: { key: `settings:${group.value}`, group: 'settings', label: group.label, page: 'settings', section: group.value }, label: group.label, keywords: group.keywords }))
+// 设置里每一行单独一条，写成「更新与关于 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，
+// 组名不算，免得搜「更新」把这一组十来行全拉出来。组本身也还是一条，排在它的行前面。
+function settingsEntries(options: CommandSearchOptions): Entry[] {
+  const groups: Entry[] = settingsGroups.map(group => ({ result: { key: `settings:${group.value}`, group: 'settings', label: group.label, page: 'settings', section: group.value }, label: group.label, keywords: group.keywords }))
+  const items: Entry[] = settingsItems.filter(item => options.settingsItemVisible?.(item) ?? true).map(item => {
+    const groupLabel = settingsGroups.find(group => group.value === item.group)?.label ?? ''
+    return { result: { key: `settings-item:${item.id}`, group: 'settings', label: `${groupLabel} › ${item.label}`, page: 'settings', section: item.id }, label: item.label, keywords: item.keywords }
+  })
+  return [...groups, ...items]
 }
 
 function tutorialEntries(topics: readonly TutorialTopic[]): Entry[] {
@@ -77,13 +86,13 @@ function tutorialEntries(topics: readonly TutorialTopic[]): Entry[] {
 }
 
 /**
- * 顶部搜索的结果：页面、个人中心分页、设置分组、教程主题四组，组内按命中程度排。
+ * 顶部搜索的结果：页面、个人中心分页、设置（分组和每一行）、教程主题四组，组内按命中程度排。
  * 什么都没输入时只列页面，和原来一样。
  */
 export function searchCommands(query: string, options: CommandSearchOptions = {}, topics: readonly TutorialTopic[] = tutorialTopics): CommandResult[] {
   const words = searchWords(query)
   if (!words.length) return pageEntries(options).map(entry => entry.result)
-  const entries = [...pageEntries(options), ...accountEntries(options), ...settingsEntries(), ...tutorialEntries(topics)]
+  const entries = [...pageEntries(options), ...accountEntries(options), ...settingsEntries(options), ...tutorialEntries(topics)]
   const hits = entries.flatMap((entry, index) => {
     const rank = score(entry, words)
     return rank === null ? [] : [{ entry, rank, index }]

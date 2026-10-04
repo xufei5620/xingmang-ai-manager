@@ -3,8 +3,11 @@ import { X } from 'lucide-react';
 import { Button } from './core';
 import { focusable, useUiText, type BaseProps, type Icon } from './shared';
 
-export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; icon?: Icon; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean };
-function Modal({ open, title, subtitle, icon: Icon, onClose, footer, dirty, initialFocus, children, testId, busy, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
+// headless: no visible title row or close button; the title stays as the accessible name and the box
+// pins near the top so a growing result list never moves it (the command palette). Esc and the
+// backdrop still close it.
+export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; icon?: Icon; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean; headless?: boolean };
+function Modal({ open, title, subtitle, icon: Icon, onClose, footer, dirty, initialFocus, children, testId, busy, headless, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
   const ref = useRef<HTMLDialogElement>(null); const returnFocus = useRef<HTMLElement | null>(null); const content = useRef<HTMLDivElement>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false); const titleId = useId(); const subtitleId = useId(); const t = useUiText();
   const current = useRef({ onClose, dirty, busy }); current.current = { onClose, dirty, busy };
@@ -20,7 +23,7 @@ function Modal({ open, title, subtitle, icon: Icon, onClose, footer, dirty, init
   useLayoutEffect(() => { if (confirmDiscard) ref.current?.querySelector<HTMLButtonElement>('[data-keep-editing]')?.focus(); }, [confirmDiscard]);
   if (!open) return null;
   const cancelDiscard = () => { setConfirmDiscard(false); requestAnimationFrame(() => (initialFocus?.current ?? (content.current && focusable(content.current)[0]) ?? ref.current)?.focus()); };
-  return <dialog ref={ref} className={'xm-modal xm-' + kind + ' xm-dialog-' + width} data-testid={testId} tabIndex={-1} aria-modal="true" aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined} onCancel={event => { event.preventDefault(); if (confirmDiscard) cancelDiscard(); else requestClose(); }} onClick={event => {
+  return <dialog ref={ref} className={'xm-modal xm-' + kind + ' xm-dialog-' + width + (headless ? ' xm-dialog-headless' : '')} data-testid={testId} tabIndex={-1} aria-modal="true" aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined} onCancel={event => { event.preventDefault(); if (confirmDiscard) cancelDiscard(); else requestClose(); }} onClick={event => {
     if (event.target !== event.currentTarget || dirty || busy || confirmDiscard) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) requestClose();
@@ -32,7 +35,7 @@ function Modal({ open, title, subtitle, icon: Icon, onClose, footer, dirty, init
     else if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }}>
-    <header>{Icon && <Icon size={20} aria-hidden="true" />}<div><h2 id={titleId}>{title}</h2>{subtitle && <small id={subtitleId}>{subtitle}</small>}</div><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy}><X size={18} aria-hidden="true" /></button></header>
+    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header>{Icon && <Icon size={20} aria-hidden="true" />}<div><h2 id={titleId}>{title}</h2>{subtitle && <small id={subtitleId}>{subtitle}</small>}</div><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy}><X size={18} aria-hidden="true" /></button></header>}
     <div ref={content} className="xm-modal-content" hidden={confirmDiscard}><div className="xm-dialog-body">{children}</div>{footer && <footer>{footer}</footer>}</div>
     {confirmDiscard && <div className="xm-discard" role="alert"><h3>{t('discardTitle')}</h3><p>{t('discardBody')}</p><div><Button data-keep-editing="true" onClick={cancelDiscard}>{t('keepEditing')}</Button><Button variant="danger" onClick={() => { setConfirmDiscard(false); onClose(); }}>{t('discard')}</Button></div></div>}
   </dialog>;
