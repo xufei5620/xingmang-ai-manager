@@ -35,7 +35,8 @@ button, input, select, textarea { font: inherit; }
 /* 账号卡两行（二-3）：头像小一号，恢复登录时换成空白头像，不把「正在恢复登录」的第一个字当名字。 */
 .v2-account-entry .v2-local-avatar-36, .v2-account-placeholder { width: 28px; height: 28px; border-radius: 9px; font-size: var(--font-body); }
 .v2-account-placeholder { display: inline-grid; place-items: center; flex: none; border: 1px solid var(--line); background: var(--panel-2); color: var(--text-3); }
-.v2-account-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 名字长、放不下「历史账号」标签时，标签折到名字下面，不把名字挤成几个字加省略号。 */
+.v2-account-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
 .v2-account-who .v2-account-tag { flex: none; overflow: visible; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--text-2); font-size: var(--font-micro-compact); line-height: 16px; }
 .v2-account-top > button:first-child { flex: 1; border: 0; background: transparent; padding: 0; color: var(--text); text-align: left; cursor: pointer; }
 .v2-account-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: var(--xm-navy); color: var(--xm-gold); border: 1px solid var(--line-2); flex: none; }

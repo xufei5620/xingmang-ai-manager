@@ -352,8 +352,6 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         else if (event.key === 'ArrowUp') { event.preventDefault(); setSelection((current) => resultCount ? (current + resultCount - 1) % resultCount : 0) }
         else if (event.key === 'Enter' && bonusAction) { event.preventDefault(); void redeemBonus() }
         else if (event.key === 'Enter' && results[selection]) { event.preventDefault(); openResult(results[selection]) }
-        // 搜索框里有字时，浏览器的 Esc 先清空文字、不关框；底下写着「Esc 关闭」，按一下就关。
-        else if (event.key === 'Escape') { event.preventDefault(); closeCommand() }
       }} /></div>
       <div ref={resultsRef} className="v2-command-results" role="listbox" aria-label="页面与操作">{bonusAction
         ? <button role="option" aria-selected={selection === 0} aria-busy={bonusBusy} disabled={bonusBusy} type="button" data-testid="command-acceleration-bonus" onClick={() => { void redeemBonus() }}>

@@ -173,6 +173,9 @@ test('the command palette has no title bar, stays put while the results change a
     await search.fill('qqqq')
     await page.getByText('没找到相关的页面或设置。').waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'fewer results do not move the box either')
+    // 搜索框里有字时第一下 Esc 先清空（浏览器自带的），第二下关框，和原来一样。
+    await page.keyboard.press('Escape')
+    assert.equal(await search.inputValue(), '')
     await page.keyboard.press('Escape')
     await page.getByTestId('command-palette').waitFor({ state: 'detached' })
     await clean(page)
