@@ -1,8 +1,9 @@
 import path from 'node:path'
-import { providerIds } from './catalog'
+import { providerIds, type ProviderId } from './catalog'
 import { redactCommandText } from './command-runner'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
-import type { SystemSnapshot } from './system-service'
+import type { CliStatus, DesktopAppStatus, NetworkLocationStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
+import type { CliUninstallCapability } from './tool-installation'
 
 /**
  * 上一次首页扫描的结果留在本机，下次启动先拿它把首页画出来，后台照常重扫。低配
@@ -10,7 +11,9 @@ import type { SystemSnapshot } from './system-service'
  *
  * 这份文件只用来「先画个样子」：界面拿到它时仍当作正在检测（不报「配置被改过」，
  * 只放开「打开」「接着聊」：点下去配置现读、工具由这边现找，用不上这份文件），真的
- * 扫描结果一回来就整份替换。主进程里任何要回答「装没装」的地方（Key 同步、开机检查、
+ * 扫描结果一回来就整份替换。工具行上的「更新」「更新到推荐版本」和菜单里的「退回」本来
+ * 就不等检测，点下去会把这份文件里的版本号交给主进程，所以别的版本写的文件不带这类判断
+ * （见 withoutVersionVerdicts）。主进程里任何要回答「装没装」的地方（Key 同步、开机检查、
  * 安装前检查、打开前那一下）都不读它。
  */
 export const SYSTEM_SNAPSHOT_CACHE_VERSION = 1
@@ -19,14 +22,17 @@ export type SystemSnapshotCacheWarningCode = 'snapshot-cache-read-failed' | 'sna
 
 export interface SystemSnapshotCacheOptions {
   filePath: string
-  /** 换了版本的软件不认旧文件：快照结构可能变了，重扫一次很便宜。 */
+  /**
+   * 落盘时记下是哪一版软件写的。别的版本写的文件照样认（更新完第一次打开最想看到
+   * 自己的工具），只是不带那一版的版本判断，见 withoutVersionVerdicts。
+   */
   appVersion: string
   onWarning?: (code: SystemSnapshotCacheWarningCode, message: string) => void
   now?: () => Date
 }
 
 export interface SystemSnapshotCache {
-  /** 读一次就记住；文件不存在、坏了、版本对不上都是 null。永不 reject。 */
+  /** 读一次就记住；文件不存在、坏了、格式版本对不上都是 null。永不 reject。 */
   load(): Promise<SystemSnapshot | null>
   /** 按顺序落盘，后一次覆盖前一次；失败只报警告。永不 reject。 */
   save(snapshot: SystemSnapshot): Promise<void>
@@ -85,7 +91,8 @@ function isNetworkStatus(value: unknown): boolean {
 
 /**
  * 界面拿到快照后会直接读 runtime / clis / desktopApps / network 下面的这些字段，
- * 缺一个就是白屏。其余可选字段保持原样，由同一版本的软件写入，结构一致。
+ * 缺一个就是白屏。其余可选字段保持原样：界面本来就当它们可能没有。别的版本写的
+ * 文件也只过这一道，所以结构一变就要把格式版本号加一，见下面的 SnapshotShapePins。
  */
 export function isCachedSystemSnapshot(value: unknown): value is SystemSnapshot {
   if (!isRecord(value) || typeof value.checkedAt !== 'string') return false
@@ -97,6 +104,80 @@ export function isCachedSystemSnapshot(value: unknown): value is SystemSnapshot 
     && providerIds.every((id) => isCliStatus(clis[id]))
     && isDesktopStatus(desktopApps.codex)
     && isNetworkStatus(value.network)
+}
+
+/** T 里不带 `?` 的那些字段，连同它们的类型。 */
+export type RequiredFields<T> = { [K in keyof T as {} extends Pick<T, K> ? never : K]: T[K] }
+
+/** T 里带 `?` 的那些字段名。 */
+export type OptionalKeys<T> = Exclude<keyof T, keyof RequiredFields<T>>
+
+/** 两边互相赋得过去才算同一个形状：多一个、少一个、换了类型都不行。 */
+export type SameShape<Actual, Pinned> = [Actual] extends [Pinned] ? [Pinned] extends [Actual] ? true : false : false
+
+/** 给的不是 true 就过不了类型检查。 */
+export type Pin<Matches extends true> = Matches
+
+/**
+ * 别的版本写的文件也认，前提是快照结构没变：0.2.10 起每一版都只增减过可选字段。
+ * 下面几个 Pinned 开头的接口把快照每一层的必填字段连同类型照抄了一份，有人加、删、
+ * 改了其中一个（必填改可选、可选改必填也算），这里就过不了类型检查。改那份清单的
+ * 同时把 SYSTEM_SNAPSHOT_CACHE_VERSION 加一，不然新版本会把上一版写的、缺了新字段的
+ * 文件当成完整的结果交给首页。字段没变、意思变了（同一个布尔值换了判定方法）也要
+ * 加一。可选字段的增减不用为这个加一，界面本来就当它可能没有（每家 CLI 的可选字段
+ * 另有一道分类，见 CliOptionalFields）。versionAdvice、revertVersion 不在清单里：
+ * 别的版本写的文件里，这两项整个不要（见 withoutVersionVerdicts）。
+ */
+type SnapshotShapePins = [
+  Pin<SameShape<RequiredFields<SystemSnapshot>, PinnedSystemSnapshot>>,
+  Pin<SameShape<RequiredFields<ToolStatus>, PinnedToolStatus>>,
+  Pin<SameShape<RequiredFields<CliStatus>, PinnedCliStatus>>,
+  Pin<SameShape<RequiredFields<DesktopAppStatus>, PinnedDesktopAppStatus>>,
+  Pin<SameShape<RequiredFields<NetworkLocationStatus>, PinnedNetworkLocationStatus>>,
+  Pin<SameShape<RequiredFields<CliUninstallCapability>, PinnedUninstallCapability>>,
+]
+
+interface PinnedSystemSnapshot {
+  checkedAt: string
+  network: NetworkLocationStatus
+  runtime: Record<'node' | 'npm' | 'python' | 'git', ToolStatus>
+  clis: Record<ProviderId, CliStatus>
+  desktopApps: { codex: DesktopAppStatus }
+}
+
+interface PinnedToolStatus {
+  installed: boolean
+  version: string | null
+  path: string | null
+  installDirectory: string | null
+}
+
+interface PinnedCliStatus extends PinnedToolStatus {
+  latestVersion: string | null
+  updateAvailable: boolean
+  uninstall: CliUninstallCapability
+}
+
+interface PinnedDesktopAppStatus extends PinnedToolStatus {
+  appVersion: string | null
+  mirrorVersion: string | null
+  mirrorUpdateAvailable: boolean | null
+  mirrorError: string | null
+  running: boolean
+}
+
+interface PinnedNetworkLocationStatus {
+  publicIp: string | null
+  countryCode: string | null
+  region: NetworkRegion
+  checkedAt: string
+  error: string | null
+}
+
+interface PinnedUninstallCapability {
+  available: boolean
+  reason: string | null
+  manualCommand: string | null
 }
 
 function scrubStrings(value: unknown): unknown {
@@ -127,7 +208,39 @@ export function serializeSystemSnapshotCache(snapshot: SystemSnapshot, appVersio
   return Buffer.byteLength(content, 'utf8') > maximumBytes ? null : content
 }
 
-/** 读出来的快照带上 `cachedAt`（落盘时间），界面据此知道这是上次的结果。 */
+/**
+ * 别的版本写的结果里，有几项是那一版按它自带的推荐版本名单下的判断：推荐装哪一版
+ * （versionAdvice）、能退回哪一版（revertVersion）、算不算有更新（updateAvailable、
+ * updateState）。新版本的名单可能已经换了推荐版本，而首页先摆上次结果的这几秒里
+ * 「更新」「更新到推荐版本」是能点的：点下去版本号原样交给主进程，主进程见到点名的
+ * 版本就直接装（resolveCliInstallVersion）。上次查到的最新版本号（latestVersion）也会
+ * 被「更新」当成点名的版本交过去。所以跨版本时每家 CLI 去掉这几项，这类按钮等这次
+ * 检测回来再出；装没装、装在哪、什么版本照留。桌面端整个照留：它的「更新」不点名
+ * 版本，装哪一版由主进程自己去和镜像比。
+ */
+function withoutVersionVerdicts(snapshot: SystemSnapshot): SystemSnapshot {
+  const clis = Object.fromEntries(providerIds.map((id) => {
+    const { versionAdvice: _versionAdvice, revertVersion: _revertVersion, ...facts } = snapshot.clis[id]
+    const status: CliStatus = { ...facts, latestVersion: null, updateAvailable: false, updateState: 'unknown' }
+    return [id, status]
+  })) as Record<ProviderId, CliStatus>
+  return { ...snapshot, clis }
+}
+
+/**
+ * 每家 CLI 的可选字段照抄一份。新加一个时这里过不了类型检查：先想清楚它是不是那一版
+ * 按自己的推荐版本名单算出来的、会不会被按钮当成要装的版本交给主进程，是就在
+ * withoutVersionVerdicts 里一起去掉，再把它记进这份清单。这一道只为分类，不用加格式版本号。
+ */
+type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'installTarget'
+  | 'updateSource' | 'updateCheck' | 'updateState' | 'updateCheckedAt' | 'updateError' | 'versionAdvice' | 'revertVersion'
+
+type CliOptionalFieldsSorted = Pin<SameShape<OptionalKeys<CliStatus>, CliOptionalFields>>
+
+/**
+ * 读出来的快照带上 `cachedAt`（落盘时间），界面据此知道这是上次的结果。别的版本
+ * 写的也认，只是去掉那一版的版本判断（见 withoutVersionVerdicts）。
+ */
 export function parseSystemSnapshotCache(content: string, appVersion: string): SystemSnapshot | null {
   let document: unknown
   try {
@@ -136,11 +249,11 @@ export function parseSystemSnapshotCache(content: string, appVersion: string): S
     return null
   }
   if (!isRecord(document) || document.version !== SYSTEM_SNAPSHOT_CACHE_VERSION) return null
-  if (document.appVersion !== appVersion) return null
   const savedAt = typeof document.savedAt === 'string' ? Date.parse(document.savedAt) : Number.NaN
   if (!Number.isFinite(savedAt)) return null
   if (!isCachedSystemSnapshot(document.snapshot)) return null
-  const { officialChatGpt: _officialChatGpt, ...snapshot } = document.snapshot
+  const { officialChatGpt: _officialChatGpt, ...saved } = document.snapshot
+  const snapshot = document.appVersion === appVersion ? saved : withoutVersionVerdicts(saved)
   return { ...snapshot, cachedAt: new Date(savedAt).toISOString() }
 }
 

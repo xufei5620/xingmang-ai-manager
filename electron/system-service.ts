@@ -2257,7 +2257,7 @@ export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
-  /** 落盘的旧结果只认同一版本的软件写的。 */
+  /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
   claudeDesktopEnv?: NodeJS.ProcessEnv
