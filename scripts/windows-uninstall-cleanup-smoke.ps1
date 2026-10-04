@@ -9,8 +9,11 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 # the real silent uninstaller, once plain and once (after reinstalling) with
 # the clear-login switch the uninstall page's checkbox stands for. Each time
 # the proxy must be back to what it was, the journal gone, the login item
-# removed; the saved sign-in must survive unless clearing it was asked for,
-# and the stored CLI keys must survive either way.
+# removed and the updater cache (the installer's copy of itself plus a
+# downloaded update) gone; the saved sign-in must survive unless clearing it
+# was asked for, and the stored CLI keys must survive either way. Once the
+# updater cache also holds a junction, which must be left alone together with
+# everything behind it.
 #
 # The acceleration worker itself is not started: the uninstaller kills it
 # before customUnInstall runs, so "journal present, owner dead" is exactly the
@@ -82,16 +85,43 @@ function Install-App {
   $script:exe = Get-ChildItem -LiteralPath $installDir -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall *' } | Select-Object -First 1
   $script:uninstaller = Get-ChildItem -LiteralPath $installDir -Filter 'Uninstall *.exe' | Select-Object -First 1
   Check ($null -ne $script:exe -and $null -ne $script:uninstaller) 'installed app and uninstaller found'
+  # electron-builder's installer template copies the installer here on every
+  # install; this is what the uninstall cleanup has to take away again.
+  Check (Test-Path -LiteralPath (Join-Path $updaterCache 'installer.exe') -PathType Leaf) 'installer copied itself into the updater cache'
 }
 
-function Invoke-DirectCleanup([string]$stage, [string[]]$arguments) {
+# What a downloaded update waiting to be installed leaves behind
+# (electron-updater's DownloadedUpdateHelper writes both into pending).
+function Set-UpdateDownloaded {
+  $pending = Join-Path $updaterCache 'pending'
+  New-Item -ItemType Directory -Force -Path $pending | Out-Null
+  [IO.File]::WriteAllText((Join-Path $pending 'xingmang-smoke-update.exe'), 'smoke')
+  [IO.File]::WriteAllText((Join-Path $pending 'update-info.json'), '{"fileName":"xingmang-smoke-update.exe"}')
+}
+
+# A junction anywhere in the cache must not be followed by the cleanup, which
+# the uninstaller runs elevated (I8). Its target sits outside the cache.
+function Set-JunctionInUpdaterCache {
+  New-Item -ItemType Directory -Force -Path $junctionTarget | Out-Null
+  [IO.File]::WriteAllText($junctionSentinel, 'not ours')
+  New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
+  Check ((Get-Item -LiteralPath $junctionPath -Force).LinkType -eq 'Junction') 'junction planted in the updater cache'
+}
+
+# Removes the link itself, never what it points at.
+function Remove-Junction {
+  if (Test-Path -LiteralPath $junctionPath) { [IO.Directory]::Delete($junctionPath) }
+}
+
+function Invoke-DirectCleanup([string]$stage, [string[]]$arguments, [bool]$junctionPlanted = $false) {
   $cleanupErrors = Join-Path $installRoot 'cleanup-stderr.txt'
   $clock = [Diagnostics.Stopwatch]::StartNew()
   $direct = Start-Process -FilePath $exe.FullName -ArgumentList $arguments -RedirectStandardError $cleanupErrors -Wait -PassThru
   Show-Diagnostics "$stage exit code $($direct.ExitCode) after $([int]$clock.Elapsed.TotalSeconds)s"
   if (Test-Path -LiteralPath $cleanupErrors) { Get-Content -LiteralPath $cleanupErrors -Encoding utf8 | ForEach-Object { Write-Output "cleanup stderr: $_" } }
+  # A refused junction is only reported: leftover installers never change the exit code.
   Check ($direct.ExitCode -eq 0) "$stage exits 0 (got $($direct.ExitCode))"
-  Assert-Cleaned $stage
+  Assert-Cleaned $stage $junctionPlanted
 }
 
 function Invoke-Uninstall([string]$stage, [string[]]$arguments) {
@@ -112,12 +142,25 @@ function Show-Diagnostics([string]$stage) {
   Write-Output ('login item: ' + (Get-LoginItem))
   Get-ChildItem -LiteralPath $env:APPDATA -Directory | Where-Object { $_.Name -like 'xingmang*' -or $_.Name -like '*AI*' } |
     ForEach-Object { Write-Output ('appdata dir: ' + $_.Name) }
+  if (Test-Path -LiteralPath $updaterCache) {
+    Get-ChildItem -LiteralPath $updaterCache -Recurse -Force -Attributes !ReparsePoint |
+      ForEach-Object { Write-Output ('updater cache: ' + $_.FullName.Substring($updaterCache.Length)) }
+  }
 }
 
-function Assert-Cleaned([string]$stage) {
+function Assert-Cleaned([string]$stage, [bool]$junctionPlanted = $false) {
   Check ($null -eq (Get-LoginItem)) "$stage removed the login item"
   Check (-not (Test-Path -LiteralPath $journalPath) -and -not (Test-Path -LiteralPath $leasePath)) "$stage removed the recovery journal and lease"
   Check (Same-State (Read-State) $before) "$stage restored the system proxy to the recorded original"
+  if (-not $junctionPlanted) {
+    Check (-not (Test-Path -LiteralPath $updaterCache)) "$stage removed the updater cache"
+    return
+  }
+  # Everything but the junction goes; the junction and what it points at stay.
+  Check (-not (Test-Path -LiteralPath (Join-Path $updaterCache 'installer.exe'))) "$stage removed the installer copy next to the junction"
+  Check (@(Get-ChildItem -LiteralPath (Join-Path $updaterCache 'pending') -Force | Where-Object { $_.FullName -ne $junctionPath }).Count -eq 0) "$stage removed the downloaded update next to the junction"
+  Check ((Get-Item -LiteralPath $junctionPath -Force).LinkType -eq 'Junction') "$stage left the junction in place"
+  Check ((Get-Content -LiteralPath $junctionSentinel -Raw) -eq 'not ours') "$stage did not follow the junction"
 }
 
 $installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-uninstall-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -133,11 +176,17 @@ $loginRecords = @('account-session.dat', 'saved-accounts.dat', 'realm-accounts-v
 $keptFiles = @('managed-cli-keys.dat', 'settings.json') | ForEach-Object { Join-Path $userData $_ }
 $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $loginItemName = 'com.xingmang.ai.manager'
+# electron/uninstall-cleanup.ts resolveUpdaterCacheDirectory, which follows electron-updater.
+$updaterCache = Join-Path $env:LOCALAPPDATA 'xingmang-ai-manager-updater'
+$junctionPath = Join-Path $updaterCache 'pending\linked'
+$junctionTarget = Join-Path $installRoot 'outside-the-cache'
+$junctionSentinel = Join-Path $junctionTarget 'keep.txt'
 $original = Read-State
 
 try {
   Check (-not (Test-Path -LiteralPath $journalPath) -and -not (Test-Path -LiteralPath $leasePath)) 'runner starts without a recovery journal'
   Check (-not (Test-Path -LiteralPath $loginRecords[0])) 'runner starts signed out'
+  Check (-not (Test-Path -LiteralPath $updaterCache)) 'runner starts without an updater cache'
   Install-App
 
   # A distinct "before" proves the cleanup writes back the recorded original,
@@ -152,21 +201,29 @@ try {
 
   # Stage 1: the cleanup entry on its own, so a failure below can be told apart
   # from the uninstaller never reaching it. Without the switch the sign-in stays.
+  # The first run also meets a junction in the updater cache.
   Set-AccelerationLeftOn $exe.FullName
-  Invoke-DirectCleanup 'direct cleanup' @('--xingmang-uninstall-cleanup')
+  Set-UpdateDownloaded
+  Set-JunctionInUpdaterCache
+  Invoke-DirectCleanup 'direct cleanup' @('--xingmang-uninstall-cleanup') $true
   Assert-SignIn 'direct cleanup' $true
+  Remove-Junction
+  Remove-Item -LiteralPath $updaterCache -Recurse -Force
 
   Set-AccelerationLeftOn $exe.FullName
+  Set-UpdateDownloaded
   Invoke-DirectCleanup 'direct cleanup with clear-login' @('--xingmang-uninstall-cleanup', '--xingmang-clear-login')
   Assert-SignIn 'direct cleanup with clear-login' $false
 
   # Stage 2: the real uninstaller with the box left unticked, the default.
   Set-SignedIn
   Set-AccelerationLeftOn $exe.FullName
+  Set-UpdateDownloaded
   Invoke-Uninstall 'uninstall' @('/S')
   Assert-SignIn 'uninstall' $true
 
   # Stage 3: reinstall, then uninstall with the switch a ticked box stands for.
+  # Only the installer's own copy is in the updater cache this time.
   Install-App
   Set-AccelerationLeftOn $exe.FullName
   Invoke-Uninstall 'uninstall with clear-login' @('/S', '--xingmang-clear-login')
@@ -179,4 +236,7 @@ try {
   Remove-ItemProperty -Path $runKeyPath -Name $loginItemName -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $journalPath, $leasePath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath ($loginRecords + $keptFiles) -Force -ErrorAction SilentlyContinue
+  # The junction first, so removing the cache can never reach through it.
+  try { Remove-Junction } catch { Write-Warning 'could not remove the junction in the updater cache' }
+  if (-not (Test-Path -LiteralPath $junctionPath)) { Remove-Item -LiteralPath $updaterCache -Recurse -Force -ErrorAction SilentlyContinue }
 }
