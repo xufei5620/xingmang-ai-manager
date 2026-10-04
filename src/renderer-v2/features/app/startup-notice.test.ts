@@ -31,7 +31,7 @@ describe('startup check notices', () => {
     expect(notice?.title).toBe('环境检查发现 3 项需要处理')
     expect(notice?.body).toBe('不影响继续使用，有空时到「检查」页看一下就行。')
     expect(notice?.failure).toBe(false)
-    expect(notice?.action).toEqual({ label: '去看看', page: 'health' })
+    expect(notice?.action).toEqual({ label: '去看看', page: 'health', section: 'first-problem' })
   })
 
   it('leaves warnings out of the count and only mentions them lightly in the body', () => {

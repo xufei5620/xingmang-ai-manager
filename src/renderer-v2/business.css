@@ -580,11 +580,15 @@
 .v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-connection-note > summary { cursor: pointer; }
 .v2-update-progress-detail { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
-.v2-curated-lead {
-  margin: 0;
-  padding: 14px 16px 0;
+/* 技能页选到不能在这里导入的工具：工具条下面平平的一行字加「看怎么放」，不做成浮起来的提示框。 */
+.v2-skill-import-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
   color: var(--text-2);
   font-size: 13px;
+  line-height: 1.6;
 }
 .v2-curated-tags {
   display: flex;
@@ -662,3 +666,7 @@
 .v2-business-tier-note strong {
   color: var(--text);
 }
+/* 检查页「Codex 干活检查」：开关和「开始检查」并成一行，按钮靠右。 */
+.v2-health-consent { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.v2-health-consent > .xm-switch-wrap { min-width: 0; }
+.v2-health-consent > .xm-btn { flex: none; }

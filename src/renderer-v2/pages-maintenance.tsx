@@ -104,7 +104,7 @@ import {
 } from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
-import { useRowFocus } from './features/app/row-focus'
+import { firstProblemAnchor, useRowFocus } from './features/app/row-focus'
 import { publishDiagnosticsCounts } from './features/app/environment-status'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
 import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
@@ -229,6 +229,8 @@ export type BusinessActions = {
    */
   appSettings?: AppSettings
 }
+/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
+const networkDiagnosticCode = 'XINGMANG_NETWORK'
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
 }
@@ -280,72 +282,105 @@ export function diagnosticHasFix(code: string, details?: Diagnostic['details']):
   return diagnosticTarget(code, details) !== null
 }
 
+/** 检查结果按轻重排：待处理在前，然后需留意，正常的在最后；同一档里照原来的次序。 */
+export function sortDiagnosticsBySeverity<T extends { state: string }>(items: readonly T[]): T[] {
+  return [...items].sort((left, right) => diagnosticRank(left.state) - diagnosticRank(right.state))
+}
+
+function diagnosticRank(state: string) {
+  return state === 'pass' ? 2 : state === 'warn' ? 1 : 0
+}
+
+/** 连接自检的小标：正常 / 有问题 / 没测成；未配置不是故障，照旧写「未配置」、灰色。 */
+export function connectionRowStatus(row: Pick<ConnectionRow, 'result'>): { label: string; tone: 'ok' | 'warn' | 'bad' | 'neutral' } {
+  if (!row.result) return { label: '没测成', tone: 'bad' }
+  const view = connectionCheckView(row.result)
+  if (view.tone === 'ok') return { label: '正常', tone: 'ok' }
+  if (view.tone === 'neutral') return { label: view.statusLabel, tone: 'neutral' }
+  return { label: '有问题', tone: view.tone }
+}
+
+/** 连接自检一行一个工具，有问题的排前：有问题、没测成、未配置、正常；同一档里照注册表的次序。 */
+export function sortConnectionRows<T extends Pick<ConnectionRow, 'result'>>(rows: readonly T[]): T[] {
+  return [...rows].sort((left, right) => connectionRank(left) - connectionRank(right))
+}
+
+function connectionRank(row: Pick<ConnectionRow, 'result'>) {
+  const { label, tone } = connectionRowStatus(row)
+  return label === '没测成' ? 1 : tone === 'ok' ? 3 : tone === 'neutral' ? 2 : 0
+}
+
 /**
- * 每个工具一条结论。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
+ * 每个工具一行：工具名、状态、一句结论，右边是能就地处理的那颗按钮；原来的第二句（怎么做、
+ * 测了什么、服务的原话）收进「查看详情」。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
  * 用户不该在这一页上看到三条失败。
  */
-function ConnectionRowNotice({
+function ConnectionRowItem({
   row,
   navigate,
   canRewriteKey,
   onRewriteKey,
+  onDetails,
 }: {
   row: ConnectionRow
-  navigate?: (page: V2Page) => void
+  navigate?: (page: V2Page, section?: string) => void
   canRewriteKey?: boolean
   onRewriteKey?: (provider: Provider) => void
+  onDetails: (row: ConnectionRow) => void
 }) {
+  const status = connectionRowStatus(row)
+  const badge = <Pill tone={status.tone} dot>{status.label}</Pill>
   if (!row.result) {
     return (
-      <Notice
-        tone="bad"
-        title={`${row.name} · 没测成`}
-        body={row.error ?? '自检没能完成'}
+      <ListRow
+        title={row.name}
+        badge={badge}
+        desc={row.error ?? '自检没能完成'}
         testId={`health-connection-error-${row.id}`}
       />
     )
   }
   const view = connectionCheckView(row.result, { canRewriteKey: canRewriteKey === true && Boolean(onRewriteKey) })
   const target = view.target
+  const section = view.section ?? undefined
   const rewritable = view.action === 'rewrite-key' ? row.provider : null
   return (
-    <Notice
-      tone={view.tone}
-      title={`${row.name} · ${view.statusLabel}`}
-      body={
-        <>
-          <div>{view.title}</div>
-          <div>{view.body}</div>
-          {view.detail && (
-            <details className="v2-connection-note">
-              <summary>服务的原话（联系客服时可以附上）</summary>
-              {view.detail}
-            </details>
-          )}
-        </>
-      }
+    <ListRow
+      title={row.name}
+      badge={badge}
+      desc={view.title}
       actions={
-        rewritable ? (
-          <Button
-            size="sm"
-            icon={KeyRound}
-            onClick={() => onRewriteKey?.(rewritable)}
-            testId={`health-connection-rewrite-${row.id}`}
-          >
-            重新写入 Key
-          </Button>
-        ) : (
-          target && (
+        <>
+          {rewritable ? (
             <Button
               size="sm"
-              icon={Wrench}
-              onClick={() => navigate?.(target)}
-              testId={`health-connection-fix-${row.id}`}
+              icon={KeyRound}
+              onClick={() => onRewriteKey?.(rewritable)}
+              testId={`health-connection-rewrite-${row.id}`}
             >
-              去处理
+              重新写入 Key
             </Button>
-          )
-        )
+          ) : (
+            target && (
+              <Button
+                size="sm"
+                icon={Wrench}
+                onClick={() => navigate?.(target, section)}
+                testId={`health-connection-fix-${row.id}`}
+              >
+                去处理
+              </Button>
+            )
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onDetails(row)}
+            testId={`health-connection-details-${row.id}`}
+          >
+            查看详情
+          </Button>
+        </>
       }
       testId={`health-connection-result-${row.id}`}
     />
@@ -366,10 +401,21 @@ export function HealthPage({
   }), [api])
   const resource = useResource(load)
   const pageRef = useRef<HTMLElement>(null)
-  // 设置里「企业证书」点「去检查页」：检查结果出来以后翻到「安全证书」那一项、亮一下。
-  useRowFocus('health', pageRef, Boolean(resource.data))
+  const diagnostics = sortDiagnosticsBySeverity(resource.data?.items ?? [])
+  const problems = diagnostics.filter((item) => item.state !== 'pass')
+  const passing = diagnostics.filter((item) => item.state === 'pass')
+  // 正常的项默认收成一行；从别处点名要看的那一项正好是正常的，就先摆出来再翻过去。
+  const [showPassing, setShowPassing] = useState(false)
+  // 设置里「企业证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
+  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。
+  useRowFocus('health', pageRef, Boolean(resource.data), (anchor) => {
+    const code = anchor === firstProblemAnchor ? problems[0]?.code ?? null : anchor
+    if (code && passing.some((item) => item.code === code)) setShowPassing(true)
+    return code
+  })
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
+  const [connectionDetailsId, setConnectionDetailsId] = useState<string | null>(null)
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
   const [certificateTrustOpen, setCertificateTrustOpen] = useState(false)
   const [fixing, setFixing] = useState<DiagnosticFixKind | null>(null)
@@ -533,6 +579,117 @@ export function HealthPage({
     navigate?.(target)
   }
   const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
+  const connectionDetails = connections?.find((row) => row.id === connectionDetailsId) ?? null
+  const connectionDetailsView = connectionDetails?.result
+    ? connectionCheckView(connectionDetails.result, {
+        canRewriteKey: connectionDetails.provider !== null && rewritableKeys?.includes(connectionDetails.provider) === true && Boolean(onRewriteKey),
+      })
+    : null
+  const exportReport = () =>
+    void operation.execute(
+      'export',
+      () => api.exportDiagnostics(),
+      (result) =>
+        result
+          ? {
+              text: `诊断报告已导出：${result.outputPath}`,
+              revealPath: result.outputPath,
+            }
+          : null,
+    )
+  const diagnosticRow = (item: Diagnostic) => (
+    <ListRow
+      key={item.code}
+      anchor={item.code}
+      icon={item.state === 'pass' ? Check : HeartPulse}
+      title={item.title}
+      badge={
+        <Pill
+          tone={
+            item.state === 'pass'
+              ? 'ok'
+              : item.state === 'warn'
+                ? 'warn'
+                : 'bad'
+          }
+          dot
+        >
+          {item.state === 'pass'
+            ? '正常'
+            : item.state === 'warn'
+              ? '需留意'
+              : '待处理'}
+        </Pill>
+      }
+      desc={item.summary}
+      actions={
+        <>
+          {canClearStaleProxy(item) && (
+            <Button
+              size="sm"
+              icon={Trash2}
+              onClick={() => setProxyClearItem(item)}
+              testId="health-clear-stale-proxy"
+            >
+              清掉这条旧设置
+            </Button>
+          )}
+          {canTrustCertificatesUserWide(item) && (
+            <Button
+              size="sm"
+              icon={ShieldCheck}
+              onClick={() => setCertificateTrustOpen(true)}
+              testId="health-trust-certificates"
+            >
+              让这台电脑上所有终端都信任
+            </Button>
+          )}
+          {diagnosticFixKind(item) && (
+            <Button
+              size="sm"
+              icon={Wrench}
+              onClick={() => setFixing(diagnosticFixKind(item))}
+              testId={`health-fix-inline-${item.code}`}
+            >
+              {diagnosticFixLabel(item)}
+            </Button>
+          )}
+          {diagnosticFolderTarget(item) && (
+            <Button
+              size="sm"
+              icon={FolderOpen}
+              onClick={() => openDiagnosticFolder(item)}
+              testId={`health-open-folder-${item.code}`}
+            >
+              打开文件夹
+            </Button>
+          )}
+          {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
+            <Button
+              size="sm"
+              icon={Wrench}
+              onClick={() => fix(item)}
+              testId={`health-fix-${item.code}`}
+            >
+              去处理
+            </Button>
+          )}
+          <Menu
+            label={`${item.title} 的更多操作`}
+            anchor={<MoreHorizontal size={18} />}
+            items={[
+              {
+                label: '查看详情',
+                icon: FileText,
+                onSelect: () => setDetails(item),
+              },
+            ]}
+          />
+        </>
+      }
+      testId={`health-row-${item.code}`}
+    />
+  )
   return (
     <section
       ref={pageRef}
@@ -544,20 +701,75 @@ export function HealthPage({
         title="检查"
         lead="逐项检查当前工具和连接；没有使用的可选环境可以先不装。"
         actions={
-          <Button
-            variant="primary"
-            icon={RefreshCw}
-            loading={resource.loading}
-            onClick={() => void resource.reload()}
-          >
-            重新检查
-          </Button>
+          <>
+            <Button
+              icon={Download}
+              disabled={resource.loading}
+              onClick={exportReport}
+            >
+              导出检查报告
+            </Button>
+            <Button
+              variant="primary"
+              icon={RefreshCw}
+              loading={resource.loading}
+              onClick={() => void resource.reload()}
+            >
+              重新检查
+            </Button>
+          </>
         }
       />
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
       />
+      {resource.data && (
+        <Toolbar
+          left={
+            <>
+              <Pill tone="bad">
+                待处理 {resource.data.counts.fail + resource.data.counts.error}
+              </Pill>
+              <Pill tone="warn">需留意 {resource.data.counts.warn}</Pill>
+              <Pill tone="ok">正常 {resource.data.counts.pass}</Pill>
+            </>
+          }
+          right={<span>上次检查 <RelativeTime value={resource.data.generatedAt} /></span>}
+        />
+      )}
+      <Card padding="none">
+        <ListState
+          page="health"
+          noun="检查结果"
+          emptyDescription="点右上角「重新检查」。"
+          loading={resource.loading}
+          error={resource.error}
+          count={diagnostics.length}
+          retry={() => void resource.reload()}
+        >
+          {problems.map(diagnosticRow)}
+          {passing.length > 0 && (
+            <ListRow
+              icon={Check}
+              title={problems.length ? `另外 ${passing.length} 项正常` : `全部 ${passing.length} 项正常`}
+              actions={
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-expanded={showPassing}
+                  onClick={() => setShowPassing((value) => !value)}
+                  testId="health-passing-toggle"
+                >
+                  {showPassing ? '收起' : '展开'}
+                </Button>
+              }
+              testId="health-passing"
+            />
+          )}
+          {showPassing && passing.map(diagnosticRow)}
+        </ListState>
+      </Card>
       <Card
         title="连接自检"
         meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
@@ -573,13 +785,14 @@ export function HealthPage({
         }
         testId="health-connection"
       >
-        {connections?.map((row) => (
-          <ConnectionRowNotice
+        {connections && sortConnectionRows(connections).map((row) => (
+          <ConnectionRowItem
             key={row.id}
             row={row}
             navigate={navigate}
             canRewriteKey={row.provider !== null && rewritableKeys?.includes(row.provider)}
             onRewriteKey={onRewriteKey ? (provider) => void rewriteKey(provider) : undefined}
+            onDetails={(entry) => setConnectionDetailsId(entry.id)}
           />
         ))}
         {!connections && (
@@ -593,23 +806,25 @@ export function HealthPage({
         meta="上面的连接自检只确认能连上。这里让 Codex 用的模型真的做一件小事：调用一个什么都不改的测试工具，再把结果读回来。会用当前账号的额度发两次请求，花费很少，但不是零；不会碰你电脑上的文件。"
         testId="health-codex-responses"
       >
-        <Switch
-          checked={responsesConsent}
-          onChange={setResponsesConsent}
-          label="我知道这次检查会用当前账号的一点额度"
-          description="每次检查前都要重新勾选。"
-          disabled={responsesBusy}
-          testId="health-codex-responses-consent"
-        />
-        <Button
-          icon={PlugZap}
-          disabled={!responsesConsent || responsesBusy}
-          loading={responsesBusy}
-          onClick={() => void runCodexResponsesProbe()}
-          testId="health-codex-responses-run"
-        >
-          开始检查
-        </Button>
+        <div className="v2-health-consent">
+          <Switch
+            checked={responsesConsent}
+            onChange={setResponsesConsent}
+            label="我知道这次检查会用当前账号的一点额度"
+            description="每次检查前都要重新勾选。"
+            disabled={responsesBusy}
+            testId="health-codex-responses-consent"
+          />
+          <Button
+            icon={PlugZap}
+            disabled={!responsesConsent || responsesBusy}
+            loading={responsesBusy}
+            onClick={() => void runCodexResponsesProbe()}
+            testId="health-codex-responses-run"
+          >
+            开始检查
+          </Button>
+        </div>
         {responsesView && (
           <Notice
             tone={responsesView.tone}
@@ -620,147 +835,6 @@ export function HealthPage({
         )}
         {responsesError && <Notice tone="bad" title="Codex 干活检查 · 没测成" body={responsesError} testId="health-codex-responses-error" />}
       </Card>}
-      {resource.data && (
-        <Toolbar
-          left={
-            <>
-              <Pill tone="ok">正常 {resource.data.counts.pass}</Pill>
-              <Pill tone="warn">需留意 {resource.data.counts.warn}</Pill>
-              <Pill tone="bad">
-                待处理 {resource.data.counts.fail + resource.data.counts.error}
-              </Pill>
-            </>
-          }
-          right={<span><RelativeTime value={resource.data.generatedAt} /></span>}
-        />
-      )}
-      <Card padding="none">
-        <ListState
-          page="health"
-          noun="检查结果"
-          loading={resource.loading}
-          error={resource.error}
-          count={resource.data?.items.length ?? 0}
-          retry={() => void resource.reload()}
-        >
-          {resource.data?.items.map((item) => (
-            <ListRow
-              key={item.code}
-              anchor={item.code}
-              icon={item.state === 'pass' ? Check : HeartPulse}
-              title={item.title}
-              badge={
-                <Pill
-                  tone={
-                    item.state === 'pass'
-                      ? 'ok'
-                      : item.state === 'warn'
-                        ? 'warn'
-                        : 'bad'
-                  }
-                  dot
-                >
-                  {item.state === 'pass'
-                    ? '正常'
-                    : item.state === 'warn'
-                      ? '需留意'
-                      : '待处理'}
-                </Pill>
-              }
-              desc={item.summary}
-              actions={
-                <>
-                  {canClearStaleProxy(item) && (
-                    <Button
-                      size="sm"
-                      icon={Trash2}
-                      onClick={() => setProxyClearItem(item)}
-                      testId="health-clear-stale-proxy"
-                    >
-                      清掉这条旧设置
-                    </Button>
-                  )}
-                  {canTrustCertificatesUserWide(item) && (
-                    <Button
-                      size="sm"
-                      icon={ShieldCheck}
-                      onClick={() => setCertificateTrustOpen(true)}
-                      testId="health-trust-certificates"
-                    >
-                      让这台电脑上所有终端都信任
-                    </Button>
-                  )}
-                  {diagnosticFixKind(item) && (
-                    <Button
-                      size="sm"
-                      icon={Wrench}
-                      onClick={() => setFixing(diagnosticFixKind(item))}
-                      testId={`health-fix-inline-${item.code}`}
-                    >
-                      {diagnosticFixLabel(item)}
-                    </Button>
-                  )}
-                  {diagnosticFolderTarget(item) && (
-                    <Button
-                      size="sm"
-                      icon={FolderOpen}
-                      onClick={() => openDiagnosticFolder(item)}
-                      testId={`health-open-folder-${item.code}`}
-                    >
-                      打开文件夹
-                    </Button>
-                  )}
-                  {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
-                    <Button
-                      size="sm"
-                      icon={Wrench}
-                      onClick={() => fix(item)}
-                      testId={`health-fix-${item.code}`}
-                    >
-                      去处理
-                    </Button>
-                  )}
-                  <Menu
-                    label={`${item.title} 的更多操作`}
-                    anchor={<MoreHorizontal size={18} />}
-                    items={[
-                      {
-                        label: '查看详情',
-                        icon: FileText,
-                        onSelect: () => setDetails(item),
-                      },
-                    ]}
-                  />
-                </>
-              }
-              testId={`health-row-${item.code}`}
-            />
-          ))}
-        </ListState>
-      </Card>
-      <Toolbar
-        right={
-          <Button
-            icon={Download}
-            disabled={resource.loading}
-            onClick={() =>
-              void operation.execute(
-                'export',
-                () => api.exportDiagnostics(),
-                (result) =>
-                  result
-                    ? {
-                        text: `诊断报告已导出：${result.outputPath}`,
-                        revealPath: result.outputPath,
-                      }
-                    : null,
-              )
-            }
-          >
-            导出检查报告
-          </Button>
-        }
-      />
       <Confirm
         open={Boolean(fixing)}
         title={fixing ? diagnosticFixConfirm[fixing].title : ''}
@@ -791,6 +865,25 @@ export function HealthPage({
         onClose={() => setCertificateTrustOpen(false)}
         testId="health-trust-certificates-confirm"
       />
+      <Drawer
+        open={Boolean(connectionDetails)}
+        title={connectionDetails ? `${connectionDetails.name} · ${connectionDetailsView?.statusLabel ?? '没测成'}` : '连接自检'}
+        onClose={() => setConnectionDetailsId(null)}
+        testId="health-connection-details"
+      >
+        {connectionDetailsView && (
+          <>
+            <p>{connectionDetailsView.title}</p>
+            <p>{connectionDetailsView.body}</p>
+            {connectionDetailsView.detail && (
+              <details className="v2-connection-note">
+                <summary>服务的原话（联系客服时可以附上）</summary>
+                {connectionDetailsView.detail}
+              </details>
+            )}
+          </>
+        )}
+      </Drawer>
       <Drawer
         open={Boolean(details)}
         title={details?.title ?? '检查详情'}
@@ -2832,7 +2925,8 @@ export function SettingsPage({
             <Button
               size="sm"
               icon={HeartPulse}
-              onClick={() => navigate?.('health')}
+              onClick={() => navigate?.('health', networkDiagnosticCode)}
+              testId="settings-network-health"
             >
               去检查页
             </Button>,

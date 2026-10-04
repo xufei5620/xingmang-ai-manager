@@ -62,6 +62,8 @@ let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
 // codexCatalogOffline 让第一次下载按国内常见的样子失败。
 let codexCatalogReady = false
 let codexCatalogAttempts = 0
+// mcpHealthFail 让第一次连接检测没跑完，验证「这次没检测成」和「重新检测」。
+let mcpHealthAttempts = 0
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -311,6 +313,64 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
       running: false,
     },
   },
+}
+// 扩展三页共用的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
+function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
+  return {
+    provider,
+    checkedAt: time,
+    capabilities: {
+      mcp: { list: true, reason: null },
+      skill: { list: true, reason: null },
+      plugin: { list: true, reason: null },
+    },
+    warnings: [],
+    // 缺 Python 的机器是多数：添加 uvx 型连接前那条提示就是靠它出的。
+    runtimes: { python: false, uv: false },
+    ...(provider === 'codex'
+      ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
+      : {}),
+    items: [
+      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
+      ...(empty
+      ? []
+      : [
+          {
+            provider,
+            kind: (page === 'skills'
+              ? 'skill'
+              : page === 'plugins'
+                ? 'plugin'
+                : 'mcp') as 'mcp' | 'skill' | 'plugin',
+            id: 'test-extension',
+            name: '测试扩展',
+            description: '本机测试连接',
+            installed: true,
+            enabled: true,
+            scope: 'user' as const,
+            currentVersion: '1.0.0',
+            latestVersion: '1.0.1',
+            source: {
+              kind: 'npm' as const,
+              locator: 'test-package',
+              reference: null,
+            },
+            update: {
+              state: 'update-available' as const,
+              reason: '发现新版本',
+              checkedAt: time,
+            },
+            operations: {
+              install: true,
+              uninstall: true,
+              enable: true,
+              disable: true,
+              update: true,
+            },
+          },
+        ]),
+    ],
+  }
 }
 const apiMethods = {
   onInstallProgress: () => () => undefined,
@@ -704,61 +764,10 @@ const apiMethods = {
   },
   listProviderExtensions: async (
     provider: Parameters<V2Bridge['listProviderExtensions']>[0],
-  ) => ({
-    provider,
-    checkedAt: time,
-    capabilities: {
-      mcp: { list: true, reason: null },
-      skill: { list: true, reason: null },
-      plugin: { list: true, reason: null },
-    },
-    warnings: [],
-    // 缺 Python 的机器是多数：添加 uvx 型连接前那条提示就是靠它出的。
-    runtimes: { python: false, uv: false },
-    ...(provider === 'codex'
-      ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
-      : {}),
-    items: [
-      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
-      ...(empty
-      ? []
-      : [
-          {
-            provider,
-            kind: (page === 'skills'
-              ? 'skill'
-              : page === 'plugins'
-                ? 'plugin'
-                : 'mcp') as 'mcp' | 'skill' | 'plugin',
-            id: 'test-extension',
-            name: '测试扩展',
-            description: '本机测试连接',
-            installed: true,
-            enabled: true,
-            scope: 'user' as const,
-            currentVersion: '1.0.0',
-            latestVersion: '1.0.1',
-            source: {
-              kind: 'npm' as const,
-              locator: 'test-package',
-              reference: null,
-            },
-            update: {
-              state: 'update-available' as const,
-              reason: '发现新版本',
-              checkedAt: time,
-            },
-            operations: {
-              install: true,
-              uninstall: true,
-              enable: true,
-              disable: true,
-              update: true,
-            },
-          },
-        ]),
-    ],
-  }),
+  ) => {
+    record('list-extensions', provider)
+    return extensionList(provider)
+  },
   ensureProviderMarketplace: async (
     provider: Parameters<V2Bridge['ensureProviderMarketplace']>[0],
   ) => {
@@ -775,6 +784,8 @@ const apiMethods = {
     provider: Parameters<V2Bridge['checkProviderMcpHealth']>[0],
   ) => {
     record('mcp-health', provider)
+    mcpHealthAttempts += 1
+    if (query.has('mcpHealthFail') && mcpHealthAttempts === 1) throw new Error('连接检测没有跑完')
     return {
       provider,
       checkedAt: time,

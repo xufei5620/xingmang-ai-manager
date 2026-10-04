@@ -440,6 +440,8 @@ export function ListState({
   retry,
   clear,
   action,
+  emptyTitle,
+  emptyDescription,
   children,
 }: {
   page: string
@@ -453,6 +455,9 @@ export function ListState({
   retry: () => void
   clear?: () => void
   action?: ReactNode
+  /** 列表真的空着时这一页自己的标题和那句话；缺省「还没有{noun}」和通用的那句。 */
+  emptyTitle?: string
+  emptyDescription?: string
   children: ReactNode
 }) {
   if (loading && !count)
@@ -495,15 +500,15 @@ export function ListState({
       <Empty
         testId={`${page}-${filtered ? 'filter-empty' : 'empty'}`}
         icon={filtered ? Search : Archive}
-        title={searched ? `没有找到「${searched}」` : filtered ? '没有符合条件的结果' : `还没有${noun}`}
+        title={searched ? `没有找到「${searched}」` : filtered ? '没有符合条件的结果' : emptyTitle ?? `还没有${noun}`}
         description={
           searched
             ? '换个词试试。'
             : filtered
               ? '试试其他关键词，或清空筛选。'
-              : page === 'sessions'
+              : emptyDescription ?? (page === 'sessions'
                 ? '在 AI 工具里开始一次对话，记录就会出现在这里。'
-                : '从页面上的添加入口开始。'
+                : '从页面上的添加入口开始。')
         }
         action={
           filtered ? (

@@ -83,7 +83,7 @@ export function BusinessPage({
   if (page === 'mcp')
     return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} installedProviders={installedProviders} />
   if (page === 'plugins')
     return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'backups')

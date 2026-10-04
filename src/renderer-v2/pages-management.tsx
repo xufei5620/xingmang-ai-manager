@@ -59,6 +59,7 @@ import {
   curatedRuntimeLabels,
   type CuratedExtension,
 } from './registry/curated-extensions'
+import { skillImportTutorialExtra } from './registry/tutorials'
 import { tools } from './registry/tools'
 import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice } from './features/tools/recent-workspaces'
 import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
@@ -646,13 +647,10 @@ export function CuratedShelf({
   return (
     <Card
       title="星芒精选"
-      meta={`${items.length} 项`}
+      meta="我们挑过的，装之前会先给你看它要什么权限"
       padding="none"
       testId="curated-shelf"
     >
-      <p className="v2-curated-lead">
-        这几项是我们挑过的，都写清了它能让 AI 多做什么、要拿到什么权限。点「安装」会先让你确认一次。
-      </p>
       {items.map((item) => {
         // 已经装上的还给一个「安装」按钮，点下去只会换来一句 CLI 的英文报错。
         const installed = (installedIds ?? []).includes(curatedInstallTarget(item))
@@ -679,7 +677,7 @@ export function CuratedShelf({
               </>
             }
             desc={item.summary}
-            meta={curatedNetworkLabels[item.network] ?? undefined}
+            // 要不要联网只在点「安装」后的确认框里说：每行都写一遍会把说明挤成两行。
             actions={
               installed ? (
                 <Pill>已在列表里</Pill>
@@ -1221,11 +1219,14 @@ export function ExtensionsPage({
   api,
   kind,
   onOpenHelp,
+  onOpenTutorial,
   installedProviders,
 }: {
   api: V2Bridge
   kind: ExtensionKind
   onOpenHelp?: () => void
+  /** 打开教程某一篇；section 写法同外壳 navigate('tutorial', section)。省略 = 不放「看怎么放」。 */
+  onOpenTutorial?: (section: string) => void
   /** 这台电脑上装好的命令行工具；缺省 = 不知道，默认选 Claude（旧行为）。 */
   installedProviders?: readonly string[]
 }) {
@@ -1282,6 +1283,14 @@ export function ExtensionsPage({
   const [curatedForm, setCuratedForm] = useState<CuratedExtension | null>(null)
   const [curatedValues, setCuratedValues] = useState<Record<string, string>>({})
   const curatedItems = useMemo(() => curatedItemsFor(kind, provider), [kind, provider])
+  // 搜索时精选也按同一个词筛；一条都不匹配，整张卡就不出来（CuratedShelf 遇到空列表不画）。
+  const curatedQuery = query.trim().toLowerCase()
+  const shownCurated = curatedQuery
+    ? curatedItems.filter((item) =>
+        `${item.name} ${item.summary}`.toLowerCase().includes(curatedQuery),
+      )
+    : curatedItems
+  const toolName = providerName(provider)
   const snapshot = resource.data?.snapshot
   const all = extensionItemsForView(
     snapshot?.items ?? [],
@@ -1369,13 +1378,34 @@ export function ExtensionsPage({
     }
     setCuratedForm(item)
   }
-  // 空列表里的「看看精选」把焦点交给精选卡的第一个「安装」，键盘用户不用自己找上去。
+  // 空列表里的「看看精选」把焦点交给精选卡的第一个「安装」，键盘用户不用自己找上去；
+  // 精选都装过了就只滚到那张卡。
   const focusCuratedShelf = () => {
-    const target = document.querySelector<HTMLElement>(
+    const button = document.querySelector<HTMLElement>(
       '[data-testid="curated-shelf"] [data-testid^="curated-install-"]',
     )
+    const target = button ?? document.querySelector<HTMLElement>('[data-testid="curated-shelf"]')
     target?.scrollIntoView({ block: 'center' })
-    target?.focus()
+    button?.focus()
+  }
+  // 精选只摆在插件页「已安装」那一侧：在「市场」页签点「看看精选」，先切过去，画出来以后再滚。
+  const [curatedFocusPending, setCuratedFocusPending] = useState(false)
+  useEffect(() => {
+    if (!curatedFocusPending || view !== 'installed') return
+    setCuratedFocusPending(false)
+    focusCuratedShelf()
+  }, [curatedFocusPending, view])
+  const showInstalledView = () => {
+    setView('installed')
+    operation.clear()
+  }
+  const seeCurated = () => {
+    if (kind === 'plugin' && view === 'market') {
+      showInstalledView()
+      setCuratedFocusPending(true)
+      return
+    }
+    focusCuratedShelf()
   }
   // 插件精选走的是页面上「添加插件」那条出口：主进程会先保证官方市场在册，再执行
   // `plugin install <插件名>@<市场名>`。精选不另开通道，校验与手填来源完全同一套。
@@ -1457,6 +1487,7 @@ export function ExtensionsPage({
       variant="primary"
       icon={Plus}
       disabled={!supportsInstall || capability?.list === false || Boolean(operation.busy)}
+      title={supportsInstall ? undefined : `${toolName} 不支持在这里导入`}
       onClick={showForm}
       testId={`${page}-add`}
     >
@@ -1468,16 +1499,29 @@ export function ExtensionsPage({
     kind === 'plugin' &&
     view === 'market' &&
     (provider === 'claude' || provider === 'codex')
-  const addOfficialMarketplace = () =>
+  const noMarket = kind === 'plugin' && view === 'market' && !officialMarketplacePage
+  // 检测命令跑起来了却没跑完才算「没检测成」；工具本来就不报连接状态的不算，「上次检测」照旧。
+  const healthFailed = Boolean(
+    health.report?.supported && health.report.reason && !health.checking,
+  )
+  // 「重新检测」先把列表重新读一遍：在别处加过、删过的连接要先出现在列表里，检测才有对象。
+  const recheck = async () => {
+    await resource.reload()
+    await health.check()
+  }
+  // 进页面时替用户自动下的那一次不另弹「已下载」：列表直接出来就是结果。自己点的照旧提示。
+  const addOfficialMarketplace = (automatic = false) =>
     void operation.execute(
       'marketplace-ensure',
       async () => {
         await api.ensureProviderMarketplace(provider)
         await resource.reload()
       },
-      provider === 'codex'
-        ? '插件目录已下载，下面就是可以安装的插件。'
-        : '官方插件市场已添加，下面就是可以安装的插件。',
+      automatic
+        ? () => null
+        : provider === 'codex'
+          ? '插件目录已下载，下面就是可以安装的插件。'
+          : '官方插件市场已添加，下面就是可以安装的插件。',
     )
   // Codex 的目录缺了就直接替用户下载，不让他先看一句「还没下载」再去点。每次进到
   // 这一页只自动下一次；失败了留着按钮，由用户换网或开加速后自己再点。
@@ -1489,7 +1533,7 @@ export function ExtensionsPage({
   useEffect(() => {
     if (!codexCatalogMissing || codexCatalogAutoTried.current || operation.busy) return
     codexCatalogAutoTried.current = true
-    addOfficialMarketplace()
+    addOfficialMarketplace(true)
   })
   const officialMarketplaceButton = (
     <Button
@@ -1497,7 +1541,7 @@ export function ExtensionsPage({
       icon={Plus}
       loading={operation.busy === 'marketplace-ensure'}
       disabled={Boolean(operation.busy)}
-      onClick={addOfficialMarketplace}
+      onClick={() => addOfficialMarketplace()}
       testId="plugins-official-marketplace-add"
     >
       {marketplace?.actionLabel ?? '添加官方市场'}
@@ -1522,6 +1566,17 @@ export function ExtensionsPage({
     ) : addButton
   const markets = resource.data?.codex?.plugins.marketplaces ?? []
   const filteredMarkets = filterExtensionMarkets(markets, query)
+  // 列表真的空着时这一页自己的那句话；插件页没有精选的工具、市场页签照旧用通用的那句。
+  const emptyDescription =
+    kind === 'mcp'
+      ? '装下面「星芒精选」里的，或点右上角「添加连接」接你自己的。'
+      : kind === 'skill'
+        ? supportsInstall
+          ? '点「导入技能」，选一个技能文件夹。'
+          : `按 ${toolName} 自己的方式放好技能，回来点「重新加载」就能看到。`
+        : view === 'installed' && curatedItems.length > 0
+          ? '装下面「星芒精选」里的，或到「市场」页签挑。'
+          : undefined
   return (
     <section
       className="v2-page"
@@ -1570,44 +1625,79 @@ export function ExtensionsPage({
             }}
           />
         }
+        // 没有插件市场的工具在「市场」页签里没什么可搜、可数的，只留选工具。
         search={
-          <SearchInput
-            value={query}
-            onChange={setQuery}
-            placeholder={kind === 'mcp' ? '搜索名称或地址' : '搜索名称或说明'}
-            testId={`${page}-search`}
-          />
+          noMarket ? undefined : (
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder={kind === 'mcp' ? '搜索名称或地址' : '搜索名称或说明'}
+              testId={`${page}-search`}
+            />
+          )
         }
         right={
-          <>
-            {resource.data && !resource.error && (
-              <span>
-                {kind === 'plugin' && view === 'market' && !officialMarketplacePage
-                  ? filteredMarkets.length
-                  : list.length}{' '}
-                {kind === 'mcp' ? '个连接' : '项'}
-              </span>
-            )}
-            {kind === 'mcp' && (
-              <>
-                {health.report?.checkedAt && !health.checking && (
-                  <span>上次检测 <RelativeTime value={health.report.checkedAt} /></span>
-                )}
+          noMarket ? undefined : (
+            <>
+              {resource.data && !resource.error && (
+                <span>
+                  {list.length} {kind === 'mcp' ? '个连接' : '项'}
+                </span>
+              )}
+              {kind === 'mcp' ? (
+                <>
+                  {healthFailed ? (
+                    <span data-testid="mcp-health-failed">这次没检测成</span>
+                  ) : (
+                    health.report?.checkedAt &&
+                    !health.checking && (
+                      <span>上次检测 <RelativeTime value={health.report.checkedAt} /></span>
+                    )
+                  )}
+                  <Button
+                    size="sm"
+                    icon={RefreshCw}
+                    loading={health.checking || resource.loading}
+                    disabled={health.checking || resource.loading}
+                    onClick={() => void recheck()}
+                    testId="mcp-health-recheck"
+                  >
+                    重新检测
+                  </Button>
+                </>
+              ) : (
                 <Button
                   size="sm"
                   icon={RefreshCw}
-                  loading={health.checking}
-                  disabled={health.checking}
-                  onClick={() => void health.check()}
-                  testId="mcp-health-recheck"
+                  loading={resource.loading}
+                  disabled={resource.loading}
+                  onClick={() => void resource.reload()}
+                  testId={`${page}-reload`}
                 >
-                  重新检测
+                  重新加载
                 </Button>
-              </>
-            )}
-          </>
+              )}
+            </>
+          )
         }
       />
+      {kind === 'skill' && !supportsInstall && (
+        <div className="v2-skill-import-note" data-testid="skills-import-unsupported">
+          <span>
+            {toolName} 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。
+          </span>
+          {onOpenTutorial && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onOpenTutorial(`skills#${skillImportTutorialExtra}`)}
+              testId="skills-import-guide"
+            >
+              看怎么放
+            </Button>
+          )}
+        </div>
+      )}
       {kind !== 'mcp' && !(kind === 'plugin' && view === 'market') && (
         <Segment
           options={scopeOptions}
@@ -1633,22 +1723,6 @@ export function ExtensionsPage({
           testId={`${page}-readonly`}
         />
       )}
-      {kind === 'skill' && !supportsInstall && (
-        <Notice
-          tone="neutral"
-          title="当前工具未提供技能导入能力"
-          body="请在该工具中管理技能，或切换到 Codex CLI / Gemini CLI。"
-        />
-      )}
-      {/* 插件页的「市场」页签本身就是一整份可装清单，精选只放在「已安装」那一侧。 */}
-      {(kind === 'mcp' || (kind === 'plugin' && view === 'installed')) && (
-        <CuratedShelf
-          items={curatedItems}
-          disabled={capability?.list === false || Boolean(operation.busy)}
-          installedIds={installedIds}
-          onPick={setCurated}
-        />
-      )}
       {officialMarketplacePage && marketplace && (
         <Notice
           tone={marketplace.tone}
@@ -1658,16 +1732,22 @@ export function ExtensionsPage({
           testId="plugins-official-marketplace"
         />
       )}
-      {view === 'market' && kind === 'plugin' && !officialMarketplacePage ? (
+      {noMarket ? (
         <Card padding="none">
           <Notice
             tone="neutral"
-            title="当前工具未提供市场管理接口"
-            body="已安装插件仍可在上一页管理。"
+            title={`${toolName} 没有插件市场`}
+            body="它的插件装好后在「已安装」里管理。"
+            actions={
+              <Button size="sm" onClick={showInstalledView} testId="plugins-market-go-installed">
+                去已安装
+              </Button>
+            }
+            testId="plugins-market-unavailable"
           />
         </Card>
       ) : (
-        <Card padding="none">
+        <Card padding="none" title={kind === 'mcp' ? '已添加' : undefined} testId={`${page}-list`}>
           <ListState
             page={page}
             noun={title}
@@ -1681,14 +1761,26 @@ export function ExtensionsPage({
               setQuery('')
               setScope('all')
             }}
+            emptyTitle={kind === 'mcp' ? '还没有添加连接' : undefined}
+            emptyDescription={emptyDescription}
             action={
-              curatedItems.length > 0 ? (
+              kind === 'skill' && !supportsInstall ? (
+                <Button
+                  size="sm"
+                  icon={RefreshCw}
+                  loading={resource.loading}
+                  onClick={() => void resource.reload()}
+                  testId={`${page}-empty-reload`}
+                >
+                  重新加载
+                </Button>
+              ) : curatedItems.length > 0 ? (
                 <>
                   {addButton}
                   {/* 和旁边的添加按钮一样大。 */}
                   <Button
                     icon={Sparkles}
-                    onClick={focusCuratedShelf}
+                    onClick={seeCurated}
                     testId={`${page}-see-curated`}
                   >
                     看看精选
@@ -1774,6 +1866,22 @@ export function ExtensionsPage({
                   testId={`${page}-row-${item.id}`}
                   actions={
                     <>
+                      {/* 行上写着「可更新」，更新就放在行上，不用再去「…」里找；菜单里那项照留。 */}
+                      {kind !== 'mcp' &&
+                        item.installed &&
+                        rowState.canUpdate &&
+                        item.update.state === 'update-available' && (
+                          <Button
+                            size="sm"
+                            icon={RefreshCw}
+                            loading={operation.busy === 'update'}
+                            disabled={Boolean(operation.busy)}
+                            onClick={() => act(item, 'update')}
+                            testId={`${page}-update-${item.id}`}
+                          >
+                            更新
+                          </Button>
+                        )}
                       {!item.installed && item.operations.install ? (
                         <Button
                           size="sm"
@@ -1933,16 +2041,26 @@ export function ExtensionsPage({
           </ListState>
         </Card>
       )}
+      {/* 推荐区放在自己的列表下面：读取中、读不到、搜不到都在上面那张卡里，第一屏就看得到。
+          插件页的「市场」页签本身就是一整份可装清单，精选只放在「已安装」那一侧。 */}
+      {(kind === 'mcp' || (kind === 'plugin' && view === 'installed')) && (
+        <CuratedShelf
+          items={shownCurated}
+          disabled={capability?.list === false || Boolean(operation.busy)}
+          installedIds={installedIds}
+          onPick={setCurated}
+        />
+      )}
       <Dialog
         open={Boolean(form)}
         title={
           form === 'market'
             ? '添加插件市场'
             : kind === 'mcp'
-              ? '添加连接'
+              ? `给 ${toolName} 添加连接`
               : kind === 'skill'
-                ? '导入技能'
-                : '添加插件'
+                ? `给 ${toolName} 导入技能`
+                : `给 ${toolName} 添加插件`
         }
         onClose={() => {
           if (!operation.busy) setForm(null)
@@ -2020,14 +2138,19 @@ export function ExtensionsPage({
               onChange={(event) => setFormName(event.target.value)}
               testId="mcp-name"
             />
-            <Segment
-              options={[
-                { value: 'http', label: '网络服务' },
-                { value: 'stdio', label: '本地程序' },
-              ]}
-              value={transport}
-              onChange={setTransport}
-            />
+            <div className="xm-field">
+              {/* 读屏从按钮组自己的名字读到它，这里只给眼睛看。 */}
+              <label aria-hidden="true">连接方式</label>
+              <Segment
+                label="连接方式"
+                options={[
+                  { value: 'http', label: '网络服务' },
+                  { value: 'stdio', label: '本地程序' },
+                ]}
+                value={transport}
+                onChange={setTransport}
+              />
+            </div>
           </>
         )}
         <Input
@@ -2086,8 +2209,10 @@ export function ExtensionsPage({
           </details>
         )}
         {form !== 'market' && (
+          // 外接工具的弹框照清单加小标题「装到哪里」；技能、插件的弹框只改了标题，下拉照旧不带字。
           <Select
-            aria-label="添加范围"
+            label={kind === 'mcp' ? '装到哪里' : undefined}
+            aria-label={kind === 'mcp' ? undefined : '添加范围'}
             options={[
               { value: 'user', label: '我的（全局）' },
               ...(provider === 'codex' && kind !== 'skill'
@@ -2229,7 +2354,7 @@ function RestoreCheckNotice({
   navigate,
 }: {
   check: RestoreCheck
-  navigate?: (page: V2Page) => void
+  navigate?: (page: V2Page, section?: string) => void
 }) {
   const name = providerName(check.provider)
   if (!check.result) {
@@ -2244,6 +2369,7 @@ function RestoreCheckNotice({
   }
   const view = connectionCheckView(check.result)
   const target = view.target
+  const section = view.section ?? undefined
   return (
     <Notice
       tone={view.tone}
@@ -2258,7 +2384,7 @@ function RestoreCheckNotice({
         target && navigate ? (
           <Button
             size="sm"
-            onClick={() => navigate(target)}
+            onClick={() => navigate(target, section)}
             testId="backups-restore-check-fix"
           >
             去处理
@@ -2288,7 +2414,8 @@ export function BackupsPage({
   api: V2Bridge
   /** 恢复成功后回调，用来让首页重读配置。 */
   onRestored?: (provider: Provider) => void
-  navigate?: (page: V2Page) => void
+  /** section：连接测试结论是「网络」时落到设置的「网络」组；缺省 = 只跳页。 */
+  navigate?: (page: V2Page, section?: string) => void
 }) {
   const load = useCallback(() => api.listBackups(), [api])
   const resource = useResource(load)
