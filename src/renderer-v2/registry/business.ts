@@ -261,7 +261,7 @@ export const notificationOptions = [
   {
     value: 'cliUpdate',
     label: '工具有新版本',
-    description: '你装的命令行工具出新版本时提醒一次',
+    description: '你装的工具出新版本时提醒一次',
   },
   {
     value: 'announcement',
