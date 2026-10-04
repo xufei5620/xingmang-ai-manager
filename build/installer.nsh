@@ -7,7 +7,8 @@
 #   2. customHeader 里的目录页守卫：不许把程序装进别人的非空目录。
 #   3. customRemoveFiles：卸载时只删本程序自己装进去的东西。
 #   4. customInit：系统太旧（Windows 10 以下）时一开始就说明并退出。
-#   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项。
+#   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项，再删掉第 1 件事
+#      补建在当前用户桌面和开始菜单里的图标。
 #   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录和聊天记录」勾选框（默认不勾）。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
@@ -201,6 +202,42 @@
       Pop $R0
     FunctionEnd
 
+    # 公共桌面、公共开始菜单写不进去的电脑上，customInstall 把图标补建在执行安装的
+    # 这个用户自己的桌面和开始菜单里。模板卸载时只删 setLinkVars 在「所有用户」
+    # 上下文里算出的那两个，补建的这两个没人删：卸完留着点不开的图标；以后重装到
+    # 别的文件夹，customInstall 看见同名图标还在，也不再补。
+    #
+    # 所以这里删的就是补建时写的那几个固定路径：图标名是编译期常量，不用通配符，
+    # 不带 /r。只在真卸载时调（见 customUnInstall）：升级时新版不补图标，这时删了
+    # 图标就真没了。普通账号输管理员密码安装、卸载时，补建和删除都落在那个管理员
+    # 自己的桌面上。
+    Function un.xingmangRemoveFallbackShortcuts
+      # 按当前用户安装时，模板删的本来就是当前用户那两个；带 --keep-shortcuts 时
+      # 跟模板一样一个都不删。
+      ${If} $installMode != "all"
+      ${OrIf} ${isKeepShortcuts}
+        Return
+      ${EndIf}
+      SetShellVarContext current
+      # 和模板删公共图标的做法一致：先 WinShell::UninstShortcut 再 Delete。
+      !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
+        WinShell::UninstShortcut "$DESKTOP\${SHORTCUT_NAME}.lnk"
+        Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
+      !endif
+      !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+        !ifdef MENU_FILENAME
+          WinShell::UninstShortcut "$SMPROGRAMS\${MENU_FILENAME}\${SHORTCUT_NAME}.lnk"
+          Delete "$SMPROGRAMS\${MENU_FILENAME}\${SHORTCUT_NAME}.lnk"
+          # 不带 /r：文件夹里还有别的东西就留着。
+          RMDir "$SMPROGRAMS\${MENU_FILENAME}"
+        !else
+          WinShell::UninstShortcut "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
+          Delete "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
+        !endif
+      !endif
+      !insertmacro xingmangRestoreShellVarContext
+    FunctionEnd
+
     # 卸载欢迎页上加一个勾选框。欢迎页正文标签占到 175u（MUI2 Welcome.nsh：从 45u
     # 起 130u 高），整页 193u 高，勾选框放在正文下面、页面底边之内。背景跟欢迎页
     # 一样是白的，不设就会是一块灰底。
@@ -358,10 +395,12 @@
 
 # 卸载区段里，这个宏在 CHECK_APP_RUNNING 已经结束掉程序之后、删文件之前执行。
 # 升级安装也会以 --updated 跑一遍旧版的卸载程序：那时不能删开机项（用户的开关
-# 会被悄悄关掉），也不必动代理（新版启动时会自己恢复），所以只在真正卸载时做。
+# 会被悄悄关掉），也不必动代理（新版启动时会自己恢复），补建的图标也得留着
+# （新版不会再补），所以只在真正卸载时做。
 !macro customUnInstall
   ${IfNot} ${isUpdated}
     Call un.xingmangUninstallCleanup
+    Call un.xingmangRemoveFallbackShortcuts
   ${EndIf}
 !macroend
 
@@ -388,7 +427,8 @@
 # 所以这里只做加法：缺了才补，补不上公共桌面就退回执行安装的这个用户自己的
 # 桌面。已经存在的快捷方式一律不碰，升级安装因此既不会多出第二个图标，也不会
 # 把用户自己挪过位置或改过名字的那一个删掉。更新器拉起的静默安装不走这里，
-# 用户主动删掉的图标不会被复活。
+# 用户主动删掉的图标不会被复活。补到当前用户那里的图标，模板卸载时不管，由
+# un.xingmangRemoveFallbackShortcuts 按同样的路径删掉，两边要一起改。
 #
 # 这段脚本在提权的安装进程里执行，所以只允许出现 CreateShortCut 与路径判断，
 # 不读注册表以外的外部输入，也永远不删除任何文件。
