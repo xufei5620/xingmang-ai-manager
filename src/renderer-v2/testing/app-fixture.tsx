@@ -250,7 +250,7 @@ const recentWorkspaceSessions = [
   // older-app 的目录已经被删掉了:卡片上这一行的「接着聊」该按不动（候选 7）。
   recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300, false),
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
-  // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页「查看记录」置灰并说明。
+  // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页照样能点开，详情里说明只有摘要、不能导出。
   recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100, true, false),
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
 ]

@@ -11,7 +11,8 @@
 .acceleration-heading h1 { margin: 0; font-size: var(--font-h1); line-height: var(--line-heading); letter-spacing: -.4px; }
 .acceleration-heading p { margin: var(--space-2) 0 0; color: var(--text-2); font-size: var(--font-body); }
 .acceleration-preview { padding: 3px 7px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); font-size: var(--font-small-compact); }
-.acceleration-workbench { display: grid; grid-template-columns: minmax(0, 1.37fr) minmax(0, 1fr); min-height: 444px; border: 1px solid var(--line-2); border-radius: var(--radius-dialog); background: var(--panel-solid); overflow: hidden; box-shadow: var(--tile-ring); }
+/* 工作台不定死高度，跟着地球和圆环走：窗口 1280×560 时「开始加速」也在第一屏里。 */
+.acceleration-workbench { display: grid; grid-template-columns: minmax(0, 1.37fr) minmax(0, 1fr); border: 1px solid var(--line-2); border-radius: var(--radius-dialog); background: var(--panel-solid); overflow: hidden; box-shadow: var(--tile-ring); }
 .acceleration-stage { position: relative; display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-7) var(--space-4); isolation: isolate; color: var(--acceleration-stage-text); background: radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--xm-slate) 27%, transparent), transparent 68%), var(--acceleration-stage); }
 .acceleration-stage::before { position: absolute; inset: 0; z-index: -1; background-image: radial-gradient(circle, var(--acceleration-stage-line) .65px, transparent .75px); background-size: 20px 20px; opacity: .35; content: ''; }
 .acceleration-stage-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
@@ -19,7 +20,7 @@
 .acceleration-stage-title { margin-top: var(--space-6); }
 .acceleration-stage-title h2 { margin: 0; color: var(--acceleration-stage-text); font-size: var(--font-h1); font-weight: 600; letter-spacing: .4px; }
 .acceleration-stage-title p { margin: var(--space-2) 0 0; color: var(--acceleration-stage-muted); font-size: var(--font-small); }
-.acceleration-orb { position: relative; flex: 1; min-height: 222px; margin: -16px -20px -13px; }
+.acceleration-orb { position: relative; flex: 1; min-height: 140px; margin: -16px -20px -13px; }
 .acceleration-globe { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .acceleration-globe-route { animation: acceleration-route-flow 9s linear infinite; animation-play-state: paused; }
 .acceleration-page[data-phase="active"] .acceleration-globe-route { animation-play-state: running; }
@@ -33,8 +34,9 @@
 .acceleration-route-latency { display: grid; gap: var(--space-1); flex: none; text-align: right; }
 .acceleration-route-latency strong { font: 500 var(--font-h2) var(--mono); }
 .acceleration-route-latency small { font-size: var(--font-small-compact); font-weight: 400; }
-.acceleration-line-picker { position: relative; margin-top: var(--space-2); }
-.acceleration-line-remembered { margin-left: var(--space-2); color: var(--text-3); font-size: var(--font-small-compact); }
+/* 「换线路」在深色底上做成浅色描边的小按钮：原来是深底上的一行字，看着不像能点。线路列表从这一行上面弹出来。 */
+.acceleration-route-info > .xm-btn { flex: none; border-color: color-mix(in srgb, var(--xm-sky) 45%, transparent); color: var(--acceleration-stage-text); }
+.acceleration-route-info > .xm-btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--xm-sky) 70%, transparent); color: var(--acceleration-stage-text); background: var(--acceleration-stage-inset); }
 .acceleration-line-list { display: grid; gap: 2px; position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(100% + 4px); max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--line-2); border-radius: var(--radius-input); background: var(--panel-solid); box-shadow: var(--shadow-float); }
 .acceleration-line-list-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 5px; color: var(--text-3); font-size: var(--font-small-compact); }
 .acceleration-line-option { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 5px; border-radius: var(--radius-input); }
@@ -58,14 +60,14 @@
 .acceleration-console-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
 .acceleration-console-top > span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--font-small); }
 .acceleration-quota-badge { padding: 3px 9px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); background: var(--panel); font-size: var(--font-small-compact); }
-.acceleration-quota { position: relative; display: grid; place-items: center; min-height: 188px; flex: 1; margin: 2px 0; }
-.acceleration-quota-ring { position: absolute; width: 206px; height: 206px; fill: none; }
+.acceleration-quota { position: relative; display: grid; place-items: center; min-height: 164px; flex: 1; margin: 2px 0; }
+.acceleration-quota-ring { position: absolute; width: 160px; height: 160px; fill: none; }
 .acceleration-quota-track { stroke: var(--line); stroke-width: 3; }
 .acceleration-quota-ticks { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 1 8; }
 .acceleration-quota-progress { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray var(--duration-progress) linear; }
-.acceleration-quota-label { position: relative; display: grid; justify-items: center; gap: var(--space-2); }
+.acceleration-quota-label { position: relative; display: grid; justify-items: center; gap: var(--space-1); }
 .acceleration-quota-label > span { color: var(--text-2); font-size: var(--font-small); }
-.acceleration-quota-label strong { color: var(--text); font: 500 calc(var(--font-display) - 6px)/var(--line-display) var(--mono); letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }
+.acceleration-quota-label strong { color: var(--text); font: 500 calc(var(--font-display) - 16px)/var(--line-display) var(--mono); letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }
 .acceleration-quota-label small { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); font-size: var(--font-small-compact); }
 .acceleration-page[data-phase="active"] .acceleration-quota-label small { color: var(--ok); }
 .acceleration-primary-action > .xm-btn { width: 100%; min-height: 46px; height: auto; border-radius: var(--radius-button); font-size: var(--font-body); }

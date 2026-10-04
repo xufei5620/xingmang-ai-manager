@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, KeyRound, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
-import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
+import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolRow, useToast } from '../../ui'
 import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -25,6 +25,7 @@ import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, ru
 import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 
 export interface HomeProps {
   api: ToolsApi
@@ -101,8 +102,22 @@ export interface HomeProps {
   onBootstrapRetry?(): void
 }
 
+type ExternalPresentation = ReturnType<typeof presentExternalClients>[number]
+
 function firstRunOf(tool: ToolId) {
   return toolRegistry.find((item) => item.id === tool)?.firstRun
+}
+
+/**
+ * 「试试第一条命令」给哪个工具。装好又连上之后才给：还没配 Key 时第一条命令敲下去只会报错，
+ * 那不是「可以试试」。一次只给一个，关掉它下一个才轮上，免得首页被四张一样的卡片占满。
+ * 「最近」里已经有这个工具的记录，说明早就用起来了，不再教第一条命令。记录还没读回来
+ * （usedProviders 为 null）时谁都不给：先给了、读完记录又收走，老用户会看到这张卡一闪而过。
+ */
+export function pickFirstRunTool(installed: ToolPresentation[], jobs: Record<string, ToolJob>, dismissed: ToolId[], usedProviders: ReadonlySet<ProviderId> | null): ToolPresentation | undefined {
+  if (!usedProviders) return undefined
+  return installed.find((tool) => tool.status.installed && !jobs[tool.id] && tool.configured && !tool.error
+    && !dismissed.includes(tool.id) && firstRunOf(tool.id) !== undefined && !usedProviders.has(tool.provider))
 }
 
 /**
@@ -163,6 +178,12 @@ const foreignKeyDetails = {
 
 const nodeInstallerPartMissingNote = '少了装工具用的组件，重装一次 Node.js 就好'
 
+// 「配置」只在「…」里（同一行不放两个配置入口），所以鼠标停上去要说出来。
+const toolMenuLabel = '配置和更多操作'
+
+// 「还可以装」收起来以后记在本机：切到别的页再回来、下次打开都照旧收着。
+const availablePreference = 'xingmang-v2-home-available'
+
 /** npm 是随 Node.js 一起装的：Node.js 在、它却确实不在（不是没查出来）才算缺。 */
 export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['runtime'] | undefined) {
   return Boolean(runtime?.node.installed && runtime.npm && !runtime.npm.installed && !runtime.npm.detectionFailed)
@@ -189,6 +210,10 @@ export function Home(props: HomeProps) {
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
   const { offline } = useOnlineStatus()
   const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
+  // 大字只放数字或「—」；没数字时旁边那行小字说清是在恢复登录、在读，还是没读到，别在读的时候说「暂未读到」。
+  const balanceLabel = balance || (!account && !props.accountRestoring) ? '可用余额 · 美元'
+    : props.accountRestoring ? '正在恢复登录'
+      : balanceState.error && !balanceState.loading ? '暂时没有读到' : '正在读取余额'
   const toast = useToast()
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
@@ -238,12 +263,20 @@ export function Home(props: HomeProps) {
   }, [props.api, recentAttempt, props.recentRevision])
   const tools = snapshot ? presentTools(snapshot) : []
   const installed = tools.filter((tool) => tool.status.installed || jobs[tool.id])
-  const available = tools.filter((tool) => !tool.status.installed && !jobs[tool.id])
+  // 检测失败的不当成没装：留在「你的工具」里，那一行写「检测失败」、给「重新检测」，不挪进「还可以装」。
+  const undetected = (tool: ToolPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.error)
+  const yourTools = tools.filter((tool) => tool.status.installed || jobs[tool.id] || undetected(tool))
+  const available = tools.filter((tool) => !tool.status.installed && !jobs[tool.id] && !undetected(tool))
   const external = presentExternalClients(props.externalClients)
+  const undetectedExternal = (tool: ExternalPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.status.detectionError)
   const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
-  const availableExternal = external.filter((tool) => !tool.status.installed && !jobs[tool.id])
+  const yourExternal = external.filter((tool) => tool.status.installed || jobs[tool.id] || undetectedExternal(tool))
+  const availableExternal = external.filter((tool) => !tool.status.installed && !jobs[tool.id] && !undetectedExternal(tool))
   const installedCount = installed.length + installedExternal.length
+  const undetectedCount = yourTools.length - installed.length + yourExternal.length - installedExternal.length
   const availableCount = available.length + availableExternal.length
+  // 第一次检测还没回来：只放「你的工具」的灰色占位，不先画「还可以装」。
+  const firstScan = loading && !snapshot
   const dollars = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
   const subscription = props.subscription ?? null
   // 有订阅时请求先扣订阅，钱包是 0 也照常能用，余额卡不再标红。
@@ -255,6 +288,14 @@ export function Home(props: HomeProps) {
   const configFailure = props.failures?.find((failure) => failure.partition === 'config') ?? null
   const ready = installed.some((tool) => tool.configured && !tool.error) || installedExternal.some((tool) => tool.ready && !tool.status.detectionError)
   const connectedCount = installed.filter((tool) => tool.configured).length + installedExternal.filter((tool) => tool.status.configured && tool.status.configurationSource === 'xingmang').length
+  const updatableCount = installed.filter((tool) => tool.updateAvailable).length
+  // 「N 个已连接」原来挂在余额卡右上角，放错了卡；配置没读到时不知道连没连，不写这一段。
+  const yourToolsMeta = [
+    `${installedCount} 个已装`,
+    ...(connectedCount > 0 && !configFailure ? [`${connectedCount} 个已连接`] : []),
+    ...(undetectedCount > 0 ? [`${undetectedCount} 个没检测出来`] : []),
+    ...(updatableCount > 0 ? [`${updatableCount} 个有更新`] : []),
+  ].join(' · ')
   // Git 是可选环境：只在探到「确实没装」时提示（探测失败按 A4 显示失败、不当没装）。
   const gitHost = gitHostPlatform(snapshot?.platform.platform ?? 'other')
   const gitStatus = snapshot?.system.runtime.git
@@ -265,6 +306,7 @@ export function Home(props: HomeProps) {
   // 探测失败时不给这段：那时候并不知道它装没装，「没有找到」是假话（同 Git 那一行 A4）。
   const nodeMissing = Boolean(snapshot && !snapshot.system.runtime.node.installed && !snapshot.system.runtime.node.detectionFailed)
   const pythonMissing = Boolean(snapshot && !snapshot.system.runtime.python.installed && !snapshot.system.runtime.python.detectionFailed)
+  const runtimeUndetected = !loading && Boolean(snapshot && (snapshot.system.runtime.node.detectionFailed || snapshot.system.runtime.python.detectionFailed))
   const nodeGuide = nodeMissing ? runtimeInstallGuide('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
   const pythonGuide = pythonMissing ? runtimeInstallGuide('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) : null
   const nodeManagedNotice = nodeMissing ? managedRuntimeNotice('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
@@ -304,10 +346,11 @@ export function Home(props: HomeProps) {
   // 用户点第三条、接上的却是第一条。判断用的是整份最近记录(api.recent 一次取
   // 60 条),不是卡片上显示的那 3 条。
   const resumable = latestSessionIdsByWorkspace(recent?.items ?? [])
-  // 装好又连上之后才给这张卡：还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
-  // 一次只显示一个工具，关掉它下一个才轮上，免得首页被四张一样的卡片占满。
-  const firstRunTool = installed.find((tool) => tool.status.installed && !jobs[tool.id] && tool.configured && !tool.error
-    && !firstRunDismissed.includes(tool.id) && firstRunOf(tool.id) !== undefined)
+  const usedTools = new Set<ProviderId>((recent?.items ?? []).map((session) => session.provider))
+  // Codex 装好了就等「最近」读完再决定，免得用过 Codex 的人先看到「第一次用 Codex？」、一眨眼又没了；读不到记录时照旧给。
+  const codexInUse = tools.some((tool) => tool.provider === 'codex' && tool.status.installed) && (usedTools.has('codex') || (recent === null && !recentError))
+  // 记录读不到时当作谁都没用过，照旧给卡。
+  const firstRunTool = pickFirstRunTool(installed, jobs, firstRunDismissed, recent !== null || recentError ? usedTools : null)
   const firstRun = firstRunTool ? firstRunOf(firstRunTool.id) : undefined
   const renderTool = useCallback((tool: ToolPresentation) => {
     const installJob = jobs[tool.id]
@@ -458,9 +501,9 @@ export function Home(props: HomeProps) {
         )
           ? [{ label: '卸载', danger: true, onSelect: () => props.onUninstall(tool.id) }]
           : []),
-      ] : undefined} testId={`tool-row-${tool.id}`} />
+      ] : undefined} menuLabel={toolMenuLabel} testId={`tool-row-${tool.id}`} />
   }, [bootstrapBusy, jobs, launchBusy, launchReadyBeforeScan, loading, props, recent])
-  const renderExternal = (tool: ReturnType<typeof presentExternalClients>[number]) => {
+  const renderExternal = (tool: ExternalPresentation) => {
     const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
     const status = installJob ? 'installing' : tool.status.detectionError ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : tool.configurationStatus
@@ -486,7 +529,7 @@ export function Home(props: HomeProps) {
         // 而四个 CLI 行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
         ...(tool.action === 'configure' ? [] : [{ label: '配置', testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
         ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy, onSelect: () => props.onLaunchExternal(tool.id) }]),
-      ] : undefined} testId={`tool-row-${tool.id}`} />
+      ] : undefined} menuLabel={toolMenuLabel} testId={`tool-row-${tool.id}`} />
   }
   return <section className="v2-page v2-home" data-testid="page-home">
     <PageHead title={`${greeting(new Date().getHours())}${account ? `，${account.username}` : ''}`}
@@ -506,7 +549,7 @@ export function Home(props: HomeProps) {
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
-    {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到：{configFailure.message}工具列表、安装和卸载照常可用；点工具行的“重新配置”可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
+    {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到（{configFailure.message.replace(/[。.\s]+$/, '')}）。工具列表、安装和卸载照常可用；点工具行的「重新配置」可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.supportsBilling !== false && dollars !== null && dollars < 5 && !subscription && <div role="status" className="v2-callout is-bad" data-testid="home-low-balance"><Zap size={18} /><span>{lowBalanceText(dollars)}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
     {props.supportsBilling !== false && subscriptionNotice && <div role="status" className="v2-callout is-bad" data-testid="home-subscription-warning"><Zap size={18} /><span>{subscriptionNotice}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>去续费</Button></div>}
     {loading && snapshot?.system.cachedAt && <div className="v2-loading-inline" role="status" data-testid="home-cached-scan">正在检查本机工具，先显示上次的结果。</div>}
@@ -516,11 +559,8 @@ export function Home(props: HomeProps) {
           <div className="v2-setup-focus"><span className="v2-step-number">1</span><div><h3>选择一种开始方式</h3><p>选一个工具先开始，之后随时可以再装别的。</p></div><Button variant="primary" onClick={props.onGuide}>开始准备</Button></div>
           <ol className="v2-setup-steps">{['选开始方式', '准备工具', '确认连接', '开始使用'].map((label, i) => <li key={label}><span>{i + 1}</span>{label}</li>)}</ol>
         </Card>}
-        {loading && !snapshot ? <Card title="你的工具"><Progress value={0} label="正在检测本机工具" /></Card> : <>
-          {installedCount > 0 && <Card title="你的工具" meta={`${installedCount} 个已装${installed.some((tool) => tool.updateAvailable) ? ` · ${installed.filter((tool) => tool.updateAvailable).length} 个有更新` : ''}`} padding="none">{installed.map(renderTool)}{installedExternal.map(renderExternal)}</Card>}
-          {availableCount > 0 && <Card title="还可以装" meta={`${availableCount} 个`} collapsible padding="none">{available.map(renderTool)}{availableExternal.map(renderExternal)}</Card>}
-          {props.externalLoading && !external.length && <div className="v2-loading-inline" role="status">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
-        </>}
+        {firstScan ? <Card title="你的工具" testId="home-tools-detecting"><p className="v2-loading-inline" role="status">正在检测这台电脑上装了哪些工具</p><Skeleton rows={3} /></Card>
+          : yourTools.length + yourExternal.length > 0 && <Card title="你的工具" meta={<span title={yourToolsMeta}>{yourToolsMeta}</span>} padding="none" testId="home-your-tools">{yourTools.map(renderTool)}{yourExternal.map(renderExternal)}</Card>}
         {firstRunTool && firstRun && <Card title="试试第一条命令" meta={firstRunTool.name} testId="home-first-run"
           actions={<Button variant="ghost" size="xs" icon={X} aria-label="不再显示这条提示" title="不再显示这条提示" testId="home-first-run-dismiss"
             onClick={() => setFirstRunDismissed((current) => dismissFirstRun(getFirstRunStorage(), current, firstRunTool.id))} />}>
@@ -545,6 +585,10 @@ export function Home(props: HomeProps) {
                 </>} />)
                 : <Empty icon={History} title="还没有对话记录" description="打开工具聊过之后，这里会出现最近的会话。" />}
         </Card>
+        {/* 「还可以装」排在最下面：老用户天天看的是上面三张，新用户要装的东西在「开始使用」里也能找到。 */}
+        {!firstScan && availableCount > 0 && <Card title="还可以装" meta={`${availableCount} 个`} collapsible defaultOpen={readLocalPreference(availablePreference) !== 'collapsed'}
+          onOpenChange={(open) => { writeLocalPreference(availablePreference, open ? 'expanded' : 'collapsed') }} padding="none" testId="home-available">{available.map(renderTool)}{availableExternal.map(renderExternal)}</Card>}
+        {!firstScan && props.externalLoading && !external.length && <div className="v2-loading-inline" role="status">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
       </div>
       <aside className="v2-home-aside">
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>
@@ -554,7 +598,9 @@ export function Home(props: HomeProps) {
             // 装工具用的那个组件（npm）是 Node.js 自带的，不单列一行，缺了才在 Node.js 这一行说。
             const partMissing = id === 'node' && nodeInstallerPartMissing(snapshot?.system.runtime)
             const text = jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))
-            return <div key={id} className="v2-runtime-row" data-testid={`home-runtime-row-${id}`}><i className={`v2-dot ${status?.installed && !partMissing ? 'is-ok' : optional ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : 'Git'}</strong>
+            // 检测中、还没检测过都是灰点：那时不知道装没装，不能先挂橙点。
+            const dot = loading || !status ? '' : status.installed && !partMissing ? 'is-ok' : optional ? '' : 'is-warn'
+            return <div key={id} className="v2-runtime-row" data-testid={`home-runtime-row-${id}`}><i className={`v2-dot ${dot}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : 'Git'}</strong>
               <span>{partMissing && !jobs[id] && !loading ? `${text} · ${nodeInstallerPartMissingNote}` : text}</span>
             </div>
           })}</div>
@@ -564,22 +610,25 @@ export function Home(props: HomeProps) {
           {nodeManagedNotice && !jobs.node && <p className={runtimeHintClass} data-testid="home-runtime-node-managed">{nodeManagedNotice}</p>}
           {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} />}
           {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
-          <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
-            {!snapshot?.system.runtime.python.installed && runtimeInstallButtonShown('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
+          {/* 确认没装才给安装按钮；检测中不给，检测失败给「重新检测」。 */}
+          <div className="v2-runtime-actions">{runtimeUndetected && <Button variant="ghost" size="sm" icon={RefreshCw} onClick={props.onScan} testId="home-runtime-rescan">重新检测</Button>}
+            {!loading && nodeMissing && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
+            {!loading && pythonMissing && runtimeInstallButtonShown('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
             {((nodeGuide && !nodeGuide.noTutorial) || (pythonGuide && !pythonGuide.noTutorial)) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial', macRuntimeTutorialTopic)} testId="home-runtime-tutorial">看教程</Button>}
             {gitMissing && gitHost !== 'other' && <Button variant="ghost" size="sm" icon={Download} loading={Boolean(jobs.git)} disabled={Boolean(jobs.git)} onClick={() => props.onRuntime('git')} testId="home-runtime-git">安装 Git</Button>}</div>
         </Card>
-        <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>
-          <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
+        <Card title="账户余额" padding="none">
+          <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '—' : `$${dollars.toFixed(2)}`}</strong><small data-testid="home-balance-label">{balanceLabel}</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
             {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}
             <div className="v2-balance-usage">{monthUsed !== null && dollars !== null && <Progress tone={tier === 'neutral' ? 'neutral' : tier} value={monthUsed + dollars > 0 ? monthUsed / (monthUsed + dollars) * 100 : 0} label={`本月已用 $${monthUsed.toFixed(2)}`} />}
-              <p>{subscriptionLine ? <span data-testid="home-subscription">{subscriptionLine}</span> : props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : props.accountRestoring ? '登录恢复后自动显示用量' : '登录后查看用量')}</p></div>
+              <p>{subscriptionLine ? <span data-testid="home-subscription">{subscriptionLine}</span> : props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? balance ? '最近 7 天暂无用量' : '读到余额后显示还能用多久' : account ? '正在读取用量' : props.accountRestoring ? '登录恢复后自动显示用量' : '登录后查看用量')}</p></div>
             <div className="v2-balance-actions">{props.supportsBilling !== false && <Button variant="balance" size="sm" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')}>充值</Button>}{props.supportsUsage !== false && <Button variant="ghost" size="sm" onClick={() => props.onNavigate('account', 'dashboard')}>用量看板</Button>}</div>
           </div>
         </Card>
-        <Card title="可以试试" padding="none" testId="home-suggestions"><ListRow icon={Plug} title="给 AI 连上浏览器和数据库" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="查看外接工具" title="查看外接工具" onClick={() => props.onNavigate('mcp')} />} />
-          <ListRow icon={MessageSquare} title="不开终端，直接在这里聊" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="打开聊天" title="打开聊天" onClick={() => props.onNavigate('chat')} />} />
-          <ListRow icon={BookOpen} title="第一次用 Codex？跟着 4 步开始" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="查看教程" title="查看教程" onClick={() => props.onNavigate('tutorial')} />} /></Card>
+        {/* 整行都能点，右边的箭头只是记号。Codex 已经在用（装着、「最近」里有它的记录）就不再教它入门。 */}
+        <Card title="可以试试" padding="none" testId="home-suggestions"><ListRow icon={Plug} title="给 AI 连上浏览器和数据库" onOpen={() => props.onNavigate('mcp')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-mcp" />
+          <ListRow icon={MessageSquare} title="不开终端，直接在这里聊" onOpen={() => props.onNavigate('chat')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-chat" />
+          {!codexInUse && <ListRow icon={BookOpen} title="第一次用 Codex？跟着 4 步开始" onOpen={() => props.onNavigate('tutorial')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-codex" />}</Card>
       </aside>
     </div>
     {officialOpen && <Dialog open title="ChatGPT 官方账户额度" width={480} onClose={() => setOfficialOpen(false)} busy={officialBusy}

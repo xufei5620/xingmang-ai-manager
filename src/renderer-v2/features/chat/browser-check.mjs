@@ -209,7 +209,9 @@ test('group options show canonical names and native menus inherit the active the
     assert.equal(geometry.selectWidth, 240)
     assert.equal(await model.inputValue(), 'gpt-5.6-sol', '首次进入文本对话应选择截图中的默认模型')
     await model.selectOption('other-model')
-    await page.getByText('自动 · 费用不可预测', { exact: true }).waitFor()
+    // 计费提示只留输入框下面那一句，右上角那个「自动 · 费用不可预测」去掉了。
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多')
+    assert.equal(await page.getByText('自动 · 费用不可预测', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
 
@@ -729,6 +731,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
     })
     await page.waitForFunction(() => document.querySelectorAll('.chat-draft-image').length === 2)
     assert.equal((await calls(page, 'paste-image')).length, 1)
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带图片的提问会更贵一些')
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false, 'images alone are enough to send')
     await page.getByTestId('chat-send').click()
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
@@ -782,5 +785,96 @@ test('typing in the composer does not re-render the markdown of existing message
     await page.getByTestId('chat-composer-input').pressSequentially('打字不卡')
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '打字不卡')
     assert.equal(await page.evaluate(() => window.__markdownRenders) - before, 0)
+  } finally { await page.close() }
+})
+
+test('an empty chat says where conversations go, and its examples only fill the composer', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '聊过的对话会存在这里')
+    assert.equal(await page.getByText('还没有对话', { exact: true }).count(), 0)
+    const empty = page.getByTestId('chat-empty')
+    await empty.getByText('选好分组和模型，直接在下面输入。', { exact: true }).waitFor()
+    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['解释一段报错是什么意思', '帮我写一个 Python 小脚本', '把这段话翻译成英文'])
+    await page.getByTestId('chat-example-2').click()
+    const input = page.getByTestId('chat-composer-input')
+    assert.equal(await input.inputValue(), '帮我写一个 Python 小脚本')
+    assert.equal(await input.evaluate((element) => element === document.activeElement), true)
+    assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
+    // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
+    assert.equal(await empty.getByRole('button').count(), 0)
+    await input.fill('')
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+    await empty.getByText('选好分组和模型，直接在下面输入。', { exact: true }).waitFor()
+    assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
+  } finally { await page.close() }
+})
+
+test('history that cannot be read is left alone, and reading it again brings it back with what was said meanwhile', async () => {
+  const page = await open()
+  try {
+    const first = await send(page, 'said before')
+    await emit(page, { type: 'content', requestId: first.requestId, content: 'earlier answer' })
+    await emit(page, { type: 'complete', requestId: first.requestId })
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages.length === 2)
+    const before = await saved(page)
+    await page.goto(`${base}/src/renderer-v2/features/chat/browser-fixture.html?historyReadFail=1`)
+    await page.getByTestId('chat-composer-input').waitFor()
+    const banner = page.getByRole('alert').filter({ hasText: '以前的聊天记录暂时读不出来，原文件没动。现在聊的内容不会保存，关掉软件就没了。' })
+    await banner.waitFor()
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '以前的对话暂时读不出来')
+    const meanwhile = await send(page, 'said meanwhile')
+    await emit(page, { type: 'content', requestId: meanwhile.requestId, content: 'answer meanwhile' })
+    await emit(page, { type: 'complete', requestId: meanwhile.requestId })
+    await page.waitForTimeout(400)
+    assert.deepEqual(await saved(page), before, 'nothing is written over a record that could not be read')
+    // 还是读不出来：红条和按钮都留着，记录照旧不碰。
+    await page.getByTestId('chat-history-reload').click()
+    await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'read-history').length === 2)
+    await page.getByTestId('chat-history-reload').waitFor()
+    await banner.waitFor()
+    await page.evaluate(() => window.chatHarness.failHistoryReads(false))
+    await page.getByTestId('chat-history-reload').click()
+    await banner.waitFor({ state: 'detached' })
+    assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    await page.getByText('answer meanwhile', { exact: true }).waitFor()
+    await waitSaved(page, (workspace) => workspace.conversations.length === 2)
+    const merged = await saved(page)
+    assert.deepEqual(merged.conversations.map((conversation) => conversation.messages[0].content), ['said meanwhile', 'said before'])
+  } finally { await page.close() }
+})
+
+test('a reply that fails before any text shows only its reason, with no empty bubble', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'will fail')
+    await emit(page, { type: 'error', requestId: request.requestId, message: 'network error' })
+    const reply = page.locator('.chat-message[data-role=assistant]')
+    const reason = reply.locator('.chat-message-error')
+    await reason.waitFor()
+    assert.equal(await reply.locator('.chat-bubble').count(), 0)
+    assert.equal(await page.locator('.chat-message[data-role=user] .chat-bubble').count(), 1)
+    // 红字放在气泡的位置：和头像挨着、顶边对齐。
+    const [avatar, line] = await Promise.all([reply.locator('.chat-avatar').boundingBox(), reason.boundingBox()])
+    assert.ok(Math.abs(line.y - avatar.y) <= 4, `the reason sits beside the avatar (${line.y} vs ${avatar.y})`)
+  } finally { await page.close() }
+})
+
+test('the composer starts one line high, grows with the text and scrolls inside past about eight lines', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    const input = page.getByTestId('chat-composer-input')
+    const size = () => input.evaluate((element) => ({ height: element.getBoundingClientRect().height, line: parseFloat(getComputedStyle(element).lineHeight), scrolls: element.scrollHeight > element.clientHeight }))
+    const one = await size()
+    assert.ok(Math.abs(one.height - (one.line + 6)) <= 1, `one line high (${one.height})`)
+    await input.fill('一\n二\n三')
+    assert.ok(Math.abs((await size()).height - (3 * one.line + 6)) <= 1)
+    await input.fill(Array.from({ length: 20 }, (_, index) => `第 ${index + 1} 行`).join('\n'))
+    const full = await size()
+    assert.ok(Math.abs(full.height - (8 * one.line + 6)) <= 1, `stops at eight lines (${full.height})`)
+    assert.equal(full.scrolls, true)
   } finally { await page.close() }
 })

@@ -25,7 +25,7 @@ export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResul
 }
 
 /**
- * 记录页「接着上次对话」成功后那句话。用户选了「先不打开」就什么都不说，
+ * 记录页「接着聊」成功后那句话。用户选了「先不打开」就什么都不说，
  * 不能再说「已打开」。
  */
 export function resumeSessionNotice(result: CliLaunchResult | void | undefined, toolName: string, cwd: string): string | null {

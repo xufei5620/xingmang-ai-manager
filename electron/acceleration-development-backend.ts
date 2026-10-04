@@ -188,7 +188,7 @@ export const accelerationStartFailureMessages: Record<AccelerationStartFailureSt
   'core-port': '加速没能打开：这台电脑上加速要用的本机通道被别的程序占满了。关掉别的加速器或下载工具后，再点「开始加速」。',
   'core-storage': '加速没能打开：本机的加速文件没通过安全检查。请完全退出软件（含托盘图标）后重新打开；还不行就联系客服。',
   'line-unavailable': '加速没能打开：现在没有能连通的线路。请检查这台电脑能不能正常上网，稍后再点「开始加速」。',
-  'line-unreachable': '加速没能打开：这条线路现在连不通。点「选择加速线路」换一条线路试试。',
+  'line-unreachable': '加速没能打开：这条线路现在连不通。点「换线路」换一条线路试试。',
   'runtime-invalid': startFailure,
   'ledger-write': startFailure,
   'proxy-authorization': 'macOS 网络设置授权未完成，请允许系统授权后重试。',
