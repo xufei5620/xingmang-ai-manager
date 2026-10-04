@@ -56,6 +56,7 @@ import {
 } from './ui'
 import {
   displayDate,
+  RelativeTime,
   beginBusinessOperation,
   errorMessage,
   ListState,
@@ -104,6 +105,7 @@ import {
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
 import { useRowFocus } from './features/app/row-focus'
+import { publishDiagnosticsCounts } from './features/app/environment-status'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
 import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
@@ -357,7 +359,11 @@ export function HealthPage({
   onRewriteKey,
   rewritableKeys,
 }: { api: V2Bridge } & BusinessActions) {
-  const load = useCallback(() => api.runDiagnostics(), [api])
+  // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
+  const load = useCallback(() => api.runDiagnostics().then((report) => {
+    publishDiagnosticsCounts(report.counts)
+    return report
+  }), [api])
   const resource = useResource(load)
   const pageRef = useRef<HTMLElement>(null)
   // 设置里「企业证书」点「去检查页」：检查结果出来以后翻到「安全证书」那一项、亮一下。
@@ -625,7 +631,7 @@ export function HealthPage({
               </Pill>
             </>
           }
-          right={<span>{displayDate(resource.data.generatedAt)}</span>}
+          right={<span><RelativeTime value={resource.data.generatedAt} /></span>}
         />
       )}
       <Card padding="none">
@@ -972,6 +978,7 @@ export function FeedbackPage({
           loading={resource.loading}
           error={resource.error}
           count={list.length}
+          query={query}
           filtered={hasRuntimeLogFilter(filter)}
           retry={() => void resource.reload()}
           clear={resetFilters}
@@ -1233,7 +1240,7 @@ export function UpdatesPage({
   // App 手里那份最新（设置页、更新气泡里改过也算）；还没有就用这一页自己读到的。
   const settings = appSettings ?? ownSettings
   const autoUpdateSetting = settings ? settings.autoUpdate !== false : false
-  // 「启动时检查新版本」「自动更新」直接在这一页改（五-51），和设置「更新与关于」里那两行是同一份设置。
+  // 「启动时检查新版本」「自动更新」直接在这一页改，和设置「更新与关于」里那两行是同一份设置。
   async function saveSetting(patch: Omit<SettingsUpdate, 'version'>) {
     const finish = beginBusinessOperation('保存设置')
     setSettingsSaving(true)
@@ -1357,7 +1364,7 @@ export function UpdatesPage({
             title="当前版本"
             meta={update?.currentVersion ?? '暂未读到'}
           />
-          <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
+          <ListRow title="上次检查" meta={<RelativeTime value={update?.checkedAt} />} />
           {update?.currentVersionWithdrawn && (
             <Notice
               tone="warn"
@@ -2084,7 +2091,7 @@ export function createSettingsQueue(
   }
 }
 
-/** 设置页顶上那句。原来那句后面加半句会折成两行，所以整句换短；Mac 上写 ⌘K（一-2）。 */
+/** 设置页顶上那句。原来那句后面加半句会折成两行，所以整句换短；Mac 上写 ⌘K。 */
 export function settingsPageLead(os: WindowOs): string {
   return `改完自动保存。找不到某一项，按 ${os === 'mac' ? '⌘K' : 'Ctrl K'} 搜它的名字。`
 }
@@ -2240,7 +2247,7 @@ export function SettingsPage({
       unsubscribe()
     }
   }, [systemApi, systemAttempt])
-  // 做成了的结果改成会自己消失的小提示，页面不再往下跳（一-12）；没做成的照旧在页顶出红条。
+  // 做成了的结果改成会自己消失的小提示，页面不再往下跳；没做成的照旧在页顶出红条。
   const toasted = (text: string) => () => {
     showToast(text, 'ok')
     return null
@@ -2262,7 +2269,7 @@ export function SettingsPage({
     if (requested) setGroup(requested)
   }, [])
   const pageRef = useRef<HTMLElement>(null)
-  // 顶部搜索搜到某一项：打开那一组以后翻到那一行、亮一下（三-2）。
+  // 顶部搜索搜到某一项：打开那一组以后翻到那一行、亮一下。
   useRowFocus('settings', pageRef, Boolean(resource.data))
   const [pending, setPending] = useState(0)
   const pendingRef = useRef(0)
@@ -2440,7 +2447,7 @@ export function SettingsPage({
       control={control}
     />
   )
-  // 要先读一次系统状态的那几项（一-13）：读的那一下照常画开关、灰着点不了，不写字；没读到写
+  // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
   // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「此版本暂不支持」。
   const systemPending = (label: string) =>
     !systemApi ? (
@@ -3281,7 +3288,7 @@ export function SettingsPage({
           id="v2-settings-panel"
           aria-labelledby={`v2-settings-${group}`}
         >
-          {/* 「正在保存更改…」挂在组名右边，不单独占一行，存的时候页面不往下跳（一-12）。 */}
+          {/* 「正在保存更改…」挂在组名右边，不单独占一行，存的时候页面不往下跳。 */}
           <div className="v2-settings-panel-head">
             <h2>{settingsGroups.find((item) => item.value === group)?.label}</h2>
             {pending > 0 && <span role="status">正在保存更改…</span>}

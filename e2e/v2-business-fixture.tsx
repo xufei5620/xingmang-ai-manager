@@ -1128,7 +1128,7 @@ const renderFixture = (paymentReturn?: {
         balance: '$10.00',
       }}
       version="0.1.31"
-      environment="Node.js 已安装"
+      environment={{ tone: 'ok', label: '环境正常' }}
       adapter={{ navigate: (next) => record('navigate', next) }}
     >
       <BalanceTierProvider value="warn">
