@@ -485,6 +485,13 @@ export function resolveDownloadRateAt(samples: readonly DownloadProgressSample[]
  */
 export const updateDownloadStallMs = 45_000
 /**
+ * 停住或代理连不上以后自动换直连重下的那一次，多久没有新数据才算又停住。有的公司网关、上网
+ * 行为管理、带下载查毒的代理会先把整个安装包收完、查完，再一次性转过来，这段时间一个字节也
+ * 收不到：第一次照 45 秒掐断是为了尽快换条路，换了路还停着就多等一会儿。这是最后一次自动重下，
+ * 再停住就报下载失败，界面在「重新下载」旁边给「打开下载页」（update-retry.ts）。
+ */
+export const updateDownloadRetryStallMs = 120_000
+/**
  * 进度到过 100% 以后，多久没动静算停住。下完以后 electron-updater 还要核对签名
  * （update-signature.ts 最多 30 秒）、改名（文件被占着时最多重试 30 秒），这几步都不报进度；
  * 增量下载分批的话，下一批开头也要过一会儿才报进度。
@@ -1461,12 +1468,12 @@ export function createUpdaterService(
     : safeError(error, platform)
 
   // 下载一次，期间盯着有没有新数据进来：electron-updater 的进度和宿主看到的字节
-  // （downloadReceivedAt）都算。还在传时 updateDownloadStallMs、进度到过 100% 以后
+  // （downloadReceivedAt）都算。还在传时 stallMs、进度到过 100% 以后
   // updateDownloadSettleMs 没动静，就算停住：取消令牌、让宿主掐断还开着的请求，以
   // UpdateDownloadStalled 收场；electron-updater 自己报的错原样抛出。掐断以后
   // updateDownloadCancelWaitMs 没收尾、期间也没再来数据，就不再等它；又来了数据就接着等，它真
   // 下完了就当没停过。fullPackage 让这一次不走增量下载。
-  async function downloadWatched(fullPackage: boolean): Promise<void> {
+  async function downloadWatched(fullPackage: boolean, stallMs = updateDownloadStallMs): Promise<void> {
     const cancellation = runtime.createDownloadCancellation?.()
     let lastActivityAt = Date.now()
     let lastTickAt = lastActivityAt
@@ -1504,7 +1511,7 @@ export function createUpdaterService(
         return
       }
       if (snapshot.phase !== 'downloading') return
-      if (at - lastActivityAt < (transferEnded ? updateDownloadSettleMs : updateDownloadStallMs)) {
+      if (at - lastActivityAt < (transferEnded ? updateDownloadSettleMs : stallMs)) {
         refreshIdleDownloadRate(at)
         return
       }
@@ -1592,7 +1599,8 @@ export function createUpdaterService(
       const stall = error instanceof UpdateDownloadStalled ? error : null
       // 自动再下只有一次，再不行就照实报下载失败，重下的按钮界面上都有。停住的那次多半是
       // 这条路不通了（代理软件不转发、换了网络旧连接没断干净），和代理连不上一样换直连，
-      // 而且重下整个安装包：只有一个请求，取消令牌就停得下来，不靠宿主掐请求。
+      // 而且重下整个安装包：只有一个请求，取消令牌就停得下来，不靠宿主掐请求。这一次按
+      // updateDownloadRetryStallMs 多等一会儿才算停住。
       // electron-updater 那次一直没收尾时不重下：再下只会接回同一次，白等一轮。
       const retry = stall
         ? !stall.unsettled
@@ -1603,7 +1611,7 @@ export function createUpdaterService(
           await retryOffProxy(async () => {
             progressSamples = []
             emit({ phase: 'downloading', error: null, progress: null })
-            await downloadWatched(stall !== null)
+            await downloadWatched(stall !== null, updateDownloadRetryStallMs)
           })
         } catch (retryError) {
           if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)

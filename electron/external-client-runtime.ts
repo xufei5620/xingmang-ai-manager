@@ -40,6 +40,11 @@ export const externalClientWingetUnavailableHint = '这台电脑缺少系统自�
 // 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
 const defaultScanCacheTtlMs = 5 * 60_000
 const maximumKnownSignatures = 32
+// How long a display-only macOS scan may reuse a verified bundle (as in
+// macos-codex-app.ts). The fingerprint covers the bundle directory, Info.plist
+// and the main executable only; edits deeper inside need not touch their
+// timestamps, so the reuse is capped rather than trusted indefinitely.
+const macVerificationTtlMs = 5 * 60_000
 const publisherPatterns: Record<ExternalToolId, RegExp> = {
   workbuddy: /(?:^|,\s*)(?:CN|O)="?Tencent Technology \(Shenzhen\) Company Limited"?(?:,|$)/i,
   claudeDesktop: /(?:^|,\s*)(?:CN|O)="Anthropic, PBC"(?:,|$)/i,
@@ -54,6 +59,14 @@ interface LocatedClient {
   applicationId?: string
 }
 interface Inspection { clients: LocatedClient[]; errors: Partial<Record<ExternalToolId, string>> }
+interface InspectionScope {
+  /** 只给展示用的检测：可以认几分钟内验过、文件没变的签名。装、打开从不传。 */
+  reuseSignatures?: boolean
+  /** Mac 上只看这一个客户端（打开它之前）。Windows 的清点是一整段脚本，照旧全看。 */
+  only?: ExternalToolId
+}
+/** 判断应用包变没变要看的那几项；fs.Stats 本身就满足。 */
+interface BundleEntryStats { dev: number; ino: number; mtimeMs: number; size: number; isFile(): boolean }
 interface LaunchPlan extends CommandSpec { cwd?: string; env: NodeJS.ProcessEnv; windowsHide: boolean }
 
 export interface ExternalClientRuntimeOptions {
@@ -70,6 +83,8 @@ export interface ExternalClientRuntimeOptions {
   resolvePowerShellExecutable?: () => string
   /** Test seams keep installation and launch tests entirely outside the host machine. */
   verifyPath?: (candidate: string, kind: 'file' | 'directory' | 'appx-file') => Promise<string>
+  /** 读应用包指纹用的 lstat；测试不碰本机文件。 */
+  lstatPath?: (candidate: string) => Promise<BundleEntryStats>
   launchProcess?: (plan: LaunchPlan) => Promise<void>
   installWorkBuddyFromOfficial?: typeof installWorkBuddyFromOfficial
   installClaudeDesktopFromOfficial?: typeof installClaudeDesktopFromOfficial
@@ -315,6 +330,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const userHome = options.userHome ?? os.homedir()
   const execute = options.runCommand ?? runCommand
   const verifyPath = options.verifyPath ?? verifyExternalClientPath
+  const lstatPath = options.lstatPath ?? ((candidate: string) => fs.promises.lstat(candidate))
   const queue = options.installationQueue ?? new InstallationQueue()
   const launchProcess = options.launchProcess ?? launchDetached
   const resolveMachinePaths = options.resolveMachinePaths ?? resolveWindowsMachinePaths
@@ -326,6 +342,11 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   // 装、卸、打开都会让在飞的那次盘点过时：它的结果照样交给等它的人，但不落进缓存。
   let scanGeneration = 0
   const knownSignatures = new Map<string, KnownExternalClientSignature>()
+  // The macOS half of knownSignatures: a Gatekeeper/codesign pass is remembered
+  // against the bundle fingerprint for a few minutes, passes only. As on Windows,
+  // a same-user attacker can forge those timestamps, so only display-only scans
+  // may reuse it; install and launch act on the bundle and always verify anew.
+  const verifiedBundles = new Map<string, { fingerprint: string; verifiedAt: number }>()
 
   const environment = () => trustedCommandEnvironment(options.env, platform === 'win32' ? resolveMachinePaths() : undefined, platform)
   const runningAsRoot = () => (options.getuid?.() ?? process.getuid?.() ?? 1) === 0
@@ -400,10 +421,27 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     return { clients, errors }
   }
 
-  async function inspectMac(): Promise<Inspection> {
+  /** 包目录、Info.plist、主程序三处的身份和时间；主程序名不像样或读不到时给 null，那一次就现验。 */
+  async function macBundleFingerprint(bundle: string, info: string, executableName: unknown): Promise<string | null> {
+    if (typeof executableName !== 'string' || !executableName || executableName === '.' || executableName === '..'
+      || path.posix.basename(executableName) !== executableName) return null
+    try {
+      const [bundleStats, infoStats, executableStats] = await Promise.all([
+        lstatPath(bundle), lstatPath(info), lstatPath(path.posix.join(bundle, 'Contents', 'MacOS', executableName)),
+      ])
+      if (!executableStats.isFile()) return null
+      return [
+        bundleStats.dev, bundleStats.ino, bundleStats.mtimeMs,
+        infoStats.mtimeMs, infoStats.size,
+        executableStats.dev, executableStats.ino, executableStats.mtimeMs, executableStats.size,
+      ].join(':')
+    } catch { return null }
+  }
+
+  async function inspectMac(scope: InspectionScope): Promise<Inspection> {
     const clients: LocatedClient[] = []
     const errors: Inspection['errors'] = {}
-    for (const tool of tools) {
+    for (const tool of scope.only ? [scope.only] : tools) {
       const definition = definitions[tool]
       for (const directory of ['/Applications', path.posix.join(userHome, 'Applications')]) {
         const candidate = path.posix.join(directory, definition.bundle)
@@ -419,10 +457,23 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           const result = await execute({ executable: '/usr/bin/plutil', argv: ['-convert', 'json', '-o', '-', info] }, { ...systemOptions(), trustedOnly: false })
           const data = record(JSON.parse(result.stdout) as unknown)
           if (definition.bundleId && data.CFBundleIdentifier !== definition.bundleId) throw new Error('应用的 bundle identifier 与官方客户端不一致')
-          // LaunchServices performs the launch as the current user. Gatekeeper
-          // checks the entire application; no guessed Team ID is used as proof.
-          await execute({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', canonical] }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
-          if (tool === 'workbuddy') await execute({ executable: '/usr/bin/codesign', argv: darwinDeveloperIdVerificationArgv('FN2V63AD2J', canonical, { deep: true, bundleIdentifier: definition.bundleId }) }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
+          const fingerprint = await macBundleFingerprint(canonical, info, data.CFBundleExecutable)
+          const remembered = verifiedBundles.get(canonical)
+          const stillVerified = scope.reuseSignatures === true && fingerprint !== null && remembered?.fingerprint === fingerprint
+            && now() - remembered.verifiedAt < macVerificationTtlMs
+          if (!stillVerified) {
+            try {
+              // LaunchServices performs the launch as the current user. Gatekeeper
+              // checks the entire application; no guessed Team ID is used as proof.
+              await execute({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', canonical] }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
+              if (tool === 'workbuddy') await execute({ executable: '/usr/bin/codesign', argv: darwinDeveloperIdVerificationArgv('FN2V63AD2J', canonical, { deep: true, bundleIdentifier: definition.bundleId }) }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
+            } catch (error) {
+              // 现验没过就忘掉上次那份：不然下一次展示用的检测会拿旧的「通过」把它报成好的。
+              verifiedBundles.delete(canonical)
+              throw error
+            }
+            if (fingerprint !== null) verifiedBundles.set(canonical, { fingerprint, verifiedAt: now() })
+          }
           const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, { ...systemOptions(), trustedOnly: false })
           const running = processes.stdout.split(/\r?\n/).some((line) => line.trim().startsWith(`${canonical}/Contents/MacOS/`))
           clients.push({ tool, path: canonical, version: versionValue(data.CFBundleShortVersionString), running })
@@ -436,8 +487,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     return { clients, errors }
   }
 
-  async function inspect(reuseSignatures = false): Promise<Inspection> {
-    try { return platform === 'win32' ? await inspectWindows(reuseSignatures) : platform === 'darwin' ? await inspectMac() : { clients: [], errors: {} } }
+  async function inspect(scope: InspectionScope = {}): Promise<Inspection> {
+    try { return platform === 'win32' ? await inspectWindows(scope.reuseSignatures === true) : platform === 'darwin' ? await inspectMac(scope) : { clients: [], errors: {} } }
     catch (error) { return { clients: [], errors: Object.fromEntries(tools.map((tool) => [tool, errorText(error)])) } }
   }
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
@@ -462,7 +513,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (inFlightScan) return inFlightScan
     if (!scanOptions.force && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
     const generation = scanGeneration
-    const promise = Promise.all([inspect(true), resolveWinget()]).then(([inspection, winget]) => {
+    const promise = Promise.all([inspect({ reuseSignatures: true }), resolveWinget()]).then(([inspection, winget]) => {
       const statuses = tools.map((tool) => status(tool, inspection, winget))
       // 检测出错的那次不缓存：老电脑上一次 PowerShell 超时不该让界面连着几分钟报错。
       if (generation === scanGeneration && statuses.every((entry) => !entry.detectionError)) cachedScan = { statuses, at: now() }
@@ -596,7 +647,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   function launch(tool: ExternalToolId): Promise<void> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
     const launched = queue.enqueue(`external-client:launch:${tool}`, async () => {
-      const inspection = await inspect()
+      // 只现验要打开的这一个（Mac）：没点的那几家跟这次打开无关，不该让人多等它们的签名核对。
+      const inspection = await inspect({ only: tool })
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       if (platform === 'win32') {

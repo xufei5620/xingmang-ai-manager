@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
+const fsCore = require('node:fs')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
@@ -327,6 +328,50 @@ test('preserves an existing destination instead of silently replacing local byte
   const mock = mockRequest((call, callback) => callback(response(Buffer.from('new bytes'), 200)))
   await assert.rejects(downloadResource({ url: `${config.publicBaseUrl}/a`, filePath: file.filePath, allowedHosts: [host] }, mock), { code: 'EEXIST' })
   assert.deepEqual(await fs.readFile(file.filePath), file.body)
+})
+
+test('closes each download descriptor once, through its FileHandle only', async t => {
+  // 10-03 两次偶发红（上面那条 ETag 用例报 EBADF）：写入流拿着 FileHandle 的同一个号，destroy() 时又关一次，
+  // 跟 handle.close() 抢。ETag 不符时流还没人监听，抢输的 EBADF 成了未捕获异常；下载成功时那次重复关落在
+  // link 之后，号若已被别的文件拿去，关掉的就是别人的。抢先后看线程池，所以直接查有没有绕过 FileHandle 的关闭。
+  const file = await fixture(t)
+  const headers = { etag: '"original"', 'content-length': String(file.body.length) }
+  const rawCloses = t.mock.method(fsCore, 'close')
+  const changed = mockRequest((call, callback) => callback(response(file.body, 200, { ...headers, etag: '"changed"' })))
+  await assert.rejects(downloadResource({ url: `${config.publicBaseUrl}/a`, filePath: path.join(file.directory, 'changed.msix'), allowedHosts: [host], expectedEtag: '"original"' }, changed), /ETag/)
+  // 下载一还回文件号就另开一个文件：新开的拿最小的空闲号，通常就是刚还回来的那个。
+  const bystanderPath = path.join(file.directory, 'bystander.log')
+  const link = fs.link
+  let bystander
+  t.mock.method(fs, 'link', async function (...args) {
+    await link.apply(fs, args)
+    bystander = await fs.open(bystanderPath, 'w')
+  })
+  const complete = mockRequest((call, callback) => callback(response(file.body, 200, headers)))
+  await downloadResource({ url: `${config.publicBaseUrl}/a`, filePath: path.join(file.directory, 'download.msix'), allowedHosts: [host], expectedEtag: '"original"' }, complete)
+  try { await bystander.writeFile('still mine') } finally { await bystander.close() }
+  assert.equal(await fs.readFile(bystanderPath, 'utf8'), 'still mine')
+  assert.deepEqual(rawCloses.mock.calls.map((call) => call.arguments[0]), [])
+})
+
+test('writes every downloaded byte when the disk takes a chunk in pieces and gives up on a stalled write', async t => {
+  const file = await fixture(t)
+  const body = crypto.randomBytes(64 * 1024 + 7)
+  const probe = await fs.open(file.filePath)
+  const fileHandle = Object.getPrototypeOf(probe)
+  await probe.close()
+  const write = fileHandle.write
+  const writes = t.mock.method(fileHandle, 'write', function (buffer, offset, length, ...rest) {
+    return write.call(this, buffer, offset, Math.min(length, 4096), ...rest)
+  })
+  const mock = mockRequest((call, callback) => callback(response(body, 200, { 'content-length': String(body.length) })))
+  const target = path.join(file.directory, 'download.msix')
+  await downloadResource({ url: `${config.publicBaseUrl}/a`, filePath: target, allowedHosts: [host], expectedSha256: digest(body) }, mock)
+  assert.deepEqual(await fs.readFile(target), body)
+  assert.equal(writes.mock.callCount(), Math.ceil(body.length / 4096))
+  writes.mock.mockImplementation(async function () { return { bytesWritten: 0 } })
+  await assert.rejects(downloadResource({ url: `${config.publicBaseUrl}/a`, filePath: path.join(file.directory, 'stalled.msix'), allowedHosts: [host] }, mock))
+  assert.deepEqual((await fs.readdir(file.directory)).sort(), ['download.msix', 'installer.msix'])
 })
 
 test('publishes immutable objects with signed MD5 metadata and public full readback', async t => {
