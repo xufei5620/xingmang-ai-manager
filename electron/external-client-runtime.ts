@@ -596,10 +596,18 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     // 句柄在入队之前登记：排在别的安装后面等待时也要能取消（同命令行工具）。重复点击
     // 走上面的 existing，不会再登记第二个把这一个挤掉。
     const cancellation = installCancellations.begin(installKey(tool))
+    // 取消是客户自己按的，不是装失败：换成统一的一句，界面认得出来，不弹错误框。
+    const cancelled = () => {
+      const error = new InstallCancelledError(`${definitions[tool].name} 安装已取消`)
+      report('error', error.message)
+      return error
+    }
+    let started = false
     report('queued', `${definitions[tool].name} 已加入安装队列`)
     job.promise = queue.enqueue(installKey(tool), async () => {
+      started = true
       try {
-        // 排队等待期间点的取消在这里生效：什么都还没动。
+        // 排着队时点的取消已经让这一项直接出队了；这里兜底，这时什么都还没动。
         cancellation.throwIfCancelled()
         report('checking', `正在检测 ${definitions[tool].name}`)
         const [before, winget] = await Promise.all([inspect(), resolveWinget()])
@@ -674,16 +682,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         report('completed', `${definitions[tool].name} 安装完成`, 100)
         return after
       } catch (error) {
-        // 取消是客户自己按的，不是装失败：换成统一的一句，界面认得出来，不弹错误框。
-        if (cancellation.cancelled || isInstallCancelledError(error)) {
-          const cancelled = new InstallCancelledError(`${definitions[tool].name} 安装已取消`)
-          report('error', cancelled.message)
-          throw cancelled
-        }
+        if (cancellation.cancelled || isInstallCancelledError(error)) throw cancelled()
         report('error', errorText(error))
         throw error
       }
-    }).finally(() => cancellation.release())
+    }, { signal: cancellation.signal })
+      // 排着队时点的取消让这一项直接出队，不用等前面那项装完。上面的任务没跑过，
+      // 取消的那句在这里补上。
+      .catch((error: unknown) => { throw started ? error : cancelled() })
+      .finally(() => cancellation.release())
     jobs.set(tool, job)
     void job.promise.then(() => { jobs.delete(tool) }, () => { jobs.delete(tool) })
     // 装成、装失败都作废：失败的安装器也可能已经留下了一半的文件。

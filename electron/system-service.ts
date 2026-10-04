@@ -4719,10 +4719,22 @@ export function createSystemService(
     // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
     // 否则用户只能干等前一个工具装完。
     const cancellation = installCancellations.begin(key)
+    let started = false
     const finished = installationQueue.enqueue(
       key,
-      () => installCliOperation(provider, target, version, cancellation),
-    ).finally(() => cancellation.release())
+      () => {
+        started = true
+        return installCliOperation(provider, target, version, cancellation)
+      },
+      { signal: cancellation.signal },
+    ).catch((error: unknown) => {
+      if (started) throw error
+      // 排着队时取消的那次直接出队，installCliOperation 没跑过：取消的那句和进度在这里补上，
+      // 和跑起来以后取消一样。
+      const cancelled = new InstallCancelledError(`${cliCatalog[provider].name} 安装已取消`)
+      sendInstallProgress(target, provider, 'error', cancelled.message)
+      throw cancelled
+    }).finally(() => cancellation.release())
     // 装好一次顺手清掉以前中途被打断的残留：这次自己的临时目录已经在 finally 里删了，
     // 剩下的只会是更早的。排在队列末尾，不拖慢这次安装的完成提示。
     void finished.then(() => cleanupInstallLeftovers(), () => undefined)

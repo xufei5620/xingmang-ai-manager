@@ -3,12 +3,22 @@ export interface InstallationQueueSnapshot {
   pendingKeys: string[]
 }
 
+export interface InstallationQueueEntryOptions {
+  /**
+   * 还在排队时这个信号被中止，这一项就直接出队，用信号的 reason 拒绝：任务一行都不跑，
+   * 也不用等前面那项做完。已经轮到它的不归队列管，由任务自己看这个信号。
+   */
+  signal?: AbortSignal
+}
+
 interface QueueEntry<T> {
   key: string
   task: () => Promise<T> | T
   resolve: (value: T | PromiseLike<T>) => void
   reject: (reason?: unknown) => void
   promise: Promise<T>
+  /** 轮到它时摘掉「排队时取消就出队」的监听；没传信号时什么都不做。 */
+  detach: () => void
 }
 
 /**
@@ -22,10 +32,13 @@ export class InstallationQueue {
   private changes = 0
   private readonly listeners = new Set<(snapshot: InstallationQueueSnapshot) => void>()
 
-  enqueue<T>(key: string, task: () => Promise<T> | T): Promise<T> {
+  enqueue<T>(key: string, task: () => Promise<T> | T, options: InstallationQueueEntryOptions = {}): Promise<T> {
     if (!key.trim()) throw new TypeError('安装队列操作名不能为空')
     const existing = this.findExisting<T>(key)
     if (existing) return existing
+    const { signal } = options
+    // 进队之前就取消了的，和排着队时取消一样：不进队列，直接拒绝。
+    if (signal?.aborted) return Promise.reject(signal.reason)
 
     let resolve!: (value: T | PromiseLike<T>) => void
     let reject!: (reason?: unknown) => void
@@ -33,7 +46,12 @@ export class InstallationQueue {
       resolve = promiseResolve
       reject = promiseReject
     })
-    const entry: QueueEntry<T> = { key, task, resolve, reject, promise }
+    const entry: QueueEntry<T> = { key, task, resolve, reject, promise, detach: () => undefined }
+    if (signal) {
+      const leave = () => this.leave(entry as QueueEntry<unknown>, signal.reason)
+      signal.addEventListener('abort', leave, { once: true })
+      entry.detach = () => signal.removeEventListener('abort', leave)
+    }
     this.pending.push(entry as QueueEntry<unknown>)
     void this.pump()
     return promise
@@ -77,6 +95,7 @@ export class InstallationQueue {
     this.active = this.pending.shift() ?? null
     const entry = this.active
     if (!entry) return
+    entry.detach()
     this.changes++
     this.notify()
     try {
@@ -90,6 +109,17 @@ export class InstallationQueue {
       void this.pump()
       if (!this.active) this.notify()
     }
+  }
+
+  /**
+   * 排着队时取消的那一项出队。它没开始过，机器上什么都没动，所以 revision 不变，
+   * 也不通知（通知只报开始和结束）。
+   */
+  private leave(entry: QueueEntry<unknown>, reason: unknown): void {
+    const index = this.pending.indexOf(entry)
+    if (index === -1) return
+    this.pending.splice(index, 1)
+    entry.reject(reason)
   }
 
   private notify(): void {
