@@ -525,6 +525,20 @@ export function powerShellLiteral(value: string): string {
   return `'${value.replace(/['\u2018-\u201b]/g, '$&$&')}'`
 }
 
+// Some path parameters are always resolved as wildcard patterns and have no
+// -LiteralPath twin, Start-Process -WorkingDirectory among them
+// (PathUtils.ResolveFilePath without isLiteralPath). Unescaped, D:\作业[1]
+// means "作业1" and fails with "the wildcard path ... did not resolve to a
+// file". The backtick is the escape character itself, so it is escaped too, or
+// a name such as a`[1] turns back into a pattern. PowerShell 7's
+// [WildcardPattern]::Escape covers the same five characters but 6.0's skipped
+// the backtick, which is why this is done here and not in the script. Wrap the
+// result in powerShellLiteral: a verbatim string hands the backticks over as
+// typed.
+export function escapePowerShellWildcard(value: string): string {
+  return value.replace(/[`[\]*?]/g, '`$&')
+}
+
 export function encodeWindowsPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
@@ -627,9 +641,15 @@ export function buildCliLaunchPlan(
     terminalEncodedCommand,
   ]
   const brokerScript = [
+    // 这一步的报错由 launchCliPowerShell 按 UTF-8 读回，describeWindowsCliLaunchError 再按
+    // 中文字认原因；中文 Windows 默认 GBK，不切过来客户和客服看到的都是乱码，中文那几条
+    // 也认不上。这个脚本不读控制台输入，所以只切输出；设不上照旧往下走，同终端窗口那句。
+    'try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
     buildPowerShellModuleImportStatement(cliLaunchBrokerModules),
     '$ErrorActionPreference = "Stop"',
-    `$process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(workspace)} -WindowStyle Normal -PassThru`,
+    // -WorkingDirectory 把方括号当通配符，文件夹叫「作业[1]」时每次都打不开，所以先转义；
+    // 终端里那句 Set-Location 用的是 -LiteralPath，照原样给。
+    `$process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(escapePowerShellWildcard(workspace))} -WindowStyle Normal -PassThru`,
     '[Console]::Out.WriteLine($process.Id)',
   ].join('; ')
 

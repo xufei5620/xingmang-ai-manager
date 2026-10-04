@@ -14,6 +14,7 @@ import {
   decodeWindowsPowerShellCommand,
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
+  escapePowerShellWildcard,
   inspectCurrentWindowsIntegrityRid,
   inspectCurrentWindowsProcessHighIntegrity,
   inspectWindowsElevationCapability,
@@ -454,6 +455,44 @@ describe('Windows CLI launch', () => {
     expect(terminalScript.indexOf('UTF8Encoding')).toBeLessThan(terminalScript.indexOf('node.exe'))
   })
 
+  it('switches the hidden launch broker to UTF-8 output before Start-Process can fail', () => {
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      workspace: 'C:\\Work',
+      title: 'Claude Code',
+    }, testPowerShell)
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+
+    // launchCliPowerShell reads the broker's errors as UTF-8.
+    const utf8 = brokerScript.indexOf('$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')
+    expect(utf8).toBeGreaterThan(-1)
+    expect(utf8).toBeLessThan(brokerScript.indexOf('$ErrorActionPreference = "Stop"'))
+    expect(utf8).toBeLessThan(brokerScript.indexOf('Start-Process'))
+    // A console that refuses the code page must not keep the terminal from opening.
+    expect(brokerScript).toMatch(/^try \{ \$OutputEncoding = [^}]*\} catch \{ \}; /)
+    expect(brokerScript).not.toMatch(/\bchcp\b/i)
+  })
+
+  it('escapes wildcard characters in the folder for -WorkingDirectory only', () => {
+    const workspace = 'D:\\[2024]课程资料\\毕业设计[最终版]\\O\'Brien`s'
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      argv: ['C:\\ProgramData\\XingMangAI\\Cli\\node_modules\\tool\\cli.js'],
+      workspace,
+      title: 'Claude Code',
+    }, testPowerShell)
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+    const terminalScript = decodeTerminalScript(brokerScript)
+
+    expect(brokerScript).toContain(
+      "-WorkingDirectory 'D:\\`[2024`]课程资料\\毕业设计`[最终版`]\\O''Brien``s' -WindowStyle Normal",
+    )
+    // The broker's own folder and the terminal's Set-Location take it literally.
+    expect(plan.cwd).toBe(workspace)
+    expect(terminalScript).toContain("Set-Location -LiteralPath 'D:\\[2024]课程资料\\毕业设计[最终版]\\O''Brien`s'")
+    expect(terminalScript).not.toContain('`[')
+  })
+
   it('tells the user what to do next once the CLI exits, keeping the window open', () => {
     const plan = buildCliLaunchPlan({
       executable: 'C:\\Program Files\\nodejs\\node.exe',
@@ -752,5 +791,74 @@ describe('PowerShell verbatim literals', () => {
     const command = buildClaudeRetainedVersionFilesCommand([file, 'C:\\Other'], 'win32')!
     const benign = buildClaudeRetainedVersionFilesCommand(['C:\\Temp\\2.1.0', 'C:\\Other'], 'win32')!
     expect(expectQuotedLike(command, benign).literals).toEqual([file, 'C:\\Other'])
+  })
+})
+
+// WildcardPattern.ContainsWildcardCharacters and WildcardPattern.Unescape
+// (engine/regex.cs): what the globber does with Start-Process -WorkingDirectory
+// before it looks on disk. A value with no wildcard left is unescaped once and
+// must then exist exactly as it reads.
+const powerShellWildcardCharacters = '*?[]'
+
+function containsPowerShellWildcard(pattern: string): boolean {
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (powerShellWildcardCharacters.includes(pattern[index])) return true
+    if (pattern[index] === '`') index += 1
+  }
+  return false
+}
+
+function unescapePowerShellWildcard(pattern: string): string {
+  let result = ''
+  let escaping = false
+  for (const char of pattern) {
+    if (char === '`' && !escaping) {
+      escaping = true
+      continue
+    }
+    if (escaping && char !== '`' && !powerShellWildcardCharacters.includes(char)) result += '`'
+    result += char
+    escaping = false
+  }
+  return escaping ? `${result}\`` : result
+}
+
+describe('PowerShell wildcard escaping', () => {
+  it.each([
+    ['D:\\作业[1]', 'D:\\作业`[1`]'],
+    ['D:\\[2024]课程资料\\作业', 'D:\\`[2024`]课程资料\\作业'],
+    ['C:\\a`b', 'C:\\a``b'],
+    ['C:\\a`[1]', 'C:\\a```[1`]'],
+    ['*?', '`*`?'],
+  ])('escapes %j', (value, escaped) => {
+    expect(escapePowerShellWildcard(value)).toBe(escaped)
+  })
+
+  it.each([
+    'C:\\Work & Test\\O\'Brien',
+    'D:\\毕业设计【最终版】(1) {x}',
+  ])('leaves %j as it is, since nothing in it is a wildcard', (value) => {
+    expect(escapePowerShellWildcard(value)).toBe(value)
+  })
+
+  it.each([
+    'D:\\作业[1]',
+    'D:\\作业[12]',
+    'D:\\a]b[',
+    'C:\\a`b',
+    'C:\\a`[1]',
+    'C:\\a``[x]``',
+    'C:\\trailing`',
+    'C:\\x`*`?',
+  ])('lets PowerShell read %j back as the same literal folder', (value) => {
+    const escaped = escapePowerShellWildcard(value)
+    expect(containsPowerShellWildcard(escaped)).toBe(false)
+    expect(unescapePowerShellWildcard(escaped)).toBe(value)
+  })
+
+  it('reads an unescaped folder as a pattern, which is what kept it from opening', () => {
+    expect(containsPowerShellWildcard('D:\\作业[1]')).toBe(true)
+    // Escaping only the brackets is not enough once a backtick comes before one.
+    expect(containsPowerShellWildcard('C:\\a`[1]'.replace(/[[\]]/g, '`$&'))).toBe(true)
   })
 })
