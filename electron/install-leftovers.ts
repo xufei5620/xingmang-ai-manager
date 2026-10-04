@@ -40,6 +40,20 @@ export const trustedCacheLeftoverPrefixes: readonly string[] = [
 ]
 
 /**
+ * 装进托管目录的工具（Mac、Linux，以及按管理员身份运行的 Windows）每次装或更新，都在托管 npm
+ * 缓存目录（managedNpmCacheRoot）里建一个这样的事务目录，下到一半就退出时留下的也在这里。
+ */
+export const managedNpmTransactionLeftoverPrefixes: readonly string[] = ['npm-transaction-']
+
+/**
+ * 托管 npm 事务里带着这两个名字的，再旧也不删，留给下次装工具开头的恢复（managed-cli.ts）：
+ * previous-prefix 是新版检查通过之前就断掉时要退回的旧版，换目录换到一半时它是唯一的一份；
+ * interrupted-prefix 是恢复失败时留下的，可能是唯一的一份新版。新版检查通过后 previous-prefix
+ * 已改名成 superseded-prefix，那样的事务和下到一半的一样，过了 6 小时就删。
+ */
+export const managedNpmTransactionPreservedEntries: readonly string[] = ['previous-prefix', 'interrupted-prefix']
+
+/**
  * 最近改动过的目录一律不动。清理本身排在安装队列里，不会和星芒的安装撞上；这段
  * 时间留给队列之外的情况（例如另一个星芒进程刚好在装），远长于任何一次安装。
  */
@@ -54,6 +68,8 @@ const maximumMeasuredEntries = 200_000
 export interface InstallLeftoverLocation {
   directory: string
   prefixes: readonly string[]
+  /** 候选目录里有这些名字之一（不论是文件、目录还是链接）就整个留着。 */
+  preserveIfContains?: readonly string[]
 }
 
 export interface InstallLeftoverLocationOptions {
@@ -62,6 +78,8 @@ export interface InstallLeftoverLocationOptions {
   temporaryDirectory: string
   /** trustedInstallerCacheRoot() 的结果；解析不出来时传 null。 */
   trustedCacheRoot: string | null
+  /** managedNpmCacheRoot() 的结果；不传或解析不出来（null）时不扫那里。 */
+  managedNpmCacheRoot?: string | null
 }
 
 /**
@@ -71,11 +89,23 @@ export interface InstallLeftoverLocationOptions {
  * 临时目录：ProgramData 里那些是以前管理员运行时留下的，普通权限本来也删不动。
  */
 export function buildInstallLeftoverLocations(options: InstallLeftoverLocationOptions): InstallLeftoverLocation[] {
+  // 托管 npm 缓存目录同样只有当前用户（Windows 上只有管理员）能写。普通权限的 Windows 不用
+  // 托管目录，那里有的只会是以前按管理员身份运行时留下的，普通权限删不动，不扫。
+  const managedNpmCache: InstallLeftoverLocation[] = options.managedNpmCacheRoot
+    ? [{
+        directory: options.managedNpmCacheRoot,
+        prefixes: managedNpmTransactionLeftoverPrefixes,
+        preserveIfContains: managedNpmTransactionPreservedEntries,
+      }]
+    : []
   if (options.platform === 'win32') {
     if (options.windowsExecutionMode === 'trusted-only') {
-      return options.trustedCacheRoot
-        ? [{ directory: options.trustedCacheRoot, prefixes: trustedCacheLeftoverPrefixes }]
-        : []
+      return [
+        ...(options.trustedCacheRoot
+          ? [{ directory: options.trustedCacheRoot, prefixes: trustedCacheLeftoverPrefixes }]
+          : []),
+        ...managedNpmCache,
+      ]
     }
     return [{ directory: options.temporaryDirectory, prefixes: userTemporaryLeftoverPrefixes }]
   }
@@ -88,6 +118,7 @@ export function buildInstallLeftoverLocations(options: InstallLeftoverLocationOp
   if (options.trustedCacheRoot) {
     locations.push({ directory: options.trustedCacheRoot, prefixes: trustedCacheLeftoverPrefixes })
   }
+  locations.push(...managedNpmCache)
   return locations
 }
 
@@ -168,6 +199,19 @@ async function inspectCandidate(
   return candidate
 }
 
+/** 读不出来（没权限、被占用）也当作有：宁可这次留着，下次再看。 */
+async function containsAnyEntry(directory: string, names: readonly string[]): Promise<boolean> {
+  for (const name of names) {
+    try {
+      await fs.promises.lstat(path.join(directory, name))
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
+    }
+  }
+  return false
+}
+
 export async function sweepInstallLeftovers(
   locations: readonly InstallLeftoverLocation[],
   options: InstallLeftoverSweepOptions = {},
@@ -190,6 +234,7 @@ export async function sweepInstallLeftovers(
       if (!isInstallLeftoverName(name, location.prefixes)) continue
       const candidate = await inspectCandidate(location.directory, resolvedRoot, name, cutoff)
       if (!candidate) continue
+      if (location.preserveIfContains && await containsAnyEntry(candidate, location.preserveIfContains)) continue
       const bytes = await measureDirectoryBytes(candidate)
       try {
         await fs.promises.rm(candidate, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 })

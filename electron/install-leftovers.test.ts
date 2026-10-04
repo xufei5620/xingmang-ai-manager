@@ -6,9 +6,12 @@ import {
   buildInstallLeftoverLocations,
   installLeftoverMinimumAgeMs,
   isInstallLeftoverName,
+  managedNpmTransactionLeftoverPrefixes,
+  managedNpmTransactionPreservedEntries,
   sweepInstallLeftovers,
   trustedCacheLeftoverPrefixes,
   userTemporaryLeftoverPrefixes,
+  type InstallLeftoverLocation,
 } from './install-leftovers'
 
 let root: string
@@ -90,6 +93,53 @@ describe('buildInstallLeftoverLocations', () => {
     expect(locations.map((location) => location.directory)).toEqual(['/tmp/x', '/tmp/x/xingmang-installer-cache'])
     expect(locations[0].prefixes).toContain('InstallerCache-')
   })
+
+  it('also sweeps the managed npm cache wherever CLIs install into the managed prefix', () => {
+    function managedNpmCache(directory: string): InstallLeftoverLocation {
+      return {
+        directory,
+        prefixes: managedNpmTransactionLeftoverPrefixes,
+        preserveIfContains: managedNpmTransactionPreservedEntries,
+      }
+    }
+    for (const platform of ['darwin', 'linux'] as const) {
+      const directory = `/home/a/${platform}/XingMangAI/Cli/npm-cache`
+      expect(buildInstallLeftoverLocations({
+        platform,
+        windowsExecutionMode: 'same-user',
+        temporaryDirectory: '/tmp/x',
+        trustedCacheRoot: '/tmp/x/xingmang-installer-cache',
+        managedNpmCacheRoot: directory,
+      }).map((location) => location.directory)).toEqual(['/tmp/x', '/tmp/x/xingmang-installer-cache', directory])
+      expect(buildInstallLeftoverLocations({
+        platform,
+        windowsExecutionMode: 'same-user',
+        temporaryDirectory: '/tmp/x',
+        trustedCacheRoot: null,
+        managedNpmCacheRoot: directory,
+      }).at(-1)).toEqual(managedNpmCache(directory))
+    }
+    expect(buildInstallLeftoverLocations({
+      platform: 'win32',
+      windowsExecutionMode: 'trusted-only',
+      temporaryDirectory: 'C:\\Temp',
+      trustedCacheRoot: 'C:\\ProgramData\\XingMangAI\\InstallerCache',
+      managedNpmCacheRoot: 'C:\\ProgramData\\XingMangAI\\Cli\\npm-cache',
+    })).toEqual([
+      { directory: 'C:\\ProgramData\\XingMangAI\\InstallerCache', prefixes: trustedCacheLeftoverPrefixes },
+      managedNpmCache('C:\\ProgramData\\XingMangAI\\Cli\\npm-cache'),
+    ])
+  })
+
+  it('leaves the managed npm cache alone when Windows runs as a normal user', () => {
+    expect(buildInstallLeftoverLocations({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      temporaryDirectory: 'C:\\Temp',
+      trustedCacheRoot: 'C:\\ProgramData\\XingMangAI\\InstallerCache',
+      managedNpmCacheRoot: 'C:\\ProgramData\\XingMangAI\\Cli\\npm-cache',
+    })).toEqual([{ directory: 'C:\\Temp', prefixes: userTemporaryLeftoverPrefixes }])
+  })
 })
 
 describe('sweepInstallLeftovers', () => {
@@ -146,5 +196,43 @@ describe('sweepInstallLeftovers', () => {
   it('skips a missing location without failing', async () => {
     const result = await sweepInstallLeftovers([{ directory: path.join(root, 'missing'), prefixes: userTemporaryLeftoverPrefixes }])
     expect(result).toEqual({ removed: 0, freedBytes: 0, failed: 0 })
+  })
+})
+
+describe('sweeping the managed npm cache', () => {
+  function managedNpmCache(): InstallLeftoverLocation {
+    return {
+      directory: root,
+      prefixes: managedNpmTransactionLeftoverPrefixes,
+      preserveIfContains: managedNpmTransactionPreservedEntries,
+    }
+  }
+
+  it('keeps old transactions the next install still needs to recover from', async () => {
+    // Cut short before the new version passed its check: previous-prefix may be the only copy of the CLIs.
+    const unverified = makeDirectory('npm-transaction-Ab12Cd', old, { 'previous-prefix/lib/cli.js': 100 })
+    // A failed recovery: interrupted-prefix may be the only copy of the newer CLIs.
+    const recoveryFailed = makeDirectory('npm-transaction-Ef34Gh', old, { 'interrupted-prefix/lib/cli.js': 100 })
+
+    const result = await sweepInstallLeftovers([managedNpmCache()])
+
+    expect(fs.readFileSync(path.join(unverified, 'previous-prefix', 'lib', 'cli.js')).length).toBe(100)
+    expect(fs.readFileSync(path.join(recoveryFailed, 'interrupted-prefix', 'lib', 'cli.js')).length).toBe(100)
+    expect(result).toEqual({ removed: 0, freedBytes: 0, failed: 0 })
+  })
+
+  it('removes old transactions once their update was verified or never got that far', async () => {
+    const verified = makeDirectory('npm-transaction-Ab12Cd', old, { 'superseded-prefix/lib/cli.js': 100, 'attempt-0/cache/blob': 200 })
+    const halfDownloaded = makeDirectory('npm-transaction-Ef34Gh', old, { 'attempt-0/cache/blob': 300 })
+    const recent = makeDirectory('npm-transaction-Ij56Kl', 60_000, { 'superseded-prefix/lib/cli.js': 100 })
+    const npmOwnCache = makeDirectory('_cacache', old, { 'index-v5/blob': 10 })
+
+    const result = await sweepInstallLeftovers([managedNpmCache()])
+
+    expect(fs.existsSync(verified)).toBe(false)
+    expect(fs.existsSync(halfDownloaded)).toBe(false)
+    expect(fs.existsSync(recent)).toBe(true)
+    expect(fs.existsSync(npmOwnCache)).toBe(true)
+    expect(result).toEqual({ removed: 2, freedBytes: 600, failed: 0 })
   })
 })

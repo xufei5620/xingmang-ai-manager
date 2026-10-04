@@ -205,7 +205,7 @@ import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-she
 import type { MacosShellProfileOutcome } from './macos-shell-profile'
 import type { LinuxTerminalCommandsReason, LinuxTerminalCommandsResult } from './linux-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
-import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedCliRoot, managedNativeProviderRoot, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
   describeInsufficientDiskSpace,
   readDiskSpace,
@@ -1792,13 +1792,52 @@ export interface ManagedNpmReplaceOperations {
   rename(source: string, destination: string): Promise<void>
 }
 
+export interface ManagedNpmReplaceResult {
+  /**
+   * 检查通过后，旧版那份是否已改名成 superseded-prefix。false 时它还叫 previous-prefix：
+   * 收尾删除没做完的话，下次安装开头的恢复仍会把它当成「更新没做完」退回去，和以前一样。
+   */
+  backupRetired: boolean
+}
+
+const managedNpmBackupRetireAttempts = 5
+
+function isTransientManagedNpmRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'EAGAIN'
+}
+
+/**
+ * 新版检查通过以后，previous-prefix 就不该再是「断了要退回的那份」。下次装、更新、卸载开头的
+ * 恢复（managed-cli.ts）只认这个名字：「完成」之后、临时文件夹删完之前退出、关机、崩掉，或者
+ * 删到一半失败，以前都会被它当成更新没做完，把检查过的新版换回旧版，删了一半的话换回来的
+ * 还是残缺的旧版。同一个目录里改名一步完成，所以不另写记号文件：删到一半时记号可能先没了、
+ * 备份还在。安全软件正攥着里面的文件时照 safe-local-data.ts 的规矩重试几次；还不行就留着
+ * 原名，和以前一样，不影响这次报完成。
+ */
+async function retireVerifiedManagedNpmBackup(
+  backup: string,
+  superseded: string,
+  operations: ManagedNpmReplaceOperations,
+): Promise<boolean> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await operations.rename(backup, superseded)
+      return true
+    } catch (error) {
+      if (!isTransientManagedNpmRenameError(error) || attempt === managedNpmBackupRetireAttempts - 1) return false
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20 * (2 ** attempt)))
+  }
+}
+
 export async function replaceManagedNpmPrefixAtomically(
   activePrefix: string,
   stagedPrefix: string,
   transactionDirectory: string,
   verifyPromotedPrefix: () => Promise<void>,
   operations: ManagedNpmReplaceOperations = fs.promises,
-): Promise<void> {
+): Promise<ManagedNpmReplaceResult> {
   const active = path.resolve(activePrefix)
   const staged = path.resolve(stagedPrefix)
   const transaction = path.resolve(transactionDirectory)
@@ -1841,6 +1880,9 @@ export async function replaceManagedNpmPrefixAtomically(
       throw new ManagedNpmRollbackError(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error })
     }
     throw error
+  }
+  return {
+    backupRetired: await retireVerifiedManagedNpmBackup(backup, path.join(transaction, 'superseded-prefix'), operations),
   }
 }
 
@@ -4647,8 +4689,9 @@ export function createSystemService(
         && (grokInstallStrategy === 'darwin-official-npm' || grokInstallStrategy === 'linux-official-npm')
       if (managedNpmLayout && managedNpmTransaction && installPrefix) {
         cancellation?.seal(managedPrefixSwapSealReason)
+        let promotion: ManagedNpmReplaceResult | null = null
         try {
-          await replaceManagedNpmPrefixAtomically(
+          promotion = await replaceManagedNpmPrefixAtomically(
             managedNpmLayout.prefix,
             installPrefix,
             managedNpmTransaction,
@@ -4687,6 +4730,15 @@ export function createSystemService(
           )
           if (!occupied) throw error
           throw new Error(occupied, { cause: error })
+        }
+        if (!promotion.backupRetired) {
+          runtimeLog?.log(
+            'warn',
+            'install',
+            'cli.install.backup-retire-failed',
+            `${definition.name} 新版已检查通过，但旧版那份没能标成已换下；临时文件夹删完之前退出的话，下次装工具时会被退回旧版`,
+            { provider },
+          )
         }
       } else if (!grokPostInstallVerified) {
         const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
@@ -4728,7 +4780,22 @@ export function createSystemService(
     } finally {
       if (downloadedGrokBinary) await cleanupDownloadedGrokBinary(downloadedGrokBinary)
       if (managedNpmTransaction && !preserveManagedNpmTransaction) {
-        await fs.promises.rm(managedNpmTransaction, { recursive: true, force: true }).catch(() => undefined)
+        // 几百 MB 的目录删起来要一会儿，安全软件、索引服务常在中途攥住刚解出来的文件：让 rm 自己
+        // 等一等再删（同 install-leftovers.ts）。还删不掉的过 6 小时由那边清；新版检查通过的话，
+        // 里面的旧版这时已经改名成 superseded-prefix，下次装工具时不会再被退回去。
+        await fs.promises.rm(managedNpmTransaction, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 })
+          .catch((error: unknown) => {
+            runtimeLog?.log(
+              'warn',
+              'install',
+              'cli.install.transaction-cleanup-failed',
+              `${definition.name} 安装用的临时文件夹没删掉，之后会自动清理`,
+              {
+                provider,
+                error: redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome),
+              },
+            )
+          })
       }
       installing.delete(provider)
     }
@@ -4782,11 +4849,19 @@ export function createSystemService(
     } catch {
       // ProgramData 解析不出来时安装本身也用不了那里，没有残留可清。
     }
+    let managedNpmCache: string | null = null
+    try {
+      // 和装工具时准备托管目录（ensureManagedNpmLayout）用同一份环境，指的才是同一处。
+      managedNpmCache = managedNpmCacheRoot(commandEnvironment(), platform)
+    } catch {
+      // 同上：解析不出来时托管安装也用不了，那里不会有更新留下的临时文件夹。
+    }
     return buildInstallLeftoverLocations({
       platform,
       windowsExecutionMode,
       temporaryDirectory: os.tmpdir(),
       trustedCacheRoot,
+      managedNpmCacheRoot: managedNpmCache,
     })
   }
 

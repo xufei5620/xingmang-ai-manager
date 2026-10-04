@@ -42,6 +42,9 @@ async function recoverInterruptedManagedNpmTransaction(
     const transaction = path.join(cacheRoot, entry.name)
     assertPlainDirectory(transaction, platform)
     const previousPrefix = path.join(transaction, 'previous-prefix')
+    // 只认 previous-prefix：新版检查通过后它会改名成 superseded-prefix（system-service.ts 的
+    // replaceManagedNpmPrefixAtomically），这时再退回就把检查过的新版换掉了。没有它的事务
+    // 不归这里管，由 install-leftovers.ts 过 6 小时清掉。
     if (!fs.existsSync(previousPrefix)) continue
     assertPlainDirectory(previousPrefix, platform)
     recoverable.push({ transaction, previousPrefix })

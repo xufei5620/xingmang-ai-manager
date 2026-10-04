@@ -4,7 +4,11 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import type { InstallLeftoverLocation, InstallLeftoverSweepResult } from './install-leftovers'
-import { userTemporaryLeftoverPrefixes } from './install-leftovers'
+import {
+  managedNpmTransactionLeftoverPrefixes,
+  managedNpmTransactionPreservedEntries,
+  userTemporaryLeftoverPrefixes,
+} from './install-leftovers'
 import { createSystemService } from './system-service'
 
 const temporaryDirectories: string[] = []
@@ -23,7 +27,8 @@ function createFixture(
 ) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-leftover-service-')))
   temporaryDirectories.push(root)
-  vi.stubEnv('HOME', path.join(root, 'home'))
+  const home = path.join(root, 'home')
+  vi.stubEnv('HOME', home)
   const log = vi.fn()
   const service = createSystemService(
     new AppSettingsStore(path.join(root, 'settings.json'), root),
@@ -35,7 +40,7 @@ function createFixture(
       ...(sweep ? { sweepInstallLeftovers: sweep } : {}),
     },
   )
-  return { service, log }
+  return { service, log, home }
 }
 
 describe('cleaning up downloads left by interrupted installs', () => {
@@ -55,6 +60,21 @@ describe('cleaning up downloads left by interrupted installs', () => {
       prefixes: [...userTemporaryLeftoverPrefixes, 'InstallerCache-'],
     })
     expect(log).toHaveBeenCalledWith('info', 'install', 'install-leftovers.swept', expect.stringContaining('300 MB'), expect.objectContaining({ removed: 2 }))
+  })
+
+  // The fixture poses as Linux, whose managed directory only takes a POSIX home path.
+  it.runIf(process.platform !== 'win32')('also sweeps the managed npm cache where updates of the managed CLIs leave their folders', async () => {
+    const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[]) => ({ removed: 0, freedBytes: 0, failed: 0 }))
+    const { service, home } = createFixture(sweep)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
+
+    await service.cleanupInstallLeftovers()
+
+    expect(sweep.mock.calls[0]?.[0]).toContainEqual({
+      directory: path.join(home, '.local', 'share', 'XingMangAI', 'Cli', 'npm-cache'),
+      prefixes: managedNpmTransactionLeftoverPrefixes,
+      preserveIfContains: managedNpmTransactionPreservedEntries,
+    })
   })
 
   it('runs in the installation queue so it never overlaps an install', async () => {
