@@ -2835,7 +2835,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const result = await dialog.showSaveDialog({
       title: '导出脱敏诊断报告',
       defaultPath: `xingmang-diagnostics-${new Date().toISOString().slice(0, 10)}.txt`,
-      filters: [{ name: 'Text', extensions: ['txt'] }],
+      filters: [{ name: '文本文件', extensions: ['txt'] }],
     })
     if (result.canceled || !result.filePath) return null
     await writeAtomicSafeUtf8File(
@@ -2910,7 +2910,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const result = await dialog.showSaveDialog({
       title: '导出反馈与诊断',
       defaultPath: `xingmang-feedback-${new Date().toISOString().slice(0, 10)}.txt`,
-      filters: [{ name: 'Text', extensions: ['txt'] }],
+      filters: [{ name: '文本文件', extensions: ['txt'] }],
     })
     if (result.canceled || !result.filePath) return null
     await writeAtomicSafeUtf8File(
