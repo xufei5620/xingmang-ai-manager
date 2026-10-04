@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
+import { isInstallCancelledError } from './install-cancellation'
 import { createSystemService, type SystemServiceOptions } from './system-service'
 
 const temporaryDirectories: string[] = []
@@ -203,5 +204,31 @@ describe('cancelling a CLI install', () => {
     expect(fixture.downloadAttempts).toHaveLength(2)
     expect(fixture.service.cancelCliInstall('claude').cancelled).toBe(true)
     expect(((await retry) as Error).message).toContain('安装已取消')
+  })
+
+  it.runIf(process.platform !== 'win32')('takes an install still waiting behind another out at once and leaves the running one alone', async () => {
+    const fixture = createCancellableInstallFixture()
+    const running = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+    await fixture.downloadAttemptStarted(1)
+    const queued = fixture.service.installCli('codex', fixture.target).then(() => 'installed', (error: unknown) => error)
+
+    expect(fixture.service.cancelCliInstall('codex')).toEqual({ cancelled: true, reason: null })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    // Claude Code 还在下载，排在它后面的 Codex 已经出队、结束了，不用等它装完。
+    const error = await Promise.race([queued, Promise.resolve('still waiting for the install ahead')])
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('Codex CLI 安装已取消')
+    expect(fixture.target.send).toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ provider: 'codex', state: 'error', message: 'Codex CLI 安装已取消' }),
+    )
+    expect(fixture.service.cancelCliInstall('codex').cancelled).toBe(false)
+    expect(fixture.downloadAttempts).toHaveLength(1)
+
+    expect(fixture.service.cancelCliInstall('claude')).toEqual({ cancelled: true, reason: null })
+    expect(((await running) as Error).message).toContain('安装已取消')
+    // 出队的那次一直没跑：前前后后只下过 Claude Code 那一次。
+    expect(fixture.downloadAttempts).toHaveLength(1)
   })
 })

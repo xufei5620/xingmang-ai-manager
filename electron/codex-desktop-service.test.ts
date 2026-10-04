@@ -2137,6 +2137,28 @@ describe('Codex Desktop install on macOS', () => {
     expect(isInstallCancelledError(error)).toBe(true)
     expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
   })
+
+  it('takes an install still waiting in the queue out at once instead of waiting for the one ahead', async () => {
+    const queue = new InstallationQueue()
+    let release = (): void => {}
+    const ahead = queue.enqueue('cli:install:claude', () => new Promise<void>((resolve) => { release = resolve }))
+    const f = macInstallFixture({ installationQueue: queue })
+    const install = f.service.installCodexDesktop(f.target).then(() => 'installed', (reason: unknown) => reason)
+    expect(queue.snapshot().pendingKeys).toEqual(['desktop:codex:install'])
+
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const error = await Promise.race([install, Promise.resolve('still waiting for the install ahead')])
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('Codex 桌面端安装已取消')
+    expect(f.progress()).toEqual([['error', null, 'Codex 桌面端安装已取消']])
+    expect(queue.snapshot()).toEqual({ activeKey: 'cli:install:claude', pendingKeys: [] })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.service.cancelCodexDesktopInstall().cancelled).toBe(false)
+    release()
+    await ahead
+  })
 })
 
 describe('Codex Desktop Microsoft Store install', () => {
