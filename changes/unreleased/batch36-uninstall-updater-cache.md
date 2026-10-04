@@ -9,11 +9,14 @@
   （模板 `installer.nsh` 的 `APP_INSTALLER_STORE_FILE`，留作增量更新的底），electron-updater 把下好的新版放在同一目录的
   `pending` 里；Mac 上是 `~/Library/Caches/xingmang-ai-manager-updater`（`pending` 加一份留作增量底的 `update.zip`）。
   卸载模板一次都不碰 `LOCALAPPDATA`，卸载清理以前也不管它。
-- `uninstall-cleanup.ts` 加 `updaterCacheDirectoryName`、`resolveUpdaterCacheDirectory`（照 electron-updater 的
-  `getAppCacheDir`：Windows 用 `LOCALAPPDATA`，没有就用用户目录下的 `AppData\Local`，只认带盘符的完整路径；Mac 用
-  `~/Library/Caches`）和 `clearUpdaterCache`。删法是把原来的 `removeChatHistoryTree` 抽成带名字、带层数上限的
+- `uninstall-cleanup.ts` 加 `updaterCacheDirectoryName`、`resolveUpdaterCacheDirectory` 和 `clearUpdaterCache`。位置照
+  electron-updater 的 `getAppCacheDir`，Mac 是 `~/Library/Caches`；Windows 的卸载清理带着管理员身份，不让环境变量决定去哪里删
+  （同不读 `CODEX_HOME`）：用 `os.userInfo().homedir`（系统登记的用户目录，只有管理员改得了）下的 `AppData\Local`，
+  `LOCALAPPDATA` 和它对不上、或者不是带盘符的完整路径就不删。删法是把原来的 `removeChatHistoryTree` 抽成带名字、带层数上限的
   `removeOwnedTree`，聊天记录和更新缓存共用：每一级过 `assertNoReparseComponents`，文件走 `removeSafeDataFile`，碰到符号链接、
   目录联接和多链接文件就留在原地、其余照删（I8），不用整棵删。聊天记录那半的行为和报告文字不变。
+- `startUninstallCleanup` 一开头调 `configureRelocatedFolderAccess('trusted-only')`：这一支本来就没打开「C 盘搬家」的跟随，
+  现在钉死，以后谁在它前面打开了也不会在提权删除时跟着联接走。
 - Windows：`runUninstallCleanup` 在代理还原之前删（还原可能等到超时，没有代理记录时也要删到）；删不掉只往报告里写一行
   `update cache: …`，不加退出码，卸载程序给客户看的几句不变。另一个管理员账号卸载（退出码 32）时照旧什么都不动；
   升级安装带 `--updated` 不跑卸载清理，不会删到正在用的安装包。`startUninstallCleanup` 多一个可替换的参数，测试里不碰跑测试

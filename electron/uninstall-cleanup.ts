@@ -12,6 +12,7 @@ import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
+import { configureRelocatedFolderAccess } from './relocated-folders'
 import { assertNoReparseComponents, removeSafeDataFile } from './safe-local-data'
 import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -208,18 +209,33 @@ export const updaterCacheDirectoryName = 'xingmang-ai-manager-updater'
 // 里面只有 pending 一层，多留一层余地。
 const updaterCacheTree: OwnedTree = { report: 'update cache', label: '更新安装包', maxDepth: 2 }
 
+// 系统登记的这个账号的用户目录：os.userInfo 走 GetUserProfileDirectory，读的是只有管理员
+// 改得了的 ProfileList；os.homedir 先读 USERPROFILE，那是普通权限就能改的环境变量。
+function registeredProfileDirectory(): string | null {
+  try {
+    return os.userInfo().homedir
+  } catch {
+    return null
+  }
+}
+
 export function resolveUpdaterCacheDirectory(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
+  home: string | null = platform === 'win32' ? registeredProfileDirectory() : os.homedir(),
 ): string | null {
   if (platform === 'win32') {
-    const base = env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local')
-    // 卸载这一支带着管理员身份：只认带盘符的完整路径，别的宁可不删。
-    return /^[A-Za-z]:[\\/]/.test(base) ? path.win32.join(base, updaterCacheDirectoryName) : null
+    if (!home || !/^[A-Za-z]:[\\/]/.test(home)) return null
+    const localAppData = path.win32.join(home, 'AppData', 'Local')
+    // electron-updater 按 LOCALAPPDATA 放。它和系统登记的用户目录对不上（搬过家，或者被普通
+    // 权限的程序改过）就不删：卸载这一支带着管理员身份，跟不读 CODEX_HOME 一个道理，不能由
+    // 环境变量决定去哪里删东西。没删的只占地方。
+    const fromEnvironment = env.LOCALAPPDATA
+    if (fromEnvironment && path.win32.resolve(fromEnvironment).toLowerCase() !== localAppData.toLowerCase()) return null
+    return path.win32.join(localAppData, updaterCacheDirectoryName)
   }
   if (platform === 'darwin') {
-    return path.posix.isAbsolute(home) ? path.posix.join(home, 'Library', 'Caches', updaterCacheDirectoryName) : null
+    return home && path.posix.isAbsolute(home) ? path.posix.join(home, 'Library', 'Caches', updaterCacheDirectoryName) : null
   }
   return null
 }
@@ -458,6 +474,9 @@ export function startUninstallCleanup(
     exit(uninstallCleanupExitCodes.unsupported)
     return
   }
+  // This branch runs elevated and deletes inside the user's profile: no
+  // relocated-folder link may ever be followed here (I8), whatever loaded first.
+  configureRelocatedFolderAccess('trusted-only')
   app.setAppUserModelId(windowsAppUserModelId)
   // The same default the desktop process reads (main.ts managerDataDirectory);
   // neither process renames the app or passes a profile switch.

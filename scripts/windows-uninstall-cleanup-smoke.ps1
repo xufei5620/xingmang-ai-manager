@@ -1,3 +1,4 @@
+#Requires -Version 7
 param([Parameter(Mandatory = $true)][string]$Installer)
 
 # Installs the freshly built NSIS package, leaves the machine in the state an
@@ -108,9 +109,15 @@ function Set-JunctionInUpdaterCache {
   Check ((Get-Item -LiteralPath $junctionPath -Force).LinkType -eq 'Junction') 'junction planted in the updater cache'
 }
 
+# Test-Path follows the link, so a junction whose target is gone would read as
+# missing; the attributes are the link's own.
+function Test-Junction {
+  try { return [bool]([IO.File]::GetAttributes($junctionPath) -band [IO.FileAttributes]::ReparsePoint) } catch { return $false }
+}
+
 # Removes the link itself, never what it points at.
 function Remove-Junction {
-  if (Test-Path -LiteralPath $junctionPath) { [IO.Directory]::Delete($junctionPath) }
+  if (Test-Junction) { [IO.Directory]::Delete($junctionPath) }
 }
 
 function Invoke-DirectCleanup([string]$stage, [string[]]$arguments, [bool]$junctionPlanted = $false) {
@@ -159,8 +166,8 @@ function Assert-Cleaned([string]$stage, [bool]$junctionPlanted = $false) {
   # Everything but the junction goes; the junction and what it points at stay.
   Check (-not (Test-Path -LiteralPath (Join-Path $updaterCache 'installer.exe'))) "$stage removed the installer copy next to the junction"
   Check (@(Get-ChildItem -LiteralPath (Join-Path $updaterCache 'pending') -Force | Where-Object { $_.FullName -ne $junctionPath }).Count -eq 0) "$stage removed the downloaded update next to the junction"
-  Check ((Get-Item -LiteralPath $junctionPath -Force).LinkType -eq 'Junction') "$stage left the junction in place"
-  Check ((Get-Content -LiteralPath $junctionSentinel -Raw) -eq 'not ours') "$stage did not follow the junction"
+  Check (Test-Junction) "$stage left the junction in place"
+  Check ((Test-Path -LiteralPath $junctionSentinel -PathType Leaf) -and (Get-Content -LiteralPath $junctionSentinel -Raw) -eq 'not ours') "$stage did not follow the junction"
 }
 
 $installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-uninstall-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -238,5 +245,5 @@ try {
   Remove-Item -LiteralPath ($loginRecords + $keptFiles) -Force -ErrorAction SilentlyContinue
   # The junction first, so removing the cache can never reach through it.
   try { Remove-Junction } catch { Write-Warning 'could not remove the junction in the updater cache' }
-  if (-not (Test-Path -LiteralPath $junctionPath)) { Remove-Item -LiteralPath $updaterCache -Recurse -Force -ErrorAction SilentlyContinue }
+  if (-not (Test-Junction)) { Remove-Item -LiteralPath $updaterCache -Recurse -Force -ErrorAction SilentlyContinue }
 }

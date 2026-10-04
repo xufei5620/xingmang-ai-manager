@@ -6,6 +6,7 @@ import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
 import { providerBaseUrls } from './catalog'
 import { inspectManagedCliHookTargets, inspectProviderConfig, saveProviderConfig } from './config-files'
+import { activeRelocatedFolderPolicy, setRelocatedFolderPolicy } from './relocated-folders'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import {
   chatHistoryDirectoryNames,
@@ -151,6 +152,25 @@ describe('uninstall cleanup', () => {
     expect(exit).toHaveBeenCalledWith(codes.unsupported)
     expect(app.setAppUserModelId).not.toHaveBeenCalled()
     expect(app.setLoginItemSettings).not.toHaveBeenCalled()
+  })
+
+  it('follows no relocated folder while it cleans up elevated', async () => {
+    // Whatever might have switched it on earlier in the process (I8).
+    setRelocatedFolderPolicy({ homeDirectories: [os.homedir()], acceptsTarget: () => true })
+    try {
+      const app = {
+        isPackaged: true,
+        getPath: vi.fn(() => temporaryDataDirectory()),
+        setAppUserModelId: vi.fn(),
+        getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+        setLoginItemSettings: vi.fn(),
+      }
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount, noConfigs, noUpdaterCache))
+      expect(activeRelocatedFolderPolicy()).toBeNull()
+      await expect(exited).resolves.toBe(0)
+    } finally {
+      setRelocatedFolderPolicy(null)
+    }
   })
 
   it('names the login item exactly as the desktop process does before removing it', async () => {
@@ -457,24 +477,22 @@ describe('removing the update installers on uninstall', () => {
   })
 
   it('looks where electron-updater keeps its cache', () => {
-    expect(resolveUpdaterCacheDirectory('win32', { LOCALAPPDATA: 'D:\\Profiles\\me\\Local' }, 'C:\\Users\\me'))
-      .toBe('D:\\Profiles\\me\\Local\\xingmang-ai-manager-updater')
-    // electron-updater falls back to the home folder when LOCALAPPDATA is missing or empty.
-    for (const env of [{}, { LOCALAPPDATA: '' }]) {
-      expect(resolveUpdaterCacheDirectory('win32', env, 'C:\\Users\\张三'))
-        .toBe('C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater')
+    const cache = 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater'
+    // electron-updater reads LOCALAPPDATA and falls back to the home folder when it is missing or empty.
+    for (const env of [{ LOCALAPPDATA: 'C:\\Users\\张三\\AppData\\Local' }, { LOCALAPPDATA: 'c:\\users\\张三\\appdata\\local\\' }, {}, { LOCALAPPDATA: '' }]) {
+      expect(resolveUpdaterCacheDirectory('win32', env, 'C:\\Users\\张三')).toBe(cache)
     }
     expect(resolveUpdaterCacheDirectory('darwin', {}, '/Users/alex')).toBe('/Users/alex/Library/Caches/xingmang-ai-manager-updater')
   })
 
-  it('refuses a location that is not a full local path', () => {
-    for (const [env, home] of [
-      [{ LOCALAPPDATA: 'AppData\\Local' }, 'C:\\Users\\me'],
-      [{ LOCALAPPDATA: '\\\\server\\share\\Local' }, 'C:\\Users\\me'],
-      [{ LOCALAPPDATA: 'C:relative' }, 'C:\\Users\\me'],
-      [{}, ''],
-    ] as const) {
-      expect(resolveUpdaterCacheDirectory('win32', env, home)).toBeNull()
+  it('lets no environment variable choose where the elevated cleanup deletes', () => {
+    // LOCALAPPDATA and USERPROFILE can be set without administrator rights; the
+    // account's registered profile folder cannot. A mismatch keeps the cache.
+    for (const LOCALAPPDATA of ['D:\\Profiles\\me\\Local', 'C:\\Users\\other\\AppData\\Local', 'AppData\\Local', 'C:relative']) {
+      expect(resolveUpdaterCacheDirectory('win32', { LOCALAPPDATA }, 'C:\\Users\\me')).toBeNull()
+    }
+    for (const home of [null, '', 'Users\\me', '\\\\server\\share\\me']) {
+      expect(resolveUpdaterCacheDirectory('win32', {}, home)).toBeNull()
     }
     expect(resolveUpdaterCacheDirectory('darwin', {}, 'relative')).toBeNull()
     expect(resolveUpdaterCacheDirectory('linux', {}, '/home/me')).toBeNull()
