@@ -1173,18 +1173,66 @@ test('an English probe failure reads as a plain Chinese sentence on the home row
     await clean(page)
   } finally { await page.close() }
 })
-test('the maintenance page does not reinstall over a CLI from the official installer', async () => {
-  const page = await open('nativeInstall=1')
+test('the maintenance page does not reinstall over a CLI from an official installer the app cannot replace', async () => {
+  const page = await open('nativeCodex=1&nativeInstall=1')
   try {
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
-    const row = page.getByTestId('maintenance-tool-claude')
-    const reinstall = page.getByTestId('maintenance-install-claude')
+    const row = page.getByTestId('maintenance-tool-codex')
+    const reinstall = page.getByTestId('maintenance-install-codex')
     await reinstall.waitFor()
     assert.equal(await reinstall.isDisabled(), true)
     assert.match(await row.innerText(), /由官方安装器管理/)
-    assert.equal(await page.getByTestId('maintenance-install-codex').isDisabled(), false)
     assert.match(await row.innerText(), /已安装（官方安装器）/)
+    // 官方安装器装的 Claude Code 星芒卸得掉：「重新安装」照常能点，点了先问一句（第三十一批 B）。
+    const claude = page.getByTestId('maintenance-tool-claude')
+    assert.equal(await page.getByTestId('maintenance-install-claude').isDisabled(), false)
+    assert.doesNotMatch(await claude.innerText(), /由官方安装器管理/)
+    assert.match(await claude.innerText(), /已安装（官方安装器）/)
+    // 点了和首页同一个确认框；点「取消」什么都不动，页面上也不冒出一句「正在安装」。
+    await page.getByTestId('maintenance-install-claude').click()
+    const dialog = page.getByTestId('managed-switch-confirm')
+    await dialog.getByText('换成星芒装的 Claude Code？', { exact: true }).waitFor()
+    assert.match(await dialog.innerText(), /再装上 1\.2\.3。/)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await page.getByTestId('maintenance-cancel-claude').waitFor({ state: 'detached' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli' || entry.method === 'installCli')), [])
+    assert.doesNotMatch(await page.getByTestId('page-maintenance').innerText(), /这个工具正在安装|安装完成，工具状态已更新/)
+    await clean(page)
+  } finally { await page.close() }
+})
+test('switching the official-installer Claude Code to the app asks first, then uninstalls and installs the named version', async () => {
+  const page = await open('cliUpdate=1&nativeInstall=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    const update = row.getByRole('button', { name: '更新', exact: true })
+    await update.waitFor()
+    assert.equal(await row.getByTestId('tool-claude-external-managed').count(), 0)
+    const switched = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli' || entry.method === 'installCli'))
+    const dialog = page.getByTestId('managed-switch-confirm')
+    await update.click()
+    await dialog.getByText('换成星芒装的 Claude Code？', { exact: true }).waitFor()
+    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账户数据和历史记录会保留，以后在星芒里点一下就能更新。/)
+    // 点「取消」什么都不动。
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual(await switched(), [])
+    assert.equal(await update.count(), 1)
+    // 再点一次、点「换成星芒装的」：这一行先「正在卸载」，卸完才装，装的正是框里写的那一版。
+    await page.evaluate(() => window.v2Test.holdNextUninstall())
+    await update.click()
+    await dialog.getByRole('button', { name: '换成星芒装的', exact: true }).click()
+    await row.getByText('正在卸载', { exact: true }).waitFor()
+    assert.deepEqual((await switched()).map((entry) => entry.method), ['uninstallCli'])
+    await page.evaluate(() => window.v2Test.releaseUninstall())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    assert.deepEqual(await switched(), [
+      { method: 'uninstallCli', args: ['claude', { reinstall: true }] },
+      { method: 'installCli', args: ['claude', '2.0.0'] },
+    ])
+    await row.getByText('v2.0.0', { exact: false }).waitFor()
+    assert.equal(await update.count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1200,8 +1248,10 @@ test('the new-version notification only calls people back for updates the app ca
   }
   for (const [query, expected] of [
     ['cliUpdate=1', [['cliUpdate', 'cli-update:claude.2.0.0']]],
-    // 官方安装器装的那份首页没有「更新」按钮，通知却说「回到星芒就能逐个更新」。
-    ['cliUpdate=1&nativeInstall=1', []],
+    // 官方安装器装的 Claude Code 首页有「更新」（换成星芒装的），照常叫人回来。
+    ['cliUpdate=1&nativeInstall=1', [['cliUpdate', 'cli-update:claude.2.0.0']]],
+    // 星芒卸不掉的那份首页没有「更新」按钮，通知却说「回到星芒就能逐个更新」。
+    ['codexUpdate=1&nativeCodex=1', []],
   ]) {
     const page = await open(query, false, recordNotifications)
     try {

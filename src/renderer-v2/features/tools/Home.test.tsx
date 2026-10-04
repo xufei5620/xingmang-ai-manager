@@ -344,16 +344,43 @@ describe('renderer-v2 home before the startup scan finishes', () => {
 })
 
 // 官方安装器/其他来源装的 CLI：如实标源，且不给 npm 更新按钮，改用被动提示。
+// 官方安装器装的 Claude Code 例外：星芒卸得掉，按钮照给，点了先问再换成星芒装的。
 describe('renderer-v2 home native install source', () => {
   const nativeClaude = { ...cliStatus, installSource: 'native', updateAvailable: true, latestVersion: '9.9.9' }
   const npmClaude = { ...cliStatus, installSource: 'npm', updateAvailable: true, latestVersion: '9.9.9' }
+  const nativeCodex = { ...nativeClaude, uninstall: { available: false, reason: '请用它原来的方式卸载', manualCommand: null } }
 
-  it('replaces the npm 更新 button with a passive hint for a native install', () => {
-    const markup = render({}, { claude: nativeClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
-    expect(markup).toContain('data-testid="tool-claude-external-managed"')
+  it('replaces the npm 更新 button with a passive hint for a native install the app cannot uninstall', () => {
+    const markup = render({}, { claude: cliStatus, codex: nativeCodex, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-codex-external-managed"')
     expect(markup).toContain('该版本由官方安装器管理，请用它自己的方式更新')
     // 那条 external-managed 提示顶掉了 npm 更新按钮。
     expect(markup).not.toContain('>更新<')
+  })
+
+  it('keeps the passive hint for a Claude Code installed some other way', () => {
+    const markup = render({}, { claude: { ...nativeClaude, installSource: 'path' }, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-claude-external-managed"')
+    expect(markup).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+    expect(markup).not.toContain('>更新<')
+  })
+
+  it('gives the official-installer Claude Code the same update button instead of the hint', () => {
+    const markup = render({}, { claude: nativeClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('>更新<')
+    expect(markup).not.toContain('data-testid="tool-claude-external-managed"')
+    expect(markup).not.toContain('该版本由官方安装器管理')
+  })
+
+  it('offers a known-problem official-installer Claude Code the recommended version', () => {
+    const blockedReason = '这个版本每次提问都会失败，换到推荐版本就好'
+    const markup = render({}, { claude: { ...nativeClaude, version: '2.1.276', latestVersion: '2.1.288',
+      versionAdvice: { recommendedVersion: '2.1.277', blockedReason, onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true } },
+    codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-claude-rollback"')
+    expect(markup).toContain('>更新到推荐版本<')
+    expect(markup).toContain(`title="${blockedReason}"`)
+    expect(markup).not.toContain('data-testid="tool-claude-external-managed"')
   })
 
   it('still offers the npm 更新 button for an npm install', () => {

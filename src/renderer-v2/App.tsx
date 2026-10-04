@@ -24,7 +24,8 @@ import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwap
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
@@ -173,6 +174,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [switchRestartOffer, setSwitchRestartOffer] = useState<AccountSourceTarget | null>(null)
   const [ccSwitchReminder, setCcSwitchReminder] = useState(false)
   const [modelSwap, setModelSwap] = useState<{ offer: ModelSwapOffer; answer: (choice: ModelSwapChoice) => void } | null>(null)
+  // 官方安装器装的 Claude Code 换成星芒装的之前那一问（第三十一批 B）；answer(false) = 不换。
+  const [managedSwitch, setManagedSwitch] = useState<{ version: string; answer: (confirmed: boolean) => void } | null>(null)
+  const pendingManagedSwitch = useRef<((confirmed: boolean) => void) | null>(null)
   /** 换模型弹框还开着时切了账号，要替用户点掉：那是上一个账号的提问（#538）。 */
   const pendingModelSwap = useRef<((choice: ModelSwapChoice) => void) | null>(null)
   const [chineseDialog, setChineseDialog] = useState(false)
@@ -816,17 +820,27 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       ? { prepare: [], blocked: null }
       : planCliInstall({ runtime: state.system.runtime, needsNode: cliNeedsNodeRuntime(state.platform, id), needsPython: cliNeedsPythonRuntime(state.platform, id, Boolean(definition?.requires.includes('python'))), nodeInstall: platform?.nodeRuntimeInstall, pythonInstall: platform?.pythonRuntimeInstall })
     if (plan.blocked) throw new Error(plan.blocked)
+    const current = presentTools(state).find((tool) => tool.id === id)
+    // 官方安装器装的 Claude Code 星芒更新不了，只能先卸掉再装回星芒自己的（第三十一批 B）。
+    // 卸之前问一句；问之前上面已经确认过没断网、运行环境装得上。
+    const switchVersion = current && canSwitchToManagedInstall(id, current.status) ? managedSwitchVersion(current, version) : null
+    if (switchVersion) {
+      if (!await confirmManagedSwitch(switchVersion)) return 'declined'
+      // 确认框里写的是哪一版，就点名装哪一版。
+      version = switchVersion
+    }
     const total = plan.prepare.length + 1
     // 运行环境那一段主进程没有取消通道；这时按「取消」要说清楚，而不是回一句
-    //「没有正在进行的安装」。
+    //「没有正在进行的安装」。换装时卸载那一步同样没有。
     let preparing = plan.prepare.length > 0
+    let uninstalling = false
     let outcome: ToolInstallOutcome = 'installed'
-    const updating = Boolean(presentTools(state).find((tool) => tool.id === id)?.status.installed)
+    const updating = Boolean(current?.status.installed)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
     // 用户中途取消时安装那一步抛出，收尾自然不会跑：本来就没装上，不用写 Key。
-    const finished = await toolbox.run(id, version ? `正在安装 ${version}` : preparing ? cliInstallStageLabel(plan.prepare[0], 0, total, toolName) : '正在安装', async (report) => {
+    const finished = await toolbox.run(id, switchVersion && !preparing ? '正在卸载' : version ? `正在安装 ${version}` : preparing ? cliInstallStageLabel(plan.prepare[0], 0, total, toolName) : '正在安装', async (report) => {
       for (const [index, runtime] of plan.prepare.entries()) {
         report(cliInstallStageLabel(runtime, index, total, toolName))
         // MSI 回 3010 时 Windows 要重启才算装完，接着装工具多半失败（第七批 5）：
@@ -839,21 +853,62 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         }
       }
       preparing = false
-      if (plan.prepare.length > 0) report(cliInstallStageLabel('tool', total - 1, total, toolName))
+      if (switchVersion) {
+        // 运行环境备齐了才卸：卸完到装上之间越短越好，环境要重启电脑时官方那份也还在。
+        uninstalling = true
+        report('正在卸载')
+        try {
+          if (!await uninstallBeforeSwitch(id, toolName)) { outcome = 'skipped'; return }
+        }
+        catch (cause) {
+          void toolbox.refresh(true).catch(() => undefined)
+          throw cause
+        }
+        finally { uninstalling = false }
+        report(plan.prepare.length > 0 ? cliInstallStageLabel('tool', total - 1, total, toolName) : `正在安装 ${version}`)
+      }
+      else if (plan.prepare.length > 0) report(cliInstallStageLabel('tool', total - 1, total, toolName))
       try {
         const result = await toolsApi.install(id, version)
         if (id === 'codexDesktop' && result && 'storeNewerVersion' in result && result.storeNewerVersion && mounted.current) setStoreNewerVersion(result.storeNewerVersion)
       }
       catch (cause) {
         // 环境已经装好、工具没装上：刷新一次，下次再点只剩装工具这一段。
-        if (plan.prepare.length > 0) void toolbox.refresh(true).catch(() => undefined)
+        // 换装时官方那份已经卸掉了：刷新后这一行变回「安装」，再点一次就好。
+        if (plan.prepare.length > 0 || switchVersion) void toolbox.refresh(true).catch(() => undefined)
         throw cause
       }
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
-    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome === 'restart' } })
+    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
+  }
+  /** 弹「换成星芒装的」确认框，等客户点；关掉框和点「取消」一样算不换。 */
+  function confirmManagedSwitch(version: string): Promise<boolean> {
+    pendingManagedSwitch.current?.(false)
+    return new Promise<boolean>((resolve) => {
+      const answer = (confirmed: boolean) => {
+        if (pendingManagedSwitch.current !== answer) return
+        pendingManagedSwitch.current = null
+        setManagedSwitch(null)
+        resolve(confirmed)
+      }
+      pendingManagedSwitch.current = answer
+      setManagedSwitch({ version, answer })
+    })
+  }
+  /**
+   * 「换成星芒装的」的前一半：和「卸载」走同一条路、同一套结果处理，只多带 reinstall，
+   * 主进程先看盘够不够装回来再动手。返回 false = 卸载转交给了别的窗口，这次先不装。
+   */
+  async function uninstallBeforeSwitch(id: ToolId, name: string): Promise<boolean> {
+    const result = await toolsApi.uninstall(id, { reinstall: true })
+    // 程序已经卸掉，只剩几个旧版本文件没删掉（多半是 Claude Code 还开着）：照常装上，清理那一步交给客户。
+    if (result.outcome === 'manual-required') setManualUninstall({ name, reason: result.manualHelp.reason, manualCommand: result.manualHelp.manualCommand })
+    const handedOff = uninstallHandOffNotice(result)
+    if (handedOff && mounted.current) toast.show(handedOff, 'neutral')
+    return !handedOff
   }
   /**
    * 串在「安装」里的运行环境那一段。单独占一个 node / python 任务，运行环境卡上
@@ -1502,6 +1557,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>换成 {modelSwap.offer.replacement}</Button>
     </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
+    {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}
+    {managedSwitch && <Confirm {...managedSwitchConfirmation(managedSwitch.version)} testId="managed-switch-confirm" onOk={() => managedSwitch.answer(true)} onClose={() => managedSwitch.answer(false)} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)
