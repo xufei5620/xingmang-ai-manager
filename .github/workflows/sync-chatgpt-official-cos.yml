@@ -69,6 +69,7 @@ jobs:
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
           XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
           XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
           CHATGPT_SYNC_PLATFORMS: ${{ matrix.platform }}
         run: node scripts/sync-chatgpt-official-cos.cjs
 

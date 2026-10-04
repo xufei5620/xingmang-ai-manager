@@ -1,10 +1,13 @@
 const crypto = require('node:crypto')
 const { performance } = require('node:perf_hooks')
+const { RETRY_POLICIES, retryTransfer } = require('./cos-transfer-retry.cjs')
 
 const PART_BYTES = 1024 * 1024
 const THRESHOLD_BYTES = 16 * 1024 * 1024
 const MAX_XML_BYTES = 64 * 1024
 const TOTAL_UPLOAD_MS = 75 * 60 * 1000
+// GitHub cancels any hosted job after six hours, so no caller can use more.
+const MAX_UPLOAD_MS = 6 * 60 * 60 * 1000
 
 function readMultipartOptions(env = process.env) {
   const enabled = env.XINGMANG_COS_MULTIPART_ENABLED
@@ -66,16 +69,18 @@ function buildCompleteMultipartBody(parts) {
   return Buffer.from(`<CompleteMultipartUpload>${parts.map((part, index) => `<Part><PartNumber>${index + 1}</PartNumber><ETag>${part.etag}</ETag></Part>`).join('')}</CompleteMultipartUpload>`)
 }
 
-async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, request, failure, onPartCommitted, shouldRetryPart = function () { return false }, monotonicNow = function () { return performance.now() } }) {
+async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, request, failure, onPartCommitted, onRetry, sleep, random,
+  shouldRetry = function () { return false }, deadlineMs = TOTAL_UPLOAD_MS, monotonicNow = function () { return performance.now() } }) {
   if (!Number.isInteger(concurrency) || concurrency < 4 || concurrency > 8 || hash.bytes !== stat.size ||
-      !Number.isSafeInteger(hash.bytes) || hash.bytes < 1 || hash.bytes > 2 * 1024 * 1024 * 1024) throw new Error('COS 分块上传参数无效')
+      !Number.isSafeInteger(hash.bytes) || hash.bytes < 1 || hash.bytes > 2 * 1024 * 1024 * 1024 ||
+      !Number.isSafeInteger(deadlineMs) || deadlineMs < 60 * 1000 || deadlineMs > MAX_UPLOAD_MS) throw new Error('COS 分块上传参数无效')
   // Hash the same trusted, open inode used by positional part reads. Part SHA256
   // checks bind every outgoing buffer to this full-file snapshot, independently
   // of MD5 (which is required by the COS UploadPart protocol).
   const parts = []
   const started = monotonicNow()
-  function checkDeadline() {
-    if (monotonicNow() - started >= TOTAL_UPLOAD_MS) throw new Error('COS 分块上传已超过总时间限制')
+  function checkDeadline(waitMs = 0) {
+    if (monotonicNow() + waitMs - started >= deadlineMs) throw new Error('COS 分块上传已超过总时间限制')
   }
   const fullHash = crypto.createHash('sha256')
   for (let offset = 0; offset < hash.bytes; offset += PART_BYTES) {
@@ -88,15 +93,33 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
   if (fullHash.digest('hex') !== hash.sha256) throw new Error('分块上传的完整源文件摘要与预校验不一致')
   let uploadId
   let completeStarted = false
+  let primaryError
+  // Wakes workers that are waiting out a backoff once another part has failed
+  // for good, so the abort below is not held up by their sleep.
+  const stopped = new AbortController()
+  function attempt(operation, send) {
+    return retryTransfer(send, {
+      policy: RETRY_POLICIES.write, sleep, random, signal: stopped.signal,
+      shouldRetry: function (error) { return shouldRetry(operation, error) },
+      // A wait that would end past the deadline is not started at all.
+      beforeRetry: function (waitMs) {
+        if (primaryError) throw primaryError
+        checkDeadline(waitMs)
+      },
+      onRetry: function (value) { onRetry?.({ operation, ...value }) },
+    })
+  }
   try {
-    const initialized = await request('init', 'POST', { uploads: '' }, Buffer.alloc(0))
+    const initialized = await attempt('init', function () {
+      checkDeadline()
+      return request('init', 'POST', { uploads: '' }, Buffer.alloc(0))
+    })
     const identity = parseMultipartXml(initialized.body, 'InitiateMultipartUploadResult', ['Bucket', 'Key', 'UploadId'])
     validateMultipartIdentity(identity, bucket, key)
     if (!/^[A-Za-z0-9_-]{1,256}$/.test(identity.UploadId)) throw new Error('COS 分块上传标识无效')
     uploadId = identity.UploadId
     let cursor = 0
     let committedBytes = 0
-    let primaryError
     async function worker() {
       while (!primaryError && cursor < parts.length) {
         const index = cursor++
@@ -106,35 +129,33 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
           const body = await readPart(handle, part.offset, part.bytes)
           const digest = partDigest(body)
           if (digest.sha256 !== part.sha256) throw new Error('分块上传的源文件内容发生变化')
-          let result
-          for (let attempt = 0; attempt < 3; attempt += 1) {
+          // COS overwrites the same UploadId/partNumber. Reuse this verified
+          // buffer so even a saved part with a lost reply is idempotent.
+          const result = await attempt('part', function () {
             checkDeadline()
             if (primaryError) throw primaryError
-            try {
-              // COS overwrites the same UploadId/partNumber. Reuse this verified
-              // buffer so even a saved part with a lost reply is idempotent.
-              result = await request('part', 'PUT', { partNumber: String(index + 1), uploadId }, body)
-              break
-            } catch (error) {
-              if (attempt === 2 || !shouldRetryPart(error)) throw error
-            }
-          }
+            return request('part', 'PUT', { partNumber: String(index + 1), uploadId }, body)
+          })
           if (result.bytes !== 0 || result.headers.etag !== `"${digest.md5}"`) throw new Error('COS 分块响应 ETag 与实际分块 MD5 不一致')
           part.etag = result.headers.etag
           committedBytes += part.bytes
           try { onPartCommitted?.(committedBytes) } catch {}
-        } catch (error) { primaryError ||= error }
+        } catch (error) {
+          primaryError ||= error
+          stopped.abort()
+        }
       }
     }
     // Every outstanding part settles before abort: late writes must never race
-    // an abort for the upload session we own. Complete is never retried.
+    // an abort for the upload session we own. Complete is repeated only when
+    // the caller's predicate proves the earlier request never reached COS.
     await Promise.all(Array.from({ length: concurrency }, () => worker()))
     if (primaryError) throw primaryError
     assertSourceStat(stat, await handle.stat())
     checkDeadline()
     const body = buildCompleteMultipartBody(parts)
     completeStarted = true
-    const completed = await request('complete', 'POST', { uploadId }, body)
+    const completed = await attempt('complete', function () { return request('complete', 'POST', { uploadId }, body) })
     const value = parseMultipartXml(completed.body, 'CompleteMultipartUploadResult', ['Location', 'Bucket', 'Key', 'ETag'])
     validateMultipartIdentity(value, bucket, key)
     if (!/^"[a-f0-9]{32}(?:-[1-9][0-9]{0,3})?"$/.test(value.ETag)) throw new Error('COS 分块合并响应 ETag 无效')
@@ -149,4 +170,4 @@ async function uploadMultipart({ handle, stat, hash, bucket, key, concurrency, r
   }
 }
 
-module.exports = { PART_BYTES, THRESHOLD_BYTES, MAX_XML_BYTES, readMultipartOptions, parseMultipartXml, buildCompleteMultipartBody, uploadMultipart }
+module.exports = { PART_BYTES, THRESHOLD_BYTES, MAX_XML_BYTES, TOTAL_UPLOAD_MS, readMultipartOptions, parseMultipartXml, buildCompleteMultipartBody, uploadMultipart }

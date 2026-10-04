@@ -103,25 +103,54 @@ test('the workflow reads exactly the secrets the owner was told to create', () =
   assert.deepEqual(referencedSecretNames(), RELEASE_SECRET_NAMES)
 })
 
-test('COS synchronization runs explicitly after the release and keeps its credentials in one opt-in step', () => {
-  const index = stepIndex(publishJob, /Synchronize the successful release to Tencent COS/)
-  const release = stepIndex(publishJob, /Tag the commit that shipped and create the GitHub Release/)
-  assert.ok(index > release)
-  assert.equal(publishJob.steps[index].if, "${{ vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}")
-  assert.equal(publishJob.steps[index].run, 'node scripts/sync-manager-release-cos.cjs --directory release-artifacts --version "$PACKAGE_VERSION"')
-  assert.deepEqual(publishJob.steps[index].env, {
+test('COS synchronization runs as its own job after an approved publish and keeps its credentials in one opt-in step', () => {
+  // 0.2.15 的 709 MB 往 COS 上海传了一个多小时，塞在 60 分钟的 publish 里传不完。
+  // 单独成作业才有足够的时间，失败了也能只重跑它，不用再批一次、不再碰 R2。
+  const cosJob = workflow.jobs['cos-sync']
+  assert.equal(stepIndex(publishJob, /Tencent COS|sync-manager-release-cos/), -1)
+  assert.deepEqual(cosJob.needs, ['publish', 'windows-build', 'macos-build', 'linux-build'])
+  // 只认 publish 成功：那一下 Approve 放行的就是这一版。
+  const runs = (publish, vars = { XINGMANG_COS_SYNC_ENABLED: 'true' }) => evaluateCondition(cosJob.if, {
+    needs: { publish, 'windows-build': 'success', 'macos-build': 'skipped' },
+    vars,
+  })
+  assert.equal(runs('success'), true)
+  for (const result of ['failure', 'skipped', 'cancelled']) assert.equal(runs(result), false, result)
+  for (const vars of [{}, { XINGMANG_COS_SYNC_ENABLED: 'false' }, { XINGMANG_COS_SYNC_ENABLED: '' }]) {
+    assert.equal(runs('success', vars), false, JSON.stringify(vars))
+  }
+  // 挂 cos-sync 而不是 release：不多一次批准，也拿不到 R2 和证书。
+  assert.equal(cosJob.environment, 'cos-sync')
+  assert.equal(cosJob.permissions, undefined)
+  assert.doesNotMatch(YAML.stringify(cosJob), /aws s3|R2_|XINGMANG_MAC_SIGNING|CSC_NAME|gh release/)
+  // 和手动导入共用一个组（两边都写 xingmang/latest.json），不进 update-feed。
+  assert.deepEqual(cosJob.concurrency, { group: 'cos-manager-publish', 'cancel-in-progress': false })
+  // GitHub 托管的作业最长 6 小时。
+  assert.ok(cosJob['timeout-minutes'] >= 300 && cosJob['timeout-minutes'] < 360, String(cosJob['timeout-minutes']))
+  // publish 发了哪些平台就同步哪些。
+  const downloads = (job) => job.steps.filter((step) => /actions\/download-artifact@/.test(String(step.uses || '')))
+  assert.deepEqual(downloads(cosJob), downloads(publishJob))
+  assert.equal(cosJob.env.PACKAGE_VERSION, publishJob.env.PACKAGE_VERSION)
+  const index = stepIndex(cosJob, /Synchronize the successful release to Tencent COS/)
+  assert.ok(index > Math.max(...downloads(cosJob).map((step) => cosJob.steps.indexOf(step))))
+  assert.equal(cosJob.steps[index].if, undefined)
+  assert.equal(cosJob.steps[index].run, 'node scripts/sync-manager-release-cos.cjs --directory release-artifacts --version "$PACKAGE_VERSION"')
+  assert.deepEqual(cosJob.steps[index].env, {
     COS_BUCKET: "${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}",
     COS_REGION: "${{ vars.COS_REGION || 'ap-shanghai' }}",
     COS_SECRET_ID: '${{ secrets.COS_SECRET_ID }}',
     COS_SECRET_KEY: '${{ secrets.COS_SECRET_KEY }}',
     XINGMANG_COS_MULTIPART_ENABLED: "${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}",
     XINGMANG_COS_MULTIPART_CONCURRENCY: "${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}",
+    XINGMANG_COS_ACCELERATE: "${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}",
   })
   const readers = allJobs.flatMap((job) => job.steps)
     .filter((step) => /secrets\.COS_SECRET_(?:ID|KEY)/.test(YAML.stringify(step)))
-  assert.deepEqual(readers, [publishJob.steps[index]])
-  assert.equal(publishJob.env.COS_SECRET_ID, undefined)
-  assert.equal(publishJob.env.COS_SECRET_KEY, undefined)
+  assert.deepEqual(readers, [cosJob.steps[index]])
+  for (const job of [cosJob, publishJob]) {
+    assert.equal(job.env.COS_SECRET_ID, undefined)
+    assert.equal(job.env.COS_SECRET_KEY, undefined)
+  }
   assert.equal(workflow.on.release, undefined)
 })
 

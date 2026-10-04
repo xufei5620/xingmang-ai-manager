@@ -334,7 +334,7 @@ R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整�
 
 ### 可选的 COS 国内文件分发同步
 
-配置 `XINGMANG_COS_SYNC_ENABLED=true` 及受限的 COS 上传凭据后，正式发布作业会在创建 GitHub Release 后同步本次完整发布产物到 COS。独立工作流也可以定时同步官方 ChatGPT 安装包。环境、权限、文件校验与首次运行步骤见 [COS-SYNC.md](COS-SYNC.md)。
+配置 `XINGMANG_COS_SYNC_ENABLED=true` 及受限的 COS 上传凭据后，publish 作业建好 GitHub Release，同一次运行里单独的 `cos-sync` 作业接着把本次完整发布产物同步到 COS：挂 `cos-sync` 环境，不多一次批准，最长跑 330 分钟。它失败不影响更新源和 GitHub Release；到运行页面点 **Re-run failed jobs** 只重跑它，已经传好的文件不再上传。独立工作流也可以定时同步官方 ChatGPT 安装包。环境、权限、文件校验、断网重试、全球加速与首次运行步骤见 [COS-SYNC.md](COS-SYNC.md)。
 
 这条可选链路提供独立下载索引，尚未接入既有客户端更新源、R2 撤回与回滚；不能用它绕过本手册中的正式发布批准或 Linux 分发开关。
 
