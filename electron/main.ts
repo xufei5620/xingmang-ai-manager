@@ -207,10 +207,12 @@ import { ensureMacosShellProfile } from './macos-shell-profile'
 import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
 import {
   applyWindowTheme,
+  assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
   windowIconFileName,
+  type AssetMenuMediaType,
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
@@ -2195,6 +2197,12 @@ if (!hasSingleInstanceLock) {
           earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
         })
       }
+      // 以前这六个菜单出错时一行日志都不记，客服事后查不到；错误框里只说中文（assetMenuFailureDialog）。
+      function showAssetMenuFailure(source: 'ai-chat' | 'canvas', mediaType: AssetMenuMediaType, action: string, error: unknown): void {
+        runtimeLog.exception(source, 'asset.menu.failed', error, { mediaType, action })
+        const content = assetMenuFailureDialog(mediaType, error)
+        dialog.showErrorBox(content.title, content.message)
+      }
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
         // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
@@ -2221,12 +2229,7 @@ if (!hasSingleInstanceLock) {
               id: item.id,
               label: item.label,
               click: () => {
-                void item.run().catch((error) => {
-                  dialog.showErrorBox(
-                    '图片操作失败',
-                    error instanceof Error ? error.message : '无法完成图片操作',
-                  )
-                })
+                void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'image', item.id, error))
               },
             })))
             menu.popup()
@@ -2258,7 +2261,7 @@ if (!hasSingleInstanceLock) {
           showContextMenu: (items) => {
             Menu.buildFromTemplate(items.map((item) => ({
               id: item.id, label: item.label,
-              click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) },
+              click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'video', item.id, error)) },
             }))).popup()
           },
         },
@@ -2272,7 +2275,7 @@ if (!hasSingleInstanceLock) {
           },
           revealInFolder: (filePath) => shell.showItemInFolder(filePath),
           showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'audio', item.id, error)) } }))).popup()
           },
         },
       })
@@ -2312,7 +2315,7 @@ if (!hasSingleInstanceLock) {
             showContextMenu: (items) => {
               Menu.buildFromTemplate(items.map((item) => ({
                 id: item.id, label: item.label,
-                click: () => { void item.run().catch((error) => dialog.showErrorBox('图片操作失败', error instanceof Error ? error.message : '无法完成图片操作')) },
+                click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'image', item.id, error)) },
               }))).popup()
             },
           },
@@ -2326,7 +2329,7 @@ if (!hasSingleInstanceLock) {
             },
             revealInFolder: (filePath) => shell.showItemInFolder(filePath),
             showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) } }))).popup()
+              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'video', item.id, error)) } }))).popup()
             },
           },
         })
@@ -2339,7 +2342,7 @@ if (!hasSingleInstanceLock) {
             },
             revealInFolder: (filePath) => shell.showItemInFolder(filePath),
             showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'audio', item.id, error)) } }))).popup()
             },
           },
         })

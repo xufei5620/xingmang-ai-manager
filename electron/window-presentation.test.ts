@@ -1,7 +1,10 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ipcEventChannels } from './ipc-contract'
 import {
   applyWindowTheme,
+  assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
@@ -154,5 +157,50 @@ describe('startup failure presentation', () => {
   it('preserves a non-empty Error message after trimming it', () => {
     expect(startupFailureMessage(new Error('  initialization failed  '), 'darwin'))
       .toBe('initialization failed')
+  })
+})
+
+describe('asset menu failure presentation', () => {
+  it('does not put an English file error carrying the user name in the dialog', () => {
+    // 图片被挪走、删掉以后再点「复制图片」「图片另存为」「在文件夹中显示」，open 抛的就是这句。
+    const missing = Object.assign(
+      new Error("ENOENT: no such file or directory, open 'C:\\Users\\张三\\Documents\\星芒AI\\output\\user-7\\2026-10-04\\xingmang-1.png'"),
+      { code: 'ENOENT' },
+    )
+    expect(assetMenuFailureDialog('image', missing)).toEqual({ title: '图片操作失败', message: '无法完成图片操作' })
+    expect(assetMenuFailureDialog('video', new Error("EBUSY: resource busy or locked, open '/Users/张三/Documents/星芒AI/output/user-7/2026-10-04/xingmang-1.mp4'")))
+      .toEqual({ title: '视频操作失败', message: '无法完成视频操作' })
+    expect(assetMenuFailureDialog('audio', new Error("EPERM: operation not permitted, open 'C:\\Users\\alice\\Documents\\xingmang-1.mp3'")))
+      .toEqual({ title: '音频操作失败', message: '无法完成音频操作' })
+  })
+
+  it('keeps the Chinese sentences the main process writes itself', () => {
+    for (const message of [
+      '账号已切换，请重新打开图片菜单',
+      '星芒账号已切换，已停止图片操作',
+      '图片另存失败，请检查目标目录写入权限',
+      'AI 图片资产文件在读取前发生变化',
+    ]) {
+      expect(assetMenuFailureDialog('image', new Error(message))).toEqual({ title: '图片操作失败', message })
+    }
+    expect(assetMenuFailureDialog('video', new Error('AI 视频资产不存在或无权访问')).message).toBe('AI 视频资产不存在或无权访问')
+    expect(assetMenuFailureDialog('audio', new Error('音频另存失败，请检查目标目录写入权限')).message).toBe('音频另存失败，请检查目标目录写入权限')
+  })
+
+  it('falls back when the failure is not an Error or says nothing', () => {
+    expect(assetMenuFailureDialog('image', new Error('   ')).message).toBe('无法完成图片操作')
+    expect(assetMenuFailureDialog('video', '无法读取')).toEqual({ title: '视频操作失败', message: '无法完成视频操作' })
+    expect(assetMenuFailureDialog('audio', null)).toEqual({ title: '音频操作失败', message: '无法完成音频操作' })
+  })
+
+  it('is how main.ts fills every image, video and audio menu error box', () => {
+    // 接线一断（哪个菜单又把 error.message 直接塞进错误框），英文原话和用户名就又上屏了。
+    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    for (const source of ['ai-chat', 'canvas']) {
+      for (const mediaType of ['image', 'video', 'audio']) {
+        expect(main).toContain(`item.run().catch((error) => showAssetMenuFailure('${source}', '${mediaType}', item.id, error))`)
+      }
+    }
+    expect(main).not.toMatch(/showErrorBox\([^)]*error\.message/)
   })
 })
