@@ -115,6 +115,7 @@ function serviceStub(): SystemService {
     onInstallationQueueChange: vi.fn(() => () => undefined),
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
+    cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
     launchExternalClient: vi.fn(async () => undefined),
   }
 }
@@ -2569,6 +2570,11 @@ describe('registerIpcHandlers', () => {
       await electronMocks.handlers.get('external-clients:launch')!(event, tool)
       expect(service.installExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
       expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool)
+      // 拒绝取消时那句原因要原样交给界面，按钮才不会像是坏了。
+      expect(electronMocks.handlers.get('external-clients:cancel-install')!(event, tool)).toEqual({
+        cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+      })
+      expect(service.cancelExternalClientInstall).toHaveBeenLastCalledWith(tool)
     }
     expect(service.scanExternalClients).toHaveBeenCalledOnce()
     expect(service.configureExternalTool).not.toHaveBeenCalled()
@@ -2578,21 +2584,23 @@ describe('registerIpcHandlers', () => {
   it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {
     const service = serviceStub()
     register(service)
-    for (const channel of ['external-clients:install', 'external-clients:launch']) {
+    for (const channel of ['external-clients:install', 'external-clients:cancel-install', 'external-clients:launch']) {
       for (const input of [undefined, null, {}, ['opencode'], 'codex', 'C:\\untrusted.exe', 'opencode --shell']) {
         expect(() => electronMocks.handlers.get(channel)!(trustedEvent(), input)).toThrow('未知的外部客户端类型')
       }
     }
     expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.cancelExternalClientInstall).not.toHaveBeenCalled()
     expect(service.launchExternalClient).not.toHaveBeenCalled()
   })
 
-  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
+  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:cancel-install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
     const service = serviceStub()
     register(service)
     expect(() => electronMocks.handlers.get(channel)!(trustedEvent('https://untrusted.example/'), 'opencode')).toThrow('已拒绝')
     expect(service.scanExternalClients).not.toHaveBeenCalled()
     expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.cancelExternalClientInstall).not.toHaveBeenCalled()
     expect(service.launchExternalClient).not.toHaveBeenCalled()
   })
 

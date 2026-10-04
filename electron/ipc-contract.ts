@@ -749,6 +749,8 @@ export interface XingmangInvokeContract {
   >
   scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
+  /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
+  cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
    * 切回官方订阅账号；merge 恢复对应来源配置，reset 重建初始配置。
@@ -1283,6 +1285,7 @@ export const ipcInvokeChannels = {
   configureExternalTool: 'config:configure-external-tool',
   scanExternalClients: 'external-clients:scan',
   installExternalClient: 'external-clients:install',
+  cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',

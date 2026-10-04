@@ -395,6 +395,25 @@ describe('Claude Desktop official MSIX installation', () => {
     expect(f.installPackage).not.toHaveBeenCalled()
   })
 
+  it('tells the caller right before Windows takes the package over, and only if nothing was cancelled', async () => {
+    const order: string[] = []
+    const f = await fixture({ onInstallStarting: () => order.push('install starting') })
+    f.installPackage.mockImplementation(async () => { order.push('installPackage') })
+    await installClaudeDesktopFromOfficial(f.options)
+    expect(order).toEqual(['install starting', 'installPackage'])
+
+    const during = new AbortController()
+    const onInstallStarting = vi.fn()
+    const cancelled = await fixture({ signal: during.signal, onInstallStarting })
+    cancelled.execute.mockImplementation(async (spec) => {
+      during.abort(new Error('安装已取消。'))
+      return result(spec, JSON.stringify(inspectionRecord()))
+    })
+    await expect(installClaudeDesktopFromOfficial(cancelled.options)).rejects.toThrow('安装已取消。')
+    expect(onInstallStarting).not.toHaveBeenCalled()
+    expect(cancelled.installPackage).not.toHaveBeenCalled()
+  })
+
   it('passes the shared installer failure on for the caller to word', async () => {
     const f = await fixture()
     f.installPackage.mockRejectedValue(new Error('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。'))

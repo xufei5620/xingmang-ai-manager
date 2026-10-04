@@ -23,6 +23,7 @@ const ipcInvokeChannels = {
   configureExternalTool: 'config:configure-external-tool',
   scanExternalClients: 'external-clients:scan',
   installExternalClient: 'external-clients:install',
+  cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
@@ -265,6 +266,7 @@ const xingmangApi: XingmangApi = {
   configureExternalTool: (tool, options) => invoke('configureExternalTool', tool, options),
   scanExternalClients: (force) => invoke('scanExternalClients', force),
   installExternalClient: (tool) => invoke('installExternalClient', tool),
+  cancelExternalClientInstall: (tool) => invoke('cancelExternalClientInstall', tool),
   launchExternalClient: (tool) => invoke('launchExternalClient', tool),
   switchToOfficialAccount: (provider, mode) => mode === undefined
     ? invoke('switchToOfficialAccount', provider)

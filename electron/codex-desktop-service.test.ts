@@ -66,6 +66,10 @@ import {
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   buildCodexDesktopOfficialPackageSource,
+  codexDesktopOfficialDownloadLimitMs,
+  codexDesktopSlowDownloadGraceMs,
+  estimateCodexDesktopDownloadRemainingMs,
+  isCodexDesktopDownloadTooSlow,
   fetchCodexDesktopManifestCandidate,
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
@@ -2487,6 +2491,142 @@ describe('Codex Desktop official offline package', () => {
 
     expect(isInstallCancelledError(error)).toBe(true)
     expect(requested).toEqual([])
+  })
+
+  /**
+   * 每读一块就把假时钟往前拨 secondsPerChunk 秒：下载「花了多久」全由它说了算，
+   * 测试本身不用真等。cancelled 记下连接有没有被掐断（没掐断的话连接会一直挂着）。
+   */
+  function trickleFetch(secondsPerChunk: number, options: { chunks?: number; onChunk?: (sent: number) => void } = {}) {
+    const chunks = options.chunks ?? 10
+    const chunkBytes = 1024 * 1024
+    const clock = { now: 0 }
+    const stream = { sent: 0, cancelled: false }
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      // highWaterMark 0: a chunk "arrives" only when the download asks for it, so the
+      // fake clock reads exactly the time the chunks handed out so far took.
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (stream.sent >= chunks) {
+            controller.close()
+            return
+          }
+          stream.sent += 1
+          clock.now += secondsPerChunk * 1000
+          controller.enqueue(new Uint8Array(chunkBytes).fill(0x43))
+          options.onChunk?.(stream.sent)
+        },
+        cancel() {
+          stream.cancelled = true
+        },
+      }, { highWaterMark: 0 })
+      const response = new Response(body, {
+        headers: { 'Content-Length': String(chunks * chunkBytes), 'Content-Type': 'application/octet-stream' },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    return { fetchMock, clock, stream, now: () => clock.now }
+  }
+
+  it('estimates how much longer a download takes at its average speed so far', () => {
+    const megabytes = 1024 * 1024
+    // 一分钟下了 30 MB，剩下 270 MB 还要九分钟。
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 30 * megabytes, 300 * megabytes)).toBe(9 * 60_000)
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 300 * megabytes, 300 * megabytes)).toBe(0)
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 0, 300 * megabytes)).toBeNull()
+  })
+
+  it('gives up on a download only after half a minute and only when ten more minutes are still ahead', () => {
+    const megabytes = 1024 * 1024
+    const limit = codexDesktopOfficialDownloadLimitMs
+    expect(limit).toBe(10 * 60_000)
+    // 前半分钟速度还没稳，再慢也不判。
+    expect(isCodexDesktopDownloadTooSlow(codexDesktopSlowDownloadGraceMs - 1, 1, 300 * megabytes, limit)).toBe(false)
+    // 半分钟下了 15 MB：剩下 285 MB 要 9.5 分钟，接着下。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 15 * megabytes, 300 * megabytes, limit)).toBe(false)
+    // 半分钟只下了 12 MB：还要 12 分钟，换下一路。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 12 * megabytes, 300 * megabytes, limit)).toBe(true)
+    // 半分钟一个字节都没收到。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 0, 300 * megabytes, limit)).toBe(true)
+    // 前面慢过、已经下了二十分钟，但只差最后一点：不扔掉重下。
+    expect(isCodexDesktopDownloadTooSlow(20 * 60_000, 299 * megabytes, 300 * megabytes, limit)).toBe(false)
+  })
+
+  it('drops the official download as too slow, not as cancelled, once ten more minutes are ahead', async () => {
+    const destination = officialDestination()
+    // 两分钟才 1 MB：第一块到时已过了半分钟的观察期，剩下 9 MB 照这个速度还要 18 分钟，
+    // 超过 10 分钟，第一块之后就停下。
+    const slow = trickleFetch(120)
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: slow.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: slow.now },
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(false)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('OpenAI 官网下载太慢：照目前的速度还要 18 分钟才下得完')
+    // 顶多多向服务器要了一块，没写进文件。
+    expect(slow.stream.sent).toBeLessThanOrEqual(2)
+    expect(slow.stream.cancelled).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+
+  it('lets a slow official download finish when what is left is short', async () => {
+    // 十秒一块（每分钟 6 MB）：半分钟时还剩 7 MB、七十秒，不换。
+    const steady = trickleFetch(10)
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: steady.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: steady.now },
+    })).resolves.toMatchObject({ status: 'downloaded', version: '26.930.1.0' })
+    expect(steady.stream.sent).toBe(10)
+  })
+
+  it('never drops the domestic mirror for being slow: it is the last route', async () => {
+    const slow = trickleFetch(120)
+
+    await expect(downloadCodexDesktopPackage(
+      { label: '国内镜像', url: packageUrl },
+      officialDestination(),
+      () => undefined,
+      slow.fetchMock,
+      undefined,
+      { now: slow.now },
+    )).resolves.toMatchObject({ transferred: 10 * 1024 * 1024 })
+  })
+
+  it('still reports the customer pressing cancel mid-download as a cancellation', async () => {
+    const controller = new AbortController()
+    const destination = officialDestination()
+    const download = trickleFetch(10, { onChunk: (sent) => { if (sent === 2) controller.abort(new InstallCancelledError()) } })
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: download.fetchMock,
+      signal: controller.signal,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: download.now },
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(download.stream.cancelled).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
   })
 })
 
