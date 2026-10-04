@@ -218,7 +218,7 @@ describe('CLI update reminders', () => {
       'requested',
     )
     expect(h.runtime.create).toHaveBeenCalledWith({
-      title: '命令行工具有新版本',
+      title: '工具有新版本',
       body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
       silent: true,
     })
@@ -233,6 +233,17 @@ describe('CLI update reminders', () => {
       'disabled',
     )
     expect(h.runtime.create).toHaveBeenCalledTimes(2)
+  })
+
+  // 第三十二批 B：Windows 客户日志里真发过这一条（只装了 Codex 桌面端，四家命令行工具一个没装），
+  // 编号就是下面这个。标题说「命令行工具」像是发错了人。
+  it('does not call a desktop app update a command-line tool update', () => {
+    const message = buildActivityNotificationMessage('cliUpdate', 'cli-update:codexDesktop.26.928.3736.0')
+    expect(message).toEqual({
+      title: '工具有新版本',
+      body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+    })
+    expect(`${message.title} ${message.body}`).not.toContain('命令行')
   })
 })
 

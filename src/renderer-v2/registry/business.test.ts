@@ -46,8 +46,10 @@ describe('renderer-v2 notification settings registry', () => {
   it('describes the CLI update reminder in the customer’s own words', () => {
     const option = notificationOptions.find(entry => entry.value === 'cliUpdate');
     expect(option?.label).toBe('工具有新版本');
+    // Codex 桌面端出新版也走这一项，只装了桌面端的客户也要能认出这一项跟自己有关（第三十二批 B）。
+    expect(option?.description).toBe('你装的工具出新版本时提醒一次');
     // 站点名、内部代号不进面向用户的文案（双站点对用户无感）。
-    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI/i);
+    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI|命令行/i);
   });
 });
 

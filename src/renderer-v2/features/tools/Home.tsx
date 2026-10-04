@@ -85,6 +85,8 @@ export interface HomeProps {
   onOpenConfigDirectory?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
   onInstallExternal(tool: ExternalToolId): void
+  /** 中止正在进行的客户端安装；缺省 = 不给这颗按钮（旧行为）。 */
+  onCancelInstallExternal?(tool: ExternalToolId): void
   onLaunchExternal(tool: ExternalToolId): void
   /** 一键安装用不了时打开客户端官网下载页；缺省 = 不给这颗按钮，仍是「暂不支持」（旧行为）。 */
   onOpenExternalDownload?(url: string): void
@@ -474,6 +476,9 @@ export function Home(props: HomeProps) {
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : downloadUrl ? '去官网下载' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '配置'
     const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : downloadUrl ? props.onOpenExternalDownload?.(downloadUrl) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
     return <ToolRow key={tool.id} tool={tool.id} status={status} detail={job?.label ?? tool.detail} progress={installJob?.percent}
+      extraAction={installJob?.cancellable && props.onCancelInstallExternal
+        ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
+        : undefined}
       primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
         icon={tool.action === 'launch' || downloadUrl ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [

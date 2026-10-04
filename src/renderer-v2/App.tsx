@@ -944,7 +944,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       throw new Error(runtimeStageFailureMessage(runtime, toolName, cause))
     }
   }
-  async function cancelInstall(id: ToolId) {
+  async function cancelInstall(id: ToolId | ExternalToolId) {
     const outcome = await toolbox.cancel(id)
     // 主进程拒绝取消时必须说清楚为什么，否则按钮看起来像坏了。
     if (!outcome.cancelled && outcome.reason) toast.show(outcome.reason, 'warn')
@@ -1005,7 +1005,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
     try {
-      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id), { notice: {} })
+      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id), { cancel: () => toolsApi.cancelExternalInstall(id), notice: {} })
       if (!completed || !mounted.current || epoch !== accountEpoch.current) return
       await toolbox.refreshExternal()
       if (mounted.current && epoch === accountEpoch.current) toast.show('客户端已安装，点击“配置”选择密钥和模型。', 'ok')
@@ -1449,7 +1449,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
-              onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
+              onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}
