@@ -4974,9 +4974,18 @@ export function createSystemService(
             // 原话只剩「命令执行失败（退出码 1）：node.exe」，客户看不出是工具开着（第三十三批 C），
             // 所以和安装、更新一样接上 npm 的要点，再数一遍这个工具的进程。cause 用 Object.assign
             // 挂成可枚举的：运行日志只记错误的可枚举字段（runtime-log.ts 的 sanitizeValue），
-            // npm 的整段输出要跟着进日志给客服看。
+            // npm 的原始输出要跟着进日志给客服看。
+            // Mac 不数：那边挪得动、删得掉正开着的程序文件，EPERM / EACCES 只会是权限不够（比如
+            // 用 sudo 装进 /usr/local 的那份），这时数到进程就会叫客户去关窗口，关了照样卸不掉。
+            // Linux 的进程检测本来就回 unsupported。
             const detail = describeNpmUninstallFailure(error)
-            const occupied = await describeOccupiedCliFailure(provider, detail, detail, plan.packageRoot, '卸载')
+            const occupied = await describeOccupiedCliFailure(
+              provider,
+              detail,
+              detail,
+              platform === 'darwin' ? null : plan.packageRoot,
+              '卸载',
+            )
             throw Object.assign(new Error(occupied ?? `${cliCatalog[provider].name} 卸载失败：${detail}`), { cause: error })
           } finally {
             if (cache) await fs.promises.rm(cache, { recursive: true, force: true }).catch(() => undefined)

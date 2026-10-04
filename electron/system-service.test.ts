@@ -336,6 +336,8 @@ function officialDarwinGrokUninstallResult(
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
+  // restoreAllMocks 不碰 vi.fn：换回真的进程检测，用例里排着没用掉的结果也一并清掉。
+  vi.mocked(probeRunningCliProcesses).mockReset()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
   for (const directory of temporaryDirectories.splice(0)) {
@@ -2967,10 +2969,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
   })
 
   // 卸载那一步的 npm 是真起的子进程：换成照 npm 原样报错、什么都没删的脚本。
-  // 包目录直接写好，不先走一遍安装。
-  function failingCodexUninstall(fixture: LinuxInstallFixture, npmErrorLines: readonly string[]) {
-    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
-    writeCodexPackage(managedPrefix, fixture.expectedVersion, true)
+  function failNpmUninstall(fixture: LinuxInstallFixture, npmErrorLines: readonly string[]): void {
     fs.writeFileSync(fixture.npmExecutable, [
       '#!/bin/sh',
       'if [ "$1" = uninstall ]; then',
@@ -2982,7 +2981,13 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
       'exit 0',
       '',
     ].join('\n'))
-    vi.mocked(probeRunningCliProcesses).mockClear()
+  }
+
+  // 包目录直接写好，不先走一遍安装。
+  function failingCodexUninstall(fixture: LinuxInstallFixture, npmErrorLines: readonly string[]) {
+    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
+    writeCodexPackage(managedPrefix, fixture.expectedVersion, true)
+    failNpmUninstall(fixture, npmErrorLines)
     const runtimeLog = { log: vi.fn() }
     const service = createSystemService(
       new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
@@ -3013,7 +3018,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
     // stays a permission problem until a process of this tool is actually found.
     expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
     expect(classifyOperationError(`Codex CLI 卸载失败：${npmRenameDeniedDetail}`)).toBe('permission')
-    // The runtime log keeps only enumerable fields, and npm's full output is what
+    // The runtime log keeps only enumerable fields, and npm's raw output is what
     // support reads there.
     expect(Object.prototype.propertyIsEnumerable.call(failure, 'cause')).toBe(true)
     expect(fs.existsSync(path.join(packageRoot, 'package.json'))).toBe(true)
@@ -3055,6 +3060,48 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
       + "原始报错：命令执行失败（退出码 1）：npm（EBUSY；Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
     expect(failure).toMatchObject({ message })
     expect(classifyOperationError(message)).toBe('toolRunning')
+  })
+
+  it('keeps a Mac permission failure a permission problem even while the tool is running', async () => {
+    // Mac 挪得动正开着的程序文件，npm 在那边报 EACCES 只会是权限不够，比如用 sudo 装进
+    // /usr/local 的那份。这时就算数得到进程也不能叫客户去关窗口：关了照样卸不掉。
+    const fixture = linuxInstallFixture(() => '')
+    writeCodexPackage(fixture.userPrefix, fixture.expectedVersion, false)
+    const packageRoot = path.join(fixture.userPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    failNpmUninstall(fixture, [
+      'npm error code EACCES',
+      'npm error syscall rename',
+      'npm error path /usr/local/lib/node_modules/@openai/codex',
+      'npm error errno -13',
+      "npm error Error: EACCES: permission denied, rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-x'",
+    ])
+    vi.mocked(probeRunningCliProcesses).mockResolvedValue({
+      status: 'checked',
+      processes: [{ processId: 4242, name: 'codex', executablePath: path.join(packageRoot, 'bin', 'codex') }],
+    })
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      {
+        platform: 'darwin',
+        windowsExecutionMode: 'same-user',
+        resolveCliInstallation: vi.fn<typeof resolveCliInstallationForTest>(async () => ({
+          commandPath: path.join(fixture.userPrefix, 'bin', 'codex'),
+          installDirectory: packageRoot,
+          packageRoot,
+          npmPrefix: fixture.userPrefix,
+          packageVersion: fixture.expectedVersion,
+          source: 'npm',
+        })),
+      },
+    )
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    const message = 'Codex CLI 卸载失败：命令执行失败（退出码 1）：npm（EACCES；Error: EACCES: permission denied, '
+      + "rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-x'）"
+    expect(failure).toMatchObject({ message })
+    expect(probeRunningCliProcesses).not.toHaveBeenCalled()
+    expect(classifyOperationError(message)).toBe('permission')
   })
 
   it('fails the install when npm silently skipped the platform build and keeps nothing half-installed', async () => {
