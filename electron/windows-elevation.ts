@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import {
+  cleanCommandOutput,
   isUserWritableResolvedPathSync,
   trustedCommandEnvironment,
   type CommandSpec,
@@ -649,8 +650,10 @@ export function buildCliLaunchPlan(
     '$ErrorActionPreference = "Stop"',
     // -WorkingDirectory 把方括号当通配符，文件夹叫「作业[1]」时每次都打不开，所以先转义；
     // 终端里那句 Set-Location 用的是 -LiteralPath，照原样给。
-    `$process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(escapePowerShellWildcard(workspace))} -WindowStyle Normal -PassThru`,
-    '[Console]::Out.WriteLine($process.Id)',
+    // 出错时只把原因写回去：留给 PowerShell 自己报，它会包上一层 CLIXML，再附上出错的那行
+    // 脚本，错误框里就是一串 XML。写 $_ 而不是 $_.Exception.Message：通配符那种报错的原因
+    // 只在 ErrorDetails 里，异常本身只有一句「找不到文件」，还会被认成 PowerShell 不见了。
+    `try { $process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(escapePowerShellWildcard(workspace))} -WindowStyle Normal -PassThru; [Console]::Out.WriteLine($process.Id) } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`,
   ].join('; ')
 
   return {
@@ -667,20 +670,79 @@ export function buildCliLaunchPlan(
   }
 }
 
+// The broker's whole script travels base64-encoded on its command line, folder and home
+// directory included, where the log's home-directory redaction cannot reach them. Node's
+// message has it as -EncodedCommand <base64>; PowerShell's own error view quotes the line
+// that launches the terminal, '-EncodedCommand', '<base64>'.
+function redactEncodedCommand(value: string): string {
+  return value.replace(/(-EncodedCommand['",\s]+)[A-Za-z0-9+/=]+/gi, '$1[REDACTED]')
+}
+
 function compactErrorDetail(value: string): string {
-  return value
-    .replace(/-EncodedCommand\s+\S+/gi, '-EncodedCommand [REDACTED]')
+  return redactEncodedCommand(value)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 400)
 }
 
+const clixmlEntities: Record<string, string> = { lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' }
+
+// XML escapes first, then PowerShell's own _xHHHH_ escapes for line breaks and other
+// characters XML cannot hold; a literal "_x" in the text was itself written as _x005F_x.
+function decodeClixmlText(value: string): string {
+  return value
+    .replace(/&(lt|gt|quot|apos|amp);/g, (_match, name: string) => clixmlEntities[name])
+    .replace(/_x([0-9A-Fa-f]{4})_/g, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+}
+
+// What the error view puts around the cause, none of it the cause. Windows PowerShell 5.1
+// says where the error happened, "At line:1 char:236" or "所在位置 行:1 字符: 236", then
+// quotes the script and gives the category on lines starting with "+"; a failed command's
+// cause comes before all that, but that of a script it never ran, such as one an antivirus
+// blocked, after the quote. PowerShell 7 opens the latter with the reason alone
+// ("ParserError:"), "Line |" and the quote as "1 | ...", then puts a row of "~" and the
+// cause behind a "|".
+const errorViewDecoration = /^(?:At line:\d+ char:\d+|所在位置 行:\d+ 字符: ?\d+|\+|Line \|$|\d+ \||~+$|[A-Za-z][\w.-]*:$)/
+// A failed command's view opens with its name, "Start-Process : " or "Start-Process: ".
+const errorViewCommandName = /^[A-Z][a-z]+-[A-Za-z]+ ?: /
+
+// The broker's catch writes the cause alone, as plain text. Should the catch fail too, as
+// its [Console] call does under Constrained Language Mode, or the script never run at all,
+// PowerShell reports the error itself, and for a redirected stream the host wraps the
+// report in CLIXML: <S S="Error"> elements holding the error view. Windows PowerShell 5.1
+// breaks it over lines at the console width; PowerShell 7 colours it with ANSI escapes
+// (both seen on the Windows CI runner).
+export function parseWindowsCliLaunchCause(stderr: string): string | null {
+  const text = cleanCommandOutput(stderr)
+  // The host writes the CLIXML header the first time it reports anything, progress
+  // included, but holds the XML until it exits, so what the catch wrote lands outside both.
+  const written = text.replace(/#< CLIXML/g, '').replace(/<Objs[\s\S]*?(?:<\/Objs>|$)/g, '').trim()
+  if (written) return written
+  const lines = cleanCommandOutput([...text.matchAll(/<S S="Error">([^<]*)<\/S>/g)]
+    .map((match) => decodeClixmlText(match[1]))
+    .join(''))
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^\|\s*/, ''))
+  // The first run of lines that are not decoration: 5.1 wraps the category lines as well,
+  // and what they spill onto the next line does not start with "+".
+  const start = lines.findIndex((line) => line && !errorViewDecoration.test(line))
+  if (start < 0) return null
+  const end = lines.findIndex((line, index) => index > start && errorViewDecoration.test(line))
+  const cause = lines.slice(start, end < 0 ? undefined : end).filter(Boolean).join(' ')
+  return cause.replace(errorViewCommandName, '') || null
+}
+
 export function describeWindowsCliLaunchError(error: unknown): string {
   const candidate = error as NodeJS.ErrnoException & { stderr?: unknown; stdout?: unknown; message?: unknown }
-  const detail = compactErrorDetail([
-    typeof candidate?.stderr === 'string' ? candidate.stderr : '',
-    typeof candidate?.message === 'string' ? candidate.message : String(error ?? ''),
-  ].filter(Boolean).join(' '))
+  // When the broker ran and failed, execFile's message only puts the whole command line in
+  // front of its stderr, so the cause is read from stderr alone; a timeout leaves none and
+  // falls through to the advice to look at the log. When PowerShell could not be started at
+  // all, execFile still attaches an empty stderr, but the error names the spawn syscall and
+  // its message says what went wrong, as do errors raised in launchCliPowerShell itself.
+  const stderr = typeof candidate?.stderr === 'string' && typeof candidate.syscall !== 'string' ? candidate.stderr : null
+  const detail = compactErrorDetail(stderr !== null
+    ? parseWindowsCliLaunchCause(stderr) ?? ''
+    : typeof candidate?.message === 'string' ? candidate.message : String(error ?? ''))
   const code = typeof candidate?.code === 'string' ? candidate.code.toUpperCase() : ''
   if (code === 'ENOENT' || /cannot find|找不到.*文件|系统找不到/i.test(detail)) {
     return '系统 PowerShell 启动文件不存在或已被移除，请修复 Windows PowerShell 或安装 PowerShell 7'
@@ -698,6 +760,41 @@ export function describeWindowsCliLaunchError(error: unknown): string {
   return detail
     ? `Windows 无法启动 PowerShell：${detail}`
     : 'Windows 无法启动 PowerShell，请查看反馈与诊断日志'
+}
+
+/** What the broker and Node reported about a launch that failed, for the log only. */
+export interface WindowsCliLaunchOutput {
+  stderr: string | null
+  message: string | null
+  /** The broker's exit code, or the errno when PowerShell could not be started at all. */
+  code: number | string | null
+  /** Set, along with killed, when the broker ran past cliLaunchBrokerTimeoutMs. */
+  signal: string | null
+  killed: boolean
+}
+
+export function buildWindowsCliLaunchOutput(error: unknown): WindowsCliLaunchOutput {
+  const candidate = error as { stderr?: unknown; message?: unknown; code?: unknown; signal?: unknown; killed?: unknown } | null | undefined
+  const stderr = typeof candidate?.stderr === 'string' ? candidate.stderr.trim() : ''
+  const code = candidate?.code
+  return {
+    stderr: stderr ? redactEncodedCommand(stderr) : null,
+    message: typeof candidate?.message === 'string' ? redactEncodedCommand(candidate.message) : null,
+    code: typeof code === 'number' || typeof code === 'string' ? code : null,
+    signal: typeof candidate?.signal === 'string' ? candidate.signal : null,
+    killed: candidate?.killed === true,
+  }
+}
+
+export class WindowsCliLaunchError extends Error {
+  /** The message is all the error dialog shows; the rest goes to the log from here. */
+  readonly launchOutput: WindowsCliLaunchOutput
+
+  constructor(message: string, launchOutput: WindowsCliLaunchOutput) {
+    super(message)
+    this.name = 'WindowsCliLaunchError'
+    this.launchOutput = launchOutput
+  }
 }
 
 function assertAccessibleWorkspace(workspace: string): void {
@@ -791,6 +888,6 @@ export async function launchCliPowerShell(
       throw new Error('PowerShell 启动代理未返回有效的终端进程 ID')
     }
   } catch (error) {
-    throw new Error(describeWindowsCliLaunchError(error))
+    throw new WindowsCliLaunchError(describeWindowsCliLaunchError(error), buildWindowsCliLaunchOutput(error))
   }
 }
