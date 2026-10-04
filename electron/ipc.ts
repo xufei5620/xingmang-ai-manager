@@ -86,6 +86,7 @@ import {
 import type {
   CliLaunchMode,
   CliLaunchResult,
+  CliUninstallOptions,
   CodexDesktopLaunchMode,
   ConfigSavePayload,
   SystemScanOptions,
@@ -384,6 +385,13 @@ export function parseSystemScanOptions(value: unknown): SystemScanOptions {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached')
     || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')) throw new Error('检测参数格式错误')
   return value.acceptCached === true ? { acceptCached: true } : {}
+}
+
+export function parseCliUninstallOptions(value: unknown): CliUninstallOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reinstall')
+    || (value.reinstall !== undefined && typeof value.reinstall !== 'boolean')) throw new Error('卸载参数格式错误')
+  return value.reinstall === true ? { reinstall: true } : {}
 }
 
 // settings:save carries a field-wise update since ①栏11: absent field = keep
@@ -2510,12 +2518,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
     return outcome
   })
-  registerTrustedHandler('cli:uninstall', async (_event, provider: unknown) => {
+  registerTrustedHandler('cli:uninstall', async (_event, provider: unknown, input: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    const uninstallOptions = parseCliUninstallOptions(input)
     const providerName = cliCatalog[provider].name
-    options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.started', `开始卸载 ${providerName}`, { provider })
+    options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.started', `开始卸载 ${providerName}`, {
+      provider,
+      ...(uninstallOptions.reinstall ? { reinstall: true } : {}),
+    })
     try {
-      const result = await service.uninstallCli(provider)
+      const result = await service.uninstallCli(provider, uninstallOptions)
       options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.completed', `${providerName} 卸载完成`, {
         provider,
         outcome: result.outcome,
