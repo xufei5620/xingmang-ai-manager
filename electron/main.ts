@@ -153,7 +153,7 @@ import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
-import { clearLoginAndChatRecords, removeCliHooksFromConfigs } from './uninstall-cleanup'
+import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksFromConfigs, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -3368,6 +3368,7 @@ if (!hasSingleInstanceLock) {
         trashItem: (target) => shell.trashItem(target),
         prepareQuit: async () => { await lifecycle.prepareUpdateQuit() },
         abortQuit: () => { lifecycle.abortUpdateQuit() },
+        removeUpdaterCache: () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
         clearLoginRecords: async () => {
           // 界面的本地存储由 Chromium 开着，先让它自己清，免得退出时把刚删的写回来。
           await session.defaultSession.clearStorageData({ storages: ['localstorage'] }).catch(() => undefined)
