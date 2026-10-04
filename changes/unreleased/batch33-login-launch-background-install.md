@@ -10,10 +10,12 @@
   普通打开照旧从启动算。`launchedAtLogin` 和 `startupQuiet` 挪到打开时装的订阅之前建，别的用法不变。
 - `auto-update-install.ts` 新增 `resolveLaunchInstallMode`：开机拉起、窗口一直没显示过的，能无人值守装（`canInstallUnattended`）
   又没开着加速就在后台装（'background'：不发预告通知、不摆卡、不等 5 秒），否则开机时不装（'skip'，日志 `install.on-launch.held`），
-  其余照旧先预告再装（'notice'）。Windows 的 NSIS 是 perMachine，安装器每次都要 UAC 授权窗口，所以 Windows 开机时一律不装；
+  其余照旧先预告再装（'notice'）。Windows 的 NSIS 是 perMachine，安装器每次都要 UAC 授权窗口，所以 Windows 窗口没打开过时开机不装；
   Mac 照 Squirrel.Mac 的 `launchPrivileged`（SQRLUpdater.m：解开符号链接后 .app 或它所在的文件夹不可写就要管理员密码）看一遍，
   从磁盘映像或系统的只读临时副本里运行的也不装。
 - 自动更新记录加可选的 `backgroundInstall {version, startedAt}`：后台装、安装器 10 分钟内重新拉起的那一次
   （`isRelaunchAfterBackgroundInstall`；ShipIt 装没装成都会拉起，所以不看版本）照开机拉起办，窗口留在菜单栏、走安静期，
-  日志 `install.background.relaunched`；读到就清掉，只认一次。旧版本读这份记录会忽略这个字段。ShipIt 用
-  NSWorkspaceLaunchDefault 打开会把程序切到前台，这一次在 ready-to-show 后 `app.hide()` 把前台还回去。
+  日志 `install.background.relaunched`；读到就清掉，只认一次。没走到重新拉起那一步的（装之前情况变了、没装成
+  `isBackgroundInstallFailed`、装的时候用户点开了窗口）当场撤回这条记录，免得之后用户自己打开时窗口出不来。旧版本读这份
+  记录会忽略这个字段。ShipIt 用 NSWorkspaceLaunchDefault 打开会把程序切到前台，这一次在 ready-to-show 后 `app.hide()`
+  把前台还回去。装之前那一眼抽成了纯函数 `shouldStillInstallAtLaunch`，后台装的另看窗口有没有被点开、加速有没有开。

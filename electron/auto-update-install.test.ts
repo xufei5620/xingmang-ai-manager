@@ -10,10 +10,12 @@ import {
   createPendingUpdateStore,
   decideLaunchInstall,
   decideQuitInstall,
+  isBackgroundInstallFailed,
   isRelaunchAfterBackgroundInstall,
   previousAutoInstallFailureMessage,
   resolveLaunchInstallMode,
   resolvePreviousAutoInstallFailure,
+  shouldStillInstallAtLaunch,
   emptyPendingUpdateRecord,
   parsePendingUpdateRecord,
   quitInstallPrompt,
@@ -21,8 +23,9 @@ import {
   undoQuitInstallAttempt,
   type LaunchInstallInput,
   type LaunchInstallModeInput,
+  type LaunchInstallRecheckInput,
 } from './auto-update-install'
-import type { UpdateSnapshot } from './updater'
+import { updateInstallLaunchTimeoutCode, type UpdateSnapshot } from './updater'
 
 const directories: string[] = []
 
@@ -102,6 +105,46 @@ describe('resolveLaunchInstallMode', () => {
   it('leaves the version for the quit when installing would pop up a prompt or cut off acceleration', () => {
     expect(resolveLaunchInstallMode(modeInput({ unattended: false }))).toBe('skip')
     expect(resolveLaunchInstallMode(modeInput({ accelerationActive: true }))).toBe('skip')
+  })
+})
+
+describe('shouldStillInstallAtLaunch', () => {
+  function recheck(patch: Partial<LaunchInstallRecheckInput> = {}): LaunchInstallRecheckInput {
+    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, background: false, windowShown: false, accelerationActive: false, ...patch }
+  }
+
+  it('goes ahead when nothing changed while the notice was up', () => {
+    expect(shouldStillInstallAtLaunch(recheck())).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ windowShown: true, accelerationActive: true }))).toBe(true)
+  })
+
+  it('backs off when auto-update was turned off, a tool install started or the version is no longer installable', () => {
+    expect(shouldStillInstallAtLaunch(recheck({ autoUpdate: false }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ busy: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+  })
+
+  it('backs off a background install once the window was opened or acceleration was turned on', () => {
+    expect(shouldStillInstallAtLaunch(recheck({ background: true }))).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ background: true, windowShown: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ background: true, accelerationActive: true }))).toBe(false)
+  })
+})
+
+describe('isBackgroundInstallFailed', () => {
+  const record = { ...emptyPendingUpdateRecord, backgroundInstall: { version: '0.2.12', startedAt: 1_760_000_000_000 } }
+  const failed = snapshot({ error: { code: 'UPDATE_INSTALL_FAILED', message: '新版本没装上' }, failedStep: 'install' })
+
+  it('flags a background install that failed while the app kept running', () => {
+    expect(isBackgroundInstallFailed(record, failed)).toBe(true)
+  })
+
+  it('keeps the record while the installer may still relaunch the app, or when there is nothing to take back', () => {
+    expect(isBackgroundInstallFailed(record, snapshot({ error: { code: updateInstallLaunchTimeoutCode, message: '新版本没装上' }, failedStep: 'install' }))).toBe(false)
+    expect(isBackgroundInstallFailed(record, snapshot())).toBe(false)
+    expect(isBackgroundInstallFailed(record, snapshot({ error: { code: 'UPDATE_DOWNLOAD_FAILED', message: '下载失败' }, failedStep: 'download' }))).toBe(false)
+    expect(isBackgroundInstallFailed({ ...record, backgroundInstall: null }, failed)).toBe(false)
   })
 })
 

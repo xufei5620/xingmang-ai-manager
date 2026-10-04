@@ -24,7 +24,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
-import type { UpdateInstallMethod, UpdateSnapshot } from './updater'
+import { updateInstallLaunchTimeoutCode, type UpdateInstallMethod, type UpdateSnapshot } from './updater'
 
 const storeLabel = '自动更新记录'
 const MAX_STORE_BYTES = 4 * 1024
@@ -153,6 +153,36 @@ export interface LaunchInstallModeInput {
 export function resolveLaunchInstallMode(input: LaunchInstallModeInput): LaunchInstallMode {
   if (!input.launchedAtLogin || input.windowShown) return 'notice'
   return input.unattended && !input.accelerationActive ? 'background' : 'skip'
+}
+
+export interface LaunchInstallRecheckInput {
+  version: string
+  autoUpdate: boolean
+  snapshot: UpdateSnapshot
+  busy: boolean
+  background: boolean
+  windowShown: boolean
+  accelerationActive: boolean
+}
+
+/**
+ * 预告等完、或者后台装写完记录，真去装之前再看一眼：这几秒里用户可能关了自动更新、开始
+ * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。
+ */
+export function shouldStillInstallAtLaunch(input: LaunchInstallRecheckInput): boolean {
+  if (!input.autoUpdate || input.busy) return false
+  if (resolveInstallableUpdateOnQuit(input.snapshot)?.version !== input.version) return false
+  return !input.background || (!input.windowShown && !input.accelerationActive)
+}
+
+/**
+ * 后台装没装成、软件还开着（安装器没起来、Mac 的安装器核对没过）。这时要撤回「重新拉起时
+ * 待在后台」那条记录，不然之后十分钟里用户自己退出再打开，窗口出不来。安装器迟迟没接手的
+ * 那条超时不算：Mac 的安装器取包、核对签名常常超过它，之后照样会装好、重新拉起。
+ */
+export function isBackgroundInstallFailed(record: PendingUpdateRecord, snapshot: UpdateSnapshot): boolean {
+  if (!record.backgroundInstall || snapshot.failedStep !== 'install' || !snapshot.error) return false
+  return snapshot.error.code !== updateInstallLaunchTimeoutCode
 }
 
 export interface UnattendedInstallInput {

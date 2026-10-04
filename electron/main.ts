@@ -57,7 +57,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, undoQuitInstallAttempt, type QuitInstallAttempt } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -1874,6 +1874,15 @@ if (!hasSingleInstanceLock) {
         current: app.getVersion(),
       })
     }
+    // 后台装没走到安装器重新拉起那一步（这次不装了、没装成、装的时候用户点开了窗口）：撤回
+    // 那条记录，不然之后用户自己退出再打开，会被当成重新拉起的那一次，窗口出不来。
+    const dropBackgroundInstall = () => {
+      if (!pendingUpdateRecord.backgroundInstall) return
+      pendingUpdateRecord = { ...pendingUpdateRecord, backgroundInstall: null }
+      void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'pending.record-failed', cause)
+      })
+    }
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
@@ -1883,6 +1892,10 @@ if (!hasSingleInstanceLock) {
         void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
           runtimeLog.exception('updater', 'pending.record-failed', cause)
         })
+      }
+      if (isBackgroundInstallFailed(pendingUpdateRecord, state)) {
+        runtimeLog.log('info', 'updater', 'install.background.failed', '后台安装没装成，留到退出时再装')
+        dropBackgroundInstall()
       }
       // 退出交接还没接上时（主窗口没建好）不装：那时安装器发起的退出会被当成用户关窗。
       // 开机拉起的安静期还没过时，两分钟也还没开始算。
@@ -1928,20 +1941,25 @@ if (!hasSingleInstanceLock) {
           updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
           await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
         }
-        // 等的这几秒里用户可能关了自动更新、开始装工具，或者这个版本被撤回了；后台装的，
-        // 写记录那一下用户可能刚点开窗口、从托盘开了加速。
-        const still = updaterService.autoUpdateEnabled()
-          && resolveInstallableUpdateOnQuit(updaterService.getState())?.version === version
-          && resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) === null
-          && (!background || (!mainWindowShown && acceleration?.hasPossibleSession() !== true))
+        const still = shouldStillInstallAtLaunch({
+          version,
+          autoUpdate: updaterService.autoUpdateEnabled(),
+          snapshot: updaterService.getState(),
+          busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+          background,
+          windowShown: mainWindowShown,
+          accelerationActive: acceleration?.hasPossibleSession() === true,
+        })
         if (!still) {
           updaterService.setLaunchInstallNotice(null)
+          dropBackgroundInstall()
           runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
           return
         }
         updaterService.install()
       }).catch((cause: unknown) => {
         updaterService.setLaunchInstallNotice(null)
+        dropBackgroundInstall()
         runtimeLog.exception('updater', 'install.on-launch.failed', cause)
       })
     })
@@ -3045,6 +3063,8 @@ if (!hasSingleInstanceLock) {
     managedMainWindow = mainWindow
     mainWindow.once('show', () => {
       mainWindowShown = true
+      // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。
+      dropBackgroundInstall()
       startupQuiet.end('window-shown')
     })
     // Mac 的安装器打开新版本时会把它切到前台（ShipIt 用 NSWorkspaceLaunchDefault）：没有窗口，
