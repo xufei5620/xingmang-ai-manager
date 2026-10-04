@@ -99,14 +99,15 @@ describe('xingmang-ai-mcp', () => {
   })
 
   it('keeps every choice the user made in its own Codex entry and only repoints the launch', () => {
+    const oldSkillDirectory = path.resolve(os.tmpdir(), 'old-home', '.agents', 'skills', '星芒AI')
     const userEntry = {
       command: '/old/node',
-      args: [invocation.scriptPath],
+      args: [path.join(oldSkillDirectory, 'scripts', 'mcp-server.mjs')],
       enabled: false,
       tool_timeout_sec: 120,
       startup_timeout_sec: 20,
       disabled_tools: ['other_tool'],
-      env: { [XINGMANG_IMAGE_CONFIG_ENV]: '/old/星芒AI/config.json', NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: path.join(oldSkillDirectory, 'config.json'), NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
       tools: { generate_image: { approval_mode: 'prompt', output_token_limit: 2000 } },
     }
     const parsed: Record<string, unknown> = { mcp_servers: { [XINGMANG_IMAGE_MCP_NAME]: structuredClone(userEntry) } }
@@ -114,6 +115,7 @@ describe('xingmang-ai-mcp', () => {
     expect(asRecord(parsed.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toEqual({
       ...userEntry,
       command: nodeExecutable,
+      args: [invocation.scriptPath],
       env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath, NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
     })
     expect(applyXingmangImageMcpToToml(parsed, invocation, 'codex')).toBe(false)

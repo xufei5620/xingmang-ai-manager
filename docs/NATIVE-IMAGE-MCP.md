@@ -20,7 +20,8 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 - 直接写文件，不调各家 `mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样能用。写入走 `executeFilePlans`（两阶段提交 + 备份 + 回滚）。
 - 只写已存在的配置目录；Codex 用官方 ChatGPT 登录时不写（它有原生画图）。
 - 同名条目只有「启动的是 星芒AI 技能目录下 `scripts/mcp-server.mjs`」才算本软件的，才会改写；别的一律不动。
-- 上表的调用时限、免确认和 `enabled = true` 只在第一次登记时写。登记过的条目以后每次只对齐启动方式（`command`、`args`、`env` 里的 `XINGMANG_IMAGE_CONFIG_PATH`，Claude Code 另加 `type = "stdio"`），跟着 Node 或技能目录换位置；别的键照用户现在的样子留着，缺了也不补。关掉（`enabled = false`）、改成每次先问（Codex `approval_mode = "prompt"`、Gemini `trust: false`）、改时限、自己加的 `disabled_tools` / `excludeTools` / 环境变量都算用户的选择。画一张图要扣余额，以前每次登录同步都整条重建，改成先问的人下次打开星芒又变回不问就画。
+- 服务器条目（Codex / Grok 的 `[mcp_servers.xingmang-image]`、Claude Code 与 Gemini 的 `mcpServers.xingmang-image`）里的调用时限、免确认和 `enabled = true` 只在第一次登记时写。登记过的条目以后每次只对齐启动方式（`command`、`args`、`env` 里的 `XINGMANG_IMAGE_CONFIG_PATH`，Claude Code 另加 `type = "stdio"`），跟着 Node 或技能目录换位置；别的键照用户现在的样子留着，缺了也不补。关掉（`enabled = false`）、改成每次先问（Codex `approval_mode = "prompt"`、Gemini `trust: false` 或删掉 `trust`）、改时限、自己加的 `disabled_tools` / `excludeTools` / 环境变量都算用户的选择。画一张图要扣余额，以前每次登录同步都整条重建，改成先问的人下次打开星芒又变回不问就画。
+- Claude Code 的免确认不在服务器条目里，是 `settings.json` 里 `permissions.allow` 的一条规则，每次同步缺了照旧补上。要 Claude Code 每次先问，就把 `mcp__xingmang-image__generate_image` 写进 `permissions.ask`：写进 ask / deny 的本软件一律不碰，而 2.1.277 判断权限时 ask 规则排在免确认模式（`bypassPermissions`）前面，开着免确认模式也会问（读程序确认，没在真机上演过）。只从 `allow` 里删掉那条不够：免确认模式下本来就不问，别的模式下下次同步又会补回来。
 - 工具说明和 `SKILL.md` 都让 AI 优先用这个工具，技能脚本留作没有工具时的兜底。
 
 ## 安全边界

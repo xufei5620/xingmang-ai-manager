@@ -54,7 +54,7 @@ export function isManagedXingmangImageMcpEntry(value: unknown): boolean {
     && segments[segments.length - 3] === XINGMANG_AI_SKILL_DIRECTORY
 }
 
-// 第一次登记时写的整套默认值。
+// 只在第一次登记时写；以后缺了也不补回来，理由见 repointedEntry。
 function freshTomlEntry(invocation: XingmangImageMcpInvocation, variant: XingmangImageTomlVariant): Record<string, unknown> {
   const entry: Record<string, unknown> = {
     command: invocation.nodeExecutable,
@@ -64,9 +64,9 @@ function freshTomlEntry(invocation: XingmangImageMcpInvocation, variant: Xingman
     env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
   }
   if (variant === 'codex') {
-    // Only this one tool of this one server is pre-approved. It can reach nothing
-    // but the account's own image endpoint (see mcp-server.mjs), so a per-call
-    // prompt would add a click without adding a decision.
+    // Pre-approved by default: this one tool of this one server can reach nothing
+    // but the account's own image endpoint (see mcp-server.mjs). Every image still
+    // costs balance, so a user who switches it back to a per-call prompt keeps that.
     entry.tools = { [XINGMANG_IMAGE_TOOL_NAME]: { approval_mode: 'approve' } }
   }
   return entry
