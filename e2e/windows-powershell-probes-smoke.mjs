@@ -456,26 +456,33 @@ for (const [name, limit, run] of trustedProbes) {
 // The CLI terminal itself stays closed, but the step of its launch that reads
 // the folder's name runs here. The broker's Start-Process resolves
 // -WorkingDirectory as a wildcard, so a project folder such as 作业[1] used to
-// fail on every open. The broker the app builds for such a folder runs as built
-// up to its Start-Process, which here starts a hidden, waited-for cmd.exe in
-// place of the terminal, so the runner keeps no window; cmd records where it
-// was started. Unescaped, the same broker must still fail, with an error that
-// reads back as UTF-8: that is the premise of the escaping, and the text the
-// customer's error dialog quotes. Both shells the app may pick are tried.
+// fail on every open. The broker the app builds for such a folder runs as built,
+// except that its Start-Process starts a hidden, waited-for cmd.exe in place of
+// the terminal, so the runner keeps no window; cmd records where it was started.
+// Unescaped, the same broker must still fail: that is the premise of the
+// escaping, and the failure is the one the customer's error dialog quotes, so it
+// must come back as the cause alone, in plain text that reads back as UTF-8.
+// Both shells the app may pick are tried.
 const {
   buildCliLaunchPlan,
   decodeWindowsPowerShellCommand,
+  describeWindowsCliLaunchError,
   parseStartedWindowsProcessId,
   powerShellLiteral,
   windowsPowerShellCandidates,
 } = compiled('windows-elevation')
 const launchBrokerMarker = path.join(scratch, 'launch-broker-cwd.txt')
 
-function launchBrokerScript(preamble, workingDirectory) {
+function withLaunchedCmd(broker) {
   const cmd = path.join(machinePaths.system32, 'cmd.exe')
   // /u: cmd writes what `cd` prints as UTF-16, so the folder's Chinese name survives the file.
   const argumentList = ['/d', '/u', '/c', `cd > "${launchBrokerMarker}"`].map(powerShellLiteral).join(', ')
-  return `${preamble}$process = Start-Process -FilePath ${powerShellLiteral(cmd)} -ArgumentList @(${argumentList}) -WorkingDirectory ${workingDirectory} -WindowStyle Hidden -Wait -PassThru; [Console]::Out.WriteLine($process.Id)`
+  const launched = / -FilePath '(?:[^']|'')*' -ArgumentList @\([^)]*\) -WorkingDirectory /
+  const shown = ' -WindowStyle Normal -PassThru;'
+  assert.ok(launched.test(broker) && broker.includes(shown), 'the broker no longer reads the way this check expects')
+  return broker
+    .replace(launched, () => ` -FilePath ${powerShellLiteral(cmd)} -ArgumentList @(${argumentList}) -WorkingDirectory `)
+    .replace(shown, () => ' -WindowStyle Hidden -Wait -PassThru;')
 }
 
 function runLaunchBroker(shell, script, cwd) {
@@ -487,22 +494,20 @@ function runLaunchBroker(shell, script, cwd) {
   })
 }
 
-checks.push(['the CLI launch broker opens a folder whose name has brackets', async () => {
+checks.push(['the CLI launch broker opens a folder whose name has brackets, and reports a failure by its cause', async () => {
   const folder = path.join(scratch, '作业[1]', 'a`[b]')
   fs.mkdirSync(folder, { recursive: true })
   const shells = windowsPowerShellCandidates(process.env, 'win32', machinePaths).filter((shell) => fs.existsSync(shell))
   assert.ok(shells.length > 0)
   for (const shell of shells) {
     const name = path.basename(shell)
-    const broker = decodeWindowsPowerShellCommand(buildCliLaunchPlan({ executable: process.execPath, workspace: folder, title: 'smoke' }, shell).argv.at(-1))
-    const start = broker.indexOf('$process = Start-Process')
+    const broker = withLaunchedCmd(decodeWindowsPowerShellCommand(buildCliLaunchPlan({ executable: process.execPath, workspace: folder, title: 'smoke' }, shell).argv.at(-1)))
     const shipped = / -WorkingDirectory ('(?:[^']|'')*') /.exec(broker)?.[1]
-    assert.ok(start > 0 && shipped, 'the broker no longer reads the way this check expects')
-    const preamble = broker.slice(0, start)
+    assert.ok(shipped && shipped !== powerShellLiteral(folder), 'the broker no longer escapes the folder')
 
     fs.rmSync(launchBrokerMarker, { force: true })
     const startedAt = Date.now()
-    const opened = await runLaunchBroker(shell, launchBrokerScript(preamble, shipped), folder)
+    const opened = await runLaunchBroker(shell, broker, folder)
     const elapsed = Date.now() - startedAt
     assert.equal(opened.error, null, `${name}: ${opened.stderr}`)
     assert.ok(parseStartedWindowsProcessId(opened.stdout), `${name} printed no process id: ${opened.stdout}`)
@@ -510,17 +515,23 @@ checks.push(['the CLI launch broker opens a folder whose name has brackets', asy
     const recorded = fs.readFileSync(launchBrokerMarker, 'utf16le').trim()
     assert.equal(fs.realpathSync.native(recorded).toLowerCase(), fs.realpathSync.native(folder).toLowerCase())
 
-    const unescaped = await runLaunchBroker(shell, launchBrokerScript(preamble, powerShellLiteral(folder)), folder)
+    const unescapedBroker = broker.replace(shipped, () => powerShellLiteral(folder))
+    const unescaped = await runLaunchBroker(shell, unescapedBroker, folder)
     assert.ok(unescaped.error, `${name} opened the folder unescaped, so escaping it no longer matches what PowerShell does`)
+    // The broker's catch wrote the cause, not PowerShell: no error view in CLIXML. A CLIXML
+    // header alone may still come first, when the host reported progress before the catch ran.
+    assert.ok(!unescaped.stderr.includes('<S S="Error">'), `${name} reported the failure itself: ${unescaped.stderr}`)
     assert.match(unescaped.stderr, /wildcard|通配符/i, `${name}: ${unescaped.stderr}`)
     assert.ok(unescaped.stderr.includes('作'), `${name} did not report the folder's name as UTF-8: ${unescaped.stderr}`)
+    // What the error dialog would say, given what execFileAsync hands launchCliPowerShell.
+    const dialog = describeWindowsCliLaunchError(Object.assign(unescaped.error, { stdout: unescaped.stdout, stderr: unescaped.stderr }))
+    assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
+    assert.doesNotMatch(dialog, /Command failed|EncodedCommand|CLIXML|<S /, `${name}: ${dialog}`)
 
-    // Printed only: how the host wraps the error the dialog quotes, and whether this
-    // runner would garble it without the switch.
-    const withoutSwitch = await runLaunchBroker(shell, launchBrokerScript(preamble.slice(preamble.indexOf('Import-Module')), powerShellLiteral(folder)), folder)
-    const errorStart = Math.max(0, unescaped.stderr.indexOf('<S S="Error">'))
-    const wrapping = unescaped.stderr.startsWith('#< CLIXML') ? 'wrapped in CLIXML' : 'as plain text'
-    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped it fails ${wrapping} with ${JSON.stringify(unescaped.stderr.slice(errorStart, errorStart + 200))}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
+    // Printed only: whether this runner would garble the same cause without the switch.
+    const withoutSwitch = await runLaunchBroker(shell, unescapedBroker.slice(unescapedBroker.indexOf('Import-Module')), folder)
+    const header = unescaped.stderr.startsWith('#< CLIXML') ? 'after a CLIXML header' : 'as plain text'
+    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped the cause came back ${header} and the dialog would read ${JSON.stringify(dialog)}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
   }
 }])
 
