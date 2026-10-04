@@ -10,6 +10,7 @@ import {
   settingsItemAvailable,
   settingsItemLabel,
   settingsItems,
+  updateBubbleRepeatsUpdatesPage,
   updateBubbleTitle,
   updateCardTitle,
   updateDiskShortfallText,
@@ -20,6 +21,7 @@ import {
   updateFailureLabels,
   updateInstallNote,
   updateInstallActionLabel,
+  updateNewVersion,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './business';
@@ -169,6 +171,39 @@ describe('renderer-v2 withdrawn version and rollback wording', () => {
     expect(withdrawnVersionAdvice(stranded)).toContain('修好的版本准备好后');
     expect(withdrawnVersionAdvice({ ...stranded, phase: 'available', availableVersion: '0.2.11' })).toContain('修好的 0.2.11');
     expect(updateCardTitle({ ...base, phase: 'not-available' })).toBe('已是最新版本');
+  });
+});
+
+describe('renderer-v2 updates page version rows', () => {
+  it('names the new version under the current one only when there is one', () => {
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false })).toBe('0.2.11');
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: null, rollback: false })).toBeNull();
+    expect(updateNewVersion(null)).toBeNull();
+  });
+
+  it('does not call the older version of a rollback new', () => {
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true })).toBeNull();
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: '0.2.10', rollback: false })).toBeNull();
+  });
+});
+
+describe('renderer-v2 update bubble on the updates page', () => {
+  const base = { currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false, currentVersionWithdrawn: false, error: null, failedStep: null } as const;
+  const failed = (step: UpdateFailedStep) => ({ ...base, phase: 'error', error: { code: 'UPDATE_ERROR', message: '失败' }, failedStep: step } as const);
+
+  it('leaves out the three bubbles that repeat what the page already says', () => {
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'downloading' })).toBe(true);
+    expect(updateBubbleRepeatsUpdatesPage(failed('download'))).toBe(true);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'available' })).toBe(true);
+  });
+
+  it('keeps the other bubbles, the known-problem one included', () => {
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'not-available', availableVersion: null, currentVersionWithdrawn: true })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'available', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'available', diskShortfall: { neededBytes: 2, freeBytes: 1 } })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'downloaded' })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage(failed('check'))).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...failed('install'), phase: 'downloaded' })).toBe(false);
   });
 });
 

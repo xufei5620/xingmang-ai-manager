@@ -107,6 +107,21 @@ export function runtimeLogDisplayMessage(message: string): string {
   return message
 }
 
+/**
+ * 日志列表上的时间：今天的只写「20:02:54」，更早的写「10月2日 18:02:54」，不是今年的再带上年份。
+ * 完整的年月日在「详情」里。
+ */
+export function runtimeLogTimeText(timestamp: string, now: number): string {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '时间不可用'
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  const today = new Date(now)
+  if (date.toDateString() === today.toDateString()) return clock
+  const day = `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+  return date.getFullYear() === today.getFullYear() ? day : `${date.getFullYear()}年${day}`
+}
+
 // 条目 id 是 `${ISO 时间}:${pid}:${序号}`，而 ISO 时间自己就带冒号，
 // 所以只能从尾部倒着取两段，不能 split(':') 按下标取。
 const entryOrigin = /:(\d+):(\d+)$/

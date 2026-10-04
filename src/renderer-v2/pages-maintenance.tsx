@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,7 +18,6 @@ import {
   FileText,
   FolderOpen,
   HeartPulse,
-  HelpCircle,
   KeyRound,
   MoreHorizontal,
   PlugZap,
@@ -59,8 +59,10 @@ import {
   RelativeTime,
   beginBusinessOperation,
   errorMessage,
+  failureWithDetail,
   ListState,
   ResultNotice,
+  resultNoticeLead,
   type OperationNotice,
   useOperation,
   useResource,
@@ -69,6 +71,9 @@ import {
 import {
   autoUpdateSettingDescription,
   cliTutorialTopic,
+  desktopInstallTutorialTopic,
+  macDesktopTutorialTopic,
+  macRuntimeTutorialTopic,
   notificationOptions,
   notificationSettingsItemId,
   settingsGroups,
@@ -80,6 +85,7 @@ import {
   updateDownloadDetail,
   updateInstallActionLabel,
   updateInstallNote,
+  updateNewVersion,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
@@ -89,7 +95,9 @@ import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, updatesOutsideApp } from './features/tools/model'
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
-import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
+import { ToolStatusMeta, toolStatusView } from './features/tools/ToolStatusMeta'
+import { installProgressLabel } from './features/tools/install-stage-text'
+import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
 import { AppUninstallRow } from './features/app/AppUninstall'
@@ -130,6 +138,7 @@ import {
   runtimeLogAreaLabel,
   runtimeLogDisplayMessage,
   runtimeLogSourceOptions,
+  runtimeLogTimeText,
   runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
@@ -141,6 +150,7 @@ import type {
   FeedbackReportCopyResult,
   FeedbackReportExportResult,
   InstallCancelResult,
+  PlatformCapabilities,
 } from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
@@ -209,6 +219,11 @@ export type BusinessActions = {
   installTool?: (tool: Provider | 'codexDesktop') => Promise<ToolInstallOutcome>
   /** 与 installTool 配对的取消：首页那条安装在准备运行环境时会说明为什么不能取消。 */
   cancelToolInstall?: (tool: Provider | 'codexDesktop') => Promise<InstallCancelResult>
+  /**
+   * 首页那份正在跑的任务（按工具编号）。「安装卸载」页拿它画「安装中」、进度那句白话和百分比；
+   * 在首页点的安装这一页也看得到。缺省 = 只看这一页自己发起的那次。
+   */
+  toolJobs?: Readonly<Record<string, ToolJob>>
   /**
    * 连接自检的密钥 / 分组层给出的「重新写入 Key」：复用装完工具后那条同样的重写
    * 流程（App 的 syncAfterToolInstalled），失败时把主进程的原话抛出来，页面照实显示。
@@ -910,6 +925,10 @@ const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
   info: '信息',
   debug: '调试',
 }
+/** 反馈页一次读多少条运行日志；读满了卡头就写「最近 500 条」。 */
+const runtimeLogLimit = 500
+/** 日志列表先铺这么多条，最后一行「再显示 100 条」。 */
+const runtimeLogPage = 100
 
 // 预览过了 30 分钟，主进程会按最新日志重生成再复制/导出；提示要让客户知道拿到的是新的那份。
 export function feedbackCopyNotice(result: FeedbackReportCopyResult) {
@@ -935,13 +954,18 @@ export function FeedbackPage({
   openHelp,
   navigate,
 }: { api: V2Bridge } & BusinessActions) {
-  const load = useCallback(() => api.getRuntimeLogs(500), [api])
+  const load = useCallback(() => api.getRuntimeLogs(runtimeLogLimit), [api])
   const resource = useResource(load)
   const operation = useOperation()
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState(anyRuntimeLogValue)
   const [source, setSource] = useState(anyRuntimeLogValue)
   const [onlyCurrentBoot, setOnlyCurrentBoot] = useState(false)
+  // 「再显示 100 条」点到第几页；换了筛选条件就从头的 100 条重新开始，改回原来的条件也不接着上次的页数。
+  const filterKey = JSON.stringify([level, source, query, onlyCurrentBoot])
+  const [shown, setShown] = useState({ key: filterKey, count: runtimeLogPage })
+  if (shown.key !== filterKey) setShown({ key: filterKey, count: runtimeLogPage })
+  const visibleCount = shown.key === filterKey ? shown.count : runtimeLogPage
   const [report, setReport] = useState<Awaited<
     ReturnType<V2Bridge['getFeedbackReport']>
   > | null>(null)
@@ -957,6 +981,10 @@ export function FeedbackPage({
   }
   const list = filterRuntimeLogs(resource.data?.entries ?? [], filter)
   const writeNotice = runtimeLogWriteNotice(resource.data?.writeFailure)
+  const now = Date.now()
+  const shownLogs = list.slice(0, visibleCount).map((entry) => ({ entry, time: runtimeLogTimeText(entry.timestamp, now) }))
+  // 去年的条目时间带年份，比平常长一截：有一条带年份，各行的时间那一格一起放宽，才对得齐。
+  const logRowClass = shownLogs.some(({ time }) => time.includes('年')) ? 'v2-feedback-log has-year' : 'v2-feedback-log'
   const resetFilters = () => {
     setQuery('')
     setLevel(anyRuntimeLogValue)
@@ -989,16 +1017,13 @@ export function FeedbackPage({
           </Button>
         }
       />
-      <Notice
-        tone="neutral"
-        title="报告会自动脱敏"
-        body="不会包含账号密码与完整密钥。发送前仍请检查私有项目名称和地址。"
-        actions={
-          <Button size="sm" icon={HelpCircle} onClick={openHelp}>
-            联系客服
-          </Button>
-        }
-      />
+      <div className="v2-feedback-privacy" data-testid="feedback-privacy">
+        <ShieldCheck size={16} aria-hidden="true" />
+        <span>报告会自动脱敏：不会包含账号密码与完整密钥。发送前仍请检查私有项目名称和地址。</span>
+        <Button size="sm" variant="ghost" onClick={openHelp}>
+          联系客服
+        </Button>
+      </div>
       {writeNotice ? (
         <Notice
           tone="warn"
@@ -1064,7 +1089,42 @@ export function FeedbackPage({
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
       />
-      <Card padding="none">
+      <Card
+        title="运行日志"
+        meta={
+          resource.data && !resource.error
+            ? resource.data.truncated ? `最近 ${runtimeLogLimit} 条` : `共 ${list.length} 条`
+            : undefined
+        }
+        padding="none"
+        actions={
+          <>
+            <Button
+              size="sm"
+              icon={FolderOpen}
+              onClick={() =>
+                void operation.execute(
+                  'directory',
+                  () => api.openRuntimeLogDirectory(),
+                  '',
+                )
+              }
+            >
+              打开日志目录
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              icon={Trash2}
+              disabled={!resource.data?.entries.length || Boolean(resource.error)}
+              onClick={() => setClearOpen(true)}
+              testId="feedback-clear"
+            >
+              清除日志
+            </Button>
+          </>
+        }
+      >
         <ListState
           page="feedback"
           noun="运行日志"
@@ -1075,65 +1135,40 @@ export function FeedbackPage({
           filtered={hasRuntimeLogFilter(filter)}
           retry={() => void resource.reload()}
           clear={resetFilters}
+          emptyDescription="软件运行时的事件会记录在这里。"
+          errorDescription="点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。"
         >
-          {list.map((entry) => (
-            <ListRow
+          {shownLogs.map(({ entry, time }) => (
+            <button
               key={entry.id}
-              icon={FileText}
-              title={runtimeLogDisplayMessage(entry.message)}
-              badge={
-                <Pill
-                  tone={
-                    entry.level === 'error'
-                      ? 'bad'
-                      : entry.level === 'warn'
-                        ? 'warn'
-                        : 'neutral'
-                  }
-                >
-                  {runtimeLogLevelLabels[entry.level] ?? entry.level}
-                </Pill>
-              }
-              desc={[displayDate(entry.timestamp), runtimeLogAreaLabel(entry)].filter(Boolean).join(' · ')}
-              actions={
-                <Button
-                  size="sm"
-                  icon={FileText}
-                  onClick={() => setSelected(entry)}
-                >
-                  详情
-                </Button>
-              }
-            />
+              type="button"
+              className={logRowClass}
+              onClick={() => setSelected(entry)}
+              data-testid={`feedback-log-${entry.id}`}
+            >
+              <time dateTime={entry.timestamp} title={displayDate(entry.timestamp)}>
+                {time}
+              </time>
+              <span className={`v2-feedback-log-level is-${entry.level}`}>
+                {runtimeLogLevelLabels[entry.level] ?? entry.level}
+              </span>
+              <span className="v2-feedback-log-message">{runtimeLogDisplayMessage(entry.message)}</span>
+              <span className="v2-feedback-log-source">{runtimeLogAreaLabel(entry)}</span>
+              <span className="v2-feedback-log-more">详情 ›</span>
+            </button>
           ))}
+          {list.length > visibleCount && (
+            <button
+              type="button"
+              className="v2-feedback-log-next"
+              onClick={() => setShown({ key: filterKey, count: visibleCount + runtimeLogPage })}
+              data-testid="feedback-log-next"
+            >
+              再显示 {runtimeLogPage} 条
+            </button>
+          )}
         </ListState>
       </Card>
-      {resource.data?.truncated && <p>已限制为最近日志。</p>}
-      <Toolbar
-        left={
-          <Button
-            icon={FolderOpen}
-            onClick={() =>
-              void operation.execute(
-                'directory',
-                () => api.openRuntimeLogDirectory(),
-                '',
-              )
-            }
-          >
-            打开日志目录
-          </Button>
-        }
-        right={
-          <Button
-            variant="danger"
-            icon={Trash2}
-            onClick={() => setClearOpen(true)}
-          >
-            清除日志
-          </Button>
-        }
-      />
       <Dialog
         open={Boolean(report)}
         title="脱敏反馈报告"
@@ -1364,6 +1399,7 @@ export function UpdatesPage({
     )
   }
   const update = resource.data
+  const newVersion = updateNewVersion(update)
   const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
   // Linux 的 .deb：装这一步交给系统安装程序，软件只关掉、不会自己重开（updater.ts 的 UpdateInstallMethod）。
   const systemInstaller = update?.installMethod === 'system-installer'
@@ -1449,14 +1485,21 @@ export function UpdatesPage({
       />
       <div className="v2-business-update-grid">
         <Card
-          title={update ? updateCardTitle(update) : '正在读取更新状态…'}
+          title={update ? updateCardTitle(update) : resource.error ? '更新状态暂未读到' : '正在读取更新状态…'}
           actions={action}
         >
           <ListRow
-            icon={RefreshCw}
             title="当前版本"
-            meta={update?.currentVersion ?? '暂未读到'}
+            meta={<span className="v2-update-version">{update?.currentVersion ?? '暂未读到'}</span>}
+            testId="updates-current-version"
           />
+          {newVersion && (
+            <ListRow
+              title="新版本"
+              meta={<span className="v2-update-version">{newVersion}</span>}
+              testId="updates-new-version"
+            />
+          )}
           <ListRow title="上次检查" meta={<RelativeTime value={update?.checkedAt} />} />
           {update?.currentVersionWithdrawn && (
             <Notice
@@ -1605,10 +1648,10 @@ export function UpdatesPage({
           ) : (
             <div className="v2-business-release-notes">{releaseNotes.text}</div>
           )}
-          <details>
-            <summary>安装前需要知道</summary>
+          <div className="v2-update-install-note" data-testid="updates-install-note">
+            <h3>安装前需要知道</h3>
             <p>{updateInstallNote}</p>
-          </details>
+          </div>
         </Card>
       </div>
       <Dialog
@@ -1665,12 +1708,89 @@ export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): 
   return '安装完成，工具状态已更新'
 }
 
+/** 安装卸载页一行在装的时候，名字下面那句白话和百分比（同首页的工具行）。 */
+interface RowProgress {
+  label: string
+  percent?: number
+}
+
+/**
+ * 安装卸载页的一行。和表头同一套三栏：工具（图标单独一格，名字和厂商上下两行）、
+ * 版本与状态、操作；有百分比时整行底下加一道细进度条。
+ */
+function MaintenanceRow({
+  icon,
+  name,
+  desc,
+  status,
+  actions,
+  progress,
+  testId,
+}: {
+  icon: ReactNode
+  name: string
+  desc: ReactNode
+  status: ReactNode
+  actions?: ReactNode
+  progress?: number
+  testId: string
+}) {
+  return (
+    <div className="xm-list-row v2-maintenance-row" data-testid={testId}>
+      {icon}
+      <div className="xm-row-main">
+        <div className="xm-row-title">{name}</div>
+        <div className="xm-row-desc">{desc}</div>
+      </div>
+      <div className="xm-row-meta">{status}</div>
+      <div className="xm-row-actions">{actions}</div>
+      {typeof progress === 'number' && (
+        <div className="v2-maintenance-row-progress">
+          <Progress value={progress} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 首页那边这个工具正挂着的任务算不算这一行在装：卸载也挂在工具编号下，那不是安装，
+ * 这一行不能标「安装中」，只说正在卸载、按钮先灰着。
+ */
+export function installJobRunning(job: ToolJob | undefined): boolean {
+  return job !== undefined && job.kind !== 'uninstall'
+}
+
+/** 正在装的是哪个（工具或运行环境）；不是安装（检查更新、复制日志……）时为 null。 */
+function installingName(busy: string): string | null {
+  if (busy === 'node') return 'Node.js'
+  if (busy === 'python') return 'Python'
+  return tools.find((tool) => tool.id === busy)?.name ?? null
+}
+
+/**
+ * 「查看安装步骤」「安装指南」落到教程哪一章。以前一律落到第一章，客户还得自己翻：
+ * 桌面端在 Mac 上去「Mac 上装桌面端」、别的电脑去「Codex 桌面端怎么安装？」；四个命令行
+ * 工具去「进阶：安装与使用命令行工具」；运行环境在 Mac 上去「Mac 上准备 Node.js 和 Python」，
+ * 别的电脑也去命令行工具那一章。
+ */
+export function installGuideTopic(
+  id: Provider | 'codexDesktop' | 'node' | 'python',
+  platform: PlatformCapabilities['platform'] | undefined,
+): string {
+  const mac = platform === 'macos'
+  if (id === 'codexDesktop') return mac ? macDesktopTutorialTopic : desktopInstallTutorialTopic
+  if (id === 'node' || id === 'python') return mac ? macRuntimeTutorialTopic : cliTutorialTopic
+  return cliTutorialTopic
+}
+
 export function MaintenancePage({
   api,
   navigate,
   onToolsChanged,
   installTool,
   cancelToolInstall,
+  toolJobs,
 }: { api: V2Bridge } & BusinessActions) {
   const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
@@ -1683,6 +1803,10 @@ export function MaintenancePage({
   const statusUnknown = Boolean(resource.data) && snapshot === null
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
+  // 首页那份任务（toolJobs）管不到的安装——运行环境、没接 installTool 时的工具——进度从事件里自己记。
+  const [progress, setProgress] = useState<Record<string, RowProgress>>({})
+  // 刚才没装上的那一行。原因和页顶红框领头的是同一句；红框换了说法（又做了别的操作）就不再算。
+  const [failedInstall, setFailedInstall] = useState<{ id: string; message: string } | null>(null)
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
   // 主进程拒绝取消时的中文原因，和检测失败共用页面顶部那条提示。
   const [cancelNotice, setCancelNotice] = useState('')
@@ -1691,22 +1815,71 @@ export function MaintenancePage({
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [runtimeRestart, setRuntimeRestart] = useState(false)
   const [nodeReplaceOpen, setNodeReplaceOpen] = useState(false)
+  const logView = useRef<HTMLPreElement>(null)
+  // 日志框只有八行高：停在最底下时新的一行进来跟着往下走，往上翻着看时不打断他。
+  const followLog = useRef(true)
   useEffect(() => {
-    const stopCli = api.onInstallProgress((event) =>
-      setLogs((previous) => [...previous.slice(-199), event.message]),
-    )
-    const stopDesktop = api.onCodexDesktopInstallProgress((event) =>
-      setLogs((previous) => [...previous.slice(-199), event.message]),
-    )
-    return () => {
-      stopCli()
-      stopDesktop()
-    }
+    // 进度那一行只放白话（同首页），原话照旧进下面的「安装日志」。
+    const note = (id: string, label: string, percent: number | null | undefined) =>
+      setProgress((previous) => ({
+        ...previous,
+        [id]: { label, percent: typeof percent === 'number' ? percent : undefined },
+      }))
+    const stops = [
+      api.onInstallProgress((event) => {
+        setLogs((previous) => [...previous.slice(-199), event.message])
+        const label = installProgressLabel(event)
+        if (label !== null) note(event.provider, label, event.percent)
+      }),
+      api.onCodexDesktopInstallProgress((event) => {
+        setLogs((previous) => [...previous.slice(-199), event.message])
+        note('codexDesktop', event.message, event.percent)
+      }),
+      api.onNodeRuntimeInstallProgress((event) => note('node', event.message, event.percent)),
+      api.onPythonRuntimeInstallProgress((event) => note('python', event.message, event.percent)),
+    ]
+    return () => stops.forEach((stop) => stop())
   }, [api])
+  useLayoutEffect(() => {
+    const view = logView.current
+    if (view && followLog.current) view.scrollTop = view.scrollHeight
+  }, [logs])
+  // 去别的页时这一页只是藏起来：那时进来的日志滚不动，回到这页再补一次贴底。
+  const hasLogs = logs.length > 0
+  useEffect(() => {
+    const view = logView.current
+    if (!view || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (followLog.current) view.scrollTop = view.scrollHeight
+    })
+    observer.observe(view)
+    return () => observer.disconnect()
+  }, [hasLogs])
+  function forgetProgress(id: string) {
+    setProgress((previous) => {
+      if (!(id in previous)) return previous
+      const next = { ...previous }
+      delete next[id]
+      return next
+    })
+  }
+  // 包住一次安装：开始前清掉这一行上次的进度和失败，没装上时记下是哪一行、红框里那句是什么。
+  async function tracked<T>(id: string, work: () => Promise<T>): Promise<T> {
+    setFailedInstall(null)
+    forgetProgress(id)
+    try {
+      return await work()
+    } catch (cause) {
+      setFailedInstall({ id, message: failureWithDetail(cause).message })
+      throw cause
+    } finally {
+      forgetProgress(id)
+    }
+  }
   const install = (id: Provider | 'codexDesktop') =>
     void operation.execute(
       id,
-      async () => {
+      () => tracked(id, async () => {
         cancelRequested.current.delete(id)
         setCancelNotice('')
         if (installTool) {
@@ -1736,8 +1909,24 @@ export function MaintenancePage({
         await onToolsChanged?.(id)
         await resource.reload()
         return 'installed' as const
-      },
+      }),
       (result) => installResultMessage(result),
+    )
+  const installRuntime = (id: 'node' | 'python') =>
+    void operation.execute(
+      id,
+      () => tracked(id, async () => {
+        const result = id === 'node'
+          ? await api.installNodeRuntime()
+          : await api.installPythonRuntime()
+        await resource.reload()
+        return describeRuntimeInstallOutcome(id, result)
+      }),
+      (outcome) => {
+        // 3010：结果条照样说清楚，另外弹重启确认（第七批 5）。
+        if (outcome.restartRequired) setRuntimeRestart(true)
+        return outcome.message
+      },
     )
   const cancelInstall = (id: Provider | 'codexDesktop') => {
     cancelRequested.current.add(id)
@@ -1763,12 +1952,27 @@ export function MaintenancePage({
     void operation.execute(
       `check-${id}`,
       async () => {
+        setFailedInstall(null)
         if (id === 'codexDesktop') await api.checkCodexDesktopUpdate()
         else await api.checkCliUpdate(id)
         await resource.reload()
       },
       '工具版本已检查',
     )
+  // 别的行正在装时，这一行的按钮是灰的：鼠标停上去说清在等谁。
+  const busyInstall = operation.busy ? installingName(operation.busy) : null
+  const waitTitle = (id: string) =>
+    busyInstall && operation.busy !== id ? `等 ${busyInstall} 装完再操作` : undefined
+  const rowProgress = (id: string) => {
+    const job = toolJobs?.[id]
+    return {
+      label: job?.label ?? progress[id]?.label,
+      percent: job ? job.percent : progress[id]?.percent,
+    }
+  }
+  const failedHere = (id: string, installed: boolean | undefined, running: boolean) =>
+    failedInstall?.id === id && failedInstall.message === operation.error && !running && installed !== true
+  const platform = capability?.platform
   return (
     <section
       className="v2-page"
@@ -1820,254 +2024,260 @@ export function MaintenancePage({
           />
         )
       })}
-      <Card title="工具">
-        <div className="v2-business-table-head">
-          <span>工具</span>
-          <span>版本与状态</span>
-          <span>操作</span>
+      <Card title="工具" padding="none">
+        <div className="v2-maintenance-table">
+          <div className="v2-business-table-head">
+            <span>工具</span>
+            <span>版本与状态</span>
+            <span>操作</span>
+          </div>
+          {tools.map((tool) => {
+            const id = tool.id
+            if (!isProvider(id) && id !== 'codexDesktop') return null
+            // 和首页同一口径（presentTools）：打不开桌面端的系统（Linux）不列这一行。
+            if (id === 'codexDesktop' && capability && !capability.codexDesktop.launch) return null
+            const status =
+              id === 'codexDesktop'
+                ? snapshot?.desktopApps.codex
+                : snapshot?.clis[id]
+            const version =
+              status && 'appVersion' in status
+                ? status.appVersion
+                : status && 'version' in status
+                  ? status.version
+                  : null
+            const managed =
+              id === 'codexDesktop'
+                ? capability?.codexDesktop.install === 'managed'
+                : capability?.cliInstall[id] === 'managed'
+            // A probe that failed says nothing about what is installed, so the
+            // row offers a rescan instead of an install that could land on top
+            // of a working tool.
+            const detectionFailed = status?.detectionFailed === true
+            // 官方安装器或别的方式装的 CLI，这里的「重新安装」走的是 npm，只会在
+            // 旁边再装一份和它抢着用（#481）。与首页一样不给这个按钮，改说明怎么更新。
+            // 官方安装器装的 Claude Code 照首页一样放开：点了先问一句，卸掉再装。
+            const externalHint = id !== 'codexDesktop' && !statusUnknown && !detectionFailed && updatesOutsideApp(id, status)
+              ? externalInstallHint(status?.installSource)
+              : null
+            // 走首页那条安装时，这一行跟着首页的任务走（在首页点的也算）；任务要等确认框点过才开始。
+            const job = toolJobs?.[id]
+            const uninstalling = job?.kind === 'uninstall'
+            const running = installTool && toolJobs ? installJobRunning(job) : operation.busy === id
+            const ownInstall = running && operation.busy === id
+            const live = running ? rowProgress(id) : null
+            const failed = failedHere(id, status?.installed, running)
+            const view = toolStatusView(status, statusUnknown, version, running ? 'installing' : failed ? 'failed' : null)
+            const lead = withElevationNotice(
+              tool.vendor,
+              externalHint ?? (id === 'codexDesktop' && !status?.installed && !statusUnknown && !detectionFailed
+                ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                : null),
+            )
+            return (
+              <MaintenanceRow
+                key={id}
+                testId={'maintenance-tool-' + id}
+                icon={<BrandIcon tool={id} size={32} variant="tile" />}
+                name={tool.name}
+                desc={live?.label ?? (uninstalling ? job.label : failed ? resultNoticeLead(operation.error, operation.detail) : lead)}
+                status={
+                  <ToolStatusMeta
+                    view={view}
+                    testId={'maintenance-state-' + id}
+                    reasonTestId={'maintenance-reason-' + id}
+                  />
+                }
+                progress={live?.percent}
+                actions={
+                  <>
+                    {/* 整页没读到时各行不再各放一颗「重新检测」：页头和红框里那两颗就够了。 */}
+                    {(!statusUnknown || running) && (
+                      <Button
+                        size="sm"
+                        icon={detectionFailed || status?.installed ? RefreshCw : Download}
+                        loading={running}
+                        disabled={(!managed && !detectionFailed) || Boolean(externalHint) || Boolean(operation.busy) || uninstalling}
+                        title={externalHint ?? waitTitle(id)}
+                        testId={'maintenance-install-' + id}
+                        onClick={() => detectionFailed ? check(id) : install(id)}
+                      >
+                        {running && typeof live?.percent === 'number'
+                          ? `${Math.round(live.percent)}%`
+                          : detectionFailed ? '重新检测' : status?.installed ? '重新安装' : '安装'}
+                      </Button>
+                    )}
+                    {ownInstall && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={X}
+                        loading={cancelling === id}
+                        onClick={() => cancelInstall(id)}
+                        testId={'maintenance-cancel-' + id}
+                      >
+                        {cancelling === id ? '正在停止' : '取消'}
+                      </Button>
+                    )}
+                    <Menu
+                      label={`${tool.name} 的更多操作`}
+                      anchor={<MoreHorizontal size={18} />}
+                      items={[
+                        {
+                          label: '检查更新',
+                          icon: RefreshCw,
+                          onSelect: () => check(id),
+                        },
+                        ...(status?.installed === true &&
+                        canUninstallTool(status, id === 'codexDesktop' &&
+                          capability?.codexDesktop.uninstall === true) &&
+                        (id !== 'codexDesktop' ||
+                        capability?.codexDesktop.uninstall)
+                          ? [
+                              {
+                                label: '卸载工具',
+                                icon: Trash2,
+                                danger: true,
+                                onSelect: () => setRemove(id),
+                              },
+                            ]
+                          : []),
+                        ...(!managed
+                          ? [
+                              {
+                                label: '查看安装步骤',
+                                icon: BookOpen,
+                                onSelect: () => navigate?.('tutorial', installGuideTopic(id, platform)),
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                  </>
+                }
+              />
+            )
+          })}
         </div>
-        {tools.map((tool) => {
-          const id = tool.id
-          if (!isProvider(id) && id !== 'codexDesktop') return null
-          // 和首页同一口径（presentTools）：打不开桌面端的系统（Linux）不列这一行。
-          if (id === 'codexDesktop' && capability && !capability.codexDesktop.launch) return null
-          const status =
-            id === 'codexDesktop'
-              ? snapshot?.desktopApps.codex
-              : snapshot?.clis[id]
-          const version =
-            status && 'appVersion' in status
-              ? status.appVersion
-              : status && 'version' in status
-                ? status.version
-                : null
-          const managed =
-            id === 'codexDesktop'
-              ? capability?.codexDesktop.install === 'managed'
-              : capability?.cliInstall[id] === 'managed'
-          // A probe that failed says nothing about what is installed, so the
-          // row offers a rescan instead of an install that could land on top
-          // of a working tool.
-          const detectionFailed = status?.detectionFailed === true
-          const rescan = statusUnknown || detectionFailed
-          // 官方安装器或别的方式装的 CLI，这里的「重新安装」走的是 npm，只会在
-          // 旁边再装一份和它抢着用（#481）。与首页一样不给这个按钮，改说明怎么更新。
-          // 官方安装器装的 Claude Code 照首页一样放开：点了先问一句，卸掉再装。
-          const externalHint = id !== 'codexDesktop' && !rescan && updatesOutsideApp(id, status)
-            ? externalInstallHint(status?.installSource)
-            : null
-          return (
-            <ListRow
-              key={id}
-              testId={'maintenance-tool-' + id}
-              title={
-                <>
-                  <BrandIcon tool={id} size={32} />
-                  {tool.name}
-                </>
-              }
-              desc={
-                <ToolStatusReason
-                  lead={withElevationNotice(
-                    tool.vendor,
-                    externalHint ?? (id === 'codexDesktop' && !status?.installed && !rescan
-                      ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
-                      : null),
-                  )}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-reason-' + id}
-                />
-              }
-              meta={
-                <ToolStatusMeta
-                  version={version}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-state-' + id}
-                />
-              }
-              actions={
-                <>
-                  <Button
+      </Card>
+      <Card title="运行环境" padding="none">
+        <div className="v2-maintenance-table">
+          {(['node', 'python'] as const).map((id) => {
+            const status = snapshot?.runtime[id]
+            const managed =
+              id === 'node'
+                ? capability?.nodeRuntimeInstall === 'managed'
+                : capability?.pythonRuntimeInstall === 'managed'
+            // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
+            // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
+            const replace =
+              id === 'node' &&
+              nodeReplaceOffered({
+                platform: capability?.platform,
+                nodeRuntimeInstall: capability?.nodeRuntimeInstall,
+                node: status,
+              })
+            const name = id === 'node' ? 'Node.js' : 'Python'
+            const running = operation.busy === id || Boolean(toolJobs?.[id])
+            const live = running ? rowProgress(id) : null
+            const failed = failedHere(id, status?.installed, running)
+            const view = toolStatusView(status, statusUnknown, status?.version, running ? 'installing' : failed ? 'failed' : null)
+            const lead = withElevationNotice(
+              id === 'node'
+                ? managed
+                  ? '命令行工具需要的运行环境；装工具时会自动准备，一般不用单独点'
+                  : '命令行工具需要的运行环境'
+                : '部分工具需要的可选运行环境',
+              id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
+                ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
+                : null,
+            )
+            // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而
+            // 以为没装好、反复点（新手引导梳理 9-25 第 4 条）。要换新版的照旧给按钮。
+            // 整页没读到时也不给「安装」：红框里说了读到之前装不了；「安装指南」只是打开教程，照旧。
+            const action = running
+              ? 'install'
+              : status?.installed && !statusUnknown && !replace
+                ? null
+                : statusUnknown && managed ? null : replace ? 'replace' : managed ? 'install' : 'guide'
+            return (
+              <MaintenanceRow
+                key={id}
+                testId={'maintenance-runtime-' + id}
+                icon={<BrandIcon tool={id} size={32} variant="tile" />}
+                name={name}
+                desc={live?.label ?? (failed ? resultNoticeLead(operation.error, operation.detail) : lead)}
+                status={
+                  <ToolStatusMeta
+                    view={view}
+                    testId={'maintenance-runtime-state-' + id}
+                    reasonTestId={'maintenance-runtime-reason-' + id}
+                  />
+                }
+                progress={live?.percent}
+                actions={
+                  action && <Button
                     size="sm"
-                    icon={rescan || status?.installed ? RefreshCw : Download}
-                    disabled={
-                      statusUnknown
-                        ? resource.loading
-                        : (!managed && !detectionFailed) || Boolean(externalHint) || Boolean(operation.busy)
-                    }
-                    title={externalHint ?? undefined}
-                    testId={'maintenance-install-' + id}
+                    icon={Download}
+                    loading={running}
+                    disabled={Boolean(operation.busy)}
+                    title={waitTitle(id)}
+                    testId={'maintenance-runtime-action-' + id}
                     onClick={() =>
-                      statusUnknown
-                        ? void resource.reload()
-                        : detectionFailed
-                          ? check(id)
-                          : install(id)
+                      action === 'replace'
+                        ? setNodeReplaceOpen(true)
+                        : action === 'install'
+                        ? installRuntime(id)
+                        : navigate?.('tutorial', installGuideTopic(id, platform))
                     }
                   >
-                    {rescan ? '重新检测' : status?.installed ? '重新安装' : '安装'}
+                    {running && typeof live?.percent === 'number'
+                      ? `${Math.round(live.percent)}%`
+                      : action === 'replace' ? '换成新版' : action === 'install' ? '安装' : '安装指南'}
                   </Button>
-                  {operation.busy === id && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={X}
-                      loading={cancelling === id}
-                      onClick={() => cancelInstall(id)}
-                      testId={'maintenance-cancel-' + id}
-                    >
-                      {cancelling === id ? '取消中' : '取消'}
-                    </Button>
-                  )}
-                  <Menu
-                    label={`${tool.name} 的更多操作`}
-                    anchor={<MoreHorizontal size={18} />}
-                    items={[
-                      {
-                        label: '检查更新',
-                        icon: RefreshCw,
-                        onSelect: () => check(id),
-                      },
-                      ...(status?.installed === true &&
-                      canUninstallTool(status, id === 'codexDesktop' &&
-                        capability?.codexDesktop.uninstall === true) &&
-                      (id !== 'codexDesktop' ||
-                      capability?.codexDesktop.uninstall)
-                        ? [
-                            {
-                              label: '卸载工具',
-                              icon: Trash2,
-                              danger: true,
-                              onSelect: () => setRemove(id),
-                            },
-                          ]
-                        : []),
-                      ...(!managed
-                        ? [
-                            {
-                              label: '查看安装步骤',
-                              icon: BookOpen,
-                              onSelect: () => navigate?.('tutorial'),
-                            },
-                          ]
-                        : []),
-                    ]}
-                  />
-                </>
-              }
-            />
-          )
-        })}
+                }
+              />
+            )
+          })}
+        </div>
       </Card>
-      <Card title="运行环境">
-        {(['node', 'python'] as const).map((id) => {
-          const status = snapshot?.runtime[id]
-          const managed =
-            id === 'node'
-              ? capability?.nodeRuntimeInstall === 'managed'
-              : capability?.pythonRuntimeInstall === 'managed'
-          // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
-          // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
-          const replace =
-            id === 'node' &&
-            nodeReplaceOffered({
-              platform: capability?.platform,
-              nodeRuntimeInstall: capability?.nodeRuntimeInstall,
-              node: status,
-            })
-          return (
-            <ListRow
-              key={id}
-              testId={'maintenance-runtime-' + id}
-              icon={Wrench}
-              title={id === 'node' ? 'Node.js' : 'Python'}
-              desc={
-                <ToolStatusReason
-                  lead={withElevationNotice(
-                    id === 'node'
-                      ? managed
-                        ? '命令行工具需要的运行环境；装工具时会自动准备，一般不用单独点'
-                        : '命令行工具需要的运行环境'
-                      : '部分工具需要的可选运行环境',
-                    id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
-                      ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
-                      : null,
-                  )}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-runtime-reason-' + id}
-                />
+      {/* 平时不占地方：装命令行工具或 Codex 桌面端时一有日志就出现（运行环境的安装不写日志），
+          装完留着；最高八行，多了在卡里滚。 */}
+      {hasLogs && (
+        <Card
+          title="安装日志"
+          actions={
+            <Button
+              size="sm"
+              icon={Copy}
+              onClick={() =>
+                void operation.execute(
+                  'copy-log',
+                  () => {
+                    setFailedInstall(null)
+                    return navigator.clipboard.writeText(logs.join('\n'))
+                  },
+                  '安装日志已复制',
+                )
               }
-              meta={
-                <ToolStatusMeta
-                  version={status?.version}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-runtime-state-' + id}
-                />
-              }
-              actions={
-                // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而
-                // 以为没装好、反复点（新手引导梳理 9-25 第 4 条）。要换新版的照旧给按钮。
-                status?.installed && !statusUnknown && !replace ? undefined : <Button
-                  size="sm"
-                  icon={Download}
-                  disabled={Boolean(operation.busy)}
-                  testId={'maintenance-runtime-action-' + id}
-                  onClick={() =>
-                    replace
-                      ? setNodeReplaceOpen(true)
-                      : managed
-                      ? void operation.execute(
-                          id,
-                          async () => {
-                            const result = id === 'node'
-                              ? await api.installNodeRuntime()
-                              : await api.installPythonRuntime()
-                            await resource.reload()
-                            return describeRuntimeInstallOutcome(id, result)
-                          },
-                          (outcome) => {
-                            // 3010：结果条照样说清楚，另外弹重启确认（第七批 5）。
-                            if (outcome.restartRequired) setRuntimeRestart(true)
-                            return outcome.message
-                          },
-                        )
-                      : navigate?.('tutorial')
-                  }
-                >
-                  {replace ? '换成新版' : managed ? '安装' : '安装指南'}
-                </Button>
-              }
-            />
-          )
-        })}
-      </Card>
-      <Card
-        title="安装日志"
-        actions={
-          <Button
-            size="sm"
-            icon={Copy}
-            disabled={!logs.length}
-            onClick={() =>
-              void operation.execute(
-                'copy-log',
-                () => navigator.clipboard.writeText(logs.join('\n')),
-                '安装日志已复制',
-              )
-            }
+            >
+              复制
+            </Button>
+          }
+        >
+          <pre
+            ref={logView}
+            className="v2-business-code v2-maintenance-log"
+            role="log"
+            onScroll={(event) => {
+              const view = event.currentTarget
+              followLog.current = view.scrollTop + view.clientHeight >= view.scrollHeight - 4
+            }}
           >
-            复制
-          </Button>
-        }
-      >
-        <pre className="v2-business-code" role="log">
-          {logs.join('\n') || '开始安装后，这里会显示进度。'}
-        </pre>
-      </Card>
+            {logs.join('\n')}
+          </pre>
+        </Card>
+      )}
       <Dialog
         open={Boolean(remove)}
         title="卸载工具？"
@@ -2084,6 +2294,7 @@ export function MaintenancePage({
                   void operation.execute(
                     'uninstall',
                     async () => {
+                      setFailedInstall(null)
                       const result =
                         remove === 'codexDesktop'
                           ? await api.uninstallCodexDesktop()
@@ -2141,11 +2352,11 @@ export function MaintenancePage({
             setNodeReplaceOpen(false)
             void operation.execute(
               'node',
-              async () => {
+              () => tracked('node', async () => {
                 const result = await api.installNodeRuntime({ reason: 'certificate' })
                 await resource.reload()
                 return describeNodeReplaceOutcome(result)
-              },
+              }),
               (outcome) => {
                 if (outcome.restartRequired) setRuntimeRestart(true)
                 return outcome.message

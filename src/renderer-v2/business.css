@@ -441,6 +441,92 @@
 .v2-business-help { color: var(--text-3); line-height: 1.6; }
 .v2-business-table-row { display: grid; grid-template-columns: 1fr 240px 200px; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
 .v2-business-table-row:last-child { border-bottom: 0; }
+/*
+ * 安装卸载页：表头和每行同一套三栏——工具约四成（图标单独一格，名字和厂商上下两行）、
+ * 版本与状态约三成、操作约两成半（主按钮在左，「…」贴最右）。有百分比时整行底下一道细进度条。
+ */
+.v2-maintenance-table > :is(.v2-business-table-head, .v2-maintenance-row) {
+  display: grid;
+  /* 操作那一格最窄也要放得下「重新安装」「正在停止」「…」三颗（约 238 宽，开「大字」再宽一点），窗口窄时先让前两栏。 */
+  grid-template-columns: 32px minmax(0, 8fr) minmax(0, 6fr) minmax(248px, 5fr);
+  column-gap: 12px;
+}
+.v2-maintenance-table > .v2-business-table-head > :first-child { grid-column: span 2; }
+.v2-maintenance-table > .v2-maintenance-row:first-child { border-top: 0; }
+.v2-maintenance-row > .xm-row-actions > .xm-menu { margin-left: auto; }
+.v2-maintenance-row-progress { grid-column: 2 / -1; margin-top: -4px; }
+.v2-tool-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.v2-tool-status-reason { display: block; margin-top: 3px; }
+/* 安装日志最高约八行，多了在卡里滚。 */
+.v2-maintenance-log { max-height: calc(1.65em * 8); }
+/* 反馈页「报告会自动脱敏」：一行细条，不再是一大块提示。 */
+.v2-feedback-privacy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: var(--font-small);
+  line-height: 1.5;
+}
+.v2-feedback-privacy > svg { flex: none; color: var(--accent-2); }
+.v2-feedback-privacy > span { flex: 1; min-width: 0; }
+/*
+ * 运行日志一条一行：时间、固定宽的级别字、内容（太长打省略号）、来源、「详情 ›」，整行点开详情。
+ * 时间那一格按「10月12日 18:02:54」留宽，来源那一格按最长的四个字留宽，各行才对得齐。
+ */
+.v2-feedback-log {
+  display: grid;
+  grid-template-columns: 112px 28px minmax(0, 1fr) 56px auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-small);
+  text-align: left;
+  cursor: pointer;
+}
+.v2-feedback-log.has-year { grid-template-columns: 152px 28px minmax(0, 1fr) 56px auto; }
+.v2-feedback-log:first-child { border-top: 0; }
+.v2-feedback-log:hover { background: var(--panel-hover); }
+.v2-feedback-log:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.v2-feedback-log > time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.v2-feedback-log-level { font-size: 11px; font-weight: 600; color: var(--text-3); }
+.v2-feedback-log-level.is-error { color: var(--bad); }
+.v2-feedback-log-level.is-warn { color: var(--warn); }
+.v2-feedback-log-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-feedback-log-source { text-align: right; }
+.v2-feedback-log-source,
+.v2-feedback-log-more { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.v2-feedback-log-next {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--font-small);
+  cursor: pointer;
+}
+.v2-feedback-log-next:hover { background: var(--panel-hover); }
+.v2-feedback-log-next:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .v2-business-chart {
   display: flex;
   align-items: flex-end;
@@ -580,6 +666,12 @@
 .v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-connection-note > summary { cursor: pointer; }
 .v2-update-progress-detail { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
+/* 更新页的版本号用正文的大小和颜色，不再是行尾最不显眼的那一小格。 */
+.xm-row-meta > .v2-update-version { font-size: var(--font-body); color: var(--text); font-variant-numeric: tabular-nums; }
+/* 「安装前需要知道」不折叠：更新说明下面一道细线、一行小标题，下面直接写。 */
+.v2-update-install-note { padding-top: 12px; border-top: 1px solid var(--line); }
+.v2-update-install-note h3 { margin: 0 0 4px; font-size: var(--font-small); font-weight: 600; color: var(--text-2); }
+.v2-update-install-note p { margin: 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.65; }
 /* 技能页选到不能在这里导入的工具：工具条下面平平的一行字加「看怎么放」，不做成浮起来的提示框。 */
 .v2-skill-import-note {
   display: flex;
