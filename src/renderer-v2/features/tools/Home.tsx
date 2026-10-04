@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { accountKeyChangePending, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
@@ -376,8 +376,9 @@ export function Home(props: HomeProps) {
     // 桌面端没有推荐版本可换，已知打不开的那一版只能靠这行小字说清楚（第十九批 7）。
     const desktopKnownIssue = tool.id === 'codexDesktop' ? blocked : null
     // 原生/其他来源装的 CLI 不走本工具的 npm 通道，不给 npm 更新/回滚按钮，
-    // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
-    const externalManaged = isExternallyManagedInstall(tool.status)
+    // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。官方安装器装的
+    // Claude Code 例外：按钮照给，点了先问一句、卸掉再装（App.tsx 的 install）。
+    const externalManaged = updatesOutsideApp(tool.id, tool.status)
     const externalHint = externalManaged ? externalInstallHint(tool.status.installSource) : null
     // 推荐版本比已装的新时这是一次「更新」，图标和文案都不能写成回退。
     const rollbackVerb = recommendedVersionVerb(tool)

@@ -363,4 +363,8 @@ describe('installResultMessage', () => {
     expect(installResultMessage('restart')).toContain('重启电脑')
     expect(installResultMessage('skipped')).not.toContain('安装完成')
   })
+
+  it('says nothing when the customer turned down switching the official-installer copy', () => {
+    expect(installResultMessage('declined')).toBeNull()
+  })
 })
