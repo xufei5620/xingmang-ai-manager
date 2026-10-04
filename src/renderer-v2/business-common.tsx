@@ -354,6 +354,7 @@ export function ResultNotice({
   revealPath,
   onReveal,
   onSupport,
+  retry,
 }: {
   error?: string
   /**
@@ -366,6 +367,8 @@ export function ResultNotice({
   onReveal?: (path: string) => Promise<unknown>
   /** 给了才出「联系客服」：只在目录说这类失败该找客服时出现。 */
   onSupport?: () => void
+  /** 读取失败时红条右边那颗重试按钮（比如设置页的「重新读取」）；缺省 = 没有。 */
+  retry?: { label: string; onClick: () => void }
 }) {
   // A raw npm/OS failure reaching this banner is unreadable on its own; when
   // the catalog can name it, its wording leads and the backend sentence stays
@@ -388,6 +391,11 @@ export function ResultNotice({
       {onSupport && hint?.actions.some((action) => action.id === 'support') && (
         <Button size="sm" icon={HelpCircle} onClick={onSupport} testId="result-notice-support">
           联系客服
+        </Button>
+      )}
+      {retry && (
+        <Button size="sm" icon={RefreshCw} onClick={retry.onClick} testId="result-notice-retry">
+          {retry.label}
         </Button>
       )}
     </div>

@@ -25,7 +25,7 @@ const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare,
 export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id: page.id, label: page.label.replace(' ↗', ''), icon: pageIcons[page.id], group: page.group as PageGroup, testId: page.testId, external: page.id === 'canvas' }))
 /** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。 */
 export const pageSearchKeywords: Record<PageId, readonly string[]> = {
-  home: ['主页', '我的工具', '打开工具'],
+  home: ['主页', '我的工具', '打开工具', '配置', '换模型'],
   chat: ['对话', '问答', '提问', '生图', '画图'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],
@@ -38,7 +38,7 @@ export const pageSearchKeywords: Record<PageId, readonly string[]> = {
   maintenance: ['装', '安装', '装不上', '删', '卸载', '重装', '下载'],
   backups: ['恢复', '还原', '找回配置'],
   feedback: ['客服', '报告', '日志', '投诉'],
-  updates: ['升级', '新版本', '版本'],
+  updates: ['升级', '新版本', '版本', '检查更新'],
   settings: ['选项', '偏好'],
   account: ['账号', '我的', '个人信息'],
 };

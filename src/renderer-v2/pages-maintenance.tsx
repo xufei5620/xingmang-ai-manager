@@ -22,10 +22,10 @@ import {
   MoreHorizontal,
   PlugZap,
   RefreshCw,
-  Settings,
   ShieldCheck,
   Trash2,
   UserRound,
+  Users,
   Wrench,
   X,
   Zap,
@@ -66,8 +66,12 @@ import {
   userFacingErrorMessage,
 } from './business-common'
 import {
+  autoUpdateSettingDescription,
+  cliTutorialTopic,
   notificationOptions,
+  notificationSettingsItemId,
   settingsGroups,
+  settingsItemLabel,
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
@@ -92,12 +96,15 @@ import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import {
   canTrustCertificatesUserWide,
+  certificateDiagnosticCode,
   certificateTrustConfirmBody,
   certificateTrustConfirmTitle,
   certificateTrustMessage,
 } from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
+import { useRowFocus } from './features/app/row-focus'
+import { currentWindowOs, type WindowOs } from './features/app/window-os'
 import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
 import { parseImportedConversations } from './features/chat/storage'
@@ -174,8 +181,11 @@ const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provide
  */
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
 export type BusinessActions = {
-  navigate?: (page: V2Page) => void
+  /** 第二个参数是要落的分页、分组或那一页里的某一行；缺省 = 只跳页。 */
+  navigate?: (page: V2Page, section?: string) => void
   openLogin?: (target?: LoginTarget) => void
+  /** 设置「账号」里的「切换账号」：弹出侧栏小 ▾ 那个切换账号框；缺省 = 按钮点不了。 */
+  switchAccount?: () => void
   openHelp?: () => void
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
@@ -211,6 +221,11 @@ export type BusinessActions = {
   uiScale?: NonNullable<AppSettingsV2Update['uiScale']>
   /** 设置页「搬到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
   chatTransfer?: ChatTransfer
+  /**
+   * App 手里最新的设置。「启动时检查新版本」「自动更新」在设置页、更新页（更新气泡里也有
+   * 「自动更新」）各有一个开关，哪边改了另一边要跟着变；缺省 = 只用页面自己读到的那份（旧行为）。
+   */
+  appSettings?: AppSettings
 }
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
@@ -344,6 +359,9 @@ export function HealthPage({
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.runDiagnostics(), [api])
   const resource = useResource(load)
+  const pageRef = useRef<HTMLElement>(null)
+  // 设置里「企业证书」点「去检查页」：检查结果出来以后翻到「安全证书」那一项、亮一下。
+  useRowFocus('health', pageRef, Boolean(resource.data))
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
@@ -511,6 +529,7 @@ export function HealthPage({
   const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
   return (
     <section
+      ref={pageRef}
       className="v2-page"
       data-page-id="health"
       data-testid="page-health"
@@ -621,6 +640,7 @@ export function HealthPage({
           {resource.data?.items.map((item) => (
             <ListRow
               key={item.code}
+              anchor={item.code}
               icon={item.state === 'pass' ? Check : HeartPulse}
               title={item.title}
               badge={
@@ -1174,14 +1194,20 @@ export function FeedbackPage({
 export function UpdatesPage({
   api,
   navigate,
+  appSettings,
+  onSettingsChanged,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.getUpdateState(), [api])
   const resource = useResource(load)
   const operation = useOperation()
+  const showToast = useToast().show
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
   const [isWindows, setIsWindows] = useState(false)
-  const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
+  const [ownSettings, setOwnSettings] = useState<AppSettings | null>(null)
+  const [settingsReadFailed, setSettingsReadFailed] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
   const [diskCleanupOpen, setDiskCleanupOpen] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
@@ -1200,10 +1226,43 @@ export function UpdatesPage({
     let current = true
     // 读不到设置就按关着说：多承诺一句「会自动装」比少说一句更糟。
     void api.getSettings()
-      .then((settings) => { if (current) setAutoUpdateSetting(settings.autoUpdate !== false) })
-      .catch(() => undefined)
+      .then((settings) => { if (current) setOwnSettings(settings) })
+      .catch(() => { if (current) setSettingsReadFailed(true) })
     return () => { current = false }
   }, [api])
+  // App 手里那份最新（设置页、更新气泡里改过也算）；还没有就用这一页自己读到的。
+  const settings = appSettings ?? ownSettings
+  const autoUpdateSetting = settings ? settings.autoUpdate !== false : false
+  // 「启动时检查新版本」「自动更新」直接在这一页改（五-51），和设置「更新与关于」里那两行是同一份设置。
+  async function saveSetting(patch: Omit<SettingsUpdate, 'version'>) {
+    const finish = beginBusinessOperation('保存设置')
+    setSettingsSaving(true)
+    setSettingsError('')
+    try {
+      const saved = await api.saveSettings({ version: 2, ...patch })
+      setOwnSettings(saved)
+      onSettingsChanged?.(saved)
+      showToast('已保存', 'ok')
+    } catch (error) {
+      setSettingsError(errorMessage(error))
+    } finally {
+      setSettingsSaving(false)
+      finish()
+    }
+  }
+  // 还在读：开关灰着点不了；没读到：写「暂未读到」，不装成关着的样子（同设置页）。
+  function settingSwitch(label: string, checked: boolean | undefined, onChange: (value: boolean) => void, testId: string) {
+    if (checked === undefined && settingsReadFailed) return <Pill tone="neutral">暂未读到</Pill>
+    return (
+      <Switch
+        checked={checked ?? false}
+        disabled={checked === undefined || settingsSaving}
+        aria-label={label}
+        onChange={onChange}
+        testId={testId}
+      />
+    )
+  }
   const update = resource.data
   const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
   // Linux 的 .deb：装这一步交给系统安装程序，软件只关掉、不会自己重开（updater.ts 的 UpdateInstallMethod）。
@@ -1284,8 +1343,8 @@ export function UpdatesPage({
     >
       <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
       <ResultNotice
-        error={resource.error || operation.error}
-        detail={resource.error ? resource.detail : operation.detail}
+        error={resource.error || settingsError || operation.error}
+        detail={resource.error ? resource.detail : settingsError ? undefined : operation.detail}
         message={operation.message}
       />
       <div className="v2-business-update-grid">
@@ -1315,17 +1374,27 @@ export function UpdatesPage({
             />
           )}
           <ListRow
-            title="启动时检查"
-            actions={
-              <Button
-                size="sm"
-                icon={Settings}
-                onClick={() => navigate?.('settings')}
-              >
-                去设置
-              </Button>
-            }
+            title={settingsItemLabel('update-check')}
+            desc="发现新版本会提醒你"
+            actions={settingSwitch(
+              '启动时检查新版本',
+              settings?.checkUpdatesOnStartup,
+              (checkUpdatesOnStartup) => void saveSetting({ checkUpdatesOnStartup }),
+              'updates-check-on-startup',
+            )}
           />
+          {update?.autoUpdateSupported && (
+            <ListRow
+              title={settingsItemLabel('auto-update')}
+              desc={autoUpdateSettingDescription(update.installMethod)}
+              actions={settingSwitch(
+                '自动更新',
+                settings ? autoUpdateSetting : undefined,
+                (autoUpdate) => void saveSetting({ autoUpdate }),
+                'updates-auto-update',
+              )}
+            />
+          )}
           {update?.progress && (
             <Progress
               value={update.progress.percent}
@@ -2015,16 +2084,13 @@ export function createSettingsQueue(
   }
 }
 
-function UnsupportedControl({ label }: { label: string }) {
-  return (
-    <Pill tone="neutral">
-      {label === '当前运行环境' ? '此版本暂不支持' : label}
-    </Pill>
-  )
+/** 设置页顶上那句。原来那句后面加半句会折成两行，所以整句换短；Mac 上写 ⌘K（一-2）。 */
+export function settingsPageLead(os: WindowOs): string {
+  return `改完自动保存。找不到某一项，按 ${os === 'mac' ? '⌘K' : 'Ctrl K'} 搜它的名字。`
 }
 
 /**
- * 设置页「关于」里的两个重来入口。两件事名字很像、做的事不一样：上面一行重走
+ * 设置页「更新与关于」里的两个重来入口。两件事名字很像、做的事不一样：上面一行重走
  * 安装配置的四步引导，下面一行只是把首页上那几条操作提示再放一遍。
  */
 export function OnboardingSettingRows({
@@ -2034,7 +2100,8 @@ export function OnboardingSettingRows({
   return (
     <>
       <SettingRow
-        title="新手引导"
+        title={settingsItemLabel('guide')}
+        anchor="guide"
         description="重新走一遍安装和配置的步骤，已经填好的账号和密钥不会被清空"
         control={
           <Button
@@ -2049,7 +2116,8 @@ export function OnboardingSettingRows({
       />
       {replayTour ? (
         <SettingRow
-          title="界面导览"
+          title={settingsItemLabel('tour')}
+          anchor="tour"
           description="再看一遍首页上指着按钮讲的那几条提示"
           control={
             <Button
@@ -2071,19 +2139,21 @@ export function SettingsPage({
   api,
   navigate,
   openLogin,
+  switchAccount,
   onAccountChanged,
   onSettingsChanged,
   openGuide,
   replayTour,
   uiScale,
   chatTransfer,
+  appSettings,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(async () => {
     const [settings, capabilities, session, update] = await Promise.all([
       api.getSettings(),
       api.getWindowCapabilities(),
       api.getAccountSession(),
-      // 只用来决定显不显示「自动更新」：读不到就当这台电脑不支持，不挡设置页。
+      // 「自动更新」显不显示、「当前版本」写哪一版：读不到就当这台电脑不支持、版本暂未读到，不挡设置页。
       api.getUpdateState().catch(() => null),
     ])
     return { settings, capabilities, session, update }
@@ -2099,12 +2169,25 @@ export function SettingsPage({
       return { ...previous, settings: persisted === undefined ? rest : { ...rest, uiScale: persisted } }
     })
   }, [uiScale, setResourceData])
+  // 「更新」页和更新气泡里也能改这两项，改完 App 拿到的是最新的；这一页开着时跟着变。
+  const checkUpdatesOnStartup = appSettings?.checkUpdatesOnStartup
+  const autoUpdate = appSettings?.autoUpdate
+  useEffect(() => {
+    if (checkUpdatesOnStartup === undefined) return
+    setResourceData((previous) => {
+      if (!previous || (previous.settings.checkUpdatesOnStartup === checkUpdatesOnStartup && previous.settings.autoUpdate === autoUpdate)) return previous
+      return { ...previous, settings: { ...previous.settings, checkUpdatesOnStartup, autoUpdate } }
+    })
+  }, [checkUpdatesOnStartup, autoUpdate, setResourceData])
   const operation = useOperation()
+  const showToast = useToast().show
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
     null,
   )
   const [systemError, setSystemError] = useState('')
+  // 「重新读取」一次就加一，系统状态那一块从头再读一遍。
+  const [systemAttempt, setSystemAttempt] = useState(0)
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
   const [isMac, setIsMac] = useState(false)
   const [isLinux, setIsLinux] = useState(false)
@@ -2129,6 +2212,7 @@ export function SettingsPage({
     const accept = (state: PlatformSystemState) => {
       if (active) {
         setSystemState(state)
+        setSystemError('')
         document.documentElement.dataset.contrast = state.appearance
           .highContrast
           ? 'high'
@@ -2155,7 +2239,12 @@ export function SettingsPage({
       active = false
       unsubscribe()
     }
-  }, [systemApi])
+  }, [systemApi, systemAttempt])
+  // 做成了的结果改成会自己消失的小提示，页面不再往下跳（一-12）；没做成的照旧在页顶出红条。
+  const toasted = (text: string) => () => {
+    showToast(text, 'ok')
+    return null
+  }
   const readProxy = () => {
     if (systemApi)
       void operation.execute(
@@ -2172,6 +2261,9 @@ export function SettingsPage({
     const requested = takeSettingsGroup()
     if (requested) setGroup(requested)
   }, [])
+  const pageRef = useRef<HTMLElement>(null)
+  // 顶部搜索搜到某一项：打开那一组以后翻到那一行、亮一下（三-2）。
+  useRowFocus('settings', pageRef, Boolean(resource.data))
   const [pending, setPending] = useState(0)
   const pendingRef = useRef(0)
   pendingRef.current = pending
@@ -2207,7 +2299,6 @@ export function SettingsPage({
     }
   }, [api, resource.setData])
   const [saveError, setSaveError] = useState('')
-  const [saved, setSaved] = useState('')
   const [legal, setLegal] = useState<Awaited<
     ReturnType<V2Bridge['getLegalDocument']>
   > | null>(null)
@@ -2243,13 +2334,13 @@ export function SettingsPage({
       ),
     [api],
   )
-  const update = async (patch: Omit<SettingsUpdate, 'version'>) => {
+  // quiet：导入时设置只是其中一半，存好了由导入那句一起说，不另弹「已保存」。
+  const update = async (patch: Omit<SettingsUpdate, 'version'>, options?: { quiet?: boolean }) => {
     setPending((value) => value + 1)
     setSaveError('')
-    setSaved('')
     try {
       await writer({ version: 2, ...patch })
-      setSaved('已保存')
+      if (!options?.quiet) showToast('已保存', 'ok')
       return true
     } catch (error) {
       setSaveError(errorMessage(error))
@@ -2275,7 +2366,7 @@ export function SettingsPage({
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
-    if (patch && !(await update(patch))) {
+    if (patch && !(await update(patch, { quiet: true }))) {
       throw new Error(
         added
           ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
@@ -2288,6 +2379,10 @@ export function SettingsPage({
       signedIn: Boolean(chatTransfer),
       settingsChanged: Boolean(patch),
     })
+  }
+  const importDone = (message: string | null) => {
+    if (message) showToast(message, 'ok')
+    return null
   }
   const startImport = () =>
     void operation.execute(
@@ -2302,7 +2397,7 @@ export function SettingsPage({
         }
         return applyImport(preview, conversations, false)
       },
-      (message) => message,
+      importDone,
     )
   const finishImport = (overwrite: boolean) => {
     const ask = importAsk
@@ -2311,9 +2406,10 @@ export function SettingsPage({
     void operation.execute(
       'transfer-import',
       () => applyImport(ask.preview, ask.conversations, overwrite),
-      (message) => message,
+      importDone,
     )
   }
+  // 导出的结果带「打开所在位置」，要给人点，照旧留在页顶。
   const startExport = () =>
     void operation.execute(
       'transfer-export',
@@ -2332,30 +2428,41 @@ export function SettingsPage({
           : null,
     )
   const settings = resource.data?.settings
-  const rememberedLogin = rememberedLoginAction(resource.data?.session)
-  const row = (title: string, description: string, control: ReactNode) => (
+  const session = resource.data?.session
+  const rememberedLogin = rememberedLoginAction(session)
+  // 行标题从注册表取（settingsItems），顶部搜索和这里说的是同一个名字。
+  const row = (id: string, description: ReactNode, control: ReactNode) => (
     <SettingRow
-      key={title}
-      title={title}
+      key={id}
+      anchor={id}
+      title={settingsItemLabel(id)}
       description={description}
       control={control}
     />
   )
-  const unavailable = (title: string, description: string) =>
-    row(
-      title,
-      description,
-      <Button size="sm" icon={BookOpen} onClick={() => navigate?.('tutorial')}>
-        查看使用步骤
-      </Button>,
+  // 要先读一次系统状态的那几项（一-13）：读的那一下照常画开关、灰着点不了，不写字；没读到写
+  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「此版本暂不支持」。
+  const systemPending = (label: string) =>
+    !systemApi ? (
+      <Pill tone="neutral">此版本暂不支持</Pill>
+    ) : systemError ? (
+      <Pill tone="neutral">暂未读到</Pill>
+    ) : (
+      <Switch
+        checked={false}
+        disabled
+        aria-label={label}
+        onChange={() => undefined}
+      />
     )
+  const currentVersion = resource.data?.update?.currentVersion
   let content: ReactNode = null
   if (settings) {
     const groups: Record<typeof group, ReactNode> = {
       appearance: (
         <>
           {row(
-            '主题',
+            'theme',
             '外观调整会应用到整个工具箱',
             <Segment
               label="主题"
@@ -2383,7 +2490,7 @@ export function SettingsPage({
                     'platform-theme',
                     async () =>
                       setSystemState(await systemApi.setThemePreference(theme)),
-                    '主题偏好已保存',
+                    toasted('主题偏好已保存'),
                   )
                 else if (theme === 'light' || theme === 'dark')
                   void update({ theme })
@@ -2391,7 +2498,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '界面皮肤',
+            'skin',
             '四套配色，暗色和亮色模式下都适用，选完立即生效',
             <div className="v2-skin-row" role="group" aria-label="界面皮肤">
               {skinOptions.map((skin) => (
@@ -2417,7 +2524,7 @@ export function SettingsPage({
             </div>,
           )}
           {row(
-            '界面缩放',
+            'ui-scale',
             '自动适应窗口；也可以按阅读习惯调整',
             <Segment
               options={[
@@ -2439,7 +2546,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '大字',
+            'large-text',
             '把说明文字和小字放大一些，看着更轻松',
             <Switch
               checked={Boolean(settings.largeText)}
@@ -2449,7 +2556,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '高对比度',
+            'high-contrast',
             systemState?.appearance.systemHighContrast
               ? '系统高对比度已开启；手动偏好会单独保留'
               : '加大文字、边框和按钮的对比度，开启时皮肤配色暂停使用',
@@ -2463,16 +2570,16 @@ export function SettingsPage({
                     'contrast',
                     async () =>
                       setSystemState(await systemApi.setHighContrast(enabled)),
-                    '高对比度偏好已保存',
+                    toasted('高对比度偏好已保存'),
                   )
                 }
               />
             ) : (
-              <UnsupportedControl label="当前运行环境" />
+              systemPending('高对比度')
             ),
           )}
           {row(
-            '减少动画',
+            'reduced-motion',
             '关闭页面过渡、滚动动画和循环装饰效果',
             <Switch
               checked={Boolean(settings.reducedMotion)}
@@ -2481,7 +2588,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '用显卡加速显示',
+            'hardware-acceleration',
             resource.data?.capabilities.displayCompat === 'auto'
               ? '显卡驱动刚才接连出了几次问题，这次已临时改用兼容方式显示。界面出现黑屏、花屏、闪烁或打开就闪退时关掉它，重启软件后生效。'
               : '界面出现黑屏、花屏、闪烁或打开就闪退时关掉它，重启软件后生效。',
@@ -2513,7 +2620,10 @@ export function SettingsPage({
                       void operation.execute(
                         'relaunch',
                         () => api.relaunchApp(),
-                        (started) => (started ? null : '已取消重开'),
+                        (started) => {
+                          if (!started) showToast('已取消重开', 'neutral')
+                          return null
+                        },
                       )
                     }
                   >
@@ -2531,7 +2641,7 @@ export function SettingsPage({
             />
           )}
           {row(
-            '语言',
+            'language',
             '当前提供简体中文；AI 的回答语言由你在对话中指定',
             <Select
               aria-label="界面语言"
@@ -2545,7 +2655,7 @@ export function SettingsPage({
       startup: (
         <>
           {row(
-            '开机自动启动',
+            'launch-at-login',
             systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
             systemApi && systemState?.startup.supported ? (
               <Switch
@@ -2561,12 +2671,14 @@ export function SettingsPage({
                   )
                 }
               />
+            ) : systemState ? (
+              <Pill tone="neutral">此版本暂不支持</Pill>
             ) : (
-              <UnsupportedControl label="当前运行环境" />
+              systemPending('开机自动启动')
             ),
           )}
           {row(
-            '点关闭按钮时',
+            'close-behavior',
             // Linux 的任务栏不一定有放托盘图标的地方（主进程先问过），没有就只能退出。
             isLinux && resource.data && !resource.data.capabilities.tray
               ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
@@ -2593,31 +2705,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '启动时检查新版本',
-            '发现新版本会提醒你',
-            <Switch
-              checked={settings.checkUpdatesOnStartup}
-              aria-label="启动时检查新版本"
-              onChange={(checkUpdatesOnStartup) =>
-                void update({ checkUpdatesOnStartup })
-              }
-            />,
-          )}
-          {resource.data?.update?.autoUpdateSupported &&
-            row(
-              '自动更新',
-              resource.data.update.installMethod === 'system-installer'
-                ? '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载'
-                : '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装',
-              <Switch
-                testId="settings-auto-update"
-                checked={settings.autoUpdate !== false}
-                aria-label="自动更新"
-                onChange={(autoUpdate) => void update({ autoUpdate })}
-              />,
-            )}
-          {row(
-            '启动时检查环境',
+            'startup-diagnostics',
             '只检查已使用工具和当前运行环境',
             <Switch
               checked={settings.runDiagnosticsOnStartup}
@@ -2627,23 +2715,12 @@ export function SettingsPage({
               }
             />,
           )}
-          {row(
-            '命令行工具总是装最新版',
-            '默认安装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到尚未验证的问题',
-            <Switch
-              checked={settings.alwaysInstallLatestCli === true}
-              aria-label="命令行工具总是装最新版"
-              onChange={(alwaysInstallLatestCli) =>
-                void update({ alwaysInstallLatestCli })
-              }
-            />,
-          )}
         </>
       ),
       tools: (
         <>
           {row(
-            '默认工作文件夹',
+            'workspace',
             '工具打开后从这个文件夹开始；请选择你信任的项目',
             <div className="v2-business-control">
               <span className="v2-business-path">{settings.workspace}</span>
@@ -2661,43 +2738,49 @@ export function SettingsPage({
                   )
                 }
               >
-                更换
+                选择文件夹
               </Button>
             </div>,
           )}
           {row(
-            '用哪个终端打开工具',
+            'latest-cli',
+            '默认安装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到尚未验证的问题',
+            <Switch
+              checked={settings.alwaysInstallLatestCli === true}
+              aria-label="命令行工具总是装最新版"
+              onChange={(alwaysInstallLatestCli) =>
+                void update({ alwaysInstallLatestCli })
+              }
+            />,
+          )}
+          {row(
+            'terminal',
             '使用工具箱为当前系统准备的终端；此版本不支持更换终端',
             <Button
               size="sm"
               icon={BookOpen}
-              onClick={() => navigate?.('tutorial')}
+              onClick={() => navigate?.('tutorial', cliTutorialTopic)}
             >
               查看打开方式
             </Button>,
           )}
           {row(
-            '工具装在哪里',
+            'install-location',
             '沿用你电脑上原来的安装位置，不影响别的软件',
             <Button
               size="sm"
               icon={Wrench}
               onClick={() => navigate?.('maintenance')}
             >
-              查看安装状态
+              去安装卸载
             </Button>,
-          )}
-          {row(
-            '连哪台服务器',
-            '新配置默认采用的星芒连接方式；现有工具可单独调整',
-            <Pill>星芒 AI</Pill>,
           )}
         </>
       ),
       network: (
         <>
           {row(
-            '下载来源',
+            'mirror',
             '自动选择可用来源；下载失败时可切换后重试',
             <Segment
               options={[
@@ -2717,7 +2800,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '网络连接',
+            'proxy',
             proxy?.note?.replaceAll('代理路由', '连接路径').replaceAll('代理', '网络设置') ??
               '可查看应用窗口的连接路径；账号请求和工具安装使用各自的连接设置。',
             systemApi ? (
@@ -2729,35 +2812,43 @@ export function SettingsPage({
                   loading={operation.busy === 'proxy'}
                   onClick={readProxy}
                 >
-                  查看路由
+                  看连接方式
                 </Button>
               </div>
             ) : (
-              <UnsupportedControl label="当前运行环境" />
+              <Pill tone="neutral">此版本暂不支持</Pill>
             ),
           )}
           {row(
-            '网络检查',
+            'network-check',
             '更换网络设置后，可再次检查连接',
             <Button
               size="sm"
               icon={HeartPulse}
               onClick={() => navigate?.('health')}
             >
-              去检查
+              去检查页
             </Button>,
           )}
-          {unavailable(
-            '企业证书',
-            '公司要求使用专用证书时，先向管理员确认来源',
+          {row(
+            'certificate',
+            '公司电脑装了专用安全证书、装工具时报证书错误，到检查页看「安全证书」那一项',
+            <Button
+              size="sm"
+              icon={HeartPulse}
+              onClick={() => navigate?.('health', certificateDiagnosticCode)}
+              testId="settings-certificate-health"
+            >
+              去检查页
+            </Button>,
           )}
         </>
       ),
       notifications: (
         <>
           {row(
-            '桌面通知',
-            '后台运行时提醒你查看结果',
+            'desktop-notifications',
+            '后台运行时提醒你查看结果；新版本和更新下载好的提醒也归它管',
             <Switch
               checked={settings.desktopNotifications !== false}
               disabled={!resource.data?.capabilities.notifications}
@@ -2767,46 +2858,8 @@ export function SettingsPage({
               }
             />,
           )}
-          {notificationOptions.filter((option) => option.value !== 'acceleration' || accelerationAvailable).map((option) =>
-            row(
-              option.label,
-              option.description,
-              systemApi && systemState ? (
-                <Switch
-                  aria-label={`${option.label}通知`}
-                  checked={
-                    systemState.preferences.notifications?.[option.value] ??
-                    true
-                  }
-                  disabled={
-                    settings.desktopNotifications === false || Boolean(operation.busy)
-                  }
-                  onChange={(enabled) =>
-                    void operation.execute(
-                      'notification-preference',
-                      async () =>
-                        setSystemState(
-                          await systemApi.setNotificationPreference(
-                            option.value,
-                            enabled,
-                          ),
-                        ),
-                      '通知偏好已保存',
-                    )
-                  }
-                />
-              ) : (
-                <UnsupportedControl label="此版本暂不支持" />
-              ),
-            ),
-          )}
           {row(
-            '新版本可用',
-            '新版本和更新下载完成提醒随桌面通知总开关控制',
-            <Pill>{settings.desktopNotifications !== false ? '已开启' : '已关闭'}</Pill>,
-          )}
-          {row(
-            '看看长什么样',
+            'test-notification',
             '系统可能关闭或静音通知；应用内状态会继续保留',
             <Button
               size="sm"
@@ -2828,22 +2881,99 @@ export function SettingsPage({
                     if (result === 'unsupported')
                       throw new Error('这台电脑当前无法显示系统通知。')
                   },
-                  '已请求显示测试通知',
+                  toasted('已请求显示测试通知'),
                 )
               }
             >
               发一条测试通知
             </Button>,
           )}
+          <div className="v2-settings-section" data-testid="settings-notification-kinds">
+            <h3>提醒哪些事</h3>
+            {settings.desktopNotifications === false && (
+              <span>桌面通知关着，下面这些都不会提醒</span>
+            )}
+          </div>
+          {notificationOptions.filter((option) => option.value !== 'acceleration' || accelerationAvailable).map((option) =>
+            row(
+              notificationSettingsItemId(option.value),
+              option.description,
+              systemApi && systemState ? (
+                <Switch
+                  aria-label={`${option.label}通知`}
+                  checked={
+                    systemState.preferences.notifications?.[option.value] ??
+                    true
+                  }
+                  disabled={
+                    settings.desktopNotifications === false || Boolean(operation.busy)
+                  }
+                  onChange={(enabled) =>
+                    void operation.execute(
+                      'notification-preference',
+                      async () =>
+                        setSystemState(
+                          await systemApi.setNotificationPreference(
+                            option.value,
+                            enabled,
+                          ),
+                        ),
+                      toasted('通知偏好已保存'),
+                    )
+                  }
+                />
+              ) : (
+                systemPending(`${option.label}通知`)
+              ),
+            ),
+          )}
         </>
       ),
       account: (
         <>
-          {resource.data?.session.sessionOnly
-            ? row('记住密码', sessionOnlyLoginNotice, null)
+          {row(
+            'current-account',
+            session?.authenticated
+              ? `${session.account?.username ? `${session.account.username}。` : ''}资料、改密码、余额、密钥和订单都在个人中心`
+              : '还没登录',
+            session?.authenticated ? (
+              <Button
+                size="sm"
+                icon={UserRound}
+                onClick={() => navigate?.('account')}
+                testId="settings-account-center"
+              >
+                去个人中心
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                icon={UserRound}
+                onClick={() => openLogin?.()}
+                testId="settings-account-login"
+              >
+                登录
+              </Button>
+            ),
+          )}
+          {row(
+            'switch-account',
+            '换成这台电脑上保存过的另一个账号，或者再添加一个',
+            <Button
+              size="sm"
+              icon={Users}
+              disabled={!switchAccount}
+              onClick={() => switchAccount?.()}
+              testId="settings-switch-account"
+            >
+              切换账号
+            </Button>,
+          )}
+          {session?.sessionOnly
+            ? row('remember-password', sessionOnlyLoginNotice, null)
             : rememberedLogin.kind === 'forget'
             ? row(
-                '记住密码',
+                'remember-password',
                 '由客户端安全存储处理；清掉后下次登录要重新输入密码',
                 <Button
                   size="sm"
@@ -2853,7 +2983,7 @@ export function SettingsPage({
                     void operation.execute(
                       'forget-remembered-login',
                       () => api.setRememberedAccountLogin(null, rememberedLogin.siteId),
-                      rememberedLoginForgottenMessage,
+                      toasted(rememberedLoginForgottenMessage),
                     )
                   }
                 >
@@ -2861,99 +2991,32 @@ export function SettingsPage({
                 </Button>,
               )
             : row(
-                '记住密码',
+                'remember-password',
                 '由客户端安全存储处理',
                 <Button size="sm" icon={UserRound} onClick={() => openLogin?.()}>
                   管理登录
                 </Button>,
               )}
-          {row(
-            '退出登录',
-            resource.data?.session.account?.username ?? '当前未登录',
-            resource.data?.session.authenticated ? (
+          {session?.authenticated &&
+            row(
+              'logout',
+              session.account?.username ?? '',
               <Button
                 size="sm"
                 variant="danger"
                 icon={Trash2}
                 onClick={() => setLogout(true)}
+                testId="settings-logout"
               >
-                退出
-              </Button>
-            ) : (
-              <Button size="sm" icon={UserRound} onClick={() => openLogin?.()}>
-                登录
-              </Button>
-            ),
-          )}
+                退出登录
+              </Button>,
+            )}
         </>
       ),
       privacy: (
         <>
           {row(
-            '崩溃自动上报',
-            '应用出错时，自动把错误堆栈和版本、系统信息发到海外的错误收集服务，帮助我们更快修好；不包含你的账号、密钥、文件路径和聊天内容',
-            <Switch
-              aria-label="崩溃自动上报"
-              checked={settings.crashReporting !== false}
-              onChange={(enabled) => void update({ crashReporting: enabled })}
-            />,
-          )}
-          {row(
-            '使用统计',
-            '只记下你的选择；目前软件不会收集或上传任何使用记录',
-            systemApi && systemState ? (
-              <Switch
-                aria-label="匿名使用统计偏好"
-                checked={
-                  systemState.preferences.privacy?.anonymousUsage ?? false
-                }
-                disabled={Boolean(operation.busy)}
-                onChange={(enabled) =>
-                  void operation.execute(
-                    'privacy',
-                    async () =>
-                      setSystemState(
-                        await systemApi.setPrivacyPreference(
-                          'anonymousUsage',
-                          enabled,
-                        ),
-                      ),
-                    '偏好已保存在本机，没有上传使用记录',
-                  )
-                }
-              />
-            ) : (
-              <UnsupportedControl label="未收集使用统计" />
-            ),
-          )}
-          {row(
-            '本机日志',
-            '打开日志目录，或预览和导出脱敏报告',
-            <>
-              <Button
-                size="sm"
-                icon={FolderOpen}
-                onClick={() =>
-                  void operation.execute(
-                    'directory',
-                    () => api.openRuntimeLogDirectory(),
-                    '',
-                  )
-                }
-              >
-                打开目录
-              </Button>
-              <Button
-                size="sm"
-                icon={FileText}
-                onClick={() => navigate?.('feedback')}
-              >
-                查看报告
-              </Button>
-            </>,
-          )}
-          {row(
-            '搬到新电脑',
+            'transfer',
             chatTransfer
               ? '把软件里的聊天记录和设置存成一个文件，在新电脑上导入。文件里没有密码和 Key，新电脑上登录一下就行'
               : '把软件里的设置存成一个文件，在新电脑上导入。登录后再导出，会连当前账号的聊天记录一起带上',
@@ -2979,12 +3042,7 @@ export function SettingsPage({
             </>,
           )}
           {row(
-            '以前的设置',
-            '升级后沿用你以前的设置和工具配置，不用重新设置',
-            <Pill>已沿用</Pill>,
-          )}
-          {row(
-            '工具配置备份',
+            'backups',
             '恢复前会保留当前配置快照',
             <Button
               size="sm"
@@ -2994,13 +3052,78 @@ export function SettingsPage({
               查看备份
             </Button>,
           )}
+          {row(
+            'logs',
+            '打开日志目录，或预览和导出脱敏报告',
+            <>
+              <Button
+                size="sm"
+                icon={FolderOpen}
+                onClick={() =>
+                  void operation.execute(
+                    'directory',
+                    () => api.openRuntimeLogDirectory(),
+                    '',
+                  )
+                }
+              >
+                打开目录
+              </Button>
+              <Button
+                size="sm"
+                icon={FileText}
+                onClick={() => navigate?.('feedback')}
+              >
+                去反馈页
+              </Button>
+            </>,
+          )}
+          {row(
+            'crash-reporting',
+            '出错时自动把错误堆栈、版本和系统信息发到海外的错误收集服务，帮我们更快修好；不含账号、密钥、文件路径和聊天内容',
+            <Switch
+              aria-label="崩溃自动上报"
+              checked={settings.crashReporting !== false}
+              onChange={(enabled) => void update({ crashReporting: enabled })}
+            />,
+          )}
+          {row(
+            'usage-stats',
+            '只记下你的选择；目前软件不会收集或上传任何使用记录',
+            systemApi && systemState ? (
+              <Switch
+                aria-label="匿名使用统计偏好"
+                checked={
+                  systemState.preferences.privacy?.anonymousUsage ?? false
+                }
+                disabled={Boolean(operation.busy)}
+                onChange={(enabled) =>
+                  void operation.execute(
+                    'privacy',
+                    async () =>
+                      setSystemState(
+                        await systemApi.setPrivacyPreference(
+                          'anonymousUsage',
+                          enabled,
+                        ),
+                      ),
+                    toasted('偏好已保存在本机，没有上传使用记录'),
+                  )
+                }
+              />
+            ) : (
+              systemPending('匿名使用统计偏好')
+            ),
+          )}
         </>
       ),
       about: (
         <>
           {row(
-            '星芒 AI 管理工具',
-            '应用版本与更新说明',
+            'version',
+            currentVersion
+              ? `v${currentVersion}。点右边看这一版改了什么、检查有没有新版本`
+              : '版本暂未读到',
             <Button
               size="sm"
               icon={RefreshCw}
@@ -3010,7 +3133,29 @@ export function SettingsPage({
             </Button>,
           )}
           {row(
-            '快捷键',
+            'update-check',
+            '发现新版本会提醒你',
+            <Switch
+              checked={settings.checkUpdatesOnStartup}
+              aria-label="启动时检查新版本"
+              onChange={(checkUpdatesOnStartup) =>
+                void update({ checkUpdatesOnStartup })
+              }
+            />,
+          )}
+          {resource.data?.update?.autoUpdateSupported &&
+            row(
+              'auto-update',
+              autoUpdateSettingDescription(resource.data.update.installMethod),
+              <Switch
+                testId="settings-auto-update"
+                checked={settings.autoUpdate !== false}
+                aria-label="自动更新"
+                onChange={(autoUpdate) => void update({ autoUpdate })}
+              />,
+            )}
+          {row(
+            'shortcuts',
             '查看当前系统使用的快捷键',
             <Button
               size="sm"
@@ -3025,7 +3170,7 @@ export function SettingsPage({
             replayTour={replayTour}
           />
           {row(
-            '用户协议与隐私政策',
+            'legal',
             '查看协议和数据处理说明',
             <>
               <Button
@@ -3059,6 +3204,7 @@ export function SettingsPage({
           <AppUninstallRow
             api={api}
             isMac={isMac}
+            isLinux={isLinux}
             openMaintenance={() => navigate?.('maintenance')}
           />
         </>
@@ -3066,22 +3212,30 @@ export function SettingsPage({
     }
     content = groups[group]
   }
+  // 读不到的是设置本身或系统状态时，红条右边给「重新读取」；保存失败不给，那是另一回事。
+  const readFailed = Boolean(resource.error) || (!saveError && Boolean(systemError))
+  function reread() {
+    if (resource.error) void resource.reload()
+    if (systemError) {
+      setSystemError('')
+      setSystemAttempt((value) => value + 1)
+    }
+  }
   return (
     <section
+      ref={pageRef}
       className="v2-page"
       data-page-id="settings"
       data-testid="page-settings"
     >
-      <PageHead
-        title="设置"
-        lead="外观调整即时显示，其他设置会提示保存结果。"
-      />
+      <PageHead title="设置" lead={settingsPageLead(currentWindowOs())} />
       <ResultNotice
         error={resource.error || saveError || systemError || operation.error}
         detail={resource.error ? resource.detail : saveError || systemError ? undefined : operation.detail}
-        message={operation.message || saved}
-        revealPath={operation.message ? operation.revealPath : undefined}
+        message={operation.revealPath ? operation.message : undefined}
+        revealPath={operation.revealPath || undefined}
         onReveal={(path) => api.revealExportedFile(path)}
+        retry={readFailed ? { label: '重新读取', onClick: reread } : undefined}
       />
       <div className="v2-business-settings-grid">
         <nav
@@ -3127,16 +3281,19 @@ export function SettingsPage({
           id="v2-settings-panel"
           aria-labelledby={`v2-settings-${group}`}
         >
-          <h2>{settingsGroups.find((item) => item.value === group)?.label}</h2>
-          {pending > 0 && <p role="status">正在保存更改…</p>}
+          {/* 「正在保存更改…」挂在组名右边，不单独占一行，存的时候页面不往下跳（一-12）。 */}
+          <div className="v2-settings-panel-head">
+            <h2>{settingsGroups.find((item) => item.value === group)?.label}</h2>
+            {pending > 0 && <span role="status">正在保存更改…</span>}
+          </div>
           <Card padding="none">
-            {content ?? <p role="status">正在读取设置…</p>}
+            {content ?? <p role="status">{resource.error ? '设置暂时没有读到' : '正在读取设置…'}</p>}
           </Card>
         </div>
       </div>
       <Dialog
         open={logout}
-        title="退出当前账号？"
+        title="退出登录？"
         onClose={() => setLogout(false)}
         footer={
           <>
@@ -3153,7 +3310,7 @@ export function SettingsPage({
                     await resource.reload()
                     onAccountChanged?.()
                   },
-                  '已退出登录',
+                  toasted('已退出登录'),
                 )
               }
             >
@@ -3162,7 +3319,7 @@ export function SettingsPage({
           </>
         }
       >
-        <p>工具中已写入的配置继续保留。</p>
+        <p>工具里已写入的配置继续保留。</p>
       </Dialog>
       <Dialog
         open={Boolean(importAsk)}

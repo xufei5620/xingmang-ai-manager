@@ -1007,6 +1007,44 @@ test('available update displays download action and failed download remains revi
   }
 })
 
+// 「更新」页也能直接开关启动检查和自动更新，不用再绕去设置（五-51）。
+test('the updates page switches the startup check and automatic updates in place', async () => {
+  const page = await fixture('page=updates&autoUpdate=1')
+  try {
+    const check = page.getByTestId('updates-check-on-startup').getByRole('switch', { name: '启动时检查新版本', exact: true })
+    const automatic = page.getByTestId('updates-auto-update').getByRole('switch', { name: '自动更新', exact: true })
+    await page.waitForFunction(() => document.querySelector('[data-testid="updates-check-on-startup"] [role="switch"]')?.disabled === false)
+    assert.equal(await check.getAttribute('aria-checked'), 'true')
+    assert.equal(await automatic.getAttribute('aria-checked'), 'true')
+    await check.click()
+    await page.locator('.xm-toast').getByText('已保存', { exact: true }).waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="updates-check-on-startup"] [role="switch"]')?.getAttribute('aria-checked') === 'false')
+    await page.waitForFunction(() => document.querySelector('[data-testid="updates-auto-update"] [role="switch"]')?.disabled === false)
+    await automatic.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="updates-auto-update"] [role="switch"]')?.getAttribute('aria-checked') === 'false')
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'settings').map((call) => call.args),
+      [
+        { version: 2, checkUpdatesOnStartup: false },
+        { version: 2, autoUpdate: false },
+      ],
+    )
+    assert.equal(await page.getByRole('button', { name: '去设置', exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the updates page leaves the automatic update switch out where the app cannot update itself', async () => {
+  const page = await fixture('page=updates')
+  try {
+    await page.getByTestId('updates-check-on-startup').waitFor()
+    assert.equal(await page.getByTestId('updates-auto-update').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('payment return only re-queries server orders and preserves the profile draft', async () => {
   const page = await fixture('page=account')
   try {
@@ -1234,6 +1272,78 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
   } finally { await page.close() }
 })
 
+// 存好了只弹会自己消失的小提示，页面不往下跳；页顶红条只留给没存上的（一-12）。
+test('a saved setting says so in a passing toast without pushing the page down', async () => {
+  const page = await fixture('page=settings')
+  try {
+    const control = page.getByRole('switch', { name: '减少动画', exact: true })
+    const before = (await control.boundingBox()).y
+    await control.click()
+    await page.locator('.xm-toast').getByText('已保存', { exact: true }).waitFor()
+    assert.equal(await control.getAttribute('aria-checked'), 'true')
+    assert.equal((await control.boundingBox()).y, before, 'the switch stays where it was')
+    assert.equal(await page.locator('.v2-business-notice').count(), 0, 'no banner is added above the groups')
+    assert.equal(await page.getByText('已完成', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('settings that wait on the system state say they were not read and read again on request', async () => {
+  const page = await fixture('page=settings&system=1&fail=platform-read')
+  try {
+    await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
+    const contrast = page.locator('[data-anchor="high-contrast"]')
+    await contrast.getByText('暂未读到', { exact: true }).waitFor()
+    assert.equal(await page.getByText('此版本暂不支持', { exact: true }).count(), 0)
+    await page.getByRole('button', { name: '重新读取', exact: true }).click()
+    await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
+    assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
+    assert.equal(await page.getByRole('button', { name: '重新读取', exact: true }).count(), 0)
+    assert.equal(await contrast.getByText('暂未读到', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the notification kinds sit under their own heading and say when the master switch silences them', async () => {
+  const page = await fixture('page=settings&system=1')
+  try {
+    await page.getByRole('tab', { name: '通知', exact: true }).click()
+    const kinds = page.getByTestId('settings-notification-kinds')
+    await kinds.getByRole('heading', { name: '提醒哪些事', exact: true }).waitFor()
+    assert.equal(await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).count(), 0)
+    await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
+    await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
+test('account and network rows open the account switcher and the check page entry they name', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByRole('tab', { name: '账号', exact: true }).click()
+    await page.getByTestId('settings-switch-account').click()
+    await page.getByTestId('settings-logout').click()
+    const logout = page.getByRole('dialog', { name: '退出登录？', exact: true })
+    await logout.getByText('工具里已写入的配置继续保留。', { exact: true }).waitFor()
+    await logout.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-certificate-health').click()
+    assert.deepEqual(
+      (await calls(page)).filter((call) => ['open-account-switcher', 'navigate'].includes(call.name)).map((call) => [call.name, call.args ?? null]),
+      [
+        ['open-account-switcher', null],
+        ['navigate', ['health', 'CERTIFICATE_TRUST']],
+      ],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('native preferences use the independent bridge while proxy remains a read-only query', async () => {
   const page = await fixture('page=settings&system=1')
   try {
@@ -1259,7 +1369,7 @@ test('native preferences use the independent bridge while proxy remains a read-o
       .getByRole('switch', { name: '开机自动启动', exact: true })
       .click()
     await page.getByRole('tab', { name: '网络', exact: true }).click()
-    await page.getByRole('button', { name: '查看路由', exact: true }).click()
+    await page.getByRole('button', { name: '看连接方式', exact: true }).click()
     await page.getByText('应用窗口当前直接连接', { exact: true }).waitFor()
     assert.deepEqual(
       (await calls(page)).map((call) => call.name),

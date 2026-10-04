@@ -84,9 +84,14 @@
 .v2-official-summary { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line-2); border-radius: var(--radius-card); }
 .v2-official-summary > div { flex: 1; min-width: 0; }
 .v2-official-summary p { color: var(--text-2); font-size: var(--font-small); }
-.v2-support { display: grid; justify-items: center; gap: 12px; }
+/* 帮助与客服：左边扫码，右边复制身份；常用去向在下面一行（二-2）。 */
+.v2-support { display: grid; grid-template-columns: 232px minmax(0, 1fr); align-items: center; gap: 20px; }
+/* 左栏那句一行放得下；开了大字放不下时两行折得一样长，不剩一个孤字。 */
+.v2-support-contact { display: grid; justify-items: center; gap: 8px; text-align: center; text-wrap: balance; }
 .v2-support img { width: 160px; height: 160px; }
 .v2-support h3, .v2-support p { margin: 0; }
+.v2-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.v2-support-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-support-identity { display: grid; gap: 6px; width: 100%; }
 .v2-support-identity > p { color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-support-identity > div { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
