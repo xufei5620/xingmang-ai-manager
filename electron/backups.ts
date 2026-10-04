@@ -7,7 +7,7 @@ import { readDirectoryEntriesSync } from './bounded-directory'
 import { isProviderId, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig } from './config-files'
-import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
+import { assertNoReparseComponents, ensureSafeDataDirectory, renameWithTransientRetrySync } from './safe-local-data'
 
 export type ConfigBackupReason = 'manual' | 'pre-save' | 'pre-restore'
 
@@ -749,7 +749,11 @@ export class ConfigBackupStore {
       }
       writeDurableJson(path.join(temporaryDirectory, 'manifest.json'), manifest)
       fs.mkdirSync(root, { recursive: true, mode: 0o700 })
-      fs.renameSync(temporaryDirectory, finalDirectory)
+      // Windows 上安全软件正扫着刚写进去的文件时，这个文件夹改不了名（EPERM），过一会儿就好
+      // （第三十七批 C）。每次试之前照开头那样再查一遍备份目录，等的那一下它可能被换成了联接。
+      renameWithTransientRetrySync(temporaryDirectory, finalDirectory, () => {
+        ensureSafeDataDirectory(root, '配置备份目录')
+      })
       this.prune(root, protectId)
       return summaryFromManifest(manifest, context)
     } catch (error) {
@@ -842,61 +846,78 @@ export class ConfigBackupStore {
         }
       }
 
+      // Windows 上安全软件正扫着配置文件或刚写好的临时文件时，下面换文件那几步都可能被拒
+      // （EPERM / EBUSY），过一会儿就好，所以都等一下再试（第三十七批 C）。每次试之前把原来
+      // 那几项检查重做一遍：等的那一下，路径可能被换成联接，占着文件的程序也可能刚存了自己的改动。
       plans.forEach((plan, index) => {
         try {
-          assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
-          assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
-          if (plan.temporaryPath) assertSafeTargetPath(plan.temporaryPath, plan.rootDirectory)
-          assertPathAbsent(plan.rollbackPath, '配置回滚路径')
-          if (plan.previousSnapshot) {
-            assertFileMatchesSnapshot(plan.targetPath, plan.previousSnapshot, '当前配置文件')
-            fs.renameSync(plan.targetPath, plan.rollbackPath)
+          const assertMoveAsideAllowed = () => {
+            assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
+            assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
+            if (plan.temporaryPath) assertSafeTargetPath(plan.temporaryPath, plan.rootDirectory)
+            assertPathAbsent(plan.rollbackPath, '配置回滚路径')
+          }
+          const previousSnapshot = plan.previousSnapshot
+          if (previousSnapshot) {
+            renameWithTransientRetrySync(plan.targetPath, plan.rollbackPath, () => {
+              assertMoveAsideAllowed()
+              assertFileMatchesSnapshot(plan.targetPath, previousSnapshot, '当前配置文件')
+            })
             plan.rollbackCreated = true
             plan.rollbackSnapshot = fileSnapshotIfPresent(plan.rollbackPath, '配置回滚文件')
             if (
               !plan.rollbackSnapshot
-              || !sameFileContentIdentity(plan.rollbackSnapshot, plan.previousSnapshot)
+              || !sameFileContentIdentity(plan.rollbackSnapshot, previousSnapshot)
             ) {
               throw new Error('配置回滚文件在移动期间发生变化')
             }
           } else {
+            assertMoveAsideAllowed()
             assertPathAbsent(plan.targetPath, '配置目标')
           }
           assertPathAbsent(plan.targetPath, '配置目标')
           this.hooks.beforeRestoreCommit?.(plan.targetPath, index)
-          assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
-          assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
-          assertPathAbsent(plan.targetPath, '配置目标')
-          if (plan.rollbackSnapshot) {
-            assertFileMatchesSnapshot(plan.rollbackPath, plan.rollbackSnapshot, '配置回滚文件')
-          }
-          if (plan.desiredExisted && plan.temporaryPath) {
-            assertSafeTargetPath(plan.temporaryPath, plan.rootDirectory)
-            if (!plan.temporarySnapshot || !plan.desiredSha256) {
-              throw new Error('恢复临时文件状态无效')
+          const assertCommitAllowed = () => {
+            assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
+            assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
+            assertPathAbsent(plan.targetPath, '配置目标')
+            if (plan.rollbackSnapshot) {
+              assertFileMatchesSnapshot(plan.rollbackPath, plan.rollbackSnapshot, '配置回滚文件')
             }
-            assertFileMatchesSnapshot(plan.temporaryPath, plan.temporarySnapshot, '恢复临时文件')
-            assertBackupFileMatches(plan.temporaryPath, plan.desiredSize, plan.desiredSha256)
-            fs.renameSync(plan.temporaryPath, plan.targetPath)
+          }
+          const temporaryPath = plan.temporaryPath
+          if (plan.desiredExisted && temporaryPath) {
+            renameWithTransientRetrySync(temporaryPath, plan.targetPath, () => {
+              assertCommitAllowed()
+              assertSafeTargetPath(temporaryPath, plan.rootDirectory)
+              if (!plan.temporarySnapshot || !plan.desiredSha256) {
+                throw new Error('恢复临时文件状态无效')
+              }
+              assertFileMatchesSnapshot(temporaryPath, plan.temporarySnapshot, '恢复临时文件')
+              assertBackupFileMatches(temporaryPath, plan.desiredSize, plan.desiredSha256)
+            })
             plan.temporarySnapshot = null
             plan.committedSnapshot = fileSnapshotIfPresent(plan.targetPath, '已恢复配置文件')
             if (!plan.committedSnapshot) throw new Error('恢复配置文件丢失')
           } else {
+            assertCommitAllowed()
             plan.committedSnapshot = null
           }
           committed.push(plan)
         } catch (error) {
           // 第一步 rename 失败时 targetPath 仍是用户当前配置，绝不能删除。
           if (plan.rollbackCreated && plan.previousSnapshot && plan.rollbackSnapshot) {
+            const rollbackSnapshot = plan.rollbackSnapshot
             try {
-              assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
-              assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
-              assertFileMatchesSnapshot(plan.rollbackPath, plan.rollbackSnapshot, '配置回滚文件')
-              assertPathAbsent(plan.targetPath, '配置目标')
-              fs.renameSync(plan.rollbackPath, plan.targetPath)
+              renameWithTransientRetrySync(plan.rollbackPath, plan.targetPath, () => {
+                assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
+                assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
+                assertFileMatchesSnapshot(plan.rollbackPath, rollbackSnapshot, '配置回滚文件')
+                assertPathAbsent(plan.targetPath, '配置目标')
+              })
               plan.rollbackCreated = false
               const restoredSnapshot = fileSnapshotIfPresent(plan.targetPath, '当前配置文件')
-              if (!restoredSnapshot || !sameFileContentIdentity(restoredSnapshot, plan.rollbackSnapshot)) {
+              if (!restoredSnapshot || !sameFileContentIdentity(restoredSnapshot, rollbackSnapshot)) {
                 throw new Error('当前配置文件在回滚期间发生变化')
               }
               plan.rollbackSnapshot = null
@@ -946,10 +967,18 @@ export class ConfigBackupStore {
           }
           if (plan.committedSnapshot) removeIfPresent(plan.targetPath)
           if (plan.rollbackCreated && plan.rollbackSnapshot) {
-            fs.renameSync(plan.rollbackPath, plan.targetPath)
+            const rollbackSnapshot = plan.rollbackSnapshot
+            // 这时原位置应当空着；等着重试的那一下若有程序在这儿新写了文件，
+            // 不拿挪开的那份盖它（第三十七批 C）。
+            renameWithTransientRetrySync(plan.rollbackPath, plan.targetPath, () => {
+              assertSafeTargetPath(plan.targetPath, plan.rootDirectory)
+              assertSafeTargetPath(plan.rollbackPath, plan.rootDirectory)
+              assertFileMatchesSnapshot(plan.rollbackPath, rollbackSnapshot, '配置回滚文件')
+              assertPathAbsent(plan.targetPath, '配置目标')
+            })
             plan.rollbackCreated = false
             const restoredSnapshot = fileSnapshotIfPresent(plan.targetPath, '当前配置文件')
-            if (!restoredSnapshot || !sameFileContentIdentity(restoredSnapshot, plan.rollbackSnapshot)) {
+            if (!restoredSnapshot || !sameFileContentIdentity(restoredSnapshot, rollbackSnapshot)) {
               throw new Error('当前配置文件在回滚期间发生变化')
             }
             plan.rollbackSnapshot = null

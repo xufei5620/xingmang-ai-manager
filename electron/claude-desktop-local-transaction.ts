@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
+import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8FileSync, renameWithTransientRetrySync } from './safe-local-data'
 
 const label = 'Claude Desktop 第三方推理配置'
 const maximumBytes = 512 * 1024
@@ -84,12 +84,16 @@ export function commitClaudeDesktopFiles(
       if (read(backupPath) !== plan.before) throw new Error(`${label}备份校验失败`)
       plan.backupPath = backupPath
     }
+    // Windows 上安全软件正扫着刚写好的暂存文件或目标文件时，换过去会被拒（EPERM / EBUSY），
+    // 过一会儿就好，等一下再试（第三十七批 C）。账号和各文件的检查每次试之前都重做：
+    // 等的那一下，账号可能已切换，Claude Desktop 也可能刚存了自己的改动。
     for (const plan of prepared) {
-      assertContext()
-      assertSnapshots()
-      if (!ownedFile(plan.temporaryPath, plan.temporaryIdentity, plan.content)) throw new Error(`${label}暂存文件发生变化`)
-      assertSafeDataFile(plan.path, label)
-      fs.renameSync(plan.temporaryPath, plan.path)
+      renameWithTransientRetrySync(plan.temporaryPath, plan.path, () => {
+        assertContext()
+        assertSnapshots()
+        if (!ownedFile(plan.temporaryPath, plan.temporaryIdentity, plan.content)) throw new Error(`${label}暂存文件发生变化`)
+        assertSafeDataFile(plan.path, label)
+      })
       committed.push(plan)
     }
     assertContext()
@@ -105,8 +109,9 @@ export function commitClaudeDesktopFiles(
           const restorePath = `${plan.path}.xingmang-rollback-${randomUUID()}.tmp`
           const restoreIdentity = stage(restorePath, plan.before)
           try {
-            if (!ownedFile(plan.path, plan.temporaryIdentity, plan.content)) throw new Error('changed')
-            fs.renameSync(restorePath, plan.path)
+            renameWithTransientRetrySync(restorePath, plan.path, () => {
+              if (!ownedFile(plan.path, plan.temporaryIdentity, plan.content)) throw new Error('changed')
+            })
           } finally {
             if (ownedFile(restorePath, restoreIdentity, plan.before)) fs.unlinkSync(restorePath)
           }
