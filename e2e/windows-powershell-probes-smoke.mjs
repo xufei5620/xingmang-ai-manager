@@ -496,7 +496,7 @@ checks.push(['the CLI launch broker opens a folder whose name has brackets', asy
     const name = path.basename(shell)
     const broker = decodeWindowsPowerShellCommand(buildCliLaunchPlan({ executable: process.execPath, workspace: folder, title: 'smoke' }, shell).argv.at(-1))
     const start = broker.indexOf('$process = Start-Process')
-    const shipped = / -WorkingDirectory ('[^']*') /.exec(broker)?.[1]
+    const shipped = / -WorkingDirectory ('(?:[^']|'')*') /.exec(broker)?.[1]
     assert.ok(start > 0 && shipped, 'the broker no longer reads the way this check expects')
     const preamble = broker.slice(0, start)
 
@@ -515,9 +515,12 @@ checks.push(['the CLI launch broker opens a folder whose name has brackets', asy
     assert.match(unescaped.stderr, /wildcard|通配符/i, `${name}: ${unescaped.stderr}`)
     assert.ok(unescaped.stderr.includes('作'), `${name} did not report the folder's name as UTF-8: ${unescaped.stderr}`)
 
-    // Printed only: whether this runner would garble the same error without the switch.
+    // Printed only: how the host wraps the error the dialog quotes, and whether this
+    // runner would garble it without the switch.
     const withoutSwitch = await runLaunchBroker(shell, launchBrokerScript(preamble.slice(preamble.indexOf('Import-Module')), powerShellLiteral(folder)), folder)
-    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped it fails with ${JSON.stringify(unescaped.stderr.slice(0, 80))}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
+    const errorStart = Math.max(0, unescaped.stderr.indexOf('<S S="Error">'))
+    const wrapping = unescaped.stderr.startsWith('#< CLIXML') ? 'wrapped in CLIXML' : 'as plain text'
+    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped it fails ${wrapping} with ${JSON.stringify(unescaped.stderr.slice(errorStart, errorStart + 200))}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
   }
 }])
 

@@ -530,11 +530,11 @@ export function powerShellLiteral(value: string): string {
 // (PathUtils.ResolveFilePath without isLiteralPath). Unescaped, D:\作业[1]
 // means "作业1" and fails with "the wildcard path ... did not resolve to a
 // file". The backtick is the escape character itself, so it is escaped too, or
-// a name such as a`[1] turns back into a pattern. PowerShell 7's
-// [WildcardPattern]::Escape covers the same five characters but 6.0's skipped
-// the backtick, which is why this is done here and not in the script. Wrap the
-// result in powerShellLiteral: a verbatim string hands the backticks over as
-// typed.
+// a name such as a`[1] turns back into a pattern. [WildcardPattern]::Escape
+// leaves the backtick alone before PowerShell 7.6, Windows PowerShell 5.1 (the
+// shell tried first) included, which is why this is done here and not in the
+// script. Wrap the result in powerShellLiteral: a verbatim string hands the
+// backticks over as typed.
 export function escapePowerShellWildcard(value: string): string {
   return value.replace(/[`[\]*?]/g, '`$&')
 }
