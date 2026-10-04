@@ -79,7 +79,7 @@ export function BusinessPage({
       />
     )
   if (page === 'sessions')
-    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} />
+    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} />
   if (page === 'mcp')
     return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'skills')

@@ -3,21 +3,29 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  BACKGROUND_RELAUNCH_WINDOW_MS,
   LAUNCH_INSTALL_WINDOW_MS,
   buildAutoInstallNotice,
+  canInstallUnattended,
   createPendingUpdateStore,
   decideLaunchInstall,
   decideQuitInstall,
+  isBackgroundInstallFailed,
+  isRelaunchAfterBackgroundInstall,
   previousAutoInstallFailureMessage,
+  resolveLaunchInstallMode,
   resolvePreviousAutoInstallFailure,
+  shouldStillInstallAtLaunch,
   emptyPendingUpdateRecord,
   parsePendingUpdateRecord,
   quitInstallPrompt,
   resolveDownloadedVersionToRecord,
   undoQuitInstallAttempt,
   type LaunchInstallInput,
+  type LaunchInstallModeInput,
+  type LaunchInstallRecheckInput,
 } from './auto-update-install'
-import type { UpdateSnapshot } from './updater'
+import { updateInstallLaunchTimeoutCode, type UpdateSnapshot } from './updater'
 
 const directories: string[] = []
 
@@ -78,6 +86,137 @@ describe('decideLaunchInstall', () => {
   })
 })
 
+describe('resolveLaunchInstallMode', () => {
+  function modeInput(patch: Partial<LaunchInstallModeInput> = {}): LaunchInstallModeInput {
+    return { launchedAtLogin: true, windowShown: false, accelerationActive: false, unattended: true, ...patch }
+  }
+
+  it('keeps the announced install for a normal launch or once the window has been shown', () => {
+    expect(resolveLaunchInstallMode(modeInput({ launchedAtLogin: false }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ launchedAtLogin: false, accelerationActive: true, unattended: false }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ windowShown: true }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ windowShown: true, unattended: false }))).toBe('notice')
+  })
+
+  it('installs in the background after a login launch whose window was never opened', () => {
+    expect(resolveLaunchInstallMode(modeInput())).toBe('background')
+  })
+
+  it('leaves the version for the quit when installing would pop up a prompt or cut off acceleration', () => {
+    expect(resolveLaunchInstallMode(modeInput({ unattended: false }))).toBe('skip')
+    expect(resolveLaunchInstallMode(modeInput({ accelerationActive: true }))).toBe('skip')
+  })
+})
+
+describe('shouldStillInstallAtLaunch', () => {
+  function recheck(patch: Partial<LaunchInstallRecheckInput> = {}): LaunchInstallRecheckInput {
+    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, background: false, windowShown: false, accelerationActive: false, ...patch }
+  }
+
+  it('goes ahead when nothing changed while the notice was up', () => {
+    expect(shouldStillInstallAtLaunch(recheck())).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ windowShown: true, accelerationActive: true }))).toBe(true)
+  })
+
+  it('backs off when auto-update was turned off, a tool install started or the version is no longer installable', () => {
+    expect(shouldStillInstallAtLaunch(recheck({ autoUpdate: false }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ busy: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+  })
+
+  it('backs off a background install once the window was opened or acceleration was turned on', () => {
+    expect(shouldStillInstallAtLaunch(recheck({ background: true }))).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ background: true, windowShown: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ background: true, accelerationActive: true }))).toBe(false)
+  })
+})
+
+describe('isBackgroundInstallFailed', () => {
+  const record = { ...emptyPendingUpdateRecord, backgroundInstall: { version: '0.2.12', startedAt: 1_760_000_000_000 } }
+  const failed = snapshot({ error: { code: 'UPDATE_INSTALL_FAILED', message: '新版本没装上' }, failedStep: 'install' })
+
+  it('flags a background install that failed while the app kept running', () => {
+    expect(isBackgroundInstallFailed(record, failed)).toBe(true)
+  })
+
+  it('keeps the record while the installer may still relaunch the app, or when there is nothing to take back', () => {
+    expect(isBackgroundInstallFailed(record, snapshot({ error: { code: updateInstallLaunchTimeoutCode, message: '新版本没装上' }, failedStep: 'install' }))).toBe(false)
+    expect(isBackgroundInstallFailed(record, snapshot())).toBe(false)
+    expect(isBackgroundInstallFailed(record, snapshot({ error: { code: 'UPDATE_DOWNLOAD_FAILED', message: '下载失败' }, failedStep: 'download' }))).toBe(false)
+    expect(isBackgroundInstallFailed({ ...record, backgroundInstall: null }, failed)).toBe(false)
+  })
+})
+
+describe('canInstallUnattended', () => {
+  const bundle = '/Applications/星芒AI管理工具.app'
+  function sameRealPath(target: string): string {
+    return target
+  }
+  function writable(...targets: string[]): (target: string) => boolean {
+    return (target) => targets.includes(target)
+  }
+
+  it('never counts on an unattended install on Windows or through the system installer', () => {
+    expect(canInstallUnattended({ platform: 'win32', bundlePath: bundle, canWrite: () => true, realPath: sameRealPath })).toBe(false)
+    expect(canInstallUnattended({ platform: 'linux', bundlePath: bundle, canWrite: () => true, realPath: sameRealPath })).toBe(false)
+    expect(canInstallUnattended({ platform: 'darwin', installMethod: 'system-installer', bundlePath: bundle, canWrite: () => true, realPath: sameRealPath })).toBe(false)
+  })
+
+  it('needs the resolved bundle and its folder writable on macOS, as Squirrel.Mac checks before asking for a password', () => {
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: bundle, canWrite: writable(bundle, '/Applications'), realPath: sameRealPath })).toBe(true)
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: bundle, canWrite: writable(bundle), realPath: sameRealPath })).toBe(false)
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: bundle, canWrite: writable('/Applications'), realPath: sameRealPath })).toBe(false)
+    const linked = '/Users/alex/Apps/星芒AI管理工具.app'
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: bundle, canWrite: writable(bundle, '/Applications'), realPath: () => linked })).toBe(false)
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: bundle, canWrite: writable(linked, '/Users/alex/Apps'), realPath: () => linked })).toBe(true)
+  })
+
+  it('assumes a prompt when the bundle is unknown or cannot be inspected', () => {
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: null, canWrite: () => true, realPath: sameRealPath })).toBe(false)
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: bundle, canWrite: () => true, realPath: () => { throw new Error('ENOENT') } })).toBe(false)
+  })
+
+  it('checks the real folders for the current user by default', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unattended-install-'))
+    directories.push(directory)
+    const app = path.join(directory, '星芒AI管理工具.app')
+    fs.mkdirSync(app)
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: app })).toBe(true)
+    expect(canInstallUnattended({ platform: 'darwin', bundlePath: path.join(directory, 'missing.app') })).toBe(false)
+  })
+
+  // root writes through any mode bits, and Windows ignores them on folders.
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)('assumes a prompt when the current user cannot write the folder holding the bundle', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unattended-install-'))
+    directories.push(directory)
+    const app = path.join(directory, '星芒AI管理工具.app')
+    fs.mkdirSync(app)
+    fs.chmodSync(directory, 0o555)
+    try {
+      expect(canInstallUnattended({ platform: 'darwin', bundlePath: app })).toBe(false)
+    } finally {
+      fs.chmodSync(directory, 0o755)
+    }
+  })
+})
+
+describe('isRelaunchAfterBackgroundInstall', () => {
+  const startedAt = 1_760_000_000_000
+  const record = { ...emptyPendingUpdateRecord, downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', backgroundInstall: { version: '0.2.12', startedAt } }
+
+  it('recognises the relaunch the installer starts after a background install, installed or not', () => {
+    expect(isRelaunchAfterBackgroundInstall(record, startedAt + 40_000)).toBe(true)
+    expect(isRelaunchAfterBackgroundInstall(record, startedAt + BACKGROUND_RELAUNCH_WINDOW_MS)).toBe(true)
+  })
+
+  it('opens the window as usual without a background install, for a much later start or after a clock jump', () => {
+    expect(isRelaunchAfterBackgroundInstall({ ...record, backgroundInstall: null }, startedAt + 40_000)).toBe(false)
+    expect(isRelaunchAfterBackgroundInstall(record, startedAt + BACKGROUND_RELAUNCH_WINDOW_MS + 1)).toBe(false)
+    expect(isRelaunchAfterBackgroundInstall(record, startedAt - 1)).toBe(false)
+  })
+})
+
 describe('resolveDownloadedVersionToRecord', () => {
   it('records a freshly downloaded version once', () => {
     expect(resolveDownloadedVersionToRecord(snapshot(), { ...emptyPendingUpdateRecord })).toBe('0.2.12')
@@ -98,9 +237,12 @@ describe('pending update store', () => {
     const store = createPendingUpdateStore({ filePath })
     expect(store.read()).toEqual(emptyPendingUpdateRecord)
     await store.write({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' })
-    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', quitAttemptedVersion: null })
+    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', quitAttemptedVersion: null, backgroundInstall: null })
     await store.write({ downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12' })
-    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12' })
+    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12', backgroundInstall: null })
+    const backgroundInstall = { version: '0.2.12', startedAt: 1_760_000_000_000 }
+    await store.write({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', backgroundInstall })
+    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', quitAttemptedVersion: null, backgroundInstall })
   })
 
   it('treats a damaged or foreign record as no record', () => {
@@ -108,6 +250,9 @@ describe('pending update store', () => {
     expect(parsePendingUpdateRecord(JSON.stringify({ version: 2, downloadedVersion: '0.2.12' }))).toEqual(emptyPendingUpdateRecord)
     expect(parsePendingUpdateRecord(JSON.stringify({ version: 1, downloadedVersion: '../x', attemptedVersion: 3 })))
       .toEqual(emptyPendingUpdateRecord)
+    for (const backgroundInstall of ['0.2.12', { version: '../x', startedAt: 1 }, { version: '0.2.12', startedAt: 0 }, { version: '0.2.12', startedAt: 1.5 }, { version: '0.2.12', startedAt: '1' }]) {
+      expect(parsePendingUpdateRecord(JSON.stringify({ version: 1, downloadedVersion: '0.2.12', backgroundInstall })).backgroundInstall).toBeNull()
+    }
   })
 
   it('refuses a relative path', () => {
