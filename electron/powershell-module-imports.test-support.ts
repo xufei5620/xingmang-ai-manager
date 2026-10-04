@@ -37,7 +37,6 @@ export const powerShellCmdletModules: Readonly<Record<string, string | null>> = 
   'Invoke-CimMethod': 'CimCmdlets',
   'Get-AppxPackage': 'Appx',
   'Get-StartApps': 'StartLayout',
-  'Get-NetTCPConnection': 'NetTCPIP',
 }
 
 export type PowerShellImportForm = 'by-name' | 'pinned'

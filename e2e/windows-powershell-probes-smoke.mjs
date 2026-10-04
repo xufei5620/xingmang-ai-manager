@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -360,10 +361,6 @@ const trustedProbes = [
     const parsed = JSON.parse((await runPowerShell(['-Command', buildDiagnosticsCodexDesktopProbeScript()], trustedEnv())).trim())
     return `installed=${Boolean(parsed.AppID)}, running=${parsed.Running}`
   }],
-  ['Codex debugging port owner', codexDesktopCdpCommandTimeoutMs, async () => {
-    const owners = await resolveCodexDesktopCdpPortOwners(1)
-    return `${owners.length} listener(s)`
-  }],
   ['external client inventory', externalClientSystemCommandTimeoutMs, async () => {
     const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientInventoryScript())], trustedEnv())).trim())
     assert.ok(Array.isArray(parsed.clients))
@@ -455,6 +452,115 @@ for (const [name, limit, run] of trustedProbes) {
     assert.ok(elapsed < limit, `took ${elapsed}ms, the app gives it ${limit}ms`)
   }])
 }
+
+// The Codex debugging port owner lookup reads the TCP table with netstat.exe
+// now, not PowerShell, so it is checked against a port whose owners are known
+// rather than an empty one. This process listens on the port, and its end
+// closes one connection first, which leaves a TIME_WAIT row with PID 0 on the
+// port, the way Codex's end of a closed request does. A second process then
+// connects out from 127.0.0.2 with the same port number, which must not count,
+// and a third listens on it over IPv6, which must. Every lookup is held to the
+// limit the app gives it.
+function listenOn(server, options) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(options, () => {
+      server.off('error', reject)
+      resolve(server.address().port)
+    })
+  })
+}
+
+function connectUntilClosed(port) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: '127.0.0.1', port })
+    socket.once('error', reject)
+    socket.once('close', resolve)
+    socket.resume()
+  })
+}
+
+// Resolves with the helper's first line, which says what it managed to set up.
+function startPortHelper(source) {
+  const child = spawn(process.execPath, ['-e', source], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
+  const ready = new Promise((resolve, reject) => {
+    let output = ''
+    const timer = setTimeout(() => reject(new Error(`port helper said nothing within 30000ms: ${output}`)), 30_000)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      output += chunk
+      if (output.includes('\n')) {
+        clearTimeout(timer)
+        resolve(output.split('\n')[0].trim())
+      }
+    })
+    child.once('error', (error) => { clearTimeout(timer); reject(error) })
+    child.once('close', (code) => { clearTimeout(timer); reject(new Error(`port helper exited with ${code} before it reported: ${output}`)) })
+  })
+  return { child, ready }
+}
+
+async function lookUpPortOwners(port, situation) {
+  const startedAt = Date.now()
+  const owners = await resolveCodexDesktopCdpPortOwners(port)
+  const elapsed = Date.now() - startedAt
+  console.log(`info Codex debugging port owner lookup, ${situation}: ${owners.length ? owners.join(', ') : 'no listener'} (${elapsed}ms of ${codexDesktopCdpCommandTimeoutMs}ms)`)
+  assert.ok(elapsed < codexDesktopCdpCommandTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopCdpCommandTimeoutMs}ms`)
+  return owners
+}
+
+checks.push(['Codex debugging port owner lookup names the real listeners inside its own limit', async () => {
+  assert.deepEqual(await lookUpPortOwners(1, 'nothing listening'), [])
+  const sockets = new Set()
+  let endNextConnection = true
+  const server = net.createServer((socket) => {
+    sockets.add(socket)
+    socket.on('error', () => {})
+    socket.once('close', () => sockets.delete(socket))
+    if (endNextConnection) {
+      endNextConnection = false
+      socket.end()
+    }
+  })
+  const helpers = []
+  try {
+    const port = await listenOn(server, { host: '127.0.0.1', port: 0 })
+    await connectUntilClosed(port)
+    assert.deepEqual(await lookUpPortOwners(port, 'this process listening'), [process.pid])
+
+    const outgoing = startPortHelper(`
+      const socket = require('node:net').connect({ host: '127.0.0.1', port: ${port}, localAddress: '127.0.0.2', localPort: ${port} })
+      socket.on('connect', () => console.log('connected'))
+      socket.on('error', (error) => console.log('unavailable ' + error.code))
+      setInterval(() => {}, 60_000)
+    `)
+    helpers.push(outgoing.child)
+    const outgoingState = await outgoing.ready
+    if (outgoingState === 'connected') {
+      assert.deepEqual(await lookUpPortOwners(port, 'another process connected out from the same port number'), [process.pid])
+    } else {
+      console.log(`info Codex debugging port owner lookup: no connection from 127.0.0.2 on this runner (${outgoingState})`)
+    }
+
+    const listener = startPortHelper(`
+      const server = require('node:net').createServer()
+      server.on('error', (error) => { console.log('unavailable ' + error.code); setInterval(() => {}, 60_000) })
+      server.listen({ host: '::1', port: ${port} }, () => console.log('listening'))
+    `)
+    helpers.push(listener.child)
+    const listenerState = await listener.ready
+    if (listenerState === 'listening') {
+      const owners = await lookUpPortOwners(port, 'another process listening over IPv6')
+      assert.deepEqual([...owners].sort((a, b) => a - b), [process.pid, listener.child.pid].sort((a, b) => a - b))
+    } else {
+      console.log(`info Codex debugging port owner lookup: no IPv6 loopback listener on this runner (${listenerState})`)
+    }
+  } finally {
+    for (const child of helpers) child.kill()
+    for (const socket of sockets) socket.destroy()
+    await new Promise((resolve) => server.close(() => resolve()))
+  }
+}])
 
 // What the app falls back to when the in-memory script fails, say on a machine
 // whose antivirus refuses it: the script 0.2.14 ran, which compiles WinInet with
