@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { createSystemService, type SystemServiceOptions } from './system-service'
-import type { DownloadAccelerationLease } from './download-acceleration'
+import { createDownloadAccelerationCoordinator, type DownloadAccelerationLease } from './download-acceleration'
 import {
   resolveNodeRuntimeNetworkRegion,
   type InstallNodeRuntimeOptions,
@@ -151,6 +151,26 @@ describe('installing a CLI with download acceleration', () => {
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.registries[0]).toContain('npmmirror.com')
     expect(fixture.release).toHaveBeenCalledTimes(1)
+  })
+
+  // 电脑里留着一个关掉的代理，星芒这次运行整个改成了直连，之后又开了加速（PR #834 核实的 F10）：
+  // 下载和 npm 其实都直连，以前却说已经加速、还先连官方源。
+  it.runIf(process.platform !== 'win32')('keeps the mirror first when this run connects directly while acceleration is on', async () => {
+    const coordinator = createDownloadAccelerationCoordinator({
+      getAccountScope: () => 'xm-account:7',
+      startRoute: async () => ({ status: 'system-proxy-active' }),
+      stopRoute: async () => {},
+      downloadsFollowSystemProxy: () => false,
+    })
+    const fixture = createInstallFixture({ acquire: () => coordinator.acquire(), subprocessProxy: {} })
+    await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
+    expect(fixture.registries[0]).toContain('npmmirror.com')
+    const messages = (fixture.target.send as unknown as { mock: { calls: Array<[string, { message?: string }]> } })
+      .mock.calls.map(([, payload]) => payload.message ?? '')
+    expect(messages.some((message) => message.includes('未启用下载加速，按现有下载源顺序继续'))).toBe(true)
+    expect(messages.some((message) => message.includes('检测到中国大陆网络'))).toBe(true)
+    expect(messages.some((message) => message.includes('已为本次下载启用加速线路'))).toBe(false)
+    expect(messages.some((message) => message.includes('已启用下载加速，优先使用官方源'))).toBe(false)
   })
 
   it.runIf(process.platform !== 'win32')('installs as before when acquiring the route throws', async () => {

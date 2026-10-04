@@ -154,6 +154,7 @@ node scripts/probe-acceleration-nodes.cjs --config 'C:\运营配置\shared-upstr
 - 主进程用独立的内存分区 session（`xingmang-download-acceleration`）承载下载流量并给它设回环代理，默认 session 不动；npm 子进程拿到的仍然只可能是回环代理（约束见 `electron/download-proxy.ts`）。
 - 线路起来了就把安装源顺序归约成 official-first（同时跳过区域探测）；用户在设置里钉死的 `mirrorPolicy` 优先级更高。
 - 用户自己正在加速时什么都不做；下载期间用户点「连接」会接管同一个内核（同线路不重起），会话停止时若仍有下载持有内核则保留内核。
+- 用户自己开着加速时，下载靠跟着系统代理走上线路，所以照样算加速；星芒这次运行已经整个改成直连时（系统代理指着一个关掉的代理软件，见 `electron/proxy-bypass.ts`）跟不上系统代理，这时不算加速，安装源照区域探测排（`downloadsFollowSystemProxy`，2026-10-04）。
 - 起不来、超时（预算 12 秒）、端口非法一律退化成「没加速」，安装照常进行。
 - 下载时长不计入免费的 20 分钟（`downloadRouteBillsFreeAllowance`），但额度仍是门槛：用完的账号不再起临时线路。
 - 已知行为：内核在下载途中意外退出时，这次下载会失败而不是自动回退成直连。
