@@ -1650,7 +1650,8 @@ if (!hasSingleInstanceLock) {
       downloadReceivedAt: () => updateRequests?.lastReceivedAt() ?? null,
       abortDownloadRequests: (reason) => {
         const aborted = updateRequests?.abortAll(reason) ?? 0
-        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted })
+        // 检查挂住和下载停住都从这里掐，reason 分得清是哪个看门狗（UpdateCheckAborted / UpdateDownloadAborted）。
+        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted, reason: reason.name })
       },
       downloadStalled: (stall) => {
         runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
