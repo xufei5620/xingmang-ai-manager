@@ -18,6 +18,13 @@ declare global {
     // 支付回调只发一次：订阅次数是 R-B6 的直接观测点，重订一次就是一次丢单窗口。
     paymentTerminalSubscriptions: () => { added: number; live: number }
     rerenderFixture: () => void
+    // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
+    failNextRead: (read: 'profile' | 'subscriptions') => void
+    // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
+    profileReadHarness: {
+      deferNext(): void
+      release(): void
+    }
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
@@ -45,6 +52,17 @@ const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
   document.documentElement.dataset.calls = JSON.stringify(calls)
+}
+const failOnce = new Set<string>()
+window.failNextRead = (read) => { failOnce.add(read) }
+function failingOnce(read: string) {
+  return failOnce.delete(read)
+}
+let deferNextProfileRead = false
+let releaseProfileRead: (() => void) | null = null
+window.profileReadHarness = {
+  deferNext() { deferNextProfileRead = true },
+  release() { releaseProfileRead?.(); releaseProfileRead = null },
 }
 // Chromium rejects clipboard writes unless the context was granted the
 // permission, so record them instead: the copy actions are what the tests
@@ -396,7 +414,21 @@ const apiMethods = {
       usedQuota: 100,
     },
   }),
-  getAccountProfile: async () => { record('get-profile'); return { ...profile, userId: activeUserId } },
+  getAccountProfile: async () => {
+    record('get-profile')
+    if (fail === 'profile' || failingOnce('profile')) throw new Error('账号资料服务暂时不可用')
+    const read = { ...profile, userId: activeUserId }
+    if (deferNextProfileRead) {
+      deferNextProfileRead = false
+      await new Promise<void>((resolve) => { releaseProfileRead = resolve })
+    }
+    return read
+  },
+  updateAccountDisplayName: async (input: { displayName: string }) => {
+    record('update-display-name', input)
+    profile.displayName = input.displayName
+    return { updated: true as const }
+  },
   getAccountBalance: async () => { record('get-balance'); return { ...balance, ...(query.has('sub2apiReliability') ? { quotaPerUnit: 1 } : {}) } },
   listSavedAccounts: async () => [
     {
@@ -495,7 +527,8 @@ const apiMethods = {
     if (state === 'deferred') await new Promise<void>((resolve) => { releaseKeyGroups = resolve })
     return groups
   },
-  getAccountDashboard: async () => {
+  getAccountDashboard: async (input: { startTimestamp?: number; endTimestamp?: number }) => {
+    record('get-dashboard', input)
     if (fail === 'dashboard') throw new Error('用量服务暂时不可用')
     return {
     startTimestamp: 1,
@@ -509,6 +542,7 @@ const apiMethods = {
     ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
   } },
   getAccountTasks: async () => {
+    if (fail === 'tasks') throw new Error('任务服务暂时不可用')
     const completed = ++taskReads > 1
     return {
       page: 1,
@@ -553,6 +587,7 @@ const apiMethods = {
     input: Parameters<V2Bridge['getAccountTopupOrders']>[0],
   ) => {
     record('query-orders', input)
+    if (fail === 'orders') throw new Error('订单服务暂时不可用')
     return {
       page: 1,
       pageSize: 20,
@@ -572,7 +607,10 @@ const apiMethods = {
       ],
     }
   },
-  getAccountTopupInfo: async () => ({
+  getAccountTopupInfo: async () => {
+    record('get-topup-info')
+    if (fail === 'topup') throw new Error('充值服务暂时不可用')
+    return {
     onlineTopupEnabled: true,
     stripeTopupEnabled: true,
     creemTopupEnabled: false,
@@ -580,7 +618,8 @@ const apiMethods = {
     redemptionEnabled: true,
     paymentComplianceConfirmed: true,
     paymentComplianceTermsVersion: '1',
-    paymentMethods: query.has('multiPayment')
+    // noPayment：后台一个支付渠道都没开，只能用充值码兑换。
+    paymentMethods: query.has('noPayment') ? [] : query.has('multiPayment')
       ? [
           {
             name: 'Stripe',
@@ -613,7 +652,7 @@ const apiMethods = {
     amountOptions: [10, 20],
     discounts: fixtureTopupDiscounts(),
     topupLink: null,
-  }),
+  } },
   quoteAccountTopupAmount: async (
     input: Parameters<V2Bridge['quoteAccountTopupAmount']>[0],
   ) => ({
@@ -671,7 +710,7 @@ const apiMethods = {
   },
   getAccountSubscriptionSelf: async () => {
     record('get-subscriptions')
-    if (fail === 'subscriptions') throw new Error('订阅服务暂时不可用')
+    if (fail === 'subscriptions' || failingOnce('subscriptions')) throw new Error('订阅服务暂时不可用')
     if (query.has('sub2apiReliability')) return {
       billingPreference: null, activeSubscriptions: [], allSubscriptions: [{
         id: 4, planId: 1, groupName: '周期订阅', status: 'active', source: 'sub2api', amountTotal: null, amountUsed: null,
@@ -687,18 +726,34 @@ const apiMethods = {
     activeSubscriptions: [],
     allSubscriptions: [],
   } },
-  getAccountLoginSessions: async () => [
-    {
-      sid: 'device-1',
-      current: true,
-      loginMethod: 'password',
-      ip: '127.0.0.1',
-      userAgent: 'Test browser',
-      createdAt: time,
-      lastActiveAt: time,
-      expiresAt: time,
-    },
-  ],
+  getAccountLoginSessions: async () => {
+    if (fail === 'devices') throw new Error('设备服务暂时不可用')
+    return [
+      {
+        sid: 'device-1',
+        current: true,
+        loginMethod: 'password',
+        ip: '127.0.0.1',
+        userAgent: 'Test browser',
+        createdAt: time,
+        lastActiveAt: time,
+        expiresAt: time,
+      },
+      // otherDevice：同一个账号还在另一台电脑上登着。
+      ...(query.has('otherDevice')
+        ? [{
+            sid: 'device-2',
+            current: false,
+            loginMethod: 'password',
+            ip: '10.0.0.2',
+            userAgent: 'Other browser',
+            createdAt: time,
+            lastActiveAt: time,
+            expiresAt: time,
+          }]
+        : []),
+    ]
+  },
   listAccountKeyModels: async () => ['test-model'],
   copyAccountKey: async (id: number) => record('copy-key', id),
   createAccountKey: async (
@@ -1171,6 +1226,7 @@ const renderFixture = (paymentReturn?: {
           navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
           switchAccount={() => record('open-account-switcher')}
+          openHelp={query.has('help') ? () => record('open-help') : undefined}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}

@@ -254,6 +254,20 @@ export function useResource<T>(load: () => Promise<T>) {
   return { data, setData, loading, error, detail, reload }
 }
 /**
+ * 页头只留一颗「刷新」（个人中心）：点名到这一块时重读它自己的数据。request 每点一次加一，
+ * 0 = 没点过，或者点的时候停在别的分页。
+ */
+export function useRefreshRequest(request: number | undefined, reload: () => void) {
+  const seen = useRef(request ?? 0)
+  const latest = useRef(reload)
+  useEffect(() => { latest.current = reload })
+  useEffect(() => {
+    if (!request || request === seen.current) return
+    seen.current = request
+    latest.current()
+  }, [request])
+}
+/**
  * 导出类操作成功后，除了那句话还要带上写出的文件，好让提示条给一颗「打开所在
  * 位置」。路径只拿来回传给主进程，主进程只认它自己刚写过的文件。
  */
@@ -372,6 +386,24 @@ function RevealExportedFile({
     </>
   )
 }
+/**
+ * 失败的原因那一段，页顶红框和页面正中「…暂时没有读到」共用。
+ * A raw npm/OS failure is unreadable on its own; when the catalog can name it,
+ * its wording leads and the backend sentence stays underneath, because support
+ * still needs the original text.
+ */
+export function FailureReason({ error, detail }: { error: string; detail?: string }) {
+  const hint = presentOperationFailure({ message: error, detail })
+  return hint ? (
+    <>
+      <strong>{hint.title}</strong>
+      {hint.body ? `，${hint.body}` : ''}
+      <em className="v2-business-notice-detail">{error}</em>
+    </>
+  ) : (
+    <>{error}</>
+  )
+}
 /** 页顶红框领头的那句：目录认得出时是它的标题（比如「写不进安装目录」），认不出就是原话。行上说原因时用同一句。 */
 export function resultNoticeLead(error: string, detail?: string): string {
   return presentOperationFailure({ message: error, detail })?.title ?? error
@@ -399,23 +431,12 @@ export function ResultNotice({
   /** 读取失败时红条右边那颗重试按钮（比如设置页的「重新读取」）；缺省 = 没有。 */
   retry?: { label: string; onClick: () => void }
 }) {
-  // A raw npm/OS failure reaching this banner is unreadable on its own; when
-  // the catalog can name it, its wording leads and the backend sentence stays
-  // underneath, because support still needs the original text.
   const hint = error ? presentOperationFailure({ message: error, detail }) : null
   return error ? (
     <div className="v2-business-notice is-error" role="alert">
       <Pill tone="bad">未完成</Pill>
       <span>
-        {hint ? (
-          <>
-            <strong>{hint.title}</strong>
-            {hint.body ? `，${hint.body}` : ''}
-            <em className="v2-business-notice-detail">{error}</em>
-          </>
-        ) : (
-          error
-        )}
+        <FailureReason error={error} detail={detail} />
       </span>
       {onSupport && hint?.actions.some((action) => action.id === 'support') && (
         <Button size="sm" icon={HelpCircle} onClick={onSupport} testId="result-notice-support">
@@ -437,6 +458,49 @@ export function ResultNotice({
       )}
     </div>
   ) : null
+}
+/** 列表读不到时卡片里那一块：「…暂时没有读到」、原因和「重新加载」（各页列表同一个样子）。 */
+export function ListReadFailure({
+  page,
+  noun,
+  description,
+  retry,
+}: {
+  page: string
+  noun: string
+  description: ReactNode
+  retry: () => void
+}) {
+  return (
+    <Empty
+      testId={`${page}-error`}
+      icon={XCircle}
+      title={`${noun}暂时没有读到`}
+      description={description}
+      action={
+        <Button
+          size="sm"
+          icon={RefreshCw}
+          onClick={retry}
+          testId={`${page}-retry`}
+        >
+          重新加载
+        </Button>
+      }
+    />
+  )
+}
+/** 读取中的灰色占位条：先占住数字、那句话的位置，读到了换成字，读屏念「正在读取」。 */
+export function PlaceholderBar({ width, testId }: { width?: string; testId?: string }) {
+  return (
+    <span
+      className="v2-business-placeholder"
+      role="status"
+      aria-label="正在读取"
+      style={width ? { width } : undefined}
+      data-testid={testId}
+    />
+  )
 }
 export function ListState({
   page,
@@ -487,22 +551,7 @@ export function ListState({
   if (error)
     return (
       <>
-        <Empty
-          testId={`${page}-error`}
-          icon={XCircle}
-          title={`${noun}暂时没有读到`}
-          description={errorDescription ?? error}
-          action={
-            <Button
-              size="sm"
-              icon={RefreshCw}
-              onClick={retry}
-              testId={`${page}-retry`}
-            >
-              重新加载
-            </Button>
-          }
-        />
+        <ListReadFailure page={page} noun={noun} description={errorDescription ?? error} retry={retry} />
         {count > 0 && children}
       </>
     )

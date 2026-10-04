@@ -18,18 +18,31 @@ export const updatesTutorialTopic = 'safety'
 /** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
 export const cliTutorialTopic = 'cli'
 // keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
-// 界面上不显示。
+// 界面上不显示。次序就是个人中心左边子导航从上到下的次序（分组见 accountTabGroups）。
 export const accountTabs = [
   { value: 'overview', label: '我的账号', keywords: ['账号', '资料', '邮箱', '密码', '改密码', '修改密码'] },
-  { value: 'dashboard', label: '用量看板', keywords: ['用量', '统计', '消耗', '花了多少'] },
-  { value: 'keys', label: '密钥', keywords: ['Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
-  { value: 'usage', label: '调用明细', keywords: ['明细', '扣费', '消费', '扣了多少', '花费'] },
-  { value: 'tasks', label: '异步任务', keywords: ['任务', '生成进度'] },
   { value: 'recharge', label: '充值与订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换', '兑换码', '充值码', '扣费偏好', '先扣'] },
   { value: 'orders', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'] },
   { value: 'invite', label: '邀请返利', keywords: ['邀请', '返利', '推广', '分享'] },
+  { value: 'dashboard', label: '用量看板', keywords: ['用量', '统计', '消耗', '花了多少'] },
+  { value: 'usage', label: '调用明细', keywords: ['明细', '扣费', '消费', '扣了多少', '花费'] },
+  { value: 'tasks', label: '异步任务', keywords: ['任务', '生成进度'] },
+  { value: 'keys', label: '密钥', keywords: ['Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
   { value: 'devices', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'] },
 ] as const
+export type AccountTabValue = (typeof accountTabs)[number]['value']
+/** 个人中心左边子导航分的三组，每组上面一行小灰字组名；每个分页只在一组里出现一次（registry 测试钉着）。 */
+export const accountTabGroups: ReadonlyArray<{ label: string; tabs: readonly AccountTabValue[] }> = [
+  { label: '账号与充值', tabs: ['overview', 'recharge', 'orders', 'invite'] },
+  { label: '用量', tabs: ['dashboard', 'usage', 'tasks'] },
+  { label: '密钥与设备', tabs: ['keys', 'devices'] },
+]
+/**
+ * 个人中心页头「切换账号」那颗按钮：顶部搜索搜「切换账号」时，个人中心那一条落到这里，
+ * 不换分页。和设置里「切换账号」那一行同名，各在各的页上找。
+ */
+export const accountSwitchAnchor = 'switch-account'
+export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
 export const settingsGroups = [
   { value: 'appearance', label: '外观', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
   { value: 'startup', label: '启动与关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },
@@ -366,7 +379,7 @@ export const settingsItems: readonly SettingsItem[] = [
     ...(option.value === 'acceleration' ? { when: 'acceleration' as const } : {}),
   })),
   { id: 'current-account', group: 'account', label: '当前账号', keywords: [] },
-  { id: 'switch-account', group: 'account', label: '切换账号', keywords: ['换账号', '切账号', '换号'] },
+  { id: 'switch-account', group: 'account', label: '切换账号', keywords: accountSwitchKeywords },
   { id: 'remember-password', group: 'account', label: '记住密码', keywords: [] },
   { id: 'logout', group: 'account', label: '退出登录', keywords: ['登出', '注销'], when: 'signedIn' },
   { id: 'transfer', group: 'privacy', label: '搬到新电脑', keywords: ['导出', '导入', '换电脑', '新电脑', '迁移', '聊天记录'] },

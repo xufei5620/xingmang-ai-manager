@@ -6,17 +6,16 @@ describe('describeTopupTier', () => {
     expect(describeTopupTier({ amount: 110, quote: 100, discounts: { 110: 100 / 110 }, provider: 'epay' })).toEqual({
       credited: '$110',
       paid: '¥100.00',
+      quoting: false,
       bonus: '送 10%',
-      hasBonus: true,
       label: '到账 $110，实付 ¥100.00，送 10%',
     })
   })
 
-  it('says there is no bonus when the account has no discount for the tier', () => {
+  it('writes nothing about a bonus when the account has no discount for the tier', () => {
     const tier = describeTopupTier({ amount: 50, quote: 365, discounts: {}, provider: 'epay' })
-    expect(tier.bonus).toBe('无赠送')
-    expect(tier.hasBonus).toBe(false)
-    expect(tier.label).toBe('到账 $50，实付 ¥365.00，无赠送')
+    expect(tier.bonus).toBeNull()
+    expect(tier.label).toBe('到账 $50，实付 ¥365.00')
   })
 
   it('leaves the currency symbol off for channels that settle in their own currency', () => {
@@ -24,15 +23,29 @@ describe('describeTopupTier', () => {
     expect(payableSymbol(undefined)).toBe('')
   })
 
-  it('shows a pending paid amount while the quote is on its way', () => {
-    expect(describeTopupTier({ amount: 10, quote: 'loading', discounts: undefined, provider: 'epay' }).paid).toBe('正在计算')
-    expect(describeTopupTier({ amount: 10, quote: undefined, discounts: undefined, provider: 'epay' }).paid).toBe('正在计算')
+  it('marks the paid amount as still being worked out, without words, while the quote is on its way', () => {
+    for (const quote of ['loading', undefined] as const) {
+      const tier = describeTopupTier({ amount: 10, quote, discounts: undefined, provider: 'epay' })
+      expect(tier.paid).toBeNull()
+      expect(tier.quoting).toBe(true)
+      expect(tier.label).toBe('到账 $10')
+    }
   })
 
   it('drops the paid amount instead of showing an error when the quote fails', () => {
     const tier = describeTopupTier({ amount: 240, quote: 'failed', discounts: { 240: 200 / 240 }, provider: 'epay' })
     expect(tier.paid).toBeNull()
+    expect(tier.quoting).toBe(false)
     expect(tier.label).toBe('到账 $240，送 20%')
+  })
+
+  it('leaves the paid amount out when it cannot be worked out right now', () => {
+    expect(describeTopupTier({ amount: 10, quote: 'unavailable', discounts: undefined, provider: 'epay' })).toMatchObject({
+      paid: null,
+      quoting: false,
+      bonus: null,
+      label: '到账 $10',
+    })
   })
 })
 
@@ -50,8 +63,7 @@ describe('describeTopupTier for accounts whose tiers are the amount paid', () =>
   it('shows no bonus when the multiplier is one', () => {
     expect(describeTopupTier({ amount: 10, quote: 10, discounts: {}, provider: 'epay', creditMultiplier: 1 })).toMatchObject({
       credited: '$10',
-      bonus: '无赠送',
-      hasBonus: false,
+      bonus: null,
     })
   })
 })
