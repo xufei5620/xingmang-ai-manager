@@ -575,6 +575,31 @@ describe('window close coordination', () => {
     lifecycle.dispose()
   })
 
+  it('keeps the answer to a quit confirmation after a power-off that never became a quit, without installing', async () => {
+    const installDownloadedUpdate = vi.fn()
+    const kept = deferred<QuitConfirmation>()
+    const first = fixture({ readPreference: () => 'quit', confirmQuit: () => kept.promise, installDownloadedUpdate })
+    const cancelled = first.lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    first.lifecycle.noteSystemPowerOff()
+    kept.resolve('cancel')
+    expect(await cancelled).toBe('cancelled')
+    expect(first.options.quit).not.toHaveBeenCalled()
+    expect(first.options.show).toHaveBeenCalledOnce()
+    first.lifecycle.dispose()
+
+    const install = deferred<QuitConfirmation>()
+    const second = fixture({ readPreference: () => 'quit', confirmQuit: () => install.promise, installDownloadedUpdate })
+    const quit = second.lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    second.lifecycle.noteSystemPowerOff()
+    install.resolve('install-update')
+    expect(await quit).toBe('quit-requested')
+    expect(installDownloadedUpdate).not.toHaveBeenCalled()
+    expect(second.options.quit).toHaveBeenCalledOnce()
+    second.lifecycle.dispose()
+  })
+
   it('confirms and installs as usual once a power-off that never became a quit has passed', async () => {
     const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update')
     const installDownloadedUpdate = vi.fn()

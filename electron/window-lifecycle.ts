@@ -237,8 +237,10 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       return performQuit()
     }
     if (disposed) return 'cancelled'
-    // 关机途中不要再去拉起安装器：系统随时会强杀这个进程，装一半更糟。
-    if (systemShuttingDown()) return performQuit()
+    // 关机途中不要再去拉起安装器：系统随时会强杀这个进程，装一半更糟。Mac 的关机通知
+    // 之后用户自己答的照样算数（系统真来让程序退出时框已经按「退出」答了），只是不再
+    // 拉起安装器（见 runQuit）。
+    if (systemShutdown) return performQuit()
     if (confirmation === 'cancel') return cancelled()
     return performQuit(confirmation === 'install-update')
   }
