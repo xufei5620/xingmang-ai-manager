@@ -57,7 +57,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure, undoQuitInstallAttempt, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -1568,6 +1568,8 @@ if (!hasSingleInstanceLock) {
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
+    // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
+    let quitInstallAttempt: QuitInstallAttempt | null = null
     let previousAutoInstallFailureReported = false
     // Linux 只有 .deb 装的能自动更新，装这一步交给系统安装程序（linux-deb-update.ts）。
     const updateInstallMethod = process.platform === 'linux'
@@ -3114,7 +3116,8 @@ if (!hasSingleInstanceLock) {
           }
           // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
           // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
-          // 记在交给安装器前的最后一刻：等通知那一下系统开始关机的话，这条记录会让下次打开不再自动装。
+          // 记在等完通知之后：等的那一下系统开始关机的话，这条记录会让下次打开不再自动装。
+          quitInstallAttempt = { version, previous: pendingUpdateRecord.quitAttemptedVersion ?? null }
           pendingUpdateRecord = { ...pendingUpdateRecord, quitAttemptedVersion: version }
           await pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
             runtimeLog.exception('updater', 'pending.record-failed', cause)
@@ -3191,6 +3194,16 @@ if (!hasSingleInstanceLock) {
       const onPowerOff = () => {
         runtimeLog.log('info', 'window', 'shutdown.power-off', '系统要关机、重启或注销')
         lifecycle.noteSystemPowerOff()
+        // 刚退出、自动装已经记下「试过了」，安装器还没装完（装完它会自己结束进程）：关机会把
+        // 它一起结束。撤回这条记录，下次打开照常自动装；没来得及写成，就和以前一样提示上次没装上。
+        const undone = undoQuitInstallAttempt(pendingUpdateRecord, quitInstallAttempt)
+        quitInstallAttempt = null
+        if (!undone) return
+        pendingUpdateRecord = undone
+        runtimeLog.log('info', 'updater', 'install.quit-interrupted', '关机打断了退出时的安装，下次打开再装')
+        void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+          runtimeLog.exception('updater', 'pending.record-failed', cause)
+        })
       }
       powerMonitor.on('shutdown', onPowerOff)
       app.once('will-quit', () => { powerMonitor.off('shutdown', onPowerOff) })

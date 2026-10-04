@@ -129,6 +129,22 @@ export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 
   return input.record.quitAttemptedVersion === version ? 'ask' : 'install'
 }
 
+/** 这次退出时自动装写下的「试过了」，连同写之前记录里的值，撤回时要用。 */
+export interface QuitInstallAttempt {
+  version: string
+  previous: string | null
+}
+
+/**
+ * 退出时自动装已经记下「试过了」，可系统关机抢在安装器装完之前（Mac 的安装器在本进程里
+ * 准备，会被一起结束）：撤回那条记录，下次打开照常自动装，不说「上次没装上」。记录已经
+ * 不是这次写的样子时不动，返回 null。
+ */
+export function undoQuitInstallAttempt(record: PendingUpdateRecord, attempt: QuitInstallAttempt | null): PendingUpdateRecord | null {
+  if (!attempt || record.quitAttemptedVersion !== attempt.version) return null
+  return { ...record, quitAttemptedVersion: attempt.previous }
+}
+
 /**
  * 上次运行时自动装过、这次打开还是旧版本、同一个版本又摆在那儿等着装：说明上次没装上
  * （授权窗被点了「否」、安装器没起来）。返回那个版本；不是这种情况返回 null。
