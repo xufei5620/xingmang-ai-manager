@@ -1239,6 +1239,9 @@ if (!hasSingleInstanceLock) {
         : Promise.resolve({ status: 'unavailable' as const }),
       stopRoute: async (scope) => { await accelerationDownloadRoutes?.stopDownloadRoute(scope) },
       onRouteChanged: applyAcceleratedDownloadProxy,
+      // 没有临时线路时，下载和给 npm 的代理都按默认会话走（见下面的 downloadFetch 和
+      // resolveSubprocessProxyEnvironment）：整个改了直连，它就不再跟着系统代理。
+      downloadsFollowSystemProxy: () => !proxyBypass.active(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // 托盘与自动连接共用这一条：把用户在加速页上选过并落了盘的线路与模式，落到

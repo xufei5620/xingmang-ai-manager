@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createDownloadAccelerationCoordinator,
@@ -18,6 +20,7 @@ function setup(options: {
   accountScope?: string | null
   timeoutMs?: number
   onRouteChanged?: (endpoint: unknown) => Promise<void>
+  followsSystemProxy?: () => boolean
 } = {}) {
   const startRoute = vi.fn(options.start ?? (async () => ({ status: 'ready', port: 7890 }) as const))
   const stopRoute = vi.fn(async () => {})
@@ -29,6 +32,7 @@ function setup(options: {
     stopRoute,
     onRouteChanged: options.onRouteChanged ?? (async (endpoint) => { routes.push(endpoint) }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.followsSystemProxy === undefined ? {} : { downloadsFollowSystemProxy: options.followsSystemProxy }),
     log,
   })
   return { coordinator, startRoute, stopRoute, routes, log }
@@ -94,6 +98,58 @@ describe('download acceleration coordinator', () => {
     await lease.release()
     expect(stopRoute).not.toHaveBeenCalled()
     expect(routes).toEqual([])
+  })
+
+  it('does not count a user-started acceleration while this run connects directly', async () => {
+    const { coordinator, stopRoute, routes, log } = setup({
+      start: async () => ({ status: 'system-proxy-active' }),
+      followsSystemProxy: () => false,
+    })
+    const lease = await coordinator.acquire()
+    // 系统代理指着加速，可下载走的默认会话已经整个改了直连：其实没加速，安装源得照地区排。
+    expect(lease.accelerated).toBe(false)
+    expect(lease.endpoint).toBeNull()
+    expect(coordinator.currentEndpoint()).toBeNull()
+    expect(log).toHaveBeenCalledWith('info', 'acceleration.download.direct', expect.any(String), undefined)
+    await lease.release()
+    expect(stopRoute).not.toHaveBeenCalled()
+    expect(routes).toEqual([])
+  })
+
+  it('stops counting a shared user-started acceleration once this run connects directly', async () => {
+    let follows = true
+    const { coordinator, startRoute, stopRoute } = setup({
+      start: async () => ({ status: 'system-proxy-active' }),
+      followsSystemProxy: () => follows,
+    })
+    const first = await coordinator.acquire()
+    expect(first.accelerated).toBe(true)
+    // 第一份还握着时用户停了加速，系统代理改回那个关掉的代理，星芒随后整个改了直连。
+    follows = false
+    const second = await coordinator.acquire()
+    expect(second.accelerated).toBe(false)
+    expect(startRoute).toHaveBeenCalledTimes(1)
+    await second.release()
+    await first.release()
+    expect(stopRoute).not.toHaveBeenCalled()
+    expect(coordinator.currentEndpoint()).toBeNull()
+  })
+
+  it('keeps its own route while this run connects directly', async () => {
+    const { coordinator, stopRoute, routes } = setup({ followsSystemProxy: () => false })
+    const lease = await coordinator.acquire()
+    // 临时线路是给下载专用会话明着设的代理，不看系统代理，改了直连也照样走得上。
+    expect(lease.accelerated).toBe(true)
+    expect(lease.endpoint).toEqual({ scheme: 'http', host: '127.0.0.1', port: 7890 })
+    expect(routes).toEqual([{ scheme: 'http', host: '127.0.0.1', port: 7890 }])
+    await lease.release()
+    expect(stopRoute).toHaveBeenCalledTimes(1)
+  })
+
+  it('is told by main.ts when this run has switched to connecting directly', () => {
+    // 接线一断，上面这几条就形同虚设：改了直连以后照样说已经加速。
+    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    expect(main).toContain('downloadsFollowSystemProxy: () => !proxyBypass.active(),')
   })
 
   it('falls back to no acceleration when the route is unavailable', async () => {
