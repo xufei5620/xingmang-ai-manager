@@ -705,6 +705,7 @@ export function CuratedShelf({
 export function SessionsPage({
   api,
   onSessionsChanged,
+  onOpenTools,
 }: {
   api: V2Bridge
   /**
@@ -712,6 +713,8 @@ export function SessionsPage({
    * 省略 = 不通知（旧行为）。
    */
   onSessionsChanged?: () => void
+  /** 一条记录都没有时「去打开工具」：回首页「你的工具」。省略 = 不放这颗按钮。 */
+  onOpenTools?: () => void
 }) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -736,12 +739,13 @@ export function SessionsPage({
   )
   const operation = useOperation()
   const [selected, setSelected] = useState<Session | null>(null)
+  // 只有摘要的记录原文已经不在这台电脑上，不去读；详情里照样看工具、文件夹和模型。
   const detailLoad = useCallback(
     () =>
-      selected
+      selected?.detailAvailable
         ? api.getProviderSessionDetail(selected.id)
         : Promise.resolve(null),
-    [api, selected?.id],
+    [api, selected?.id, selected?.detailAvailable],
   )
   const detailResource = useResource(detailLoad)
   const detail = detailResource.data
@@ -913,15 +917,25 @@ export function SessionsPage({
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
+          action={
+            onOpenTools && (
+              <Button size="sm" onClick={onOpenTools} testId="sessions-empty-open-tools">
+                去打开工具
+              </Button>
+            )
+          }
         >
           {resource.data?.items.map((session) => {
             // 文件夹被删掉或搬走之后,CLI 按目录找回对话这条路就断了。按钮留在
             // 原位但按不动,旁边说一句为什么——把它藏起来的话,用户只会觉得
             // 「昨天还有的按钮今天没了」。
             const missingWorkspace = session.cwdExists === false
+            const canResume = resumable.has(session.id) && !session.archived
             return (
               <ListRow
                 key={session.id}
+                onOpen={() => view(session)}
+                openTestId={`sessions-view-${session.id}`}
                 title={
                   <>
                     <BrandIcon tool={session.provider} size={24} />
@@ -949,7 +963,7 @@ export function SessionsPage({
                 }
                 actions={
                   <>
-                    {resumable.has(session.id) && !session.archived && (
+                    {canResume ? (
                       <Button
                         size="sm"
                         icon={Play}
@@ -964,6 +978,13 @@ export function SessionsPage({
                       >
                         接着聊
                       </Button>
+                    ) : (
+                      // 没有「接着聊」的行也占着这一格，后面的按钮和左边的信息上下对齐。
+                      <span className="v2-row-action-placeholder" aria-hidden="true">
+                        <Button size="sm" icon={Play} tabIndex={-1}>
+                          接着聊
+                        </Button>
+                      </span>
                     )}
                     {Boolean(session.cwd) && (
                       <Button
@@ -982,20 +1003,6 @@ export function SessionsPage({
                         打开文件夹
                       </Button>
                     )}
-                    <Button
-                      size="sm"
-                      icon={History}
-                      disabled={!session.detailAvailable}
-                      onClick={() => view(session)}
-                      title={
-                        session.detailAvailable
-                          ? undefined
-                          : '这条记录只有摘要，对话原文已经不在这台电脑上了，看不了全文'
-                      }
-                      testId={`sessions-view-${session.id}`}
-                    >
-                      查看记录
-                    </Button>
                   </>
                 }
                 testId={`sessions-row-${session.id}`}
@@ -1020,10 +1027,30 @@ export function SessionsPage({
         testId="session-detail-drawer"
         footer={
           <>
+            {selected && resumable.has(selected.id) && !selected.archived && (
+              <Button
+                variant="primary"
+                icon={Play}
+                disabled={
+                  Boolean(operation.busy) || selected.cwdExists === false
+                }
+                onClick={() => resume(selected)}
+                title={
+                  selected.cwdExists === false
+                    ? '这条记录的文件夹已经不在了，接不上上次的对话'
+                    : '接着这个文件夹里最近一次对话'
+                }
+                testId="session-detail-resume"
+              >
+                接着聊
+              </Button>
+            )}
             <Button
               icon={Download}
+              title="导出成 Markdown 文件"
               disabled={
                 !capability?.operations.exportMarkdown ||
+                !selected?.detailAvailable ||
                 Boolean(operation.busy)
               }
               onClick={() =>
@@ -1040,26 +1067,10 @@ export function SessionsPage({
                       : null,
                 )
               }
+              testId="session-detail-export"
             >
-              导出 Markdown
+              导出
             </Button>
-            {selected && resumable.has(selected.id) && !selected.archived && (
-              <Button
-                icon={Play}
-                disabled={
-                  Boolean(operation.busy) || selected.cwdExists === false
-                }
-                onClick={() => resume(selected)}
-                title={
-                  selected.cwdExists === false
-                    ? '这条记录的文件夹已经不在了，接不上上次的对话'
-                    : '接着这个文件夹里最近一次对话'
-                }
-                testId="session-detail-resume"
-              >
-                接着上次对话
-              </Button>
-            )}
             {capability?.operations[
               selected?.archived ? 'restore' : 'archive'
             ] && (
@@ -1068,7 +1079,7 @@ export function SessionsPage({
                 disabled={Boolean(operation.busy)}
                 onClick={archive}
               >
-                {selected?.archived ? '恢复记录' : '归档记录'}
+                {selected?.archived ? '恢复' : '归档'}
               </Button>
             )}
             {capability?.operations.delete && (
@@ -1098,6 +1109,11 @@ export function SessionsPage({
             <dt>模型</dt>
             <dd>{selected.model || '未记录'}</dd>
           </dl>
+        )}
+        {selected && !selected.detailAvailable && (
+          <p className="v2-transcript-missing" data-testid="session-detail-summary-only">
+            这条记录只有摘要，对话原文已经不在这台电脑上了
+          </p>
         )}
         <ResultNotice error={detailResource.error} detail={detailResource.detail} />
         {detailResource.error && (
@@ -1142,7 +1158,7 @@ export function SessionsPage({
             <p>
               会把这条对话从这台电脑上删掉，里面粘贴过的代码、密码和聊天内容会一起消失，删了就找不回来。
             </p>
-            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出 Markdown」。</p>
+            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出」。</p>
           </>
         }
         okLabel="彻底删除"

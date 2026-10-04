@@ -111,6 +111,18 @@
 .v2-usage-price-table tbody th small { display: block; margin-top: 6px; color: var(--text-2); font-weight: 400; }
 .v2-usage-price-table td { white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .v2-usage-price-table .is-matched { background: var(--ok-soft); }
+/* 只有摘要的记录：正文的位置说一句原文已经不在了。 */
+.v2-transcript-missing {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+/* 记录列表里没有「接着聊」的行：占着同样宽的一格，按钮和左边的信息上下对齐。 */
+.v2-row-action-placeholder {
+  display: inline-flex;
+  visibility: hidden;
+}
 .v2-transcript-message {
   border-top: 1px solid var(--line);
   padding: 16px 0;

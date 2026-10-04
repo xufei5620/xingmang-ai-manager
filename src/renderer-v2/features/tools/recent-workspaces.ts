@@ -106,7 +106,7 @@ export function isMissingWorkspace(cause: unknown): boolean {
 }
 
 /**
- * 「接着上次对话」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
+ * 「接着聊」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
  * 找最近一条,不按会话 id 挑。所以这颗按钮只能长在每个(工具 × 目录)组合里最近
  * 的那一条记录上,否则用户点第三条、接上的却是第一条。
  *

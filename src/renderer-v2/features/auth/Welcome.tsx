@@ -54,10 +54,10 @@ export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reduced
     <Starfield paused={paused} />
     <div className="auth-welcome-hero">
       <div className="auth-welcome-copy">
-        <div className="auth-welcome-brand"><Logo kind="horizontal" height={128} /></div>
+        {/* 标志加侧栏那份「星芒 AI」字样，横版标志下面那行英文名不放；字样比下面的大标题小一号。 */}
+        <div className="auth-welcome-brand"><Logo kind="symbol" height={64} /><Logo kind="wordmark" height={40} /></div>
         <h1>装好就能用的<br /><em>AI 编程工具</em></h1>
         <p className="auth-welcome-lead">一个账号，四家工具。环境、安装、Key 全都由这里帮你配好，不用敲命令，不用改配置文件。</p>
-        <div className="auth-welcome-brands">{providers.map((tool) => <span key={tool.id}><BrandIcon tool={tool.id} size={22} variant="xs" />{tool.name}</span>)}</div>
         <div className="auth-welcome-cta"><Button variant="primary" onClick={onLogin} testId="welcome-login">登录</Button><Button onClick={onRegister} testId="welcome-register">注册新账号</Button></div>
         <div className="auth-welcome-links"><Button variant="ghost" size="xs" onClick={onSteps} testId="welcome-steps">先看看使用步骤</Button>{!lowEnd && <Button variant="ghost" size="xs" onClick={() => onReducedMotionChange(!reducedMotion)} testId="welcome-motion">{reducedMotion ? '开启动画' : '减少动画'}</Button>}</div>
         <div className="auth-welcome-legal"><Button variant="ghost" size="xs" onClick={() => onLegal('user-agreement')} testId="welcome-terms">用户协议</Button><Button variant="ghost" size="xs" onClick={() => onLegal('privacy-policy')} testId="welcome-privacy">隐私政策</Button></div>
@@ -66,8 +66,8 @@ export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reduced
         <div className="auth-orbit-ellipses" aria-hidden="true"><i /><i /><i /><b /></div>
         <div className="auth-orbit-glow" aria-hidden="true" />
         <div className="auth-orbit-beam" aria-hidden="true" />
-        <div className="auth-orbit-ring auth-orbit-inner">{providers.slice(0, 2).map((tool, index) => <span className="auth-orbit-satellite" data-position={index} key={tool.id}><BrandIcon tool={tool.id} size={22} variant="xs" />{tool.name}</span>)}</div>
-        <div className="auth-orbit-ring auth-orbit-outer">{providers.slice(2).map((tool, index) => <span className="auth-orbit-satellite" data-position={index} key={tool.id}><BrandIcon tool={tool.id} size={22} variant="xs" />{tool.name}</span>)}</div>
+        {/* 四个工具在同一条轨道上等距、同向公转：原来分内外两圈反着转，转着转着会叠在一起。 */}
+        <div className="auth-orbit-ring">{providers.map((tool, index) => <span className="auth-orbit-satellite" data-position={index} key={tool.id}><BrandIcon tool={tool.id} size={22} variant="xs" />{tool.name}</span>)}</div>
         <div className="auth-orbit-core"><Logo kind="symbol" height={105} /></div>
         <div className="auth-orbit-hud"><span>{environmentLabel}</span><i><b /></i><span>{keyStatusLabel}</span></div>
       </div>

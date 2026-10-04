@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Home, lowBalanceText, type HomeProps } from './Home'
-import type { ToolboxSnapshot } from './model'
+import { describe, expect, it } from 'vitest'
+import { Home, lowBalanceText, pickFirstRunTool, type HomeProps } from './Home'
+import { presentTools, type ToolboxSnapshot } from './model'
+import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
@@ -191,49 +192,42 @@ describe('renderer-v2 home install cancellation', () => {
 })
 
 describe('renderer-v2 home first-run suggestion', () => {
-  afterEach(() => { vi.unstubAllGlobals() })
-
-  function dismissedStorage(value: string) {
-    return { localStorage: { getItem: () => value, setItem: () => undefined, removeItem: () => undefined } }
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const noRecords = new Set<ProviderId>()
+  function installedTools(clis: Record<string, unknown> = allTools, from = snapshot(clis)) {
+    return presentTools(from, null).filter((tool) => tool.status.installed)
   }
 
-  it('offers the first command and prompt once a tool is installed and connected', () => {
-    const markup = render({})
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).toContain('试试第一条命令')
-    expect(markup).toContain('data-testid="home-first-run-steps-command"')
-    expect(markup).toContain('>claude<')
-    expect(markup).toContain('data-testid="home-first-run-steps-copy-command"')
-    expect(markup).toContain('data-testid="home-first-run-steps-copy-prompt"')
-    expect(markup).toContain('data-testid="home-first-run-dismiss"')
+  // 记录还没读回来就先给卡，读完发现早就用过又收走，老用户会看到它一闪而过。
+  it('waits for the records before offering the card', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], null)).toBeUndefined()
+    expect(render({})).not.toContain('data-testid="home-first-run"')
+  })
+
+  it('offers the first command once a tool is installed and connected', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], noRecords)?.id).toBe('claude')
   })
 
   it('moves on to the next tool once its card has been closed', () => {
-    vi.stubGlobal('window', dismissedStorage('["claude"]'))
-    const markup = render({})
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).toContain('Codex CLI')
-    expect(markup).toContain('>codex<')
-    expect(markup).not.toContain('>claude<')
+    expect(pickFirstRunTool(installedTools(), {}, ['claude'], noRecords)?.id).toBe('codex')
   })
 
   it('stays gone once every tool has been closed', () => {
-    vi.stubGlobal('window', dismissedStorage('["claude","codex","gemini","grok"]'))
-    expect(render({})).not.toContain('data-testid="home-first-run"')
+    expect(pickFirstRunTool(installedTools(), {}, ['claude', 'codex', 'gemini', 'grok'], noRecords)).toBeUndefined()
   })
 
   // 还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
   it('waits until the tool is actually connected', () => {
-    const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus },
-      { snapshot: unreadableConfig(), failures: configFailure })
-    expect(markup).not.toContain('data-testid="home-first-run"')
+    expect(pickFirstRunTool(installedTools(allTools, unreadableConfig()), {}, [], noRecords)).toBeUndefined()
   })
 
   it('keeps the card off a tool that is still installing', () => {
-    const markup = render({ claude: { label: '正在安装', log: [] } })
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).not.toContain('>claude<')
-    expect(markup).toContain('>codex<')
+    expect(pickFirstRunTool(installedTools(), { claude: { label: '正在安装', log: [] } as unknown as ToolJob }, [], noRecords)?.id).toBe('codex')
+  })
+
+  // 「最近」里已经有它的记录，说明早就用起来了。
+  it('skips a tool that already shows up in the records', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], new Set<ProviderId>(['claude', 'codex']))?.id).toBe('grok')
   })
 })
 
@@ -585,7 +579,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: gitMissingOn('macos') })
     expect(markup).toContain('data-testid="home-runtime-git"')
     const hint = markup.slice(markup.indexOf('data-testid="home-runtime-git-hint"'))
-    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('苹果自己的安装窗口')
+    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('在苹果弹出的窗口里点“安装”')
     expect(markup).not.toMatch(/xcode-select|brew install git/)
   })
 
@@ -694,8 +688,9 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: failed })
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
     expect(markup).not.toContain('data-testid="home-runtime-node-managed"')
-    // 按钮照旧在，想重新准备一次还是能点。
-    expect(markup).toContain('准备 Node.js')
+    // 检测失败给「重新检测」：说不准装没装，不先劝人去装。
+    expect(markup).toContain('data-testid="home-runtime-rescan"')
+    expect(markup).not.toContain('data-testid="home-runtime-node"')
   })
 
   it('says nothing about installing runtimes once both are present', () => {
@@ -1178,7 +1173,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(node).toContain('可选 · 未装')
     expect(node).not.toContain('is-warn')
     expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
-    expect(markup).not.toContain('Claude Code 的一部分功能')
+    expect(markup).not.toContain('Claude Code 的部分功能')
     const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
     expect(elevation).toContain('is-quiet')
     expect(elevation).toContain(optionalElevation)
@@ -1196,7 +1191,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(node).not.toContain('可选')
     expect(node).toContain('is-warn')
     expect(markup).toContain('data-testid="home-runtime-git-hint"')
-    expect(markup).toContain('Claude Code 的一部分功能')
+    expect(markup).toContain('Claude Code 的部分功能')
     const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
     expect(elevation).not.toContain('is-quiet')
     expect(elevation).toContain(requiredElevation)
@@ -1251,5 +1246,34 @@ describe('Home balance card while a saved login is being restored', () => {
     expect(restoring).toContain('登录恢复后自动显示用量')
     expect(restoring).not.toContain('登录后查看用量')
     expect(render({})).toContain('登录后查看用量')
+  })
+})
+
+describe('Home sections and balance labels', () => {
+  function section(markup: string, testId: string): string {
+    const at = markup.indexOf(`data-testid="${testId}"`)
+    if (at < 0) return ''
+    return markup.slice(markup.lastIndexOf('<', at), markup.indexOf('</section>', at))
+  }
+
+  it('keeps a tool whose detection failed under 你的工具 and says how many were not detected', () => {
+    // 主进程探测失败时回的就是 installed:false + detectionFailed（buildToolStatusFromSettled）。
+    const failed = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null, detectionFailed: true, detectionError: '命令入口无法安全执行' }
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: failed })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
+    const yours = section(markup, 'home-your-tools')
+    expect(yours).toContain('data-testid="tool-row-gemini"')
+    expect(yours).toMatch(/\d+ 个已装 · \d+ 个已连接 · 1 个没检测出来/)
+    expect(section(markup, 'home-available')).not.toContain('data-testid="tool-row-gemini"')
+  })
+
+  it('says what the balance card is waiting for instead of claiming nothing was read', () => {
+    const account = { id: 7, username: 'peaker', displayName: 'peaker', group: 'default', quota: 0, usedQuota: 0, requestCount: 0 } as unknown as HomeProps['account']
+    const reading = render({}, undefined, { account })
+    expect(section(reading, 'home-balance')).toContain('—')
+    expect(reading).toContain('正在读取余额')
+    expect(reading).not.toContain('暂时没有读到')
+    expect(render({}, undefined, { accountRestoring: true })).toContain('正在恢复登录')
   })
 })
