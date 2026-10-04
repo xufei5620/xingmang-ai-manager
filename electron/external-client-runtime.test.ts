@@ -170,23 +170,29 @@ describe('external desktop client lifecycle', () => {
     expect(f.execute).toHaveBeenCalledTimes(2)
   })
 
-  it('cancels an install still waiting in the queue before it touches anything, and installs again afterwards', async () => {
+  it('cancels an install still waiting in the queue at once, before it touches anything, and installs again afterwards', async () => {
     const queue = new InstallationQueue()
     const blocker = deferred()
-    void queue.enqueue('existing-runtime-install', () => blocker.promise)
+    const ahead = queue.enqueue('existing-runtime-install', () => blocker.promise)
     const f = fixture({ installationQueue: queue })
     const progress: ExternalClientInstallProgress[] = []
     const install = f.runtime.install('opencode', (event) => progress.push(event))
+    const settled = install.then(() => 'installed', (cause: unknown) => cause)
     expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
     // 再点一次仍是同一个「取消中」。
     expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
-    blocker.resolve()
-    const error = await install.catch((cause: unknown) => cause)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    // 前面那项还没装完，排着队的这一项已经出队、结束了，不用等它。
+    const error = await Promise.race([settled, Promise.resolve('still waiting for the install ahead')])
     expect(isInstallCancelledError(error)).toBe(true)
     expect((error as Error).message).toBe('OpenCode 安装已取消')
+    expect(progress.map((event) => event.phase)).toEqual(['queued', 'error'])
     expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'OpenCode 安装已取消' })
+    expect(queue.snapshot()).toEqual({ activeKey: 'existing-runtime-install', pendingKeys: [] })
     expect(f.execute).not.toHaveBeenCalled()
     expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })
+    blocker.resolve()
+    await ahead
     f.setInventory([candidate('opencode')])
     await expect(f.runtime.install('opencode')).resolves.toMatchObject({ installed: true })
   })
