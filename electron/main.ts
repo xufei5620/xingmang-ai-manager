@@ -3097,17 +3097,28 @@ if (!hasSingleInstanceLock) {
         }
         const version = update.version
         const installMethod = updaterService.getState().installMethod
-        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod }) === 'install') {
+        // 上面等撤回名单的那几秒里系统可能已经开始关机：不装、不问，也不记「退出时试过了」。
+        const decision = decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod, systemShuttingDown: lifecycle.isSystemShuttingDown })
+        if (decision === 'later') {
+          runtimeLog.log('info', 'window', 'quit.update-later', `系统正在关机、重启或注销，这次不装 ${version ?? '新版本'}，下次打开再装`)
+          return 'quit'
+        }
+        if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform))
+          // 给系统一点时间把通知摆出来，再让安装器接手退出。
+          await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
+          if (lifecycle.isSystemShuttingDown) {
+            runtimeLog.log('info', 'window', 'quit.update-later', `系统正在关机、重启或注销，这次不装 ${version}，下次打开再装`)
+            return 'quit'
+          }
           // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
           // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
+          // 记在交给安装器前的最后一刻：等通知那一下系统开始关机的话，这条记录会让下次打开不再自动装。
           pendingUpdateRecord = { ...pendingUpdateRecord, quitAttemptedVersion: version }
           await pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
             runtimeLog.exception('updater', 'pending.record-failed', cause)
           })
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform))
-          // 给系统一点时间把通知摆出来，再让安装器接手退出。
-          await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           return 'install-update'
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
@@ -3173,10 +3184,14 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
-    // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：
-    // 退出时正在等安装器的，听到这一声就不等了。
+    // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：听到这一声，
+    // 接下来的退出和 Windows 关机一样不问、不装（下好的更新下次打开再装），开着的确认框和
+    // 正在等的安装器都不等了。Electron 只在系统发出关机通知时发它，Command + Q 不发。
     if (process.platform === 'darwin') {
-      const onPowerOff = () => { lifecycle.noteSystemPowerOff() }
+      const onPowerOff = () => {
+        runtimeLog.log('info', 'window', 'shutdown.power-off', '系统要关机、重启或注销')
+        lifecycle.noteSystemPowerOff()
+      }
       powerMonitor.on('shutdown', onPowerOff)
       app.once('will-quit', () => { powerMonitor.off('shutdown', onPowerOff) })
     }

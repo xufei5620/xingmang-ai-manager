@@ -132,6 +132,16 @@ describe('quit-time auto install', () => {
   it('does not retry at launch a version already tried on quit', () => {
     expect(decideLaunchInstall(input({ recordAtLaunch: { ...record, quitAttemptedVersion: '0.2.12' } }))).toBeNull()
   })
+
+  it('neither installs nor asks while the system shuts down, leaving the version for the next launch', () => {
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: false, version: '0.2.12', record, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: { ...record, quitAttemptedVersion: '0.2.12' }, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, systemShuttingDown: false })).toBe('install')
+    // Nothing was recorded on the way down, so the next launch installs it.
+    expect(decideLaunchInstall(input({ recordAtLaunch: record }))).toBe('0.2.12')
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', record)).toBeNull()
+  })
 })
 
 describe('resolvePreviousAutoInstallFailure', () => {

@@ -85,6 +85,11 @@ const updateHandoffBudgetMs = 20_000
 
 export interface WindowLifecycle {
   readonly isQuitting: boolean
+  /**
+   * 系统已经说过要关机 / 重启 / 注销（Windows 的 query-session-end / session-end，Mac 的
+   * noteSystemPowerOff）。confirmQuit 等过东西之后再看一眼：这时不该再记「退出时装过了」。
+   */
+  readonly isSystemShuttingDown: boolean
   requestClose(): Promise<WindowCloseResult>
   requestQuit(): Promise<WindowCloseResult>
   /**
@@ -96,8 +101,9 @@ export interface WindowLifecycle {
   /** 安装器没起来，程序照常开着：撤掉 prepareUpdateQuit 的放行。 */
   abortUpdateQuit(): void
   /**
-   * 系统要关机 / 重启 / 注销（Mac 的 powerMonitor 'shutdown'）。退出时正在等安装器
-   * 的话立刻不等了：拖住退出，系统会说本程序取消了关机。
+   * 系统要关机 / 重启 / 注销（Mac 的 powerMonitor 'shutdown'：只在系统发出关机通知时才有，
+   * Command + Q 不发）。之后的退出和 Windows 关机一样不问、不装；开着的询问框、确认框不等
+   * 回答直接退；退出时正在等安装器的也立刻不等了。拖住退出，系统会说本程序取消了关机。
    */
   noteSystemPowerOff(): void
   attach(window: WindowCloseSource, application: ApplicationQuitSource): () => void
@@ -114,6 +120,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
   let updateQuit = false
   let powerOff = false
   let endUpdateHandoff: (() => void) | null = null
+  let stopWaitingForAnswer: (() => void) | null = null
   const detachListeners = new Set<() => void>()
 
   const reportError = (error: unknown) => {
@@ -125,6 +132,22 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
   const cancelled = (): WindowCloseResult => {
     if (!disposed) show()
     return 'cancelled'
+  }
+  const systemShuttingDown = () => systemShutdown || powerOff
+  // Mac 关机时系统等着这个程序自己退出，开着的询问框、确认框不会有人回答：一听到关机就
+  // 不等了，按「退出」走。（Windows 到点直接结束进程，要收拾的由 quitForShutdown 并行做完。）
+  const answerUnlessPowerOff = async <T>(answer: T | Promise<T>, quit: T): Promise<T> => {
+    try {
+      return await Promise.race([
+        answer,
+        new Promise<T>((resolve) => {
+          stopWaitingForAnswer = () => resolve(quit)
+          if (powerOff) resolve(quit)
+        }),
+      ])
+    } finally {
+      stopWaitingForAnswer = null
+    }
   }
   const cleanup = async (action: () => Promise<void>, budgetMs = quitCleanupBudgetMs): Promise<void> => {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -194,11 +217,13 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     })
   }
   const confirmedQuit = async (): Promise<WindowCloseResult> => {
-    // Windows 关机 / 注销只给几秒钟，拦住它只会让系统强杀这个进程。
-    if (systemShutdown || !options.confirmQuit) return performQuit()
+    // 关机 / 重启 / 注销时不问也不装：Windows 只给几秒钟，拦住它只会让系统强杀这个进程；
+    // Mac 的确认框没人回答就拦住了关机，安装器在本进程里准备，也会被关机一起结束。
+    // 下好的更新留到下次打开再装。
+    if (systemShuttingDown() || !options.confirmQuit) return performQuit()
     let confirmation: QuitConfirmation
     try {
-      confirmation = await options.confirmQuit()
+      confirmation = await answerUnlessPowerOff(options.confirmQuit(), 'quit')
     } catch (error) {
       // 确认框自己坏了不能否决用户已经做出的退出选择。
       reportError(error)
@@ -206,7 +231,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     }
     if (disposed) return 'cancelled'
     // 关机途中不要再去拉起安装器：系统随时会强杀这个进程，装一半更糟。
-    if (systemShutdown) return performQuit()
+    if (systemShuttingDown()) return performQuit()
     if (confirmation === 'cancel') return cancelled()
     return performQuit(confirmation === 'install-update')
   }
@@ -214,7 +239,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     if (explicitQuit) return confirmedQuit()
     const preference = options.readPreference()
     if (preference === 'quit') return confirmedQuit()
-    const choice = preference === 'ask' ? await options.requestCloseDecision() : 'hide'
+    const choice = preference === 'ask' ? await answerUnlessPowerOff(options.requestCloseDecision(), 'quit') : 'hide'
     const { decision, remember = false } = typeof choice === 'string' ? { decision: choice } : choice
     if (disposed) return 'cancelled'
     const rememberChoice = remember && decision !== 'cancel' && options.rememberCloseBehavior
@@ -252,6 +277,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
 
   const lifecycle: WindowLifecycle = {
     get isQuitting() { return quitting },
+    get isSystemShuttingDown() { return systemShuttingDown() },
     requestClose: () => request(false),
     requestQuit: () => request(true),
     prepareUpdateQuit() {
@@ -270,6 +296,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     },
     noteSystemPowerOff() {
       powerOff = true
+      stopWaitingForAnswer?.()
       endUpdateHandoff?.()
     },
     attach(window, application) {
@@ -288,8 +315,8 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       // 收到 session-end 之后 Electron 立刻结束进程，before-quit 和
       // prepareToQuit 都不会跑。所以必须做完的清理（开着加速时还原系统代理）
       // 只能在问的这一下推迟关机、当场做完再退；没有要做的就不拦，关机照常。
-      // 两个事件都记下来，让后面的确认框直接放行。macOS 注销没有对应事件，
-      // 那边由系统自己的「有程序阻止注销」界面兜底。
+      // 两个事件都记下来，让后面的确认框直接放行。macOS 没有这两个事件，
+      // 关机 / 重启 / 注销由宿主听到 powerMonitor 'shutdown' 后调 noteSystemPowerOff。
       const onQuerySessionEnd: LifecycleListener = (event) => {
         systemShutdown = true
         if (quitting) return

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createWindowLifecycle, type QuitConfirmation, type WindowLifecycleOptions } from './window-lifecycle'
+import { createWindowLifecycle, type QuitConfirmation, type WindowCloseChoice, type WindowLifecycleOptions } from './window-lifecycle'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -470,18 +470,97 @@ describe('window close coordination', () => {
     expect(options.quit).toHaveBeenCalledOnce()
   })
 
-  it('does not start waiting for the installer once a Mac power-off was announced', async () => {
+  // macOS announces a shut down, restart or log out first, then asks the app
+  // to quit; the update stays downloaded for the next launch to install.
+  it('neither confirms nor starts the installer once a Mac power-off was announced', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update')
     const installDownloadedUpdate = vi.fn(() => new Promise<void>(() => {}))
-    const { options, lifecycle } = fixture({
-      readPreference: () => 'quit',
-      confirmQuit: async () => 'install-update' as const,
-      installDownloadedUpdate,
-    })
+    const { options, lifecycle } = fixture({ confirmQuit, installDownloadedUpdate })
+    lifecycle.attach(window, application)
     lifecycle.noteSystemPowerOff()
-    expect(await lifecycle.requestClose()).toBe('quit-requested')
-    expect(installDownloadedUpdate).toHaveBeenCalledOnce()
+    const beforeQuit = { preventDefault: vi.fn() }
+    application.emit('before-quit', beforeQuit)
+    expect(beforeQuit.preventDefault).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(confirmQuit).not.toHaveBeenCalled()
+    expect(installDownloadedUpdate).not.toHaveBeenCalled()
+    expect(options.requestCloseDecision).not.toHaveBeenCalled()
     expect(options.hide).not.toHaveBeenCalled()
     expect(options.quit).toHaveBeenCalledOnce()
+    lifecycle.dispose()
+  })
+
+  it('still confirms and waits for the installer on an ordinary Mac quit', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const handoff = deferred<void>()
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update')
+    const installDownloadedUpdate = vi.fn(() => handoff.promise)
+    const { options, lifecycle } = fixture({ confirmQuit, installDownloadedUpdate })
+    lifecycle.attach(window, application)
+    application.emit('before-quit', { preventDefault: vi.fn() })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(lifecycle.isSystemShuttingDown).toBe(false)
+    expect(confirmQuit).toHaveBeenCalledOnce()
+    expect(installDownloadedUpdate).toHaveBeenCalledOnce()
+    expect(options.hide).toHaveBeenCalledOnce()
+    expect(options.quit).not.toHaveBeenCalled()
+    handoff.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).toHaveBeenCalledOnce()
+    lifecycle.dispose()
+  })
+
+  it('stops waiting on an open quit confirmation once a Mac power-off arrives, and installs nothing', async () => {
+    const answer = deferred<QuitConfirmation>()
+    const installDownloadedUpdate = vi.fn()
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit: () => answer.promise, installDownloadedUpdate })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).not.toHaveBeenCalled()
+    lifecycle.noteSystemPowerOff()
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.show).not.toHaveBeenCalled()
+    // A late answer changes nothing.
+    answer.resolve('install-update')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(installDownloadedUpdate).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('does not let a close dialog left open hold a Mac power-off, and remembers nothing', async () => {
+    const decision = deferred<WindowCloseChoice>()
+    const rememberCloseBehavior = vi.fn()
+    const { options, lifecycle } = fixture({ requestCloseDecision: () => decision.promise, rememberCloseBehavior })
+    const close = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).not.toHaveBeenCalled()
+    lifecycle.noteSystemPowerOff()
+    expect(await close).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    decision.resolve({ decision: 'hide', remember: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.hide).not.toHaveBeenCalled()
+    expect(rememberCloseBehavior).not.toHaveBeenCalled()
+  })
+
+  it('reports a shutdown announced on either platform', () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const windows = fixture()
+    windows.lifecycle.attach(window, application)
+    expect(windows.lifecycle.isSystemShuttingDown).toBe(false)
+    window.emit('query-session-end', { preventDefault: vi.fn() })
+    expect(windows.lifecycle.isSystemShuttingDown).toBe(true)
+    const mac = fixture()
+    expect(mac.lifecycle.isSystemShuttingDown).toBe(false)
+    mac.lifecycle.noteSystemPowerOff()
+    expect(mac.lifecycle.isSystemShuttingDown).toBe(true)
+    windows.lifecycle.dispose()
   })
 
   it('does not start an installer once Windows reports the session is ending', async () => {
