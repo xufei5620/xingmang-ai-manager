@@ -24,7 +24,8 @@ import type { NodeRuntimeInstallResult } from './node-runtime'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } from './codex-model-catalog'
 import type { MacosCodexAppInspection } from './macos-codex-app'
-import { managedCliPackageDirectory } from './cli-process-probe'
+import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
+import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
@@ -87,6 +88,7 @@ import {
   npmInstallRegistries,
   npmRegistryLabel,
   describeNpmCommandFailure,
+  describeNpmUninstallFailure,
   grokDownloadStallHeartbeatMs,
   grokDownloadStallMessage,
   npmResolutionHeartbeatMessage,
@@ -112,6 +114,13 @@ import {
   type SystemServiceOptions,
   type ToolStatus,
 } from './system-service'
+
+// 卸载失败时要数这个工具的进程（第三十三批 C）。默认照真的跑；Linux 上真的那份
+// 一律回 unsupported，所以要「数到进程」的用例临时换掉一次结果。
+vi.mock('./cli-process-probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./cli-process-probe')>()
+  return { ...actual, probeRunningCliProcesses: vi.fn(actual.probeRunningCliProcesses) }
+})
 
 const temporaryDirectories: string[] = []
 
@@ -2957,6 +2966,97 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
     expect(syncLinuxTerminalCommands).toHaveBeenCalledTimes(2)
   })
 
+  // 卸载那一步的 npm 是真起的子进程：换成照 npm 原样报错、什么都没删的脚本。
+  // 包目录直接写好，不先走一遍安装。
+  function failingCodexUninstall(fixture: LinuxInstallFixture, npmErrorLines: readonly string[]) {
+    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
+    writeCodexPackage(managedPrefix, fixture.expectedVersion, true)
+    fs.writeFileSync(fixture.npmExecutable, [
+      '#!/bin/sh',
+      'if [ "$1" = uninstall ]; then',
+      "  /bin/cat >&2 <<'EOF'",
+      ...npmErrorLines,
+      'EOF',
+      '  exit 1',
+      'fi',
+      'exit 0',
+      '',
+    ].join('\n'))
+    vi.mocked(probeRunningCliProcesses).mockClear()
+    const runtimeLog = { log: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', resolveCliInstallation: managedResolution(fixture), runtimeLog },
+    )
+    return { service, runtimeLog, packageRoot: path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex') }
+  }
+
+  const npmRenameDenied = [
+    'npm error code EPERM',
+    'npm error syscall rename',
+    'npm error errno -1',
+    "npm error Error: EPERM: operation not permitted, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'",
+  ]
+  const npmRenameDeniedDetail = "命令执行失败（退出码 1）：npm（EPERM；Error: EPERM: operation not permitted, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
+
+  it('names the tool that failed to uninstall and keeps npm\'s EPERM when none of its processes is running', async () => {
+    const { service, packageRoot } = failingCodexUninstall(linuxInstallFixture(() => ''), npmRenameDenied)
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).toMatchObject({
+      message: `Codex CLI 卸载失败：${npmRenameDeniedDetail}`,
+      cause: expect.any(CommandRunnerError),
+    })
+    // EPERM by itself reads the same as a folder the user cannot write to, so it
+    // stays a permission problem until a process of this tool is actually found.
+    expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
+    expect(classifyOperationError(`Codex CLI 卸载失败：${npmRenameDeniedDetail}`)).toBe('permission')
+    // The runtime log keeps only enumerable fields, and npm's full output is what
+    // support reads there.
+    expect(Object.prototype.propertyIsEnumerable.call(failure, 'cause')).toBe(true)
+    expect(fs.existsSync(path.join(packageRoot, 'package.json'))).toBe(true)
+  })
+
+  it('tells the customer to close the tool when one of its processes holds the folder', async () => {
+    const { service, runtimeLog, packageRoot } = failingCodexUninstall(linuxInstallFixture(() => ''), npmRenameDenied)
+    vi.mocked(probeRunningCliProcesses).mockResolvedValueOnce({
+      status: 'checked',
+      processes: [{ processId: 4242, name: 'codex', executablePath: path.join(packageRoot, 'bin', 'codex') }],
+    })
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    const message = 'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+      + `原始报错：${npmRenameDeniedDetail}`
+    expect(failure).toMatchObject({ message })
+    expect(probeRunningCliProcesses).toHaveBeenCalledTimes(1)
+    expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
+    expect(classifyOperationError(message)).toBe('toolRunning')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'install', 'cli.file-locked', 'Codex CLI 卸载时文件被占用', {
+      provider: 'codex',
+      probeStatus: 'checked',
+      processes: 1,
+    })
+  })
+
+  it('still points at the running tool when npm says the folder is busy but no process was counted', async () => {
+    const { service } = failingCodexUninstall(linuxInstallFixture(() => ''), [
+      'npm error code EBUSY',
+      'npm error syscall rename',
+      'npm error errno -16',
+      "npm error Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'",
+    ])
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    const message = 'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+      + "原始报错：命令执行失败（退出码 1）：npm（EBUSY；Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
+    expect(failure).toMatchObject({ message })
+    expect(classifyOperationError(message)).toBe('toolRunning')
+  })
+
   it('fails the install when npm silently skipped the platform build and keeps nothing half-installed', async () => {
     const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
     let withNative = false
@@ -3834,6 +3934,48 @@ describe('npm install progress reporting', () => {
 
     expect(describeNpmCommandFailure(failure)).toContain('下载超时')
     expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
+  })
+
+  it('never calls a stuck uninstall a download timeout, but keeps the code npm printed', () => {
+    // 卸载不下载东西。借安装那句「下载超时」的话，渲染层会叫客户换源重试（第三十三批 C）。
+    const timedOut = new CommandRunnerError('命令执行时间过长，已中止：node.exe', {
+      code: 'TIMED_OUT',
+      executable: 'node.exe',
+      argv: [],
+      exitCode: null,
+      signal: 'SIGTERM',
+      stdout: '',
+      stderr: '',
+      outputBytes: 0,
+      maxOutputBytes: 0,
+      durationMs: 2 * 60_000,
+    })
+    expect(describeNpmUninstallFailure(timedOut)).toBe('命令执行时间过长，已中止：node.exe')
+    expect(classifyOperationError(`Codex CLI 卸载失败：${describeNpmUninstallFailure(timedOut)}`)).toBe('unknown')
+
+    const locked = new CommandRunnerError('命令执行失败（退出码 1）：node.exe', {
+      code: 'EXIT_NON_ZERO',
+      executable: 'node.exe',
+      argv: [],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: [
+        'npm error code EPERM',
+        'npm error syscall rename',
+        'npm error path C:\\Users\\a\\AppData\\Local\\XingMangAI\\Cli\\npm\\node_modules\\@openai\\codex',
+        'npm error errno -4048',
+        "npm error Error: EPERM: operation not permitted, rename 'C:\\npm\\@openai\\codex' -> 'C:\\npm\\@openai\\.codex-x'",
+        'npm error A complete log of this run can be found in: C:\\Users\\a\\AppData\\Local\\npm-cache\\_logs\\debug-0.log',
+      ].join('\n'),
+      outputBytes: 0,
+      maxOutputBytes: 0,
+      durationMs: 0,
+    })
+    expect(describeNpmUninstallFailure(locked)).toBe(
+      "命令执行失败（退出码 1）：node.exe（EPERM；Error: EPERM: operation not permitted, rename 'C:\\npm\\@openai\\codex' -> 'C:\\npm\\@openai\\.codex-x'）",
+    )
+    expect(describeNpmUninstallFailure(new Error('plain'))).toBe('plain')
   })
 
   it('tells the user why the official source cannot be replaced by a mirror', () => {

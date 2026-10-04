@@ -46,6 +46,7 @@ import {
   describeRunningCliProcessWarning,
   fileLockErrorCode,
   managedCliPackageDirectory,
+  type OccupiedUpdateFailureInput,
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { cliProcessProbeRoots, inspectRunningTools as inspectRunningToolsWith, type RunningToolsReport } from './running-tools'
@@ -1517,6 +1518,19 @@ export function describeNpmCommandFailure(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
   }
   if (error.code === 'TIMED_OUT') return '下载超时，长时间没有完成，已中止'
+  const highlights = npmFailureHighlights(error.stderr)
+  return highlights ? `${error.message}（${highlights}）` : error.message
+}
+
+/**
+ * 卸载不下载任何东西，所以不借上面那句「下载超时」：借过去渲染层会归成下载超时，
+ * 叫客户换源重试。这里一律用命令运行器自己那句话（它刻意不说「超时」），后面接上
+ * npm 的要点（EPERM、EBUSY 这些），文件被占用要靠它们才认得出来。
+ */
+export function describeNpmUninstallFailure(error: unknown): string {
+  if (!(error instanceof CommandRunnerError)) {
+    return error instanceof Error ? error.message : String(error)
+  }
   const highlights = npmFailureHighlights(error.stderr)
   return highlights ? `${error.message}（${highlights}）` : error.message
 }
@@ -3953,7 +3967,7 @@ export function createSystemService(
     errorLike: unknown,
     detail: string,
     probeRoot: string | null,
-    updating: boolean,
+    action: OccupiedUpdateFailureInput['action'],
   ): Promise<string | null> {
     if (!fileLockErrorCode(errorLike)) return null
     const probe = probeRoot
@@ -3961,13 +3975,13 @@ export function createSystemService(
       : { status: 'unsupported' as const, processes: [] }
     const message = describeOccupiedUpdateFailure({
       toolName: cliCatalog[provider].name,
-      action: updating ? '更新' : '安装',
+      action,
       error: errorLike,
       probe,
       detail,
     })
     if (!message) return null
-    runtimeLog?.log('warn', 'install', 'cli.file-locked', `${cliCatalog[provider].name} 更新时文件被占用`, {
+    runtimeLog?.log('warn', 'install', 'cli.file-locked', `${cliCatalog[provider].name} ${action}时文件被占用`, {
       provider,
       probeStatus: probe.status,
       processes: probe.processes.length,
@@ -4592,7 +4606,7 @@ export function createSystemService(
         const detail = installErrors.join('；') || '所有 npm 源均不可用'
         // npm 替换正在运行的工具时报的是 EBUSY / EPERM,两者的原文都读不出「谁
         // 占着这个文件」。这里重新数一遍进程,数到了才改写成「文件被占用」。
-        const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall)
+        const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall ? '更新' : '安装')
         throw new Error(occupied ?? await withToolCertificateHint(`${definition.name} 安装失败：${detail}`))
       }
       sendInstallProgress(target, provider, 'output', `${definition.name} 已安装，正在检查安装结果`, undefined, { stage: 'final-check' })
@@ -4656,7 +4670,7 @@ export function createSystemService(
             error,
             redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300),
             occupancyProbeRoot,
-            updatingExistingInstall,
+            updatingExistingInstall ? '更新' : '安装',
           )
           if (!occupied) throw error
           throw new Error(occupied, { cause: error })
@@ -4955,6 +4969,15 @@ export function createSystemService(
               timeoutMs: 2 * 60_000,
               maxOutputBytes: 4 * 1024 * 1024,
             })
+          } catch (error) {
+            // 工具开着时 Windows 锁着它自己的文件，npm 挪不开包目录，报 EPERM / EBUSY 后原样退回。
+            // 原话只剩「命令执行失败（退出码 1）：node.exe」，客户看不出是工具开着（第三十三批 C），
+            // 所以和安装、更新一样接上 npm 的要点，再数一遍这个工具的进程。cause 用 Object.assign
+            // 挂成可枚举的：运行日志只记错误的可枚举字段（runtime-log.ts 的 sanitizeValue），
+            // npm 的整段输出要跟着进日志给客服看。
+            const detail = describeNpmUninstallFailure(error)
+            const occupied = await describeOccupiedCliFailure(provider, detail, detail, plan.packageRoot, '卸载')
+            throw Object.assign(new Error(occupied ?? `${cliCatalog[provider].name} 卸载失败：${detail}`), { cause: error })
           } finally {
             if (cache) await fs.promises.rm(cache, { recursive: true, force: true }).catch(() => undefined)
           }
