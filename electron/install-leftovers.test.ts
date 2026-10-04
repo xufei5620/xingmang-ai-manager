@@ -211,19 +211,25 @@ describe('sweeping the managed npm cache', () => {
   it('keeps old transactions the next install still needs to recover from', async () => {
     // Cut short before the new version passed its check: previous-prefix may be the only copy of the CLIs.
     const unverified = makeDirectory('npm-transaction-Ab12Cd', old, { 'previous-prefix/lib/cli.js': 100 })
-    // A failed recovery: interrupted-prefix may be the only copy of the newer CLIs.
-    const recoveryFailed = makeDirectory('npm-transaction-Ef34Gh', old, { 'interrupted-prefix/lib/cli.js': 100 })
+    // The recovery itself stopped halfway: the active copy already moved aside, the old one not yet back.
+    const recoveryStopped = makeDirectory('npm-transaction-Ef34Gh', old, {
+      'previous-prefix/lib/cli.js': 100,
+      'interrupted-prefix/lib/cli.js': 100,
+    })
 
     const result = await sweepInstallLeftovers([managedNpmCache()])
 
     expect(fs.readFileSync(path.join(unverified, 'previous-prefix', 'lib', 'cli.js')).length).toBe(100)
-    expect(fs.readFileSync(path.join(recoveryFailed, 'interrupted-prefix', 'lib', 'cli.js')).length).toBe(100)
+    expect(fs.readFileSync(path.join(recoveryStopped, 'previous-prefix', 'lib', 'cli.js')).length).toBe(100)
+    expect(fs.readFileSync(path.join(recoveryStopped, 'interrupted-prefix', 'lib', 'cli.js')).length).toBe(100)
     expect(result).toEqual({ removed: 0, freedBytes: 0, failed: 0 })
   })
 
-  it('removes old transactions once their update was verified or never got that far', async () => {
+  it('removes old transactions once their update was verified, rolled back or never got that far', async () => {
     const verified = makeDirectory('npm-transaction-Ab12Cd', old, { 'superseded-prefix/lib/cli.js': 100, 'attempt-0/cache/blob': 200 })
     const halfDownloaded = makeDirectory('npm-transaction-Ef34Gh', old, { 'attempt-0/cache/blob': 300 })
+    // The recovery finished but its own cleanup did not: nothing restores from interrupted-prefix.
+    const rolledBack = makeDirectory('npm-transaction-Mn78Op', old, { 'interrupted-prefix/lib/cli.js': 100 })
     const recent = makeDirectory('npm-transaction-Ij56Kl', 60_000, { 'superseded-prefix/lib/cli.js': 100 })
     const npmOwnCache = makeDirectory('_cacache', old, { 'index-v5/blob': 10 })
 
@@ -231,8 +237,9 @@ describe('sweeping the managed npm cache', () => {
 
     expect(fs.existsSync(verified)).toBe(false)
     expect(fs.existsSync(halfDownloaded)).toBe(false)
+    expect(fs.existsSync(rolledBack)).toBe(false)
     expect(fs.existsSync(recent)).toBe(true)
     expect(fs.existsSync(npmOwnCache)).toBe(true)
-    expect(result).toEqual({ removed: 2, freedBytes: 600, failed: 0 })
+    expect(result).toEqual({ removed: 3, freedBytes: 700, failed: 0 })
   })
 })

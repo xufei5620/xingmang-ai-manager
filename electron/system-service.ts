@@ -206,6 +206,7 @@ import type { MacosShellProfileOutcome } from './macos-shell-profile'
 import type { LinuxTerminalCommandsReason, LinuxTerminalCommandsResult } from './linux-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
 import { managedCliRoot, managedNativeProviderRoot, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
   describeInsufficientDiskSpace,
   readDiskSpace,
@@ -4855,6 +4856,12 @@ export function createSystemService(
       managedNpmCache = managedNpmCacheRoot(commandEnvironment(), platform)
     } catch {
       // 同上：解析不出来时托管安装也用不了，那里不会有更新留下的临时文件夹。
+    }
+    // 按管理员身份在 ProgramData 里删东西，要这次运行亲手加固、核过 ACL 的目录才算只有管理员能写
+    // （装、卸工具准备托管目录时会做）。没核过的那一处可能是普通进程抢先建好、等着在删的时候换成
+    // 联接的（同 I8），这一轮先不扫，核过以后的那一轮再清。
+    if (platform === 'win32' && managedNpmCache && !isRegisteredTrustedManagedWindowsPath(managedNpmCache)) {
+      managedNpmCache = null
     }
     return buildInstallLeftoverLocations({
       platform,

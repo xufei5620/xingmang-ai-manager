@@ -9,13 +9,17 @@ import {
   managedNpmTransactionPreservedEntries,
   userTemporaryLeftoverPrefixes,
 } from './install-leftovers'
+import { managedNpmCacheRoot } from './managed-cli-paths'
+import { clearTrustedManagedWindowsRootsForTests, registerTrustedManagedWindowsRoot } from './managed-path-trust'
 import { createSystemService } from './system-service'
+import { resolveWindowsMachinePaths } from './windows-machine-paths'
 
 const temporaryDirectories: string[] = []
 
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.restoreAllMocks()
+  clearTrustedManagedWindowsRootsForTests()
   while (temporaryDirectories.length) {
     const directory = temporaryDirectories.pop()
     if (directory) fs.rmSync(directory, { recursive: true, force: true })
@@ -24,6 +28,10 @@ afterEach(() => {
 
 function createFixture(
   sweep?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>,
+  runAs: { platform: NodeJS.Platform; windowsExecutionMode: 'same-user' | 'trusted-only' } = {
+    platform: 'linux',
+    windowsExecutionMode: 'same-user',
+  },
 ) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-leftover-service-')))
   temporaryDirectories.push(root)
@@ -33,8 +41,7 @@ function createFixture(
   const service = createSystemService(
     new AppSettingsStore(path.join(root, 'settings.json'), root),
     {
-      platform: 'linux',
-      windowsExecutionMode: 'same-user',
+      ...runAs,
       findExecutable: vi.fn(async () => null),
       runtimeLog: { log },
       ...(sweep ? { sweepInstallLeftovers: sweep } : {}),
@@ -75,6 +82,26 @@ describe('cleaning up downloads left by interrupted installs', () => {
       prefixes: managedNpmTransactionLeftoverPrefixes,
       preserveIfContains: managedNpmTransactionPreservedEntries,
     })
+  })
+
+  // Only a real Windows resolves ProgramData, and only there does the trust registry answer at all.
+  it.runIf(process.platform === 'win32')('leaves the managed npm cache alone as administrator until this run has checked its ACL', async () => {
+    const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[]) => ({ removed: 0, freedBytes: 0, failed: 0 }))
+    const { service } = createFixture(sweep, { platform: 'win32', windowsExecutionMode: 'trusted-only' })
+    const managedNpmCache = {
+      directory: managedNpmCacheRoot(process.env, 'win32'),
+      prefixes: managedNpmTransactionLeftoverPrefixes,
+      preserveIfContains: managedNpmTransactionPreservedEntries,
+    }
+
+    await service.cleanupInstallLeftovers()
+    expect(sweep.mock.calls[0]?.[0]).not.toContainEqual(managedNpmCache)
+
+    // Stands in for the hardening an install runs before it touches the managed directory. The real
+    // root is ProgramData\XingMangAI, which a test machine does not have.
+    registerTrustedManagedWindowsRoot(resolveWindowsMachinePaths().programData)
+    await service.cleanupInstallLeftovers()
+    expect(sweep.mock.calls[1]?.[0]).toContainEqual(managedNpmCache)
   })
 
   it('runs in the installation queue so it never overlaps an install', async () => {

@@ -46,12 +46,13 @@ export const trustedCacheLeftoverPrefixes: readonly string[] = [
 export const managedNpmTransactionLeftoverPrefixes: readonly string[] = ['npm-transaction-']
 
 /**
- * 托管 npm 事务里带着这两个名字的，再旧也不删，留给下次装工具开头的恢复（managed-cli.ts）：
- * previous-prefix 是新版检查通过之前就断掉时要退回的旧版，换目录换到一半时它是唯一的一份；
- * interrupted-prefix 是恢复失败时留下的，可能是唯一的一份新版。新版检查通过后 previous-prefix
- * 已改名成 superseded-prefix，那样的事务和下到一半的一样，过了 6 小时就删。
+ * 托管 npm 事务里还有 previous-prefix 的，再旧也不删，留给下次装工具开头的恢复（managed-cli.ts）：
+ * 它是新版检查通过之前就断掉时要退回的旧版，换目录换到一半时它是唯一的一份。恢复自己失败、
+ * 停在半路时 previous-prefix 也还在，照样留着。新版检查通过后它已改名成 superseded-prefix；
+ * 恢复做完后剩下的 interrupted-prefix 是被换下来、没检查过的那份，没有代码会再用它。这两种
+ * 事务和下到一半的一样，过了 6 小时就删。
  */
-export const managedNpmTransactionPreservedEntries: readonly string[] = ['previous-prefix', 'interrupted-prefix']
+export const managedNpmTransactionPreservedEntries: readonly string[] = ['previous-prefix']
 
 /**
  * 最近改动过的目录一律不动。清理本身排在安装队列里，不会和星芒的安装撞上；这段
@@ -78,7 +79,7 @@ export interface InstallLeftoverLocationOptions {
   temporaryDirectory: string
   /** trustedInstallerCacheRoot() 的结果；解析不出来时传 null。 */
   trustedCacheRoot: string | null
-  /** managedNpmCacheRoot() 的结果；不传或解析不出来（null）时不扫那里。 */
+  /** managedNpmCacheRoot() 的结果；不传或传 null（解析不出来，或 Windows 上这次运行还没核过）时不扫那里。 */
   managedNpmCacheRoot?: string | null
 }
 
@@ -89,8 +90,9 @@ export interface InstallLeftoverLocationOptions {
  * 临时目录：ProgramData 里那些是以前管理员运行时留下的，普通权限本来也删不动。
  */
 export function buildInstallLeftoverLocations(options: InstallLeftoverLocationOptions): InstallLeftoverLocation[] {
-  // 托管 npm 缓存目录同样只有当前用户（Windows 上只有管理员）能写。普通权限的 Windows 不用
-  // 托管目录，那里有的只会是以前按管理员身份运行时留下的，普通权限删不动，不扫。
+  // 托管 npm 缓存目录同样只有当前用户（Windows 上只有管理员）能写；Windows 上调用方要等这次运行
+  // 核过它的 ACL 才传进来。普通权限的 Windows 不用托管目录，那里有的只会是以前按管理员身份运行时
+  // 留下的，普通权限删不动，不扫。
   const managedNpmCache: InstallLeftoverLocation[] = options.managedNpmCacheRoot
     ? [{
         directory: options.managedNpmCacheRoot,

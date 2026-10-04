@@ -80,7 +80,9 @@ async function recoverInterruptedManagedNpmTransaction(
     throw new Error('npm 安装恢复失败，当前安装未被替换', { cause: error })
   }
 
-  await fs.promises.rm(interrupted.transaction, { recursive: true, force: true })
+  // 旧版已经放回去了，事务里只剩换下来的 interrupted-prefix，下次恢复不会再认它。删的时候正被
+  // 杀毒软件扫着就多等两次（同 install-leftovers.ts）。
+  await fs.promises.rm(interrupted.transaction, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 })
 }
 
 function assertPlainSingleLinkFile(filePath: string): void {

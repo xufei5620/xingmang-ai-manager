@@ -3028,7 +3028,8 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
     // 星芒在「完成」之后、临时文件夹删完之前被关掉：收尾那一下删除没有做成。
     const realRm = fs.promises.rm
     const rm = vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
-      if (String(target).startsWith(path.join(cacheRoot, 'npm-transaction-'))) {
+      // Only the transaction folder itself, as the final cleanup removes it; whatever the install does inside runs for real.
+      if (path.dirname(String(target)) === cacheRoot && path.basename(String(target)).startsWith('npm-transaction-')) {
         throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
       }
       return realRm(target, options)
