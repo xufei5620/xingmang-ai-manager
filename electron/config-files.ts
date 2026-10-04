@@ -2662,12 +2662,13 @@ export function executeFilePlans(
     }
     for (const [index, plan] of prepared.entries()) {
       assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      hooks.beforeReplace?.(plan.path, index)
-      renameWithTransientRetrySync(
-        plan.temporaryPath,
-        plan.path,
-        () => assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot),
-      )
+      // A hook may re-read what this save was computed from (external-tool-config
+      // does), so it runs again before every retry: whoever held the file may
+      // have just saved its own change.
+      renameWithTransientRetrySync(plan.temporaryPath, plan.path, () => {
+        hooks.beforeReplace?.(plan.path, index)
+        assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
+      })
       committed.push(plan)
     }
   } catch (error) {

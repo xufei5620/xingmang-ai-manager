@@ -319,9 +319,12 @@ describe('application settings persistence', () => {
       return originalRename(from, to)
     })
 
-    await writeAppSettings(filePath, next)
+    let hookCalls = 0
+
+    await writeAppSettings(filePath, next, { beforeReplace: () => { hookCalls += 1 } })
 
     expect([...held.values()]).toEqual([0, 0])
+    expect(hookCalls).toBe(3)
     expect(readAppSettings(filePath)).toEqual(next)
     expect(readAppSettings(`${filePath}.bak`)).toEqual(previous)
     expect(fs.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
@@ -350,17 +353,15 @@ describe('application settings persistence', () => {
 
   it('checks the settings file again before retrying a held replacement', async () => {
     const filePath = temporarySettingsPath()
-    const victim = path.join(path.dirname(filePath), 'victim.json')
+    const alias = path.join(path.dirname(filePath), 'settings-alias.json')
     await writeAppSettings(filePath, settings({ workspace: 'D:\\Previous' }))
-    const original = `${JSON.stringify(settings({ workspace: 'D:\\Victim' }))}\n`
-    fs.writeFileSync(victim, original, 'utf8')
+    const before = fs.readFileSync(filePath, 'utf8')
     const originalRename = fs.promises.rename.bind(fs.promises)
-    let swapped = false
+    let linked = false
     vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
-      if (!swapped && path.resolve(String(to)) === path.resolve(filePath)) {
-        swapped = true
-        fs.rmSync(filePath)
-        fs.linkSync(victim, filePath)
+      if (!linked && path.resolve(String(to)) === path.resolve(filePath)) {
+        linked = true
+        fs.linkSync(filePath, alias)
         throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
       }
       return originalRename(from, to)
@@ -368,8 +369,8 @@ describe('application settings persistence', () => {
 
     await expect(writeAppSettings(filePath, settings({ workspace: 'D:\\Next' })))
       .rejects.toThrow('单链接普通文件')
-    expect(swapped).toBe(true)
-    expect(fs.readFileSync(victim, 'utf8')).toBe(original)
+    expect(linked).toBe(true)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before)
     expect(fs.lstatSync(filePath).nlink).toBe(2)
   })
 })

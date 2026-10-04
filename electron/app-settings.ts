@@ -399,15 +399,15 @@ async function performAtomicSettingsWrite(
       assertSafeDataFile(filePath, '应用设置文件')
       assertSafeDataFile(backupPath, '应用设置备份')
       await fsPromises.copyFile(filePath, backupTemporaryPath, fs.constants.COPYFILE_EXCL)
-      await renameWithTransientRetry(
-        backupTemporaryPath,
-        backupPath,
-        () => assertSafeDataFile(backupPath, '应用设置备份'),
-      )
+      await renameWithTransientRetry(backupTemporaryPath, backupPath, () => {
+        assertSafeDataFile(backupPath, '应用设置备份')
+      })
     }
 
-    await hooks.beforeReplace?.(filePath)
-    await renameWithTransientRetry(temporaryPath, filePath, () => assertSafeDataFile(filePath, '应用设置文件'))
+    await renameWithTransientRetry(temporaryPath, filePath, async () => {
+      await hooks.beforeReplace?.(filePath)
+      assertSafeDataFile(filePath, '应用设置文件')
+    })
   } finally {
     await Promise.allSettled([
       removeIfPresent(temporaryPath),

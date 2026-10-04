@@ -438,17 +438,18 @@ function delayReplaceRetrySync(attempt: number): void {
  * is retried with backoff; anything else, or the last transient error, is
  * rethrown unchanged so every caller keeps its existing wording.
  *
- * `beforeAttempt` runs right before every attempt, the first one included: a
- * path check made before the backoff must not vouch for the retried rename,
- * or a link planted during the wait would redirect it.
+ * Pass the caller's own checks as `beforeAttempt`. It runs right before every
+ * attempt, the first one included, so nothing a check saw before the wait
+ * vouches for the retried rename: a link may have been planted meanwhile, or
+ * the program that held the file may have saved its own change.
  */
 export async function renameWithTransientRetry(
   sourcePath: string,
   targetPath: string,
-  beforeAttempt?: () => void,
+  beforeAttempt?: () => void | Promise<void>,
 ): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
-    beforeAttempt?.()
+    if (beforeAttempt) await beforeAttempt()
     try {
       await fs.promises.rename(sourcePath, targetPath)
       return

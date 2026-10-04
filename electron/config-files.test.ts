@@ -57,6 +57,7 @@ import {
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import type { CliHookInvocation } from './cli-hooks'
+import { renameWithTransientRetrySync } from './safe-local-data'
 
 const temporaryHomes: string[] = []
 const statusLineCommand = '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
@@ -1374,10 +1375,16 @@ describe('native CLI configuration files', () => {
       }
       originalRename(from, to)
     })
+    let authHookCalls = 0
 
-    saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {
+      beforeReplace: (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(authPath)) authHookCalls += 1
+      },
+    }, providerBaseUrls)
 
     expect(locked).toBe(0)
+    expect(authHookCalls).toBe(3)
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toMatchObject({ OPENAI_API_KEY: 'new-key' })
     expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.model).toBe('gpt-5.6-sol')
     expect(fs.readdirSync(path.dirname(configPath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
@@ -1456,7 +1463,9 @@ describe('native CLI configuration files', () => {
           fs.writeFileSync(path.join(outside, name), `outside sentinel: ${name}\n`, 'utf8')
         }
         outsideBefore = directoryFileSnapshot(outside)
-        originalRename(codexHome, displacedCodexHome)
+        // A scanner may still hold a file just written here; wait it out the
+        // same way, or the swap itself could fail and let the save go through.
+        renameWithTransientRetrySync(codexHome, displacedCodexHome)
         fs.symlinkSync(outside, codexHome, 'junction')
         throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
       }
@@ -1465,7 +1474,7 @@ describe('native CLI configuration files', () => {
 
     expect(() => saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
       .toThrow()
-    expect(swapped).toBe(true)
+    expect(fs.lstatSync(codexHome).isSymbolicLink()).toBe(true)
     expect(directoryFileSnapshot(outside)).toEqual(outsideBefore)
   })
 
