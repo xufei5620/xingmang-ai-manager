@@ -1327,6 +1327,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'config:open-directory': '工具配置目录打开',
   'external-clients:scan': '外部客户端检测',
   'external-clients:install': '外部客户端安装',
+  'external-clients:cancel-install': '外部客户端安装取消',
   'external-clients:launch': '外部客户端启动',
   'workspace:choose': '工作目录选择',
   'repository:get-context': '仓库上下文读取',
@@ -2164,6 +2165,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('external-clients:install', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
     return service.installExternalClient(tool, _event.sender)
+  })
+  registerTrustedHandler('external-clients:cancel-install', (_event, tool: unknown) => {
+    if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
+    const outcome = service.cancelExternalClientInstall(tool)
+    options.runtimeLog.log('info', 'maintenance', 'external-client.install.cancel-requested', '收到取消外部客户端安装的请求', {
+      tool,
+      cancelled: outcome.cancelled,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    })
+    return outcome
   })
   registerTrustedHandler('external-clients:launch', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')

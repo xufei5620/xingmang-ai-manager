@@ -213,7 +213,13 @@ export interface ClaudeDesktopMsixInstallOptions {
   runCommand?: typeof runCommand
   env?: NodeJS.ProcessEnv
   onProgress?: (event: ClaudeDesktopMsixProgress) => void
+  /** 下载和核对安装包时客户点了取消。交给 Windows 装的那一步不看它，见 onInstallStarting。 */
   signal?: AbortSignal
+  /**
+   * 下好、核过的安装包马上交给 Windows 装，之后 signal 不再起作用：调用方在这里停止接受取消，
+   * 免得界面说「已取消」而 Windows 照样装完。在最后一次检查 signal 之后同步调用，中间没有空档。
+   */
+  onInstallStarting?: () => void
   /** Test seams; production uses the fixed Windows resolvers and the shared MSIX installer. */
   platform?: NodeJS.Platform
   resolveMachinePaths?: () => WindowsMachinePaths
@@ -411,6 +417,7 @@ export async function installClaudeDesktopFromOfficial(options: ClaudeDesktopMsi
       throw error
     }
     options.signal?.throwIfAborted()
+    options.onInstallStarting?.()
     reportProgress(options, { phase: 'installing', percent: null, message: `正在安装 Claude Desktop ${inspected.version}` })
     await (options.installPackage ?? addWindowsDesktopAppxPackage)(packagePath, {
       product: claudeAppxProduct,

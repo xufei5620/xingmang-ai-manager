@@ -1028,6 +1028,7 @@ export interface SystemService {
     knownStatus?: ExternalClientRuntimeStatus | null,
   ): Promise<ExternalClientCheckResult>
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
+  cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
@@ -5767,6 +5768,7 @@ export function createSystemService(
       : [...(latestExternalClients ?? []), described]
     return described
   }
+  const cancelExternalClientInstall = (tool: ExternalToolId) => externalClientRuntime.cancelInstall(tool)
   const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
   /**
    * 保存之后立刻回读一遍并自检。这一步问出来的比保存时那次模型清单校验多两件
@@ -6712,6 +6714,7 @@ export function createSystemService(
     getLastExternalClients,
     checkExternalClientConnection,
     installExternalClient,
+    cancelExternalClientInstall,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),

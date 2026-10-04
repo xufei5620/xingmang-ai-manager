@@ -214,6 +214,9 @@ export async function downloadWithResume(options: ResumableDownloadOptions): Pro
         } finally {
           clearTimeout(timer)
         }
+        // A read that already had data queued wins the race above even after an
+        // abort; stop here instead of writing on until the queue runs dry.
+        if (attempt.signal.aborted) throw new InterruptedTransfer(attempt.signal.reason)
         if (chunk.done) break
         if (!chunk.value?.byteLength) continue
         const next = state.transferred + chunk.value.byteLength

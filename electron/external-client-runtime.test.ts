@@ -4,6 +4,7 @@ import { CommandRunnerError, runCommand, type CommandSpec, type CommandErrorDeta
 import type { ExternalClientInstallProgress } from './external-client-contract'
 import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
+import { isInstallCancelledError } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
 import * as pathIdentity from './path-identity'
 import * as safeLocalData from './safe-local-data'
@@ -46,6 +47,12 @@ function deferred<T = void>() {
   let reject!: (error: unknown) => void
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
+}
+/** A download that only ends when the customer presses cancel. */
+function untilAborted(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
 }
 function fixture(overrides: ExternalClientRuntimeOptions = {}) {
   let inventory: { clients: Record<string, unknown>[]; errors: Record<string, string> } = { clients: [], errors: {} }
@@ -161,6 +168,78 @@ describe('external desktop client lifecycle', () => {
     expect(firstEvents.at(-1)?.phase).toBe('completed')
     expect(secondEvents.at(-1)?.phase).toBe('completed')
     expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels an install still waiting in the queue before it touches anything, and installs again afterwards', async () => {
+    const queue = new InstallationQueue()
+    const blocker = deferred()
+    void queue.enqueue('existing-runtime-install', () => blocker.promise)
+    const f = fixture({ installationQueue: queue })
+    const progress: ExternalClientInstallProgress[] = []
+    const install = f.runtime.install('opencode', (event) => progress.push(event))
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+    // 再点一次仍是同一个「取消中」。
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+    blocker.resolve()
+    const error = await install.catch((cause: unknown) => cause)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('OpenCode 安装已取消')
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'OpenCode 安装已取消' })
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })
+    f.setInventory([candidate('opencode')])
+    await expect(f.runtime.install('opencode')).resolves.toMatchObject({ installed: true })
+  })
+
+  it('refuses to cancel while winget runs, because ending it ends the installer it started', async () => {
+    const f = fixture()
+    const wingetRunning = deferred()
+    const finishWinget = deferred()
+    const inventoryCommand = f.execute.getMockImplementation()!
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable !== winget) return inventoryCommand(spec, options)
+      wingetRunning.resolve()
+      await finishWinget.promise
+      f.setInventory([candidate('opencode')])
+      return commandResult(spec)
+    })
+    const install = f.runtime.install('opencode')
+    await wingetRunning.promise
+    expect(f.runtime.cancelInstall('opencode')).toEqual({
+      cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。',
+    })
+    finishWinget.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true })
+    expect(f.execute.mock.calls.find(([spec]) => spec.executable === winget)?.[1]?.signal).toBeUndefined()
+  })
+
+  it('stops the Tencent download on cancel but not the Tencent installer once it runs', async () => {
+    const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
+    const downloading = deferred()
+    f.officialInstaller.mockImplementationOnce(async (options) => {
+      downloading.resolve()
+      await untilAborted(options?.signal)
+    })
+    const cancelled = f.runtime.install('workbuddy')
+    await downloading.promise
+    expect(f.runtime.cancelInstall('workbuddy')).toEqual({ cancelled: true, reason: null })
+    await expect(cancelled).rejects.toThrow('WorkBuddy 安装已取消')
+
+    const installing = deferred()
+    const finish = deferred()
+    f.officialInstaller.mockImplementationOnce(async (options) => {
+      options?.onInstallStarting?.()
+      installing.resolve()
+      await finish.promise
+      f.setInventory([candidate('workbuddy')])
+    })
+    const install = f.runtime.install('workbuddy')
+    await installing.promise
+    expect(f.runtime.cancelInstall('workbuddy')).toEqual({
+      cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。',
+    })
+    finish.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true })
   })
 
   it('isolates failing progress observers', async () => {
@@ -551,6 +630,49 @@ describe('Windows Claude Desktop official package route', () => {
     expect(progress.find((event) => event.percent === 42)).toMatchObject({ tool: 'claudeDesktop', phase: 'downloading' })
   })
 
+  it.each([
+    ['without winget', noWinget, null],
+    ['after winget failed', {}, wingetError()],
+  ] as const)('stops the Claude website download when the customer cancels %s, and installs again afterwards', async (_label, overrides, wingetFailure) => {
+    const f = claudeFixture(overrides)
+    if (wingetFailure) f.failWinget(wingetFailure)
+    const downloading = deferred()
+    f.claudeOfficial.mockImplementationOnce(async (options) => {
+      downloading.resolve()
+      return untilAborted(options.signal)
+    })
+    const progress: ExternalClientInstallProgress[] = []
+    const install = f.runtime.install('claudeDesktop', (event) => progress.push(event))
+    await downloading.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({ cancelled: true, reason: null })
+    const error = await install.catch((cause: unknown) => cause)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('Claude Desktop 安装已取消')
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'Claude Desktop 安装已取消' })
+    expect(f.routed).toEqual(['start', 'end'])
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+  })
+
+  it('refuses to cancel once the downloaded package is handed to Windows', async () => {
+    const f = claudeFixture(noWinget)
+    const installing = deferred()
+    const finish = deferred()
+    f.claudeOfficial.mockImplementationOnce(async (options) => {
+      options.onInstallStarting?.()
+      installing.resolve()
+      await finish.promise
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    const install = f.runtime.install('claudeDesktop')
+    await installing.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({
+      cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+    })
+    finish.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true, version: '2.110.1.0' })
+  })
+
   it('installs the arm64 package on arm64 computers and defaults to trusted-only checks', async () => {
     const f = claudeFixture({ ...noWinget, architecture: 'arm64' })
     expect((await f.runtime.scan())[1]).toMatchObject({ installSupported: true, installHint: null })
@@ -750,6 +872,22 @@ describe('macOS external desktop lifecycle', () => {
     expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/codesign', argv: ['--verify'] }, expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000 }))
     for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
     expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/usr/sbin/spctl' && spec.argv.at(-1) === '/Applications/OpenCode.app')).toBe(true)
+  })
+  it('stops a Mac install at any step when the customer cancels, even while the app is being moved into place', async () => {
+    const placing = deferred()
+    const f = macInstallFixture({ installMacosDesktopApp: async (options) => {
+      await options.runProcess({ executable: '/usr/bin/sw_vers', argv: ['-productVersion'], timeoutMs: 1_000 })
+      // 放进「应用程序」是整个改名，停在哪一步都不会留下半个应用，所以这一步也接受取消。
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      placing.resolve()
+      return untilAborted(options.signal)
+    } })
+    const install = f.runtime.install('opencode')
+    await placing.promise
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+    await expect(install).rejects.toThrow('OpenCode 安装已取消')
+    // The installer's own processes listen to the same cancel.
+    expect(f.execute.mock.calls.find(([spec]) => spec.executable === '/usr/bin/sw_vers')?.[1]?.signal?.aborted).toBe(true)
   })
   it('checks the disk before anything is downloaded and passes the installer failure on unchanged', async () => {
     const short = macInstallFixture({ assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足`) } })

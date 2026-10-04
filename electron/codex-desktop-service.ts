@@ -125,6 +125,12 @@ const codexDesktopOfficialPackageUrls = {
   arm64: 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix',
 } as const
 const codexDesktopOfficialLabel = 'OpenAI 官网'
+// 官网那一路照当时的速度还要再下这么久以上，就不等了，换国内镜像（0.2.15 发版前回归检查③）。
+// 国内镜像一两分钟就能下完，没开加速的客户直连官网常常「慢但不断」，以前只能干等或点取消。
+// 看的是「还要多久」而不是「一共多久」：快下完的不会因为前面慢过而被扔掉重下。
+export const codexDesktopOfficialDownloadLimitMs = 10 * 60_000
+// 刚开始那半分钟速度还没稳（建连接、TCP 慢启动），不据此放弃。
+export const codexDesktopSlowDownloadGraceMs = 30_000
 const codexDesktopMirrorHosts = new Set([
   'codexapp.agentsmirror.com',
   'codexapp-r2.agentsmirror.com',
@@ -426,6 +432,30 @@ export interface CodexDesktopPackageSource {
    * 缺省 = 只认 MSIX 与二进制流（国内镜像那一路照旧）。
    */
   acceptAnyBinaryContentType?: boolean
+  /**
+   * 只给后面还有退路的那一路（OpenAI 官网的离线安装包）：照目前的平均速度还要这么久以上
+   * 才下得完，就不等了，当这一路没下成，由调用方换国内镜像。
+   * 缺省 = 多慢都下完（国内镜像是最后一路，照旧）。
+   */
+  maximumRemainingMs?: number
+}
+
+/** 下载那一步留给测试的接缝：断线后等多久、多久没数据算停住、判「太慢」用的时钟。 */
+export interface CodexDesktopDownloadSeams extends Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'> {
+  now?: () => number
+}
+
+/** 照开始以来的平均速度，这次下载还要多久才下得完。还没收到数据时算不出来，返回 null。 */
+export function estimateCodexDesktopDownloadRemainingMs(elapsedMs: number, transferred: number, total: number): number | null {
+  if (transferred <= 0 || elapsedMs < 0) return null
+  return Math.max(0, total - transferred) * elapsedMs / transferred
+}
+
+/** 下了半分钟以上，照目前的速度还要超过 limitMs 才下得完（或者还一个字节都没收到）。 */
+export function isCodexDesktopDownloadTooSlow(elapsedMs: number, transferred: number, total: number, limitMs: number): boolean {
+  if (elapsedMs < codexDesktopSlowDownloadGraceMs) return false
+  const remaining = estimateCodexDesktopDownloadRemainingMs(elapsedMs, transferred, total)
+  return remaining === null || remaining > limitMs
 }
 
 export interface CodexDesktopDownloadProgress {
@@ -1019,18 +1049,25 @@ export async function downloadCodexDesktopPackage(
   onProgress: (progress: CodexDesktopDownloadProgress) => void,
   fetchImplementation: typeof fetch,
   cancelSignal?: AbortSignal,
-  resumeOptions: Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'> = {},
+  seams: CodexDesktopDownloadSeams = {},
 ): Promise<CodexDesktopDownloadResult> {
+  const { now = Date.now, ...resumeOptions } = seams
   let total = 0
   let lastPercent = -1
   const percentOf = (transferred: number) => Math.min(100, Math.floor((transferred / total) * 100))
+  // 「太慢、不等了」单独一个信号：要和客户点的取消分得开，前者换下一路，后者整次停下。
+  const limitMs = source.maximumRemainingMs
+  const slow = new AbortController()
+  const downloadSignal = limitMs === undefined ? cancelSignal
+    : cancelSignal ? AbortSignal.any([cancelSignal, slow.signal]) : slow.signal
+  const startedAt = now()
   try {
     const download = await downloadWithResume({
       targetPath: destination,
       fileMode: 0o600,
       maximumBytes: maximumCodexDesktopPackageBytes,
       oversizeMessage: `${source.label}返回的数据超过声明的安装包大小`,
-      signal: cancelSignal,
+      signal: downloadSignal,
       responseTimeoutMs: 20_000,
       idleTimeoutMs: 45_000,
       ...resumeOptions,
@@ -1064,6 +1101,17 @@ export async function downloadCodexDesktopPackage(
         return declared
       },
       onProgress: (transferred) => {
+        // 每收到一块就算一次：只按整百分比算的话，慢到一分钟走不了 1% 时要好几分钟才看得出来。
+        if (limitMs !== undefined && !slow.signal.aborted) {
+          const elapsedMs = now() - startedAt
+          if (isCodexDesktopDownloadTooSlow(elapsedMs, transferred, total, limitMs)) {
+            const remaining = estimateCodexDesktopDownloadRemainingMs(elapsedMs, transferred, total)
+            slow.abort(new Error(remaining === null
+              ? `${source.label}下载太慢`
+              : `${source.label}下载太慢：照目前的速度还要 ${Math.ceil(remaining / 60_000)} 分钟才下得完`))
+            return
+          }
+        }
         const percent = percentOf(transferred)
         if (percent === lastPercent) return
         lastPercent = percent
@@ -1090,6 +1138,7 @@ export async function downloadCodexDesktopPackage(
     // 判断，而不是把两者都说成「下载超时」。reason 兜一层：本函数是导出的，调用方
     // 给的信号不一定带 reason，少了这一层就会 throw undefined。
     if (cancelSignal?.aborted) throw cancelSignal.reason ?? new InstallCancelledError()
+    if (slow.signal.aborted) throw slow.signal.reason
     if (
       error instanceof DownloadStalledError
       || (error instanceof Error && error.name === 'AbortError')
@@ -1186,6 +1235,7 @@ export function buildCodexDesktopOfficialPackageSource(architecture: 'x64' | 'ar
     label: codexDesktopOfficialLabel,
     url: codexDesktopOfficialPackageUrls[architecture],
     acceptAnyBinaryContentType: true,
+    maximumRemainingMs: codexDesktopOfficialDownloadLimitMs,
   }
 }
 
@@ -1205,7 +1255,7 @@ export interface CodexDesktopOfficialDownloadOptions {
   onValidating?: () => void
   /** 测试替身；生产用 inspectCodexDesktopPackageFile。 */
   inspectPackage?: (packagePath: string) => Promise<CodexDesktopPackageMetadata>
-  resumeOptions?: Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'>
+  resumeOptions?: CodexDesktopDownloadSeams
 }
 
 export type CodexDesktopOfficialDownloadResult =
@@ -1215,7 +1265,9 @@ export type CodexDesktopOfficialDownloadResult =
 /**
  * 第二路：从 OpenAI 官网下离线安装包。官网不像国内镜像那样给一份带 SHA-256 的清单，
  * 所以真伪靠下载后的包身份、发布者、签名核对（和镜像那一路同一套），装的时候 Windows
- * 还会再验一次签名。没读到版本、没下成、没过校验都抛错，由调用方换国内镜像。
+ * 还会再验一次签名。没读到版本、没下成、没过校验都抛错，由调用方换国内镜像；照当时的
+ * 速度还要下 10 分钟以上（codexDesktopOfficialDownloadLimitMs）也算没下成。客户点的取消
+ * 照旧原样抛出，调用方据此整次停下。
  */
 export async function downloadCodexDesktopOfficialPackage(
   options: CodexDesktopOfficialDownloadOptions,
