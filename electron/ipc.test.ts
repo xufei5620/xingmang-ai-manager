@@ -7007,6 +7007,21 @@ describe('exports:reveal-file', () => {
   })
 })
 
+describe('text export save dialogs', () => {
+  it('names the file type in Chinese for every report saved as text', async () => {
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { desktopDirectory: () => os.tmpdir() })
+    electronMocks.showSaveDialog.mockResolvedValue({ canceled: true })
+
+    await expect(electronMocks.handlers.get('diagnostics:export')!(trustedEvent())).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('chat-history:export-text')!(trustedEvent(), { title: '周报', text: '我：你好' })).resolves.toBeNull()
+
+    // Windows 保存窗口底下的「保存类型」显示的就是这个名字；诊断报告和反馈报告以前写的是英文 Text。
+    const textFilter = [{ name: '文本文件', extensions: ['txt'] }]
+    expect(electronMocks.showSaveDialog.mock.calls.map(([options]) => options.filters)).toEqual([textFilter, textFilter, textFilter])
+  })
+})
+
 describe('runtime-logs:preview-feedback size budget', () => {
   it('asks the log store to fit the report instead of failing on size', async () => {
     const { runtimeLog } = register()
