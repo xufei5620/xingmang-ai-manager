@@ -82,7 +82,7 @@ import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { tools } from './registry/tools'
 import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
-import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
+import { canUninstallTool, externalInstallHint, updatesOutsideApp } from './features/tools/model'
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
@@ -168,8 +168,11 @@ type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConne
 // 没有自己的配置文件，自检无从下手，所以这里只取 CLI；三个外部客户端各有自己的
 // 配置文件，跟在 CLI 后面（registry/clients.ts 的次序）。
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
-/** installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）。 */
-/** declined：客户在开装前的确认框里点了不装（比如 Codex 桌面端还开着时点「先不更新」），什么都没动。 */
+/**
+ * installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）；
+ * declined：客户在开装前的确认框里点了不装（「换成星芒装的」点取消、Codex 桌面端还开着时点「先不更新」），
+ * 什么都没动，也不用说什么。
+ */
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
@@ -1486,10 +1489,9 @@ export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问�
 export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
-export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
+export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string | null {
+  if (result === 'declined') return null
   if (result === 'cancelled') return '安装已取消'
-  // 客户自己说先不装：什么都没动，也就不用说什么。
-  if (result === 'declined') return ''
   if (result === 'restart') return '运行环境已装好，重启电脑后再点一次「安装」'
   if (result === 'skipped') return '这个工具正在安装，等它做完就好'
   return '安装完成，工具状态已更新'
@@ -1543,7 +1545,6 @@ export function MaintenancePage({
           try {
             const outcome = await installTool(id)
             if (outcome === 'skipped' && cancelRequested.current.has(id)) return 'cancelled' as const
-            if (outcome === 'declined') return outcome
             await resource.reload()
             return outcome
           } finally {
@@ -1683,7 +1684,8 @@ export function MaintenancePage({
           const rescan = statusUnknown || detectionFailed
           // 官方安装器或别的方式装的 CLI，这里的「重新安装」走的是 npm，只会在
           // 旁边再装一份和它抢着用（#481）。与首页一样不给这个按钮，改说明怎么更新。
-          const externalHint = id !== 'codexDesktop' && !rescan && isExternallyManagedInstall(status)
+          // 官方安装器装的 Claude Code 照首页一样放开：点了先问一句，卸掉再装。
+          const externalHint = id !== 'codexDesktop' && !rescan && updatesOutsideApp(id, status)
             ? externalInstallHint(status?.installSource)
             : null
           return (

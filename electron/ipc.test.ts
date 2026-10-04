@@ -2853,8 +2853,24 @@ describe('registerIpcHandlers', () => {
       outcome: 'uninstalled',
       previousVersion: 'grok 0.2.111',
     })
-    expect(service.uninstallCli).toHaveBeenCalledWith('grok')
+    expect(service.uninstallCli).toHaveBeenCalledWith('grok', {})
     await expect(electronMocks.handlers.get('cli:uninstall')!(trustedEvent(), 'unknown')).rejects.toThrow('未知的 CLI 类型')
+  })
+
+  it('passes the reinstall request of an uninstall through and rejects any other shape', async () => {
+    const service = serviceStub()
+    vi.mocked(service.uninstallCli).mockResolvedValue({ outcome: 'uninstalled', previousVersion: '2.1.276' })
+    register(service)
+    const handler = electronMocks.handlers.get('cli:uninstall')!
+
+    await handler(trustedEvent(), 'claude', { reinstall: true })
+    expect(service.uninstallCli).toHaveBeenLastCalledWith('claude', { reinstall: true })
+    await handler(trustedEvent(), 'claude', { reinstall: false })
+    expect(service.uninstallCli).toHaveBeenLastCalledWith('claude', {})
+    await expect(handler(trustedEvent(), 'claude', { reinstall: 'yes' })).rejects.toThrow('卸载参数格式错误')
+    await expect(handler(trustedEvent(), 'claude', { reinstall: true, path: '/tmp' })).rejects.toThrow('卸载参数格式错误')
+    await expect(handler(trustedEvent(), 'claude', 'reinstall')).rejects.toThrow('卸载参数格式错误')
+    expect(service.uninstallCli).toHaveBeenCalledTimes(2)
   })
 
   it('exposes sanitized runtime logs and copies the feedback report', async () => {

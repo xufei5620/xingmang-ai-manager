@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -423,6 +423,15 @@ describe('renderer update offer for the start guide', () => {
   it('points an install made some other way at its own updater', () => {
     expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'native' } })))
       .toMatchObject({ manualHint: '该版本由官方安装器管理，请用它自己的方式更新' })
+    expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'path', uninstall: { available: true, reason: null, manualCommand: null } } })))
+      .toMatchObject({ manualHint: '该版本不是通过本工具安装的，更新请用它原本的安装方式' })
+  })
+
+  it('offers the official-installer Claude Code the same update button, since the app can switch it over', () => {
+    const native = { installed: true, version: '2.1.276', path: null, installDirectory: null, installSource: 'native' as const, uninstall: { available: true, reason: null, manualCommand: null } }
+    const blocked = { ...pinnedOld, blockedReason: '这个版本每次提问都会失败，换到推荐版本就好' }
+    expect(toolUpdateOffer(row({ status: native, versionAdvice: blocked })))
+      .toEqual({ version: '2.1.277', target: '2.1.277', newer: true, knownIssue: true, manualHint: null })
   })
 
   it('stays quiet for a missing tool or a failed detection', () => {
@@ -496,6 +505,27 @@ describe('renderer install source labelling', () => {
     expect(isExternallyManagedInstall({ installed: true, installSource: 'npm' })).toBe(false)
     expect(isExternallyManagedInstall({ installed: true })).toBe(false)
     expect(isExternallyManagedInstall({ installed: false, installSource: 'native' })).toBe(false)
+  })
+
+  it('lets only the official-installer Claude Code the app can uninstall switch to the app', () => {
+    const uninstall = { available: true, reason: null, manualCommand: null }
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'native', uninstall })).toBe(true)
+    // Codex 官方那份星芒卸不掉；别的方式装的、npm 装的、没装的都不在此列。
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'native', uninstall: { ...uninstall, available: false } })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'native' })).toBe(false)
+    expect(canSwitchToManagedInstall('codex', { installed: true, installSource: 'native', uninstall })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'path', uninstall })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'npm', uninstall })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: false, installSource: 'native', uninstall })).toBe(false)
+  })
+
+  it('updates outside the app only an external install that cannot switch over', () => {
+    const uninstall = { available: true, reason: null, manualCommand: null }
+    expect(updatesOutsideApp('claude', { installed: true, installSource: 'native', uninstall })).toBe(false)
+    expect(updatesOutsideApp('codex', { installed: true, installSource: 'native', uninstall })).toBe(true)
+    expect(updatesOutsideApp('claude', { installed: true, installSource: 'path', uninstall })).toBe(true)
+    expect(updatesOutsideApp('claude', { installed: true, installSource: 'npm', uninstall })).toBe(false)
+    expect(updatesOutsideApp('gemini', { installed: true })).toBe(false)
   })
 
   it('gives a source-specific passive hint instead of an npm update', () => {

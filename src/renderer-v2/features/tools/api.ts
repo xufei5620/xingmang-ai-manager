@@ -3,6 +3,7 @@ import {
   type AccountSourceTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
+  type CliUninstallOptions,
   type CodexDesktopLaunchMode,
   type ExternalToolId,
   type InstallCancelResult,
@@ -180,8 +181,9 @@ export function createToolsApi(bridge: XingmangApi) {
     cancelInstall: (id: ToolId): Promise<InstallCancelResult> => id === 'codexDesktop'
       ? bridge.cancelCodexDesktopInstall()
       : bridge.cancelCliInstall(id),
-    uninstall: async (id: ToolId) => {
-      const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id))
+    // options 只有「换成星芒装的」会带（reinstall），见 CliUninstallOptions。
+    uninstall: async (id: ToolId, options?: CliUninstallOptions) => {
+      const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id, options))
       recentSessions.invalidate()
       return result
     },
