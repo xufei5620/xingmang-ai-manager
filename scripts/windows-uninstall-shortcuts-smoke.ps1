@@ -8,13 +8,15 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 # the previous uninstaller with --updated: the new installer does not recreate
 # shortcuts then.
 #
-# A hosted runner can write the public desktop, so the fallback never fires
-# here. The smoke plants the pair itself, next to a differently named shortcut
-# that must survive, then upgrades twice (a plain reinstall over the installed
-# copy, and an updater-style --updated one) and finally uninstalls for real.
+# The smoke turns the runner into such a machine: everyone is denied adding
+# files to the public desktop and the all-users start menu, so the installer
+# writes the pair itself. It then upgrades twice (a plain reinstall over the
+# installed copy, and an updater-style --updated one), uninstalls for real,
+# installs into another folder, where the pair has to come back (a leftover
+# pair used to stop that), and uninstalls again.
 #
-# CI only. It writes shortcuts into the current user's desktop and start menu,
-# and removes whatever of them is left in the finally block.
+# CI only. It changes the ACLs of the two all-users folders and writes into the
+# current user's desktop and start menu; the finally block undoes both.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -24,72 +26,105 @@ function Check([bool]$condition, [string]$message) {
   Write-Output "ok - $message"
 }
 
-function Install-App([string]$stage, [string[]]$switches) {
+function Get-AppExe([string]$dir) {
+  return Get-ChildItem -LiteralPath $dir -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall *' } | Select-Object -First 1
+}
+
+function Install-App([string]$stage, [string]$dir, [string[]]$switches) {
   # /D= has to come last: NSIS takes the rest of the command line as the path.
-  $install = Start-Process -FilePath $Installer -ArgumentList (@('/S') + $switches + "/D=$installDir") -Wait -PassThru
+  $install = Start-Process -FilePath $Installer -ArgumentList (@('/S') + $switches + "/D=$dir") -Wait -PassThru
   Check ($install.ExitCode -eq 0) "$stage exits 0 (got $($install.ExitCode))"
 }
 
-function New-Shortcut([string]$path, [string]$target) {
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
-  $link = (New-Object -ComObject WScript.Shell).CreateShortcut($path)
-  $link.TargetPath = $target
-  $link.Save()
+function Uninstall-App([string]$stage, [string]$dir) {
+  $exe = Get-AppExe $dir
+  $uninstaller = Get-ChildItem -LiteralPath $dir -Filter 'Uninstall *.exe' | Select-Object -First 1
+  Check ($null -ne $exe -and $null -ne $uninstaller) "$stage found the app and its uninstaller"
+  # _?= keeps the uninstaller in place so -Wait covers the whole uninstall.
+  $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/S', "_?=$dir") -Wait -PassThru
+  Check ($uninstall.ExitCode -eq 0) "$stage exits 0 (got $($uninstall.ExitCode))"
+  Check (-not (Test-Path -LiteralPath $exe.FullName)) "$stage removed the app"
 }
 
-function Assert-Present([string]$stage, [string[]]$paths, [bool]$expected) {
-  $verb = if ($expected) { 'kept' } else { 'removed' }
-  foreach ($path in $paths) { Check ((Test-Path -LiteralPath $path) -eq $expected) "$stage $verb $path" }
+function Set-AddFileDenied([string]$dir, [bool]$denied) {
+  # Everyone by SID, so the runner's display language does not matter. WD on a
+  # folder is "add file"; without (OI)(CI) nothing inside inherits the deny.
+  $arguments = if ($denied) { @($dir, '/deny', '*S-1-1-0:(WD)') } else { @($dir, '/remove:d', '*S-1-1-0') }
+  & (Join-Path $env:SystemRoot 'System32\icacls.exe') @arguments | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "icacls $($arguments -join ' ') exited $LASTEXITCODE" }
+}
+
+function Get-Links([string]$dir) {
+  if (-not (Test-Path -LiteralPath $dir)) { return @() }
+  return @(Get-ChildItem -LiteralPath $dir -Filter '*.lnk' -Force | ForEach-Object { $_.Name })
+}
+
+function Assert-Links([string]$stage, [string[]]$paths, [bool]$expected) {
+  $state = if ($expected) { 'is there' } else { 'is gone' }
+  foreach ($path in $paths) { Check ((Test-Path -LiteralPath $path) -eq $expected) "after $stage, $path $state" }
 }
 
 $installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-shortcut-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-$installDir = Join-Path $installRoot 'app'
-# The folders NSIS means by $DESKTOP and $SMPROGRAMS after SetShellVarContext
-# current, and by $DESKTOP in the all-users context.
+$firstDir = Join-Path $installRoot 'first'
+$secondDir = Join-Path $installRoot 'second'
+# What NSIS means by $DESKTOP and $SMPROGRAMS in the all-users context, and
+# after SetShellVarContext current.
+$publicDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
+$publicPrograms = [Environment]::GetFolderPath('CommonPrograms')
 $userDesktop = [Environment]::GetFolderPath('DesktopDirectory')
 $userPrograms = [Environment]::GetFolderPath('Programs')
-$publicDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
-$planted = @()
+$denied = @()
+$leftovers = @()
 
 try {
-  Install-App 'silent install' @()
-  $exe = Get-ChildItem -LiteralPath $installDir -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall *' } | Select-Object -First 1
-  $uninstaller = Get-ChildItem -LiteralPath $installDir -Filter 'Uninstall *.exe' | Select-Object -First 1
-  Check ($null -ne $exe -and $null -ne $uninstaller) 'installed app and uninstaller found'
+  $before = @{}
+  foreach ($dir in $publicDesktop, $publicPrograms, $userDesktop, $userPrograms) { $before[$dir] = @(Get-Links $dir) }
+  foreach ($dir in $publicDesktop, $publicPrograms) {
+    Set-AddFileDenied $dir $true
+    $denied += $dir
+  }
 
-  # The fallback names its shortcuts after nsis.shortcutName, which is the same
-  # string as the product name here; the template's own public shortcut proves it.
+  Install-App 'first install' $firstDir @()
+  $exe = Get-AppExe $firstDir
+  Check ($null -ne $exe) 'first install put the app in place'
+  # nsis.shortcutName is the product name, which also names the exe.
   $name = [IO.Path]::GetFileNameWithoutExtension($exe.Name) + '.lnk'
-  $publicLink = Join-Path $publicDesktop $name
-  Check (Test-Path -LiteralPath $publicLink) "the installer put $name on the public desktop"
+  $added = @{}
+  foreach ($dir in $before.Keys) { $added[$dir] = @(Get-Links $dir | Where-Object { $before[$dir] -notcontains $_ }) -join ', ' }
+  Check ($added[$publicDesktop] -eq '') "the installer could not write the public desktop (added: $($added[$publicDesktop]))"
+  Check ($added[$publicPrograms] -eq '') "the installer could not write the all-users start menu (added: $($added[$publicPrograms]))"
+  Check ($added[$userDesktop] -eq $name) "the installer fell back to $name on the user's desktop (added: $($added[$userDesktop]))"
+  Check ($added[$userPrograms] -eq $name) "the installer fell back to $name in the user's start menu (added: $($added[$userPrograms]))"
 
   $fallbackLinks = @((Join-Path $userDesktop $name), (Join-Path $userPrograms $name))
+  # A shortcut the user made or renamed is not the installer's to delete.
   $otherLink = Join-Path $userDesktop ('copy of ' + $name)
-  foreach ($link in $fallbackLinks + $otherLink) {
-    # customInstall only falls back when the public copy is missing, so the
-    # installer itself must not have put anything here.
-    Check (-not (Test-Path -LiteralPath $link)) "nothing at $link before planting"
-    New-Shortcut $link $exe.FullName
-    $planted += $link
-  }
-  Assert-Present 'planting' ($fallbackLinks + $otherLink) $true
+  $leftovers = $fallbackLinks + $otherLink
+  Copy-Item -LiteralPath $fallbackLinks[0] -Destination $otherLink
 
   # Running the new installer over the old copy runs the old uninstaller with
   # --updated; the updater adds --updated to the installer itself as well.
-  Install-App 'reinstall over the installed copy' @()
-  Assert-Present 'reinstall' ($fallbackLinks + $otherLink) $true
-  Install-App 'updater-style upgrade' @('--updated')
-  Assert-Present 'upgrade' ($fallbackLinks + $otherLink) $true
+  Install-App 'reinstall over the installed copy' $firstDir @()
+  Assert-Links 'reinstall' ($fallbackLinks + $otherLink) $true
+  Install-App 'updater-style upgrade' $firstDir @('--updated')
+  Assert-Links 'upgrade' ($fallbackLinks + $otherLink) $true
 
-  # _?= keeps the uninstaller in place so -Wait covers the whole uninstall.
-  $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/S', "_?=$installDir") -Wait -PassThru
-  Check ($uninstall.ExitCode -eq 0) "uninstall exits 0 (got $($uninstall.ExitCode))"
-  Check (-not (Test-Path -LiteralPath $exe.FullName)) 'uninstall removed the app'
-  Assert-Present 'uninstall' ($fallbackLinks + $publicLink) $false
-  Assert-Present 'uninstall' @($otherLink) $true
+  Uninstall-App 'uninstall' $firstDir
+  Assert-Links 'uninstall' $fallbackLinks $false
+  Assert-Links 'uninstall' @($otherLink) $true
+
+  # A leftover pair used to make the next install skip the fallback.
+  Install-App 'install into another folder' $secondDir @()
+  Assert-Links 'install into another folder' $fallbackLinks $true
+  Uninstall-App 'second uninstall' $secondDir
+  Assert-Links 'second uninstall' $fallbackLinks $false
 } catch {
   Write-Output $_.ScriptStackTrace
   throw
 } finally {
-  if ($planted.Count -gt 0) { Remove-Item -LiteralPath $planted -Force -ErrorAction SilentlyContinue }
+  # A failure here must not hide the one that brought us here.
+  foreach ($dir in $denied) {
+    try { Set-AddFileDenied $dir $false } catch { Write-Output "could not restore the ACL of ${dir}: $_" }
+  }
+  if ($leftovers.Count -gt 0) { Remove-Item -LiteralPath $leftovers -Force -ErrorAction SilentlyContinue }
 }

@@ -15,8 +15,8 @@
 - `scripts/windows-installer-shortcuts.test.cjs` 加三条：卸载删的路径与 `customInstall` 在当前用户那里补建的逐条对上（顺手建的文件夹同理）；
   只在真卸载里调，守着 `--keep-shortcuts` 和 `DO_NOT_CREATE_*`，函数只进卸载程序那一遍；切到 current 以后每条路都切回。
   `windows-installer-uninstall-cleanup.test.cjs` 那条正则放宽到 isUpdated 守卫里可以跟着别的调用。
-- `windows-uninstall-smoke.yml` 加一步 `scripts/windows-uninstall-shortcuts-smoke.ps1`：真装真卸，在当前用户桌面和开始菜单摆上同名图标
-  （runner 写得进公共桌面，兜底不会自己触发），旁边再放一个别的名字的；覆盖安装、带 --updated 的升级各一次后都还在，真卸载后同名的两个
-  没了、别的名字那个还在、公共桌面那个也没了。
+- `windows-uninstall-smoke.yml` 加一步 `scripts/windows-uninstall-shortcuts-smoke.ps1`：真装真卸。先用 icacls 拒绝所有人往公共桌面和
+  公共开始菜单里加文件，让安装程序自己把图标补建在当前用户那里，旁边再复制一个别的名字的；覆盖安装、带 --updated 的升级各一次后都还在；
+  真卸载后补建的两个没了、别的名字那个还在；再装到另一个文件夹，两个图标又补出来，再卸载又没了。最后把两个文件夹的权限改回去。
 - 这次不管的两种：普通账号输别的管理员密码代为安装和卸载（补建、删除都在那个管理员那里，两头对称）；不先卸载、直接拿新安装包覆盖安装
   又换了文件夹（旧卸载程序带 --updated 跑，不删；新安装程序看见旧图标在，也不补）。
