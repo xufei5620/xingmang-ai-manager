@@ -169,7 +169,8 @@ type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConne
 // 配置文件，跟在 CLI 后面（registry/clients.ts 的次序）。
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
 /** installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）。 */
-export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped'
+/** declined：客户在开装前的确认框里点了不装（比如 Codex 桌面端还开着时点「先不更新」），什么都没动。 */
+export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
   openLogin?: (target?: LoginTarget) => void
@@ -1487,6 +1488,8 @@ export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码�
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
   if (result === 'cancelled') return '安装已取消'
+  // 客户自己说先不装：什么都没动，也就不用说什么。
+  if (result === 'declined') return ''
   if (result === 'restart') return '运行环境已装好，重启电脑后再点一次「安装」'
   if (result === 'skipped') return '这个工具正在安装，等它做完就好'
   return '安装完成，工具状态已更新'
@@ -1540,6 +1543,7 @@ export function MaintenancePage({
           try {
             const outcome = await installTool(id)
             if (outcome === 'skipped' && cancelRequested.current.has(id)) return 'cancelled' as const
+            if (outcome === 'declined') return outcome
             await resource.reload()
             return outcome
           } finally {

@@ -134,6 +134,10 @@ if (query.has('desktopOnly')) {
 if (query.has('cliUpdate')) {
   system.clis.claude = { ...system.clis.claude, latestVersion: '2.0.0', updateAvailable: true }
 }
+// Codex 桌面端国内镜像有新包：首页那一行挂「更新」，安装卸载页的「重新安装」装的也是它（第三十二批 C）。
+if (query.has('desktopUpdate')) {
+  system.desktopApps.codex = { ...system.desktopApps.codex, latestVersion: '1.2.4', updateAvailable: true, updateState: 'available', mirrorVersion: '1.2.4', mirrorUpdateAvailable: true }
+}
 // 官方安装器装的 Claude Code：维护页不给 npm「重新安装」（#481）。
 if (query.has('nativeInstall')) {
   system.clis.claude = { ...system.clis.claude, installSource: 'native' }
@@ -523,7 +527,12 @@ const methods = {
     if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)
     system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0', latestVersion: '2.0.0', updateAvailable: false }
   },
-  installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
+  installCodexDesktop: async () => {
+    if (!query.has('desktopUpdate')) return { action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }
+    // 同主进程：Windows 上换包之前先关掉开着的 Codex，装完是新版、没开着。
+    system.desktopApps.codex = { ...system.desktopApps.codex, version: '1.2.4', appVersion: '1.2.4', updateAvailable: false, updateState: 'latest', mirrorUpdateAvailable: false, running: false }
+    return { action: 'updated', previousVersion: '1.2.3', installedVersion: '1.2.4' }
+  },
   getAccountKeys: async () => ({ keys: query.has('keyOptions') ? [
     { id: 201, name: 'coding-key', group: 'Codex_pro', maskedKey: 'sk-se••••9012', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
     { id: 202, name: 'custom-key', group: 'Custom group', maskedKey: 'sk-ot••••1234', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },

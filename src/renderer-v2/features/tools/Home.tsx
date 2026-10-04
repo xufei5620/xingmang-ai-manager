@@ -61,6 +61,8 @@ export interface HomeProps {
   onInstall(tool: ToolId, version?: string): void
   /** 中止正在进行的安装或更新。 */
   onCancelInstall(tool: ToolId): void
+  /** 点了「更新」、开装前还在查一件事（Codex 桌面端开没开）的那个工具：它那颗「更新」转圈。缺省 = 没有（旧行为）。 */
+  checkingUpdate?: ToolId
   /**
    * workspace 省略 = 弹目录选择器(旧行为);点名 = 直接用记住的目录打开(N7)。
    * mode 省略 = 开新对话;'resumeLast' = 接着这个目录里最近的一条对话(#292);
@@ -313,6 +315,7 @@ export function Home(props: HomeProps) {
     const switchJob = jobs[`switch:${tool.id}`]
     const repairJob = jobs[`repair-hooks:${tool.id}`]
     const job = launchJob ?? switchJob ?? repairJob ?? installJob
+    const checkingUpdate = props.checkingUpdate === tool.id
     // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
     const configUnavailable = !tool.error && tool.status.installed
@@ -382,7 +385,7 @@ export function Home(props: HomeProps) {
     const rollbackIcon = tool.versionAdvice?.recommendedIsNewer ? Download : RotateCcw
     const waitingForScan = loading && !launchReadyBeforeScan(tool)
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
-      disabled={waitingForScan || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
+      disabled={waitingForScan || launchBusy || checkingUpdate || bootstrapBusy && !tool.configured && !configUnavailable}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
@@ -411,7 +414,7 @@ export function Home(props: HomeProps) {
             : undefined
           : rollback && blocked
             ? <Button variant="ghost" size="sm" icon={rollbackIcon} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>{`${rollbackVerb}推荐版本`}</Button>
-            : update?.newer ? <Button variant="ghost" size="sm" icon={Download} title={updateButtonHint(tool)} onClick={() => props.onInstall(tool.id, update.version ?? update.target ?? undefined)}>更新</Button> : undefined}
+            : update?.newer ? <Button variant="ghost" size="sm" icon={Download} loading={checkingUpdate} title={updateButtonHint(tool)} onClick={() => props.onInstall(tool.id, update.version ?? update.target ?? undefined)}>更新</Button> : undefined}
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}

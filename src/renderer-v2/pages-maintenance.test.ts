@@ -321,4 +321,10 @@ describe('installResultMessage', () => {
     expect(installResultMessage('restart')).toContain('重启电脑')
     expect(installResultMessage('skipped')).not.toContain('安装完成')
   })
+
+  // 第三十二批 C：Codex 桌面端还开着、客户点了「先不更新」。原来落到 skipped，页面会说
+  //「这个工具正在安装，等它做完就好」，可什么都没在装。
+  it('says nothing when the customer held off before anything started', () => {
+    expect(installResultMessage('declined')).toBe('')
+  })
 })

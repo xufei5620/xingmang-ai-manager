@@ -2928,6 +2928,173 @@ test('running desktop offers a real restart and official quotas can be refreshed
   } finally { await page.close() }
 })
 
+// 第三十二批 C：Windows 上更新 Codex 桌面端，主进程换包之前会先关掉它，正在进行的回答会被打断。
+// 开着就先问一句，客户点了「关掉并更新」才装，装完照「打开」那条路替客户重新打开；没开着照旧直接装。
+// 点「更新」那一刻现问的那一次（getCodexDesktopStatus）先压住，放行时按 running 回答。
+async function holdCodexDesktopStatus(page, running) {
+  await page.evaluate(async (running) => {
+    const status = { ...(await window.xingmang.scanSystem()).desktopApps.codex, running }
+    window.xingmang.getCodexDesktopStatus = () => new Promise((resolve) => { window.__releaseDesktopStatus = () => resolve(status) })
+  }, running)
+}
+
+test('updating an open Codex Desktop asks first, then closes, updates and reopens it', async () => {
+  const page = await open('running=1&desktopUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-codexDesktop')
+    await row.getByRole('button', { name: '更新', exact: true }).click()
+    const dialog = page.getByTestId('codex-desktop-update-close')
+    await dialog.getByRole('heading', { name: 'Codex 桌面端还开着', exact: true }).waitFor()
+    await dialog.getByText('更新要先把它关掉，会打断它正在进行的回答。更新完星芒会帮你重新打开。', { exact: true }).waitFor()
+    // 随手一按回车不会关掉正在回答的 Codex。
+    await expect(dialog.getByRole('button', { name: '先不更新', exact: true })).toBeFocused()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop')), false, '客户回答之前不能开装')
+    await dialog.getByRole('button', { name: '关掉并更新', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    const methods = calls.map((entry) => entry.method)
+    assert.ok(methods.indexOf('installCodexDesktop') < methods.indexOf('launchCodexDesktop'), '装完才重新打开')
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args), [['open']])
+    await expect(row).toContainText('1.2.4')
+    assert.equal(await dialog.count(), 0)
+    // 刚装完那一下它没开着，不该问「要不要重启」。
+    assert.equal(await page.getByRole('heading', { name: 'Codex 已在运行' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 主进程那一趟的另外几种结局，客户都点了「关掉并更新」：closed 是商店那一路先关了它、商店没装上、
+// 国内线路又没有更新的版本，结果「没换包」；failed 是关了之后没装成；untouched 是已是最新，主进程没动它。
+for (const [ending, reopened] of [['closed', true], ['failed', true], ['untouched', false]]) {
+  test(`Codex Desktop is reopened after the update only when it ended up closed (${ending})`, async () => {
+    const page = await open('running=1&desktopUpdate=1')
+    try {
+      await page.evaluate(async (ending) => {
+        const status = (await window.xingmang.scanSystem()).desktopApps.codex
+        let closed = false
+        window.__desktopStatusReads = 0
+        window.xingmang.getCodexDesktopStatus = async () => { window.__desktopStatusReads += 1; return { ...status, running: !closed } }
+        window.xingmang.installCodexDesktop = async () => {
+          closed = ending !== 'untouched'
+          if (ending === 'failed') throw new Error('Codex 桌面端安装包没下完整')
+          return { action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }
+        }
+      }, ending)
+      await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更新', exact: true }).click()
+      await page.getByTestId('codex-desktop-update-close').getByRole('button', { name: '关掉并更新', exact: true }).click()
+      // 开装前问一次，这一趟结束后再看一次它关没关。
+      await page.waitForFunction(() => window.__desktopStatusReads === 2)
+      if (reopened) await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+      else await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))))
+      assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args)), reopened ? [['open']] : [])
+      // 它还开着是主进程没动它，不问「要不要重启」。
+      assert.equal(await page.getByRole('heading', { name: 'Codex 已在运行' }).count(), 0)
+      if (ending === 'failed') await page.getByRole('dialog', { name: '操作没有完成' }).waitFor()
+      else assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+      await clean(page)
+    } finally { await page.close() }
+  })
+}
+
+test('holding off leaves an open Codex Desktop alone and can be asked again', async () => {
+  const page = await open('running=1&desktopUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-codexDesktop')
+    const update = row.getByRole('button', { name: '更新', exact: true })
+    const dialog = page.getByTestId('codex-desktop-update-close')
+    // Esc 关掉询问框和点「先不更新」一样。
+    await update.click()
+    await dialog.waitFor()
+    await page.keyboard.press('Escape')
+    await dialog.waitFor({ state: 'hidden' })
+    await update.click()
+    await dialog.getByRole('button', { name: '先不更新', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await expect(update).toBeEnabled()
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(methods.includes('installCodexDesktop'), false)
+    assert.equal(methods.includes('launchCodexDesktop'), false)
+    assert.equal(methods.filter((method) => method === 'getCodexDesktopStatus').length, 2)
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('updating a closed Codex Desktop installs straight away and leaves it closed', async () => {
+  const page = await open('desktopUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-codexDesktop')
+    await row.getByRole('button', { name: '更新', exact: true }).click()
+    await expect(row).toContainText('1.2.4')
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.ok(methods.includes('getCodexDesktopStatus'), '开装前现问过一次')
+    assert.ok(methods.includes('installCodexDesktop'))
+    assert.equal(methods.includes('launchCodexDesktop'), false, '本来没开着的，装完不替客户打开')
+    assert.equal(await page.getByTestId('codex-desktop-update-close').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the live answer wins over the last scan and the update button spins while it is asked', async () => {
+  // 首页上次检测时它还没开；点「更新」之前客户刚把它打开。
+  const page = await open('desktopUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-codexDesktop')
+    const update = row.getByRole('button', { name: '更新', exact: true })
+    await update.waitFor()
+    await holdCodexDesktopStatus(page, true)
+    await update.click()
+    await expect(update).toHaveAttribute('aria-busy', 'true')
+    await expect(page.getByTestId('tool-codexDesktop-primary')).toBeDisabled()
+    await page.evaluate(() => window.__releaseDesktopStatus())
+    const dialog = page.getByTestId('codex-desktop-update-close')
+    await dialog.getByRole('button', { name: '先不更新', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await expect(update).toBeEnabled()
+    await expect(page.getByTestId('tool-codexDesktop-primary')).toBeEnabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the maintenance reinstall asks the same question and says nothing when the customer holds off', async () => {
+  const page = await open('running=1&desktopUpdate=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const reinstall = page.getByTestId('maintenance-install-codexDesktop')
+    await reinstall.click()
+    const dialog = page.getByTestId('codex-desktop-update-close')
+    await dialog.getByRole('button', { name: '先不更新', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await expect(reinstall).toBeEnabled()
+    // 原来落到「已在装」那一句，可什么都没在装。
+    assert.equal(await page.getByText('这个工具正在安装，等它做完就好', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('安装完成，工具状态已更新', { exact: true }).count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('cancelling on the maintenance page before the question installs nothing', async () => {
+  const page = await open('running=1&desktopUpdate=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const reinstall = page.getByTestId('maintenance-install-codexDesktop')
+    await reinstall.waitFor()
+    await holdCodexDesktopStatus(page, true)
+    await reinstall.click()
+    await page.getByTestId('maintenance-cancel-codexDesktop').click()
+    await page.evaluate(() => window.__releaseDesktopStatus())
+    await page.getByText('安装已取消', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('codex-desktop-update-close').count(), 0)
+    assert.equal(await page.getByText('这一步已经不能取消了。', { exact: true }).count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a key from another site is named for the account and switched from the row in one click', async () => {
   const page = await open('unknown=1')
   try {
