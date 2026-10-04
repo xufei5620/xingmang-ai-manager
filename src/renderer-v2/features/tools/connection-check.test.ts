@@ -91,6 +91,9 @@ describe('connectionCheckView', () => {
     expect(connectionCheckView(result({ layer: 'config' })).target).toBe('home')
     expect(connectionCheckView(result({ layer: 'unconfigured' })).target).toBe('home')
     expect(connectionCheckView(result({ layer: 'network' })).target).toBe('settings')
+    // 网络那一层落在设置的「网络」组，不再停在第一组「外观」。
+    expect(connectionCheckView(result({ layer: 'network' })).section).toBe('network')
+    expect(connectionCheckView(result({ layer: 'credential' })).section).toBeNull()
     expect(connectionCheckView(result({ layer: 'protocol' })).target).toBe('feedback')
     expect(connectionCheckView(result({ layer: 'unknown' })).target).toBe('feedback')
   })

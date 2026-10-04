@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 
 /**
  * 从别处跳过来要落到页面里的某一行：顶部搜索搜到设置里的「自动更新」，设置页要翻到那一行；
@@ -6,6 +6,9 @@ import { useEffect, useState, type RefObject } from 'react'
  * 要翻到的那一行先放在这里，页面把那一行画出来以后取走（同 settings-group-intent）。
  */
 export type RowFocusPage = 'settings' | 'health'
+
+/** 检查页上「第一项问题」：开机提示的「去看看」不知道是哪一项，由检查页自己换成那一项的 code。 */
+export const firstProblemAnchor = 'first-problem'
 
 let pending: { page: RowFocusPage; anchor: string } | null = null
 const listeners = new Set<() => void>()
@@ -58,9 +61,13 @@ function highlight(row: HTMLElement) {
 /**
  * 页面画好了（ready）就看有没有要翻到的那一行：有就滚到正中、亮一下。那一行等了一会儿还是
  * 没画出来（比如检查结果里这台电脑没有「安全证书」），就只停在这一页，不留着下次再跳。
+ * resolve：把要翻到的那一行换成页面上真有的那一行（检查页的「第一项问题」），顺便让页面把收起的那一行
+ * 摆出来；返回 null 就不翻。缺省 = 原样找。
  */
-export function useRowFocus(page: RowFocusPage, root: RefObject<HTMLElement | null>, ready: boolean) {
+export function useRowFocus(page: RowFocusPage, root: RefObject<HTMLElement | null>, ready: boolean, resolve?: (anchor: string) => string | null) {
   const [request, setRequest] = useState(0)
+  const resolver = useRef(resolve)
+  useEffect(() => { resolver.current = resolve })
   useEffect(() => {
     const listener = () => setRequest((value) => value + 1)
     listeners.add(listener)
@@ -74,8 +81,9 @@ export function useRowFocus(page: RowFocusPage, root: RefObject<HTMLElement | nu
     const frame = requestAnimationFrame(function look() {
       anchor ??= takeRowFocus(page)
       const element = root.current
-      if (!anchor || !element) return
-      const row = rowFor(element, anchor)
+      const target = anchor && resolver.current ? resolver.current(anchor) : anchor
+      if (!target || !element) return
+      const row = rowFor(element, target)
       if (row) highlight(row)
       else if (++attempts < lookupAttempts) timer = window.setTimeout(look, lookupIntervalMs)
     })

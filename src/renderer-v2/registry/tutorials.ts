@@ -61,6 +61,9 @@ export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后
 // Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
 export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
 
+// 技能页选到不能在这里导入的工具时，「看怎么放」打开技能那篇并展开这一条。
+export const skillImportTutorialExtra = 'Claude Code、Grok CLI 没有导入按钮？';
+
 export function updateDiskCleanupStepsFor(os: WindowOs): string {
   return os === 'linux' ? linuxUpdateDiskCleanupSteps : updateDiskCleanupSteps;
 }
@@ -710,7 +713,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: 'Codex CLI 填本机技能文件夹，Gemini CLI 填技能来源。',
         bullets: ['点「导入技能」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
-        extra: [{ title: 'Claude Code、Grok CLI 没有导入按钮？', detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页重新加载；选择当前项目时先核对工作文件夹。' }],
+        extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
         action: '去导入技能',
         page: 'skills',
       },
@@ -779,7 +782,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '工具运行中安装的插件，可能需要重新打开工具才生效。',
         bullets: ['先保存当前工作，再重新打开工具。', '仍失败时，记录插件名称、工具版本和报错。'],
         expected: '重开后能使用插件，或已取得明确错误。',
-        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '「当前工具未提供市场管理接口」表示没有市场，现有插件仍在已安装列表。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
+        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '看到「没有插件市场」，表示这个工具没有市场，装好的插件仍在「已安装」里。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
         action: '打开插件检查状态',
         page: 'plugins',
       },

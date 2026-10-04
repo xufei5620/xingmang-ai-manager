@@ -117,6 +117,17 @@ describe('renderer-v2 list empty states', () => {
     expect(markup).toContain('>清空筛选<')
   })
 
+  // 每处空着时说自己的去处，不再都是「从页面上的添加入口开始。」
+  it('lets a page name its own empty title and next step', () => {
+    const markup = renderToStaticMarkup(<ListState page="health" noun="检查结果" emptyDescription="点右上角「重新检查」。" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
+    expect(markup).toContain('还没有检查结果')
+    expect(markup).toContain('点右上角「重新检查」。')
+    expect(markup).not.toContain('从页面上的添加入口开始。')
+    const titled = renderToStaticMarkup(<ListState page="mcp" noun="外接工具" emptyTitle="还没有添加连接" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
+    expect(titled).toContain('还没有添加连接')
+    expect(titled).not.toContain('还没有外接工具')
+  })
+
   it('puts the empty state buttons side by side in one row', () => {
     const markup = emptyList({ action: <><button type="button">添加</button><button type="button">看看精选</button></> })
     expect(markup).toContain('<div class="xm-empty-actions"><button type="button">添加</button><button type="button">看看精选</button></div>')

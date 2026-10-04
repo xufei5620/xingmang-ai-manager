@@ -809,6 +809,209 @@ test('a curated entry that needs a folder prefills the form instead of installin
   }
 })
 
+const callsNamed = async (page, name) =>
+  (await calls(page)).filter((call) => call.name === name)
+
+// 第五部分第 23、24 条：自己加的连接在上，「星芒精选」在下；一个词同时筛两边。
+test('the MCP page lists its own connections above the curated shelf and one search narrows both', async () => {
+  const page = await fixture('page=mcp')
+  try {
+    const list = page.getByTestId('mcp-list')
+    await list.getByRole('heading', { name: '已添加', exact: true }).waitFor()
+    await list.getByTestId('mcp-row-test-extension').waitFor()
+    const shelf = page.getByTestId('curated-shelf')
+    await shelf.getByText('我们挑过的，装之前会先给你看它要什么权限', { exact: true }).waitFor()
+    const listBox = await list.boundingBox()
+    const shelfBox = await shelf.boundingBox()
+    assert.ok(listBox.y + listBox.height <= shelfBox.y, '自己的列表排在「星芒精选」上面')
+    // 精选每一行只留「安装」：要不要联网放在点「安装」后的确认框里说。
+    assert.equal(await shelf.getByText(/联网/).count(), 0)
+    const search = page.getByTestId('mcp-search')
+    await search.fill('GitHub')
+    await shelf.getByTestId('curated-install-github').waitFor()
+    await shelf.getByTestId('curated-install-browser').waitFor({ state: 'detached' })
+    // 精选一条都不匹配就整张收起；搜不到的那句在「已添加」这张卡里。
+    await search.fill('no-such-connection-8472')
+    await shelf.waitFor({ state: 'detached' })
+    await list.getByTestId('mcp-filter-empty').getByText('没有找到「no-such-connection-8472」', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('an empty MCP list says how to add one and 看看精选 lands on the first install', async () => {
+  const page = await fixture('page=mcp&empty')
+  try {
+    const empty = page.getByTestId('mcp-empty')
+    await empty.getByText('还没有添加连接', { exact: true }).waitFor()
+    await empty.getByText('装下面「星芒精选」里的，或点右上角「添加连接」接你自己的。', { exact: true }).waitFor()
+    await empty.getByRole('button', { name: '添加连接', exact: true }).waitFor()
+    await empty.getByTestId('mcp-see-curated').click()
+    await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
+  } finally {
+    await page.close()
+  }
+})
+
+// 第五部分第 25、28 条：没检测成就别写「上次检测」；「重新检测」先重读列表再检测。
+test('an MCP check that did not finish says so, and 重新检测 reads the list again before checking', async () => {
+  const page = await fixture('page=mcp&mcpHealthFail')
+  try {
+    await page.getByTestId('mcp-health-failed').getByText('这次没检测成', { exact: true }).waitFor()
+    assert.equal(await page.getByText(/上次检测/).count(), 0)
+    const reads = (await callsNamed(page, 'list-extensions')).length
+    await page.getByTestId('mcp-health-recheck').click()
+    await page.getByText(/^上次检测 /).waitFor()
+    assert.equal(await page.getByTestId('mcp-health-failed').count(), 0)
+    const names = (await calls(page)).map((call) => call.name)
+    assert.equal(names.filter((name) => name === 'list-extensions').length, reads + 1)
+    assert.ok(names.lastIndexOf('list-extensions') < names.lastIndexOf('mcp-health'), '先重读列表，再检测连接')
+  } finally {
+    await page.close()
+  }
+})
+
+// 第五部分第 26 条：弹框标题带上工具名，选项上面有小标题。
+test('the add dialogs name the tool they add to and label their choices', async () => {
+  const mcp = await fixture('page=mcp')
+  try {
+    await mcp.getByTestId('mcp-add').first().click()
+    const dialog = mcp.getByRole('dialog', { name: '给 Claude Code 添加连接', exact: true })
+    await dialog.waitFor()
+    await dialog.getByText('连接方式', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '网络服务', exact: true }).waitFor()
+    await dialog.getByRole('combobox', { name: '装到哪里', exact: true }).waitFor()
+  } finally {
+    await mcp.close()
+  }
+  const plugins = await fixture('page=plugins')
+  try {
+    await plugins.getByTestId('plugins-add').first().click()
+    await plugins.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true }).waitFor()
+  } finally {
+    await plugins.close()
+  }
+  const skills = await fixture('page=skills')
+  try {
+    await skills.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await skills.getByTestId('skills-add').first().click()
+    await skills.getByRole('dialog', { name: '给 Codex CLI 导入技能', exact: true }).waitFor()
+  } finally {
+    await skills.close()
+  }
+})
+
+// 第五部分第 27、28 条：不能在这里导入的工具，说清楚怎么放，空着时给「重新加载」。
+test('a tool whose skills cannot be imported here says how to place them and offers a reload', async () => {
+  const page = await fixture('page=skills&empty')
+  try {
+    const note = page.getByTestId('skills-import-unsupported')
+    await note.getByText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。', { exact: true }).waitFor()
+    const add = page.getByTestId('skills-add')
+    assert.equal(await add.count(), 1, '空状态里不再放那颗灰的「导入技能」')
+    assert.equal(await add.isDisabled(), true)
+    assert.equal(await add.getAttribute('title'), 'Claude Code 不支持在这里导入')
+    const empty = page.getByTestId('skills-empty')
+    await empty.getByText('按 Claude Code 自己的方式放好技能，回来点「重新加载」就能看到。', { exact: true }).waitFor()
+    let reads = (await callsNamed(page, 'list-extensions')).length
+    await empty.getByTestId('skills-empty-reload').click()
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
+    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
+    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['tutorial', 'skills#Claude Code、Grok CLI 没有导入按钮？'])
+    // 选 Grok CLI 时句首换成它。
+    await page.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await note.getByText(/^Grok CLI 的技能不能在这里导入/).waitFor()
+    // 能导入的工具：没有那一行，空着时叫人点「导入技能」；工具条上的「重新加载」照样重读。
+    await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await note.waitFor({ state: 'detached' })
+    await empty.getByText('点「导入技能」，选一个技能文件夹。', { exact: true }).waitFor()
+    await empty.getByTestId('skills-add').waitFor()
+    reads = (await callsNamed(page, 'list-extensions')).length
+    await page.getByTestId('skills-reload').click()
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
+  } finally {
+    await page.close()
+  }
+})
+
+// 第五部分第 29、31 条：「已安装」先放装了的，再放精选；有新版本的行上直接给「更新」。
+test('installed plugins come before the curated shelf and an update sits on the row', async () => {
+  const page = await fixture('page=plugins')
+  try {
+    const list = page.getByTestId('plugins-list')
+    const row = list.getByTestId('plugins-row-test-extension')
+    await row.waitFor()
+    assert.equal(await list.locator('.xm-card-head').count(), 0, '列表卡不加标题')
+    const shelf = page.getByTestId('curated-shelf')
+    await shelf.waitFor()
+    const listBox = await list.boundingBox()
+    const shelfBox = await shelf.boundingBox()
+    assert.ok(listBox.y + listBox.height <= shelfBox.y, '装了的排在「星芒精选」上面')
+    const update = row.getByTestId('plugins-update-test-extension')
+    await update.waitFor()
+    const updateBox = await update.boundingBox()
+    const switchBox = await row.getByRole('switch').boundingBox()
+    assert.ok(updateBox.x + updateBox.width <= switchBox.x, '「更新」在开关左边')
+    await update.click()
+    await page.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.equal((await callsNamed(page, 'extension')).at(-1).args.action, 'update')
+    // 「…」菜单里那一项照留。
+    await row.getByRole('button', { name: /更多操作/ }).click()
+    await page.getByRole('menuitem', { name: '更新', exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('an empty installed list points at the curated shelf and the market tab', async () => {
+  const page = await fixture('page=plugins&empty')
+  try {
+    const empty = page.getByTestId('plugins-empty')
+    await empty.getByText('还没有插件', { exact: true }).waitFor()
+    await empty.getByText('装下面「星芒精选」里的，或到「市场」页签挑。', { exact: true }).waitFor()
+    // 在「市场」页签点「看看精选」：切回「已安装」，落到精选的第一颗「安装」。
+    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    await page.getByTestId('plugins-empty').getByTestId('plugins-see-curated').click()
+    await page.getByRole('tab', { name: '已安装', exact: true, selected: true }).waitFor()
+    await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
+  } finally {
+    await page.close()
+  }
+})
+
+// 第五部分第 30 条：没有插件市场的工具，「市场」页签直说，只留选工具。
+test('a tool without a plugin market says so on the market tab and goes back to installed', async () => {
+  const page = await fixture('page=plugins')
+  try {
+    await page.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    const notice = page.getByTestId('plugins-market-unavailable')
+    await notice.getByText('Gemini CLI 没有插件市场', { exact: true }).waitFor()
+    await notice.getByText('它的插件装好后在「已安装」里管理。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('plugins-search').count(), 0)
+    assert.equal(await page.locator('.xm-toolbar-right').count(), 0)
+    await notice.getByTestId('plugins-market-go-installed').click()
+    await page.getByRole('tab', { name: '已安装', exact: true, selected: true }).waitFor()
+    await page.getByTestId('plugins-search').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the Codex plugin catalog fetched on entering the market brings no extra success note', async () => {
+  const page = await fixture('page=plugins')
+  try {
+    await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
+    await page.waitForTimeout(300)
+    assert.equal(await page.getByText('插件目录已下载，下面就是可以安装的插件。').count(), 0)
+    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
+  } finally {
+    await page.close()
+  }
+})
+
 test('backup restore requires preview and confirmation before touching files', async () => {
   const page = await fixture('page=backups')
   try {

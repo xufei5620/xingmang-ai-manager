@@ -143,7 +143,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab; rechargeAmount?: number }>({ sequence: 0, value: 'overview' })
   // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
   // sequence，教程页才接得住第二次、第三次跳过来。
-  const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string; query?: string } | null>(null)
+  const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string; query?: string; extra?: string } | null>(null)
   // 设置页只在挂载时取一次要落的分组（settings-group-intent），已经打开过再点名
   // 某一组就换个 key 让它重新挂一次，否则会停在上次看的那组（全面检测 Q48）。
   const [settingsRequest, setSettingsRequest] = useState(0)
@@ -728,7 +728,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
     if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview', rechargeAmount }))
-    if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
+    // 教程的 section 可以带「#某条补充说明的标题」：打开那一篇、展开那一条（技能页「看怎么放」）。
+    if (target === 'tutorial' && section) {
+      const mark = section.indexOf('#')
+      const id = mark < 0 ? section : section.slice(0, mark)
+      const extra = mark < 0 ? '' : section.slice(mark + 1)
+      setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id, ...(extra ? { extra } : {}) }))
+    }
     if (target === 'settings') {
       // section 可以是一组，也可以是某一行（顶部搜索搜到的「自动更新」）：是一行就打开它那一组再翻过去。
       const item = settingsItems.find((entry) => entry.id === section)
@@ -1539,7 +1545,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         }
         dismissStartupNotice(id)
         if ('login' in action) setAuth('login')
-        else if ('page' in action) navigate(action.page)
+        else if ('page' in action) navigate(action.page, action.section)
         else if ('displayCompat' in action) void chooseDisplayCompat(action.displayCompat)
         else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })

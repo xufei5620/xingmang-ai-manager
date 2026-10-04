@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, settingsPageLead, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installResultMessage, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialTopicsFor } from './registry/tutorials'
@@ -22,6 +22,44 @@ describe('paid Codex check in HealthPage', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
     expect(markup).toContain('这一条证明你现在能用')
+  })
+})
+
+describe('health page order', () => {
+  it('puts the export next to re-check in the page head and the two explanation cards after the results', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    const head = markup.indexOf('导出检查报告')
+    expect(head).toBeGreaterThan(-1)
+    expect(head).toBeLessThan(markup.indexOf('重新检查'))
+    expect(markup.indexOf('重新检查')).toBeLessThan(markup.indexOf('xm-card-none'))
+    expect(markup.indexOf('xm-card-none')).toBeLessThan(markup.indexOf('连接自检'))
+  })
+
+  it('lists problems before warnings before passing items and keeps the order within each', () => {
+    const items = [
+      { code: 'A', state: 'pass' }, { code: 'B', state: 'warn' }, { code: 'C', state: 'fail' },
+      { code: 'D', state: 'pass' }, { code: 'E', state: 'error' }, { code: 'F', state: 'warn' },
+    ]
+    expect(sortDiagnosticsBySeverity(items).map((item) => item.code)).toEqual(['C', 'E', 'B', 'F', 'A', 'D'])
+    expect(items.map((item) => item.code)).toEqual(['A', 'B', 'C', 'D', 'E', 'F'])
+  })
+
+  it('labels each self-check row 正常, 有问题 or 没测成 and keeps an unconfigured tool grey', () => {
+    const base = { siteId: 'solov', endpoint: null, model: null, detail: null, status: null, durationMs: 1, checkedAt: '2026-10-04T00:00:00Z', nextStep: '照着做' }
+    const ok = { ...base, provider: 'claude' as const, ok: true, layer: 'network' as const, summary: '连接正常' }
+    const broken = { ...base, provider: 'codex' as const, ok: false, layer: 'credential' as const, summary: '密钥不对' }
+    const service = { ...base, provider: 'grok' as const, ok: false, layer: 'service' as const, summary: '服务在维护' }
+    const unconfigured = { ...base, provider: 'gemini' as const, ok: false, layer: 'unconfigured' as const, summary: '还没配' }
+    expect(connectionRowStatus({ result: ok })).toEqual({ label: '正常', tone: 'ok' })
+    expect(connectionRowStatus({ result: broken })).toEqual({ label: '有问题', tone: 'bad' })
+    expect(connectionRowStatus({ result: service })).toEqual({ label: '有问题', tone: 'warn' })
+    expect(connectionRowStatus({ result: unconfigured })).toEqual({ label: '未配置', tone: 'neutral' })
+    expect(connectionRowStatus({ result: null })).toEqual({ label: '没测成', tone: 'bad' })
+    const rows = [
+      { id: 'claude', result: ok }, { id: 'gemini', result: unconfigured }, { id: 'codex', result: broken },
+      { id: 'workbuddy', result: null }, { id: 'grok', result: service },
+    ]
+    expect(sortConnectionRows(rows).map((row) => row.id)).toEqual(['codex', 'grok', 'workbuddy', 'gemini', 'claude'])
   })
 })
 

@@ -4836,22 +4836,37 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-connection-idle').waitFor()
     await page.getByTestId('health-connection-run').click()
-    // 每个工具一条结论，按注册表的展示顺序。
+    // 每个工具一行：工具名、小标、一句结论；第二句（测了什么）收进「查看详情」。
     const claude = page.getByTestId('health-connection-result-claude')
     await claude.waitFor()
-    await claude.getByText('Claude Code · 正常', { exact: true }).waitFor()
-    await claude.getByText('已用 claude-opus-5 发过一次最小请求', { exact: true }).waitFor()
-    const codex = page.getByTestId('health-connection-result-codex')
-    await codex.getByText('Codex CLI · 正常', { exact: true }).waitFor()
+    await expect(claude.locator('.xm-row-title')).toContainText('Claude Code')
+    await expect(claude.locator('.xm-pill')).toHaveText('正常')
+    await expect(claude.locator('.xm-row-desc')).toHaveText('连接正常，claude-opus-5 可以直接使用')
+    assert.equal(await claude.getByText('已用 claude-opus-5 发过一次最小请求').count(), 0)
+    await claude.getByRole('button', { name: '查看详情', exact: true }).click()
+    const details = page.getByTestId('health-connection-details')
+    await details.getByRole('heading', { name: 'Claude Code · 正常', exact: true }).waitFor()
+    await details.getByText('已用 claude-opus-5 发过一次最小请求', { exact: true }).waitFor()
+    // 抽屉盖在每行右头的「查看详情」上，先关掉再看下一个工具。
+    await details.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(details).toHaveCount(0)
     // 只读探测的结论要如实说出来，不能照 Claude 那句「发过一次最小请求」套。
-    await codex.getByText('已核对当前账号的可用模型清单，gpt-6-astra 在其中', { exact: true }).waitFor()
+    await page.getByTestId('health-connection-result-codex').getByRole('button', { name: '查看详情', exact: true }).click()
+    await details.getByRole('heading', { name: 'Codex CLI · 正常', exact: true }).waitFor()
+    await details.getByText('已核对当前账号的可用模型清单，gpt-6-astra 在其中', { exact: true }).waitFor()
+    await details.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(details).toHaveCount(0)
     for (const provider of ['gemini', 'grok']) {
       const row = page.getByTestId(`health-connection-result-${provider}`)
-      await row.getByText('未配置', { exact: false }).waitFor()
-      // 未配置不是失败：不给红色告警的 role，只给一条「去处理」。
-      assert.equal(await row.getAttribute('role'), 'status')
+      // 未配置不是失败：小标是灰的「未配置」，不是红的「有问题」，只给一条「去处理」。
+      await expect(row.locator('.xm-pill')).toHaveText('未配置')
+      await expect(row.locator('.xm-pill')).toHaveClass(/xm-tone-neutral/)
       await row.getByRole('button', { name: '去处理', exact: true }).waitFor()
     }
+    // 有问题的排前：没配的两条排在正常的两条前面，同一档里照注册表的次序。
+    const order = await page.getByTestId('health-connection').locator('[data-testid^="health-connection-result-"]')
+      .evaluateAll((rows) => rows.map((row) => row.dataset.testid.replace('health-connection-result-', '')))
+    assert.deepEqual(order.filter((id) => ['claude', 'codex', 'gemini', 'grok'].includes(id)), ['gemini', 'grok', 'claude', 'codex'])
     assert.equal(await page.getByTestId('health-connection-idle').count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -4951,7 +4966,21 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-connection-run').click()
     const claude = page.getByTestId('health-connection-result-claude')
-    await claude.getByText('Claude Code · 账号分组', { exact: true }).waitFor()
+    await expect(claude.locator('.xm-pill')).toHaveText('有问题')
+    await expect(claude.locator('.xm-pill')).toHaveClass(/xm-tone-bad/)
+    await expect(claude.locator('.xm-row-desc')).toHaveText('当前账号分组下没有可用渠道（HTTP 503）')
+    // 出问题的是哪一层，点「查看详情」看。
+    await claude.getByRole('button', { name: '查看详情', exact: true }).click()
+    const details = page.getByTestId('health-connection-details')
+    await details.getByRole('heading', { name: 'Claude Code · 账号分组', exact: true }).waitFor()
+    await details.getByRole('button', { name: '关闭', exact: true }).click()
+    // 测不成的那一条是「没测成」，排在「有问题」后面、「未配置」前面。
+    const codex = page.getByTestId('health-connection-error-codex')
+    await expect(codex.locator('.xm-pill')).toHaveText('没测成')
+    await expect(codex.locator('.xm-row-desc')).toHaveText('自检没能完成')
+    const order = await page.getByTestId('health-connection').locator('[data-testid^="health-connection-"]:is([data-testid*="-result-"], [data-testid*="-error-"])')
+      .evaluateAll((rows) => rows.map((row) => row.dataset.testid.replace(/^health-connection-(result|error)-/, '')))
+    assert.deepEqual(order.filter((id) => ['claude', 'codex', 'gemini', 'grok'].includes(id)), ['claude', 'codex', 'gemini', 'grok'])
     // 分组层的下一步是重签一把 Key，所以这一条给的是「重新写入 Key」；仍旧跳页的
     // 那几层（这里是未配置的 Gemini）继续给「去处理」。
     await claude.getByRole('button', { name: '重新写入 Key', exact: true }).waitFor()
@@ -4975,7 +5004,8 @@ test('the self-check key layer rewrites the current account Key in place and re-
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-connection-run').click()
     const claude = page.getByTestId('health-connection-result-claude')
-    await claude.getByText('Claude Code · 密钥', { exact: true }).waitFor()
+    await expect(claude.locator('.xm-pill')).toHaveText('有问题')
+    await expect(claude.locator('.xm-row-desc')).toHaveText('密钥被拒绝（HTTP 401）')
     // 账号页上并没有「写入 Key」这颗按钮，所以这一层不再给「去处理」。
     assert.equal(await page.getByTestId('health-connection-fix-claude').count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
@@ -4984,7 +5014,8 @@ test('the self-check key layer rewrites the current account Key in place and re-
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
     assert.deepEqual(calls.at(-1).args[0].providers, ['claude'])
     // 写完自己再测一遍：用户不用回到页头再点一次「测试连接」。
-    await claude.getByText('Claude Code · 正常', { exact: true }).waitFor()
+    await expect(claude.locator('.xm-pill')).toHaveText('正常')
+    await expect(claude.locator('.xm-row-desc')).toHaveText('连接正常，claude-opus-5 可以直接使用')
     await clean(page)
   } finally { await page.close() }
 })
@@ -5000,7 +5031,9 @@ test('a failed rewrite says what the backend said instead of claiming it was fix
     await page.getByTestId('health-connection-rewrite-claude').click()
     await page.getByText('当前账号的分组暂时不可用', { exact: false }).waitFor()
     // 没写成就不该把结论刷成正常。
-    await page.getByTestId('health-connection-result-claude').getByText('Claude Code · 密钥', { exact: true }).waitFor()
+    const claude = page.getByTestId('health-connection-result-claude')
+    await expect(claude.locator('.xm-pill')).toHaveText('有问题')
+    await expect(claude.locator('.xm-row-desc')).toHaveText('密钥被拒绝（HTTP 401）')
     await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
     await clean(page)
   } finally { await page.close() }
@@ -5068,6 +5101,15 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
   } finally { await page.close() }
 })
 
+// 整个元素都在内容区看得见的范围里（内容区自己滚，不是窗口在滚）。
+function insidePageViewport(locator) {
+  return locator.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const visible = element.closest('[data-testid="page-viewport"]').getBoundingClientRect()
+    return box.top >= visible.top && box.bottom <= visible.bottom
+  })
+}
+
 test('tutorial searches step contents regardless of case and surrounding spaces and recovers from no results', async () => {
   const page = await open()
   try {
@@ -5090,6 +5132,11 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     })).toBe(true)
     await expect(search).toBeFocused()
     await expect(tutorial.getByTestId('tutorial-article')).toContainText('brew install python')
+    // 命中的字带浅黄底，大小写照原文；页面落在第一处命中（这一篇是标题里的 Python）。
+    const firstHit = tutorial.getByTestId('tutorial-article').locator('mark.v2-tutorial-hit').first()
+    await expect(firstHit).toHaveText('Python')
+    assert.notEqual(await firstHit.evaluate((element) => getComputedStyle(element).backgroundColor), 'rgba(0, 0, 0, 0)')
+    await expect.poll(() => insidePageViewport(firstHit)).toBe(true)
     const advanced = tutorial.getByTestId('tutorial-group-advanced')
     await advanced.locator('summary').click()
     await expect(advanced).toHaveJSProperty('open', false)
@@ -5111,14 +5158,123 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(explanation).toHaveCount(1)
     await expect(explanation).toHaveJSProperty('open', true)
     await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
+    // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
+    const notes = tutorial.getByTestId('tutorial-article').locator('details.v2-tutorial-extra')
+    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 已在运行？'])
+    const explanationHit = explanation.locator('mark.v2-tutorial-hit')
+    await expect(explanationHit).toHaveText('重新读取时')
+    await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)
     await search.fill('安装报错怎么办')
     const installationNote = tutorial.getByTestId('tutorial-article').locator('details').filter({ hasText: '安装报错怎么办' })
     await expect(installationNote).toHaveJSProperty('open', true)
+    await expect(tutorial.getByTestId('tutorial-article').locator('details[data-extra-title="装的时候能走开吗？"]')).toHaveJSProperty('open', false)
     await installationNote.locator('summary').click()
     await expect(installationNote).toHaveJSProperty('open', false)
     await search.fill('Windows 安装报错')
     await expect(installationNote).toHaveJSProperty('open', true)
     await expect(installationNote.getByText(/Windows 安装报错时按提示处理/)).toBeVisible()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第五部分第 32、33 条：目录只写标题；读到中间，顶上吸着「第几步」；求助在文章最后。
+test('tutorial pins the step being read on top and puts help at the end of the article', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-tutorial').click()
+    const tutorial = page.getByTestId('page-tutorial')
+    const article = tutorial.getByTestId('tutorial-article')
+    await expect(article).toBeVisible()
+    const directory = tutorial.getByRole('navigation', { name: '教程目录', exact: true })
+    // 目录每行只写标题，「约 5 分钟 · 4 步」留在文章开头。
+    await expect(directory.getByTestId('tutorial-topic-start')).toHaveText('第一次用？照着这 4 步做')
+    assert.equal(await directory.getByText(/分钟/).count(), 0)
+    await expect(article.locator('.v2-tutorial-meta')).toContainText('约 5 分钟 · 4 步')
+    assert.equal(Math.round(await tutorial.locator('.v2-tutorial-directory').evaluate((element) => element.getBoundingClientRect().width)), 240)
+    const progress = tutorial.getByTestId('tutorial-progress')
+    await expect(progress).toBeHidden()
+
+    // 点开头的第 3 步：开头滚出去，顶上那条出来，写着第 3 步，第三颗圆点亮着，也不压住第 3 步的标题。
+    await article.locator('.v2-tutorial-step-links a').nth(2).click()
+    await expect(progress).toBeVisible()
+    await expect(progress).toContainText('第 3 步，共 4 步 · 看到「已配好」就继续')
+    await expect(progress.getByRole('button', { name: '第 3 步：看到「已配好」就继续', exact: true })).toHaveAttribute('aria-current', 'step')
+    const bar = await progress.evaluate((element) => element.getBoundingClientRect().toJSON())
+    const pane = await page.getByTestId('page-viewport').evaluate((element) => element.getBoundingClientRect().toJSON())
+    assert.ok(Math.abs(bar.height - 36) <= 1, `吸顶条约 36 高，实际 ${bar.height}`)
+    assert.ok(Math.abs(bar.top - pane.top) <= 1, `吸顶条贴着内容区的上沿（条 ${bar.top}，内容区 ${pane.top}）`)
+    const stepTitle = await article.locator('#tutorial-start-step-2 h3').evaluate((element) => element.getBoundingClientRect().toJSON())
+    assert.ok(stepTitle.top >= bar.bottom, '吸顶条不压住这一步的标题')
+
+    // 点圆点跳到最后一步：最后一步滚不到顶，也亮第 4 颗。
+    await progress.getByRole('button', { name: '第 4 步：打开 Codex，发出第一条消息', exact: true }).click()
+    await expect(progress).toContainText('第 4 步，共 4 步 · 打开 Codex，发出第一条消息')
+    await expect(progress.getByRole('button', { name: '第 4 步：打开 Codex，发出第一条消息', exact: true })).toHaveAttribute('aria-current', 'step')
+    // 自己滚回去，读到哪一步就写哪一步。
+    await article.locator('#tutorial-start-step-1').evaluate((element) => element.scrollIntoView({ block: 'start' }))
+    await expect(progress).toContainText('第 2 步，共 4 步 · 装好 Codex 桌面端')
+    await expect(progress.locator('[aria-current="step"]')).toHaveText('2')
+    // 回到文章开头，那条收起来。
+    await page.getByTestId('page-viewport').evaluate((element) => { element.scrollTop = 0 })
+    await expect(progress).toBeHidden()
+
+    // 求助在每篇最后、「上一篇 / 下一篇」下面，目录里不再有。
+    const support = article.getByTestId('tutorial-support')
+    await expect(support).toContainText('还是不会？')
+    const footer = await article.locator('.v2-tutorial-footer').evaluate((element) => element.getBoundingClientRect().toJSON())
+    const supportBox = await support.evaluate((element) => element.getBoundingClientRect().toJSON())
+    assert.ok(supportBox.top >= footer.bottom, '求助在「上一篇 / 下一篇」下面')
+    assert.equal(await tutorial.locator('.v2-tutorial-directory').getByText('还是不知道怎么操作？').count(), 0)
+    await support.getByRole('button', { name: '联系客服', exact: true }).click()
+    const help = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+    await help.waitFor()
+    await page.keyboard.press('Escape')
+    await expect(help).toHaveCount(0)
+    // 搜不到时，「联系客服」在「清除搜索」旁边。
+    await tutorial.getByRole('searchbox', { name: '搜索教程', exact: true }).fill('no-such-tutorial-8472')
+    const empty = tutorial.getByTestId('tutorial-empty')
+    await empty.getByRole('button', { name: '清除搜索', exact: true }).waitFor()
+    await empty.getByRole('button', { name: '联系客服', exact: true }).click()
+    await help.waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第五部分第 27、32 条：技能页「看怎么放」打开技能那篇、只展开那一条补充说明；目录翻到这一篇。
+test('the skills page guide opens the skills chapter on its note and the directory follows it', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1280, height: 560 })
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+      })
+    })
+    await page.getByTestId('nav-skills').click()
+    const skills = page.getByTestId('page-skills')
+    const note = skills.getByTestId('skills-import-unsupported')
+    await expect(note).toContainText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。')
+    await expect(skills.getByTestId('skills-add')).toBeDisabled()
+    await expect(skills.getByTestId('skills-add')).toHaveAttribute('title', 'Claude Code 不支持在这里导入')
+    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
+    const tutorial = page.getByTestId('page-tutorial')
+    const article = tutorial.getByTestId('tutorial-article')
+    await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
+    const guide = article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')
+    await expect(guide).toHaveJSProperty('open', true)
+    await expect(guide).toContainText('再回本页点「重新加载」')
+    assert.deepEqual(await article.locator('details.v2-tutorial-extra').evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle)), ['Claude Code、Grok CLI 没有导入按钮？'])
+    await expect.poll(() => insidePageViewport(guide.locator('summary'))).toBe(true)
+    // 目录只滚自己，翻到正在看的这一篇。
+    const entry = tutorial.getByTestId('tutorial-topic-skills')
+    await expect(entry).toHaveAttribute('aria-current', 'page')
+    await expect.poll(() => entry.evaluate((element) => {
+      const list = element.closest('.v2-tutorial-directory')
+      const box = element.getBoundingClientRect()
+      const visible = list.getBoundingClientRect()
+      return list.scrollHeight > list.clientHeight && box.top >= visible.top && box.bottom <= visible.bottom
+    })).toBe(true)
     await clean(page)
   } finally { await page.close() }
 })
@@ -5251,7 +5407,149 @@ test('the enterprise certificate row opens the check page on the certificate ite
     await page.getByTestId('settings-certificate-health').click()
     await page.getByTestId('page-health').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="CERTIFICATE_TRUST"]')?.getAttribute('data-anchor-focus') === 'true')
-    assert.equal(await page.locator('[data-testid="page-health"] [data-anchor="XINGMANG_NETWORK"]').getAttribute('data-anchor-focus'), null)
+    // 指名的是一项要留意的，正常的那几项照旧收着，也不会被点亮。
+    assert.equal(await page.locator('[data-testid="page-health"] [data-anchor="XINGMANG_NETWORK"]').count(), 0)
+    await expect(page.getByTestId('health-passing-toggle')).toHaveText('展开')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 检查页每次「重新检查」都拿到这一份结果；计数按条目现算，免得和列表对不上。
+async function stubHealthReport(page, items) {
+  const counts = { pass: 0, warn: 0, fail: 0, error: 0 }
+  for (const item of items) counts[item.state] += 1
+  const report = { version: 1, durationMs: 1, counts, items: items.map((item) => ({ durationMs: 1, ...item })) }
+  await page.evaluate((value) => {
+    window.xingmang.runDiagnostics = async () => ({ ...value, generatedAt: new Date().toISOString() })
+  }, report)
+}
+
+const mixedHealthItems = [
+  { code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '连接正常' },
+  { code: 'RUNTIME_PYTHON', title: 'Python', state: 'warn', summary: '还没装 Python' },
+  { code: 'CERTIFICATE_TRUST', title: '安全证书', state: 'pass', summary: '没有发现公司证书' },
+  { code: 'CLI_CODEX', title: 'Codex CLI', state: 'fail', summary: 'Codex CLI 打不开' },
+]
+
+// 第五部分第 35 条、第六部分第 8 条：结果在两张说明卡上面，有问题的排最前，正常的收成一行。
+test('the check page lists problems first, folds the passing items into one row and keeps the self-checks below', async () => {
+  const page = await open()
+  try {
+    await stubHealthReport(page, mixedHealthItems)
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.getByTestId('health-row-CLI_CODEX').waitFor()
+    // 页头：先「导出检查报告」，再主按钮「重新检查」；页底不再有导出。
+    const head = await health.locator('.xm-page-head button').evaluateAll((buttons) => buttons.map((button) => button.textContent.trim()))
+    assert.deepEqual(head, ['导出检查报告', '重新检查'])
+    assert.equal(await health.getByRole('button', { name: '导出检查报告', exact: true }).count(), 1)
+    // 计数条：待处理、需留意、正常，右边是上次检查的时间。
+    const pills = await health.locator('.xm-toolbar .xm-pill').evaluateAll((items) => items.map((item) => item.textContent.trim()))
+    assert.deepEqual(pills, ['待处理 1', '需留意 1', '正常 2'])
+    await expect(health.locator('.xm-toolbar')).toContainText(/上次检查 (刚刚|今天 \d{2}:\d{2})/)
+    const rows = await health.locator('[data-testid^="health-row-"], [data-testid="health-passing"]').evaluateAll((items) => items.map((item) => item.dataset.testid))
+    assert.deepEqual(rows, ['health-row-CLI_CODEX', 'health-row-RUNTIME_PYTHON', 'health-passing'])
+    await expect(health.getByTestId('health-passing')).toContainText('另外 2 项正常')
+    const toggle = health.getByTestId('health-passing-toggle')
+    await expect(toggle).toHaveText('展开')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await toggle.click()
+    await expect(toggle).toHaveText('收起')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const expanded = await health.locator('[data-testid^="health-row-"]').evaluateAll((items) => items.map((item) => item.dataset.testid))
+    assert.deepEqual(expanded, ['health-row-CLI_CODEX', 'health-row-RUNTIME_PYTHON', 'health-row-XINGMANG_NETWORK', 'health-row-CERTIFICATE_TRUST'])
+    await toggle.click()
+    assert.equal(await health.getByTestId('health-row-XINGMANG_NETWORK').count(), 0)
+    // 两张说明卡挪到结果下面。
+    const resultsBottom = await health.getByTestId('health-passing').evaluate((element) => element.getBoundingClientRect().bottom)
+    const connectionTop = await health.getByTestId('health-connection').evaluate((element) => element.getBoundingClientRect().top)
+    assert.ok(resultsBottom < connectionTop, '结果应在「连接自检」上面')
+    // 「Codex 干活检查」的开关和「开始检查」在同一行。
+    const consent = await health.getByTestId('health-codex-responses-consent').evaluate((element) => element.getBoundingClientRect().toJSON())
+    const run = await health.getByTestId('health-codex-responses-run').evaluate((element) => element.getBoundingClientRect().toJSON())
+    assert.ok(Math.abs((consent.top + consent.bottom) / 2 - (run.top + run.bottom) / 2) < consent.height / 2, '开关和「开始检查」应在同一行')
+    assert.ok(run.left > consent.left, '「开始检查」在开关右边')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a check page with nothing but passing items says so in one row', async () => {
+  const page = await open()
+  try {
+    await stubHealthReport(page, mixedHealthItems.filter((item) => item.state === 'pass'))
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const passing = page.getByTestId('health-passing')
+    await expect(passing).toContainText('全部 2 项正常')
+    assert.equal(await page.locator('[data-testid^="health-row-"]').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the settings network check opens the passing network item and points at it', async () => {
+  const page = await open()
+  try {
+    await stubHealthReport(page, mixedHealthItems)
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-network-health').click()
+    await page.getByTestId('page-health').waitFor()
+    // 网络那一项是正常的：先把正常的几项摆出来，再翻到它、亮一下。
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="XINGMANG_NETWORK"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('health-passing-toggle')).toHaveText('收起')
+    await expect.poll(() => page.getByTestId('health-row-XINGMANG_NETWORK').evaluate((row) => {
+      const box = row.getBoundingClientRect()
+      const visible = row.closest('[data-testid="page-viewport"]').getBoundingClientRect()
+      return box.top >= visible.top && box.bottom <= visible.bottom
+    })).toBe(true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the startup notice lands on the first problem of the check results', async () => {
+  const page = await open('diagnostics=1&diagnosticIssues=1&diagnosticWarnings=1')
+  try {
+    const notice = page.getByTestId('startup-notice-diagnostics')
+    await notice.waitFor()
+    await stubHealthReport(page, mixedHealthItems)
+    await notice.getByRole('button', { name: '去看看', exact: true }).click()
+    await page.getByTestId('page-health').waitFor()
+    // 排在最前的那一项问题亮一下；正常的几项还收着。
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="CLI_CODEX"]')?.getAttribute('data-anchor-focus') === 'true')
+    assert.equal(await page.locator('[data-testid="page-health"] [data-anchor="RUNTIME_PYTHON"][data-anchor-focus]').count(), 0)
+    await expect(page.getByTestId('health-passing-toggle')).toHaveText('展开')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第五部分第 39 条：结论是「网络」时，「去处理」打开设置的「网络」那一组，不再落在第一组「外观」。
+test('a network self-check result sends 去处理 to the network group of settings', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      const original = window.xingmang.checkProviderConnection
+      window.xingmang.checkProviderConnection = async (provider) => provider === 'claude'
+        ? { provider, siteId: 'solov', ok: false, layer: 'network', summary: '连不上星芒服务（连接被重置）', nextStep: '换个网络或打开加速后再测一次',
+          endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'ECONNRESET', status: null, durationMs: 12, checkedAt: new Date().toISOString() }
+        : original(provider)
+    })
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').click()
+    const claude = page.getByTestId('health-connection-result-claude')
+    await expect(claude.locator('.xm-pill')).toHaveText('有问题')
+    await expect(claude.locator('.xm-row-desc')).toHaveText('连不上星芒服务（连接被重置）')
+    await claude.getByRole('button', { name: '查看详情', exact: true }).click()
+    const details = page.getByTestId('health-connection-details')
+    await details.getByRole('heading', { name: 'Claude Code · 网络', exact: true }).waitFor()
+    await details.getByText('换个网络或打开加速后再测一次', { exact: true }).waitFor()
+    await details.getByRole('button', { name: '关闭', exact: true }).click()
+    await claude.getByRole('button', { name: '去处理', exact: true }).click()
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await expect(settings.getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(settings.locator('#v2-settings-panel h2')).toHaveText('网络')
     await clean(page)
   } finally { await page.close() }
 })
