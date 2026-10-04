@@ -42,6 +42,16 @@ function snapshot(files: readonly string[]): Map<string, string> {
 function expectSnapshot(previous: ReadonlyMap<string, string>): void {
   for (const [file, content] of previous) expect(fs.readFileSync(file, 'utf8'), file).toBe(content)
 }
+// What a rename reports on Windows while a scanner or the indexer holds the file.
+function heldError(code: 'EPERM' | 'EBUSY'): NodeJS.ErrnoException {
+  const message = code === 'EPERM' ? 'EPERM: operation not permitted, rename' : 'EBUSY: resource busy or locked, rename'
+  return Object.assign(new Error(message), { code })
+}
+function expectNoStagedFiles(f: ReturnType<typeof fixture>): void {
+  for (const directory of [f.profileDirectory, path.dirname(f.metadataPath), f.developerDirectory]) {
+    expect(fs.readdirSync(directory).filter((file) => file.endsWith('.tmp')), directory).toEqual([])
+  }
+}
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -357,6 +367,90 @@ describe('Claude Desktop in-app third-party configuration', () => {
     await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('未覆盖外部改动')
     expect(read(result.path)).toEqual({ concurrent: 'replacement' })
     expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
+  })
+
+  it('waits out a scanner briefly holding a file while saving', async () => {
+    const f = fixture()
+    const rename = fs.renameSync.bind(fs)
+    let held = 2
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (held > 0 && path.resolve(String(target)) === path.resolve(f.configPath)) {
+        held -= 1
+        throw heldError('EPERM')
+      }
+      rename(source, target)
+    })
+    const result = await f.service.saveGateway(input)
+    expect(held).toBe(0)
+    expect(read(f.configPath)).toEqual({ deploymentMode: '3p' })
+    expect(read(result.path)).toEqual(buildClaudeDesktopGatewayConfig(input))
+    expectNoStagedFiles(f)
+  })
+
+  it('keeps the original wording and the previous files when a file stays held', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const previous = snapshot(result.files)
+    const rename = fs.renameSync.bind(fs)
+    let attempts = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (path.resolve(String(target)) === path.resolve(f.configPath)) {
+        attempts += 1
+        throw heldError('EPERM')
+      }
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    expect(attempts).toBe(5)
+    expectSnapshot(previous)
+    expectNoStagedFiles(f)
+  })
+
+  it('checks the files again before retrying a held save', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const gatewayBefore = fs.readFileSync(result.path, 'utf8')
+    const rename = fs.renameSync.bind(fs)
+    let held = false
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (!held && path.resolve(String(target)) === path.resolve(f.configPath)) {
+        held = true
+        // Claude Desktop saves its own change while the toolbox waits.
+        write(f.configPath, { deploymentMode: '1p', concurrent: true })
+        throw heldError('EPERM')
+      }
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    expect(held).toBe(true)
+    expect(read(f.configPath)).toEqual({ deploymentMode: '1p', concurrent: true })
+    expect(fs.readFileSync(result.path, 'utf8')).toBe(gatewayBefore)
+  })
+
+  it('waits out a briefly held file while putting the previous files back', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const previous = snapshot(result.files)
+    const rename = fs.renameSync.bind(fs)
+    let rollbackHeld = 1
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (String(source).includes('.xingmang-rollback-')) {
+        if (rollbackHeld > 0) {
+          rollbackHeld -= 1
+          throw heldError('EBUSY')
+        }
+      } else if (path.resolve(String(target)) === path.resolve(f.configPath)) {
+        throw new Error('rename failure sk-do-not-echo')
+      }
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    expect(rollbackHeld).toBe(0)
+    expectSnapshot(previous)
+    expectNoStagedFiles(f)
   })
 
   it('cleans partially written staged files without changing any target', async () => {
