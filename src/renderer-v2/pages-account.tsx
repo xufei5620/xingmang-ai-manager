@@ -1256,6 +1256,7 @@ function AccountKeys({
           loading={resource.loading}
           error={resource.error}
           count={list.length}
+          query={query}
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
@@ -1383,6 +1384,7 @@ function AccountKeys({
       <Pagination
         page={page}
         total={resource.data?.page.total ?? 0}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
       <Dialog
@@ -1708,6 +1710,7 @@ function AccountUsage({ api, balance, session }: { api: V2Bridge; balance: Balan
         page={page}
         size={pageSize}
         total={resource.data?.total ?? 0}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
       {selected && <UsageDetails record={selected} balance={balance} onClose={() => setSelected(null)} />}
@@ -1944,6 +1947,7 @@ function AccountTasks({
         page={page}
         total={resource.data?.total ?? 0}
         size={pageSize}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
       <Drawer
@@ -2068,6 +2072,7 @@ function AccountOrders({
       <Pagination
         page={page}
         total={resource.data?.total ?? 0}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
     </>
@@ -2124,7 +2129,6 @@ function AccountRecharge({
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
   const [redeemOpen, setRedeemOpen] = useState(false)
-  const [redemptionMessage, setRedemptionMessage] = useState('')
   const [payment, setPayment] = useState<{
     tradeNo: string | null
     kind: 'topup' | 'subscription'
@@ -2304,7 +2308,7 @@ function AccountRecharge({
       <ResultNotice
         error={resource.error || operation.error}
         detail={resource.error ? resource.detail : operation.detail}
-        message={payment || paymentTerminal ? '' : operation.message === '兑换码已兑换' ? redemptionMessage : operation.message}
+        message={payment || paymentTerminal ? '' : operation.message}
       />
       <div className="v2-business-recharge-grid">
         <Card
@@ -2622,15 +2626,15 @@ function AccountRecharge({
                   'redeem',
                   async () => {
                     const result = await api.redeemAccountTopupCode(code.trim())
-                    setRedemptionMessage(result.type === 'subscription' ? '订阅兑换成功'
-                      : result.type === 'concurrency' ? '并发额度兑换成功' : '余额兑换成功')
                     setCode('')
                     setRedeemOpen(false)
                     changed()
                     await resource.reload()
                     if (result.type === 'subscription') applySubscriptionToTools()
+                    return result.type
                   },
-                  '兑换码已兑换',
+                  (type) => type === 'subscription' ? '订阅兑换成功'
+                    : type === 'concurrency' ? '并发额度兑换成功' : '余额兑换成功',
                 )
               }
             >

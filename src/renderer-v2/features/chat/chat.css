@@ -37,3 +37,5 @@
 .chat-page button:focus-visible, .chat-page summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 @keyframes chat-spin { to { transform: rotate(360deg); } }
 [data-reduce-motion='1'] .chat-generating > svg, [data-reduced-motion='true'] .chat-generating > svg, [data-system-reduced-motion='true'] .chat-generating > svg { animation: none; }
+/* 窗口比设计宽时消息和输入框不跟着拉宽：内容最宽 808（1280 设计宽下正好是原来的宽度），两边留白变多；分隔线照旧通到两边。 */
+.chat-messages, .chat-composer { padding-inline: max(18px, calc((100% - 808px) / 2)); }

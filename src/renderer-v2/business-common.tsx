@@ -9,9 +9,10 @@ import {
   Search,
   XCircle,
 } from 'lucide-react'
-import { Button, Empty, Pill } from './ui'
+import { Button, Empty, Pill, useToast } from './ui'
 import { errors } from './registry/errors'
 import { presentOperationFailure } from './operation-error'
+import { formatCalendarTime } from './calendar-time'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
 import { isChineseSentence } from '../../electron/chinese-sentence'
@@ -128,7 +129,8 @@ export function detectionFailureMessage(value: string | null | undefined) {
   return detectionFailureCopy.other
 }
 
-const genericFailure = '操作没有成功，请重试或查看反馈日志。'
+// 只在说不出具体原因时用；指到「反馈」页而不是让人自己去翻日志。
+const genericFailure = '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。'
 
 export function errorMessage(error: unknown, fallback = genericFailure) {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
@@ -145,7 +147,7 @@ export function errorMessage(error: unknown, fallback = genericFailure) {
   if (speaksChinese(safe)) return redactSecretPatterns(safe)
   if (/401|unauthorized/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
   // 限流与超时是两回事：超时让人去查网络，限流只需要等几秒。没有这条，new-api 的英文
-  // 限流原文会掉进最后的通用兜底，把「稍等几秒」说成「请重试或查看反馈日志」。
+  // 限流原文会掉进最后的通用兜底，把「稍等几秒」说成兜底那句「请重试」。
   // 只认 HTTP 429 与明确的限流措辞，不认裸的 429，避免把额度数字之类误判成限流。
   if (/HTTP\s*429|too\s*many\s*requests|rate[\s_-]?limit/i.test(safe)) {
     return `${errors.tooManyRequests.title}，${errors.tooManyRequests.body}。`
@@ -153,14 +155,26 @@ export function errorMessage(error: unknown, fallback = genericFailure) {
   if (/timeout|ENOTFOUND|ECONN|fetch/i.test(safe)) return `${errors.timeout.title}，请检查网络后重试。`
   return fallback
 }
-export function displayDate(value: string | number | null | undefined) {
-  if (value === null || value === undefined || value === '') return '暂未记录'
+function parseDisplayDate(value: string | number) {
   const date = new Date(
     typeof value === 'number' && value < 1e12 ? value * 1000 : value,
   )
-  return Number.isNaN(date.getTime())
-    ? '时间不可用'
-    : date.toLocaleString('zh-CN', { hour12: false })
+  return Number.isNaN(date.getTime()) ? null : date
+}
+export function displayDate(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === '') return '暂未记录'
+  const date = parseDisplayDate(value)
+  return date ? date.toLocaleString('zh-CN', { hour12: false }) : '时间不可用'
+}
+/**
+ * 列表里的时间：写「今天 14:20」这种，鼠标停上去看带年带秒的完整时间。
+ * 没记录、读不出的照 displayDate 那两句。
+ */
+export function RelativeTime({ value, now }: { value: string | number | null | undefined; now?: number }) {
+  const date = value === null || value === undefined || value === '' ? null : parseDisplayDate(value)
+  const text = date ? formatCalendarTime(date.getTime(), now ?? Date.now()) : null
+  if (!date || !text) return <>{displayDate(value)}</>
+  return <time dateTime={date.toISOString()} title={displayDate(value)}>{text}</time>
 }
 export function dollars(amount: number | null | undefined) {
   return typeof amount === 'number' && Number.isFinite(amount)
@@ -242,7 +256,13 @@ export interface OperationNotice {
   text: string
   revealPath: string
 }
+/**
+ * 做成了的那句弹成一个会自己消失的小提示，不再挂在页顶把内容往下推，也不会被带到
+ * 切过去的另一个工具上。只有带「打开所在位置」的导出结果照旧挂在页顶：
+ * 那颗按钮要给人点。失败照旧是页顶红条，由各页在切换工具、页签时 clear()。
+ */
 export function useOperation() {
+  const toast = useToast()
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
   const [revealPath, setRevealPath] = useState('')
@@ -272,7 +292,7 @@ export function useOperation() {
       // page claim an export that never happened.
       const notice = typeof success === 'function' ? success(result) : success
       if (typeof notice === 'string') {
-        if (notice) setMessage(notice)
+        if (notice) toast.show(notice, 'ok')
       } else if (notice) {
         setMessage(notice.text)
         setRevealPath(notice.revealPath)
@@ -416,6 +436,7 @@ export function ListState({
   error,
   count,
   filtered,
+  query,
   retry,
   clear,
   action,
@@ -427,6 +448,8 @@ export function ListState({
   error: string
   count: number
   filtered?: boolean
+  /** 搜索框里的词；有词时空状态直说没找到它。只用了范围筛选时不给。 */
+  query?: string
   retry: () => void
   clear?: () => void
   action?: ReactNode
@@ -466,23 +489,26 @@ export function ListState({
         {count > 0 && children}
       </>
     )
+  const searched = filtered ? query?.trim() : ''
   if (!count)
     return (
       <Empty
         testId={`${page}-${filtered ? 'filter-empty' : 'empty'}`}
         icon={filtered ? Search : Archive}
-        title={filtered ? '没有符合条件的结果' : `还没有${noun}`}
+        title={searched ? `没有找到「${searched}」` : filtered ? '没有符合条件的结果' : `还没有${noun}`}
         description={
-          filtered
-            ? '试试其他关键词，或清空筛选。'
-            : page === 'sessions'
-              ? '在 AI 工具里开始一次对话，记录就会出现在这里。'
-              : '从页面上的添加入口开始。'
+          searched
+            ? '换个词试试。'
+            : filtered
+              ? '试试其他关键词，或清空筛选。'
+              : page === 'sessions'
+                ? '在 AI 工具里开始一次对话，记录就会出现在这里。'
+                : '从页面上的添加入口开始。'
         }
         action={
           filtered ? (
             <Button size="sm" onClick={clear} testId={`${page}-clear`}>
-              清空筛选
+              {searched ? '清除搜索' : '清空筛选'}
             </Button>
           ) : (
             action
@@ -505,18 +531,25 @@ export function overflowedPage(page: number, total: number, size = 20): number |
   const pages = Math.max(1, Math.ceil(total / size))
   return page > pages ? pages : null
 }
+/**
+ * 超过一页才摆分页条；列表读不到时也不摆，免得「共 0 条　1 / 1」像是读到了。
+ */
 export function Pagination({
   page,
   total,
   size = 20,
+  failed = false,
   onChange,
 }: {
   page: number
   total: number
   size?: number
+  /** 这一页的列表读取失败了。 */
+  failed?: boolean
   onChange: (page: number) => void
 }) {
   const pages = Math.max(1, Math.ceil(total / size))
+  if (failed || pages <= 1) return null
   return (
     <div className="v2-business-pagination">
       <span>共 {total} 条</span>

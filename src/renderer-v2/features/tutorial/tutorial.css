@@ -57,7 +57,7 @@
 .v2-tutorial-article { min-width: 0; scroll-margin-top: 16px; }
 .v2-tutorial-article:focus { outline: none; }
 .v2-tutorial-article:focus-visible { outline: 2px solid var(--info); outline-offset: 4px; }
-.v2-tutorial-article-head { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.v2-tutorial-article-head { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
 .v2-tutorial-meta { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: var(--font-small); }
 .v2-tutorial-meta > span { display: inline-flex; align-items: center; gap: 6px; }
 .v2-tutorial-article h2 { margin: 16px 0 10px; font-size: var(--font-h1); line-height: 1.4; }
@@ -67,7 +67,7 @@
 .v2-tutorial-step-links a:hover { color: var(--accent); text-decoration: underline; }
 .v2-tutorial-step-links a > span { color: var(--accent); font-family: var(--mono); }
 .v2-tutorial-steps { list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 20px; }
-.v2-tutorial-steps > li { scroll-margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.v2-tutorial-steps > li { scroll-margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
 .v2-tutorial-step-title { display: flex; align-items: center; gap: 12px; }
 .v2-tutorial-step-title > span { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; border-radius: var(--radius-input); background: var(--accent-soft); color: var(--accent); font: 600 var(--font-body) var(--mono); }
 .v2-tutorial-step-title h3 { margin: 0; font-size: var(--font-h2); line-height: 1.5; }

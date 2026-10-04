@@ -122,13 +122,14 @@
 }
 .v2-business-backup-grid {
   display: grid;
-  grid-template-columns: 690px 292px;
+  /* 正文 1000 宽时左栏正好 690；窗口窄到正文不足 1000 时左栏先让，不撑出横向滚动。 */
+  grid-template-columns: minmax(0, 690px) 292px;
   align-items: start;
   gap: 18px;
 }
 .v2-business-settings-grid {
   display: grid;
-  grid-template-columns: 160px 816px;
+  grid-template-columns: 160px minmax(0, 1fr);
   gap: 24px;
   align-items: start;
 }
@@ -136,7 +137,7 @@
   display: grid;
   align-content: start;
   gap: 2px;
-  /* 右边内容长时往下滚，左边组名停在原处（一-14）。 */
+  /* 右边内容长时往下滚，左边组名停在原处。 */
   position: sticky;
   top: 16px;
 }
@@ -164,7 +165,7 @@
   font-size: var(--font-body);
   font-weight: 600;
 }
-/* 组名右边挂「正在保存更改…」，不单独占一行，保存时页面不往下跳（一-12）。 */
+/* 组名右边挂「正在保存更改…」，不单独占一行，保存时页面不往下跳。 */
 .v2-settings-panel-head {
   display: flex;
   align-items: baseline;
@@ -269,7 +270,7 @@
 }
 .v2-business-profile-aside {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 .v2-business-profile-avatar {
   display: flex;
@@ -422,6 +423,9 @@
   font-size: 12px;
   border-bottom: 1px solid var(--line);
 }
+/* 表头放进带内边距的卡片时和下面的行一样通到两边，表头自带下边线，紧跟的那一行不再叠一道。 */
+.xm-card-md > .xm-card-body > .v2-business-table-head:first-child { margin: -14px -16px 0; }
+.v2-business-table-head + :is(.xm-list-row, .xm-tool-row) { border-top: 0; }
 .v2-business-help { color: var(--text-3); line-height: 1.6; }
 .v2-business-table-row { display: grid; grid-template-columns: 1fr 240px 200px; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
 .v2-business-table-row:last-child { border-bottom: 0; }

@@ -5157,7 +5157,7 @@ test('the health network row no longer sends the user around through settings', 
   } finally { await page.close() }
 })
 
-// 顶部搜索能搜到设置里的每一行（三-2），靠的是每一行都带着注册表里的 id。这里把注册表和
+// 顶部搜索能搜到设置里的每一行，靠的是每一行都带着注册表里的 id。这里把注册表和
 // 页面对一遍：这台电脑该有的行一行不少、次序一样，不该有的（Windows 上的「卸载星芒」、
 // 不支持自动更新时的「自动更新」）不出现。
 test('every settings row the search can name is on the settings page, in the registry order', async () => {
@@ -5226,7 +5226,7 @@ test('the help dialog lists the pages tucked under More and opens them', async (
   } finally { await welcome.close() }
 })
 
-// 「更新」页和设置「更新与关于」改的是同一份设置：在一边关掉，另一边跟着关（五-51）。
+// 「更新」页和设置「更新与关于」改的是同一份设置：在一边关掉，另一边跟着关。
 test('the startup update check switched on the updates page shows the same in settings, and back', async () => {
   const page = await open()
   try {
@@ -5394,6 +5394,193 @@ test('startup configuration failure lets a guest log in and reach recovery pages
     await page.getByTestId('nav-backups').click()
     await page.getByTestId('page-backups').waitFor()
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method))), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+function box(page, selector) {
+  return page.evaluate((target) => {
+    const element = document.querySelector(target)
+    if (!element) return null
+    const { left, right, top, bottom, width } = element.getBoundingClientRect()
+    return { left, right, top, bottom, width }
+  }, selector)
+}
+
+test('the shell fills a wide window and keeps each page 1000 wide to the right of the sidebar', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1600, height: 900 })
+    await page.getByTestId('page-home').waitFor()
+    for (const selector of ['.v2-root', '[data-testid="window-titlebar"]']) assert.equal((await box(page, selector)).width, 1600, selector)
+    assert.equal((await box(page, '[data-testid="shell-statusbar"]')).right, 1600)
+    assert.equal((await box(page, '[data-testid="shell-topbar"]')).right, 1600)
+    const workspace = await box(page, '.v2-workspace')
+    const home = await box(page, '[data-testid="page-home"]')
+    assert.equal(home.width, 1000)
+    // 左右留白一样多（滚动条那一点点差不算）。
+    assert.ok(Math.abs((home.left - workspace.left) - (workspace.right - home.right)) <= 20, `page is centred (${home.left - workspace.left} / ${workspace.right - home.right})`)
+    await page.screenshot({ path: path.join(artifacts, 'shell-wide-1600.png') })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a window narrower than the design collapses the sidebar by itself, floats it when opened and never saves that as the choice', async () => {
+  const page = await open()
+  try {
+    // 选了 110% 的窗口在 1280 设计宽下只剩 1163 逻辑宽。
+    await page.setViewportSize({ width: 1164, height: 820 })
+    await page.getByTestId('page-home').waitFor()
+    const shell = page.locator('.v2-shell')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    assert.equal((await box(page, '[data-testid="page-home"]')).width, 1000)
+    const workspace = await box(page, '.v2-workspace')
+    await page.getByTestId('sidebar-collapse').click()
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')
+    assert.equal((await box(page, '[data-testid="sidebar"]')).width, 216)
+    assert.deepEqual(await box(page, '.v2-workspace'), workspace, 'the page does not move under the floating sidebar')
+    await page.screenshot({ path: path.join(artifacts, 'shell-narrow-overlay.png') })
+    await page.keyboard.press('Escape')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '展开侧栏')
+    await page.getByTestId('sidebar-collapse').click()
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')
+    await page.getByTestId('page-home').click({ position: { x: 900, y: 10 } })
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    await page.getByTestId('sidebar-collapse').click()
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').waitFor()
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-v2-sidebar')), null, 'collapsing on its own does not change the saved choice')
+    // 窗口拉回 1280：回到自己设的样子（没设过就是展开）。
+    await page.setViewportSize({ width: 1280, height: 820 })
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('startup cards no longer carry the dialog shadow that the scroll area cut into a block', async () => {
+  const page = await open('justUpdated=1&noticeCollection=1')
+  try {
+    const card = page.getByTestId('startup-notices-list').locator('.xm-notice').first()
+    await card.waitFor()
+    assert.equal(await card.evaluate((element) => getComputedStyle(element).boxShadow.includes('64px')), false, 'the card does not carry the dialog shadow that the scroll area cuts into a block')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a detail drawer stays between the bars, leaves the list usable and switches to the row picked behind it', async () => {
+  const page = await open('recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    const rows = page.getByRole('button', { name: '查看记录', exact: true })
+    await rows.first().click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    await drawer.getByRole('heading', { name: '会话 1', exact: true }).waitFor()
+    const drawerBox = await box(page, '[data-testid="session-detail-drawer"]')
+    assert.equal(drawerBox.top, (await box(page, '#v2-main')).top, 'the drawer starts where the page starts')
+    assert.equal(drawerBox.bottom, (await box(page, '[data-testid="shell-statusbar"]')).top, 'the drawer stops above the status bar')
+    // 背后不罩、不锁：页面上的按钮照样点得到。
+    assert.equal(await page.evaluate(() => document.querySelector(':modal')), null)
+    const topbarButton = await page.getByTestId('announcement-open').boundingBox()
+    assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid="announcement-open"]') !== null, { x: topbarButton.x + 5, y: topbarButton.y + 5 }), true)
+    // 盖在抽屉下面的那一行用键盘也能换过去，抽屉里换成那一行。
+    await rows.nth(1).focus()
+    await page.keyboard.press('Enter')
+    await drawer.getByRole('heading', { name: '会话 2', exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog').count(), 1)
+    // 焦点在抽屉外面时按 Esc 照样关，焦点留在刚才那一行上。
+    await page.keyboard.press('Escape')
+    await drawer.waitFor({ state: 'detached' })
+    assert.equal(await rows.nth(1).evaluate((element) => element === document.activeElement), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+function setBrowserOnline(page, online) {
+  return page.evaluate((value) => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => value })
+    window.dispatchEvent(new Event(value ? 'online' : 'offline'))
+  }, online)
+}
+
+test('going offline swaps the announcement bar for the offline bar and brings it back afterwards', async () => {
+  const page = await open('noticeCollection=1')
+  try {
+    const banner = page.getByTestId('announcement-banner')
+    await banner.waitFor()
+    await setBrowserOnline(page, false)
+    const offline = page.getByTestId('offline-banner')
+    await offline.waitFor()
+    await banner.waitFor({ state: 'detached' })
+    // 只剩一条：页面只往下让一条的高度。
+    assert.equal(await page.locator('.v2-workspace > :is(.v2-offline-banner, .v2-announcement-banner, .v2-promo-bar)').count(), 1)
+    assert.equal(await offline.getByRole('button').last().textContent(), '检查网络')
+    // 铃铛的红点照旧。
+    await page.getByTestId('announcement-open').locator('.v2-unread').waitFor()
+    await setBrowserOnline(page, true)
+    await offline.waitFor({ state: 'detached' })
+    await banner.waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the status bar says whether the environment is fine and follows the latest check', async () => {
+  const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
+  try {
+    const environment = page.getByTestId('statusbar-environment')
+    await expect.poll(() => environment.textContent()).toBe('环境有 2 项需要处理')
+    assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot is-warn')
+    await expect.poll(() => environment.getAttribute('title')).toBe('Node.js v24.0.0 · Python 3.12.0 · Git 2.43.0')
+    await clean(page)
+  } finally { await page.close() }
+  const unchecked = await open()
+  try {
+    const environment = unchecked.getByTestId('statusbar-environment')
+    // 开机没跑检查：灰点，不猜。
+    assert.equal(await environment.textContent(), '环境待检测')
+    assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot')
+    await environment.click()
+    await unchecked.getByTestId('page-health').waitFor()
+    // 检查页跑完，状态栏跟着变。
+    await expect.poll(() => environment.textContent()).toBe('环境正常')
+    assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot is-ok')
+    await clean(unchecked)
+  } finally { await unchecked.close() }
+})
+
+test('cards on a page sit 16 apart, a list in a card reaches its edges and a long card note leaves the title on one line', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await page.getByTestId('maintenance-tool-claude').waitFor()
+    const layout = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('[data-testid="page-maintenance"] > .xm-card')]
+      const gaps = cards.slice(1).map((card, index) => Math.round(card.getBoundingClientRect().top - cards[index].getBoundingClientRect().bottom))
+      const tools = cards[0]
+      const card = tools.getBoundingClientRect()
+      const head = tools.querySelector('.v2-business-table-head').getBoundingClientRect()
+      const row = tools.querySelector('.xm-list-row')
+      const rowBox = row.getBoundingClientRect()
+      return {
+        gaps,
+        // 卡片自己有 1 像素边框，表头和行贴着它。
+        edges: [head.left - card.left, card.right - head.right, rowBox.left - card.left, card.right - rowBox.right].map(Math.round),
+        firstRowBorder: getComputedStyle(row).borderTopWidth,
+      }
+    })
+    assert.ok(layout.gaps.length >= 2)
+    assert.deepEqual(layout.gaps, layout.gaps.map(() => 16))
+    assert.deepEqual(layout.edges, [1, 1, 1, 1])
+    assert.equal(layout.firstRowBorder, '0px', 'the table head already draws the line above the first row')
+    await page.getByTestId('nav-health').click()
+    const codex = page.getByTestId('health-codex-responses')
+    await codex.waitFor()
+    const title = await codex.locator('.xm-card-head h2').evaluate((element) => ({ height: element.getBoundingClientRect().height, line: parseFloat(getComputedStyle(element).lineHeight) }))
+    assert.ok(title.height < title.line * 1.5, `the title stays on one line (${title.height})`)
+    assert.equal(await codex.locator('.xm-card-head small').count(), 0)
+    assert.match(await codex.locator('.xm-card-body > .xm-card-lead').textContent(), /^上面的连接自检只确认能连上。/)
     await clean(page)
   } finally { await page.close() }
 })

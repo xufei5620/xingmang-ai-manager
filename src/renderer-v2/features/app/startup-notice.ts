@@ -71,6 +71,11 @@ function countOf(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
+/** 检查页「待处理」的项数；状态栏最左那项和开机那条提示都按这个数。 */
+export function diagnosticsIssueCount(counts: StartupDiagnosticsCounts): number {
+  return countOf(counts.fail) + countOf(counts.error)
+}
+
 /**
  * 只有「待处理」（fail / error）才值得在开机时说一句。「需留意」（warn）里多半是
  * 用不到的东西没装：另外几家 CLI、Codex 桌面端、Python、Git。把它们数进去，只用
@@ -79,7 +84,7 @@ function countOf(value: number): number {
  * 和待处理一起出现时只在正文里轻带一句。
  */
 export function startupDiagnosticsIssues(counts: StartupDiagnosticsCounts): StartupNotice | null {
-  const issues = countOf(counts.fail) + countOf(counts.error)
+  const issues = diagnosticsIssueCount(counts)
   if (issues < 1) return null
   const warnings = countOf(counts.warn)
   return {

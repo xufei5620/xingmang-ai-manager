@@ -20,9 +20,13 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 export function Pill({ tone = 'neutral', dot = false, children, testId }: BaseProps & { tone?: Tone; dot?: boolean; children?: ReactNode }) {
   return <span className={'xm-pill xm-tone-' + tone} data-testid={testId}>{dot && <i aria-hidden="true" />}{children}</span>;
 }
+// 卡片头高度固定，一句长说明跟在标题后面会把标题挤成两行（检查页「Codex 干活检查」）；
+// 超过这个字数的说明改放进卡片第一行单独成段，计数、时间这类短说明照旧跟在标题后面。
+const cardMetaInlineLimit = 24;
 export function Card({ title, meta, actions, collapsible, padding = 'md', children, testId }: BaseProps & { title?: ReactNode; meta?: ReactNode; actions?: ReactNode; collapsible?: boolean; padding?: 'none' | 'md'; children?: ReactNode }) {
   const [open, setOpen] = useState(true); const bodyId = useId(); const t = useUiText();
-  return <section className={'xm-card xm-card-' + padding} data-testid={testId}>{title && <header className="xm-card-head"><div><h2>{title}</h2>{meta && <small>{meta}</small>}</div><div className="xm-card-actions">{actions}{collapsible && <Button variant="ghost" size="sm" icon={ChevronDown} aria-label={open ? t('collapse') : t('expand')} aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)} />}</div></header>}<div id={bodyId} hidden={Boolean(collapsible && !open)} className="xm-card-body">{children}</div></section>;
+  const lead = Boolean(title) && typeof meta === 'string' && meta.length > cardMetaInlineLimit;
+  return <section className={'xm-card xm-card-' + padding} data-testid={testId}>{title && <header className="xm-card-head"><div><h2>{title}</h2>{meta && !lead && <small title={typeof meta === 'string' ? meta : undefined}>{meta}</small>}</div><div className="xm-card-actions">{actions}{collapsible && <Button variant="ghost" size="sm" icon={ChevronDown} aria-label={open ? t('collapse') : t('expand')} aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)} />}</div></header>}<div id={bodyId} hidden={Boolean(collapsible && !open)} className="xm-card-body">{lead && <p className="xm-card-lead">{meta}</p>}{children}</div></section>;
 }
 export function ListRow({ icon: Icon, leading, title, badge, desc, descMono, meta, actions, off, anchor, testId }: BaseProps & { icon?: Icon; leading?: ReactNode; title: ReactNode; badge?: ReactNode; desc?: ReactNode; descMono?: boolean; meta?: ReactNode; actions?: ReactNode; off?: boolean; anchor?: string }) {
   return <div className={cx('xm-list-row', off && 'is-off')} data-testid={testId} data-anchor={anchor}>{leading ? <span className="xm-row-icon">{leading}</span> : Icon && <span className="xm-row-icon"><Icon size={18} aria-hidden="true" /></span>}<div className="xm-row-main"><div className="xm-row-title">{title}{badge}</div>{desc && <div className={cx('xm-row-desc', descMono && 'xm-mono')}>{desc}</div>}</div>{meta && <div className="xm-row-meta">{meta}</div>}<div className="xm-row-actions">{actions}</div></div>;
@@ -52,7 +56,7 @@ function Choices({ options, value, onChange, testId, kind, label, activation = k
 export function Segment(props: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; label?: string }) { return <Choices {...props} kind="segment" />; }
 export function Tabs({ items, ...props }: BaseProps & { items: Choice[]; value: string; onChange: (value: string) => void; label?: string; activation?: 'manual' | 'automatic' }) { return <Choices {...props} options={items} kind="tabs" />; }
 export function Empty({ icon: Icon, title, description, action, testId }: BaseProps & { icon: Icon; title: ReactNode; description: ReactNode; action?: ReactNode }) {
-  return <div className="xm-empty" data-testid={testId}><Icon size={28} aria-hidden="true" /><h3>{title}</h3>{description && <p>{description}</p>}{action}</div>;
+  return <div className="xm-empty" data-testid={testId}><Icon size={28} aria-hidden="true" /><h3>{title}</h3>{description && <p>{description}</p>}{action && <div className="xm-empty-actions">{action}</div>}</div>;
 }
 export function Progress({ value, tone = 'accent', label, testId }: BaseProps & { value: number; tone?: Tone; label?: ReactNode }) {
   const safeValue = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0; const labelId = useId(); const t = useUiText();

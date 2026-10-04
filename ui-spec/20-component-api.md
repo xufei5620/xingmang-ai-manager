@@ -22,7 +22,7 @@
 |---|---|---|
 | `Button` | `variant: primary\|secondary\|ghost\|danger\|accent\|balance` · `size` · `icon` · `iconRight` · `loading` · `disabled` · `onClick` · `kbd?` | `balance` 变体内部读余额档位决定颜色 |
 | `Pill` | `tone` · `dot?: boolean` · `children` | 只展示，不可点 |
-| `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head |
+| `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head；标题不折行。`meta` 是超过 24 个字的字符串时放进卡片第一行单独成段（`xm-card-lead`），短的跟在标题后面、放不下打省略号。卡片里直接放 ListRow / ToolRow / 表头时，行和分隔线通到卡片两边，第一行上面不画线 |
 | `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `progress?: number` | 六列固定网格 |
 | `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码） |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
@@ -32,12 +32,12 @@
 | `SearchInput` | `value` · `onChange` · `placeholder` | 带图标，宽 240 |
 | `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
 | `Confirm` | `title` · `body` · `okLabel` · `danger?` · `requireAck?` · `onOk` | Dialog 特化 |
-| `Drawer` | `open` · `title` · `icon?` · `footer` · `onClose` | 右侧 420 |
-| `Notice` | `tone` · `icon` · `title` · `body` · `actions` · `onDismiss` · `progress?` | 同时只显示一张 |
-| `Toast` | 通过 `useToast().show(text, tone?)` 调用 | 2.4s，≤ 3 条 |
+| `Drawer` | `open` · `title` · `icon?` · `footer` · `onClose` | 右侧 420，从顶栏下面到状态栏上面；非模态：背后不罩、不模糊，点另一行换内容，Esc 关；footer 按钮从左往右排、主按钮在最左，放不下换行 |
+| `Notice` | `tone` · `icon` · `title` · `body` · `actions` · `onDismiss` · `progress?` | 同时只显示一张；`tone='bad'` 一律红圈 ×、`'warn'` 一律橙色三角，`icon` 只对一般说明生效；嵌在页面里只留细边框，浮在角上的（开机提示、更新通知）由外壳加阴影 |
+| `Toast` | 通过 `useToast().show(text, tone?)` 调用 | 2.4s，≤ 3 条；做成了的结果一律走它，不挂在页顶（带「打开所在位置」的导出结果除外，要给人点） |
 | `Menu` | `items: {label,icon?,danger?,onSelect}[] \| 'divider'` · `anchor` | |
 | `Popover` | `anchor` · `title?` · `children` · `onClose` | 帮助 / 公告 / 账号切换 |
-| `Empty` | `icon` · `title` · `description` · `action?` | |
+| `Empty` | `icon` · `title` · `description` · `action?` | `action` 里有两颗按钮时一样大、间距 8 |
 | `Progress` | `value` · `tone?` · `label?` | |
 | `Skeleton` | `rows?: number` | 列表加载 |
 | `Tabs` | `items` · `value` · `onChange` | 弹窗页签 / 账号页签 |

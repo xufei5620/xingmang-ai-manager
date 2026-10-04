@@ -1,10 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Info, X } from 'lucide-react';
+import { Info, TriangleAlert, X, XCircle } from 'lucide-react';
 import { Progress } from './core';
 import { useUiText, type BaseProps, type Icon, type Tone } from './shared';
 
-export function Notice({ tone, icon: Icon = Info, title, body, actions, onDismiss, progress, testId }: BaseProps & { tone: Tone; icon?: Icon; title: ReactNode; body: ReactNode; actions?: ReactNode; onDismiss?: () => void; progress?: number }) {
-  const t = useUiText();
+// Errors and warnings always wear the same mark (red circled cross, amber
+// triangle) whatever icon the caller picked: the mark is how a reader tells a
+// failure from an ordinary explanation before reading a word of it.
+export function Notice({ tone, icon = Info, title, body, actions, onDismiss, progress, testId }: BaseProps & { tone: Tone; icon?: Icon; title: ReactNode; body: ReactNode; actions?: ReactNode; onDismiss?: () => void; progress?: number }) {
+  const t = useUiText(); const Icon = tone === 'bad' ? XCircle : tone === 'warn' ? TriangleAlert : icon;
   return <aside className={'xm-notice xm-tone-' + tone} data-testid={testId} role={tone === 'bad' ? 'alert' : 'status'}><Icon size={18} aria-hidden="true" /><div><strong>{title}</strong><div className="xm-notice-body">{body}</div>{actions && <div className="xm-notice-actions">{actions}</div>}{typeof progress === 'number' && <Progress value={progress} />}</div>{onDismiss && <button className="xm-icon-btn" aria-label={t('close')} onClick={onDismiss} type="button"><X size={16} aria-hidden="true" /></button>}</aside>;
 }
 type ToastItem = { id: number; text: string; tone: Tone };

@@ -329,9 +329,9 @@ describe('v2 business boundaries', () => {
     )
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试或查看反馈日志。',
+      '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试或查看反馈日志。')
+    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

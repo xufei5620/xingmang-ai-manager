@@ -39,6 +39,7 @@ import {
 } from './ui'
 import {
   displayDate,
+  RelativeTime,
   errorMessage,
   ListState,
   Pagination,
@@ -878,6 +879,8 @@ export function SessionsPage({
             onChange={(value) => {
               setProvider(value)
               setPage(1)
+              // 上一个工具的红条不跟到下一个工具上。
+              operation.clear()
             }}
           />
         }
@@ -892,7 +895,8 @@ export function SessionsPage({
             testId="sessions-search"
           />
         }
-        right={<span>{resource.data?.total ?? 0} 条记录</span>}
+        // 没读到时不写「0 条记录」，免得像是真没有；读不到的原因在下面的列表里说。
+        right={resource.data && !resource.error ? <span>{resource.data.total} 条记录</span> : null}
       />
       <ResultNotice
         {...operation}
@@ -905,6 +909,7 @@ export function SessionsPage({
           {...resource}
           error={resource.error}
           count={resource.data?.items.length ?? 0}
+          query={query}
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
@@ -939,7 +944,7 @@ export function SessionsPage({
                   <span>
                     {session.model || '未记录模型'} ·{' '}
                     {session.messageCount ?? '未知'} 条 ·{' '}
-                    {displayDate(session.updatedAt)}
+                    <RelativeTime value={session.updatedAt} />
                   </span>
                 }
                 actions={
@@ -1002,6 +1007,7 @@ export function SessionsPage({
       <Pagination
         page={page}
         total={resource.data?.total ?? 0}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
       <Drawer
@@ -1527,6 +1533,7 @@ export function ExtensionsPage({
           onChange={(next) => {
             setView(next)
             if (next === 'market') setScope('all')
+            operation.clear()
           }}
           testId="plugins-tabs"
         />
@@ -1541,6 +1548,8 @@ export function ExtensionsPage({
                 setProvider(value)
                 setQuery('')
                 setScope('all')
+                // 上一个工具的红条不跟到下一个工具上。
+                operation.clear()
               }
             }}
           />
@@ -1555,16 +1564,18 @@ export function ExtensionsPage({
         }
         right={
           <>
-            <span>
-              {kind === 'plugin' && view === 'market' && !officialMarketplacePage
-                ? filteredMarkets.length
-                : list.length}{' '}
-              {kind === 'mcp' ? '个连接' : '项'}
-            </span>
+            {resource.data && !resource.error && (
+              <span>
+                {kind === 'plugin' && view === 'market' && !officialMarketplacePage
+                  ? filteredMarkets.length
+                  : list.length}{' '}
+                {kind === 'mcp' ? '个连接' : '项'}
+              </span>
+            )}
             {kind === 'mcp' && (
               <>
                 {health.report?.checkedAt && !health.checking && (
-                  <span>上次检测 {displayDate(health.report.checkedAt)}</span>
+                  <span>上次检测 <RelativeTime value={health.report.checkedAt} /></span>
                 )}
                 <Button
                   size="sm"
@@ -1647,6 +1658,7 @@ export function ExtensionsPage({
             loading={resource.loading}
             error={resource.error}
             count={list.length}
+            query={query}
             filtered={Boolean(query || scope !== 'all')}
             retry={() => void resource.reload()}
             clear={() => {
@@ -1657,8 +1669,8 @@ export function ExtensionsPage({
               curatedItems.length > 0 ? (
                 <>
                   {addButton}
+                  {/* 和旁边的添加按钮一样大。 */}
                   <Button
-                    size="sm"
                     icon={Sparkles}
                     onClick={focusCuratedShelf}
                     testId={`${page}-see-curated`}
@@ -1849,6 +1861,7 @@ export function ExtensionsPage({
             loading={resource.loading}
             error={resource.error}
             count={filteredMarkets.length}
+            query={query}
             filtered={Boolean(query)}
             retry={() => void resource.reload()}
             clear={() => setQuery('')}
@@ -2333,7 +2346,10 @@ export function BackupsPage({
         }
       />
       <Toolbar
-        left={<ProviderFilter value={provider} all onChange={setProvider} />}
+        left={<ProviderFilter value={provider} all onChange={(value) => {
+          setProvider(value)
+          operation.clear()
+        }} />}
         search={
           <SearchInput
             value={query}
@@ -2342,7 +2358,7 @@ export function BackupsPage({
             testId="backups-search"
           />
         }
-        right={<span>{list.length} 份备份</span>}
+        right={resource.data && !resource.error ? <span>{list.length} 份备份</span> : null}
       />
       <ResultNotice {...operation} />
       {restoreCheck && (
@@ -2356,6 +2372,7 @@ export function BackupsPage({
             loading={resource.loading}
             error={resource.error}
             count={list.length}
+            query={query}
             filtered={Boolean(query)}
             retry={() => void resource.reload()}
             clear={() => setQuery('')}
@@ -2376,7 +2393,7 @@ export function BackupsPage({
                       : '无法识别的备份'}
                   </>
                 }
-                desc={displayDate(backup.createdAt)}
+                desc={<RelativeTime value={backup.createdAt} />}
                 badge={
                   <>
                     <Pill tone={backup.valid ? 'neutral' : 'bad'}>

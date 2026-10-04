@@ -317,8 +317,9 @@ test('revoking the only key on the last page steps back to a real page instead o
     await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
     await page.getByRole('dialog', { name: '撤销这把密钥？', exact: true }).getByRole('button', { name: '确认撤销', exact: true }).click()
     await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
-    await page.getByText('1 / 1', { exact: true }).waitFor()
     assert.equal(await page.getByText('2 / 1', { exact: true }).count(), 0)
+    // 只剩一页，分页条整个不摆。
+    await page.locator('.v2-business-pagination').waitFor({ state: 'detached' })
   } finally { await page.close() }
 })
 
@@ -331,8 +332,8 @@ test('key search finds a key that lives on a later page and starts from the firs
     await page.getByText('2 / 3', { exact: true }).waitFor()
     await page.getByTestId('keys-search').fill('paged-key-43')
     await page.getByRole('button', { name: '密钥 paged-key-43 的更多操作', exact: true }).waitFor()
-    await page.getByText('1 / 1', { exact: true }).waitFor()
-    await page.getByText('共 1 条', { exact: true }).waitFor()
+    // 搜到的只有一页，分页条不摆。
+    await page.locator('.v2-business-pagination').waitFor({ state: 'detached' })
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'searchAccountKeys').map((call) => call.args), ['paged-key-43'])
     await page.getByTestId('keys-search').fill('')
     await page.getByText('共 45 条', { exact: true }).waitFor()
@@ -1007,7 +1008,7 @@ test('available update displays download action and failed download remains revi
   }
 })
 
-// 「更新」页也能直接开关启动检查和自动更新，不用再绕去设置（五-51）。
+// 「更新」页也能直接开关启动检查和自动更新，不用再绕去设置。
 test('the updates page switches the startup check and automatic updates in place', async () => {
   const page = await fixture('page=updates&autoUpdate=1')
   try {
@@ -1272,7 +1273,7 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
   } finally { await page.close() }
 })
 
-// 存好了只弹会自己消失的小提示，页面不往下跳；页顶红条只留给没存上的（一-12）。
+// 存好了只弹会自己消失的小提示，页面不往下跳；页顶红条只留给没存上的。
 test('a saved setting says so in a passing toast without pushing the page down', async () => {
   const page = await fixture('page=settings')
   try {
