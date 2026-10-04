@@ -27,6 +27,8 @@ import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { ensureManagedNpmLayout } from './managed-cli'
+import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
 import { WindowsCliLaunchError } from './windows-elevation'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
@@ -2579,17 +2581,84 @@ describe('managed npm transaction', () => {
     return { active, transaction, staged }
   }
 
-  it('promotes a verified prefix while retaining rollback data until transaction cleanup', async () => {
+  it('promotes a verified prefix and keeps the old copy, marked as superseded, until transaction cleanup', async () => {
     const fixture = transactionFixture()
-    await replaceManagedNpmPrefixAtomically(
+    await expect(replaceManagedNpmPrefixAtomically(
       fixture.active,
       fixture.staged,
       fixture.transaction,
       async () => {
         expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('new')
+        // Until the new version has been verified, the old copy keeps the name recovery rolls back to.
+        expect(fs.readFileSync(path.join(fixture.transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
       },
-    )
+    )).resolves.toEqual({ backupRetired: true })
     expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('new')
+    expect(fs.readFileSync(path.join(fixture.transaction, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.existsSync(path.join(fixture.transaction, 'previous-prefix'))).toBe(false)
+  })
+
+  it('retries marking the old copy superseded while something briefly holds it', async () => {
+    const fixture = transactionFixture()
+    let busy = 2
+    const rename = vi.fn(async (source: string, destination: string) => {
+      if (path.basename(destination) === 'superseded-prefix' && busy > 0) {
+        busy -= 1
+        throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
+      }
+      await fs.promises.rename(source, destination)
+    })
+
+    await expect(replaceManagedNpmPrefixAtomically(
+      fixture.active,
+      fixture.staged,
+      fixture.transaction,
+      async () => undefined,
+      { rename },
+    )).resolves.toEqual({ backupRetired: true })
+    expect(rename).toHaveBeenCalledTimes(5)
+    expect(fs.readFileSync(path.join(fixture.transaction, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('old')
+  })
+
+  it('still reports the verified update when the old copy cannot be marked superseded', async () => {
+    const fixture = transactionFixture()
+    const rename = vi.fn(async (source: string, destination: string) => {
+      if (path.basename(destination) === 'superseded-prefix') {
+        throw Object.assign(new Error('cross-device link not permitted'), { code: 'EXDEV' })
+      }
+      await fs.promises.rename(source, destination)
+    })
+
+    await expect(replaceManagedNpmPrefixAtomically(
+      fixture.active,
+      fixture.staged,
+      fixture.transaction,
+      async () => undefined,
+      { rename },
+    )).resolves.toEqual({ backupRetired: false })
+    // A non-transient failure is not retried; the old copy stays where it was, as before.
+    expect(rename).toHaveBeenCalledTimes(3)
+    expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('new')
+    expect(fs.readFileSync(path.join(fixture.transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
+  })
+
+  it('gives up marking the old copy superseded after a bounded number of transient failures', async () => {
+    const fixture = transactionFixture()
+    const rename = vi.fn(async (source: string, destination: string) => {
+      if (path.basename(destination) === 'superseded-prefix') {
+        throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+      }
+      await fs.promises.rename(source, destination)
+    })
+
+    await expect(replaceManagedNpmPrefixAtomically(
+      fixture.active,
+      fixture.staged,
+      fixture.transaction,
+      async () => undefined,
+      { rename },
+    )).resolves.toEqual({ backupRetired: false })
+    expect(rename.mock.calls.filter(([, destination]) => path.basename(destination) === 'superseded-prefix')).toHaveLength(5)
     expect(fs.readFileSync(path.join(fixture.transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
   })
 
@@ -2602,6 +2671,7 @@ describe('managed npm transaction', () => {
       async () => { throw new Error('verification failed') },
     )).rejects.toThrow('verification failed')
     expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.existsSync(path.join(fixture.transaction, 'superseded-prefix'))).toBe(false)
   })
 
   it('preserves rollback data when restoring the previous prefix also fails', async () => {
@@ -2945,6 +3015,63 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
     expect(stages.filter((stage, index) => stage !== stages[index - 1]))
       .toEqual(['version', 'download', 'verify', 'install', 'final-check'])
     expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
+  })
+
+  it('keeps a verified update when the cleanup after it was cut short, and sweeps the leftover later', async () => {
+    const fixture = linuxInstallFixture(() => '')
+    const productRoot = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI')
+    const managedPrefix = path.join(productRoot, 'Cli', 'npm')
+    const cacheRoot = path.join(productRoot, 'Cli', 'npm-cache')
+    const managedManifest = path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex', 'package.json')
+    writeCodexPackage(managedPrefix, '0.1.0', true)
+    const runCommand = fakeNpm(fixture, (prefix) => writeCodexPackage(prefix, fixture.expectedVersion, true))
+    // 星芒在「完成」之后、临时文件夹删完之前被关掉：收尾那一下删除没有做成。
+    const realRm = fs.promises.rm
+    const rm = vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
+      // Only the transaction folder itself, as the final cleanup removes it; whatever the install does inside runs for real.
+      if (path.dirname(String(target)) === cacheRoot && path.basename(String(target)).startsWith('npm-transaction-')) {
+        throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
+      }
+      return realRm(target, options)
+    })
+    let sweepNow: number | null = null
+    const sweep = vi.fn(async (locations: readonly InstallLeftoverLocation[]) => sweepNow === null
+      ? { removed: 0, freedBytes: 0, failed: 0 }
+      // Only the managed npm cache: never touch whatever sits in this machine's own temp directory.
+      : sweepInstallLeftovers(locations.filter((location) => location.directory === cacheRoot), { now: sweepNow }))
+    const runtimeLog = { log: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      {
+        platform: 'linux',
+        runCommand,
+        resolveCliInstallation: managedResolution(fixture),
+        sweepInstallLeftovers: sweep,
+        runtimeLog,
+      },
+    )
+
+    await service.installCli('codex', { isDestroyed: () => false, send: vi.fn() })
+    // The sweep queued after every successful install; it must be done before the later one is queued.
+    await vi.waitFor(() => expect(sweep).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(service.inspectInstallationQueue().activeKey).toBeNull())
+    rm.mockRestore()
+
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'install', 'cli.install.transaction-cleanup-failed', expect.any(String), expect.objectContaining({ provider: 'codex' }))
+    const leftovers = fs.readdirSync(cacheRoot).filter((name) => name.startsWith('npm-transaction-'))
+    expect(leftovers).toHaveLength(1)
+    const leftover = path.join(cacheRoot, leftovers[0])
+    expect(fs.existsSync(path.join(leftover, 'superseded-prefix'))).toBe(true)
+    expect(fs.existsSync(path.join(leftover, 'previous-prefix'))).toBe(false)
+
+    // Every later install, update or uninstall starts by preparing the managed layout.
+    await ensureManagedNpmLayout({ platform: 'linux', env: process.env })
+    expect(JSON.parse(fs.readFileSync(managedManifest, 'utf8'))).toMatchObject({ version: fixture.expectedVersion })
+
+    sweepNow = Date.now() + installLeftoverMinimumAgeMs + 60_000
+    await expect(service.cleanupInstallLeftovers()).resolves.toMatchObject({ removed: 1, failed: 0 })
+    expect(fs.existsSync(leftover)).toBe(false)
+    expect(JSON.parse(fs.readFileSync(managedManifest, 'utf8'))).toMatchObject({ version: fixture.expectedVersion })
   })
 
   it('brings the terminal commands in line after an install and again after the uninstall', async () => {

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ensureManagedNpmLayout } from './managed-cli'
+import { ensureManagedNpmLayout, type ManagedNpmLayoutOptions } from './managed-cli'
 import {
   managedCliRoot,
   managedNpmBinDirectory,
@@ -34,6 +34,22 @@ afterEach(() => {
     fs.rmSync(directory, { recursive: true, force: true })
   }
 })
+
+// 恢复的规矩三个平台一样，这几条在哪台 CI 上都跑：Mac、Linux 用临时主目录，Windows 照下面
+// 几条用假的 ProgramData。
+function layoutOptionsForThisPlatform(): ManagedNpmLayoutOptions {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-npm-recovery-')))
+  temporaryDirectories.push(root)
+  if (process.platform === 'win32') {
+    return {
+      env: { ...process.env, ProgramData: root },
+      platform: 'win32',
+      applyWindowsAcl: vi.fn(async () => undefined),
+      machinePaths: testMachinePaths(root),
+    }
+  }
+  return { env: { ...process.env, HOME: root, XDG_DATA_HOME: '' }, platform: process.platform }
+}
 
 describe('managed CLI paths', () => {
   it('keeps the permanent npm prefix and cache below ProgramData', () => {
@@ -232,5 +248,41 @@ describe('managed CLI paths', () => {
     }
 
     await expect(ensureManagedNpmLayout(options)).rejects.toThrow('多个未完成的 npm 安装事务')
+  })
+
+  it('keeps a verified update when only its superseded copy was left behind', async () => {
+    const options = layoutOptionsForThisPlatform()
+    const layout = await ensureManagedNpmLayout(options)
+    fs.writeFileSync(path.join(layout.prefix, 'version.txt'), 'new', 'utf8')
+    const transaction = path.join(layout.cacheRoot, 'npm-transaction-Ab12Cd')
+    fs.mkdirSync(path.join(transaction, 'superseded-prefix'), { recursive: true })
+    fs.writeFileSync(path.join(transaction, 'superseded-prefix', 'version.txt'), 'old', 'utf8')
+
+    await ensureManagedNpmLayout(options)
+
+    expect(fs.readFileSync(path.join(layout.prefix, 'version.txt'), 'utf8')).toBe('new')
+    // Left for the leftover sweep (install-leftovers.ts), which removes it once it is old enough.
+    expect(fs.readFileSync(path.join(transaction, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('old')
+  })
+
+  it('rolls back only the update that was never verified and leaves verified leftovers alone', async () => {
+    const options = layoutOptionsForThisPlatform()
+    const layout = await ensureManagedNpmLayout(options)
+    // v1 → v2 passed its check but its cleanup was cut short; v2 → v3 was cut short before its check.
+    const verified = path.join(layout.cacheRoot, 'npm-transaction-Ab12Cd')
+    fs.mkdirSync(path.join(verified, 'superseded-prefix'), { recursive: true })
+    fs.writeFileSync(path.join(verified, 'superseded-prefix', 'version.txt'), 'v1', 'utf8')
+    fs.writeFileSync(path.join(layout.prefix, 'version.txt'), 'v2', 'utf8')
+    const unverified = path.join(layout.cacheRoot, 'npm-transaction-Ef34Gh')
+    fs.mkdirSync(unverified)
+    fs.renameSync(layout.prefix, path.join(unverified, 'previous-prefix'))
+    fs.mkdirSync(layout.prefix)
+    fs.writeFileSync(path.join(layout.prefix, 'version.txt'), 'v3', 'utf8')
+
+    await ensureManagedNpmLayout(options)
+
+    expect(fs.readFileSync(path.join(layout.prefix, 'version.txt'), 'utf8')).toBe('v2')
+    expect(fs.existsSync(unverified)).toBe(false)
+    expect(fs.readFileSync(path.join(verified, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('v1')
   })
 })
