@@ -2,6 +2,8 @@
 
 - Windows 上 Codex 桌面端从 OpenAI 官网下载离线安装包时，下了半分钟以后照当时的速度还要 10 分钟以上才下得完，就自动换国内线路接着装，
   不用再点「取消」（点「取消」会把整次安装停掉）。
+- 首页装 Claude Desktop、WorkBuddy、OpenCode 时可以点「取消」了：排队、下载、核对安装包的时候点了就停，那一行回到「安装」。
+  Windows 上已经交给系统安装的那一步停不了，点了会说明原因。
 
 ## 开发
 
@@ -17,6 +19,7 @@
   封存，拒绝时给「正在安装 X，这一步中断会留下装了一半的程序，请等它结束。」；winget 没装上、换官网包那一路时解封。Mac 全程不封存：
   放进「应用程序」是整个改名，跨盘时先拷到临时名字再改名。`claude-desktop-msix-installer.ts`、`workbuddy-installer.ts` 各加一个
   `onInstallStarting`，在最后一次检查 signal 之后同步调用，供调用方封存。取消统一抛 `InstallCancelledError`（「X 安装已取消」）。
-  首页那颗「取消」按钮要加界面文字，等确认后另开 PR；在那之前这条通道没有调用方，客户看到的行为不变。
+  首页这三行接上「取消」：`App.tsx` 的 `installExternal` 给 `toolbox.run` 带上 `cancel`，`Home.tsx` 新增可选的
+  `onCancelInstallExternal`，按钮点下去显示「正在停止」，主进程拒绝时那句原因照命令行工具那几行用 toast 提示。
 - `download-retry.ts`：每次读到数据块后先看这一轮有没有被中止。响应体不跟着请求信号一起中止时（测试里的流、不接信号的 fetch 实现），
   流里排着的数据块会赢过中止，取消或「太慢」要等排队的数据读完才生效；整包都排在流里时甚至照样当成下完返回。

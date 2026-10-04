@@ -310,6 +310,36 @@ test('external client install shows progress and finishes at configuration witho
   } finally { await page.close() }
 })
 
+test('external client install can be cancelled while downloading and returns to 安装 without an error', async () => {
+  const page = await open('externalInstallPending=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await row.getByTestId('tool-workbuddy-cancel').click()
+    await row.getByRole('button', { name: '安装', exact: true }).waitFor()
+    assert.equal(await row.getByTestId('tool-workbuddy-cancel').count(), 0)
+    assert.equal(await page.getByRole('alert').count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelExternalClientInstall').map((entry) => entry.args)), [['workbuddy']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a refused external client cancel says why and lets the install finish', async () => {
+  const page = await open('externalInstallPending=1&externalCancelRefused=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await row.getByTestId('tool-workbuddy-cancel').click()
+    await page.getByText('正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('tool-workbuddy-cancel').textContent(), '取消')
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByRole('button', { name: '配置', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client install failures clear busy state and remain retryable', async () => {
   const page = await open('externalInstallFailure=1')
   try {

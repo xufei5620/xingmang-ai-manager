@@ -192,6 +192,7 @@ declare global { interface Window { v2Test: { calls: Array<{ method: string; arg
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
+let cancelExternalInstall: ((error: Error) => void) | null = null
 let holdExternalScan = false
 let releaseExternalScan: () => void = () => undefined
 let holdConfigRead = false
@@ -417,12 +418,18 @@ const methods = {
   },
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
-    if (query.has('externalInstallPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
+    if (query.has('externalInstallPending')) await new Promise<void>((resolve, reject) => { releaseLaunch = resolve; cancelExternalInstall = reject })
     if (query.has('externalInstallFailure')) throw new Error('客户端安装失败，请重试')
     const current = externalStatuses.find((entry) => entry.tool === tool)!
     Object.assign(current, { installed: true, version: '2.0.0' })
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'completed', message: '安装完成', percent: 100 })
     return structuredClone(current)
+  },
+  // 同主进程：下载那一段点了就停，安装那一步拒绝并给原因（externalCancelRefused）。
+  cancelExternalClientInstall: async (tool) => {
+    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。' }
+    cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
+    return { cancelled: true, reason: null }
   },
   launchExternalClient: async (tool) => {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
