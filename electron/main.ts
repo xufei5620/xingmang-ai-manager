@@ -1940,15 +1940,19 @@ if (!hasSingleInstanceLock) {
     // 当前选中的那个。
     async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
       const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
-      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
-      if (direct) {
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
+      const retry = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
+      if (retry) {
+        // 直连那一路刚交还给系统代理时，重发走的是系统代理。
+        const scope = proxyBypass.active() ? 'app' : proxyBypass.siteDirect() ? 'site' : 'proxy'
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope === 'proxy'
+          ? '账号请求直接联网没走通，已改回跟随系统代理'
+          : '账号请求经系统代理没走通，已改直接联网', {
           reason: failure.reason,
           method: failure.method,
-          scope: proxyBypass.active() ? 'app' : 'site',
+          scope,
         })
       }
-      return direct
+      return retry
     }
     const accounts = createRealmAccountService({
       vault,
@@ -1995,9 +1999,16 @@ if (!hasSingleInstanceLock) {
         previous?.videoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
-        await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
-          previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
-          previous.canvasRuns.whenIdle()] : [])])
+        // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完；叫停管到下面这段等完，
+        // 晚一步才开始的那次也不等（system-service.ts 的 stopTemplateFillWaits）。
+        const resumeTemplateFill = systemService.stopTemplateFillWaits?.()
+        try {
+          await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
+            previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
+            previous.canvasRuns.whenIdle()] : [])])
+        } finally {
+          resumeTemplateFill?.()
+        }
       },
       onChanged: (siteId, state) => {
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())

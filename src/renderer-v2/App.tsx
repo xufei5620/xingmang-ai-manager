@@ -25,7 +25,7 @@ import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } fro
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
-import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
+import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
@@ -56,7 +56,7 @@ import { OperationErrorDialog, supportFailureOf, type OperationFailure } from '.
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureTone, updateNeedsManualReinstall } from './features/app/update-retry'
+import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
 import { LaunchInstallNotice } from './features/app/LaunchInstallNotice'
@@ -943,8 +943,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   async function launchExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
     try {
-      await toolbox.run(`launch:${id}`, '正在打开客户端', () => toolsApi.launchExternal(id))
-      if (mounted.current && epoch === accountEpoch.current) await toolbox.refreshExternal()
+      const launched = await toolbox.run(`launch:${id}`, '正在打开客户端', () => toolsApi.launchExternal(id))
+      // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
+      if (launched && mounted.current && epoch === accountEpoch.current) toolbox.noteExternalLaunched(id)
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
   }
   function finishExternalConfigSave() {
@@ -1038,6 +1039,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
             ? { ...current, config: { ...current.config, rememberedWorkspace } }
             : current)
+          // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
+          // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。
+          if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
         }
       })
       return launchIsCurrent(epoch) && started
@@ -1248,15 +1252,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const toolUpdates = toolbox.snapshot ? pendingToolUpdates(presentTools(toolbox.snapshot)) : []
   // 启动扫描完成后把「有新版本」汇总成一条系统通知。同一个工具同一个目标版本
   // 只说一次，抑制状态留在本机，所以下次启动不会再念一遍；工具更完或者上游又
-  // 出了新版本，记录随之变化，才会再提醒。
-  const toolUpdateKey = updateNoticeKey(toolUpdates)
+  // 出了新版本，记录随之变化，才会再提醒。通知说「回到星芒就能逐个更新」，
+  // 所以只算星芒更新得了的那几个（inAppToolUpdates），角标照旧数全部。
+  const noticeUpdates = toolbox.snapshot ? inAppToolUpdates(presentTools(toolbox.snapshot)) : []
+  const toolUpdateKey = updateNoticeKey(noticeUpdates)
   useEffect(() => {
     // 开机先画出来的上次结果不算：那时说的「有新版本」可能早就更新过了。
     if (!toolbox.snapshot || toolbox.snapshot.system.cachedAt) return
-    if (unannouncedToolUpdates(toolUpdates, readAnnouncedToolUpdates()).length > 0) {
+    if (unannouncedToolUpdates(noticeUpdates, readAnnouncedToolUpdates()).length > 0) {
       void platformApi()?.notifyActivity('cliUpdate', toolUpdateKey).catch(() => undefined)
     }
-    rememberAnnouncedToolUpdates(toolUpdates)
+    rememberAnnouncedToolUpdates(noticeUpdates)
     // toolUpdateKey 已经把这一轮的工具与目标版本压成一个字符串，
     // 快照里别的字段变化（余额、运行环境）不该重新触发这段。
   }, [toolUpdateKey, Boolean(toolbox.snapshot), Boolean(toolbox.snapshot?.system.cachedAt)])
@@ -1342,9 +1348,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
           notification={showUpdate && <Notice tone={update.error ? updateFailureTone(update) : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
             body={update.error ? userFacingErrorMessage(update.error) : updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn, update.installMethod)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
-            actions={<>{update.error && (updateNeedsManualReinstall(update)
-              ? <Button size="sm" variant="primary" onClick={() => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl))}>打开下载页</Button>
-              : <Button size="sm" variant="primary" testId="update-bubble-retry" loading={updateRetrying} onClick={retryUpdate}>{updateFailureLabel(update.failedStep).retry}</Button>)}
+            actions={<>{update.error && !updateNeedsManualReinstall(update) && <Button size="sm" variant="primary" testId="update-bubble-retry" loading={updateRetrying} onClick={retryUpdate}>{updateFailureLabel(update.failedStep).retry}</Button>}
+              {updateOffersDownloadPage(update) && <Button size="sm" variant={updateNeedsManualReinstall(update) ? 'primary' : 'secondary'} onClick={() => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl))}>打开下载页</Button>}
               {updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
           adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), pageVisible: (id) => id !== 'acceleration' || accelerationAvailable, refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },

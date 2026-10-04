@@ -792,3 +792,139 @@ describe('macOS external desktop lifecycle', () => {
     expect((await invalid.runtime.scan())[0]).toMatchObject({ installed: false, detectionError: 'signature rejected' })
   })
 })
+
+// 第三十一批 C：打开只现验要开的那一个；展示用的检测认几分钟内验过、包没变的结果（同 Windows 的 knownSignatures）。
+describe('macOS external client signature checks', () => {
+  const bundles: Record<ExternalToolId, string> = { workbuddy: '/Applications/WorkBuddy.app', claudeDesktop: '/Applications/Claude.app', opencode: '/Applications/OpenCode.app' }
+  const bundleIds: Record<ExternalToolId, string> = { workbuddy: 'com.tencent.workbuddy.mac', claudeDesktop: 'com.anthropic.claudefordesktop', opencode: 'ai.opencode.desktop' }
+  const tools = Object.keys(bundles) as ExternalToolId[]
+  /** 三家都装着的 Mac。rejected 里的包 spctl 不放行；touch 改一个文件的修改时间。 */
+  function allInstalled(extra: ExternalClientRuntimeOptions = {}) {
+    let clock = 1_000
+    let executableName: string | undefined = 'Main'
+    const rejected = new Set<string>()
+    const mtimes = new Map<string, number>()
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      const target = tools.find((tool) => spec.argv.some((arg) => arg.startsWith(bundles[tool])))
+      if (spec.executable === '/usr/bin/plutil') {
+        return commandResult(spec, JSON.stringify({ CFBundleIdentifier: bundleIds[target!], CFBundleShortVersionString: '1.0.0', CFBundleExecutable: executableName }))
+      }
+      if (spec.executable === '/usr/sbin/spctl' && target && rejected.has(bundles[target])) throw new Error('rejected by Gatekeeper')
+      return commandResult(spec)
+    })
+    const lstatPath = vi.fn(async (candidate: string) => ({
+      dev: 1, ino: candidate.length, mtimeMs: mtimes.get(candidate) ?? 100, size: 10, isFile: () => candidate.includes('/Contents/'),
+    }))
+    // 三家都装在 /Applications，~/Applications 下没有：某家在 /Applications 验不过时，不会再从那边读出另一种错。
+    const verifyPath = async (candidate: string) => {
+      if (candidate.startsWith('/Applications/')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    }
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute,
+      verifyPath, lstatPath, getuid: () => 501, now: () => clock, ...extra,
+    })
+    /** 这个客户端从上次清零以来跑过的签名核对（spctl、codesign），按先后。 */
+    function checks(tool: ExternalToolId): string[] {
+      return execute.mock.calls
+        .filter(([spec]) => (spec.executable === '/usr/sbin/spctl' || spec.executable === '/usr/bin/codesign') && spec.argv.includes(bundles[tool]))
+        .map(([spec]) => spec.executable)
+    }
+    return {
+      execute, runtime, checks, rejected,
+      advance(ms: number) { clock += ms },
+      touch(file: string) { mtimes.set(file, (mtimes.get(file) ?? 100) + 1) },
+      dropExecutableName() { executableName = undefined },
+    }
+  }
+
+  it('verifies only the client it opens, in full', async () => {
+    const f = allInstalled()
+    await f.runtime.launch('claudeDesktop')
+    expect(f.checks('claudeDesktop')).toEqual(['/usr/sbin/spctl'])
+    expect(f.checks('workbuddy')).toEqual([])
+    expect(f.checks('opencode')).toEqual([])
+    expect(f.execute.mock.calls.filter(([spec]) => spec.executable === '/usr/bin/plutil').map(([spec]) => spec.argv.at(-1)))
+      .toEqual(['/Applications/Claude.app/Contents/Info.plist'])
+    expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/open', argv: ['-a', '/Applications/Claude.app'] }, expect.any(Object))
+
+    f.execute.mockClear()
+    await f.runtime.launch('workbuddy')
+    // WorkBuddy 照旧加一次整包深验。
+    expect(f.checks('workbuddy')).toEqual(['/usr/sbin/spctl', '/usr/bin/codesign'])
+    expect(f.checks('claudeDesktop')).toEqual([])
+  })
+
+  it('never lets opening or installing reuse an earlier verification', async () => {
+    const f = allInstalled()
+    await f.runtime.scan()
+    f.execute.mockClear()
+    await f.runtime.launch('workbuddy')
+    expect(f.checks('workbuddy')).toEqual(['/usr/sbin/spctl', '/usr/bin/codesign'])
+    f.execute.mockClear()
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+
+  it('lets a display scan reuse a verification from the last few minutes while the bundle is unchanged', async () => {
+    const f = allInstalled()
+    expect((await f.runtime.scan()).map((status) => status.installed)).toEqual([true, true, true])
+    f.execute.mockClear()
+    const statuses = await f.runtime.scan({ force: true })
+    expect(statuses.map((status) => [status.installed, status.detectionError])).toEqual([[true, null], [true, null], [true, null]])
+    for (const tool of tools) expect(f.checks(tool), tool).toEqual([])
+    // 应用标识和「运行中」照旧每次现读。
+    expect(f.execute.mock.calls.filter(([spec]) => spec.executable === '/usr/bin/plutil')).toHaveLength(3)
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/bin/ps')).toBe(true)
+  })
+
+  it('remembers the verification made when opening, so the scan after it skips that deep check', async () => {
+    const f = allInstalled()
+    await f.runtime.launch('workbuddy')
+    f.execute.mockClear()
+    await f.runtime.scan()
+    expect(f.checks('workbuddy')).toEqual([])
+    // 另两家这之前没验过，照旧现验。
+    expect(f.checks('claudeDesktop')).toEqual(['/usr/sbin/spctl'])
+    expect(f.checks('opencode')).toEqual(['/usr/sbin/spctl'])
+  })
+
+  it('verifies again once the bundle changes or the few minutes are up', async () => {
+    const f = allInstalled()
+    await f.runtime.scan()
+    f.touch('/Applications/WorkBuddy.app/Contents/MacOS/Main')
+    f.execute.mockClear()
+    await f.runtime.scan({ force: true })
+    expect(f.checks('workbuddy')).toEqual(['/usr/sbin/spctl', '/usr/bin/codesign'])
+    expect(f.checks('opencode')).toEqual([])
+
+    f.advance(5 * 60_000)
+    f.execute.mockClear()
+    await f.runtime.scan({ force: true })
+    for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+
+  it('forgets an earlier pass as soon as a fresh verification fails', async () => {
+    const f = allInstalled()
+    await f.runtime.scan()
+    f.rejected.add('/Applications/OpenCode.app')
+    await expect(f.runtime.launch('opencode')).rejects.toThrow('rejected by Gatekeeper')
+    f.execute.mockClear()
+    const statuses = await f.runtime.scan({ force: true })
+    expect(statuses[2]).toMatchObject({ tool: 'opencode', installed: false, detectionError: 'rejected by Gatekeeper' })
+    expect(f.checks('opencode')).toEqual(['/usr/sbin/spctl'])
+    f.rejected.clear()
+    f.execute.mockClear()
+    expect((await f.runtime.scan({ force: true }))[2].installed).toBe(true)
+    expect(f.checks('opencode')).toEqual(['/usr/sbin/spctl'])
+  })
+
+  it('verifies every time when the bundle names no main program to fingerprint', async () => {
+    const f = allInstalled()
+    f.dropExecutableName()
+    await f.runtime.scan()
+    f.execute.mockClear()
+    await f.runtime.scan({ force: true })
+    for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+})

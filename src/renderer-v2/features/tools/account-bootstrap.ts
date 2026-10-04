@@ -35,6 +35,30 @@ export interface AccountBootstrapProgress {
   phase: AccountBootstrapPhase
   label: string
   percent: number
+  /**
+   * 开机恢复这一档问完服务端以后才填：已经连好的工具里，这一轮还要换 Key 的那几家
+   * （Key 换了分组）。没填 = 还不知道，或者是会重写已连好工具的登录、点名重写两档。
+   */
+  connectedKeyChanges?: ProviderId[]
+}
+
+/**
+ * 开机检测还没跑完、首页摆着上次结果的那几秒里，账号这边还会不会换掉这个工具的 Key。
+ * 会换、或者还说不准的，「打开」照旧等检测跑完：Key 同步写配置要等那一轮检测，抢在它
+ * 前面打开，工具就带着旧 Key 起来了。登录还在恢复、或者同步还没开始的，都算说不准。
+ */
+export function accountKeyChangePending(
+  account: {
+    signedIn: boolean
+    restoring: boolean
+    bootstrap: (AccountBootstrapProgress & { result?: unknown; error?: string }) | null
+  },
+  provider: ProviderId,
+): boolean {
+  const { bootstrap } = account
+  if (!bootstrap) return account.signedIn || account.restoring
+  if (bootstrap.result || bootstrap.error) return false
+  return bootstrap.connectedKeyChanges?.includes(provider) ?? true
 }
 
 export interface AccountBootstrapSkip {
@@ -312,7 +336,10 @@ export async function bootstrapAccountTools(
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40 })
+  // 开机恢复这一档问完服务端就定了：已经连好的工具只有换了分组的还要换 Key（见
+  // accountBootstrapPlan）。下面要等检测跑完才写，首页这几秒按它决定哪几行能先打开。
+  const keyChanges = mode === 'restore' ? { connectedKeyChanges: [...(synchronized?.regrouped ?? [])] } : {}
+  onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40, ...keyChanges })
   const [system, config, settings] = await Promise.all([
     // 这里只读「装没装、探测有没有失败」，而 scanSystem 从不缓存安装状态——
     // force 清掉的是 npm 最新版与网络位置那几份缓存，跟这份计划无关，白清一次
@@ -337,6 +364,7 @@ export async function bootstrapAccountTools(
       phase: 'configuring',
       label: `正在为 ${plan.targets.length} 个已安装工具写入 Key`,
       percent: 65,
+      ...keyChanges,
     })
     outcome = await api.configureManagedCliKeys({
       providers: plan.targets,
@@ -348,7 +376,7 @@ export async function bootstrapAccountTools(
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'verifying', label: '正在复核 Key、服务地址和模型', percent: 88 })
+  onProgress({ phase: 'verifying', label: '正在复核 Key、服务地址和模型', percent: 88, ...keyChanges })
   const verified = await api.getConfig()
   await assertAccount(api, expectedUserId, expectedSiteId)
 

@@ -42,6 +42,17 @@ export function updateNeedsManualReinstall(update: Pick<UpdateSnapshot, 'error'>
 }
 
 /**
+ * 更新页和首页气泡要不要给「打开下载页」。除了上面那种，还有下载停住（主进程 updater.ts 的
+ * downloadFailure，两边字面量要一致）：主进程已经自动换直连重下过一次还是停住，或者停住的那次
+ * 一直收不了尾。有的公司网关、带下载查毒的代理会先把整个安装包扣住查完才放行，这种网络里再点
+ * 「重新下载」多半还是一样，得让客户去下载页用浏览器下安装包。「重新下载」照留：换个网络、
+ * 过一会儿再点也可能就好了。
+ */
+export function updateOffersDownloadPage(update: Pick<UpdateSnapshot, 'error'> | null | undefined): boolean {
+  return updateNeedsManualReinstall(update) || update?.error?.code === 'UPDATE_DOWNLOAD_STALLED'
+}
+
+/**
  * 开机那次检查超过时限只是放开了启动界面，真正的请求还在后台跑，算不上「失败」，
  * 气泡用提醒色，不用报错的红色。
  */

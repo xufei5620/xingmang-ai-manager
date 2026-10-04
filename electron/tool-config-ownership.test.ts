@@ -540,6 +540,63 @@ describe('filling template defaults while a tool may be running', () => {
     expect(backups).toEqual(['codex'])
   })
 
+  it('stops waiting for the running-tools check once an account change begins, and fills on a later try', async () => {
+    const f = await savedWhile(closed)
+    const before = f.makeOlder()
+    const backups: string[] = []
+    // 安全软件拖住了 PowerShell：看工具开没开这一下迟迟没有回音。
+    f.running.mockImplementationOnce(() => new Promise<never>(() => undefined))
+
+    const startup = f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+    const resume = f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+    expect(f.revision()).toBeUndefined()
+    // 换账号那段等完了、没换成，还是这个账号：再来要时照常看、照常补。
+    resume()
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) }, true)).toEqual({ filled: ['codex'] })
+    expect(backups).toEqual(['codex'])
+    expect(f.revision()).toBe(relayTemplateRevision)
+  })
+
+  it('does not wait on a round that only gets going while an account change is still waiting', async () => {
+    const f = await savedWhile(closed)
+    const before = f.makeOlder()
+    const backups: string[] = []
+    // 进门以后先读备份用的账号信息，晚一步才走到看工具这里：叫停还管着，起都不起。
+    const resume = f.service.stopTemplateFillWaits!()
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).not.toHaveBeenCalled()
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+
+    resume()
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: ['codex'] })
+    expect(f.running).toHaveBeenCalledTimes(1)
+    expect(backups).toEqual(['codex'])
+  })
+
+  it('keeps waits stopped until every overlapping account change has finished waiting', async () => {
+    const f = await savedWhile(closed)
+    f.makeOlder()
+    // 上一次换账号超时了还在等，又来一次：先等完的那次放开（重复放开也只算一次），后来那次还管着。
+    const first = f.service.stopTemplateFillWaits!()
+    const second = f.service.stopTemplateFillWaits!()
+    first()
+    first()
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).not.toHaveBeenCalled()
+
+    second()
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: ['codex'] })
+    expect(f.running).toHaveBeenCalledTimes(1)
+  })
+
   it('only retries what the startup round had to leave behind', async () => {
     const f = await savedWhile(closed)
     expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })

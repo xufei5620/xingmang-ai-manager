@@ -1008,6 +1008,12 @@ export interface SystemService {
    * retry = 只补开机那轮因为工具可能开着而欠下的（第二十六批 E）。
    */
   fillToolTemplateDefaults?(backup?: (provider: ProviderId) => void, retry?: boolean): Promise<ToolTemplateFillResult>
+  /**
+   * 换账号、退出、登录之前叫一声（main.ts 的 quiesce）：正在补设置的那次不再等本机看工具开没开，
+   * 这次先不补、记成还欠着，账号操作不用陪它等。返回的函数在那段等待结束后调，之后开始的补设置
+   * 照常看。可选 = 旧实现不提供，调用方照旧等它做完。
+   */
+  stopTemplateFillWaits?(): () => void
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
@@ -2590,6 +2596,25 @@ export function settleWithin(promise: Promise<unknown>, ms: number): Promise<voi
       resolve()
     }
     promise.then(done, done)
+  })
+}
+
+/**
+ * 等 start() 起的活落定，signal 一停就不等了（按停下的原因拒绝），活自己接着跑完、结果没人要；
+ * 已经停了就不起。给只读的本机探测用：起出去的进程收不回来，放着跑完无害，等它的人不必陪着。
+ */
+export function unlessStopped<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const work = start()
+    function stop(): void {
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', stop, { once: true })
+    void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
   })
 }
 
@@ -6377,13 +6402,38 @@ export function createSystemService(
   let templateFillDebt: { owner: string; providers: readonly ProviderId[]; codexModelCatalog: boolean } | null = null
 
   /**
+   * 换账号、退出、登录要先等跟账号有关的活都收尾（main.ts 的 quiesce 等 accountWork），补设置
+   * 那次调用也算在里面。它动手前要在本机看工具开没开（Windows 上起 PowerShell），开机那次还要
+   * 先等型号名单的本机核对；安全软件拖慢的电脑上这几步各自等到超时，加起来超过换账号肯等的
+   * 30 秒，客户就看到「账号服务请求超时」，被引去查网络。这几步都只是看：换账号前叫停
+   * （stopTemplateFillWaits）就不再等，还没看完的当成没看出来，不写、记成还欠着；已经在写的
+   * 照常写完（都在本机，很快）。真换了账号，欠的就作废。
+   * 每次调用开头拿当时那个 signal，叫停之后这次调用里后面的等待也都不等了。叫停一直管到换账号
+   * 那段等待结束（调返回的函数）：已经进了门、晚一步才走到这里的那次（ipc.ts 要先读备份用的账号
+   * 信息）也不等。上一次换账号超时了还在等、又来一次的，两次都放开才恢复。
+   */
+  let templateFillWaits = new AbortController()
+  let templateFillHolds = 0
+  function stopTemplateFillWaits(): () => void {
+    templateFillHolds += 1
+    templateFillWaits.abort()
+    let resumed = false
+    return () => {
+      if (resumed) return
+      resumed = true
+      templateFillHolds -= 1
+      if (!templateFillHolds) templateFillWaits = new AbortController()
+    }
+  }
+
+  /**
    * 老客户的配置不跟着模板升级（第十七批第 2 条）：开机恢复账号只核对连没连上，一个字
    * 不写。这里对「来源确认是当前账号、记录的模板版本落后」的配置补一次缺省项
    * （fillRelayTemplateDefaults：只补缺的，用户写过的一律不动）。官方账号、手填、来源
    * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，记进 pending 等渲染层
    * 再来要。失败只记日志，不打扰用户，版本号不前进，下次开机再试。
    */
-  async function fillToolTemplateDefaults(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound): Promise<ToolTemplateFillResult> {
+  async function fillToolTemplateDefaults(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ToolTemplateFillResult> {
     const filled: ProviderId[] = []
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     if (!owner) return { filled }
@@ -6399,7 +6449,7 @@ export function createSystemService(
     if (!due.length) return { filled }
     let report: RunningToolsReport
     try {
-      report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due)
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due), stopped)
     } catch {
       return { filled, pending: due }
     }
@@ -6448,14 +6498,19 @@ export function createSystemService(
    * config.toml），返回 true 记成还欠着；真要改先做一份与保存配置同样的备份，备份不成就不改。
    * 按账号核对要先问一遍中转，放到后台去做，不等它。失败只记日志。
    */
-  async function syncCodexModelCatalog(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound): Promise<boolean> {
+  async function syncCodexModelCatalog(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<boolean> {
     if (!serviceOptions.bundledCodexModelCatalogPath) return false
-    await guardCodexModelCatalogAtStartup()
+    try {
+      await unlessStopped(guardCodexModelCatalogAtStartup, stopped)
+    } catch {
+      // 那次核对从不抛错，到这里只会是换账号叫停：核对照旧在后台做（main.ts 开机也起它）；欠不欠这次还没看，照原样记。
+      return round.codexModelCatalog
+    }
     // 不是当前账号写的 Codex 配置本来就不按账号刷新，谈不上欠着，不必起进程看它开没开。
     if (!round.codexModelCatalog || !modelCheckTarget('codex', true)) return false
     let report: RunningToolsReport
     try {
-      report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex'])
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex']), stopped)
     } catch {
       return true
     }
@@ -6480,17 +6535,20 @@ export function createSystemService(
     const round: TemplateFillRound = retry && debt
       ? { retry, providers: debt.providers, codexModelCatalog: debt.codexModelCatalog }
       : { retry: false, providers: providerIds, codexModelCatalog: true }
+    const stopped = templateFillWaits.signal
     let result: ToolTemplateFillResult
     try {
-      result = await fillToolTemplateDefaults(backup, round)
+      result = await fillToolTemplateDefaults(backup, round, stopped)
     } catch (error) {
-      void syncCodexModelCatalog(backup, round).catch(() => false)
+      void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
       throw error
     }
-    const catalogOwed = await syncCodexModelCatalog(backup, round).catch(() => false)
+    const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
     const skipped = result.pending ?? []
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
     const pending = providerIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
+    // 客服看报告分得清是工具开着没补，还是给换账号让了路。
+    if (stopped.aborted) runtimeLog?.log('info', 'config', 'template-defaults.stopped', '要换账号了，补设置不再等本机检测，没补的下次再补', { pending, ...(round.retry ? { retry: true } : {}) })
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
@@ -6647,6 +6705,7 @@ export function createSystemService(
     },
     guardCodexModelCatalogAtStartup,
     fillToolTemplateDefaults: fillToolTemplateDefaultsThenSyncPickers,
+    stopTemplateFillWaits,
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,

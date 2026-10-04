@@ -344,6 +344,57 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+// 第三十一批 C：打开以后那一行先写「运行中」，后台悄悄核一次，三行按钮不跟着变灰、右上角不转圈。
+test('opening a desktop client marks its row running and leaves the client rows usable while it rechecks', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    const opener = page.getByTestId('tool-workbuddy-primary')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await expect(opener).toBeEnabled()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await page.evaluate(() => window.v2Test.holdNextExternalScan())
+    await opener.click()
+    await row.getByText(/运行中/).waitFor()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').at(-1).args), [false])
+    for (const id of ['tool-workbuddy-primary', 'home-client-claudeDesktop', 'home-client-opencode']) assert.equal(await page.getByTestId(id).isEnabled(), true, id)
+    assert.notEqual(await page.getByTestId('home-rescan').getAttribute('aria-busy'), 'true')
+    await page.evaluate(async () => {
+      window.v2Test.releaseExternalScan()
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await row.getByText(/运行中/).count(), 1)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a background recheck that fails after opening a desktop client keeps the last result without an error bar', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    const opener = page.getByTestId('tool-workbuddy-primary')
+    const unread = page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' })
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await expect(opener).toBeEnabled()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await page.evaluate(() => { window.v2Test.fail = 'scanExternalClients' })
+    await opener.click()
+    await row.getByText(/运行中/).waitFor()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await unread.count(), 0)
+    assert.equal(await row.getByText('已配好', { exact: true }).count(), 1)
+    await expect(opener).toBeEnabled()
+    // 客户自己点「重新检测」没读到的，照旧出红条。
+    await page.getByTestId('home-rescan').click()
+    await unread.waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('every tool row offers configuration in exactly one place', async () => {
   const page = await open('externalInstalled=1&externalReady=workbuddy&externalAccountOwned=workbuddy')
   try {
@@ -1137,6 +1188,31 @@ test('the maintenance page does not reinstall over a CLI from the official insta
     await clean(page)
   } finally { await page.close() }
 })
+test('the new-version notification only calls people back for updates the app can install', async () => {
+  // 通知在开机第一轮检测落地时就发，所以系统通知接口要在页面加载前装好。
+  function recordNotifications() {
+    window.__notified = []
+    window.xingmangPlatform = {
+      notifyActivity: async (kind, key) => { window.__notified.push([kind, key]); return 'requested' },
+      onStateChanged: () => () => undefined,
+      getState: () => new Promise(() => undefined),
+    }
+  }
+  for (const [query, expected] of [
+    ['cliUpdate=1', [['cliUpdate', 'cli-update:claude.2.0.0']]],
+    // 官方安装器装的那份首页没有「更新」按钮，通知却说「回到星芒就能逐个更新」。
+    ['cliUpdate=1&nativeInstall=1', []],
+  ]) {
+    const page = await open(query, false, recordNotifications)
+    try {
+      await page.getByTestId('tool-row-claude').waitFor()
+      // 记下「已提醒过」是同一段收尾的最后一步，写进去了就说明这一轮已经判过要不要通知。
+      await page.waitForFunction(() => localStorage.getItem('xingmang-v2-cli-update-notice') !== null)
+      assert.deepEqual(await page.evaluate(() => window.__notified.filter(([kind]) => kind === 'cliUpdate')), expected, query)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
 test('a failed probe offers a rescan on the maintenance page instead of an install', async () => {
   const page = await open('detectionFailed=1')
   try {
@@ -1585,6 +1661,104 @@ test('a launch paints the last saved scan first and swaps in the fresh one witho
     await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     const cachedReads = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'scanSystem' && entry.args[1]?.acceptCached === true).length)
     assert.equal(cachedReads, 1, '只有开机首屏那一次可以先用上次的结果')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第三十一批 A：开机检测没跑完时只放开「打开」「接着聊」。点下去配置现读、工具现找，
+// 用不上上次的结果；「安装」照旧等检测跑完。
+test('a connected tool opens while the last saved scan is still on screen, and install keeps waiting', async () => {
+  const page = await open('allInstalled=1&cachedScan=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    // 上次的结果里 Grok 还没装：装不装要等这一轮检测说了算。
+    assert.equal(await page.getByTestId('tool-grok-primary').innerText(), '安装')
+    assert.equal(await page.getByTestId('tool-grok-primary').isDisabled(), true)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\Selected Project']])
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 1, '检测还没跑完就已经打开了')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the home recent card resumes a conversation before the startup scan finishes', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&cachedScan=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    const resume = page.getByTestId('home-recent-resume-claude:1')
+    await resume.waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:1"]')?.disabled === false)
+    // 目录已经不在的那一行照旧按不动。
+    assert.equal(await page.getByTestId('home-recent-resume-claude:2').isDisabled(), true)
+    await resume.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 1, '检测还没跑完就已经接上了')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 开机这一轮账号要给已连好的 Claude 换 Key（Key 换了分组）：新 Key 要等检测跑完才写，
+// 抢在前面打开就带着旧 Key 起来，所以只有它照旧等，别的工具不受连累。
+test('a tool whose account key changes this startup keeps waiting for the scan while the others open', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&regrouped=claude')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.disabled === false)
+    assert.equal(await page.getByTestId('tool-claude-primary').isDisabled(), true)
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    const configured = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').map((entry) => entry.args[0].providers))
+    assert.ok(configured.some((providers) => providers.includes('claude')), '换了分组的 Claude 要在这一轮换上新 Key')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
+// 问完了、谁都不用换，检测没跑完也能打开。
+test('opening waits while the account key sync has not answered yet, then opens before the scan finishes', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&bootstrapPending=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    assert.equal(await page.getByTestId('tool-claude-primary').isDisabled(), true)
+    await page.evaluate(() => window.v2Test.releaseBootstrap())
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 1)
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 检测没跑完时打开、刚选的文件夹写上了按钮；那一轮落地时带的是打开前读的配置，
+// 不能把这个文件夹盖回去，否则下次点「打开」又要选一遍。
+test('a folder picked while the startup scan runs stays on the button after the scan lands', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&launchRemembers=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    // 账号这一轮写完 Key 也会重读一次配置，先按住它，看的是检测落地这一下本身。
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length), 1)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2328,6 +2502,49 @@ test('a Mac signature rejection offers the download page instead of reinstalling
     await bubble.getByRole('button', { name: '打开下载页', exact: true }).click()
     await expect.poll(opened).toEqual([downloadPage, downloadPage])
     assert.equal(await page.getByRole('dialog', { name: '重启并安装更新？' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 下载停住、自动换直连重下也还是停住：有的公司网关先把整个安装包扣住查完才放行，再点
+//「重新下载」多半还是一样。更新页和首页气泡在「重新下载」旁边多给「打开下载页」；别的下载
+// 失败照旧只给「重新下载」。
+test('a stalled update download offers the download page next to downloading again', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'download',
+      error: { code: value.code, message: value.reason }, development: true,
+    }), { code, reason })
+    await emit('UPDATE_DOWNLOAD_STALLED')
+    const notice = updates.getByTestId('updates-failure-download')
+    await notice.getByText('下载更新失败', { exact: true }).waitFor()
+    await notice.getByText(reason, { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
+    const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
+    await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    const downloadPage = 'https://docs-new.solov.cc/guide/manager#download-installers'
+    await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage])
+    await bubble.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage, downloadPage])
+
+    // 同一句「超时」，没经过看门狗的不算停住。
+    await emit('ETIMEDOUT')
+    await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await expect.poll(() => bubble.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
 })
