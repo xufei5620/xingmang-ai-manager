@@ -14,6 +14,7 @@ import {
   parsePendingUpdateRecord,
   quitInstallPrompt,
   resolveDownloadedVersionToRecord,
+  undoQuitInstallAttempt,
   type LaunchInstallInput,
 } from './auto-update-install'
 import type { UpdateSnapshot } from './updater'
@@ -131,6 +132,31 @@ describe('quit-time auto install', () => {
 
   it('does not retry at launch a version already tried on quit', () => {
     expect(decideLaunchInstall(input({ recordAtLaunch: { ...record, quitAttemptedVersion: '0.2.12' } }))).toBeNull()
+  })
+
+  it('neither installs nor asks while the system shuts down, leaving the version for the next launch', () => {
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: false, version: '0.2.12', record, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: { ...record, quitAttemptedVersion: '0.2.12' }, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, systemShuttingDown: false })).toBe('install')
+    // Nothing was recorded on the way down, so the next launch installs it.
+    expect(decideLaunchInstall(input({ recordAtLaunch: record }))).toBe('0.2.12')
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', record)).toBeNull()
+  })
+
+  it('takes back a quit attempt that a power-off cut short, so the next launch installs it', () => {
+    const tried = { ...record, quitAttemptedVersion: '0.2.12' }
+    const undone = undoQuitInstallAttempt(tried, { version: '0.2.12', previous: null })
+    expect(undone).toEqual({ ...record, quitAttemptedVersion: null })
+    expect(decideLaunchInstall(input({ recordAtLaunch: undone ?? tried }))).toBe('0.2.12')
+    expect(undoQuitInstallAttempt({ ...record, quitAttemptedVersion: '0.2.12' }, { version: '0.2.12', previous: '0.2.11' })).toEqual({ ...record, quitAttemptedVersion: '0.2.11' })
+  })
+
+  it('leaves the record alone when this quit wrote nothing or it has changed since', () => {
+    const tried = { ...record, quitAttemptedVersion: '0.2.12' }
+    expect(undoQuitInstallAttempt(tried, null)).toBeNull()
+    expect(undoQuitInstallAttempt(tried, { version: '0.2.13', previous: null })).toBeNull()
+    expect(undoQuitInstallAttempt(record, { version: '0.2.12', previous: null })).toBeNull()
   })
 })
 
