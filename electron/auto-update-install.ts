@@ -5,7 +5,9 @@
  * - **用户自己退出时**：直接装，不再弹「顺手装上吗」那一问（main.ts 的 confirmQuit）。
  *   系统关机、重启、注销不算：安装器会被一起结束，留给下次打开。
  * - **下次打开软件时**：上一次运行就已经下好了，这次启动刚打开、用户还没开始用，装上。
- *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。
+ *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。开机自启的要等开机安静期过了才查
+ *   更新（login-launch.ts），「刚打开」从那时算；窗口一直没打开过时没人在看，就不预告、
+ *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装（resolveLaunchInstallMode）。
  *
  * 第二条最怕的是死循环：安装器每次都起不来，软件就会每次一打开就关掉。所以每个版本
  * 在启动时只试一次，先记下「试过了」再去装；没装成的版本退回到「退出时装」和更新页
@@ -18,20 +20,28 @@
  *
  * 记录读坏了一律当作没有记录：最多少装一次，绝不会多装。
  */
+import fs from 'node:fs'
 import path from 'node:path'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
-import type { UpdateInstallMethod, UpdateSnapshot } from './updater'
+import { updateInstallLaunchTimeoutCode, type UpdateInstallMethod, type UpdateSnapshot } from './updater'
 
 const storeLabel = '自动更新记录'
 const MAX_STORE_BYTES = 4 * 1024
 const VERSION_PATTERN = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,64})?$/
 
 /**
- * 启动后多久之内下好的才算「打开时装」。本地缓存命中加上 SHA-512 复核通常几秒就完；
- * 超过这个时间才下好，说明是这次现场下载的，用户多半已经在用了，留到退出时再装。
+ * 开始查更新后多久之内下好的才算「打开时装」。本地缓存命中加上 SHA-512 复核通常几秒就完；
+ * 超过这个时间才下好，说明是这次现场下载的，用户多半已经在用了，留到退出时再装。开机自启
+ * 的安静期里不查更新，从安静期结束算（main.ts）。
  */
 export const LAUNCH_INSTALL_WINDOW_MS = 2 * 60 * 1_000
+
+/**
+ * 后台装好新版后，安装器最晚在开始装之后多久把它重新拉起来。Mac 的安装器要解包、核对
+ * 签名再换掉程序，慢的机器也就一两分钟；过了这个时间才打开的，当成用户自己打开的。
+ */
+export const BACKGROUND_RELAUNCH_WINDOW_MS = 10 * 60 * 1_000
 
 /** 启动时自动装之前，预告通知摆出来之后等多久再关窗去装。 */
 export const LAUNCH_INSTALL_NOTICE_MS = 5_000
@@ -45,9 +55,17 @@ export interface PendingUpdateRecord {
   attemptedVersion: string | null
   /** 已经在退出时自动装过的版本。可选＝旧记录，当作没试过。 */
   quitAttemptedVersion?: string | null
+  /** 开机自启时在后台开始装的版本。可选＝没有。 */
+  backgroundInstall?: BackgroundInstall | null
 }
 
-export const emptyPendingUpdateRecord: PendingUpdateRecord = { downloadedVersion: null, attemptedVersion: null, quitAttemptedVersion: null }
+export interface BackgroundInstall {
+  version: string
+  /** 开始装的时间（毫秒时间戳）。 */
+  startedAt: number
+}
+
+export const emptyPendingUpdateRecord: PendingUpdateRecord = { downloadedVersion: null, attemptedVersion: null, quitAttemptedVersion: null, backgroundInstall: null }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -55,6 +73,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseVersion(value: unknown): string | null {
   return typeof value === 'string' && VERSION_PATTERN.test(value) ? value : null
+}
+
+function parseBackgroundInstall(value: unknown): BackgroundInstall | null {
+  if (!isRecord(value)) return null
+  const version = parseVersion(value.version)
+  const startedAt = value.startedAt
+  if (!version || typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt <= 0) return null
+  return { version, startedAt }
 }
 
 export function parsePendingUpdateRecord(content: string): PendingUpdateRecord {
@@ -65,6 +91,7 @@ export function parsePendingUpdateRecord(content: string): PendingUpdateRecord {
       downloadedVersion: parseVersion(value.downloadedVersion),
       attemptedVersion: parseVersion(value.attemptedVersion),
       quitAttemptedVersion: parseVersion(value.quitAttemptedVersion),
+      backgroundInstall: parseBackgroundInstall(value.backgroundInstall),
     }
   } catch {
     return { ...emptyPendingUpdateRecord }
@@ -83,6 +110,7 @@ export interface LaunchInstallInput {
   snapshot: UpdateSnapshot
   /** 本次启动时读到的记录，不是运行中改写过的那份。 */
   recordAtLaunch: PendingUpdateRecord
+  /** 从开始查更新算：普通打开从启动算，开机自启的从安静期结束算。 */
   elapsedSinceLaunchMs: number
   /** 有安装任务在跑（装 CLI、装 Node 之类）时不打断。 */
   busy: boolean
@@ -101,6 +129,110 @@ export function decideLaunchInstall(input: LaunchInstallInput): string | null {
   if (input.recordAtLaunch.attemptedVersion === version) return null
   if (input.recordAtLaunch.quitAttemptedVersion === version) return null
   return version
+}
+
+export type LaunchInstallMode = 'notice' | 'background' | 'skip'
+
+export interface LaunchInstallModeInput {
+  /** 开机自启拉起的；后台装好新版后重新拉起的那一次也算。 */
+  launchedAtLogin: boolean
+  /** 这次运行里主窗口显示过。 */
+  windowShown: boolean
+  /** 加速可能还连着（开机后从托盘开的）。装之前要断开，装好重新打开时不会自己连回去。 */
+  accelerationActive: boolean
+  /** 装的时候一个窗口也不弹（canInstallUnattended）。 */
+  unattended: boolean
+}
+
+/**
+ * 打开时装怎么装。照旧是先预告、几秒后关掉软件去装，装好打开窗口（'notice'）。开机自启、
+ * 窗口一直没打开过时没人在看：预告没人看得到，装好也不该自己弹出窗口，就不预告、在后台装，
+ * 装好照旧待在后台（'background'）。装的时候会弹出东西等人点（Windows 的授权窗口、Mac 要
+ * 输开机密码），或者开机后已经从托盘开了加速，开机时就不装，留到退出时（'skip'）。
+ */
+export function resolveLaunchInstallMode(input: LaunchInstallModeInput): LaunchInstallMode {
+  if (!input.launchedAtLogin || input.windowShown) return 'notice'
+  return input.unattended && !input.accelerationActive ? 'background' : 'skip'
+}
+
+export interface LaunchInstallRecheckInput {
+  version: string
+  autoUpdate: boolean
+  snapshot: UpdateSnapshot
+  busy: boolean
+  background: boolean
+  windowShown: boolean
+  accelerationActive: boolean
+}
+
+/**
+ * 预告等完、或者后台装写完记录，真去装之前再看一眼：这几秒里用户可能关了自动更新、开始
+ * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。
+ */
+export function shouldStillInstallAtLaunch(input: LaunchInstallRecheckInput): boolean {
+  if (!input.autoUpdate || input.busy) return false
+  if (resolveInstallableUpdateOnQuit(input.snapshot)?.version !== input.version) return false
+  return !input.background || (!input.windowShown && !input.accelerationActive)
+}
+
+/**
+ * 后台装没装成、软件还开着（安装器没起来、Mac 的安装器核对没过）。这时要撤回「重新拉起时
+ * 待在后台」那条记录，不然之后十分钟里用户自己退出再打开，窗口出不来。安装器迟迟没接手的
+ * 那条超时不算：Mac 的安装器取包、核对签名常常超过它，之后照样会装好、重新拉起。
+ */
+export function isBackgroundInstallFailed(record: PendingUpdateRecord, snapshot: UpdateSnapshot): boolean {
+  if (!record.backgroundInstall || snapshot.failedStep !== 'install' || !snapshot.error) return false
+  return snapshot.error.code !== updateInstallLaunchTimeoutCode
+}
+
+export interface UnattendedInstallInput {
+  platform: NodeJS.Platform
+  installMethod?: UpdateInstallMethod | null
+  /** Mac 上本程序的 .app；认不出来、或者从磁盘映像和系统的只读临时副本里运行时是 null。 */
+  bundlePath: string | null
+  /** 测试用；缺省看当前用户能不能写。 */
+  canWrite?: (target: string) => boolean
+  /** 测试用；缺省解开符号链接。 */
+  realPath?: (target: string) => string
+}
+
+/**
+ * 装新版本时会不会一个窗口也不弹。Windows 的安装包装在「所有用户」目录下，安装器每次都要
+ * 系统授权窗口；交给系统安装器的（Linux）每次都要输开机密码。Mac 的安装器（Squirrel.Mac 的
+ * ShipIt）在程序包或它所在的文件夹当前用户改不了时，要输开机密码才装（SQRLUpdater.m 的
+ * launchPrivileged：先解开符号链接，再看两处能不能写），照它的看法看一遍。看不清楚一律当作会弹。
+ */
+export function canInstallUnattended(input: UnattendedInstallInput): boolean {
+  if (input.platform !== 'darwin' || input.installMethod === 'system-installer' || !input.bundlePath) return false
+  const canWrite = input.canWrite ?? canWriteAsCurrentUser
+  try {
+    const target = (input.realPath ?? fs.realpathSync)(input.bundlePath)
+    return canWrite(target) && canWrite(path.dirname(target))
+  } catch {
+    return false
+  }
+}
+
+function canWriteAsCurrentUser(target: string): boolean {
+  try {
+    fs.accessSync(target, fs.constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 这次启动是不是后台装新版后、安装器把它重新拉起的那一次。是的话照开机自启那样待在后台，
+ * 装之前它就待在后台。Mac 的安装器装没装成都会重新拉起（ShipIt-main.m：Launch regardless
+ * of whether installation succeeds or fails），所以不看版本：没装成的那一次也不弹窗口，
+ * 「上次没装上」留到用户自己打开窗口时再看。隔了很久才打开的当成用户自己打开的。
+ */
+export function isRelaunchAfterBackgroundInstall(record: PendingUpdateRecord, now: number): boolean {
+  const install = record.backgroundInstall
+  if (!install) return false
+  const elapsed = now - install.startedAt
+  return elapsed >= 0 && elapsed <= BACKGROUND_RELAUNCH_WINDOW_MS
 }
 
 export interface QuitInstallInput {
@@ -236,6 +368,7 @@ export function createPendingUpdateStore(options: { filePath: string }): Pending
         downloadedVersion: parseVersion(record.downloadedVersion),
         attemptedVersion: parseVersion(record.attemptedVersion),
         quitAttemptedVersion: parseVersion(record.quitAttemptedVersion),
+        backgroundInstall: parseBackgroundInstall(record.backgroundInstall),
       }
       await writeAtomicSafeUtf8File(options.filePath, `${JSON.stringify(value)}\n`, storeLabel)
     },

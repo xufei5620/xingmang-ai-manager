@@ -67,15 +67,16 @@ export function gitMissingNotice(platform: string = process.platform): string {
 
 /**
  * 首页运行环境卡里、「安装 Git」按钮正上方那一段。按钮就在眼前，所以直接说「点「安装 Git」」，
- * 不再绕回「首页运行环境」；没有按钮的平台与整句提示相同。
+ * 不再绕回「首页运行环境」；没有按钮的平台与整句提示相同。原来约 6 行橙字压在窄窄的右栏里，
+ * 照 yoyo 2026-10-04 点过头的清单改短到两行左右；检查页那句完整说明不动。
  */
 export function gitMissingHomeNotice(platform: string = process.platform): string {
   const host = gitHostPlatform(platform)
   if (host === 'windows') {
-    return `这台电脑上没有找到 Git。${gitMissingImpact(platform)}。点下面的「安装 Git」，星芒会自动下载装好，不用管理员权限。`
+    return '没有 Git 的话，Claude Code 的部分功能和一些技能、插件会用不了。点「安装 Git」自动装好，不用管理员权限。'
   }
   if (host === 'macos') {
-    return `这台 Mac 上没有找到 Git。${gitMissingImpact(platform)}。点「安装 Git」，Mac 会弹出苹果自己的安装窗口，点里面的“安装”，等它装完就好。`
+    return '没有 Git 的话，装官方插件市场和部分技能、插件会用不了。点「安装 Git」，在苹果弹出的窗口里点“安装”。'
   }
   return gitMissingNotice(platform)
 }

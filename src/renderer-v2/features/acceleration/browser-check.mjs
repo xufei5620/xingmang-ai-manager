@@ -256,9 +256,9 @@ test('a legacy thirty-five-minute remainder migrates to exhausted rather than a 
     })
     await page.reload()
     await openLazyAcceleration(page)
-    await page.getByTestId('acceleration-session-start').filter({ hasText: '免费体验已用完' }).waitFor()
+    await page.getByTestId('acceleration-contact-support').filter({ hasText: '联系客服' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:00:00')
-    assert.equal(await page.getByTestId('acceleration-session-start').isDisabled(), true)
+    assert.equal(await page.getByTestId('acceleration-session-start').count(), 0)
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('xingmang-acceleration-preview:v2:xm-account:17')).usedMilliseconds), 25 * 60 * 1000)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
@@ -272,9 +272,9 @@ test('exhaustion stops the session once even when the acceleration page is hidde
     await page.getByTestId('nav-home').click()
     await page.clock.runFor(10_000)
     await page.getByTestId('nav-acceleration').click()
-    await page.getByTestId('acceleration-session-start').filter({ hasText: '免费体验已用完' }).waitFor()
+    await page.getByTestId('acceleration-contact-support').filter({ hasText: '联系客服' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:00:00')
-    assert.equal(await page.getByTestId('acceleration-session-start').isDisabled(), true)
+    assert.equal(await page.getByTestId('acceleration-session-start').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'stopAcceleration').length), 1)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
@@ -302,6 +302,10 @@ test('failed start preserves the full trial and failed stop stays active until r
     await page.getByTestId('acceleration-session-start').click()
     await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:20:00')
+    assert.equal(await page.getByTestId('acceleration-phase').innerText(), '上次没连上')
+    const strip = await page.getByTestId('acceleration-error').boundingBox()
+    const workbench = await page.locator('.acceleration-workbench').boundingBox()
+    assert.ok(strip.y + strip.height <= workbench.y, `the failure strip sits above the workbench: ${JSON.stringify({ strip, workbench })}`)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await page.getByTestId('acceleration-session-start').click()
     await page.getByTestId('acceleration-session-stop').waitFor()
@@ -477,6 +481,77 @@ test('closing and reopening the bonus palette does not display a stale success m
     assert.equal(await remaining(page).innerText(), '00:30:00')
     assert.equal(await reopened.feedback.count(), 0)
     assert.equal(await reopened.action.count(), 0)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 免费时长用完：主按钮直接打开「帮助与客服」，不再给换线路，地球下面也不再放一颗小按钮。
+test('an exhausted trial turns the main button into contacting support and hides the line picker', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      localStorage.removeItem('xingmang-acceleration-preview:v2:xm-account:17')
+      localStorage.setItem('xingmang-acceleration-preview:xm-account:17', String(35 * 60 * 1000))
+    })
+    await page.reload()
+    await openLazyAcceleration(page)
+    const contact = page.getByTestId('acceleration-contact-support')
+    await contact.filter({ hasText: '联系客服' }).waitFor()
+    assert.equal(await contact.isDisabled(), false)
+    assert.equal(await page.getByText('免费体验已经用完，后续服务请联系客服').count(), 1)
+    assert.equal(await page.getByTestId('acceleration-line-picker-toggle').count(), 0)
+    assert.equal(await page.getByTestId('acceleration-status-refresh').count(), 0)
+    await contact.click()
+    await page.getByTestId('support-dialog').waitFor()
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 失败后再点「开始加速」或「重新检查」，状态就不再停在「上次没连上」。
+test('the failed-start label clears once the user checks again', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'startAcceleration' })
+    await page.getByTestId('acceleration-session-start').click()
+    await page.getByTestId('acceleration-error').waitFor()
+    assert.equal(await page.getByTestId('acceleration-phase').innerText(), '上次没连上')
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await page.getByTestId('acceleration-error').getByRole('button', { name: '重新检查' }).click()
+    await page.getByTestId('acceleration-phase').filter({ hasText: '准备就绪' }).waitFor()
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 「换线路」挨着「加速线路」那一行最右边，是一颗带边框的小按钮；列表从这一行上面弹出来，不出卡片。
+test('the line switch sits at the end of the line row as an outlined button and the list opens above the row', async () => {
+  const page = await open()
+  try {
+    const toggle = page.getByTestId('acceleration-line-picker-toggle')
+    assert.equal(await toggle.innerText(), '换线路')
+    const row = await page.locator('.acceleration-route-info').boundingBox()
+    const button = await toggle.boundingBox()
+    assert.ok(button.y >= row.y && button.y + button.height <= row.y + row.height, 'the button is inside the line row')
+    assert.ok(row.x + row.width - (button.x + button.width) <= 24, 'the button is at the right end of the row')
+    assert.notEqual(await toggle.evaluate(element => getComputedStyle(element).borderTopColor), 'rgba(0, 0, 0, 0)')
+    await toggle.click()
+    assert.equal(await toggle.innerText(), '收起')
+    const list = await page.getByRole('listbox', { name: '加速线路选择' }).boundingBox()
+    const stage = await page.locator('.acceleration-stage').boundingBox()
+    assert.ok(list.y + list.height <= row.y && list.y >= stage.y, `the list opens above the row inside the stage: ${JSON.stringify({ list, row, stage })}`)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 工作台不再定死 444 高：窗口 1280×560 时「开始加速」也在第一屏里。
+test('the start button is on the first screen of a 1280 by 560 window', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1280, height: 560 })
+    const start = page.getByTestId('acceleration-session-start')
+    await start.waitFor()
+    const box = await start.boundingBox()
+    const statusbar = await page.locator('.v2-statusbar').boundingBox()
+    assert.ok(box.y + box.height <= (statusbar?.y ?? 560), `the start button is visible without scrolling: ${JSON.stringify({ box, statusbar })}`)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
 })

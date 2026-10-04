@@ -57,7 +57,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure, undoQuitInstallAttempt, type QuitInstallAttempt } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -152,7 +152,7 @@ import { clearUserProviderOverrides, setAsideCodexDotenv, type DiagnosticFixKind
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
-import { removeMacLoginItem, removeMacManagedTools, runMacUninstall } from './macos-uninstall'
+import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
 import { clearLoginAndChatRecords, removeCliHooksFromConfigs } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
@@ -1571,6 +1571,15 @@ if (!hasSingleInstanceLock) {
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
+    // 开机自启时在后台装新版本（见下面打开时装），安装器把它重新拉起的这一次照开机自启
+    // 那样待在后台。这条记录只认一次，读到就清掉。
+    const relaunchedAfterBackgroundInstall = isRelaunchAfterBackgroundInstall(pendingUpdateAtLaunch, Date.now())
+    if (pendingUpdateAtLaunch.backgroundInstall) {
+      pendingUpdateRecord = { ...pendingUpdateRecord, backgroundInstall: null }
+      void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'pending.record-failed', cause)
+      })
+    }
     // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
     let quitInstallAttempt: QuitInstallAttempt | null = null
     let previousAutoInstallFailureReported = false
@@ -1841,8 +1850,43 @@ if (!hasSingleInstanceLock) {
       readAutoUpdate: () => updaterService.autoUpdateEnabled(),
     })
     const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
+    // 开机拉起时检测工具、检查更新、账号 Key 初始化这几件后台事都往后挪：窗口第一次显示或满
+    // 3 分钟才开始（见 login-launch.ts）。加速要还原的系统代理不在其中，照原来的顺序先做。
+    // 开机自启时在后台装新版、安装器重新拉起的那一次也照开机拉起办：装之前它就待在后台。
+    const launchedAtLogin = relaunchedAfterBackgroundInstall || resolveLoginLaunch({
+      platform: process.platform,
+      argv: process.argv,
+      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
+    })
+    // 打开时装只认开始查更新之后两分钟内下好的（LAUNCH_INSTALL_WINDOW_MS）：开机拉起的安静期
+    // 里不查（update:startup 等它结束），两分钟从安静期结束才开始算。
+    let launchInstallClockFrom: number | null = launchedAtLogin ? null : Date.now()
+    // 开机拉起、窗口一直没打开过的，打开时装改在后台装（resolveLaunchInstallMode）。
+    let mainWindowShown = false
+    const startupQuiet = createLoginQuietPeriod({
+      active: launchedAtLogin,
+      durationMs: loginQuietPeriodMs,
+      onEnd: (reason) => {
+        launchInstallClockFrom = Date.now()
+        runtimeLog.log('info', 'main', 'launch.quiet-ended', reason === 'window-shown' ? '开机安静期结束：窗口已打开' : '开机安静期结束：已到时间', { reason })
+      },
+    })
+    if (relaunchedAfterBackgroundInstall) {
+      runtimeLog.log('info', 'updater', 'install.background.relaunched', '后台装新版本后重新打开，照旧待在后台', {
+        version: pendingUpdateAtLaunch.backgroundInstall?.version ?? null,
+        current: app.getVersion(),
+      })
+    }
+    // 后台装没走到安装器重新拉起那一步（这次不装了、没装成、装的时候用户点开了窗口）：撤回
+    // 那条记录，不然之后用户自己退出再打开，会被当成重新拉起的那一次，窗口出不来。
+    const dropBackgroundInstall = () => {
+      if (!pendingUpdateRecord.backgroundInstall) return
+      pendingUpdateRecord = { ...pendingUpdateRecord, backgroundInstall: null }
+      void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'pending.record-failed', cause)
+      })
+    }
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
-    const launchedAt = Date.now()
     let launchInstallTried = false
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
@@ -1852,39 +1896,73 @@ if (!hasSingleInstanceLock) {
           runtimeLog.exception('updater', 'pending.record-failed', cause)
         })
       }
+      if (isBackgroundInstallFailed(pendingUpdateRecord, state)) {
+        runtimeLog.log('info', 'updater', 'install.background.failed', '后台安装没装成，留到退出时再装')
+        dropBackgroundInstall()
+      }
       // 退出交接还没接上时（主窗口没建好）不装：那时安装器发起的退出会被当成用户关窗。
-      if (launchInstallTried || !updateQuitHandoff) return
+      // 开机拉起的安静期还没过时，两分钟也还没开始算。
+      if (launchInstallTried || !updateQuitHandoff || launchInstallClockFrom === null) return
       const version = decideLaunchInstall({
         autoUpdate: updaterService.autoUpdateEnabled(),
         snapshot: state,
         recordAtLaunch: pendingUpdateAtLaunch,
-        elapsedSinceLaunchMs: Date.now() - launchedAt,
+        elapsedSinceLaunchMs: Date.now() - launchInstallClockFrom,
         busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
       })
       if (!version) return
       launchInstallTried = true
-      runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
-      pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version }
+      const accelerationActive = acceleration?.hasPossibleSession() === true
+      const unattended = canInstallUnattended({
+        platform: process.platform,
+        installMethod: state.installMethod,
+        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
+      })
+      const mode = resolveLaunchInstallMode({ launchedAtLogin, windowShown: mainWindowShown, accelerationActive, unattended })
+      if (mode === 'skip') {
+        runtimeLog.log('info', 'updater', 'install.on-launch.held', `开机自启、窗口没打开过，${version} 开机时不装，留到退出时再装`, { accelerationActive, unattended })
+        return
+      }
+      const background = mode === 'background'
+      runtimeLog.log('info', 'updater', background ? 'install.on-launch.background' : 'install.on-launch', background
+        ? `开机自启、窗口没打开过，在后台装上次下好的 ${version}，装好照旧待在后台`
+        : `上次已下载好 ${version}，启动时自动安装`)
+      // 后台装的另记一笔：安装器装好重新拉起新版本时，照它认出那一次，照旧待在后台。
+      pendingUpdateRecord = {
+        ...pendingUpdateRecord,
+        attemptedVersion: version,
+        ...(background ? { backgroundInstall: { version, startedAt: Date.now() } } : {}),
+      }
       // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。装之前先发
       // 一条系统通知、等几秒：窗口刚出来就自己关掉、再凭空弹出授权窗口，看着像闪退中毒。
+      // 后台装的没人在看，不预告也不等。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
-        const notice = buildAutoInstallNotice(version, 'launch', process.platform)
-        desktopNotifications.announce(notice)
-        // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
-        updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
-        await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
-        // 等的这几秒里用户可能关了自动更新、开始装工具，或者这个版本被撤回了。
-        const still = updaterService.autoUpdateEnabled()
-          && resolveInstallableUpdateOnQuit(updaterService.getState())?.version === version
-          && resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) === null
+        if (!background) {
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform)
+          desktopNotifications.announce(notice)
+          // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
+          updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
+          await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
+        }
+        const still = shouldStillInstallAtLaunch({
+          version,
+          autoUpdate: updaterService.autoUpdateEnabled(),
+          snapshot: updaterService.getState(),
+          busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+          background,
+          windowShown: mainWindowShown,
+          accelerationActive: acceleration?.hasPossibleSession() === true,
+        })
         if (!still) {
           updaterService.setLaunchInstallNotice(null)
+          dropBackgroundInstall()
           runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
           return
         }
         updaterService.install()
       }).catch((cause: unknown) => {
         updaterService.setLaunchInstallNotice(null)
+        dropBackgroundInstall()
         runtimeLog.exception('updater', 'install.on-launch.failed', cause)
       })
     })
@@ -2606,23 +2684,6 @@ if (!hasSingleInstanceLock) {
     const accountSessionReady = accountRestore.then(() => undefined).catch((error) => {
       runtimeLog.exception('account', 'session.restore.failed', error)
     })
-    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
-    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
-    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
-    // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
-    // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
-    const launchedAtLogin = resolveLoginLaunch({
-      platform: process.platform,
-      argv: process.argv,
-      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
-    })
-    // 开机拉起时这几件后台事都往后挪：窗口第一次显示或满 3 分钟才开始（见 login-launch.ts）。
-    // 加速要还原的系统代理不在其中，照原来的顺序先做。
-    const startupQuiet = createLoginQuietPeriod({
-      active: launchedAtLogin,
-      durationMs: loginQuietPeriodMs,
-      onEnd: (reason) => runtimeLog.log('info', 'main', 'launch.quiet-ended', reason === 'window-shown' ? '开机安静期结束：窗口已打开' : '开机安静期结束：已到时间', { reason }),
-    })
     if (startupQuiet.active()) {
       runtimeLog.log('info', 'main', 'launch.quiet-started', '开机自动启动，检测和更新稍后再做', { durationMs: loginQuietPeriodMs })
       // 托盘在安静期里先用上次落盘的检测结果（能打开哪些工具），真扫描回来再换掉。
@@ -2630,6 +2691,11 @@ if (!hasSingleInstanceLock) {
         if (cached && !latestTraySystem) { latestTraySystem = cached; applicationTray?.updateSnapshot() }
       }).catch(() => undefined)
     }
+    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
+    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
+    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
+    // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
+    // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
     void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
@@ -2998,7 +3064,20 @@ if (!hasSingleInstanceLock) {
       trayAvailable: applicationTray?.available ?? false,
     }))
     managedMainWindow = mainWindow
-    mainWindow.once('show', () => { startupQuiet.end('window-shown') })
+    mainWindow.once('show', () => {
+      mainWindowShown = true
+      // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。
+      dropBackgroundInstall()
+      startupQuiet.end('window-shown')
+    })
+    // Mac 的安装器打开新版本时会把它切到前台（ShipIt 用 NSWorkspaceLaunchDefault）：没有窗口，
+    // 菜单栏却换成了星芒的，这时按 Command + Q 退出的是星芒。后台装完重新拉起、窗口留在
+    // 菜单栏的这一次，把前台还给刚才在用的程序。
+    if (process.platform === 'darwin' && relaunchedAfterBackgroundInstall) {
+      mainWindow.once('ready-to-show', () => {
+        if (!mainWindowShown && !mainWindow.isVisible()) app.hide()
+      })
+    }
     // 拔掉外接显示器时正开着的窗口也挪回来；缩在托盘里的等下次显示时再挪。
     // 稍等一下再看：Windows 自己也会挪一部分窗口，别跟系统抢。
     let displayChangeTimer: ReturnType<typeof setTimeout> | undefined

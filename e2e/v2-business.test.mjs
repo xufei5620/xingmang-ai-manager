@@ -525,10 +525,10 @@ test('settings failure restores the persisted control and never announces succes
 test('session detail shows transcript and archives the native id after a user action', async () => {
   const page = await fixture('page=sessions')
   try {
-    await page.getByRole('button', { name: '查看记录', exact: true }).click()
+    await page.getByTestId('sessions-view-codex:session-1').click()
     const drawer = page.getByRole('dialog')
     await drawer.getByText('这是一条测试消息').waitFor()
-    await drawer.getByRole('button', { name: '归档记录', exact: true }).click()
+    await drawer.getByRole('button', { name: '归档', exact: true }).click()
     await page.getByText('测试归档失败').first().waitFor()
     assert.equal(
       (await calls(page)).find((call) => call.name === 'archive').args,
@@ -600,7 +600,7 @@ test('a record whose folder is gone keeps the resume button in place but disable
 test('session detail exposes a retry action after a temporary read failure', async () => {
   const page = await fixture('page=sessions&detailFailure=1')
   try {
-    await page.getByRole('button', { name: '查看记录', exact: true }).click()
+    await page.getByTestId('sessions-view-codex:session-1').click()
     const drawer = page.getByTestId('session-detail-drawer')
     await drawer.getByText('会话详情暂时不可读', { exact: true }).waitFor()
     await drawer.getByRole('button', { name: '重试读取', exact: true }).click()
@@ -952,10 +952,10 @@ test('the feedback preview sends the customer to the check page when the report 
 test('a cancelled export reports nothing instead of claiming the file was written', async () => {
   const page = await fixture('page=sessions')
   try {
-    await page.getByRole('button', { name: '查看记录', exact: true }).click()
+    await page.getByTestId('sessions-view-codex:session-1').click()
     const drawer = page.getByTestId('session-detail-drawer')
     await drawer.getByText('这是一条测试消息').waitFor()
-    await drawer.getByRole('button', { name: '导出 Markdown', exact: true }).click()
+    await drawer.getByRole('button', { name: '导出', exact: true }).click()
     await page.waitForFunction(() =>
       JSON.parse(document.documentElement.dataset.calls || '[]').some(
         (call) => call.name === 'export-session',

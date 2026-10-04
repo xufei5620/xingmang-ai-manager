@@ -22,9 +22,9 @@
 |---|---|---|
 | `Button` | `variant: primary\|secondary\|ghost\|danger\|accent\|balance` · `size` · `icon` · `iconRight` · `loading` · `disabled` · `onClick` · `kbd?` | `balance` 变体内部读余额档位决定颜色 |
 | `Pill` | `tone` · `dot?: boolean` · `children` | 只展示，不可点 |
-| `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head；标题不折行。`meta` 是超过 24 个字的字符串时放进卡片第一行单独成段（`xm-card-lead`），短的跟在标题后面、放不下打省略号。卡片里直接放 ListRow / ToolRow / 表头时，行和分隔线通到卡片两边，第一行上面不画线 |
-| `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `progress?: number` | 六列固定网格 |
-| `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码） |
+| `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `defaultOpen?`（默认 true）· `onOpenChange?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head；可折叠的卡要记住收起时，页面用 `defaultOpen` 和 `onOpenChange` 自己存（首页「还可以装」）；标题不折行。`meta` 是超过 24 个字的字符串时放进卡片第一行单独成段（`xm-card-lead`），短的跟在标题后面、放不下打省略号。卡片里直接放 ListRow / ToolRow / 表头时，行和分隔线通到卡片两边，第一行上面不画线 |
+| `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `menuLabel?` · `progress?: number` | 六列固定网格；`menuLabel` 是「…」的鼠标提示和读屏名，缺省「更多操作」，首页工具行写「配置和更多操作」 |
+| `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` · `onOpen?` · `openTestId?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码）。给了 `onOpen` 整行都能点（标题是按钮，键盘和读屏从它进），鼠标停上去变色；`actions` 里的按钮各管各的，不触发整行 |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
 | `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` | ≤ 5 项 |
 | `Switch` | `checked` · `onChange` · `label?` · `description?` | 切换即保存 |
