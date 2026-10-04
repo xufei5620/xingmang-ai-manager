@@ -162,6 +162,32 @@ describe('renderer-v2 home install cancellation', () => {
     const markup = render({ 'launch:claude': { label: '正在打开工具', log: [], cancellable: true } })
     expect(markup).not.toContain('data-testid="tool-claude-cancel"')
   })
+
+  const claudeDesktop = {
+    tool: 'claudeDesktop', installed: false, version: null, path: null, installDirectory: null, running: false,
+    installSupported: true, launchSupported: false, detectionError: null, installHint: null,
+  } as unknown as HomeProps['externalClients'][number]
+
+  it('offers 取消 on a desktop client row while its install can still be stopped', () => {
+    const noop = () => undefined
+    const markup = render({ claudeDesktop: { label: '正在从 Claude 官网下载离线安装包（42%）', log: [], cancellable: true } }, undefined, {
+      externalClients: [claudeDesktop], onCancelInstallExternal: noop,
+    })
+    expect(markup).toContain('data-testid="tool-claudeDesktop-cancel"')
+    const cancelling = render({ claudeDesktop: { label: '正在安装', log: [], cancellable: true, cancelling: true } }, undefined, {
+      externalClients: [claudeDesktop], onCancelInstallExternal: noop,
+    })
+    expect(cancelling).toContain('正在停止')
+  })
+
+  it('leaves the desktop client row without 取消 when the host gives no cancel channel or the client is idle', () => {
+    const job = { claudeDesktop: { label: '正在安装', log: [], cancellable: true } }
+    expect(render(job, undefined, { externalClients: [claudeDesktop] })).not.toContain('data-testid="tool-claudeDesktop-cancel"')
+    expect(render({}, undefined, { externalClients: [claudeDesktop], onCancelInstallExternal: () => undefined })).not.toContain('data-testid="tool-claudeDesktop-cancel"')
+    expect(render({ 'launch:claudeDesktop': { label: '正在打开客户端', log: [], cancellable: true } }, undefined, {
+      externalClients: [claudeDesktop], onCancelInstallExternal: () => undefined,
+    })).not.toContain('data-testid="tool-claudeDesktop-cancel"')
+  })
 })
 
 describe('renderer-v2 home first-run suggestion', () => {
