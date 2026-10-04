@@ -3077,6 +3077,67 @@ describe('stalled update checks', () => {
     }
   })
 
+  it('lets a retry that joined the hung startup check end on the same watchdog', async () => {
+    vi.useFakeTimers()
+    try {
+      // 宿主掐不到请求时看门狗还要再等 updateDownloadCancelWaitMs。接回同一次的「重试」跟着开机那次
+      // 的看门狗一起收场，不另起一个从头再等 45 秒。
+      const f = hangingCheckService({ startupCheckTimeoutMs: 8_000, abortDownloadRequests: undefined })
+      void f.service.startup()
+      await vi.advanceTimersByTimeAsync(20_000)
+      let settled = false
+      const retry = f.service.check({ manual: true })
+      void retry.then(() => { settled = true })
+
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - 20_000 + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      expect(settled).toBe(true)
+      await expect(retry).resolves.toMatchObject({
+        phase: 'error',
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the stopped startup check silent while a later check is still on its way', async () => {
+    vi.useFakeTimers()
+    try {
+      let statusReads = 0
+      let releaseStatus: () => void = () => undefined
+      const f = hangingCheckService({
+        startupCheckTimeoutMs: 8_000,
+        // 开机那次照常读完服务状态文件；后来那次读的时候网络还卡着。
+        refreshServiceStatus: () => {
+          statusReads += 1
+          if (statusReads === 1) return Promise.resolve(null)
+          return new Promise<null>((resolve) => { releaseStatus = () => resolve(null) })
+        },
+      })
+      void f.service.startup()
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - 3_000)
+      expect(f.service.getState().error?.code).toBe('STARTUP_UPDATE_TIMEOUT')
+
+      const retry = f.service.check({ manual: true })
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      // 开机那次在这时被掐断：后来那次还没发请求，等它自己的结果，不先闪一句「检查更新失败」。
+      expect(f.aborts).toHaveLength(1)
+      expect(f.service.getState().phase).toBe('checking')
+      expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
+
+      releaseStatus()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.requests()).toBe(2)
+      f.answer()
+      await expect(retry).resolves.toMatchObject({ phase: 'not-available', error: null })
+      expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('watches the check it retries off the proxy as well', async () => {
     vi.useFakeTimers()
     try {

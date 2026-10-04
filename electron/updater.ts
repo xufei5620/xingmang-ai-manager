@@ -912,6 +912,8 @@ export function createUpdaterService(
   let downloadWatch: { observe(percent: number): void; stop(): void } | null = null
   // 正在等的那一次检查和盯着它的看门狗（见 checkWatched）；没在检查时为 null。
   let checkWatch: { pending: Promise<unknown>; outcome: Promise<unknown>; stop(): void } | null = null
+  // check() 每真正开始一次加一。挂住的检查被掐断时只让最新那一次报（见 reportCheckFailure）。
+  let latestCheck = 0
   // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
   // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
   const abandonedDownloads = new Set<Promise<unknown>>()
@@ -1460,11 +1462,13 @@ export function createUpdaterService(
   }
 
   // 挂住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多一句新话；
-  // code 另记，日志里分得清是看门狗停的。开机那次已经说过「网络有点慢…在后台接着查」、之后没人再
-  // 点过检查的，那句留着：掐掉挂住的那次只是为了让之后的「重试」和三小时那次能重新发请求。
-  const reportCheckFailure = (error: unknown) => {
+  // code 另记，日志里分得清是看门狗停的。挂住的那次被掐断时只让最新那一次检查说话：之后又开始了
+  // 一次的，那一次接回了同一个请求就和它一起报，还没发出请求就会重新发，这里再报只会让「检查更新
+  // 失败」在它查的时候闪一下。开机那次已经说过「网络有点慢…在后台接着查」、之后没人再点过检查的，
+  // 那句留着：掐掉挂住的那次只是为了让之后的「重试」和三小时那次能重新发请求。
+  const reportCheckFailure = (error: unknown, failedCheck: number) => {
     const stalledCheck = error instanceof UpdateCheckAborted
-    if (stalledCheck && snapshot.error?.code === 'STARTUP_UPDATE_TIMEOUT') return
+    if (stalledCheck && (failedCheck !== latestCheck || snapshot.error?.code === 'STARTUP_UPDATE_TIMEOUT')) return
     emit({
       phase: 'error',
       error: stalledCheck
@@ -1484,6 +1488,7 @@ export function createUpdaterService(
       // failed install would lock out update checks for the whole session.
       || (snapshot.phase === 'downloaded' && !snapshot.error)
     ) return cloneSnapshot(snapshot)
+    const thisCheck = ++latestCheck
     emit({ phase: 'checking', error: null, progress: null })
     await syncServiceStatus()
     if (disposed) return cloneSnapshot(snapshot)
@@ -1502,10 +1507,10 @@ export function createUpdaterService(
             result = await checkWatched()
           })
         } catch (retryError) {
-          reportCheckFailure(retryError)
+          reportCheckFailure(retryError, thisCheck)
         }
       } else {
-        reportCheckFailure(error)
+        reportCheckFailure(error, thisCheck)
       }
     } finally {
       manualCheck = false
