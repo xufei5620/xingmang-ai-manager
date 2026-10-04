@@ -3,6 +3,7 @@
  *
  * 规矩是不在用户正用着的时候把软件关掉重开，所以只有两个时机：
  * - **用户自己退出时**：直接装，不再弹「顺手装上吗」那一问（main.ts 的 confirmQuit）。
+ *   系统关机、重启、注销不算：安装器会被一起结束，留给下次打开。
  * - **下次打开软件时**：上一次运行就已经下好了，这次启动刚打开、用户还没开始用，装上。
  *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。
  *
@@ -108,17 +109,40 @@ export interface QuitInstallInput {
   record: PendingUpdateRecord
   /** 缺省＝安装器接手退出（Windows、Mac）。 */
   installMethod?: UpdateInstallMethod | null
+  /** 系统已经在关机、重启或注销。缺省＝没有。 */
+  systemShuttingDown?: boolean
 }
 
 /**
  * 退出时有下好的更新：自动更新开着、这个版本还没在退出时自动试过，就直接装；否则
  * 回到「顺手装上吗」那一问，由用户决定。交给系统安装器的版本（Linux）每次都问：装的时候
  * 要他在系统窗口里点「安装」、输开机密码，没问过就弹出来只会被当成可疑窗口关掉。
+ *
+ * 系统在关机、重启或注销时这次不装也不问（'later'）：安装器会被关机一起结束，问了也没人
+ * 回答。也不记「退出时试过了」，记了下次打开就会被当成上次没装上；不记，下次打开照常
+ * 自动装（decideLaunchInstall）。
  */
-export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' {
+export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 'later' {
+  if (input.systemShuttingDown) return 'later'
   const version = parseVersion(input.version)
   if (!input.autoUpdate || !version || input.installMethod === 'system-installer') return 'ask'
   return input.record.quitAttemptedVersion === version ? 'ask' : 'install'
+}
+
+/** 这次退出时自动装写下的「试过了」，连同写之前记录里的值，撤回时要用。 */
+export interface QuitInstallAttempt {
+  version: string
+  previous: string | null
+}
+
+/**
+ * 退出时自动装已经记下「试过了」，可系统关机抢在安装器装完之前（Mac 的安装器在本进程里
+ * 准备，会被一起结束）：撤回那条记录，下次打开照常自动装，不说「上次没装上」。记录已经
+ * 不是这次写的样子时不动，返回 null。
+ */
+export function undoQuitInstallAttempt(record: PendingUpdateRecord, attempt: QuitInstallAttempt | null): PendingUpdateRecord | null {
+  if (!attempt || record.quitAttemptedVersion !== attempt.version) return null
+  return { ...record, quitAttemptedVersion: attempt.previous }
 }
 
 /**
