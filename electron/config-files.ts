@@ -38,7 +38,12 @@ import {
   isManagedCodexModelCatalogSetting,
   removeCodexRelayModelCatalog,
 } from './codex-model-catalog'
-import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
+import {
+  assertNoReparseComponents,
+  ensureSafeDataDirectory,
+  readSafeUtf8FileSync,
+  renameWithTransientRetrySync,
+} from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
   applyXingmangImageMcpToJson,
@@ -2589,8 +2594,11 @@ function rollbackCommittedPlans(
         assertSafeSourceAndTarget(plan.backupPath, rollbackPath, providerRoot)
         fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
         rollbackCopyCreated = true
-        assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot)
-        fs.renameSync(rollbackPath, plan.path)
+        renameWithTransientRetrySync(
+          rollbackPath,
+          plan.path,
+          () => assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot),
+        )
         rollbackCopyCreated = false
       } catch (error) {
         rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
@@ -2654,9 +2662,13 @@ export function executeFilePlans(
     }
     for (const [index, plan] of prepared.entries()) {
       assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      hooks.beforeReplace?.(plan.path, index)
-      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      fs.renameSync(plan.temporaryPath, plan.path)
+      // A hook may re-read what this save was computed from (external-tool-config
+      // does), so it runs again before every retry: whoever held the file may
+      // have just saved its own change.
+      renameWithTransientRetrySync(plan.temporaryPath, plan.path, () => {
+        hooks.beforeReplace?.(plan.path, index)
+        assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
+      })
       committed.push(plan)
     }
   } catch (error) {
