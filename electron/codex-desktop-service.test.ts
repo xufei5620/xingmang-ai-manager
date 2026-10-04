@@ -2079,7 +2079,7 @@ describe('Codex Desktop install on macOS', () => {
   })
 
   // 点「安装」那一刻检测没做完：照「没装」往下走的话，安装那一步会把「应用程序」里客户自己装好的
-  // 正版 ChatGPT 说成「不是官方原版」，叫他移到废纸篓。
+  // 正版 ChatGPT 说成「不是官方原版」，叫客户移到废纸篓。
   it('checks once more when the first detection did not finish, and leaves the app it then finds alone', async () => {
     const installed = {
       app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
