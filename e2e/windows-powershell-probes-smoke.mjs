@@ -453,6 +453,77 @@ for (const [name, limit, run] of trustedProbes) {
   }])
 }
 
+// The CLI terminal itself stays closed, but the step of its launch that reads
+// the folder's name runs here. The broker's Start-Process resolves
+// -WorkingDirectory as a wildcard, so a project folder such as 作业[1] used to
+// fail on every open. The broker the app builds for such a folder runs as built
+// up to its Start-Process, which here starts a hidden, waited-for cmd.exe in
+// place of the terminal, so the runner keeps no window; cmd records where it
+// was started. Unescaped, the same broker must still fail, with an error that
+// reads back as UTF-8: that is the premise of the escaping, and the text the
+// customer's error dialog quotes. Both shells the app may pick are tried.
+const {
+  buildCliLaunchPlan,
+  decodeWindowsPowerShellCommand,
+  parseStartedWindowsProcessId,
+  powerShellLiteral,
+  windowsPowerShellCandidates,
+} = compiled('windows-elevation')
+const launchBrokerMarker = path.join(scratch, 'launch-broker-cwd.txt')
+
+function launchBrokerScript(preamble, workingDirectory) {
+  const cmd = path.join(machinePaths.system32, 'cmd.exe')
+  // /u: cmd writes what `cd` prints as UTF-16, so the folder's Chinese name survives the file.
+  const argumentList = ['/d', '/u', '/c', `cd > "${launchBrokerMarker}"`].map(powerShellLiteral).join(', ')
+  return `${preamble}$process = Start-Process -FilePath ${powerShellLiteral(cmd)} -ArgumentList @(${argumentList}) -WorkingDirectory ${workingDirectory} -WindowStyle Hidden -Wait -PassThru; [Console]::Out.WriteLine($process.Id)`
+}
+
+function runLaunchBroker(shell, script, cwd) {
+  return new Promise((resolve) => {
+    const child = execFile(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)], {
+      cwd, env: trustedEnv(), encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
+    child.stdin?.end()
+  })
+}
+
+checks.push(['the CLI launch broker opens a folder whose name has brackets', async () => {
+  const folder = path.join(scratch, '作业[1]', 'a`[b]')
+  fs.mkdirSync(folder, { recursive: true })
+  const shells = windowsPowerShellCandidates(process.env, 'win32', machinePaths).filter((shell) => fs.existsSync(shell))
+  assert.ok(shells.length > 0)
+  for (const shell of shells) {
+    const name = path.basename(shell)
+    const broker = decodeWindowsPowerShellCommand(buildCliLaunchPlan({ executable: process.execPath, workspace: folder, title: 'smoke' }, shell).argv.at(-1))
+    const start = broker.indexOf('$process = Start-Process')
+    const shipped = / -WorkingDirectory ('(?:[^']|'')*') /.exec(broker)?.[1]
+    assert.ok(start > 0 && shipped, 'the broker no longer reads the way this check expects')
+    const preamble = broker.slice(0, start)
+
+    fs.rmSync(launchBrokerMarker, { force: true })
+    const startedAt = Date.now()
+    const opened = await runLaunchBroker(shell, launchBrokerScript(preamble, shipped), folder)
+    const elapsed = Date.now() - startedAt
+    assert.equal(opened.error, null, `${name}: ${opened.stderr}`)
+    assert.ok(parseStartedWindowsProcessId(opened.stdout), `${name} printed no process id: ${opened.stdout}`)
+    // Both sides resolved, so a short 8.3 temp path still compares equal.
+    const recorded = fs.readFileSync(launchBrokerMarker, 'utf16le').trim()
+    assert.equal(fs.realpathSync.native(recorded).toLowerCase(), fs.realpathSync.native(folder).toLowerCase())
+
+    const unescaped = await runLaunchBroker(shell, launchBrokerScript(preamble, powerShellLiteral(folder)), folder)
+    assert.ok(unescaped.error, `${name} opened the folder unescaped, so escaping it no longer matches what PowerShell does`)
+    assert.match(unescaped.stderr, /wildcard|通配符/i, `${name}: ${unescaped.stderr}`)
+    assert.ok(unescaped.stderr.includes('作'), `${name} did not report the folder's name as UTF-8: ${unescaped.stderr}`)
+
+    // Printed only: how the host wraps the error the dialog quotes, and whether this
+    // runner would garble it without the switch.
+    const withoutSwitch = await runLaunchBroker(shell, launchBrokerScript(preamble.slice(preamble.indexOf('Import-Module')), powerShellLiteral(folder)), folder)
+    const errorStart = Math.max(0, unescaped.stderr.indexOf('<S S="Error">'))
+    const wrapping = unescaped.stderr.startsWith('#< CLIXML') ? 'wrapped in CLIXML' : 'as plain text'
+    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped it fails ${wrapping} with ${JSON.stringify(unescaped.stderr.slice(errorStart, errorStart + 200))}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
+  }
+}])
+
 // The Codex debugging port owner lookup reads the TCP table with netstat.exe
 // now, not PowerShell, so it is checked against a port whose owners are known
 // rather than an empty one. This process listens on the port, and its end
