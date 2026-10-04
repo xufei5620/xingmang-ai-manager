@@ -101,6 +101,7 @@ import type {
   AppConfigSummary as MainAppConfigSummary,
   CliLaunchResult as MainCliLaunchResult,
   CliStatus as MainCliStatus,
+  CliUninstallOptions as MainCliUninstallOptions,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
   CodexDesktopLaunchResult as MainCodexDesktopLaunchResult,
   CodexReadinessStatus as MainCodexReadinessStatus,
@@ -299,6 +300,7 @@ export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
+export type CliUninstallOptions = MainCliUninstallOptions
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
 export type SavedAccount = SavedAccountSummary
@@ -811,7 +813,8 @@ export interface XingmangInvokeContract {
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId, version?: string], void>
   /** 中止正在进行的安装或更新;已经走到写入工具目录那一步时会被拒绝并给出原因。 */
   cancelCliInstall: IpcInvokeDefinition<'cli:cancel-install', [provider: ProviderId], InstallCancelResult>
-  uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
+  /** options 省略 = 只卸载；reinstall = 「换成星芒装的」那一次，主进程先看盘够不够装回来再动手。 */
+  uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId, options?: CliUninstallOptions], ToolUninstallResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
   installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>

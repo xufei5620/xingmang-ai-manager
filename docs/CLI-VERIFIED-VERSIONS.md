@@ -91,6 +91,10 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 软件装的、也由本软件更新，账号来源换了这一点没变。更新提醒仍走首页的新版本角标与一键更新
 （A5），那条路径走 npm 官方源并对 SHA-512，CLI 自己的 `npm install -g` 没有这一层。
 
+写这几个键时不看安装方式，官方原生安装器装的那份 Claude Code 也一样被关掉了自更新，而本软件
+又不能用 npm 原地升级它。所以首页对它照给更新按钮（第三十一批 B）：点了先问一句，客户同意后
+先卸掉官方那份、再用 npm 装上本软件的，见 `CLI-NATIVE-INSTALLS.md` 的「识别口径」。
+
 **验证依据**（沙箱，2026-09-22，空 HOME，装的都是名单里的推荐版本）：
 
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
@@ -98,7 +102,11 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`。同一台机器上不写这个键时是
   `Auto-updates: enabled` 外加一行 `- Can't auto-update: npm global folder isn't writable`。
   二进制里那段判定先看 `DISABLE_UPDATES`、再看 `DISABLE_AUTOUPDATER`，与安装方式无关，所以
-  对官方原生安装器装的那一份同样生效（这一条是读二进制得出的，没有真机演过）。
+  对官方原生安装器装的那一份同样生效。2026-10-03 第三十一批在沙箱里用真二进制演过：把 npm 上的
+  Claude Code Linux 二进制按官方安装器的样子摆好，2.1.277 与 2.1.288 的 `claude doctor` 都认出
+  是官方安装器装的（2.1.288 原文 `Running: native (2.1.288)`），写了这个键是
+  `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`，不写是 `Auto-updates: enabled`。
+  Windows 与 Mac 真机没演过。
   刻意**不用** `DISABLE_UPDATES`：那个连手动 `claude update` 也一起禁掉。
 - **Codex 0.155.1 — 跑起来看到了**。`~/.codex/config.toml` 写
   `check_for_update_on_startup = false` 后跑 `codex doctor`，Updates 一节的
