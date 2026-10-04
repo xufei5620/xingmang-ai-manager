@@ -1050,6 +1050,50 @@ test('backup restore requires preview and confirmation before touching files', a
   }
 })
 
+// 第 45～47 条：空着时说清备份从哪来；按工具筛选时空状态点名那个工具，「创建第一份备份」和右边的下拉都跟着筛选走。
+test('an empty backup list says where backups come from and backs up the tool picked above', async () => {
+  const page = await fixture('page=backups&empty')
+  try {
+    const state = page.getByTestId('backups-empty')
+    await state.getByText('还没有备份', { exact: true }).waitFor()
+    await state.getByText('改工具配置前会自动留一份。想现在就留一份，点下面的按钮。', { exact: true }).waitFor()
+    const picker = page.getByRole('combobox', { name: '选择备份工具', exact: true })
+    assert.equal(await picker.inputValue(), 'claude')
+    await page.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await state.getByText('Gemini CLI 还没有备份', { exact: true }).waitFor()
+    assert.equal(await picker.inputValue(), 'gemini')
+    await state.getByRole('button', { name: '创建第一份备份', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'createBackup'))
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'createBackup').map((call) => call.args), [['gemini']])
+    // 选回「全部工具」：右边的下拉不动。
+    await page.getByRole('button', { name: '全部工具', exact: true }).click()
+    await state.getByText('还没有备份', { exact: true }).waitFor()
+    assert.equal(await picker.inputValue(), 'gemini')
+    await page.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('backups are searched by the date the list shows, not by an id nobody sees', async () => {
+  const page = await fixture('page=backups')
+  try {
+    const row = page.getByTestId('backups-row-backup-1')
+    const shown = await row.locator('time').innerText()
+    // 图标单独一格，标题只有工具名。
+    await row.locator('.xm-row-icon').waitFor()
+    assert.equal(await row.locator('.xm-row-title').innerText().then((text) => text.startsWith('Codex CLI')), true)
+    const search = page.getByTestId('backups-search')
+    assert.equal(await search.getAttribute('placeholder'), '搜索日期')
+    await search.fill(shown)
+    await row.waitFor()
+    await search.fill('backup-1')
+    await page.getByTestId('backups-filter-empty').getByText('没有找到「backup-1」', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
   const page = await fixture('page=backups&backupOtherKey')
   try {
@@ -1083,7 +1127,7 @@ test('feedback narrows the log list by source and to this run, and copies one en
     )
     await page.getByText('本次启动的更新失败').waitFor()
 
-    await page.getByRole('button', { name: '详情', exact: true }).first().click()
+    await page.getByTestId('feedback-log-2026-09-07T01:00:00Z:4242:2').click()
     await page.getByRole('button', { name: '复制这一条', exact: true }).click()
     await page.getByText('这一条已复制').first().waitFor()
     assert.deepEqual(
@@ -1092,6 +1136,86 @@ test('feedback narrows the log list by source and to this run, and copies one en
         .map((call) => call.args),
       ['[2026-09-07T01:00:00Z] [ERROR] [updater/download] 本次启动的更新失败 {"code":"ENOENT"}'],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 第 48～50 条：日志一条一行、整行点开；卡头写条数、放「打开日志目录」「清除日志」；脱敏提示是一行细条。
+test('feedback shows one line per log entry under a card head that counts them', async () => {
+  const page = await fixture('page=feedback')
+  try {
+    const row = page.getByTestId('feedback-log-2026-09-07T01:00:00Z:4242:2')
+    await row.waitFor()
+    assert.match(await row.locator('time').innerText(), /^(\d{4}年)?\d{1,2}月\d{1,2}日 \d{2}:\d{2}:\d{2}$/)
+    assert.equal(await row.locator('.v2-feedback-log-level').innerText(), '错误')
+    assert.match(await row.locator('.v2-feedback-log-level').getAttribute('class'), /is-error/)
+    assert.equal(await row.locator('.v2-feedback-log-message').innerText(), '本次启动的更新失败')
+    assert.equal(await row.locator('.v2-feedback-log-source').innerText(), '更新')
+    assert.equal(await row.locator('.v2-feedback-log-more').innerText(), '详情 ›')
+    // 一条一行：没有文件图标，也没有单独的「详情」按钮。
+    assert.equal(await row.locator('svg').count(), 0)
+    assert.equal(await page.getByRole('button', { name: '详情', exact: true }).count(), 0)
+    const height = (await row.boundingBox()).height
+    assert.ok(height < 44, `one line per entry (${height})`)
+    const card = page.locator('.xm-card').filter({ has: row })
+    await card.locator('.xm-card-head').getByText('共 3 条', { exact: true }).waitFor()
+    await card.locator('.xm-card-head').getByRole('button', { name: '打开日志目录', exact: true }).waitFor()
+    assert.equal(await page.getByTestId('feedback-clear').isEnabled(), true)
+    assert.equal(await page.getByText('已限制为最近日志。').count(), 0)
+    const privacy = page.getByTestId('feedback-privacy')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '报告会自动脱敏：不会包含账号密码与完整密钥。发送前仍请检查私有项目名称和地址。联系客服')
+    assert.ok((await privacy.boundingBox()).height <= 50)
+    // 筛选后条数跟着列表走。
+    await page.getByTestId('feedback-source').selectOption('更新')
+    await card.locator('.xm-card-head').getByText('共 2 条', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('feedback cannot clear logs it has none of and says how to read them when the list fails', async () => {
+  const empty = await fixture('page=feedback&empty')
+  try {
+    const state = empty.getByTestId('feedback-empty')
+    await state.getByText('还没有运行日志', { exact: true }).waitFor()
+    await state.getByText('软件运行时的事件会记录在这里。', { exact: true }).waitFor()
+    assert.equal(await empty.getByTestId('feedback-clear').isDisabled(), true)
+  } finally {
+    await empty.close()
+  }
+  const failed = await fixture('page=feedback&fail=load')
+  try {
+    const state = failed.getByTestId('feedback-error')
+    await state.getByText('点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。', { exact: true }).waitFor()
+    await state.getByRole('button', { name: '重新加载', exact: true }).waitFor()
+    assert.equal(await failed.getByTestId('feedback-clear').isDisabled(), true)
+  } finally {
+    await failed.close()
+  }
+})
+
+test('feedback shows the latest 100 entries first and 100 more on request', async () => {
+  const page = await fixture('page=feedback&manyLogs')
+  try {
+    const card = page.locator('.xm-card').filter({ has: page.getByTestId('feedback-log-next') })
+    await card.locator('.xm-card-head').getByText('最近 500 条', { exact: true }).waitFor()
+    assert.equal(await page.locator('.v2-feedback-log').count(), 100)
+    assert.equal(await page.getByTestId('feedback-log-next').innerText(), '再显示 100 条')
+    await page.getByTestId('feedback-log-next').click()
+    await page.getByTestId('feedback-log-next').waitFor({ state: 'detached' })
+    assert.equal(await page.locator('.v2-feedback-log').count(), 150)
+    // 换了筛选条件就从头的 100 条重新开始。
+    await page.getByTestId('feedback-search').fill('测试日志')
+    await page.getByTestId('feedback-log-next').waitFor()
+    assert.equal(await page.locator('.v2-feedback-log').count(), 100)
+    // 改回原来的条件也一样从头的 100 条开始，不接着上次翻到的 150 条。
+    await page.getByTestId('feedback-search').fill('第 7 条测试日志')
+    await page.waitForFunction(() => document.querySelectorAll('.v2-feedback-log').length === 1)
+    await page.getByTestId('feedback-search').fill('')
+    await page.waitForFunction(() => document.querySelectorAll('.v2-feedback-log').length > 1)
+    assert.equal(await page.locator('.v2-feedback-log').count(), 100)
+    await page.getByTestId('feedback-log-next').waitFor()
   } finally {
     await page.close()
   }
@@ -1208,6 +1332,40 @@ test('available update displays download action and failed download remains revi
     )
   } finally {
     await page.close()
+  }
+})
+
+// 第 52～54 条：版本号和别的行对齐、用正文的字；有新版本时多一行「新版本」；读不到时标题照实说；
+//「安装前需要知道」不折叠。
+test('the updates page lines up the versions, names the new one and shows what to know before installing', async () => {
+  const page = await fixture('page=updates')
+  try {
+    const current = page.getByTestId('updates-current-version')
+    await current.getByText('0.1.31', { exact: true }).waitFor()
+    assert.equal(await current.locator('.xm-row-icon').count(), 0)
+    const next = page.getByTestId('updates-new-version')
+    await next.getByText('新版本', { exact: true }).waitFor()
+    await next.getByText('0.1.32', { exact: true }).waitFor()
+    const titleLeft = (row) => row.locator('.xm-row-title').evaluate((element) => Math.round(element.getBoundingClientRect().left))
+    const checked = page.locator('.xm-list-row').filter({ hasText: '上次检查' })
+    assert.equal(await titleLeft(current), await titleLeft(checked))
+    const size = await current.locator('.v2-update-version').evaluate((element) => getComputedStyle(element).fontSize)
+    assert.equal(size, '14px')
+    const note = page.getByTestId('updates-install-note')
+    assert.equal(await note.isVisible(), true)
+    await note.getByText('安装前需要知道', { exact: true }).waitFor()
+    await note.getByText(/^装之前先保存工具里没做完的东西。/).waitFor()
+    assert.equal(await page.locator('details').count(), 0)
+  } finally {
+    await page.close()
+  }
+  const failed = await fixture('page=updates&fail=load')
+  try {
+    await failed.getByText('更新状态暂未读到', { exact: true }).waitFor()
+    assert.equal(await failed.getByText('正在读取更新状态…', { exact: true }).count(), 0)
+    assert.equal(await failed.getByTestId('updates-new-version').count(), 0)
+  } finally {
+    await failed.close()
   }
 })
 

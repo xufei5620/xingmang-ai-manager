@@ -35,7 +35,7 @@ import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeR
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
-import { accountTabs, macDesktopTutorialTopic, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
+import { accountTabs, macDesktopTutorialTopic, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import { pageRegistry, type PageId } from './registry/pages'
@@ -1235,7 +1235,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 管理员模式下卸载转交给普通窗口：是预料之中的一步，给中性提示，不当失败弹红框。
         const handedOff = uninstallHandOffNotice(result)
         if (handedOff && mounted.current) toast.show(handedOff, 'neutral')
-      })
+      }, { kind: 'uninstall' })
       await toolbox.refresh(true)
     } })
   }
@@ -1384,7 +1384,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const maintenance = update?.serviceMaintenance ?? null
   const launchInstall = update?.launchInstallNotice ?? null
   const maintenanceKey = maintenanceNoticeKey(maintenance)
+  // 人就在更新页时，说的是页面上同一件事的那几种气泡不弹，离开更新页照旧。
   const showUpdate = update && (update.error || update.currentVersionWithdrawn || ['available', 'downloading', 'downloaded'].includes(update.phase)) && dismissedUpdate !== updateKey
+    && !(page === 'updates' && updateBubbleRepeatsUpdatesPage(update))
   // 「自动更新」勾选跟着提示气泡走：用户第一次看到「有新版本」时就能看到它、改它。
   // 这台电脑的更新通道不支持自动更新时不显示，免得勾了没用。
   const autoUpdateToggle = Boolean(update?.autoUpdateSupported && settings && !update.error && !update.rollback)
@@ -1482,7 +1484,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })}
-                  installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)}
+                  installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)} toolJobs={toolbox.jobs}
                   onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
                   onSubscriptionActivated={applySubscriptionToTools} onSubscriptionPurchased={() => void refreshSubscription()} />
               </Suspense>

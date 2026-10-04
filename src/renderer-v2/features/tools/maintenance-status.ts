@@ -60,14 +60,15 @@ export interface MaintenanceFailureNotice {
 /**
  * 缺了哪一块，用户能做什么就不一样：工具状态缺席时页面上的每一行都还没有结论，
  * 而系统能力缺席时状态仍然可信，只是按钮暂时点不动。文案分开写，别让用户
- * 以为工具真的不见了。
+ * 以为工具真的不见了。工具状态缺席时各行既不给安装也不给卸载（卸载项要先知道
+ * 装没装），提示照实这么说。
  */
 export function maintenanceFailureNotice(failure: MaintenancePartitionFailure): MaintenanceFailureNotice {
   return failure.partition === 'system'
     ? {
         title: '工具状态暂未读到',
         reason: failure.message,
-        hint: '下面各行的版本与安装状态都还没有结论，安装日志和卸载入口不受影响。点「重新检测」可以再试一次。',
+        hint: '下面各行的版本和安装状态还没读到，读到之前装不了也卸不了。点「重新检测」再试一次。',
       }
     : {
         title: '当前系统支持的操作暂未读到',

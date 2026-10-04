@@ -1350,11 +1350,14 @@ test('the uninstall step of a switch to the app cannot be cancelled, and asking 
     // 卸到一半停不下来：说清楚，而不是假装取消了。
     await row.getByTestId('tool-claude-cancel').click()
     await waitForToast(page, '这一步已经不能取消了。')
-    // 换装还在跑时到安装卸载页再点「重新安装」：不再问一遍「先把它卸掉」，按已在装处理。
+    // 换装还在跑时到安装卸载页：这一行跟着首页那次写「安装中」，按钮转圈点不了，
+    // 也就不会再问一遍「先把它卸掉」。取消只在发起的那一页给。
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
-    await page.getByTestId('maintenance-install-claude').click()
-    await page.getByText('这个工具正在安装，等它做完就好', { exact: true }).waitFor()
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('安装中')
+    await expect(page.getByTestId('maintenance-tool-claude').locator('.xm-row-desc')).toHaveText('正在卸载')
+    await expect(page.getByTestId('maintenance-install-claude')).toBeDisabled()
+    assert.equal(await page.getByTestId('maintenance-cancel-claude').count(), 0)
     assert.equal(await page.getByTestId('managed-switch-confirm').count(), 0)
     await page.evaluate(() => window.v2Test.releaseUninstall())
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
@@ -1567,20 +1570,99 @@ test('a failed system scan leaves the maintenance page usable and never claims a
     await page.evaluate(() => { window.v2Test.fail = 'scanSystem' })
     await page.getByTestId('page-maintenance').getByRole('button', { name: '重新检测', exact: true }).first().click()
     await page.getByTestId('maintenance-failure-system').waitFor()
-    await row.getByText('状态未读到', { exact: true }).waitFor()
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('暂未读到')
+    assert.equal(await row.locator('.xm-pill').count(), 0)
     assert.equal(await row.getByText('未安装', { exact: true }).count(), 0)
     assert.equal(await row.getByRole('button', { name: '安装', exact: true }).count(), 0)
-    await row.getByRole('button', { name: '重新检测', exact: true }).waitFor()
-    // 运行环境那两行同样不能谎报「尚未安装」。
+    // 第 42 条：各行不再各放一颗「重新检测」，整页只留页头和红框里那两颗；红框照实说装不了也卸不了。
+    assert.equal(await row.getByRole('button', { name: '重新检测', exact: true }).count(), 0)
     const maintenance = page.getByTestId('page-maintenance')
+    assert.equal(await maintenance.getByRole('button', { name: '重新检测', exact: true }).count(), 2)
+    assert.match(await page.getByTestId('maintenance-failure-system').innerText(), /读到之前装不了也卸不了/)
+    // 运行环境那两行同样不能谎报「尚未安装」，也不给「安装」。
     assert.equal(await maintenance.getByText('尚未安装', { exact: true }).count(), 0)
-    assert.ok(await maintenance.getByText('状态未读到', { exact: true }).count() >= 5, '每个工具行与运行环境行都应只报未知')
+    assert.equal(await maintenance.getByText('暂未读到', { exact: true }).count(), 7, '每个工具行与运行环境行都只写一次「暂未读到」')
+    assert.equal(await page.getByTestId('maintenance-runtime-action-node').count(), 0)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await page.getByTestId('maintenance-failure-system').getByRole('button', { name: '重新检测', exact: true }).click()
     await row.getByText('已安装', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('maintenance-failure-system').count(), 0)
     await clean(page)
   } finally { await page.close() }
+})
+// 第 40、43 条：正在装的那一行自己写「安装中」，进度换成首页那种白话，有百分比时按钮写百分比、
+// 底下一道细进度条；别的行灰着，鼠标停上去说在等谁；「取消」点了写「正在停止」。
+//「安装日志」平时不占地方，一开始装就出现、装完留着。
+test('the maintenance row being installed says so, shows plain progress and tells the other rows what they wait for', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const maintenance = page.getByTestId('page-maintenance')
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    assert.equal(await maintenance.getByRole('log').count(), 0)
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('安装中')
+    await expect(page.getByTestId('maintenance-install-gemini')).toBeDisabled()
+    const other = page.getByTestId('maintenance-install-claude')
+    await expect(other).toBeDisabled()
+    await expect(other).toHaveAttribute('title', '等 Gemini CLI 装完再操作')
+    await page.evaluate(() => window.v2Test.emit('onInstallProgress', { provider: 'gemini', state: 'output', stage: 'download', message: 'npm 官方源：正在下载 @google/gemini-cli' }))
+    await expect(row.locator('.xm-row-desc')).toHaveText('正在下载，第一次可能要几分钟，请别关窗口…')
+    // 程序原话照旧只进「安装日志」，这张卡这时才出现。
+    await expect(maintenance.getByRole('log')).toHaveText('npm 官方源：正在下载 @google/gemini-cli')
+    assert.equal(await row.locator('.v2-maintenance-row-progress').count(), 0)
+    await page.evaluate(() => window.v2Test.emit('onInstallProgress', { provider: 'gemini', state: 'output', stage: 'download', message: '已下载 38%', percent: 38 }))
+    await expect(page.getByTestId('maintenance-install-gemini')).toHaveText('38%')
+    await row.locator('.v2-maintenance-row-progress').waitFor()
+    await page.getByTestId('maintenance-cancel-gemini').click()
+    await expect(page.getByTestId('maintenance-cancel-gemini')).toHaveText('正在停止')
+    await page.evaluate(() => window.v2Test.releaseInstall('安装已取消'))
+    await page.getByTestId('maintenance-cancel-gemini').waitFor({ state: 'detached' })
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    assert.equal(await row.locator('.v2-maintenance-row-progress').count(), 0)
+    await expect(other).toBeEnabled()
+    assert.equal(await other.getAttribute('title'), null)
+    await maintenance.getByRole('log').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+// 第 40 条：没装上的那一行写红色「安装失败」，名字下面写页顶红框领头的那一句。
+test('a maintenance row whose install failed says 安装失败 with the sentence the red banner leads with', async () => {
+  const page = await open('installPermissionDenied=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-gemini')
+    const state = page.getByTestId('maintenance-state-gemini')
+    await expect(state).toHaveText('未安装')
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(state).toHaveText('安装失败')
+    assert.match(await state.getAttribute('class'), /xm-tone-bad/)
+    const banner = page.getByTestId('page-maintenance').locator('.v2-business-notice.is-error strong')
+    await expect(banner).toHaveText('写不进安装目录')
+    await expect(row.locator('.xm-row-desc')).toHaveText('写不进安装目录')
+    // 别的行没受连累。
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('已安装')
+    await clean(page)
+  } finally { await page.close() }
+})
+// 第 44 条：「安装指南」落到装它的那一章，不再是教程第一章。
+test('the runtime install guide opens the chapter that installs it', async () => {
+  for (const [query, chapter] of [['desktopOnly=1&runtimeExternal=1&os=mac', 'Mac 上准备 Node.js 和 Python'], ['desktopOnly=1&runtimeExternal=1', '进阶：安装与使用命令行工具']]) {
+    const page = await open(query)
+    try {
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-maintenance').click()
+      const guide = page.getByTestId('maintenance-runtime-action-node')
+      await expect(guide).toHaveText('安装指南')
+      await guide.click()
+      await expect(page.locator('#tutorial-article-title')).toHaveText(chapter)
+      await clean(page)
+    } finally { await page.close() }
+  }
 })
 test('a failed platform capability read keeps the tool states on the maintenance page', async () => {
   const page = await open()
@@ -2656,8 +2738,9 @@ test('the updates page names the step that failed and offers that step again', a
       await notice.getByText(stage.reason, { exact: true }).waitFor()
       await notice.getByRole('button', { name: stage.retry, exact: true }).waitFor()
       await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
-      // 首页那条浮动气泡读的是同一份文案，不许和页面说两套话。
-      await page.getByRole('alert').getByText(stage.title, { exact: true }).waitFor()
+      // 首页那条浮动气泡读的是同一份文案，不许和页面说两套话；下载失败那条人在更新页时不弹（第 55 条）。
+      if (stage.step === 'download') await expect.poll(() => page.locator('.v2-notification').count()).toBe(0)
+      else await page.getByRole('alert').getByText(stage.title, { exact: true }).waitFor()
     }
     // 检查失败时的「重试」重新走检查，而不是去下载一个还没开始下的包。
     await updates.getByTestId('updates-failure-install').getByRole('button', { name: '重新安装', exact: true }).click()
@@ -2766,22 +2849,29 @@ test('a stalled update download offers the download page next to downloading aga
     await notice.getByText(reason, { exact: true }).waitFor()
     await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
     await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
-    const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
-    await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
-    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+    // 人在更新页时气泡不重复说一遍（第 55 条）。
+    assert.equal(await page.locator('.v2-notification').count(), 0)
 
     const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
     const downloadPage = 'https://docs-new.solov.cc/guide/manager#download-installers'
     await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
     await expect.poll(opened).toEqual([downloadPage])
-    await bubble.getByRole('button', { name: '打开下载页', exact: true }).click()
-    await expect.poll(opened).toEqual([downloadPage, downloadPage])
 
     // 同一句「超时」，没经过看门狗的不算停住。
     await emit('ETIMEDOUT')
     await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
-    await expect.poll(() => bubble.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
     await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+
+    // 离开更新页，气泡照旧弹，按钮和页面上的一样。
+    await page.getByTestId('nav-home').click()
+    await emit('UPDATE_DOWNLOAD_STALLED')
+    const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
+    await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual([downloadPage, downloadPage])
+    await emit('ETIMEDOUT')
+    await expect.poll(() => bubble.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
     await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
@@ -2938,6 +3028,45 @@ test('a maintenance notice from the update feed reaches signed-out users, includ
     await corner.getByText(/预计 23:00 恢复/).waitFor()
     await emit(undefined)
     await corner.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第 55 条：人就在更新页时，「新版本 X 可以安装」「正在下载更新」「下载更新失败」三种气泡说的是页面上
+// 写着的同一件事，不弹；离开更新页照旧弹。「这个版本有已知问题」那种照旧。
+test('the updates page does not pop the bubbles that repeat what it already says', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.getByText('当前环境暂不提供自动更新', { exact: true }).waitFor()
+    const emit = (state) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: true, ...value,
+    }), state)
+    const bubble = page.locator('.v2-notification')
+    await emit({ phase: 'available' })
+    await expect(updates.getByTestId('updates-new-version')).toContainText('0.1.32')
+    assert.equal(await bubble.count(), 0)
+    await emit({ phase: 'downloading', progress: { percent: 38, bytesPerSecond: 1, transferred: 38, total: 100 } })
+    await updates.getByTestId('updates-progress-detail').waitFor()
+    assert.equal(await bubble.count(), 0)
+    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } })
+    await updates.getByTestId('updates-failure-download').waitFor()
+    assert.equal(await bubble.count(), 0)
+    // 离开更新页照旧弹。
+    await page.getByTestId('nav-home').click()
+    await bubble.getByText('下载更新失败', { exact: true }).waitFor()
+    await emit({ phase: 'available' })
+    await bubble.getByText('新版本 0.1.32 可以安装', { exact: true }).waitFor()
+    // 回到更新页那条又收起来；「这个版本有已知问题」人在更新页也照旧弹。
+    await page.getByTestId('nav-updates').click()
+    await expect(page.getByTestId('nav-updates')).toHaveAttribute('aria-current', 'page')
+    await expect.poll(() => bubble.count()).toBe(0)
+    await emit({ phase: 'not-available', availableVersion: null, currentVersionWithdrawn: true })
+    await bubble.getByText('这个版本有已知问题', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('nav-updates').getAttribute('aria-current'), 'page')
     await clean(page)
   } finally { await page.close() }
 })
@@ -5924,7 +6053,7 @@ test('cards on a page sit 16 apart, a list in a card reaches its edges and a lon
         firstRowBorder: getComputedStyle(row).borderTopWidth,
       }
     })
-    assert.ok(layout.gaps.length >= 2)
+    assert.ok(layout.gaps.length >= 1)
     assert.deepEqual(layout.gaps, layout.gaps.map(() => 16))
     assert.deepEqual(layout.edges, [1, 1, 1, 1])
     assert.equal(layout.firstRowBorder, '0px', 'the table head already draws the line above the first row')
