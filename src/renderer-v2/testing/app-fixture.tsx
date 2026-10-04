@@ -541,6 +541,14 @@ const methods = {
     }
     const previousVersion = system.clis[provider].version
     system.clis[provider] = { ...system.clis[provider], installed: false, version: null, path: null, installDirectory: null, installSource: undefined }
+    // 管理员模式下的第二轮：官方安装器那份已经卸掉，剩下的交给普通窗口去卸，等客户在那边卸完。
+    if (query.has('uninstallHandOff')) return { outcome: 'delegated' as const, previousVersion }
+    // 程序已经卸掉，只剩几个旧版本文件删不掉（Claude Code 还开着）。
+    if (query.has('uninstallLeftovers')) {
+      const reason = 'Claude Code 已卸载，但有 1 个旧版本文件没能删除，可能还有 Claude Code 在运行。'
+      return { outcome: 'manual-required' as const, previousVersion, error: reason,
+        manualHelp: { reason, manualCommand: 'Remove-Item -LiteralPath "C:\\Users\\Fixture\\.local\\share\\claude\\versions\\1.2.3"' } }
+    }
     return { outcome: 'uninstalled' as const, previousVersion }
   },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),

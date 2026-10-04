@@ -239,6 +239,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { subscription, refresh: refreshSubscription } = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
   const browserOnline = useBrowserOnline()
   const offline = isOffline({ browserOnline, networkFailures: session.authenticated ? balanceState.networkFailures : 0 })
+  // 安装任务跑到一半要看的是「现在」断没断网（换成星芒装的，动手卸之前），闭包里的 offline 停在点按钮那一刻。
+  const offlineNow = useRef(offline)
+  offlineNow.current = offline
   const [onlineChecking, setOnlineChecking] = useState(false)
   // 系统说网回来了，不等下一次定时刷新：马上读一次余额，确认真的通了横幅才收起。
   useEffect(() => {
@@ -825,6 +828,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 卸之前问一句；问之前上面已经确认过没断网、运行环境装得上。
     const switchVersion = current && canSwitchToManagedInstall(id, current.status) ? managedSwitchVersion(current, version) : null
     if (switchVersion) {
+      // 这一份已经在换（比如首页点过、又到安装卸载页点「重新安装」）：再问一遍「先把它卸掉」
+      // 只会让人糊涂。和 toolbox.run 撞锁一样，当作已经在装。
+      if (toolbox.jobs[id]) return 'skipped'
       if (!await confirmManagedSwitch(switchVersion)) return 'declined'
       // 确认框里写的是哪一版，就点名装哪一版。
       version = switchVersion
@@ -855,6 +861,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       preparing = false
       if (switchVersion) {
         // 运行环境备齐了才卸：卸完到装上之间越短越好，环境要重启电脑时官方那份也还在。
+        // 确认框可能开着放了好一阵，运行环境也可能刚装了几分钟：真动手卸之前再看一眼网，
+        // 断了就先不卸，免得卸完装不回来。
+        if (offlineNow.current) {
+          if (mounted.current) toast.show(offlineActionMessage, 'warn')
+          outcome = 'skipped'
+          return
+        }
         uninstalling = true
         report('正在卸载')
         try {
@@ -907,8 +920,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 程序已经卸掉，只剩几个旧版本文件没删掉（多半是 Claude Code 还开着）：照常装上，清理那一步交给客户。
     if (result.outcome === 'manual-required') setManualUninstall({ name, reason: result.manualHelp.reason, manualCommand: result.manualHelp.manualCommand })
     const handedOff = uninstallHandOffNotice(result)
-    if (handedOff && mounted.current) toast.show(handedOff, 'neutral')
-    return !handedOff
+    if (!handedOff) return true
+    // 同「卸载」：转交出去时官方那份可能已经卸掉了，刷新一次，这一行照实际情况显示。
+    void toolbox.refresh(true).catch(() => undefined)
+    if (mounted.current) toast.show(handedOff, 'neutral')
+    return false
   }
   /**
    * 串在「安装」里的运行环境那一段。单独占一个 node / python 任务，运行环境卡上
