@@ -88,7 +88,7 @@ export function LocalAvatar({
 }: {
   identity: AvatarIdentity | null
   name: string
-  size?: 36 | 72
+  size?: 36 | 56 | 72
   testId?: string
 }) {
   const avatar = useLocalAvatar(identity)

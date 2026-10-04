@@ -265,13 +265,17 @@ test('a discarded render of the next account does not block saving for the accou
   }
 })
 
-test('account header matches the return-and-identity layout and moves refresh into its menu', async () => {
+test('account header names the current account, switches and refreshes from two buttons and goes back home', async () => {
   const page = await localAvatar.newPage()
   try {
     await openFixture(page, 'v2-business-fixture.html?page=account', 'account header fixture')
     await page
-      .getByText('管理你的星芒账号、余额与 Key。', { exact: true })
+      .getByText('当前账号：本地测试（test@example.invalid）', { exact: true })
       .waitFor()
+    assert.equal(
+      await page.getByText('管理你的星芒账号、余额与 Key。', { exact: true }).count(),
+      0,
+    )
     const avatar = page.getByTestId('account-profile-avatar')
     assert.equal(await avatar.innerText(), '本')
     assert.deepEqual(
@@ -282,35 +286,34 @@ test('account header matches the return-and-identity layout and moves refresh in
         color: getComputedStyle(element).color,
       })),
       {
-        width: 72,
-        height: 72,
+        width: 56,
+        height: 56,
         background: 'rgb(11, 31, 59)',
         color: 'rgb(212, 163, 85)',
       },
     )
+    // 页头不再放头像按钮；「刷新账号资料」并进页头唯一的「刷新」。
+    assert.equal(await page.getByTestId('account-identity-menu').count(), 0)
     assert.equal(
       await page.getByRole('button', { name: '刷新', exact: true }).count(),
-      0,
+      1,
     )
-    await page.getByTestId('account-identity-menu').click()
-    await page
-      .getByRole('menuitem', { name: '刷新账号资料', exact: true })
-      .waitFor()
-    await page.keyboard.press('Escape')
+    await page.getByTestId('account-switch').click()
+    assert.equal(await page.getByTestId('account-back').getAttribute('title'), '回首页')
     await page.getByTestId('account-back').click()
+    const recorded = await page.evaluate(() =>
+      JSON.parse(document.documentElement.dataset.calls),
+    )
+    assert.equal(recorded.some((call) => call.name === 'open-account-switcher'), true)
     assert.equal(
-      await page.evaluate(() =>
-        JSON.parse(document.documentElement.dataset.calls).some(
-          (call) => call.name === 'navigate' && call.args === 'home',
-        ),
-      ),
+      recorded.some((call) => call.name === 'navigate' && call.args === 'home'),
       true,
     )
     assert.equal(
       await page
         .locator('.v2-business-profile-fields')
         .evaluate((element) => getComputedStyle(element).rowGap),
-      '0px',
+      '16px',
     )
   } finally {
     await page.close()

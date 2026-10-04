@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 
 /**
  * 从别处跳过来要落到页面里的某一行：顶部搜索搜到设置里的「自动更新」，设置页要翻到那一行；
- * 设置里「企业证书」的「去检查页」，检查页要翻到「安全证书」那一项。页面切换只传页面名，
- * 要翻到的那一行先放在这里，页面把那一行画出来以后取走（同 settings-group-intent）。
+ * 设置里「企业证书」的「去检查页」，检查页要翻到「安全证书」那一项；顶部搜索搜到个人中心的
+ * 「切换账号」，落到页头那颗按钮。页面切换只传页面名，要翻到的那一行先放在这里，页面把那一行
+ * 画出来以后取走（同 settings-group-intent）。
  */
-export type RowFocusPage = 'settings' | 'health'
+export type RowFocusPage = 'settings' | 'health' | 'account'
 
 /** 检查页上「第一项问题」：开机提示的「去看看」不知道是哪一项，由检查页自己换成那一项的 code。 */
 export const firstProblemAnchor = 'first-problem'
