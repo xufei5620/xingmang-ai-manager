@@ -375,7 +375,7 @@ function createDownloadFixture(downloadBehavior: 'hang' | 'succeed') {
 /** 假时钟往前拨一次检查的间隔，再让真实的读盘（量目录、删目录）跑完。 */
 async function advanceOneCheck(): Promise<void> {
   await vi.advanceTimersByTimeAsync(npmDownloadProgressCheckMs)
-  await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  await new Promise<void>((resolve) => setTimeout(resolve, 30))
 }
 
 /** 一直拨到这次下载被停下；拨到上限还没停就让用例当场红，而不是干等超时。 */
@@ -439,17 +439,19 @@ describe('a CLI download that stops moving', () => {
     const partial = path.join(official.cache, '_cacache', 'tmp', 'partial')
     fs.mkdirSync(path.dirname(partial), { recursive: true })
     // A trickle: a little more arrives before every check, for twice the old five-minute budget.
+    let lastGrowthAt = official.startedAt
     for (let elapsed = 0; elapsed < 2 * npmDownloadTimeoutMs; elapsed += npmDownloadProgressCheckMs) {
       fs.appendFileSync(partial, Buffer.alloc(512))
+      lastGrowthAt = performance.now()
       await advanceOneCheck()
     }
     expect(official.abortedAt).toBeNull()
     expect(fixture.downloads).toHaveLength(1)
 
     // Then it stops moving: three minutes from the last change, not from the start.
-    const lastChangeAt = performance.now()
     await advanceUntilAborted(official, 2 * npmDownloadStallTimeoutMs)
-    expect((official.abortedAt ?? 0) - lastChangeAt).toBeGreaterThanOrEqual(npmDownloadStallTimeoutMs)
+    expect((official.abortedAt ?? 0) - lastGrowthAt).toBeGreaterThanOrEqual(npmDownloadStallTimeoutMs)
+    expect((official.abortedAt ?? 0) - lastGrowthAt).toBeLessThanOrEqual(npmDownloadStallTimeoutMs + 4 * npmDownloadProgressCheckMs)
 
     // The customer cancelling the next registry's download is still a cancel.
     await fixture.downloadStarted(2)
