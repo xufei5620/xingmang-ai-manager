@@ -12,6 +12,10 @@ import {
 } from './command-runner'
 import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
+import {
+  InstallCancellationRegistry, InstallCancelledError, isInstallCancelledError,
+  type InstallCancellationHandle, type InstallCancellationOutcome,
+} from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { installMacosDesktopApp, macosDesktopAppInstallable } from './macos-desktop-app-installer'
@@ -158,6 +162,13 @@ function wingetFailureMessage(error: unknown): string {
 
 function installationError(message: string, originalError: unknown): Error {
   return Object.assign(new Error(message), { originalError })
+}
+function installKey(tool: ExternalToolId): string {
+  return `external-client:install:${tool}`
+}
+/** Windows 上交给系统去装的那一步不接受取消时，按「取消」弹出的那句话。 */
+function installSealReason(tool: ExternalToolId): string {
+  return `正在安装 ${definitions[tool].name}，这一步中断会留下装了一半的程序，请等它结束。`
 }
 function textValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() && value.length < 32_768 && !/[\x00-\x1f]/.test(value) ? value.trim() : null
@@ -335,6 +346,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const launchProcess = options.launchProcess ?? launchDetached
   const resolveMachinePaths = options.resolveMachinePaths ?? resolveWindowsMachinePaths
   const jobs = new Map<ExternalToolId, { promise: Promise<ExternalClientRuntimeStatus>; observers: Set<(event: ExternalClientInstallProgress) => void>; last: ExternalClientInstallProgress | null }>()
+  const installCancellations = new InstallCancellationRegistry()
   let inFlightScan: Promise<ExternalClientRuntimeStatus[]> | null = null
   const now = options.now ?? Date.now
   const scanCacheTtlMs = options.scanCacheTtlMs ?? defaultScanCacheTtlMs
@@ -523,13 +535,18 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     void promise.then(() => { if (inFlightScan === promise) inFlightScan = null }, () => { if (inFlightScan === promise) inFlightScan = null })
     return promise
   }
-  /** Mac 上没有 winget 一类的系统安装器：下载官方包、核对签名、放进「应用程序」都在这一步。 */
-  async function installOnMac(tool: ExternalToolId, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void): Promise<void> {
+  /**
+   * Mac 上没有 winget 一类的系统安装器：下载官方包、核对签名、放进「应用程序」都在这一步。
+   * 放进去是整个改名（跨盘时先拷到旁边的临时名字再改名），哪一步停下都不会留下半个应用，
+   * 所以从头到尾都接受取消，不封存。
+   */
+  async function installOnMac(tool: ExternalToolId, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, signal: AbortSignal): Promise<void> {
     await options.assertDiskSpace?.(`${definitions[tool].name} 安装失败`)
     const run = () => (options.installMacosDesktopApp ?? installMacosDesktopApp)({
       tool, architecture, userHome, environment: options.env ?? process.env, fetch: options.fetch ?? fetch,
-      runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024 }),
+      runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024, signal }),
       onProgress: (event) => report(event.phase, event.message, event.percent),
+      signal,
     })
     await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
   }
@@ -538,7 +555,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
    * 从 Claude 官网下离线安装包装。两路都没装上时把原因归成客户分得清的一句，原话挂在
    * originalError 上进运行日志。
    */
-  async function installClaudeDesktopOnWindows(wingetFailure: unknown, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void): Promise<void> {
+  async function installClaudeDesktopOnWindows(wingetFailure: unknown, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, cancellation: InstallCancellationHandle): Promise<void> {
     const wingetTried = wingetFailure !== undefined
     try {
       await options.assertDiskSpace?.(`${definitions.claudeDesktop.name} 安装失败`)
@@ -549,9 +566,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         windowsExecutionMode: options.windowsExecutionMode ?? 'trusted-only', runCommand: execute, env: options.env,
         resolveMachinePaths, resolvePowerShellExecutable: options.resolvePowerShellExecutable,
         onProgress: (event) => report(event.phase, event.message, event.percent),
+        // 下载、核对安装包时点取消就停；交给 Windows 装的那一步不停，见 onInstallStarting。
+        signal: cancellation.signal,
+        onInstallStarting: () => cancellation.seal(installSealReason('claudeDesktop')),
       })
       await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
     } catch (error) {
+      if (cancellation.cancelled) throw error
       const detail = error instanceof Error ? error.message : String(error)
       const message = isPlainClaudeDesktopInstallMessage(detail)
         ? errorText(error)
@@ -572,16 +593,22 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       job.last = { tool, phase, message, percent }
       for (const observer of observers) { try { observer(job.last) } catch { /* UI failures cannot change an installer outcome. */ } }
     }
+    // 句柄在入队之前登记：排在别的安装后面等待时也要能取消（同命令行工具）。重复点击
+    // 走上面的 existing，不会再登记第二个把这一个挤掉。
+    const cancellation = installCancellations.begin(installKey(tool))
     report('queued', `${definitions[tool].name} 已加入安装队列`)
-    job.promise = queue.enqueue(`external-client:install:${tool}`, async () => {
+    job.promise = queue.enqueue(installKey(tool), async () => {
       try {
+        // 排队等待期间点的取消在这里生效：什么都还没动。
+        cancellation.throwIfCancelled()
         report('checking', `正在检测 ${definitions[tool].name}`)
         const [before, winget] = await Promise.all([inspect(), resolveWinget()])
+        cancellation.throwIfCancelled()
         const current = status(tool, before, winget)
         if (current.installed) { report('completed', '客户端已安装，无需重复安装', 100); return current }
         if (current.detectionError) throw new Error(`无法确认当前安装状态：${current.detectionError}`)
         if (!current.installSupported) throw new Error(current.installHint || '当前系统不支持一键安装')
-        if (platform === 'darwin') await installOnMac(tool, report)
+        if (platform === 'darwin') await installOnMac(tool, report, cancellation.signal)
         let officialDownloadNeeded = platform === 'win32' && !winget.executable
         let sourceFailure: unknown
         let installerStarted = false
@@ -590,6 +617,9 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         // Its WindowsApps ACL is deliberately handled by that resolver, as in
         // node-runtime/python-runtime; never substitute a PATH/AppExecutionAlias.
         if (winget.executable) {
+          // winget 自己又下载又安装，看不出哪一刻开始动这台电脑；结束它会连同它拉起的安装程序
+          // 一起结束（Windows 上取消是结束整个进程树），所以整段都不接受取消。
+          cancellation.seal(installSealReason(tool))
           report('downloading', `正在下载并安装 ${definitions[tool].name}`)
           try {
             await execute(buildExternalClientWingetInstall(tool, winget.executable), {
@@ -610,6 +640,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             const claudeFallback = tool === 'claudeDesktop' && !wingetCancelled(error)
             if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetNetworkFailure(error))) throw installationError(wingetFailureMessage(error), error)
             sourceFailure = error
+            // 换星芒自己下官方安装包的那一路：下载时又能取消了。
+            cancellation.unseal()
             const recheck = status(tool, await inspect(), winget)
             if (recheck.detectionError) {
               throw installationError(claudeFallback
@@ -619,15 +651,20 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             officialDownloadNeeded = !recheck.installed
           }
         }
-        if (officialDownloadNeeded && tool === 'claudeDesktop') await installClaudeDesktopOnWindows(sourceFailure, report)
+        if (officialDownloadNeeded) cancellation.throwIfCancelled()
+        if (officialDownloadNeeded && tool === 'claudeDesktop') await installClaudeDesktopOnWindows(sourceFailure, report, cancellation)
         else if (officialDownloadNeeded) {
           report('downloading', sourceFailure ? '连不上微软的软件下载源，正在切换到腾讯官方下载' : '正在使用腾讯官方安装包')
           try {
             await (options.installWorkBuddyFromOfficial ?? installWorkBuddyFromOfficial)({
               architecture, windowsExecutionMode: options.windowsExecutionMode ?? 'trusted-only', runCommand: execute,
               onProgress: (event) => report(event.phase, event.message, event.percent),
+              // 下载、核对时点取消就停；腾讯的安装程序跑起来以后不停，见 onInstallStarting。
+              signal: cancellation.signal,
+              onInstallStarting: () => cancellation.seal(installSealReason(tool)),
             })
           } catch (error) {
+            if (cancellation.cancelled) throw error
             throw installationError(`${sourceFailure ? '连不上微软的软件下载源；' : ''}腾讯官方安装未完成：${errorText(error)}`, { winget: sourceFailure, official: error })
           }
         }
@@ -636,13 +673,25 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (!after.installed) throw new Error(after.detectionError || '安装命令已结束，但未检测到客户端，请检查安装器结果后重试检测')
         report('completed', `${definitions[tool].name} 安装完成`, 100)
         return after
-      } catch (error) { report('error', errorText(error)); throw error }
-    })
+      } catch (error) {
+        // 取消是客户自己按的，不是装失败：换成统一的一句，界面认得出来，不弹错误框。
+        if (cancellation.cancelled || isInstallCancelledError(error)) {
+          const cancelled = new InstallCancelledError(`${definitions[tool].name} 安装已取消`)
+          report('error', cancelled.message)
+          throw cancelled
+        }
+        report('error', errorText(error))
+        throw error
+      }
+    }).finally(() => cancellation.release())
     jobs.set(tool, job)
     void job.promise.then(() => { jobs.delete(tool) }, () => { jobs.delete(tool) })
     // 装成、装失败都作废：失败的安装器也可能已经留下了一半的文件。
     void job.promise.then(invalidateScan, invalidateScan)
     return job.promise
+  }
+  function cancelInstall(tool: ExternalToolId): InstallCancellationOutcome {
+    return installCancellations.cancel(installKey(tool))
   }
   function launch(tool: ExternalToolId): Promise<void> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
@@ -667,5 +716,5 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     void launched.then(invalidateScan, invalidateScan)
     return launched
   }
-  return { scan, install, launch }
+  return { scan, install, cancelInstall, launch }
 }

@@ -50,6 +50,11 @@ export interface WorkBuddyOfficialInstallOptions {
   windowsExecutionMode?: WindowsCliExecutionMode
   onProgress?: (event: ExternalClientInstallProgress) => void
   signal?: AbortSignal
+  /**
+   * 腾讯的安装程序马上开始写这台电脑：中途结束它会留下装了一半的 WorkBuddy。调用方在这里
+   * 停止接受取消；在最后一次检查 signal 之后同步调用，中间没有空档。
+   */
+  onInstallStarting?: () => void
   runCommand?: typeof runCommand
   fetch?: typeof globalThis.fetch
   env?: NodeJS.ProcessEnv
@@ -220,6 +225,7 @@ export async function installWorkBuddyFromOfficial(options: WorkBuddyOfficialIns
     report(options, 'installing', '正在以当前用户安装 WorkBuddy')
     await verifyInstaller(filePath, directory, size, mode, options)
     checkAborted(options.signal)
+    options.onInstallStarting?.()
     const installationTemporaryDirectory = mode === 'same-user' ? os.tmpdir() : directory
     verifyDirectory(installationTemporaryDirectory, mode, options)
     // The installer starts WorkBuddy itself. Same-user children must inherit

@@ -1028,6 +1028,7 @@ export interface SystemService {
     knownStatus?: ExternalClientRuntimeStatus | null,
   ): Promise<ExternalClientCheckResult>
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
+  cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
@@ -2256,7 +2257,7 @@ export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
-  /** 落盘的旧结果只认同一版本的软件写的。 */
+  /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
   claudeDesktopEnv?: NodeJS.ProcessEnv
@@ -5767,6 +5768,7 @@ export function createSystemService(
       : [...(latestExternalClients ?? []), described]
     return described
   }
+  const cancelExternalClientInstall = (tool: ExternalToolId) => externalClientRuntime.cancelInstall(tool)
   const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
   /**
    * 保存之后立刻回读一遍并自检。这一步问出来的比保存时那次模型清单校验多两件
@@ -6712,6 +6714,7 @@ export function createSystemService(
     getLastExternalClients,
     checkExternalClientConnection,
     installExternalClient,
+    cancelExternalClientInstall,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),

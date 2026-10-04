@@ -42,6 +42,7 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
       onProgress?.({ tool, phase: 'installing', message: '正在安装', percent: null })
       return { ...runtimeStatuses.find((status) => status.tool === tool)!, installed: true, launchSupported: true, version: '1.2.3' }
     }),
+    cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
     launch: vi.fn(async () => undefined),
   }
   const serviceOptions: SystemServiceOptions = {

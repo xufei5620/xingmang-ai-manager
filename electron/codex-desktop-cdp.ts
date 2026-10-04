@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import type { WindowsMachinePaths } from './windows-machine-paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -365,39 +366,76 @@ export function getAvailableLoopbackPort(): Promise<number> {
 export type CodexDesktopCdpPortOwnership = 'unbound' | 'owned' | 'foreign'
 
 /**
- * Both scripts below run under trustedCommandEnvironment(), where a cmdlet left
- * to autoloading costs the whole System32 module scan (20 s and more on the CI
- * runner, see buildPowerShellModuleImportStatement) against a 10 s limit. The
- * port probe repeats while Codex starts, so each slow round is a lost round.
+ * The activation script runs under trustedCommandEnvironment(), where a cmdlet
+ * left to autoloading costs the whole System32 module scan (20 s and more on
+ * the CI runner, see buildPowerShellModuleImportStatement) against a 10 s limit.
  */
-export const codexDesktopCdpPortOwnerModules = ['NetTCPIP'] as const
 export const codexDesktopActivationModules = ['Microsoft.PowerShell.Utility'] as const
 export const codexDesktopCdpCommandTimeoutMs = 10_000
 
-// With no listener Get-NetTCPConnection reports "no MSFT_NetTCPConnection
-// objects found" as a non-terminating error, and powershell.exe then exits 1
-// even though the error is silenced. That made the normal "Codex has not bound
-// the port yet" state reject instead of reading as unbound, which aborted the
-// whole injection on its first check. A real failure (the command missing,
-// a terminating error) still stops the script under 'Stop' before the exit.
-export const codexDesktopCdpPortOwnerScript = String.raw`$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-${buildPowerShellModuleImportStatement(codexDesktopCdpPortOwnerModules)}
-$port = [int]$env:XINGMANG_CODEX_CDP_PORT
-Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
-  ForEach-Object { [string]$_.OwningProcess }
-exit 0`
+/**
+ * The port's listeners come from the inbox netstat.exe, which reads the same
+ * TCP owner table Get-NetTCPConnection took OwningProcess from. The cmdlet
+ * went through a PowerShell start, the NetTCPIP module and WMI's network
+ * provider, a path no other probe in this app takes. Across 44 packaging runs
+ * on 2026-10-03 it took 1.1 s at the median, over 3 s in six and past this
+ * limit in two (#796, #816), while the CIM process queries in the same runs
+ * never reached 1.4 s. The lookup repeats while Codex starts, so each slow one
+ * was a lost round.
+ */
+export const codexDesktopCdpPortOwnerArguments = ['-a', '-n', '-o'] as const
+// netstat prints every connection on the machine, about 90 bytes a row, and
+// download or P2P clients hold thousands. A table cut off at the buffer is a
+// failed lookup, never a partial answer.
+const codexDesktopCdpPortOwnerOutputBytes = 8 * 1024 * 1024
+// A listening socket has no remote end. The state column is translated on
+// some Windows languages (German prints ABHÖREN); the address never is.
+const listeningRemoteEndpoints = new Set(['0.0.0.0:0', '[::]:0'])
 
-export function parseCodexDesktopCdpPortOwners(output: string): number[] {
+function endpointPort(endpoint: string): number | null {
+  const value = endpoint.slice(endpoint.lastIndexOf(':') + 1)
+  return /^\d{1,5}$/.test(value) ? Number(value) : null
+}
+
+/**
+ * Reads `netstat -a -n -o`, whose TCP rows are
+ *   TCP  <local address>:<port>  <remote address>:<port>  <state>  <pid>
+ * with IPv6 addresses in brackets. Only rows listening on the port count. An
+ * accepted connection, or one left in TIME_WAIT (PID 0) once it closed, keeps
+ * the port as its local end without listening on it, and another process's
+ * outgoing connection can use the same port number on another local address.
+ * The PID is the last column, so a state translated into several words cannot
+ * shift it. A listener whose PID cannot be read gives null rather than being
+ * left out: dropping it could pass a port that someone else also listens on.
+ *
+ * Only the protocol, the two addresses and the PID are read. On Windows in
+ * other languages netstat writes its header in the console code page (GBK on
+ * Simplified Chinese Windows), which reaches us through execFile's UTF-8
+ * decoding as replacement characters, and German Windows translates the state
+ * too; none of the columns read here is ever translated.
+ */
+export function parseCodexDesktopCdpPortOwners(output: string, port: number): number[] | null {
+  assertCdpPort(port)
   const owners: number[] = []
+  let tcpRows = 0
   for (const line of output.split(/\r?\n/)) {
-    const value = line.trim()
-    if (!/^\d+$/.test(value)) continue
-    const processId = Number(value)
-    if (Number.isInteger(processId) && processId > 0 && !owners.includes(processId)) owners.push(processId)
+    const columns = line.trim().split(/\s+/)
+    if (columns.length < 4 || !/^TCP(?:v6)?$/i.test(columns[0])) continue
+    const localPort = endpointPort(columns[1])
+    if (localPort === null) continue
+    tcpRows += 1
+    if (localPort !== port) continue
+    if (!listeningRemoteEndpoints.has(columns[2]) && columns[3].toUpperCase() !== 'LISTENING') continue
+    const value = columns.length > 4 ? columns[columns.length - 1] : ''
+    const processId = /^\d+$/.test(value) ? Number(value) : 0
+    if (!Number.isSafeInteger(processId) || processId <= 0) return null
+    if (!owners.includes(processId)) owners.push(processId)
   }
-  return owners
+  // Windows always listens on a few ports of its own (RPC on 135 among them),
+  // so output without a single TCP row is a table this parser cannot read, not
+  // an idle machine. Read as "nobody listens", it would wait out the whole
+  // deadline on every launch; as a failed lookup it gives up after three rounds.
+  return tcpRows ? owners : null
 }
 
 /**
@@ -414,27 +452,39 @@ export function classifyCodexDesktopCdpPortOwnership(
   return owners.every((owner) => owner === expectedProcessId) ? 'owned' : 'foreign'
 }
 
-export async function resolveCodexDesktopCdpPortOwners(
-  port: number,
-  baseEnv: NodeJS.ProcessEnv = process.env,
-): Promise<number[]> {
-  assertCdpPort(port)
-  const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-EncodedCommand',
-    encodePowerShellCommand(codexDesktopCdpPortOwnerScript),
-  ], {
-    env: {
-      ...trustedCommandEnvironment(baseEnv),
-      XINGMANG_CODEX_CDP_PORT: String(port),
-    },
+export interface CodexDesktopCdpPortOwnerLookupOptions {
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  machinePaths?: WindowsMachinePaths
+  /** Test seam; production runs netstat through execFile. */
+  run?: (executable: string, argv: readonly string[], env: NodeJS.ProcessEnv) => Promise<string>
+}
+
+async function runNetstat(executable: string, argv: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
+  const { stdout } = await execFileAsync(executable, [...argv], {
+    env,
     windowsHide: true,
     timeout: codexDesktopCdpCommandTimeoutMs,
-    maxBuffer: 256 * 1024,
+    maxBuffer: codexDesktopCdpPortOwnerOutputBytes,
   })
-  return parseCodexDesktopCdpPortOwners(stdout)
+  return stdout
+}
+
+export async function resolveCodexDesktopCdpPortOwners(
+  port: number,
+  options: CodexDesktopCdpPortOwnerLookupOptions = {},
+): Promise<number[]> {
+  assertCdpPort(port)
+  if ((options.platform ?? process.platform) !== 'win32') throw new Error('Codex Desktop 调试端口归属查询仅支持 Windows')
+  const env = options.env ?? process.env
+  const stdout = await (options.run ?? runNetstat)(
+    windowsSystemExecutable('netstat.exe', env, 'win32', options.machinePaths),
+    codexDesktopCdpPortOwnerArguments,
+    trustedCommandEnvironment(env, options.machinePaths),
+  )
+  const owners = parseCodexDesktopCdpPortOwners(stdout, port)
+  if (!owners) throw new Error('Codex Desktop 调试端口的监听进程无法识别')
+  return owners
 }
 
 function encodePowerShellCommand(script: string): string {
@@ -806,14 +856,13 @@ export async function injectCodexDesktopChineseLocale(
   const delay = options.delay ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const resolvePortOwnerProcessIds = options.resolvePortOwnerProcessIds ?? resolveCodexDesktopCdpPortOwners
   let ownershipVerifiedAt = 0
-  // Re-reading the TCP table costs a PowerShell start, so a confirmation is
-  // reused for a short while instead of running on every discovery attempt.
+  // Re-reading the TCP table starts a process, so a confirmation is reused for
+  // a short while instead of running on every discovery attempt.
   // null means the lookup itself failed or ran out of time. That says nothing
   // about who holds the port, so the round sends nothing, exactly as for an
   // unbound port, and the next round asks again inside the same deadline.
-  // 慢电脑上第一次查要冷启动网络连接表，又正赶上 Codex 自己在启动，10 秒限时可能
-  // 被吃完（2026-10-01 打包冒烟实测到 10 秒以上）；以前这一下就让切中文整步放弃，
-  // 提示里还冒出整串 PowerShell 命令。
+  // 当初用 PowerShell 查，第一次查就可能吃完 10 秒限时（2026-10-01 打包冒烟实测到
+  // 10 秒以上），这一下就让切中文整步放弃，提示里还冒出整串 PowerShell 命令。
   const inspectPortOwnership = async (): Promise<CodexDesktopCdpPortOwnership | null> => {
     if (ownershipVerifiedAt && Date.now() - ownershipVerifiedAt < cdpPortOwnershipRevalidateMs) return 'owned'
     let owners: number[]
@@ -844,9 +893,9 @@ export async function injectCodexDesktopChineseLocale(
       if (ownership === null) {
         unansweredLookups += 1
         lastError = new Error(cdpPortOwnerUnconfirmedMessage)
-        // A lookup that can never work here (PowerShell blocked, the module
-        // missing) must not start another process every half second until the
-        // deadline; a slow one gets its retries.
+        // A lookup that can never work here (netstat blocked or missing) must
+        // not start another process every half second until the deadline; a
+        // slow one gets its retries.
         if (unansweredLookups >= cdpPortOwnerLookupFailureLimit) break
         await delay(500)
         continue
