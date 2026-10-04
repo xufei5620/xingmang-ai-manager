@@ -78,7 +78,7 @@ describe('tutorial wording that follows the current app', () => {
     const update = step('safety', '打开工具箱更新');
     const text = JSON.stringify(update);
     expect(update.detail).toContain('自动装上');
-    expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'startup')?.label}」`);
+    expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'about')?.label}」`);
     expect(text).toContain('「自动更新」');
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
