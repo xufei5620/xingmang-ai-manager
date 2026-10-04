@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import {
   CuratedDetails,
   CuratedShelf,
+  backupMatchesQuery,
   curatedPlaceholderField,
   curatedRuntimeCommand,
   curatedVersionText,
@@ -547,5 +548,29 @@ describe('curated folder placeholders', () => {
   it('explains a pasted Windows path in Chinese instead of surfacing the JSON parser error', () => {
     expect(() => parseCommandArguments('["C:\\Users"]')).toThrow('选择文件夹')
     expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('环境变量的格式不对')
+  })
+})
+
+describe('backup search', () => {
+  const now = new Date(2026, 9, 4, 15, 0).getTime()
+  const createdAt = new Date(2026, 9, 2, 18, 5).toISOString()
+
+  it('finds a backup by the date the list shows', () => {
+    expect(backupMatchesQuery(createdAt, '10月2日', now)).toBe(true)
+    expect(backupMatchesQuery(new Date(2026, 9, 4, 9, 30).toISOString(), '今天', now)).toBe(true)
+  })
+
+  it('also finds it by the full time shown on hover', () => {
+    expect(backupMatchesQuery(createdAt, '18:05', now)).toBe(true)
+    expect(backupMatchesQuery(createdAt, ' 2026/10/2 ', now)).toBe(true)
+  })
+
+  it('keeps everything for an empty search and drops what does not match', () => {
+    expect(backupMatchesQuery(createdAt, '  ', now)).toBe(true)
+    expect(backupMatchesQuery(createdAt, '9月30日', now)).toBe(false)
+  })
+
+  it('no longer matches the backup id the list does not show', () => {
+    expect(backupMatchesQuery(createdAt, 'backup-1', now)).toBe(false)
   })
 })

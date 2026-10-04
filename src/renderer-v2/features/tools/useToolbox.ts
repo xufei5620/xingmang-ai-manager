@@ -15,6 +15,8 @@ export interface ToolJob {
   cancellable?: boolean
   /** 取消已经发出去，还在等主进程收尾。 */
   cancelling?: boolean
+  /** 卸载也挂在工具编号下：别处据此分清是在装还是在卸；缺省 = 安装、更新这类（旧行为）。 */
+  kind?: 'uninstall'
 }
 
 export interface ToolJobOptions {
@@ -22,6 +24,8 @@ export interface ToolJobOptions {
   cancel?: () => Promise<InstallCancelResult>
   /** 装好、更新好或没装上时发一条系统通知（设置里「安装 / 更新结果」管着）；缺省不发。 */
   notice?: InstallNoticePlan
+  /** 见 ToolJob.kind。 */
+  kind?: ToolJob['kind']
 }
 
 /** 让长任务在运行途中改写工具行上那句话（安装完成后还要同步 Key、重新检测）。 */
@@ -242,7 +246,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     locks.current.add(key)
     cancelRequests.current.delete(key)
     if (options?.cancel) cancellers.current.set(key, options.cancel)
-    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel) } }))
+    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel), ...(options?.kind ? { kind: options.kind } : {}) } }))
     const report: ToolJobReport = (next, percent) => {
       if (!active.current) return
       setJobs((current) => {

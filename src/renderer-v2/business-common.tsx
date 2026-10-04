@@ -166,6 +166,11 @@ export function displayDate(value: string | number | null | undefined) {
   const date = parseDisplayDate(value)
   return date ? date.toLocaleString('zh-CN', { hour12: false }) : '时间不可用'
 }
+/** 列表上那个时间实际写着的字（RelativeTime 显示的就是它）；按看到的字搜索时用。 */
+export function relativeTimeText(value: string | number | null | undefined, now: number): string {
+  const date = value === null || value === undefined || value === '' ? null : parseDisplayDate(value)
+  return (date && formatCalendarTime(date.getTime(), now)) || displayDate(value)
+}
 /**
  * 列表里的时间：写「今天 14:20」这种，鼠标停上去看带年带秒的完整时间。
  * 没记录、读不出的照 displayDate 那两句。
@@ -367,6 +372,10 @@ function RevealExportedFile({
     </>
   )
 }
+/** 页顶红框领头的那句：目录认得出时是它的标题（比如「写不进安装目录」），认不出就是原话。行上说原因时用同一句。 */
+export function resultNoticeLead(error: string, detail?: string): string {
+  return presentOperationFailure({ message: error, detail })?.title ?? error
+}
 export function ResultNotice({
   error,
   detail,
@@ -442,6 +451,7 @@ export function ListState({
   action,
   emptyTitle,
   emptyDescription,
+  errorDescription,
   children,
 }: {
   page: string
@@ -458,6 +468,8 @@ export function ListState({
   /** 列表真的空着时这一页自己的标题和那句话；缺省「还没有{noun}」和通用的那句。 */
   emptyTitle?: string
   emptyDescription?: string
+  /** 读不到时那句说明；缺省 = 读取失败的原话。 */
+  errorDescription?: string
   children: ReactNode
 }) {
   if (loading && !count)
@@ -479,7 +491,7 @@ export function ListState({
           testId={`${page}-error`}
           icon={XCircle}
           title={`${noun}暂时没有读到`}
-          description={error}
+          description={errorDescription ?? error}
           action={
             <Button
               size="sm"
