@@ -8,7 +8,8 @@
 #
 # 同一个安装包再查一件只在真卸载程序里才有的事：把公共桌面和公共开始菜单设成谁都写不进去，
 # 让安装程序自己把图标补建在当前用户那里；升级时这两个图标留着，卸载时删掉，之后装到别的
-# 文件夹还能再补出来。步骤见 scripts/windows-uninstall-shortcuts-smoke.ps1。
+# 文件夹还能再补出来；桌面路径里有联接、图标换成了符号链接时，卸载程序不跟过去删。
+# 步骤见 scripts/windows-uninstall-shortcuts-smoke.ps1。
 #
 # 打一次包要几分钟，所以不进必需的 quality 门禁，只在碰到这条路径的改动上跑，
 # 也可以手动触发。
@@ -64,7 +65,7 @@ jobs:
           $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1
           if ($null -eq $installer) { throw 'no installer was built' }
           ./scripts/windows-uninstall-cleanup-smoke.ps1 -Installer $installer.FullName
-      - name: Uninstall removes the shortcuts the installer put in the user's own profile, upgrades keep them
+      - name: Uninstall removes the shortcuts the installer put in the user's own profile, upgrades keep them, links are not followed
         # 两次安装、两次覆盖安装、两次卸载，每次卸载都要冷启动一次清理。
         timeout-minutes: 10
         shell: pwsh

@@ -12,11 +12,17 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 # files to the public desktop and the all-users start menu, so the installer
 # writes the pair itself. It then upgrades twice (a plain reinstall over the
 # installed copy, and an updater-style --updated one), uninstalls for real,
-# installs into another folder, where the pair has to come back (a leftover
-# pair used to stop that), and uninstalls again.
+# and installs into another folder, where the pair has to come back (a leftover
+# pair used to stop that).
 #
-# CI only. It changes the ACLs of the two all-users folders and writes into the
-# current user's desktop and start menu; the finally block undoes both.
+# The uninstaller runs elevated and the pair sits where the user's own
+# programs can write, so it must not delete through links. Before the second
+# uninstall the desktop is pointed at a junction and the start menu shortcut
+# is swapped for a symbolic link; neither, nor what they point at, may go.
+#
+# CI only. It changes the ACLs of the two all-users folders, the current
+# user's desktop location, and writes into the current user's desktop and
+# start menu; the finally block undoes all of it.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -64,9 +70,15 @@ function Assert-Links([string]$stage, [string[]]$paths, [bool]$expected) {
   foreach ($path in $paths) { Check ((Test-Path -LiteralPath $path) -eq $expected) "after $stage, $path $state" }
 }
 
-$installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-shortcut-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+$installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-shortcut-smoke-' + $suffix)
 $firstDir = Join-Path $installRoot 'first'
 $secondDir = Join-Path $installRoot 'second'
+# Not under the temp folder: that one is spelled with an 8.3 name on the
+# runner, which alone would make the uninstaller refuse the redirected path.
+$linkRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('xingmang-shortcut-links-' + $suffix)
+$shellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+$savedDesktop = $null
 # What NSIS means by $DESKTOP and $SMPROGRAMS in the all-users context, and
 # after SetShellVarContext current.
 $publicDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
@@ -116,13 +128,37 @@ try {
   # A leftover pair used to make the next install skip the fallback.
   Install-App 'install into another folder' $secondDir @()
   Assert-Links 'install into another folder' $fallbackLinks $true
-  Uninstall-App 'second uninstall' $secondDir
-  Assert-Links 'second uninstall' $fallbackLinks $false
+
+  # What the user's own programs could set up for the elevated uninstaller: a
+  # desktop whose path runs through a junction, with a file of the right name
+  # behind it, and a symbolic link with the right name in the start menu.
+  $realDesk = Join-Path $linkRoot 'desk'
+  $junctionDesk = Join-Path $linkRoot 'desk-junction'
+  New-Item -ItemType Directory -Force -Path $realDesk | Out-Null
+  New-Item -ItemType Junction -Path $junctionDesk -Target $realDesk | Out-Null
+  $behindJunction = Join-Path $realDesk $name
+  Copy-Item -LiteralPath $fallbackLinks[0] -Destination $behindJunction
+  $symlinkTarget = Join-Path $linkRoot ('target of ' + $name)
+  Move-Item -LiteralPath $fallbackLinks[1] -Destination $symlinkTarget
+  New-Item -ItemType SymbolicLink -Path $fallbackLinks[1] -Target $symlinkTarget | Out-Null
+  $savedDesktop = (Get-Item -LiteralPath $shellFolders).GetValue('Desktop', $null, 'DoNotExpandEnvironmentNames')
+  Check ($null -ne $savedDesktop) 'the current user has a desktop location to restore'
+  New-ItemProperty -LiteralPath $shellFolders -Name 'Desktop' -Value $junctionDesk -PropertyType ExpandString -Force | Out-Null
+
+  Uninstall-App 'uninstall through links' $secondDir
+  # Still there means the uninstaller read the moved desktop, not the old one.
+  Check (Test-Path -LiteralPath $fallbackLinks[0]) 'the uninstaller worked on the moved desktop'
+  Check (Test-Path -LiteralPath $behindJunction) 'the shortcut behind the desktop junction is still there'
+  Check ((Get-Item -LiteralPath $fallbackLinks[1] -Force).LinkType -eq 'SymbolicLink') 'the symbolic link in the start menu is still there'
+  Check (Test-Path -LiteralPath $symlinkTarget) 'the file the symbolic link points at is still there'
 } catch {
   Write-Output $_.ScriptStackTrace
   throw
 } finally {
   # A failure here must not hide the one that brought us here.
+  if ($null -ne $savedDesktop) {
+    try { New-ItemProperty -LiteralPath $shellFolders -Name 'Desktop' -Value $savedDesktop -PropertyType ExpandString -Force | Out-Null } catch { Write-Output "could not restore the desktop location: $_" }
+  }
   foreach ($dir in $denied) {
     try { Set-AddFileDenied $dir $false } catch { Write-Output "could not restore the ACL of ${dir}: $_" }
   }
