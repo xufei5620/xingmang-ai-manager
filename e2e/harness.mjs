@@ -185,9 +185,10 @@ export function observeFixtureBootstrap(page, server) {
   }
 }
 
-async function startFixtureServer({ cacheDir } = {}) {
+async function startFixtureServer({ cacheDir, root = projectRoot, configFile } = {}) {
   const { server, origin } = await createFixtureServer({
-    root: projectRoot,
+    root,
+    ...(configFile ? { configFile } : {}),
     // configFile 不传 = Vite 自己从 root 解析 vite.config.ts，与此前显式传路径的写法
     // 等价；两种写法当初并存只是抄的来源不同。
     ...(cacheDir ? { cacheDir } : {}),

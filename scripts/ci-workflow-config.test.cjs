@@ -1044,6 +1044,7 @@ const fixtureReadinessModule = 'e2e/fixture-readiness.mjs'
 // default, and whose first open therefore reported a cold start as an
 // assertion failure.
 const fixtureReadinessConsumers = [
+  'e2e/canvas-composer.test.mjs',
   'e2e/primary-views-interactions.test.mjs',
   'e2e/start-guide-interactions.test.mjs',
   'e2e/account-switcher-interactions.test.mjs',

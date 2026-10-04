@@ -152,6 +152,7 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef(value)
+  const composingRef = useRef(false)
   const menuId = useId()
   const [draft, setDraft] = useState(value)
   const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null)
@@ -229,6 +230,7 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
     })
   }
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault()
       onCommit?.(draftRef.current)
@@ -255,6 +257,7 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
     if (!mentionQuery) return
     if (event.key === 'Escape') {
       event.preventDefault()
+      event.stopPropagation()
       setMentionQuery(null)
     } else if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -325,6 +328,8 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
             setMentionQuery(mentionQueryAt(event.currentTarget.value, event.currentTarget.selectionStart))
           }
         }}
+        onCompositionStart={() => { composingRef.current = true }}
+        onCompositionEnd={() => { composingRef.current = false }}
         onKeyDown={handleKeyDown}
         onBlur={() => {
           onCommit?.(draftRef.current)
