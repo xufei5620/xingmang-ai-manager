@@ -18,6 +18,10 @@ const OBJECT_PREFIX = 'xingmang'
 const LATEST_KEY = `${OBJECT_PREFIX}/latest.json`
 const MAX_RELEASE_FILES = 24
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+// Release files go up one after another in a job allowed 330 minutes, so one
+// slow installer may use more than the 75 minutes that the 90-minute official
+// package jobs keep as their default before cleanly aborting their session.
+const MULTIPART_DEADLINE_MS = 120 * 60 * 1000
 
 function validateManagerVersion(version) {
   if (typeof version !== 'string' || version.length > 64
@@ -220,21 +224,23 @@ async function syncManagerRelease(options) {
   const { config, plan, store } = await stage('prepare-manager-plan', { version: options.version }, async function () {
     const config = options.config || utilities.readCosConfiguration(options.env || process.env)
     const plan = await buildManagerReleasePlan(options.directory, options.version, { utilities, installersOnly: options.installersOnly })
-    return { config, plan, store: options.store || utilities.createCosStore(config) }
+    return { config, plan, store: options.store || utilities.createCosStore(config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS }) }
   })
-  const previous = await stage('cos-read-latest', { version: plan.version }, function () { return store.readJson(LATEST_KEY) })
+  const previous = await stage('cos-read-latest', { version: plan.version }, function (report) { return store.readJson(LATEST_KEY, { onRetry: report.retry }) })
   await stage('cos-validate-index', { version: plan.version }, function () { return buildManagerIndex(plan, previous, config.publicBaseUrl) })
   // The updater manifests belong beside their relative payloads. The root
   // pointer is an independent JSON index with absolute URLs and is touched
   // only after every immutable object has passed a full public readback.
   const ordered = [...plan.files].sort((left, right) => Number(left.kind === 'manifest') - Number(right.kind === 'manifest'))
   for (const file of ordered) {
-    await stage('cos-publish-file', { version: plan.version, platform: file.platform, architecture: file.architecture }, async function () {
+    await stage('cos-publish-file', { version: plan.version, platform: file.platform, architecture: file.architecture }, async function (report) {
       const published = await store.publishFile(file.key, file.path, {
         contentType: file.type,
         cacheControl: IMMUTABLE_CACHE_CONTROL,
         expectedBytes: file.size,
         expectedSha256: file.sha256,
+        onProgress: report.transfer,
+        onRetry: report.retry,
       })
       if (published.bytes !== file.size || published.sha256 !== file.sha256 || published.contentType !== file.type
         || published.url !== publicObjectUrl(config.publicBaseUrl, file.key)) {
@@ -244,22 +250,22 @@ async function syncManagerRelease(options) {
   }
   // Re-read before the mutable write so a CLI run or a platform supplement
   // cannot silently discard another successfully published platform.
-  const index = await stage('cos-recheck-latest', { version: plan.version }, async function () {
-    const current = await store.readJson(LATEST_KEY)
+  const index = await stage('cos-recheck-latest', { version: plan.version }, async function (report) {
+    const current = await store.readJson(LATEST_KEY, { onRetry: report.retry })
     return buildManagerIndex(plan, current, config.publicBaseUrl)
   })
   const candidateDigest = createHash('sha256').update(JSON.stringify(index)).digest('hex')
   const candidateKey = `${OBJECT_PREFIX}/releases/${plan.version}/indexes/${candidateDigest}.json`
-  await stage('cos-publish-candidate', { version: plan.version }, function () { return store.publishJson(candidateKey, index, { cacheControl: IMMUTABLE_CACHE_CONTROL }) })
-  await stage('cos-recheck-candidate-state', { version: plan.version }, async function () {
-    const beforeSwitch = await store.readJson(LATEST_KEY)
+  await stage('cos-publish-candidate', { version: plan.version }, function (report) { return store.publishJson(candidateKey, index, { cacheControl: IMMUTABLE_CACHE_CONTROL, onRetry: report.retry }) })
+  await stage('cos-recheck-candidate-state', { version: plan.version }, async function (report) {
+    const beforeSwitch = await store.readJson(LATEST_KEY, { onRetry: report.retry })
     if (JSON.stringify(buildManagerIndex(plan, beforeSwitch, config.publicBaseUrl)) !== JSON.stringify(index)) {
       throw new Error('COS 平台索引在候选清单核验期间发生变更，请重跑同步；未覆盖最新指针')
     }
   })
   latestState = 'write-unconfirmed'
-  await stage('cos-publish-latest', { version: plan.version }, async function () {
-    const result = await store.publishJson(LATEST_KEY, index, { overwrite: true, cacheControl: 'no-cache' })
+  await stage('cos-publish-latest', { version: plan.version }, async function (report) {
+    const result = await store.publishJson(LATEST_KEY, index, { overwrite: true, cacheControl: 'no-cache', onRetry: report.retry })
     latestState = 'published-and-read-back'
     return result
   })

@@ -15,11 +15,13 @@ const {
   fetchText,
   hashFile,
   inspectResource,
+  isTransientTransferFailure,
   readBoundedRegularFile,
   readCosConfiguration,
   validateObjectKey,
   safeSyncFailure,
 } = require('./cos-sync-utils.cjs')
+const { RETRY_POLICIES } = require('./cos-transfer-retry.cjs')
 
 test('safe diagnostics recognize owned errors and never trust forged fields or raw transport details', async () => {
   const forged = new Error('Bearer SECRET signed-url')
@@ -117,7 +119,7 @@ test('an empty stalled PUT response counts received bytes independently of uploa
     stream.headers = { 'content-length': '0' }
     callback(stream)
   })
-  const store = createCosStore(config, { ...mock, bodyTimeoutMs: 20 })
+  const store = createCosStore(config, { ...mock, bodyTimeoutMs: 20, sleep: noWait })
   await assert.rejects(store.publishFile('chatgpt/test/app.msix', file.filePath, { contentType: 'application/vnd.ms-appx' }), (error) => {
     const diagnostic = safeSyncFailure(error)
     assert.equal(diagnostic.put.code, 'response-body-timeout')
@@ -126,6 +128,9 @@ test('an empty stalled PUT response counts received bytes independently of uploa
     assert.equal(diagnostic.put.expectedBytes, 0)
     return true
   })
+  // Every readback in this fixture is a 404, which proves the immutable object
+  // is still absent, so the timed-out PUT is repeated until the policy runs out.
+  assert.equal(mock.calls.filter((call) => call.method === 'PUT').length, RETRY_POLICIES.write.attempts)
 })
 
 const config = readCosConfiguration({ COS_SECRET_ID: 'TESTSECRETID123456', COS_SECRET_KEY: 'TESTSECRETKEY123456' })
@@ -160,11 +165,17 @@ function mockRequest(handler) {
   return { requestImpl, calls }
 }
 
-function memoryCos({ lostPut = false, corruptGet = false, privateGet = false } = {}) {
+function memoryCos({ lostPut = false, lostPutCode, corruptGet = false, privateGet = false, putFaults = [] } = {}) {
   const objects = new Map()
+  const faults = [...putFaults]
   const transport = mockRequest((call, callback, request) => {
     const key = decodeURIComponent(call.url.pathname.slice(1))
     if (call.method === 'PUT') {
+      // A fault here happens before COS stores anything: a refused, reset or
+      // rejected request that leaves the object absent.
+      const fault = faults.shift()
+      if (typeof fault === 'number') return callback(response(Buffer.alloc(0), fault))
+      if (fault) return request.destroy(Object.assign(new Error(`Authorization: ${call.headers.authorization}`), { code: fault }))
       const existing = objects.get(key)
       if (existing && call.headers['x-cos-forbid-overwrite'] === 'true') {
         callback(response(Buffer.alloc(0), 409))
@@ -172,7 +183,7 @@ function memoryCos({ lostPut = false, corruptGet = false, privateGet = false } =
       }
       assert.equal(call.headers['content-md5'], crypto.createHash('md5').update(call.body).digest('base64'))
       objects.set(key, { body: call.body, contentType: call.headers['content-type'], sha256: call.headers['x-cos-meta-sha256'] })
-      if (lostPut) request.destroy(new Error(`Authorization: ${call.headers.authorization}`))
+      if (lostPut || lostPutCode) request.destroy(Object.assign(new Error(`Authorization: ${call.headers.authorization}`), lostPutCode ? { code: lostPutCode } : {}))
       else callback(response(Buffer.alloc(0), 200, { 'content-length': '0' }))
       return
     }
@@ -188,6 +199,10 @@ function memoryCos({ lostPut = false, corruptGet = false, privateGet = false } =
     }))
   })
   return { ...transport, objects }
+}
+
+function noWait() {
+  return Promise.resolve()
 }
 
 async function fixture(t, contents = 'installer contents') {
@@ -466,4 +481,143 @@ test('refuses private objects and only permits overwriting the three fixed lates
   await assert.rejects(store.publishJson('chatgpt/v1/latest.json', { version: '1' }, { overwrite: true }), /固定/)
   assert.equal(await store.readJson('not-present.json'), null)
   await assert.rejects(store.publishJson('chatgpt/latest.json', {}, { overwrite: true, ifMatch: '"old"' }), /尚未验证/)
+})
+
+test('only failures of the path to COS and busy answers count as transient', async () => {
+  async function failureOf(handler, options = {}) {
+    try { await fetchText({ url: `${config.publicBaseUrl}/a`, allowedHosts: [host] }, { ...mockRequest(handler), ...options }) } catch (error) { return error }
+    assert.fail('the request unexpectedly succeeded')
+  }
+  function reset(code) { return (call, callback, request) => request.destroy(Object.assign(new Error('SECRET'), { code })) }
+  function status(value) { return (call, callback) => callback(response(Buffer.alloc(0), value)) }
+  for (const code of ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_PREMATURE_CLOSE']) {
+    assert.equal(isTransientTransferFailure(await failureOf(reset(code))), true, code)
+  }
+  // A host that does not resolve, a bad certificate or an unknown error is an
+  // answer, not an outage: retrying would only delay the real diagnosis.
+  for (const code of ['ENOTFOUND', 'CERT_HAS_EXPIRED', 'SELF_SIGNED_CERT_IN_CHAIN', 'EACCES', undefined]) {
+    assert.equal(isTransientTransferFailure(await failureOf(reset(code))), false, String(code))
+  }
+  for (const value of [429, 500, 502, 503, 504]) assert.equal(isTransientTransferFailure(await failureOf(status(value))), true, String(value))
+  for (const value of [400, 401, 403, 404, 409, 412]) assert.equal(isTransientTransferFailure(await failureOf(status(value))), false, String(value))
+  assert.equal(isTransientTransferFailure(await failureOf(() => {}, { headerTimeoutMs: 20 })), true)
+  assert.equal(isTransientTransferFailure(Object.assign(new Error('forged'), { status: 503, code: 'ECONNRESET' })), false)
+})
+
+test('transient read failures are retried with growing waits while final answers are not', async () => {
+  const body = Buffer.from('{"version":"1"}')
+  const faults = ['ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT']
+  const mock = mockRequest((call, callback, request) => {
+    const fault = faults.shift()
+    if (fault) return request.destroy(Object.assign(new Error('SECRET'), { code: fault }))
+    callback(response(body, 200, { 'content-length': String(body.length) }))
+  })
+  const waits = []
+  const retries = []
+  const store = createCosStore(config, { ...mock, sleep: async (milliseconds) => { waits.push(milliseconds) }, random: () => 0 })
+  assert.deepEqual(await store.readJson('chatgpt/latest.json', { onRetry: (value) => retries.push(value) }), { version: '1' })
+  assert.equal(mock.calls.length, 4)
+  assert.deepEqual(waits, [1000, 2000, 4000])
+  assert.deepEqual(retries.map(({ attempt, delayMs, error }) => [attempt, delayMs, safeSyncFailure(error).transportCode]), [[1, 1000, 'ECONNRESET'], [2, 2000, 'EAI_AGAIN'], [3, 4000, 'ETIMEDOUT']])
+
+  for (const [statusCode, expected] of [[403, 'reject'], [404, null]]) {
+    const answer = mockRequest((call, callback) => callback(response(Buffer.alloc(0), statusCode)))
+    const client = createCosStore(config, { ...answer, sleep: async () => assert.fail('a final answer must not wait') })
+    if (expected === 'reject') await assert.rejects(client.readJson('chatgpt/latest.json'))
+    else assert.equal(await client.readJson('chatgpt/latest.json'), expected)
+    assert.equal(answer.calls.length, 1)
+  }
+  const exhausted = mockRequest((call, callback, request) => request.destroy(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' })))
+  await assert.rejects(createCosStore(config, { ...exhausted, sleep: noWait }).readJson('chatgpt/latest.json'), (error) => safeSyncFailure(error).transportCode === 'ECONNRESET')
+  assert.equal(exhausted.calls.length, RETRY_POLICIES.read.attempts)
+})
+
+test('a stalled first HEAD no longer ends a run before an uploaded installer is verified', async (t) => {
+  // 0.2.15 补传第一次：核对已传好的 Intel 包时 HEAD 30 秒没回应，整次补传就此停下。
+  const file = await fixture(t)
+  const cos = memoryCos()
+  const key = 'xingmang/releases/0.2.15/XingMang-AI-Manager-0.2.15-x64.dmg'
+  cos.objects.set(key, { body: file.body, contentType: 'application/x-apple-diskimage', sha256: digest(file.body) })
+  let stalls = 1
+  const transport = { calls: cos.calls, requestImpl(url, input, callback) {
+    if (input.method === 'HEAD' && stalls > 0) {
+      stalls -= 1
+      return cos.requestImpl(url, input, () => {})
+    }
+    return cos.requestImpl(url, input, callback)
+  } }
+  const waits = []
+  const store = createCosStore(config, { ...transport, headerTimeoutMs: 20, sleep: async (milliseconds) => { waits.push(milliseconds) } })
+  const result = await store.publishFile(key, file.filePath, { contentType: 'application/x-apple-diskimage' })
+  assert.equal(result.sha256, digest(file.body))
+  assert.deepEqual(cos.calls.map((call) => call.method), ['HEAD', 'HEAD', 'GET'])
+  assert.equal(waits.length, 1)
+})
+
+test('an immutable PUT is repeated only after a transient failure that a 404 readback proves never landed', async (t) => {
+  const file = await fixture(t)
+  const key = 'xingmang/releases/0.2.16/latest.yml'
+  const input = { contentType: 'text/yaml' }
+  const repeated = memoryCos({ putFaults: ['ECONNRESET'] })
+  const waits = []
+  const result = await createCosStore(config, { ...repeated, sleep: async (milliseconds) => { waits.push(milliseconds) }, random: () => 0 }).publishFile(key, file.filePath, input)
+  assert.equal(result.sha256, digest(file.body))
+  assert.deepEqual(repeated.calls.map((call) => call.method), ['HEAD', 'PUT', 'GET', 'PUT', 'GET'])
+  assert.deepEqual(waits, [2500])
+  for (const put of repeated.calls.filter((call) => call.method === 'PUT')) assert.equal(put.headers['x-cos-forbid-overwrite'], 'true')
+
+  // A refused write (403) is an answer; a reset after COS stored the bytes but
+  // with different public content proves someone else's object. Neither repeats.
+  for (const transport of [memoryCos({ putFaults: [403] }), memoryCos({ lostPutCode: 'ECONNRESET', corruptGet: true })]) {
+    await assert.rejects(createCosStore(config, { ...transport, sleep: async () => assert.fail('must not wait') }).publishFile(key, file.filePath, input), (error) => {
+      assert.equal(safeSyncFailure(error).code, 'cos-upload-unconfirmed')
+      return true
+    })
+    assert.equal(transport.calls.filter((call) => call.method === 'PUT').length, 1)
+  }
+  // A reset whose bytes did land is recovered by the readback without a second PUT.
+  const landed = memoryCos({ lostPutCode: 'ECONNRESET' })
+  assert.equal((await createCosStore(config, { ...landed, sleep: async () => assert.fail('must not wait') }).publishFile(key, file.filePath, input)).sha256, digest(file.body))
+  assert.equal(landed.calls.filter((call) => call.method === 'PUT').length, 1)
+})
+
+test('the latest pointer is written again only when the earlier request never left the runner', async () => {
+  const previous = Buffer.from('{"version":"0"}\n')
+  for (const [code, succeeds] of [['ECONNREFUSED', true], ['EHOSTUNREACH', true], ['EAI_AGAIN', true], ['ECONNRESET', false], ['ETIMEDOUT', false], ['EPIPE', false]]) {
+    const mock = memoryCos({ putFaults: [code] })
+    mock.objects.set('chatgpt/latest.json', { body: previous, contentType: 'application/json', sha256: digest(previous) })
+    const store = createCosStore(config, { ...mock, sleep: noWait })
+    const run = store.publishJson('chatgpt/latest.json', { version: '1' }, { overwrite: true })
+    if (succeeds) await run
+    else await assert.rejects(run, (error) => safeSyncFailure(error).code === 'cos-upload-unconfirmed')
+    assert.equal(mock.calls.filter((call) => call.method === 'PUT').length, succeeds ? 2 : 1, code)
+    assert.deepEqual(await store.readJson('chatgpt/latest.json'), { version: succeeds ? '1' : '0' })
+  }
+})
+
+test('global acceleration is an explicit opt-in that rejects ambiguous values', () => {
+  const secrets = { COS_SECRET_ID: 'TESTSECRETID123456', COS_SECRET_KEY: 'TESTSECRETKEY123456' }
+  for (const value of [undefined, '', 'false']) assert.equal(readCosConfiguration({ ...secrets, XINGMANG_COS_ACCELERATE: value }).accelerate, false)
+  assert.equal(readCosConfiguration({ ...secrets, XINGMANG_COS_ACCELERATE: 'true' }).accelerate, true)
+  for (const value of ['TRUE', '1', 'yes']) assert.throws(() => readCosConfiguration({ ...secrets, XINGMANG_COS_ACCELERATE: value }), /全球加速/)
+  // Customers keep downloading from the regional address either way.
+  assert.equal(readCosConfiguration({ ...secrets, XINGMANG_COS_ACCELERATE: 'true' }).publicBaseUrl, config.publicBaseUrl)
+})
+
+test('global acceleration moves only the signed writes and keeps every readback regional', async (t) => {
+  const file = await fixture(t)
+  const mock = memoryCos()
+  const store = createCosStore({ ...config, accelerate: true }, { ...mock, now: () => 1000 })
+  const key = 'xingmang/releases/0.2.16/latest.yml'
+  const result = await store.publishFile(key, file.filePath, { contentType: 'text/yaml' })
+  const accelerated = `${config.bucket}.cos.accelerate.myqcloud.com`
+  assert.equal(result.url, `${config.publicBaseUrl}/${key}`)
+  assert.deepEqual(mock.calls.map((call) => [call.method, call.url.hostname]), [['HEAD', host], ['PUT', accelerated], ['GET', host]])
+  const put = mock.calls[1]
+  assert.equal(put.headers.host, accelerated)
+  const signed = { ...put.headers }
+  delete signed.authorization
+  delete signed['accept-encoding']
+  assert.equal(put.headers.authorization, buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: 'PUT', pathname: `/${key}`, headers: signed, now: 1000 }))
+  for (const call of mock.calls.filter((entry) => entry.method !== 'PUT')) assert.equal(call.headers.authorization, undefined)
 })

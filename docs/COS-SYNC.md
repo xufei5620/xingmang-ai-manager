@@ -16,7 +16,7 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | 官方 ChatGPT 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-chatgpt-official-cos` | `chatgpt/latest.json` |
 | 官方 Claude 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-claude-official-cos` | `xingmang/offline/claude/latest.json` |
 
-星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流。同步步骤直接接在既有发布作业末尾，保留 `release` 环境的发布批准和 `update-feed` 串行规则。
+星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流，所以同步写在 `publish-release` 里，是排在 publish 后面的单独作业 `cos-sync`：publish 作业（`release` 环境批准、`update-feed` 串行）成功后才开始；它挂 `cos-sync` 环境，不多一次批准；和手动导入 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，因为两边都会写 `xingmang/latest.json`。2026-10-04 以前同步接在 publish 作业末尾，为什么拆出来见下文「网络不稳时」。
 
 星芒同步本次完整发布产物，包括安装包、Mac 更新 ZIP、blockmap 和 `latest*.yml`。按平台清单校验版本、文件名、大小与 SHA-512，再上传到 `xingmang/releases/<星芒版本>/`。单平台发布时，索引保留其它平台已经发布的下载；同版本补发另一平台会合并条目。同版本同文件名而内容不同的文件不能覆盖。
 
@@ -41,7 +41,7 @@ Claude Mac 的这两个浏览器下载入口在 runner 返回 403，并明确带
 
 当前 `2.19675.0` 的两个候选还分别绑定正常官方浏览器下载后计算的大小和 SHA-256，依据保存在 `claude-mac-confirmed-sources.cjs`。将来官方更新 feed 给出新版本时自动解析新候选，不套用旧版浏览器摘要。DMG/PKG 均完整下载、原生验签后才可上传：固定 `Anthropic PBC`、Team `Q6L2SF6YDW`、Apple 根链和应用标识；PKG 还展开实际 payload，验证其中唯一应用的签名、Info.plist 版本及 Intel/Apple Silicon Mach-O。包壳的 PackageInfo 版本和 URL 中的 universal 字样不能代替这两项验证。
 
-发布 latest 前，使用本次同一个匿名安装 cohort 重新请求官方 feed，并重查候选 HEAD；版本、release ID、声明 ZIP 指纹或候选大小/ETag 变化时不切换指针。同步日志只含固定阶段、平台、耗时、字节数和自有脱敏错误分类；latest 写入结果未知时独立读回确认，不自动重试、覆盖或回滚，清理失败也不会掩盖此前的主错误。
+发布 latest 前，使用本次同一个匿名安装 cohort 重新请求官方 feed，并重查候选 HEAD；版本、release ID、声明 ZIP 指纹或候选大小/ETag 变化时不切换指针。同步日志只含固定阶段、平台、耗时、字节数和自有脱敏错误分类；latest 写入结果未知时独立读回确认，不覆盖或回滚，只有连接根本没建立时才重发；清理失败也不会掩盖此前的主错误。
 
 Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`，不可变候选清单保存在同一前缀的 `indexes/`。它们与星芒正式发布的 `xingmang/releases/` 和 `xingmang/latest.json` 分开，使用现有 `xingmang/*` 授权即可同步，无需扩大 CAM 权限。
 
@@ -64,15 +64,15 @@ SecretId 和 SecretKey 直接填写到下节 GitHub Secrets，不经过聊天、
 
 | 环境 | 用途 | 保护规则 |
 | --- | --- | --- |
-| 既有 `release` | 星芒完成正式发布后同步 COS | 保留原有 required reviewers 和发布批准 |
-| 新建 `cos-sync` | 官方包的自动检查和同步 | Deployment branches 限定 `main`；不设置每次人工批准，否则定时任务会停在等待批准 |
+| 既有 `release` | 星芒正式发布：用真证书出包、上传更新源 | 保留原有 required reviewers 和发布批准 |
+| 新建 `cos-sync` | 星芒正式发布后的 COS 同步、手动导入、官方包的自动检查和同步 | Deployment branches 限定 `main`；不设置每次人工批准，否则定时任务和发版后的同步会停在等待批准 |
 
-在两个环境的 **Environment secrets** 中分别设置：
+在 `cos-sync` 环境的 **Environment secrets** 中设置：
 
 - `COS_SECRET_ID`
 - `COS_SECRET_KEY`
 
-同一个受限 COS 子账号可用于两个环境。保留原有 R2 和 Mac 签名 Secrets。
+2026-10-04 起星芒正式发布也改由 `cos-sync` 环境同步，`release` 环境里原来那两个 COS secret 已经没有作业读取，留着不碍事，也可以删掉。保留原有 R2 和 Mac 签名 Secrets。
 
 在 **Settings → Secrets and variables → Actions → Variables** 配置仓库变量：
 
@@ -81,6 +81,7 @@ SecretId 和 SecretKey 直接填写到下节 GitHub Secrets，不经过聊天、
 | `COS_BUCKET` | `xingmang-downloads-1342302199` |
 | `COS_REGION` | `ap-shanghai` |
 | `XINGMANG_COS_SYNC_ENABLED` | `true`，在环境及 Secrets 配齐后开启 |
+| `XINGMANG_COS_ACCELERATE` | 不设或 `false`；存储桶开了全球加速以后才设 `true`，见下文「网络不稳时」 |
 
 Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `cos-sync` 环境的分支限制；自动创建的同名环境没有这些保护规则。官方同步还会检查仓库身份、`main` 分支和开关，使用只读 GitHub token。
 
@@ -90,7 +91,7 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 运行 `sync-published-manager-cos`，选择 `main`；留空版本号导入最新正式 GitHub Release，也可指定正规发布标签。仅接受同一仓库的正式发布和安装包资产，下载后核对 GitHub 提供的大小及 SHA-256，再按安装包模式同步 COS。该模式不重新发布星芒、不修改 R2，也不伪造 GitHub Release 中没有的更新 companion 文件。未来正式发版仍同步完整发布产物。
 
-观察 `[manager-sync]` 的固定阶段：GitHub 发布清单、下载位置、安装包下载/摘要、COS 文件完整回读、候选索引、latest 切换及清理。失败只输出阶段、已验证版本/平台和安全白名单分类；HEAD 探测分别标记超时、网络失败、HTTP 状态和被拒的重定向原因，绝不输出原异常、堆栈、文件路径、URL、Location 或认证正文。`not-written-by-this-run` 不表示此前的不可变文件未上传；`write-unconfirmed` 需要先读取远端状态；`published-and-read-back` 表示 latest 已完整回读确认，即使之后清理临时目录失败。清理错误单独记录，不盖掉原始同步失败；分块仅按下文列明的条件有限重试，其它写入不自动重试。
+观察 `[manager-sync]` 的固定阶段：GitHub 发布清单、下载位置、安装包下载/摘要、COS 文件完整回读、候选索引、latest 切换及清理。失败只输出阶段、已验证版本/平台和安全白名单分类；HEAD 探测分别标记超时、网络失败、HTTP 状态和被拒的重定向原因，绝不输出原异常、堆栈、文件路径、URL、Location 或认证正文。`not-written-by-this-run` 不表示此前的不可变文件未上传；`write-unconfirmed` 需要先读取远端状态；`published-and-read-back` 表示 latest 已完整回读确认，即使之后清理临时目录失败。清理错误单独记录，不盖掉原始同步失败。断网和超时按下文「网络不稳时」的规则等一等再重试；传安装包期间每 30 秒打一行 `stage-wait`（这个文件已传和总共的字节数），每次重试打一行 `retry`（第几次、要等多久、脱敏后的错误分类），`stage-complete`、`stage-failed` 带上这一阶段的耗时 `elapsedMs`。
 
 ### 官方 ChatGPT 包
 
@@ -98,7 +99,7 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 真实运行中，官方源下载正常而 COS 单连接 PUT 约为 50 KiB/s，大包可能超过既有上传期限。实现提供分块上传，而不是增加原 PUT 超时：`XINGMANG_COS_MULTIPART_ENABLED` 缺省或 `false` 保持原流程。负责人现场确认权限及存储桶版本控制关闭后，才在受保护环境设置为 `true`；本改动不修改线上变量、凭据或权限。
 
-启用后，16 MiB 及以上的不可变文件使用 1 MiB（1,048,576 字节）分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 8 MiB。2 GiB 文件上限对应最多 2048 块，低于 COS 的 10000 块限制；最大 Complete 请求 XML 为 181216 字节，64 KiB 上限仅用于响应读取。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多六分钟，显式设置的更短调用方超时仍优先；分块调度总期限七十五分钟（已发出的请求收拢后退出），合并正文至多十分钟，各平台作业仍限九十分钟。每次请求重新生成有效期三十分钟的签名，覆盖单块请求；整体调度不会复用一份过期签名。
+启用后，16 MiB 及以上的不可变文件使用 1 MiB（1,048,576 字节）分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 8 MiB。2 GiB 文件上限对应最多 2048 块，低于 COS 的 10000 块限制；最大 Complete 请求 XML 为 181216 字节，64 KiB 上限仅用于响应读取。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多六分钟，显式设置的更短调用方超时仍优先；分块调度总期限七十五分钟（已发出的请求收拢后退出，重试前的等待也算在里面），合并正文至多十分钟，各平台作业仍限九十分钟。星芒正式发布和手动导入的作业限 330 分钟，单个安装包的分块期限放宽到一百二十分钟。每次请求重新生成有效期三十分钟的签名，覆盖单块请求；整体调度不会复用一份过期签名。
 
 2026-10-03 的两个真实运行均在 4 MiB 单块等待响应头三分钟后失败：八并发运行 `37103271602` 在约 244 秒提交 58,720,256 字节，四并发对照 `37119586459` 在约 611 秒提交 96,468,992 字节，两次均未开始 Complete 且公共 GET 为 404。减并发未解决单块超时，因此提高这两项时间上限，以容纳近期约 900 MB 包的较慢传输。七十五分钟是分块调度上限，并非整个同步的保证耗时；源下载、在途请求收拢、合并及完整公共回读仍受各自预算和九十分钟作业硬期限约束，实际吞吐与成功率须继续用真实运行验收。
 
@@ -110,7 +111,7 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 随后 ChatGPT 运行 `37136334139` 的 Windows x64 作业明确返回 HTTP 400 UserNetworkTooSlow，469 字节 XML 已被安全识别。Claude 运行 `37137350933` 的 Mac 作业完成 377037896 字节 DMG 的完整回读和 HEAD 验收后，384935158 字节 PKG 在已提交 304087040 字节时遇到分块 PUT EPIPE；DMG/PKG 原生验证已过，但 PKG 未开始 Complete，完整公共 GET 为 404，latest 未写。依据这两种已观察到的错误，分块重试集合补充 EPIPE 与 HTTP 400 UserNetworkTooSlow，不将未知 HTTP 400 推定为可重试。
 
-同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，仅遇响应头/正文超时、私有分块 PUT 网络错误 ETIMEDOUT、ECONNRESET 或 EPIPE，或安全识别为 HTTP 400 RequestTimeout / UserNetworkTooSlow 时，最多额外重试两次。每次重新签名，并检查原七十五分钟截止和其它 worker 的失败状态；校验失败、证书错误、其它 HTTP 错误不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init、Complete、Abort、普通 PUT 与 latest 均不增加重试。
+同一 UploadId、partNumber 和已通过 SHA-256 校验的 Buffer，遇响应头/正文超时，连接被重置、拒绝、中断或找不到路由（ECONNRESET、ECONNREFUSED、ETIMEDOUT、EPIPE、EAI_AGAIN、EHOSTUNREACH、ENETUNREACH、ERR_STREAM_PREMATURE_CLOSE），HTTP 429/5xx，或安全识别为 HTTP 400 RequestTimeout / UserNetworkTooSlow 时，按下文「网络不稳时」的写入规则等一等再重发，每块最多十次。每次重新签名；开始等待前先看会不会超过截止时间、其它 worker 是否已经失败，等待中其它 worker 失败会立刻叫醒它停下。校验失败、证书错误、ENOTFOUND、403/404 和其它 HTTP 4xx 不重试。官方协议规定同一 UploadId/partNumber 的后一次上传覆盖前块，因此重发同一内容可恢复已保存但响应丢失的分块，无需额外 ListParts 权限。Init 同样按这些条件重试，回执丢失最多留下一个不含分块的空会话；Complete 只在连接根本没建立（ECONNREFUSED、EAI_AGAIN、EHOSTUNREACH、ENETUNREACH）时重发；Abort 不重试。
 
 仅需要在原有两个对象前缀范围增授四项 CAM action：`cos:InitiateMultipartUpload`、`cos:UploadPart`、`cos:CompleteMultipartUpload`、`cos:AbortMultipartUpload`。不需要 List、Copy、ACL、公开对象 DELETE 或扩大资源前缀。Init 与 Complete 都签入 `x-cos-forbid-overwrite: true`；官方文档明确该头不保护开启版本控制的桶，因此启用前必须核实桶版本控制仍为关闭。本模块不自行访问或修改桶配置。
 
@@ -131,17 +132,46 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 安全错误分类区分响应头超时、正文超时、HTTP 状态、断流、ETag/大小/摘要不一致，以及 PUT 与公共完整回读的各自原因。`latestState: write-unconfirmed` 表示最新索引写入结果未知，需要先读取远端状态；`published-and-read-back` 表示索引已发布并回读确认，即使随后临时目录清理失败。清理失败不会盖掉此前的主错误。
 
-期限仍为 GET/HEAD 响应头 30 秒、GET 正文与普通 PUT 响应头 20 分钟、原生 Windows 检查 120 秒、整个作业 90 分钟；分块预算及有限超时重试见上文，日志计时使用单调时钟。最终切换索引前重新核对所选官方源的指纹及 Windows/Mac 元数据，避免长时间同步后将已经变化的 `latest` 源快照继续公布。其它写入不自动重试，也不调整上传身份的权限。
+期限仍为 GET/HEAD 响应头 30 秒、GET 正文与普通 PUT 响应头 20 分钟、原生 Windows 检查 120 秒、整个作业 90 分钟；分块预算见上文，断网时的等待与重试见下文「网络不稳时」，日志计时使用单调时钟。最终切换索引前重新核对所选官方源的指纹及 Windows/Mac 元数据，避免长时间同步后将已经变化的 `latest` 源快照继续公布。重试不调整上传身份的权限。
 
 ### 星芒正式发布
 
-按既有发布手册运行 `publish-release` 并批准本次正式发布。COS 开关开启后，GitHub Release 创建完成即同步该次完整发布产物。Linux 是否正式分发仍由既有 `XINGMANG_PUBLISH_LINUX` 开关决定，不会通过 COS 绕过它。
+按既有发布手册运行 `publish-release` 并批准本次正式发布。COS 开关开启后，publish 作业传完更新源、建好 GitHub Release，`cos-sync` 作业接着同步该次完整发布产物，不用再批。它最长跑 330 分钟：0.2.15 一批 709 MB，GitHub 的机器要传一到一个半小时。Linux 是否正式分发仍由既有 `XINGMANG_PUBLISH_LINUX` 开关决定，不会通过 COS 绕过它：`cos-sync` 只同步 publish 当时实际发了的平台（publish 的 `outputs.linux`），之后改了开关再重跑也不会多出 Linux。
+
+`cos-sync` 失败不影响更新源和 GitHub Release，客户端照常自动更新。打开这次运行，在左边作业列表里把鼠标移到 `cos-sync` 上点重跑按钮（或打开它的日志点 **Re-run this job**），只重跑它、不用再批：已经传好的文件不再上传，只完整下载核对一遍；中断的那个文件重新开一次分块上传。别点 **Re-run failed jobs**：同一次运行里还有别的作业红着时（比如 Linux 开关关着、Linux 出包红了），它会把依赖它们的 publish 也带着重跑，又要批一次、又传一遍更新源。构建产物保留 14 天，期间都能这样重跑。
+
+整条 `publish-release` 同一时间只跑一次，`cos-sync` 还在传时再触发发布，新的运行会排队等它传完。着急的话，在上一次运行的页面点 **Cancel workflow** 停掉同步：更新源和 GitHub Release 已经发完，不受影响；新版本同步完会把 `xingmang/latest.json` 换成新版本，上一版不用补传。
 
 成功后访问 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/latest.json`。这一 JSON 索引使用绝对下载地址；版本目录里的原更新清单与安装包位于同目录。
 
 ### Claude 桌面备用包
 
 打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。定时与 `all` 覆盖 Windows x64/ARM64 和 Mac 通用 DMG/PKG 四个安装包。也可只重跑 `windows`、`macos`，或精确选择 `windows-x64`、`windows-arm64`、`macos-dmg-universal`、`macos-pkg-universal`；精确选择沿用同一来源、原生验证和完整公共回读流程，平台作业保留索引中的其它已发布平台（包括历史 Linux 条目）。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/claude/latest.json`。沿用现有 `xingmang/*` 的 GetObject、HeadObject、PutObject 权限和 GitHub Secrets，不增加 `claude/*` 授权或创建新密钥。
+
+## 网络不稳时（2026-10-04）
+
+0.2.15 发布时，GitHub 的机器往 COS 上海整体只有 120～200 KB/s，网络还会整段断上几分钟：所有在传的分块一起卡住，再一起报响应头超时和 EPIPE。同步当时接在限 60 分钟的 publish 作业末尾，传到 Mac arm64 安装包就停了；手动补传第一次在核对 Intel 包时，一个 HEAD 等了 30 秒没回应就失败（读取当时不重试），第二次才传完。所以改了三处：同步拆成单独作业给足时间；读取和写入在断网时都等一等再试；可以选择开全球加速。
+
+**等多久、试几次**（`scripts/cos-transfer-retry.cjs`）。每次等待一半固定、一半随机，一起失败的分块错开重连：
+
+| 操作 | 最多次数 | 每次等待 | 失败前至少一共等 |
+| --- | --- | --- | --- |
+| 读取：HEAD、完整 GET 回读、读 latest | 12 | 1～2 秒起翻倍，封顶 30～60 秒 | 约 3.5 分钟 |
+| 写入：Init、分块、可以重发的单次 PUT | 10 | 2.5～5 秒起翻倍，封顶 60～120 秒 | 约 5 分钟 |
+
+只有超时、连接被重置/拒绝/中断、找不到路由（见上文分块那段的清单）、HTTP 429/5xx，以及分块请求上 COS 明确说是慢网络的 HTTP 400 才重试；只有分块请求会读 COS 的错误正文，所以单次 PUT 和读取遇到 HTTP 400 一律不重试。403、404、ENOTFOUND、证书错误、大小或摘要不符都是明确的答复，立即失败；ENOTFOUND 不重试，是为了地址写错时马上报错，不白等十几分钟。
+
+**写入什么时候才重发**：分块和 Init 见上文。普通单次 PUT（小文件、清单）失败后先完整回读：不可变文件回读是 404、且失败属于上面那几类，才重发，`x-cos-forbid-overwrite` 保证晚到的第一次 PUT 不会被覆盖；可覆盖的 latest 指针回读到的总是旧内容，分不清这次 PUT 有没有到，所以只在连接根本没建立时重发。Complete 同理。
+
+**断了怎么接着传**：同一次运行里，断网期间各分块等着，网恢复后接着传还没确认的分块，已经确认的不重传。整次运行失败后重跑（星芒正式发布要单独重跑 `cos-sync` 作业，见上文）：已经传好、完整回读核对过的文件跳过上传，中断的那个文件重新开一次分块上传。跨运行接着传分块要先列出已传的分块（ListParts），得给上传身份加权限，这次没有做。重试用完而失败时会中止本次分块会话；作业被取消或超时强停时来不及中止，正在传的那个文件会留下未完成的分块，下载地址里看不到它，但占存储。桶的生命周期规则可以定期清掉这类碎片，属于桶设置，要负责人自己决定。
+
+**全球加速（可选，要在腾讯云控制台操作）**：
+
+1. 腾讯云控制台 → 对象存储 → 存储桶列表 → `xingmang-downloads-1342302199` → 域名与传输管理 → 全球加速 → 编辑，打开后保存（菜单名以控制台为准）。加速的流量另外计费，以腾讯云价格页为准。
+2. GitHub 仓库 Settings → Secrets and variables → Actions → Variables，新建 `XINGMANG_COS_ACCELERATE`，值填 `true`。四条 COS 工作流都会读它。
+3. 打开后只有上传（Init、分块、Complete、Abort、PUT）走 `<桶名>.cos.accelerate.myqcloud.com`；完整回读核对、读 latest 和客户下载仍用原来的上海地址。签名方式、CAM 权限都不变，不用新建密钥。
+
+要关掉，把变量删掉或改回 `false`。没开桶的全球加速就把变量设成 `true`，上传会被拒绝而失败，删掉变量重跑即可（推测：拒绝的具体错误码没有实测过）。加速域名能不能明显提速，只能等下一次真实发版看 `[manager-sync]` 的耗时。
 
 ## 校验、顺序与失败恢复
 
@@ -151,7 +181,7 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 - 所需文件全部验证通过后，最后更新固定 latest 索引。旧版本对象保留；拒绝版本倒退和不可变路径的内容冲突。
 - 同类工作流串行执行；切换前重读最新索引，发现变更则停止。人工 CLI 不应与 Actions 同时发布同类索引。本实现没有宣称普通 COS PUT 支持目标对象的条件写入/CAS。
 - **切换前失败**：不会写 latest，可修复后重跑。
-- **latest 写入结果未知**：先读取远端确认，不盲目覆盖或自动回滚；工作流失败时，检查索引和运行日志后决定重跑。网络错误不证明远端写入没有发生。
+- **latest 写入结果未知**：先读取远端确认，不盲目覆盖或自动回滚；只有连接根本没建立时自动重发。工作流失败时，检查索引和运行日志后决定重跑。网络错误不证明远端写入没有发生。
 - 关闭 `XINGMANG_COS_SYNC_ENABLED` 可以停止后续同步，不会删除已上传版本。
 
 ## 最新学习空间和安装教程接入

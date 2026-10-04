@@ -13,9 +13,10 @@ on:
 permissions:
   contents: read
 
-# 与发布、回滚、维护工作流串行，防止星芒 COS latest 索引交错写入。
+# 与 publish-release 里同步 COS 的 cos-sync 作业串行，防止星芒 COS latest 索引交错写入。
+# 不进 update-feed：这里不碰 R2，一传几个小时也不该挡住发布、回滚和维护开关。
 concurrency:
-  group: update-feed
+  group: cos-manager-publish
   cancel-in-progress: false
 
 jobs:
@@ -23,7 +24,9 @@ jobs:
     if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     environment: cos-sync
-    timeout-minutes: 90
+    # 往 COS 上海只能传 120～200 KB/s，一个版本的安装包要传一个小时上下，断网时还要等着
+    # 重试；GitHub 托管的作业最长 6 小时，留半小时余量。
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
@@ -42,5 +45,6 @@ jobs:
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
           XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
           XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
           MANAGER_RELEASE_TAG: ${{ inputs.tag || '' }}
         run: node scripts/sync-published-manager-cos.cjs

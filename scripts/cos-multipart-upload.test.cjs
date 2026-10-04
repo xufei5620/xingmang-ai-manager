@@ -6,6 +6,7 @@ const path = require('node:path')
 const { PassThrough, Readable, Writable } = require('node:stream')
 const { test } = require('node:test')
 const { PART_BYTES, THRESHOLD_BYTES, MAX_XML_BYTES, buildCompleteMultipartBody, readMultipartOptions, parseMultipartXml, uploadMultipart } = require('./cos-multipart-upload.cjs')
+const { RETRY_POLICIES } = require('./cos-transfer-retry.cjs')
 const { MAX_FILE_BYTES, createCosStore, readCosConfiguration, buildCosAuthorization, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 const config = readCosConfiguration({ COS_SECRET_ID: 'TESTSECRETID123456', COS_SECRET_KEY: 'TESTSECRETKEY123456' })
@@ -32,6 +33,7 @@ async function fixture(t, size = THRESHOLD_BYTES + 123) {
 }
 function memoryMultipart({ loseComplete = false, errorComplete = false, completeHttpError = false, corruptReadback = false, existing = null, failPart = false, partFault, operationFault, now = function () { return 1000 } } = {}) {
   const calls = []
+  const waits = []
   const parts = new Map()
   const attempts = new Map()
   let object = existing
@@ -108,11 +110,14 @@ function memoryMultipart({ loseComplete = false, errorComplete = false, complete
     })
     return request
   }
-  return { requestImpl, calls, get peak() { return peak } }
+  // Retry waits are recorded instead of slept; random 0 makes each one its fixed half.
+  async function sleep(milliseconds) { waits.push(milliseconds) }
+  return { requestImpl, calls, waits, sleep, get peak() { return peak } }
 }
-function store(transport, enabled = true, concurrency = 4) {
-  return createCosStore({ ...config, multipart: { enabled, concurrency } }, { requestImpl: transport.requestImpl, now: () => 1000 })
+function store(transport, enabled = true, concurrency = 4, configuration = {}) {
+  return createCosStore({ ...config, multipart: { enabled, concurrency }, ...configuration }, { requestImpl: transport.requestImpl, now: () => 1000, sleep: transport.sleep, random: () => 0 })
 }
+const FULL_WRITE_WAITS = [2500, 5000, 10000, 20000, 40000, 60000, 60000, 60000, 60000]
 
 test('multipart is disabled by default and concurrency stays inside four to eight workers', () => {
   assert.deepEqual(readMultipartOptions({}), { enabled: false, concurrency: 8 })
@@ -262,17 +267,21 @@ test('failed parts all settle before aborting only the owned session with no com
 
 test('a saved part with a lost reply retries identical bytes and digests with a fresh signature', async t => {
   const data = await fixture(t)
-  for (const code of ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'UserNetworkTooSlow']) {
+  const faults = [
+    ...['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE'].map(code => ({ code })),
+    ...[['UserNetworkTooSlow', 400], ['RequestTimeout', 400], ['InternalError', 500], ['ServiceUnavailable', 503], ['SlowDown', 503], ['TooManyRequests', 429]].map(([code, status]) => ({ code, status })),
+  ]
+  for (const { code, status } of faults) {
     let now = 1000
     const transport = memoryMultipart({ now: () => now, partFault: function ({ call, callback, request, attempt }) {
       if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
       now = 1010
-      if (code === 'UserNetworkTooSlow') callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+      if (status) callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), status))
       else request.destroy(Object.assign(new Error('SECRET response lost'), { code }))
       return true
     } })
     const progress = []
-    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => now })
+    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => now, sleep: transport.sleep, random: () => 0 })
     await client.publishFile(key, data.filePath, { ...data.input, onProgress: value => { if (value.method === 'PUT' && value.phase === 'upload-body') progress.push(value.transferredBytes) } })
     const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
     assert.equal(attempts.length, 2)
@@ -289,15 +298,33 @@ test('a saved part with a lost reply retries identical bytes and digests with a 
     assert.equal(progress.length, Math.ceil(data.body.length / PART_BYTES))
     assert.equal(transport.calls.filter(call => call.method === 'POST').length, 2)
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+    assert.deepEqual(transport.waits, [2500], code)
   }
 })
 
-test('only diagnosed HTTP 400 timeout or slow-network errors retry and each part stops after three attempts', async t => {
+test('refused or unreachable connections retry the part instead of failing the release', async t => {
+  const data = await fixture(t)
+  for (const code of ['ECONNREFUSED', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']) {
+    const transport = memoryMultipart({ partFault: function ({ call, request, attempt }) {
+      if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
+      request.destroy(Object.assign(new Error('SECRET unreachable'), { code }))
+      return true
+    } })
+    assert.equal((await store(transport).publishFile(key, data.filePath, data.input)).sha256, data.input.expectedSha256)
+    assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, 2)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+    assert.deepEqual(transport.waits, [2500], code)
+  }
+})
+
+test('a part retries only timeouts, slow-network answers and busy COS replies, at most ten times', async t => {
   const data = await fixture(t)
   for (const [code, failCount, expectedAttempts, succeeds, status = 400] of [
-    ['RequestTimeout', 2, 3, true], ['RequestTimeout', 3, 3, false],
-    ['UserNetworkTooSlow', 2, 3, true], ['UserNetworkTooSlow', 1, 1, false, 503],
+    ['RequestTimeout', 9, 10, true], ['RequestTimeout', 10, 10, false],
+    ['UserNetworkTooSlow', 2, 3, true],
+    ['UserNetworkTooSlow', 1, 2, true, 503], ['SlowDown', 1, 2, true, 503], ['InternalError', 1, 2, true, 500], ['TooManyRequests', 1, 2, true, 429],
     ['BadDigest', 1, 1, false], ['InvalidDigest', 1, 1, false], ['UnknownSECRET', 1, 1, false],
+    ['AccessDenied', 1, 1, false, 403], ['NoSuchUpload', 1, 1, false, 404],
     ...['IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'].map(code => [code, 1, 1, false]),
   ]) {
     const transport = memoryMultipart({ partFault: function ({ call, callback, attempt }) {
@@ -315,12 +342,13 @@ test('only diagnosed HTTP 400 timeout or slow-network errors retry and each part
       return true
     })
     assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, expectedAttempts)
+    assert.deepEqual(transport.waits, FULL_WRITE_WAITS.slice(0, expectedAttempts - 1), `${code} ${status}`)
     assert.equal(transport.calls.filter(call => call.method === 'POST').length, succeeds ? 2 : 1)
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, succeeds ? 0 : 1)
   }
 })
 
-test('broken-pipe and slow-network part failures stop after three attempts before a settled abort', async t => {
+test('broken-pipe and slow-network part failures stop after ten attempts before a settled abort', async t => {
   const data = await fixture(t)
   for (const code of ['EPIPE', 'UserNetworkTooSlow']) {
     const transport = memoryMultipart({ partFault: function ({ call, callback, request }) {
@@ -344,18 +372,20 @@ test('broken-pipe and slow-network part failures stop after three attempts befor
       return true
     })
     const attempts = transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1')
-    assert.equal(attempts.length, 3)
+    assert.equal(attempts.length, RETRY_POLICIES.write.attempts)
     for (const attempt of attempts) {
       assert.equal(attempt.url.href, attempts[0].url.href)
       assert.equal(attempt.buffers[0], attempts[0].buffers[0])
     }
+    // About five minutes of waiting in total, so a short outage is outlasted.
+    assert.deepEqual(transport.waits, FULL_WRITE_WAITS)
     assert.equal(transport.calls.filter(call => call.method === 'POST').length, 1)
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1)
     assert.deepEqual(transport.calls.slice(-2).map(call => call.method), ['DELETE', 'GET'])
   }
 })
 
-test('broken-pipe and slow-network failures never retry init, complete, abort or latest writes', async t => {
+test('broken-pipe and slow-network failures repeat init but never complete, abort or the latest pointer', async t => {
   const data = await fixture(t)
   for (const operation of ['init', 'complete', 'abort', 'single']) {
     for (const code of ['EPIPE', 'UserNetworkTooSlow']) {
@@ -385,20 +415,75 @@ test('broken-pipe and slow-network failures never retry init, complete, abort or
         assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|authorization|upload-123/)
         return true
       })
-      assert.equal(faultCount, 1)
+      // A lost init reply leaves at most an empty session behind, so init is
+      // repeated; the others could already have changed what COS holds.
+      const repeated = operation === 'init'
+      assert.equal(faultCount, repeated ? RETRY_POLICIES.write.attempts : 1)
+      assert.deepEqual(transport.waits, repeated ? FULL_WRITE_WAITS : [])
       assert.equal(transport.calls.at(-1).method, 'GET')
       if (operation === 'single') assert.deepEqual(transport.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
       else {
-        assert.equal(transport.calls.filter(call => call.method === 'POST').length, operation === 'complete' ? 2 : 1)
+        assert.equal(transport.calls.filter(call => call.method === 'POST').length, repeated ? RETRY_POLICIES.write.attempts : operation === 'complete' ? 2 : 1)
         assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, operation === 'abort' ? 1 : 0)
       }
     }
   }
 })
 
-test('part checksum, certificate and refused connection failures never retry', async t => {
+test('an init that failed in transit is opened again and the upload carries on', async t => {
   const data = await fixture(t)
-  for (const failure of ['etag', 'CERT_HAS_EXPIRED', 'ECONNREFUSED']) {
+  for (const code of ['ECONNRESET', 'ECONNREFUSED', 'UserNetworkTooSlow']) {
+    let faults = 0
+    const transport = memoryMultipart({ operationFault: function ({ operation, callback, request }) {
+      if (operation !== 'init' || faults++ > 0) return false
+      if (code === 'UserNetworkTooSlow') callback(response(Buffer.from(`<Error><Code>${code}</Code><Message>SECRET</Message></Error>`), 400))
+      else request.destroy(Object.assign(new Error('SECRET init lost'), { code }))
+      return true
+    } })
+    assert.equal((await store(transport).publishFile(key, data.filePath, data.input)).sha256, data.input.expectedSha256)
+    assert.equal(transport.calls.filter(call => call.method === 'POST' && call.url.searchParams.has('uploads')).length, 2)
+    assert.equal(transport.calls.filter(call => call.method === 'POST' && call.url.searchParams.has('uploadId')).length, 1)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+    assert.deepEqual(transport.waits, [2500], code)
+  }
+})
+
+test('a complete that never reached COS is sent again until it is answered or the policy runs out', async t => {
+  const data = await fixture(t)
+  for (const code of ['ECONNREFUSED', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']) {
+    let faults = 0
+    const transport = memoryMultipart({ operationFault: function ({ operation, request }) {
+      if (operation !== 'complete' || faults++ > 0) return false
+      request.destroy(Object.assign(new Error('SECRET never connected'), { code }))
+      return true
+    } })
+    assert.equal((await store(transport).publishFile(key, data.filePath, data.input)).sha256, data.input.expectedSha256)
+    assert.equal(transport.calls.filter(call => call.method === 'POST' && call.url.searchParams.has('uploadId')).length, 2)
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+    assert.deepEqual(transport.waits, [2500], code)
+  }
+  const refused = memoryMultipart({ operationFault: function ({ operation, request }) {
+    if (operation !== 'complete') return false
+    request.destroy(Object.assign(new Error('SECRET never connected'), { code: 'ECONNREFUSED' }))
+    return true
+  } })
+  await assert.rejects(store(refused).publishFile(key, data.filePath, data.input), error => {
+    const diagnostic = safeSyncFailure(error)
+    assert.equal(diagnostic.put.multipartState, 'complete-unconfirmed')
+    assert.equal(diagnostic.put.put.multipartOperation, 'complete')
+    assert.equal(diagnostic.put.put.transportCode, 'ECONNREFUSED')
+    assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|authorization|upload-123/)
+    return true
+  })
+  assert.equal(refused.calls.filter(call => call.method === 'POST' && call.url.searchParams.has('uploadId')).length, RETRY_POLICIES.write.attempts)
+  // A complete that may still be merging is never followed by an abort.
+  assert.equal(refused.calls.filter(call => call.method === 'DELETE').length, 0)
+  assert.deepEqual(refused.waits, FULL_WRITE_WAITS)
+})
+
+test('part checksum, certificate and unknown-host failures never retry', async t => {
+  const data = await fixture(t)
+  for (const failure of ['etag', 'CERT_HAS_EXPIRED', 'ENOTFOUND']) {
     const transport = memoryMultipart({ partFault: function ({ call, callback, request }) {
       if (call.url.searchParams.get('partNumber') !== '1') return false
       if (failure === 'etag') callback(response(Buffer.alloc(0), 200, { etag: '"wrong-md5"' }))
@@ -407,6 +492,7 @@ test('part checksum, certificate and refused connection failures never retry', a
     } })
     await assert.rejects(store(transport).publishFile(key, data.filePath, data.input))
     assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, 1)
+    assert.deepEqual(transport.waits, [])
     assert.equal(transport.calls.filter(call => call.method === 'POST').length, 1)
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1)
   }
@@ -425,10 +511,11 @@ test('part response header and body timeouts retry only the failed part', async 
       }
       return true
     } })
-    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => 1000, headerTimeoutMs: 500, bodyTimeoutMs: 20 })
+    const client = createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => 1000, headerTimeoutMs: 500, bodyTimeoutMs: 20, sleep: transport.sleep, random: () => 0 })
     await client.publishFile(key, data.filePath, data.input)
     assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, 2)
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0)
+    assert.deepEqual(transport.waits, [2500], phase)
   }
 })
 
@@ -462,7 +549,7 @@ test('part retries retain the original deadline and stop after another worker fa
     const terminal = new Error('terminal failure')
     try {
       await assert.rejects(uploadMultipart({ handle, stat: await handle.stat(), hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
-        monotonicNow: () => clock, failure: error => error, shouldRetryPart: error => error === timeout,
+        monotonicNow: () => clock, failure: error => error, shouldRetry: (operation, error) => error === timeout,
         request: async function (operation, method, query, body) {
           operations.push([operation, query.partNumber])
           if (operation === 'init') return { body: initXml() }
@@ -490,6 +577,44 @@ test('part retries retain the original deadline and stop after another worker fa
       assert.deepEqual(operations.at(-1), ['abort', undefined])
     } finally { await handle.close() }
   }
+})
+
+test('a part waiting out its backoff is woken as soon as another part fails for good', async t => {
+  const data = await fixture(t, PART_BYTES * 4)
+  const handle = await fs.open(data.filePath, 'r')
+  t.after(() => handle.close())
+  const timeout = new Error('retryable timeout')
+  const terminal = new Error('terminal failure')
+  let startWaiting
+  const waiting = new Promise(resolve => { startWaiting = resolve })
+  let woken = false
+  let active = 0
+  const operations = []
+  await assert.rejects(uploadMultipart({ handle, stat: await handle.stat(), hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+    failure: error => error, shouldRetry: (operation, error) => error === timeout,
+    sleep: (milliseconds, signal) => new Promise((resolve, reject) => {
+      // Stands in for a backoff of up to two minutes; only the abort may end it
+      // early. Without the signal this resolves late and the assertion fails.
+      const fallback = setTimeout(resolve, 2000)
+      signal?.addEventListener('abort', () => { clearTimeout(fallback); woken = true; reject(signal.reason) }, { once: true })
+      startWaiting()
+    }),
+    request: async function (operation, method, query, body) {
+      operations.push([operation, query.partNumber])
+      if (operation === 'init') return { body: initXml() }
+      if (operation === 'abort') { assert.equal(active, 0); return {} }
+      active += 1
+      try {
+        if (query.partNumber === '1') throw timeout
+        if (query.partNumber === '2') { await waiting; throw terminal }
+        return { bytes: 0, headers: { etag: `"${digest(body, 'md5')}"` } }
+      } finally { active -= 1 }
+    },
+  }), error => error === terminal)
+  assert.equal(woken, true)
+  assert.equal(operations.filter(([operation, number]) => operation === 'part' && number === '1').length, 1)
+  assert.equal(operations.filter(([operation]) => operation === 'complete').length, 0)
+  assert.deepEqual(operations.at(-1), ['abort', undefined])
 })
 
 test('an existing conflicting immutable object is fully read and never starts multipart', async t => {
@@ -568,6 +693,76 @@ test('dispatch can finish beyond thirty minutes but stops at the seventy-five mi
       if (elapsedMs < 75 * 60 * 1000) { await run; assert.ok(operations.includes('complete')) }
       else { await assert.rejects(run, /总时间限制/); assert.deepEqual(operations, ['init', 'abort']) }
     } finally { await handle.close() }
+  }
+})
+
+test('a caller deadline replaces the seventy-five minute default and out-of-range deadlines are refused', async t => {
+  const data = await fixture(t, PART_BYTES + 123)
+  const deadlineMs = 120 * 60 * 1000
+  for (const elapsedMs of [75 * 60 * 1000, deadlineMs - 1, deadlineMs]) {
+    const handle = await fs.open(data.filePath, 'r')
+    let clock = 0
+    const operations = []
+    try {
+      const run = uploadMultipart({ handle, stat: await handle.stat(), hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+        deadlineMs, monotonicNow: () => clock, failure: error => error,
+        request: async function (operation, method, query, body) {
+          operations.push(operation)
+          if (operation === 'init') { clock = elapsedMs; return { body: initXml() } }
+          if (operation === 'part') return { bytes: 0, headers: { etag: `"${digest(body, 'md5')}"` } }
+          if (operation === 'complete') return { body: completeXml(Math.ceil(data.body.length / PART_BYTES)) }
+          return {}
+        },
+      })
+      if (elapsedMs < deadlineMs) { await run; assert.ok(operations.includes('complete')) }
+      else { await assert.rejects(run, /总时间限制/); assert.deepEqual(operations, ['init', 'abort']) }
+    } finally { await handle.close() }
+  }
+  // GitHub stops any hosted job after six hours, and a deadline under a
+  // minute could not finish even one part.
+  for (const invalid of [59 * 1000, 6 * 60 * 60 * 1000 + 1, 90 * 60 * 1000 + 0.5, Number.NaN, String(deadlineMs)]) {
+    const handle = await fs.open(data.filePath, 'r')
+    try {
+      await assert.rejects(uploadMultipart({ handle, stat: await handle.stat(), hash: { bytes: data.body.length, sha256: data.input.expectedSha256 }, bucket: config.bucket, key, concurrency: 4,
+        deadlineMs: invalid, failure: error => error, request: async () => assert.fail('an invalid deadline must not reach COS'),
+      }), /COS 分块上传参数无效/, String(invalid))
+    } finally { await handle.close() }
+  }
+})
+
+test('global acceleration carries every multipart write while readbacks stay on the regional download host', async t => {
+  const data = await fixture(t)
+  const regional = `${config.bucket}.cos.ap-shanghai.myqcloud.com`
+  const accelerated = `${config.bucket}.cos.accelerate.myqcloud.com`
+  const transport = memoryMultipart({ partFault: function ({ call, callback, attempt }) {
+    if (call.url.searchParams.get('partNumber') !== '1' || attempt !== 1) return false
+    callback(response(Buffer.from('<Error><Code>UserNetworkTooSlow</Code><Message>SECRET</Message></Error>'), 400))
+    return true
+  } })
+  const result = await store(transport, true, 4, { accelerate: true }).publishFile(key, data.filePath, data.input)
+  assert.equal(result.sha256, data.input.expectedSha256)
+  assert.equal(new URL(result.url).hostname, regional)
+  assert.deepEqual([...new Set(transport.calls.map(call => call.method))].sort(), ['GET', 'HEAD', 'POST', 'PUT'])
+  for (const call of transport.calls) {
+    const write = !['HEAD', 'GET'].includes(call.method)
+    assert.equal(call.url.hostname, write ? accelerated : regional, call.method)
+    assert.equal(Boolean(call.headers.authorization), write, call.method)
+    if (write) assert.equal(call.headers.host, accelerated)
+  }
+  // COS reports slow-network errors from the acceleration endpoint too, and
+  // they are diagnosed and retried exactly as on the regional one.
+  assert.equal(transport.calls.filter(call => call.url.searchParams.get('partNumber') === '1').length, 2)
+  assert.deepEqual(transport.waits, [2500])
+
+  const failed = memoryMultipart({ failPart: true })
+  await assert.rejects(store(failed, true, 4, { accelerate: true }).publishFile(key, data.filePath, data.input))
+  assert.deepEqual(failed.calls.filter(call => call.method === 'DELETE').map(call => call.url.hostname), [accelerated])
+})
+
+test('all protected workflows leave global acceleration off unless the repository variable turns it on', async () => {
+  for (const name of ['publish-release.yml', 'sync-chatgpt-official-cos.yml', 'sync-claude-official-cos.yml', 'sync-published-manager-cos.yml']) {
+    const text = await fs.readFile(path.join(__dirname, '../.github/workflows', name), 'utf8')
+    assert.match(text, /XINGMANG_COS_ACCELERATE: \$\{\{ vars\.XINGMANG_COS_ACCELERATE \|\| 'false' \}\}/, name)
   }
 })
 

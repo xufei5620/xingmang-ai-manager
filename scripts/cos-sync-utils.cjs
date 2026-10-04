@@ -7,13 +7,24 @@ const { performance } = require('node:perf_hooks')
 const { Writable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { readMultipartOptions, uploadMultipart, THRESHOLD_BYTES, PART_BYTES, MAX_XML_BYTES } = require('./cos-multipart-upload.cjs')
+const { RETRY_POLICIES, retryTransfer } = require('./cos-transfer-retry.cjs')
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_JSON_BYTES = 1024 * 1024
 const DEFAULT_BUCKET = 'xingmang-downloads-1342302199'
 const DEFAULT_REGION = 'ap-shanghai'
 const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed', 'cos-multipart-unconfirmed'])
-const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
+const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
+// Failures of the path to COS, not answers about the object. ENOTFOUND is left
+// out on purpose: a misspelt or unknown host must fail at once instead of
+// waiting through every retry.
+const TRANSIENT_TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_PREMATURE_CLOSE'])
+// Refused, unresolvable or unroutable: in practice the request never reached
+// COS. Linux can report EHOSTUNREACH/ENETUNREACH on an established connection
+// too, but only after many minutes of failed retransmission: Complete's
+// 30-second header timeout fires first, and a repeated latest pointer PUT
+// resends identical bytes.
+const UNDELIVERED_TRANSPORT_CODES = new Set(['ECONNREFUSED', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'])
 const COS_ERROR_CODES = new Set(['RequestTimeout', 'BadDigest', 'InvalidDigest', 'AccessDenied', 'SignatureDoesNotMatch', 'NoSuchUpload', 'EntityTooSmall', 'InvalidPart', 'InvalidPartOrder', 'InvalidArgument', 'UserNetworkTooSlow', 'IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'])
 const COS_ERROR_BODY_STATUSES = new Set(['recognized-code', 'unrecognized-code', 'missing-code', 'empty-body', 'invalid-utf8', 'invalid-xml', 'unsupported-field', 'duplicate-field', 'invalid-entity', 'unsupported-encoding', 'invalid-content-length', 'declared-too-large', 'body-too-large', 'body-timeout', 'body-stream-failed', 'length-mismatch'])
 const COS_ERROR_CONTENT_TYPES = new Set(['missing', 'xml', 'json', 'html', 'text', 'other'])
@@ -73,7 +84,13 @@ function readCosConfiguration(env = process.env) {
       typeof secretKey !== 'string' || !/^[A-Za-z0-9+/=]{8,128}$/.test(secretKey)) {
     throw new Error('请配置有效的 COS_SECRET_ID 和 COS_SECRET_KEY')
   }
-  return { ...location, secretId, secretKey, multipart: readMultipartOptions(env) }
+  return { ...location, secretId, secretKey, multipart: readMultipartOptions(env), accelerate: readAccelerateOption(env) }
+}
+
+function readAccelerateOption(env = process.env) {
+  const value = env.XINGMANG_COS_ACCELERATE
+  if (value !== undefined && !['true', 'false', ''].includes(value)) throw new Error('COS 全球加速开关必须为 true 或 false')
+  return value === 'true'
 }
 
 function validateObjectKey(key) {
@@ -186,7 +203,7 @@ function parseCosErrorDiagnostic(body) {
 function isCosMultipartRequest(input, url) {
   const methods = { init: 'POST', part: 'PUT', complete: 'POST', abort: 'DELETE' }
   return Object.hasOwn(methods, input.multipartOperation) && methods[input.multipartOperation] === input.method &&
-    /^[a-z0-9][a-z0-9-]{0,49}-[0-9]{5,20}\.cos\.[a-z]{2}-[a-z]+(?:-[a-z]+)?\.myqcloud\.com$/.test(url.hostname)
+    /^[a-z0-9][a-z0-9-]{0,49}-[0-9]{5,20}\.cos\.(?:[a-z]{2}-[a-z]+(?:-[a-z]+)?|accelerate)\.myqcloud\.com$/.test(url.hostname)
 }
 
 function classifyCosErrorContentType(value) {
@@ -234,12 +251,30 @@ async function readCosErrorDiagnostic(response, timeoutMs) {
   } finally { clearTimeout(timer) }
 }
 
-function isRetryablePartFailure(error) {
+// Only owned failure records count: a timeout, a dropped or refused connection,
+// COS being busy (429/5xx) or COS's own diagnosed slow-network 400s. Digest,
+// size, type, ETag, certificate, 403/404 and unknown 4xx answers are final.
+function isTransientTransferFailure(error) {
   const details = failureDetails.get(error)
-  if (!details || details.method !== 'PUT' || details.multipartOperation !== 'part') return false
-  return details.code === 'response-header-timeout' || details.code === 'response-body-timeout' ||
-    (details.code === 'network-request-failed' && ['ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(details.transportCode)) ||
-    (details.code === 'http-status' && details.status === 400 && ['RequestTimeout', 'UserNetworkTooSlow'].includes(details.cosErrorCode))
+  if (!details) return false
+  if (details.code === 'response-header-timeout' || details.code === 'response-body-timeout') return true
+  if (details.code === 'network-request-failed') return TRANSIENT_TRANSPORT_CODES.has(details.transportCode)
+  if (details.code !== 'http-status') return false
+  return details.status === 429 || (details.status >= 500 && details.status <= 599) ||
+    (details.status === 400 && ['RequestTimeout', 'UserNetworkTooSlow'].includes(details.cosErrorCode))
+}
+
+function isUndeliveredRequestFailure(error) {
+  const details = failureDetails.get(error)
+  return details?.code === 'network-request-failed' && UNDELIVERED_TRANSPORT_CODES.has(details.transportCode)
+}
+
+// Complete can return 200 before merging finishes or lose its final reply, so a
+// second Complete is sent only when the first one provably never left the
+// runner. Init and parts are safe to repeat: a lost init reply leaves an empty
+// session holding no data, and COS keeps the last copy of a partNumber.
+function shouldRetryMultipart(operation, error) {
+  return operation === 'complete' ? isUndeliveredRequestFailure(error) : isTransientTransferFailure(error)
 }
 
 async function performRequest(input, options = {}) {
@@ -538,15 +573,37 @@ function createCosStore(configuration, options = {}) {
   const config = readCosConfiguration({ COS_BUCKET: configuration.bucket, COS_REGION: configuration.region, COS_SECRET_ID: configuration.secretId, COS_SECRET_KEY: configuration.secretKey })
   const multipart = readMultipartOptions({ XINGMANG_COS_MULTIPART_ENABLED: configuration.multipart?.enabled === true ? 'true' : 'false', XINGMANG_COS_MULTIPART_CONCURRENCY: configuration.multipart?.concurrency })
   const host = new URL(config.publicBaseUrl).hostname
+  // Global acceleration only changes where bytes are written. Every readback
+  // keeps using the regional address that customers download from.
+  const uploadHost = configuration.accelerate === true ? `${config.bucket}.cos.accelerate.myqcloud.com` : host
+  const pacing = { sleep: options.sleep, random: options.random }
 
-  function publicUrl(key) {
+  function objectPath(key) {
     validateObjectKey(key)
-    return `${config.publicBaseUrl}/${key.split('/').map(encodeComponent).join('/')}`
+    return key.split('/').map(encodeComponent).join('/')
   }
 
-  async function inspect(key) {
+  function publicUrl(key) {
+    return `${config.publicBaseUrl}/${objectPath(key)}`
+  }
+
+  function uploadUrl(key) {
+    return new URL(`https://${uploadHost}/${objectPath(key)}`)
+  }
+
+  function reportRetry(input) {
+    return function ({ attempt, delayMs, error }) {
+      if (typeof input.onRetry === 'function') input.onRetry({ attempt, delayMs, error })
+    }
+  }
+
+  function read(operation, input) {
+    return retryTransfer(operation, { policy: RETRY_POLICIES.read, shouldRetry: isTransientTransferFailure, onRetry: reportRetry(input), ...pacing })
+  }
+
+  async function inspect(key, input = {}) {
     try {
-      const result = await inspectResource({ url: publicUrl(key), allowedHosts: [host], maxBytes: MAX_FILE_BYTES }, options)
+      const result = await read(function () { return inspectResource({ url: publicUrl(key), allowedHosts: [host], maxBytes: MAX_FILE_BYTES }, options) }, input)
       return { bytes: result.bytes, etag: result.etag, contentType: result.contentType, sha256: result.headers['x-cos-meta-sha256'] }
     } catch (error) {
       if (error.status === 404) return null
@@ -554,41 +611,58 @@ function createCosStore(configuration, options = {}) {
     }
   }
 
-  async function readJson(key) {
-    return fetchJson({ url: publicUrl(key), allowedHosts: [host], missingOk: true }, options)
+  async function readJson(key, input = {}) {
+    return read(function () { return fetchJson({ url: publicUrl(key), allowedHosts: [host], missingOk: true }, options) }, input)
   }
 
   async function verify(key, hash, input) {
-    const result = await performRequest({ url: publicUrl(key), allowedHosts: [host], maxBytes: hash.bytes, expectedBytes: hash.bytes, expectedSha256: hash.sha256, onProgress: input.onProgress }, options)
+    const result = await read(function () {
+      return performRequest({ url: publicUrl(key), allowedHosts: [host], maxBytes: hash.bytes, expectedBytes: hash.bytes, expectedSha256: hash.sha256, onProgress: input.onProgress }, options)
+    }, input)
     if (!contentTypesMatch(result.headers['content-type'], input.contentType, input.acceptedContentTypes)) throw new Error('COS 文件的 Content-Type 与预期不一致')
     return { key, url: publicUrl(key), bytes: hash.bytes, sha256: hash.sha256, contentType: result.headers['content-type'], etag: result.etag }
+  }
+
+  // A write is repeated only once it is proven not to have happened. After a
+  // transient PUT failure, an immutable object that the full public readback
+  // reports missing (404) is still absent, and x-cos-forbid-overwrite turns a
+  // late landing of the first PUT into a refusal rather than a replacement.
+  // The mutable latest pointer is repeated only when the request never left
+  // the runner, because its previous content always reads back as a mismatch.
+  function canRepeatPut(input, error) {
+    const details = failureDetails.get(error)
+    if (details?.code !== 'cos-upload-unconfirmed') return false
+    if (input.overwrite) return isUndeliveredRequestFailure(details.put)
+    return isTransientTransferFailure(details.put) && failureDetails.get(details.readback)?.status === 404
   }
 
   async function publish(key, hash, createBody, input) {
     validateObjectKey(key)
     validatePublicationOptions(key, input)
-    const existing = await inspect(key)
+    const existing = await inspect(key, input)
     if (existing && !input.overwrite) return verify(key, hash, input)
-    const url = new URL(publicUrl(key))
-    const headers = {
-      host,
-      'content-length': String(hash.bytes),
-      'content-md5': hash.md5Base64,
-      'content-type': input.contentType,
-      'x-cos-meta-sha256': hash.sha256,
-      'cache-control': input.cacheControl || (input.overwrite ? 'no-cache' : 'public, max-age=31536000, immutable'),
-    }
-    if (!input.overwrite) headers['x-cos-forbid-overwrite'] = 'true'
-    headers.authorization = buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: 'PUT', pathname: decodeURIComponent(url.pathname), headers, now: options.now ? options.now() : Math.floor(Date.now() / 1000) })
-    let putError
-    try {
-      await performRequest({ url: url.href, allowedHosts: [host], method: 'PUT', headers, body: await createBody(), uploadBytes: hash.bytes, onProgress: input.onProgress, maxBytes: MAX_JSON_BYTES }, options)
-    } catch (error) { putError = error }
-    // A lost PUT response does not justify another write: first confirm the complete public object.
-    try { return await verify(key, hash, input) } catch (readbackError) {
-      if (putError) throw transferFailure('cos-upload-unconfirmed', 'COS 上传未确认成功；已尝试读取核验，请检查远程状态后再重试', { put: putError, readback: readbackError })
-      throw transferFailure('cos-readback-failed', 'COS 上传后的公共下载核验失败，请检查远程状态', { readback: readbackError })
-    }
+    const url = uploadUrl(key)
+    return retryTransfer(async function () {
+      const headers = {
+        host: uploadHost,
+        'content-length': String(hash.bytes),
+        'content-md5': hash.md5Base64,
+        'content-type': input.contentType,
+        'x-cos-meta-sha256': hash.sha256,
+        'cache-control': input.cacheControl || (input.overwrite ? 'no-cache' : 'public, max-age=31536000, immutable'),
+      }
+      if (!input.overwrite) headers['x-cos-forbid-overwrite'] = 'true'
+      headers.authorization = buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method: 'PUT', pathname: decodeURIComponent(url.pathname), headers, now: options.now ? options.now() : Math.floor(Date.now() / 1000) })
+      let putError
+      try {
+        await performRequest({ url: url.href, allowedHosts: [uploadHost], method: 'PUT', headers, body: await createBody(), uploadBytes: hash.bytes, onProgress: input.onProgress, maxBytes: MAX_JSON_BYTES }, options)
+      } catch (error) { putError = error }
+      // A lost PUT response does not justify another write: first confirm the complete public object.
+      try { return await verify(key, hash, input) } catch (readbackError) {
+        if (putError) throw transferFailure('cos-upload-unconfirmed', 'COS 上传未确认成功；已尝试读取核验，请检查远程状态后再重试', { put: putError, readback: readbackError })
+        throw transferFailure('cos-readback-failed', 'COS 上传后的公共下载核验失败，请检查远程状态', { readback: readbackError })
+      }
+    }, { policy: RETRY_POLICIES.write, shouldRetry: function (error) { return canRepeatPut(input, error) }, onRetry: reportRetry(input), ...pacing })
   }
 
   async function publishFile(key, filePath, input) {
@@ -614,18 +688,18 @@ function createCosStore(configuration, options = {}) {
   async function publishMultipartFile(key, filePath, hash, input) {
     validateObjectKey(key)
     validatePublicationOptions(key, input)
-    if (await inspect(key)) return verify(key, hash, input)
+    if (await inspect(key, input)) return verify(key, hash, input)
     const opened = await openRegularFile(filePath, MAX_FILE_BYTES)
     let uploadError
     try {
       await uploadMultipart({ handle: opened.handle, stat: opened.stat, hash, bucket: config.bucket, key, concurrency: multipart.concurrency,
-        shouldRetryPart: isRetryablePartFailure,
+        shouldRetry: shouldRetryMultipart, deadlineMs: options.multipartDeadlineMs, onRetry: reportRetry(input), ...pacing,
         failure: function (error, multipartState, abort) { return transferFailure('cos-multipart-unconfirmed', 'COS 分块上传未确认；请核对远程状态', { put: error, multipartState, abort }) },
         onPartCommitted: function (transferredBytes) { input.onProgress?.({ method: 'PUT', phase: 'upload-body', transferredBytes, expectedBytes: hash.bytes }) },
         request: async function (operation, method, query, body) {
-          const url = new URL(publicUrl(key))
+          const url = uploadUrl(key)
           url.search = Object.entries(query).map(([name, value]) => `${encodeComponent(name)}=${encodeComponent(value)}`).join('&')
-          const headers = { host, 'content-length': String(body.length) }
+          const headers = { host: uploadHost, 'content-length': String(body.length) }
           if (operation !== 'abort') {
             headers['content-type'] = operation === 'init' ? input.contentType : operation === 'complete' ? 'application/xml' : 'application/octet-stream'
             headers['content-md5'] = crypto.createHash('md5').update(body).digest('base64')
@@ -638,7 +712,7 @@ function createCosStore(configuration, options = {}) {
           if (operation === 'part') headers['x-cos-psize-max'] = String(PART_BYTES)
           headers.authorization = buildCosAuthorization({ secretId: config.secretId, secretKey: config.secretKey, method, pathname: decodeURIComponent(url.pathname), query, headers, now: options.now ? options.now() : Math.floor(Date.now() / 1000) })
           try {
-            const result = await performRequest({ url: url.href, allowedHosts: [host], method, headers, body, uploadBytes: body.length, maxBytes: MAX_XML_BYTES, collectBody: true, multipartOperation: operation }, { ...options, headerTimeoutMs: operation === 'part' ? Math.min(options.headerTimeoutMs ?? 6 * 60 * 1000, 6 * 60 * 1000) : options.headerTimeoutMs, bodyTimeoutMs: Math.min(options.bodyTimeoutMs ?? (operation === 'complete' ? 10 * 60 * 1000 : 30000), operation === 'complete' ? 10 * 60 * 1000 : 30000) })
+            const result = await performRequest({ url: url.href, allowedHosts: [uploadHost], method, headers, body, uploadBytes: body.length, maxBytes: MAX_XML_BYTES, collectBody: true, multipartOperation: operation }, { ...options, headerTimeoutMs: operation === 'part' ? Math.min(options.headerTimeoutMs ?? 6 * 60 * 1000, 6 * 60 * 1000) : options.headerTimeoutMs, bodyTimeoutMs: Math.min(options.bodyTimeoutMs ?? (operation === 'complete' ? 10 * 60 * 1000 : 30000), operation === 'complete' ? 10 * 60 * 1000 : 30000) })
             if (operation === 'abort' && (result.status !== 204 || result.bytes !== 0)) throw new Error('COS 分块中止响应无效')
             return result
           } catch (error) {
@@ -650,7 +724,8 @@ function createCosStore(configuration, options = {}) {
       })
     } catch (error) { uploadError = error } finally { await opened.handle.close().catch(() => {}) }
     // Complete can return 200 before merging finishes, or lose its final reply.
-    // There is never a second complete, rollback, or abort after complete.
+    // A second complete is only sent when the first provably never reached
+    // COS; there is never a rollback, and never an abort after complete.
     try { return await verify(key, hash, input) } catch (readbackError) {
       if (uploadError) throw transferFailure('cos-upload-unconfirmed', 'COS 分块上传未确认成功；已尝试完整公共回读，请核对远程状态', { put: uploadError, readback: readbackError })
       throw transferFailure('cos-readback-failed', 'COS 分块上传后的完整公共下载核验失败', { readback: readbackError })
@@ -677,6 +752,7 @@ module.exports = {
   fetchText,
   hashFile,
   inspectResource,
+  isTransientTransferFailure,
   readBoundedRegularFile,
   readCosConfiguration,
   readCosLocation,

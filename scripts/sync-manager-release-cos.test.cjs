@@ -140,7 +140,11 @@ test('the complete release is verified and synchronized before the absolute late
   assert.equal(index.product, 'xingmang-ai-manager')
   assert.equal(store.events.at(-1).key, LATEST_KEY)
   assert.equal(store.events.at(-1).kind, 'json')
-  assert.deepEqual(store.events.at(-1).options, { overwrite: true, cacheControl: 'no-cache' })
+  // The pointer write also hands the store a retry observer for the log; the
+  // write itself keeps exactly these two options.
+  const { onRetry, ...pointerOptions } = store.events.at(-1).options
+  assert.deepEqual(pointerOptions, { overwrite: true, cacheControl: 'no-cache' })
+  assert.equal(typeof onRetry, 'function')
   const firstManifest = store.events.findIndex((event) => event.key.endsWith('.yml'))
   assert.equal(firstManifest, 10)
   assert.ok(store.events.slice(firstManifest, -2).every((event) => event.key.endsWith('.yml')))
@@ -432,4 +436,44 @@ test('CLI arguments reject missing, duplicate and unknown values', () => {
     ['--directory', 'x', '--directory', 'y', '--version', VERSION], ['--token', 'secret']]) {
     assert.throws(() => parseArguments(args))
   }
+})
+
+test('the release store may spend two hours on one installer and its retries reach the log with stage and platform', async (t) => {
+  const local = fixture(t)
+  const base = memoryStore()
+  const created = []
+  const failure = new Error('PRIVATE signed upload URL')
+  const store = {
+    ...base,
+    async readJson(key, options) {
+      options.onRetry({ attempt: 1, delayMs: 1000, error: failure })
+      return base.readJson(key)
+    },
+    async publishFile(key, filePath, options) {
+      assert.equal(typeof options.onProgress, 'function')
+      options.onRetry({ attempt: 2, delayMs: 5000, error: failure })
+      return base.publishFile(key, filePath, options)
+    },
+    async publishJson(key, value, options) {
+      options.onRetry({ attempt: 1, delayMs: 2500, error: failure })
+      return base.publishJson(key, value, options)
+    },
+  }
+  const utilities = { ...require('./cos-sync-utils.cjs'), createCosStore(config, options) { created.push(options); return store } }
+  const events = []
+  await syncManagerRelease({ ...local, utilities, config: { publicBaseUrl: PUBLIC_BASE }, onDiagnostic: event => events.push(event) })
+  // Longer than the 75-minute default of the 90-minute official package jobs.
+  assert.deepEqual(created, [{ multipartDeadlineMs: 120 * 60 * 1000 }])
+  const retries = events.filter(event => event.event === 'retry')
+  assert.deepEqual([...new Set(retries.map(event => event.stage))], ['cos-read-latest', 'cos-publish-file', 'cos-recheck-latest', 'cos-publish-candidate', 'cos-recheck-candidate-state', 'cos-publish-latest'])
+  const fileRetries = retries.filter(event => event.stage === 'cos-publish-file')
+  assert.equal(fileRetries.length, base.events.filter(event => event.kind === 'file').length)
+  for (const retry of fileRetries) {
+    assert.equal(retry.platform, 'windows')
+    assert.equal(retry.version, VERSION)
+    assert.equal(retry.attempt, 2)
+    assert.equal(retry.delayMs, 5000)
+    assert.deepEqual(retry.failure, { code: 'operation-failed' })
+  }
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE|signed upload|filePath|https:/)
 })
