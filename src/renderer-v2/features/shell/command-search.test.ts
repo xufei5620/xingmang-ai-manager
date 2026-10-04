@@ -80,6 +80,13 @@ describe('searchCommands', () => {
     expect(hits.some((item) => item.key === 'account:recharge')).toBe(false)
   })
 
+  it('offers the account center switch button under the account center, whichever tabs the account has', () => {
+    expect(searchCommands('切换账号').find((item) => item.group === 'account')).toEqual({
+      key: 'account:switch-account', group: 'account', label: '切换账号', page: 'account', section: 'switch-account',
+    })
+    expect(searchCommands('换号', { accountTabVisible: () => false }).some((item) => item.key === 'account:switch-account')).toBe(true)
+  })
+
   it('returns nothing for text no page, setting or tutorial mentions', () => {
     expect(searchCommands('qqqqzzzz')).toEqual([])
   })

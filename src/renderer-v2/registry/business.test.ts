@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { PlatformNotificationKind } from '../../../electron/platform/contract';
 import type { UpdateFailedStep } from '../../../electron/ipc-contract';
 import {
+  accountTabGroups,
+  accountTabs,
   autoUpdateBubbleBody,
   autoUpdateSettingDescription,
   notificationOptions,
@@ -25,6 +27,13 @@ import {
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './business';
+
+describe('account center tab groups', () => {
+  // 左边子导航按组画，搜索结果按 accountTabs 排；两边次序一致，每个分页只出现一次。
+  it('lists every account tab in exactly one group, in the order of the tab list', () => {
+    expect(accountTabGroups.flatMap((group) => group.tabs)).toEqual(accountTabs.map((tab) => tab.value));
+  });
+});
 
 describe('renderer-v2 notification settings registry', () => {
   // 设置页是 notificationOptions.map 渲染的，所以少一条就是「主进程会发这种通知，

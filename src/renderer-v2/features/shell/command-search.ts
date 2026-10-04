@@ -1,4 +1,4 @@
-import { accountTabs, settingsGroups, settingsItems, type SettingsItem } from '../../registry/business'
+import { accountSwitchAnchor, accountSwitchKeywords, accountTabs, settingsGroups, settingsItems, type SettingsItem } from '../../registry/business'
 import { pageRegistry, pageSearchKeywords, type PageId } from '../../registry/pages'
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
 import { searchWords, tutorialSearchText } from '../tutorial/tutorial-search'
@@ -65,9 +65,11 @@ function pageEntries(options: CommandSearchOptions): Entry[] {
   return pageRegistry.filter(page => options.pageVisible?.(page.id) ?? true).map(page => ({ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }))
 }
 
+// 页头的「切换账号」不是分页，哪种账号都有：点了停在当前分页，翻到那颗按钮。
 function accountEntries(options: CommandSearchOptions): Entry[] {
-  return accountTabs.filter(tab => options.accountTabVisible?.(tab.value) ?? true)
+  const tabs: Entry[] = accountTabs.filter(tab => options.accountTabVisible?.(tab.value) ?? true)
     .map(tab => ({ result: { key: `account:${tab.value}`, group: 'account', label: tab.label, page: 'account', section: tab.value }, label: tab.label, keywords: tab.keywords }))
+  return [...tabs, { result: { key: `account:${accountSwitchAnchor}`, group: 'account', label: '切换账号', page: 'account', section: accountSwitchAnchor }, label: '切换账号', keywords: accountSwitchKeywords }]
 }
 
 // 设置里每一行单独一条，写成「更新与关于 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，

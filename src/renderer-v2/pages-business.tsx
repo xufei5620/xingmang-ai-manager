@@ -23,6 +23,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   accountTabRequest?: number
   /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
   accountRechargeAmount?: number
+  /** 外壳手上的登录状态，个人中心自己读回来之前先拿它摆出左边分页；缺省 = 等个人中心自己读。 */
+  accountSession?: Parameters<typeof AccountPage>[0]['accountSession']
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
@@ -47,6 +49,7 @@ export function BusinessPage({
   accountTab,
   accountTabRequest,
   accountRechargeAmount,
+  accountSession,
   tutorialTopic,
   paymentReturn,
   onSessionsChanged,
@@ -66,9 +69,12 @@ export function BusinessPage({
         tabRequest={accountTabRequest}
         rechargeAmount={accountRechargeAmount}
         paymentReturn={paymentReturn}
+        accountSession={accountSession}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
+        onSwitchAccount={actions.switchAccount}
+        onOpenHealth={actions.navigate ? () => actions.navigate?.('health') : undefined}
         onRewriteKey={actions.onRewriteKey}
         onConfigureTool={actions.openConfig}
         onToolConfigSaved={onToolConfigSaved}
