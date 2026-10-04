@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultAppSettings,
   mergeAppSettings,
@@ -31,6 +31,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -299,6 +300,77 @@ describe('application settings persistence', () => {
       settings({ workspace: 'D:\\Replacement' }),
     )).rejects.toThrow('单链接普通文件')
     expect(fs.readFileSync(victim, 'utf8')).toBe(original)
+  })
+
+  it('waits out a scanner briefly holding the settings file or its backup', async () => {
+    const filePath = temporarySettingsPath()
+    const previous = settings({ workspace: 'D:\\Previous' })
+    const next = settings({ workspace: 'D:\\Next', theme: 'light' })
+    await writeAppSettings(filePath, previous)
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    const held = new Map([[path.resolve(filePath), 2], [path.resolve(`${filePath}.bak`), 1]])
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      const target = path.resolve(String(to))
+      const remaining = held.get(target) ?? 0
+      if (remaining > 0) {
+        held.set(target, remaining - 1)
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return originalRename(from, to)
+    })
+
+    await writeAppSettings(filePath, next)
+
+    expect([...held.values()]).toEqual([0, 0])
+    expect(readAppSettings(filePath)).toEqual(next)
+    expect(readAppSettings(`${filePath}.bak`)).toEqual(previous)
+    expect(fs.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('keeps the original error and the previous settings when the file stays held', async () => {
+    const filePath = temporarySettingsPath()
+    const previous = settings({ workspace: 'D:\\Previous' })
+    await writeAppSettings(filePath, previous)
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    let heldAttempts = 0
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.resolve(String(to)) === path.resolve(filePath)) {
+        heldAttempts += 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return originalRename(from, to)
+    })
+
+    await expect(writeAppSettings(filePath, settings({ workspace: 'D:\\Next' })))
+      .rejects.toThrow('EPERM: operation not permitted, rename')
+    expect(heldAttempts).toBe(5)
+    expect(readAppSettings(filePath)).toEqual(previous)
+    expect(fs.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('checks the settings file again before retrying a held replacement', async () => {
+    const filePath = temporarySettingsPath()
+    const victim = path.join(path.dirname(filePath), 'victim.json')
+    await writeAppSettings(filePath, settings({ workspace: 'D:\\Previous' }))
+    const original = `${JSON.stringify(settings({ workspace: 'D:\\Victim' }))}\n`
+    fs.writeFileSync(victim, original, 'utf8')
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    let swapped = false
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (!swapped && path.resolve(String(to)) === path.resolve(filePath)) {
+        swapped = true
+        fs.rmSync(filePath)
+        fs.linkSync(victim, filePath)
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return originalRename(from, to)
+    })
+
+    await expect(writeAppSettings(filePath, settings({ workspace: 'D:\\Next' })))
+      .rejects.toThrow('单链接普通文件')
+    expect(swapped).toBe(true)
+    expect(fs.readFileSync(victim, 'utf8')).toBe(original)
+    expect(fs.lstatSync(filePath).nlink).toBe(2)
   })
 })
 

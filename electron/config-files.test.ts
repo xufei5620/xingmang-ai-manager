@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
 import {
   buildCodexApiKeyAuth,
@@ -28,6 +28,7 @@ import {
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
+  executeFilePlans,
   fillRelayTemplateDefaults,
   relayTemplateDefaultsPending,
   inspectManagedCliHookTargets,
@@ -116,6 +117,7 @@ if (false) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryHomes.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -1356,6 +1358,114 @@ describe('native CLI configuration files', () => {
     }
 
     expect(saveError).toBeInstanceOf(Error)
+    expect(directoryFileSnapshot(outside)).toEqual(outsideBefore)
+  })
+
+  it('waits out a scanner briefly holding a Codex file instead of failing the save', () => {
+    const roots = providerRoots(temporaryHome())
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    const originalRename = fs.renameSync.bind(fs)
+    let locked = 2
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (locked > 0 && path.resolve(String(to)) === path.resolve(authPath)) {
+        locked -= 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      originalRename(from, to)
+    })
+
+    saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls)
+
+    expect(locked).toBe(0)
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toMatchObject({ OPENAI_API_KEY: 'new-key' })
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.model).toBe('gpt-5.6-sol')
+    expect(fs.readdirSync(path.dirname(configPath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('keeps the original error and restores every Codex file when a file stays held', () => {
+    const roots = providerRoots(temporaryHome())
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    const configBefore = fs.readFileSync(configPath, 'utf8')
+    const authBefore = fs.readFileSync(authPath, 'utf8')
+    const originalRename = fs.renameSync.bind(fs)
+    let heldAttempts = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (path.resolve(String(to)) === path.resolve(authPath)) {
+        heldAttempts += 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
+      .toThrow('EPERM: operation not permitted, rename')
+    expect(heldAttempts).toBe(5)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore)
+    expect(fs.readFileSync(authPath, 'utf8')).toBe(authBefore)
+    expect(fs.readdirSync(path.dirname(configPath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('waits out a briefly held file while rolling back a failed save', () => {
+    const root = temporaryHome()
+    const first = path.join(root, 'first.json')
+    const second = path.join(root, 'second.json')
+    fs.writeFileSync(first, '{"before":1}\n', 'utf8')
+    fs.writeFileSync(second, '{"before":2}\n', 'utf8')
+    const originalRename = fs.renameSync.bind(fs)
+    let rollbackLocked = 1
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (rollbackLocked > 0 && path.basename(String(from)).includes('.xingmang-rollback-')) {
+        rollbackLocked -= 1
+        throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => executeFilePlans([
+      { path: first, content: '{"after":1}\n' },
+      { path: second, content: '{"after":2}\n' },
+    ], {
+      beforeReplace: (_targetPath, index) => {
+        if (index === 1) throw new Error('injected second-file failure')
+      },
+    }, root)).toThrow('injected second-file failure')
+    expect(rollbackLocked).toBe(0)
+    expect(fs.readFileSync(first, 'utf8')).toBe('{"before":1}\n')
+    expect(fs.readFileSync(second, 'utf8')).toBe('{"before":2}\n')
+    expect(fs.readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('fails closed when a junction replaces the Codex root while a held file is retried', () => {
+    const userHome = temporaryHome()
+    const codexParent = temporaryHome()
+    const codexHome = path.join(codexParent, 'custom-codex')
+    const displacedCodexHome = path.join(codexParent, 'displaced-codex')
+    const outside = temporaryHome()
+    const roots = { userHome, codexHome }
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    const originalRename = fs.renameSync.bind(fs)
+    let swapped = false
+    let outsideBefore: Record<string, string> = {}
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (!swapped && path.resolve(String(to)) === path.resolve(authPath)) {
+        swapped = true
+        for (const name of fs.readdirSync(codexHome)) {
+          fs.writeFileSync(path.join(outside, name), `outside sentinel: ${name}\n`, 'utf8')
+        }
+        outsideBefore = directoryFileSnapshot(outside)
+        originalRename(codexHome, displacedCodexHome)
+        fs.symlinkSync(outside, codexHome, 'junction')
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
+      .toThrow()
+    expect(swapped).toBe(true)
     expect(directoryFileSnapshot(outside)).toEqual(outsideBefore)
   })
 

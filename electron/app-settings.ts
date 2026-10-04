@@ -11,6 +11,7 @@ import {
   ensureSafeDataDirectory,
   readSafeUtf8FileSync,
   removeSafeDataFile,
+  renameWithTransientRetry,
 } from './safe-local-data'
 
 export type AppTheme = 'light' | 'dark'
@@ -398,12 +399,15 @@ async function performAtomicSettingsWrite(
       assertSafeDataFile(filePath, '应用设置文件')
       assertSafeDataFile(backupPath, '应用设置备份')
       await fsPromises.copyFile(filePath, backupTemporaryPath, fs.constants.COPYFILE_EXCL)
-      await fsPromises.rename(backupTemporaryPath, backupPath)
+      await renameWithTransientRetry(
+        backupTemporaryPath,
+        backupPath,
+        () => assertSafeDataFile(backupPath, '应用设置备份'),
+      )
     }
 
     await hooks.beforeReplace?.(filePath)
-    assertSafeDataFile(filePath, '应用设置文件')
-    await fsPromises.rename(temporaryPath, filePath)
+    await renameWithTransientRetry(temporaryPath, filePath, () => assertSafeDataFile(filePath, '应用设置文件'))
   } finally {
     await Promise.allSettled([
       removeIfPresent(temporaryPath),
