@@ -54,16 +54,12 @@ export function isManagedXingmangImageMcpEntry(value: unknown): boolean {
     && segments[segments.length - 3] === XINGMANG_AI_SKILL_DIRECTORY
 }
 
-function managedTomlEntry(
-  existing: Record<string, unknown> | undefined,
-  invocation: XingmangImageMcpInvocation,
-  variant: XingmangImageTomlVariant,
-): Record<string, unknown> {
+// 第一次登记时写的整套默认值。
+function freshTomlEntry(invocation: XingmangImageMcpInvocation, variant: XingmangImageTomlVariant): Record<string, unknown> {
   const entry: Record<string, unknown> = {
     command: invocation.nodeExecutable,
     args: [invocation.scriptPath],
-    // 用户在 MCP 页面关掉过就保持关着，本软件不替他重新打开。
-    enabled: existing?.enabled !== false,
+    enabled: true,
     tool_timeout_sec: XINGMANG_IMAGE_TOOL_TIMEOUT_SEC,
     env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
   }
@@ -74,6 +70,36 @@ function managedTomlEntry(
     entry.tools = { [XINGMANG_IMAGE_TOOL_NAME]: { approval_mode: 'approve' } }
   }
   return entry
+}
+
+function freshJsonEntry(invocation: XingmangImageMcpInvocation, variant: XingmangImageJsonVariant): Record<string, unknown> {
+  const env = { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath }
+  return variant === 'claude'
+    ? { type: 'stdio', command: invocation.nodeExecutable, args: [invocation.scriptPath], env }
+    : {
+      command: invocation.nodeExecutable,
+      args: [invocation.scriptPath],
+      env,
+      // Gemini 按毫秒计时。trust 只免这一个服务器的调用确认，不改别的服务器或工具。
+      timeout: XINGMANG_IMAGE_TOOL_TIMEOUT_SEC * 1000,
+      trust: true,
+    }
+}
+
+/**
+ * 登记过的条目每次只对齐脚本跑起来必需的几项（Node 或技能目录换了位置要跟着改）：
+ * command、args，以及 env 里那个配置路径。别的键照现在的样子留着，缺了也不补：本软件
+ * 写过的每一版都是上面那一整套，缺的只会是客户删的，或者工具自己改写时省掉的缺省值
+ * （Codex 不写 enabled = true）。关掉、改超时、改成每次先问、自己加的项都算客户的选择；
+ * 画一张图要扣余额，改成先问一句的人不能每次打开星芒又被改回不问就画。
+ */
+function repointedEntry(existing: Record<string, unknown>, invocation: XingmangImageMcpInvocation): Record<string, unknown> {
+  return {
+    ...existing,
+    command: invocation.nodeExecutable,
+    args: [invocation.scriptPath],
+    env: { ...(isRecord(existing.env) ? existing.env : {}), [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
+  }
 }
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -90,7 +116,7 @@ export function applyXingmangImageMcpToToml(
   const servers = isRecord(parsed.mcp_servers) ? parsed.mcp_servers : {}
   const existing = servers[XINGMANG_IMAGE_MCP_NAME]
   if (existing !== undefined && !isManagedXingmangImageMcpEntry(existing)) return false
-  const next = managedTomlEntry(isRecord(existing) ? existing : undefined, invocation, variant)
+  const next = isRecord(existing) ? repointedEntry(existing, invocation) : freshTomlEntry(invocation, variant)
   if (sameValue(existing, next)) return false
   servers[XINGMANG_IMAGE_MCP_NAME] = next
   parsed.mcp_servers = servers
@@ -107,17 +133,9 @@ export function applyXingmangImageMcpToJson(
   const servers = isRecord(parsed.mcpServers) ? parsed.mcpServers : {}
   const existing = servers[XINGMANG_IMAGE_MCP_NAME]
   if (existing !== undefined && !isManagedXingmangImageMcpEntry(existing)) return false
-  const env = { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath }
-  const next: Record<string, unknown> = variant === 'claude'
-    ? { type: 'stdio', command: invocation.nodeExecutable, args: [invocation.scriptPath], env }
-    : {
-      command: invocation.nodeExecutable,
-      args: [invocation.scriptPath],
-      env,
-      // Gemini 按毫秒计时。trust 只免这一个服务器的调用确认，不改别的服务器或工具。
-      timeout: XINGMANG_IMAGE_TOOL_TIMEOUT_SEC * 1000,
-      trust: true,
-    }
+  const next = isRecord(existing) ? repointedEntry(existing, invocation) : freshJsonEntry(invocation, variant)
+  // 起的是本地脚本，Claude Code 的 type 被改成别的连接方式就起不来了，和 command 一样每次对齐。
+  if (variant === 'claude') next.type = 'stdio'
   if (sameValue(existing, next)) return false
   servers[XINGMANG_IMAGE_MCP_NAME] = next
   parsed.mcpServers = servers

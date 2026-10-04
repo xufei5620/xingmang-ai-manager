@@ -19,7 +19,8 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 
 - 直接写文件，不调各家 `mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样能用。写入走 `executeFilePlans`（两阶段提交 + 备份 + 回滚）。
 - 只写已存在的配置目录；Codex 用官方 ChatGPT 登录时不写（它有原生画图）。
-- 同名条目只有「启动的是 星芒AI 技能目录下 `scripts/mcp-server.mjs`」才算本软件的，才会改写（例如 Node 换了位置）；别的一律不动。用户关掉过（`enabled = false`）就保持关着。
+- 同名条目只有「启动的是 星芒AI 技能目录下 `scripts/mcp-server.mjs`」才算本软件的，才会改写；别的一律不动。
+- 上表的调用时限、免确认和 `enabled = true` 只在第一次登记时写。登记过的条目以后每次只对齐启动方式（`command`、`args`、`env` 里的 `XINGMANG_IMAGE_CONFIG_PATH`，Claude Code 另加 `type = "stdio"`），跟着 Node 或技能目录换位置；别的键照用户现在的样子留着，缺了也不补。关掉（`enabled = false`）、改成每次先问（Codex `approval_mode = "prompt"`、Gemini `trust: false`）、改时限、自己加的 `disabled_tools` / `excludeTools` / 环境变量都算用户的选择。画一张图要扣余额，以前每次登录同步都整条重建，改成先问的人下次打开星芒又变回不问就画。
 - 工具说明和 `SKILL.md` 都让 AI 优先用这个工具，技能脚本留作没有工具时的兜底。
 
 ## 安全边界
