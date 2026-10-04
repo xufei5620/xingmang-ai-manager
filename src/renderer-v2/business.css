@@ -136,6 +136,9 @@
   display: grid;
   align-content: start;
   gap: 2px;
+  /* 右边内容长时往下滚，左边组名停在原处（一-14）。 */
+  position: sticky;
+  top: 16px;
 }
 .v2-business-subnav button {
   min-height: 32px;
@@ -160,6 +163,43 @@
   color: var(--text);
   font-size: var(--font-body);
   font-weight: 600;
+}
+/* 组名右边挂「正在保存更改…」，不单独占一行，保存时页面不往下跳（一-12）。 */
+.v2-settings-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 22px;
+  margin: 0 0 8px 2px;
+}
+.v2-business-settings-grid .v2-settings-panel-head h2 {
+  margin: 0;
+}
+.v2-settings-panel-head [role='status'] {
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+}
+/* 同一张卡里分段的小标题（通知的「提醒哪些事」）。 */
+.v2-settings-section {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 16px 16px 4px;
+  border-top: 1px solid var(--line);
+}
+.v2-settings-section h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-body);
+  font-weight: 600;
+}
+.v2-settings-section span {
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+}
+.v2-settings-section + .xm-setting-row {
+  border-top: 0;
 }
 .v2-business-control {
   display: flex;

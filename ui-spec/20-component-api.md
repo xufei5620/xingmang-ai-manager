@@ -24,13 +24,13 @@
 | `Pill` | `tone` · `dot?: boolean` · `children` | 只展示，不可点 |
 | `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head |
 | `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `progress?: number` | 六列固定网格 |
-| `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` | 通用行 |
+| `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码） |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
 | `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` | ≤ 5 项 |
 | `Switch` | `checked` · `onChange` · `label?` · `description?` | 切换即保存 |
 | `Input` / `Select` / `Textarea` | 标准受控 props + `error?: string` · `hint?` · `mono?` · `password?`（带显隐） | |
 | `SearchInput` | `value` · `onChange` · `placeholder` | 带图标，宽 240 |
-| `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` | 只能有一个打开 |
+| `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
 | `Confirm` | `title` · `body` · `okLabel` · `danger?` · `requireAck?` · `onOk` | Dialog 特化 |
 | `Drawer` | `open` · `title` · `icon?` · `footer` · `onClose` | 右侧 420 |
 | `Notice` | `tone` · `icon` · `title` · `body` · `actions` · `onDismiss` · `progress?` | 同时只显示一张 |
@@ -44,7 +44,7 @@
 | `Table` | `columns` · `rows` · `rowKey` · `onRowClick?` · `empty` | 卡片内自动横向滚动 |
 | `PageHead` | `title` · `lead` · `actions?` | |
 | `Toolbar` | `left` · `search?` · `right?` | |
-| `SettingRow` | `title` · `description` · `control` | |
+| `SettingRow` | `title` · `description` · `control` · `anchor?` | `anchor` 写成 `data-anchor`，取 `settingsItems` 里那一行的 id，顶部搜索靠它翻到这一行并亮一下 |
 | `BrandIcon` | `tool: ToolId \| model: string` · `size` · `variant: tile\|inline\|xs` | 内部映射 lobehub / simple-icons |
 | `Logo` | `kind: micro\|symbol\|horizontal\|wordmark` · `height` | 内部按主题选深浅文件 |
 | `Kbd` | `keys: string` | 自动按平台把 ⌘ 换成 Ctrl |
