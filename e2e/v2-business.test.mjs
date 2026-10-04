@@ -548,6 +548,31 @@ test('a profile read once stays on screen with an unsaved name when a later refr
   }
 })
 
+test('a slow profile read that lands after a newer one is not what a later failed refresh falls back to', async () => {
+  const page = await fixture('page=account')
+  try {
+    const name = page.locator('.v2-business-profile-avatar strong')
+    await name.filter({ hasText: /^本地测试$/ }).waitFor()
+    // 先点「刷新」，这次读得慢；还没回来就把显示名称改了存上，存完那次读得快。
+    await page.evaluate(() => window.profileReadHarness.deferNext())
+    await page.getByTestId('account-refresh').click()
+    await page.getByTestId('account-display').fill('新名字')
+    await page.getByTestId('account-display-save').click()
+    await name.filter({ hasText: /^新名字$/ }).waitFor()
+    // 慢的那次这时才回来，带的还是改名前的资料。
+    await page.evaluate(() => window.profileReadHarness.release())
+    await page.waitForTimeout(100)
+    await page.evaluate(() => window.failNextRead('profile'))
+    await page.getByTestId('account-refresh').click()
+    const alert = page.getByRole('tabpanel').filter({ visible: true }).getByRole('alert')
+    await alert.getByText('账号资料服务暂时不可用').waitFor()
+    assert.equal(await name.innerText(), '新名字')
+    assert.equal(await page.getByTestId('account-display').inputValue(), '新名字')
+  } finally {
+    await page.close()
+  }
+})
+
 test('a subscription re-read that fails says so instead of still showing no subscriptions', async () => {
   const page = await fixture('page=account&accountTab=recharge')
   try {

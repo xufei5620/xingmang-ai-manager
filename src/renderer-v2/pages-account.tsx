@@ -626,8 +626,11 @@ export function AccountPage({
   // 已经读到过的资料、余额：刷新或改了东西以后再读没读到，手上这份留着，正在改的显示名称也不丢，
   // 只在要它的那页顶上说一声（同改版前）。换了账号不沿用。
   const keptDetails = useRef<{ scope: string; profile: Profile | null; balance: Balance | null } | null>(null)
+  // 和 useResource 一样只认最后发出去的那次：先发后到的旧结果上不了屏，也不能顶掉留着的那份。
+  const detailsRequest = useRef(0)
   const loadDetails = useCallback(async () => {
     if (!detailsScope) return null
+    const request = ++detailsRequest.current
     const [profile, balance] = await Promise.allSettled([
       api.getAccountProfile(),
       balanceStore ? balanceStore.refresh('foreground').then(() => {
@@ -643,7 +646,9 @@ export function AccountPage({
       balance: balance.status === 'fulfilled' ? balance.value : kept?.balance ?? null,
       balanceFailure: balance.status === 'rejected' ? failureWithDetail(balance.reason) : null,
     }
-    keptDetails.current = { scope: detailsScope, profile: next.profile, balance: next.balance }
+    if (request === detailsRequest.current) {
+      keptDetails.current = { scope: detailsScope, profile: next.profile, balance: next.balance }
+    }
     return next
   }, [api, balanceStore, detailsScope])
   const details = useResource(loadDetails)

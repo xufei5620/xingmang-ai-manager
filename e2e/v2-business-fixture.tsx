@@ -20,6 +20,11 @@ declare global {
     rerenderFixture: () => void
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     failNextRead: (read: 'profile' | 'subscriptions') => void
+    // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
+    profileReadHarness: {
+      deferNext(): void
+      release(): void
+    }
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
@@ -52,6 +57,12 @@ const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
 function failingOnce(read: string) {
   return failOnce.delete(read)
+}
+let deferNextProfileRead = false
+let releaseProfileRead: (() => void) | null = null
+window.profileReadHarness = {
+  deferNext() { deferNextProfileRead = true },
+  release() { releaseProfileRead?.(); releaseProfileRead = null },
 }
 // Chromium rejects clipboard writes unless the context was granted the
 // permission, so record them instead: the copy actions are what the tests
@@ -406,7 +417,17 @@ const apiMethods = {
   getAccountProfile: async () => {
     record('get-profile')
     if (fail === 'profile' || failingOnce('profile')) throw new Error('账号资料服务暂时不可用')
-    return { ...profile, userId: activeUserId }
+    const read = { ...profile, userId: activeUserId }
+    if (deferNextProfileRead) {
+      deferNextProfileRead = false
+      await new Promise<void>((resolve) => { releaseProfileRead = resolve })
+    }
+    return read
+  },
+  updateAccountDisplayName: async (input: { displayName: string }) => {
+    record('update-display-name', input)
+    profile.displayName = input.displayName
+    return { updated: true as const }
   },
   getAccountBalance: async () => { record('get-balance'); return { ...balance, ...(query.has('sub2apiReliability') ? { quotaPerUnit: 1 } : {}) } },
   listSavedAccounts: async () => [
