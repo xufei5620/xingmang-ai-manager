@@ -185,6 +185,7 @@ import {
   launchCliPowerShell,
   launchUnelevatedCommandWindow,
   resolveWindowsPowerShellExecutable,
+  WindowsCliLaunchError,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
 import { createTrustedTemporaryDirectory, trustedInstallerCacheRoot } from './trusted-temp'
@@ -2304,6 +2305,8 @@ export interface SystemServiceOptions {
   findExecutable?: typeof findExecutable
   /** Test seam: the real one looks for a terminal program and waits for its window (linux-terminal.ts). */
   launchLinuxTerminal?: typeof launchLinuxTerminal
+  /** Test seam: the real one has a hidden PowerShell start the terminal and hand back its process id (windows-elevation.ts). */
+  launchCliPowerShell?: typeof launchCliPowerShell
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
@@ -2700,6 +2703,7 @@ export function createSystemService(
     providerCommandEnvironment(provider, process.env, codexEnv)
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
   const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
+  const launchCliPowerShellForService = serviceOptions.launchCliPowerShell ?? launchCliPowerShell
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
@@ -5352,7 +5356,7 @@ export function createSystemService(
         if (windowsExecutionMode === 'trusted-only') {
           assertTrustedElevatedCliCommand(command, definition.name)
         }
-        await launchCliPowerShell({
+        await launchCliPowerShellForService({
           executable: command.executable,
           argv: cliLaunchArgv(provider, command.argv, mode, {
             installedVersion: installedStatus.version,
@@ -5371,6 +5375,16 @@ export function createSystemService(
           ), provider),
         })
       } catch (error) {
+        if (error instanceof WindowsCliLaunchError) {
+          // 错误框只说原因；PowerShell 和 Node 交回来的原文记在这一条里，路径按主目录脱敏（I13）。
+          const { stderr, message, ...exit } = error.launchOutput
+          runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的命令窗口没能打开`, {
+            provider,
+            ...exit,
+            stderr: stderr && redactHomeDirectory(stderr, providerRoots.userHome),
+            message: message && redactHomeDirectory(message, providerRoots.userHome),
+          })
+        }
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
       }

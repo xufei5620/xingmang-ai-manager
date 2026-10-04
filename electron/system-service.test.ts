@@ -28,6 +28,7 @@ import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-proc
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
+import { WindowsCliLaunchError } from './windows-elevation'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -6036,6 +6037,77 @@ describe('opening a CLI on Linux', () => {
     const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
     expect(JSON.stringify(entry?.[4])).toContain('EACCES')
     expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
+  })
+})
+
+describe('opening a CLI on Windows', () => {
+  function windowsLaunchService(userHome: string, launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+    return createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      ...(runtimeLog ? { runtimeLog } : {}),
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-04T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: 'C:\\Program Files\\nodejs\\claude.cmd',
+        installDirectory: 'C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code',
+        packageRoot: 'C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code',
+        npmPrefix: 'C:\\Program Files\\nodejs',
+        packageVersion: '2.1.283',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({
+        executable: 'C:\\Program Files\\nodejs\\node.exe',
+        argv: ['C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\cli.js'],
+      })),
+      findExecutable: vi.fn(async () => null),
+      probeLoopbackProxy: async () => true,
+      launchCliPowerShell,
+    })
+  }
+
+  it('says why the tool did not open, and logs what PowerShell reported with the home folder hidden', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-windows-open-fail-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const cause = `Cannot perform operation because the wildcard path ${path.join(workspace, '作业[1]')} did not resolve to a file.`
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => {
+      throw new WindowsCliLaunchError(`Windows 无法启动 PowerShell：${cause}`, {
+        stderr: cause,
+        message: `Command failed: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [REDACTED]\n${cause}`,
+        code: 1,
+        signal: null,
+        killed: false,
+      })
+    })
+    const log = vi.fn()
+
+    const failure = windowsLaunchService(userHome, launchCliPowerShell, { log }).launchProvider('claude', workspace)
+    await expect(failure).rejects.toThrow(`未能打开 Claude Code：Windows 无法启动 PowerShell：${cause}`)
+    await expect(failure).rejects.not.toThrow('Command failed')
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    expect(launchCliPowerShell.mock.calls[0]?.[0]).toMatchObject({ workspace, title: 'Claude Code · 星芒AI' })
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 4)).toEqual(['warn', 'system', 'terminal.failed', 'Claude Code 的命令窗口没能打开'])
+    expect(entry?.[4]).toMatchObject({ provider: 'claude', code: 1, signal: null, killed: false })
+    for (const field of ['stderr', 'message']) {
+      expect(entry?.[4][field]).toContain('did not resolve to a file')
+      expect(entry?.[4][field]).not.toContain(userHome)
+    }
   })
 })
 
