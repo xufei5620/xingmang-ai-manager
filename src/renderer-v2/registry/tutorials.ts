@@ -1,6 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
+import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -584,7 +584,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
   {
-    id: 'cli',
+    id: cliTutorialTopic,
     title: '进阶：安装与使用命令行工具',
     lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。只用 Codex 桌面端可以跳过这一章。',
     category: 'advanced',
@@ -810,7 +810,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「更多」→「更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启安装」。'],
         expected: '重新打开后，更新页显示「已是最新版本」。',
         extra: [
-          { title: '不想让它自动装？', detail: '去「设置」→「启动与关闭」关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
+          { title: '不想让它自动装？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
           { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
           { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
           { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
@@ -1170,7 +1170,7 @@ const linuxSelfUpdateTutorialStep: TutorialStep = {
   bullets: ['点「安装新版本」，星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。', '装好后从应用菜单重新打开星芒。'],
   expected: '重新打开后，更新页显示「已是最新版本」。',
   extra: [
-    { title: '不想让它在后台下载？', detail: '去「设置」→「启动与关闭」关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
+    { title: '不想让它在后台下载？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
     { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
     { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
     { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
@@ -1214,7 +1214,7 @@ function linuxTutorialText(topic: TutorialTopic): TutorialTopic {
 function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
   if (topic.id === 'start') return [linuxStartTutorial];
   if (linuxHiddenTutorialTopics.has(topic.id)) return [];
-  if (topic.id === 'cli') {
+  if (topic.id === cliTutorialTopic) {
     return [linuxTutorialText({
       ...topic,
       lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。第一章走的是 Codex CLI，Claude Code、Gemini CLI 也是同样的装法。',

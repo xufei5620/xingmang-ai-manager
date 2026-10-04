@@ -3,7 +3,13 @@ import type { PlatformNotificationKind } from '../../../electron/platform/contra
 import type { UpdateFailedStep } from '../../../electron/ipc-contract';
 import {
   autoUpdateBubbleBody,
+  autoUpdateSettingDescription,
   notificationOptions,
+  notificationSettingsItemId,
+  settingsGroups,
+  settingsItemAvailable,
+  settingsItemLabel,
+  settingsItems,
   updateBubbleTitle,
   updateCardTitle,
   updateDiskShortfallText,
@@ -48,6 +54,67 @@ describe('renderer-v2 notification settings registry', () => {
     expect(option?.label).toBe('工具有新版本');
     // 站点名、内部代号不进面向用户的文案（双站点对用户无感）。
     expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI/i);
+  });
+});
+
+describe('renderer-v2 settings rows registry', () => {
+  // 顶部搜索按 id 翻到设置里那一行，id 和组名撞了，搜到的那一条会被当成一组打开。
+  it('gives every row an id of its own that no group uses', () => {
+    const ids = settingsItems.map(item => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const group of settingsGroups) expect(ids).not.toContain(group.value);
+  });
+
+  it('puts at least one row in every group and only uses known groups', () => {
+    for (const group of settingsGroups) expect(settingsItems.some(item => item.group === group.value), group.value).toBe(true);
+  });
+
+  it('lists the four rows the settings page moved or renamed under their new groups', () => {
+    const groupOf = (id: string) => settingsItems.find(item => item.id === id)?.group;
+    expect(groupOf('latest-cli')).toBe('tools');
+    expect(groupOf('update-check')).toBe('about');
+    expect(groupOf('auto-update')).toBe('about');
+    expect(settingsItemLabel('workspace')).toBe('打开工具时进入的文件夹');
+    expect(settingsItemLabel('test-notification')).toBe('测试通知');
+    expect(settingsGroups.find(group => group.value === 'about')?.label).toBe('更新与关于');
+    expect(settingsGroups.find(group => group.value === 'startup')?.keywords).not.toContain('自动更新');
+  });
+
+  it('carries one row per notification switch, titled like the switch', () => {
+    for (const option of notificationOptions) expect(settingsItemLabel(notificationSettingsItemId(option.value))).toBe(option.label);
+  });
+
+  it('refuses a row id nobody registered instead of rendering a blank title', () => {
+    expect(() => settingsItemLabel('no-such-row')).toThrow();
+  });
+
+  it('only offers the rows this computer and this login have', () => {
+    const context = { mac: false, autoUpdate: false, acceleration: false, signedIn: false };
+    const visible = (id: string, overrides: Partial<typeof context> = {}) => {
+      const item = settingsItems.find(entry => entry.id === id);
+      if (!item) throw new Error(id);
+      return settingsItemAvailable(item, { ...context, ...overrides });
+    };
+    expect(visible('uninstall')).toBe(true);
+    expect(visible('uninstall-app')).toBe(false);
+    expect(visible('uninstall', { mac: true })).toBe(false);
+    expect(visible('uninstall-app', { mac: true })).toBe(true);
+    expect(visible('auto-update')).toBe(false);
+    expect(visible('auto-update', { autoUpdate: true })).toBe(true);
+    expect(visible(notificationSettingsItemId('acceleration'))).toBe(false);
+    expect(visible(notificationSettingsItemId('acceleration'), { acceleration: true })).toBe(true);
+    expect(visible('logout')).toBe(false);
+    expect(visible('logout', { signedIn: true })).toBe(true);
+    expect(visible('theme')).toBe(true);
+  });
+
+  it('never names a site or an internal term in a row title or search word', () => {
+    for (const item of settingsItems) expect(`${item.label} ${item.keywords.join(' ')}`).not.toMatch(/solov|new-api|sub2api|relay/i);
+  });
+
+  it('describes automatic updates the same way on the settings and update pages', () => {
+    expect(autoUpdateSettingDescription('system-installer')).toContain('由你点下载');
+    expect(autoUpdateSettingDescription(undefined)).toContain('由你点安装');
   });
 });
 

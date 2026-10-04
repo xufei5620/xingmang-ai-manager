@@ -4793,7 +4793,7 @@ async function openAboutSettings(page) {
   await page.getByTestId('nav-settings').click()
   const settings = page.getByTestId('page-settings')
   await settings.waitFor()
-  await settings.getByRole('tab', { name: '关于', exact: true }).click()
+  await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
   return settings
 }
 
@@ -4940,19 +4940,19 @@ test('tutorial actions land on the account tab or settings group the step descri
 
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '关于', exact: true }).click()
-    await expect(settings.getByRole('tab', { name: '关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
+    await expect(settings.getByRole('tab', { name: '更新与关于', exact: true })).toHaveAttribute('aria-selected', 'true')
     for (let visit = 0; visit < 2; visit += 1) {
       await openChapter('advanced', 'safety')
       await tutorial.getByTestId('tutorial-safety-action-2').click()
       await expect(page.getByTestId('page-settings')).toBeVisible()
       await expect(page.getByTestId('page-settings').getByRole('tab', { name: '隐私与数据', exact: true })).toHaveAttribute('aria-selected', 'true')
-      await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
+      await page.getByTestId('page-settings').getByRole('tab', { name: '更新与关于', exact: true }).click()
     }
     // 从侧栏点「设置」不点名分组，仍停在用户上次看的那组，不会被教程的跳转带偏。
     await page.getByTestId('nav-home').click()
     await page.getByTestId('nav-settings').click()
-    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '更新与关于', exact: true })).toHaveAttribute('aria-selected', 'true')
     // 默认夹具没接充值、订单、用量那几个读取（会记进 unexpected），这里只看有没有报错。
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
@@ -4972,6 +4972,101 @@ test('the health network row no longer sends the user around through settings', 
     await expect(page.getByTestId('page-health').getByText('连不上星芒服务')).toBeVisible()
     await expect(page.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+
+// 顶部搜索能搜到设置里的每一行（三-2），靠的是每一行都带着注册表里的 id。这里把注册表和
+// 页面对一遍：这台电脑该有的行一行不少、次序一样，不该有的（Windows 上的「卸载星芒」、
+// 不支持自动更新时的「自动更新」）不出现。
+test('every settings row the search can name is on the settings page, in the registry order', async () => {
+  const page = await open()
+  try {
+    const groups = await page.evaluate(async () => {
+      const { settingsGroups, settingsItems } = await import('/src/renderer-v2/registry/business.ts')
+      return settingsGroups.map((group) => ({ label: group.label, ids: settingsItems.filter((item) => item.group === group.value && item.when !== 'mac' && item.when !== 'autoUpdate').map((item) => item.id) }))
+    })
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    for (const group of groups) {
+      await settings.getByRole('tab', { name: group.label, exact: true }).click()
+      await expect(settings.locator('#v2-settings-panel h2')).toHaveText(group.label)
+      await expect.poll(() => settings.locator('#v2-settings-panel [data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), { message: `「${group.label}」的行` }).toEqual(group.ids)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the enterprise certificate row opens the check page on the certificate item and points at it', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.runDiagnostics = async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1,
+        counts: { pass: 1, warn: 1, fail: 0, error: 0 },
+        items: [
+          { code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '连接正常', durationMs: 1 },
+          { code: 'CERTIFICATE_TRUST', title: '安全证书', state: 'warn', summary: '这台电脑装了公司的安全证书', durationMs: 1 },
+        ] })
+    })
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-certificate-health').click()
+    await page.getByTestId('page-health').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="CERTIFICATE_TRUST"]')?.getAttribute('data-anchor-focus') === 'true')
+    assert.equal(await page.locator('[data-testid="page-health"] [data-anchor="XINGMANG_NETWORK"]').getAttribute('data-anchor-focus'), null)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the help dialog lists the pages tucked under More and opens them', async () => {
+  const page = await open()
+  try {
+    for (const [id, label] of [['maintenance', '安装卸载'], ['backups', '备份'], ['updates', '更新']]) {
+      await page.getByTestId('shell-topbar').getByRole('button', { name: '帮助与客服', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+      await expect(dialog.getByTestId('support-more')).toContainText('左边「更多」里还有：')
+      const button = dialog.getByTestId(`support-more-${id}`)
+      await expect(button).toHaveText(label)
+      await button.click()
+      await page.getByTestId(`page-${id}`).waitFor()
+      await expect(page.getByTestId('support-dialog')).toHaveCount(0)
+      await expect(page.getByTestId(`nav-${id}`)).toHaveAttribute('aria-current', 'page')
+    }
+    await clean(page)
+  } finally { await page.close() }
+  // 欢迎页没有侧栏，也就不说「左边「更多」里还有」。
+  const welcome = await open('guest=1')
+  try {
+    await welcome.getByTestId('welcome-help').click()
+    await welcome.getByRole('dialog', { name: '帮助与客服', exact: true }).getByRole('button', { name: '使用教程', exact: true }).waitFor()
+    assert.equal(await welcome.getByTestId('support-more').count(), 0)
+    await clean(welcome)
+  } finally { await welcome.close() }
+})
+
+// 「更新」页和设置「更新与关于」改的是同一份设置：在一边关掉，另一边跟着关（五-51）。
+test('the startup update check switched on the updates page shows the same in settings, and back', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const check = page.getByTestId('updates-check-on-startup').getByRole('switch', { name: '启动时检查新版本', exact: true })
+    await expect(check).toBeEnabled()
+    await expect(check).toHaveAttribute('aria-checked', 'false')
+    await check.click()
+    await waitForToast(page, '已保存')
+    await expect(check).toHaveAttribute('aria-checked', 'true')
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
+    const settingsCheck = settings.getByRole('switch', { name: '启动时检查新版本', exact: true })
+    await expect(settingsCheck).toHaveAttribute('aria-checked', 'true')
+    await settingsCheck.click()
+    await waitForToast(page, '已保存')
+    await expect(settingsCheck).toHaveAttribute('aria-checked', 'false')
+    await page.getByTestId('nav-updates').click()
+    await expect(check).toHaveAttribute('aria-checked', 'false')
+    await clean(page)
   } finally { await page.close() }
 })
 

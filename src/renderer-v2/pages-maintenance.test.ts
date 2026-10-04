@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, TutorialPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, settingsPageLead, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialTopicsFor } from './registry/tutorials'
@@ -278,6 +278,40 @@ describe('tutorial topics', () => {
   })
 })
 
+describe('settings page lead', () => {
+  it('says changes save themselves and how to search, with the Mac shortcut on a Mac', () => {
+    expect(settingsPageLead('win')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
+    expect(settingsPageLead('linux')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
+    expect(settingsPageLead('mac')).toBe('改完自动保存。找不到某一项，按 ⌘K 搜它的名字。')
+  })
+})
+
+describe('settings page before the settings arrive', () => {
+  it('says it is still reading instead of claiming anything is unsupported', () => {
+    const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
+    expect(markup).toContain('正在读取设置…')
+    expect(markup).not.toContain('此版本暂不支持')
+    expect(markup).toContain('>更新与关于</button>')
+    expect(markup).not.toContain('>关于</button>')
+  })
+})
+
+describe('updates page startup switches', () => {
+  it('replaces the 去设置 button with the two switches, greyed out until the settings are read', () => {
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('去设置')
+    expect(markup).toContain('启动时检查新版本')
+    expect(markup).toContain('发现新版本会提醒你')
+    expect(markup).toMatch(/data-testid="updates-check-on-startup"[^>]*>[^]*?disabled=""/)
+  })
+
+  it('shows the saved values the app already holds', () => {
+    const settings = { checkUpdatesOnStartup: false, autoUpdate: true } as Parameters<typeof UpdatesPage>[0]['appSettings']
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge, appSettings: settings }))
+    expect(markup).toMatch(/aria-checked="false"[^>]*aria-label="启动时检查新版本"/)
+  })
+})
+
 describe('settings onboarding entries', () => {
   it('offers both 「再看一遍」 and 「重看导览」 when the app can drive them', () => {
     const markup = renderToStaticMarkup(
@@ -299,6 +333,14 @@ describe('settings onboarding entries', () => {
     )
     expect(markup).toContain('data-testid="settings-start-guide"')
     expect(markup).not.toContain('data-testid="settings-replay-tour"')
+  })
+
+  it('marks both rows so the top search can scroll to them', () => {
+    const markup = renderToStaticMarkup(
+      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
+    )
+    expect(markup).toContain('data-anchor="guide"')
+    expect(markup).toContain('data-anchor="tour"')
   })
 })
 

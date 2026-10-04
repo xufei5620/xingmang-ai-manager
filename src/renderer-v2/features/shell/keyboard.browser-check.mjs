@@ -114,7 +114,7 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
   } finally { await page.close() }
 })
 
-test('on a short screen the sidebar keeps Settings in view and scrolls the opened More list into view', async () => {
+test('on a short screen More and Settings stay pinned in view, the open More list fits and is remembered', async () => {
   const page = await open()
   try {
     // 1280×720 屏幕、1920×1080 开 150% 缩放时，窗口里能给侧栏的高度大约就这么多。
@@ -131,16 +131,79 @@ test('on a short screen the sidebar keeps Settings in view and scrolls the opene
         return box.top >= clip.top - 1 && box.bottom <= clip.bottom + 1 && Boolean(hit && element.contains(hit))
       }, testId)
     }
-    assert.equal(await visibleInSidebar('nav-settings'), true, 'Settings is not cut off below the fold')
+    const pinned = ['nav-more', 'nav-settings']
+    for (const id of pinned) assert.equal(await visibleInSidebar(id), true, `${id} is not cut off below the fold`)
+    for (const id of pinned) assert.equal(await page.getByTestId('sidebar-pinned').getByTestId(id).count(), 1, `${id} sits in the pinned part, not the scrolling one`)
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-updates').waitFor()
-    await page.waitForFunction(() => {
-      const item = document.querySelector('[data-testid="nav-updates"]')?.getBoundingClientRect()
-      const scroll = document.querySelector('.v2-sidebar-scroll')?.getBoundingClientRect()
-      return Boolean(item && scroll && item.bottom <= scroll.bottom + 1)
-    })
-    assert.equal(await visibleInSidebar('nav-updates'), true, 'the last item of More is scrolled into view')
-    assert.equal(await visibleInSidebar('nav-settings'), true, 'Settings stays in view with More open')
+    for (const id of [...pinned, 'nav-maintenance', 'nav-backups', 'nav-feedback', 'nav-updates'])
+      assert.equal(await visibleInSidebar(id), true, `${id} stays in view with More open`)
+    // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
+    await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
+    await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
+    await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
+
+    await page.reload()
+    await page.getByTestId('nav-updates').waitFor()
+    assert.equal(await page.getByTestId('nav-more').getAttribute('aria-expanded'), 'true', 'More reopens the way it was left')
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').waitFor({ state: 'detached' })
+    await page.reload()
+    await page.getByTestId('nav-more').waitFor()
+    assert.equal(await page.getByTestId('nav-more').getAttribute('aria-expanded'), 'false')
+    assert.equal(await page.getByTestId('nav-updates').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the command palette has no title bar, stays put while the results change and shows the keys to use', async () => {
+  const page = await open()
+  try {
+    await page.keyboard.press('Control+k')
+    const palette = page.getByRole('dialog', { name: '搜功能、设置或教程', exact: true })
+    await palette.waitFor()
+    assert.equal(await palette.locator('[data-modal-close]').count(), 0, 'Esc and clicking outside close it; no close button')
+    assert.equal(await palette.getByTestId('command-hint').textContent(), '↑↓ 选择　回车 打开　Esc 关闭')
+    const search = palette.getByRole('searchbox', { name: '搜索页面、设置和教程' })
+    assert.equal(await search.getAttribute('placeholder'), '搜功能、设置或教程…')
+    const top = (await palette.boundingBox()).y
+    await search.fill('通知')
+    await palette.getByRole('option').first().waitFor()
+    assert.equal((await palette.boundingBox()).y, top, 'more results grow the box downwards only')
+    await search.fill('qqqq')
+    await page.getByText('没找到相关的页面或设置。').waitFor()
+    assert.equal((await palette.boundingBox()).y, top, 'fewer results do not move the box either')
+    await page.keyboard.press('Escape')
+    await page.getByTestId('command-palette').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a single setting found from the command palette opens its group and points at that row', async () => {
+  const page = await open()
+  try {
+    await page.keyboard.press('Control+k')
+    const search = page.getByRole('searchbox', { name: '搜索页面、设置和教程' })
+    await search.fill('收不到通知')
+    const first = page.getByTestId('command-palette').getByRole('option').first()
+    assert.equal(await first.getAttribute('aria-label'), '设置 · 通知 › 测试通知')
+    await page.keyboard.press('Enter')
+    await page.getByTestId('page-settings').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-anchor="test-notification"]')?.getAttribute('data-anchor-focus') === 'true')
+    assert.equal(await page.getByTestId('page-settings').getByRole('tab', { name: '通知', exact: true }).getAttribute('aria-selected'), 'true')
+    const row = await page.locator('[data-anchor="test-notification"]').boundingBox()
+    const viewport = page.viewportSize()
+    assert.ok(row && row.y >= 0 && row.y + row.height <= viewport.height, 'the row is scrolled into view')
+    // 亮一下就收，不一直挂着。
+    await page.waitForFunction(() => !document.querySelector('[data-anchor="test-notification"]')?.hasAttribute('data-anchor-focus'), null, { timeout: 5000 })
+
+    // 再搜一次别组的一行：设置页已经开着，也要翻过去。
+    await page.keyboard.press('Control+k')
+    await search.fill('开机')
+    const launch = page.getByTestId('command-palette').getByRole('option', { name: '设置 · 启动与关闭 › 开机自动启动', exact: true })
+    await launch.click()
+    await page.waitForFunction(() => document.querySelector('[data-anchor="launch-at-login"]')?.getAttribute('data-anchor-focus') === 'true')
+    assert.equal(await page.getByTestId('page-settings').getByRole('tab', { name: '启动与关闭', exact: true }).getAttribute('aria-selected'), 'true')
     await clean(page)
   } finally { await page.close() }
 })

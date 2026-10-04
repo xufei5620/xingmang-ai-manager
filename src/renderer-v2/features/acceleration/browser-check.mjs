@@ -331,7 +331,7 @@ test('logged out users see the global acceleration page with a working login act
 
 const bonusCode = 'XM-NEBULA-10M-7Q9K'
 async function bonusPalette(page, code = bonusCode) {
-  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).click()
+  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).click()
   const palette = page.getByTestId('command-palette')
   const input = palette.getByRole('searchbox', { name: '搜索页面' })
   if (code) await input.fill(code)
@@ -397,10 +397,10 @@ test('bonus palette preserves page search, arrows, IME Enter and Escape focus re
     await input.press('Enter')
     await palette.waitFor({ state: 'hidden' })
     assert.equal(await page.getByTestId('nav-settings').getAttribute('aria-current'), 'page')
-    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).click()
+    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).click()
     await input.press('Escape')
     await palette.waitFor({ state: 'hidden' })
-    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).evaluate(element => document.activeElement === element), true)
+    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).evaluate(element => document.activeElement === element), true)
     assert.equal((await bonusCalls(page)).length, 0)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
