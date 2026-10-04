@@ -10,6 +10,7 @@ import { Starfield } from '../auth/Starfield'
 import { LocalAvatar } from '../../LocalAvatar'
 import type { AvatarIdentity } from '../../local-avatar'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
+import { rowFocusEvent } from '../app/row-focus'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { networkLocationLabel } from './network'
 import { balanceFailureLabel, balanceStatusText, type BalanceStatusView } from './balance-status'
@@ -87,6 +88,14 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
+  const brandRef = useRef<HTMLDivElement>(null)
+  const refocusToggle = useRef(false)
+  // 收起、展开时那颗按钮换了一颗（窄条上就是标志本身）：焦点原来在它上面的，换完交给新的那颗，键盘用户不丢位置。
+  useLayoutEffect(() => {
+    if (!refocusToggle.current) return
+    refocusToggle.current = false
+    brandRef.current?.querySelector<HTMLElement>('[data-testid="sidebar-collapse"]')?.focus()
+  }, [collapsed])
   // 「更多」和「设置」一起钉在侧栏底部，窗口再矮也看得到；展开还是收起记在本机，下次打开照旧（二-1）。
   const [more, setMore] = useState(() => readLocalPreference(moreNavigationPreference) === 'expanded')
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -248,6 +257,8 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
     element.addEventListener('scroll', remember, { passive: true })
     element.addEventListener('wheel', userScroll, { passive: true })
     element.addEventListener('pointerdown', userScroll)
+    // 从搜索或别的页跳过来要翻到某一行：那一行说了算，不再滚回上次的位置。
+    element.addEventListener(rowFocusEvent, finish)
     return () => {
       // A programmatic scroll can be followed by navigation before Chromium
       // dispatches its scroll event. Read the live position during teardown so
@@ -257,9 +268,11 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       element.removeEventListener('scroll', remember)
       element.removeEventListener('wheel', userScroll)
       element.removeEventListener('pointerdown', userScroll)
+      element.removeEventListener(rowFocusEvent, finish)
     }
   }, [activePage])
   function toggleSidebar() {
+    refocusToggle.current = Boolean(brandRef.current?.contains(document.activeElement))
     setCollapsed((current) => {
       writeLocalPreference('xingmang-v2-sidebar', current ? 'expanded' : 'collapsed')
       adapter.setSidebarCollapsed?.(!current)
@@ -292,7 +305,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       <aside className="v2-sidebar" data-testid="sidebar">
         <a className="v2-skip-link" href="#v2-main" onClick={skipToContent} data-testid="shell-skip-to-content">跳到正文</a>
         {/* 收成窄条时顶上只留标志，鼠标停上去才变成「展开侧栏」（二-5）。 */}
-        <div className="v2-brand">{collapsed
+        <div ref={brandRef} className="v2-brand">{collapsed
           ? <button type="button" className="v2-brand-toggle" aria-label="展开侧栏" title="展开侧栏" onClick={toggleSidebar} data-testid="sidebar-collapse"><Logo kind="micro" height={32} /><PanelLeft size={18} aria-hidden="true" /></button>
           : <><Logo kind="micro" height={32} /><Logo kind="wordmark" height={32} />
             <Button variant="ghost" size="xs" icon={PanelLeft} aria-label="收起侧栏" title="收起侧栏" onClick={toggleSidebar} testId="sidebar-collapse" /></>}</div>

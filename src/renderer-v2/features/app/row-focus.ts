@@ -27,6 +27,13 @@ export function hasRowFocus(page: RowFocusPage): boolean {
   return pending?.page === page
 }
 
+/**
+ * 翻到那一行之前在那一行上发的事件（冒泡）。外壳换页时会等新页面长高、再把正文滚回这一页上次的位置，
+ * 设置页从别处打开时先只有一行「正在读取设置…」，长高那一下正好落在翻到那一行之后，会把它又拽走；
+ * 外壳收到这个事件就不再滚回去。
+ */
+export const rowFocusEvent = 'xingmang-row-focus'
+
 // 那一行亮一下的时长；开了「减少动画」时不闪，同样时长里只围一圈边框（样式在 components.css）。
 const highlightMs = 2000
 // 有的行要等别的读取回来才画得出（Mac 才有的「卸载星芒」要等平台能力），先等一会儿再放弃。
@@ -40,6 +47,7 @@ function rowFor(root: HTMLElement, anchor: string): HTMLElement | null {
 }
 
 function highlight(row: HTMLElement) {
+  row.dispatchEvent(new Event(rowFocusEvent, { bubbles: true }))
   row.scrollIntoView?.({ block: 'center' })
   // 键盘用户回车打开的，焦点直接给那一行能操作的第一个控件，不用再从页头一路 Tab 过来。
   row.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)')?.focus({ preventScroll: true })

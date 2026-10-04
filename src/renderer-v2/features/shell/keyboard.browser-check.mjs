@@ -210,3 +210,40 @@ test('a single setting found from the command palette opens its group and points
     await clean(page)
   } finally { await page.close() }
 })
+
+test('a setting found from the command palette stays in view when settings was left scrolled down', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1280, height: 600 })
+    await page.getByTestId('nav-settings').click()
+    await page.locator('[data-anchor="theme"]').waitFor()
+    const main = page.getByTestId('page-viewport')
+    await main.evaluate((element) => { element.scrollTop = element.scrollHeight })
+    assert.ok(await main.evaluate((element) => element.scrollTop) > 100, 'the settings page is taller than the window')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    // 设置页重新打开时还在读设置、高度不够，外壳会等它长高再滚回上次的位置；翻到那一行之后不能再被拽回去。
+    await page.keyboard.press('Control+k')
+    await page.getByRole('searchbox', { name: '搜索页面、设置和教程' }).fill('主题')
+    await page.getByTestId('command-palette').getByRole('option', { name: '设置 · 外观 › 主题', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-anchor="theme"]')?.getAttribute('data-anchor-focus') === 'true')
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 200)))))
+    const row = await page.locator('[data-anchor="theme"]').boundingBox()
+    assert.ok(row && row.y >= 0 && row.y + row.height <= 600, `the row stays in view (y=${row?.y})`)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('collapsing and expanding the sidebar from the keyboard keeps focus on the toggle', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('sidebar-collapse').focus()
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => document.querySelector('.v2-shell')?.classList.contains('sidebar-collapsed'))
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '展开侧栏')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => !document.querySelector('.v2-shell')?.classList.contains('sidebar-collapsed'))
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '收起侧栏')
+    await clean(page)
+  } finally { await page.close() }
+})
