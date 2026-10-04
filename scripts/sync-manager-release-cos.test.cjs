@@ -140,7 +140,11 @@ test('the complete release is verified and synchronized before the absolute late
   assert.equal(index.product, 'xingmang-ai-manager')
   assert.equal(store.events.at(-1).key, LATEST_KEY)
   assert.equal(store.events.at(-1).kind, 'json')
-  assert.deepEqual(store.events.at(-1).options, { overwrite: true, cacheControl: 'no-cache' })
+  // The pointer write also hands the store a retry observer for the log; the
+  // write itself keeps exactly these two options.
+  const { onRetry, ...pointerOptions } = store.events.at(-1).options
+  assert.deepEqual(pointerOptions, { overwrite: true, cacheControl: 'no-cache' })
+  assert.equal(typeof onRetry, 'function')
   const firstManifest = store.events.findIndex((event) => event.key.endsWith('.yml'))
   assert.equal(firstManifest, 10)
   assert.ok(store.events.slice(firstManifest, -2).every((event) => event.key.endsWith('.yml')))
@@ -450,6 +454,10 @@ test('the release store may spend two hours on one installer and its retries rea
       options.onRetry({ attempt: 2, delayMs: 5000, error: failure })
       return base.publishFile(key, filePath, options)
     },
+    async publishJson(key, value, options) {
+      options.onRetry({ attempt: 1, delayMs: 2500, error: failure })
+      return base.publishJson(key, value, options)
+    },
   }
   const utilities = { ...require('./cos-sync-utils.cjs'), createCosStore(config, options) { created.push(options); return store } }
   const events = []
@@ -457,7 +465,7 @@ test('the release store may spend two hours on one installer and its retries rea
   // Longer than the 75-minute default of the 90-minute official package jobs.
   assert.deepEqual(created, [{ multipartDeadlineMs: 120 * 60 * 1000 }])
   const retries = events.filter(event => event.event === 'retry')
-  assert.deepEqual([...new Set(retries.map(event => event.stage))], ['cos-read-latest', 'cos-publish-file', 'cos-recheck-latest', 'cos-recheck-candidate-state'])
+  assert.deepEqual([...new Set(retries.map(event => event.stage))], ['cos-read-latest', 'cos-publish-file', 'cos-recheck-latest', 'cos-publish-candidate', 'cos-recheck-candidate-state', 'cos-publish-latest'])
   const fileRetries = retries.filter(event => event.stage === 'cos-publish-file')
   assert.equal(fileRetries.length, base.events.filter(event => event.kind === 'file').length)
   for (const retry of fileRetries) {

@@ -127,9 +127,21 @@ test('COS synchronization runs as its own job after an approved publish and keep
   assert.deepEqual(cosJob.concurrency, { group: 'cos-manager-publish', 'cancel-in-progress': false })
   // GitHub 托管的作业最长 6 小时。
   assert.ok(cosJob['timeout-minutes'] >= 300 && cosJob['timeout-minutes'] < 360, String(cosJob['timeout-minutes']))
-  // publish 发了哪些平台就同步哪些。
+  // publish 发了哪些平台就同步哪些。Windows / macOS 的条件只看出包结果，整次运行里不会
+  // 变，所以和 publish 一字不差。
   const downloads = (job) => job.steps.filter((step) => /actions\/download-artifact@/.test(String(step.uses || '')))
-  assert.deepEqual(downloads(cosJob), downloads(publishJob))
+  const [publishWindows, publishMacos, publishLinux] = downloads(publishJob)
+  const [cosWindows, cosMacos, cosLinux, ...extra] = downloads(cosJob)
+  assert.deepEqual(extra, [])
+  assert.deepEqual([cosWindows, cosMacos], [publishWindows, publishMacos])
+  // Linux 要看仓库开关，cos-sync 却可能排队几个小时、重跑时几天后才开始，那时开关可能
+  // 已经打开：照开关下载，就会把这次没发的 Linux 包同步出去。所以照 publish 当时实际
+  // 下没下来决定。
+  assert.deepEqual(cosLinux.with, publishLinux.with)
+  assert.equal(publishLinux.id, 'linux-artifacts')
+  assert.equal(publishJob.outputs.linux, "${{ steps.linux-artifacts.outcome == 'success' }}")
+  assert.equal(cosLinux.if, "${{ needs.publish.outputs.linux == 'true' }}")
+  assert.doesNotMatch(YAML.stringify(cosJob), /XINGMANG_PUBLISH_LINUX/)
   assert.equal(cosJob.env.PACKAGE_VERSION, publishJob.env.PACKAGE_VERSION)
   const index = stepIndex(cosJob, /Synchronize the successful release to Tencent COS/)
   assert.ok(index > Math.max(...downloads(cosJob).map((step) => cosJob.steps.indexOf(step))))

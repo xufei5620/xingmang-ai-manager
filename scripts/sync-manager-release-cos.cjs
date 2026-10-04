@@ -264,8 +264,8 @@ async function syncManagerRelease(options) {
     }
   })
   latestState = 'write-unconfirmed'
-  await stage('cos-publish-latest', { version: plan.version }, async function () {
-    const result = await store.publishJson(LATEST_KEY, index, { overwrite: true, cacheControl: 'no-cache' })
+  await stage('cos-publish-latest', { version: plan.version }, async function (report) {
+    const result = await store.publishJson(LATEST_KEY, index, { overwrite: true, cacheControl: 'no-cache', onRetry: report.retry })
     latestState = 'published-and-read-back'
     return result
   })

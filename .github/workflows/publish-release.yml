@@ -704,6 +704,11 @@ jobs:
       # 写权限的是一开始占 tag 的 release-tag。
       contents: write
     timeout-minutes: 60
+    outputs:
+      # 这次实际发没发 Linux。cos-sync 照它决定同不同步 Linux：cos-sync 可能排队几个小时，
+      # 重跑时更可能已经过了好几天，到那时再看 XINGMANG_PUBLISH_LINUX，开关一变就会把这次
+      # 没发的 Linux 包同步出去。
+      linux: ${{ steps.linux-artifacts.outcome == 'success' }}
     env:
       # 出包作业各自核对过 confirm_version 与 package.json 一致，取跑过的那个。
       PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version || needs.linux-build.outputs.version }}
@@ -750,7 +755,8 @@ jobs:
 
       # Linux 开关关着时不下载 Linux 的包，下面每一步就都碰不到它：护栏、上传、复核、
       # 清单和 Release 附件都只按 release-artifacts 里实际有什么来做。
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - id: linux-artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
         with:
           pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
@@ -1071,8 +1077,10 @@ jobs:
   # 单独成一个作业，不接在 publish 末尾（2026-10-04）：GitHub 的机器往 COS 上海只能
   # 传 120～200 KB/s，0.2.15 一批 709 MB 要传一到一个半小时，网络还会整段断上几分钟；
   # 塞在 60 分钟的 publish 里传不完，0.2.15 就停在这一步、靠手动导入补齐。这里给足
-  # 时间。还是失败的话用 Re-run failed jobs 只重跑这个作业：已经传好、核对过的文件
-  # 直接跳过，不用再批一次，R2 更新源和 GitHub Release 也不会再动。
+  # 时间。还是失败的话单独重跑这个作业（Re-run this job）：已经传好、核对过的文件不再
+  # 上传，不用再批一次，R2 更新源和 GitHub Release 也不会再动。别用 Re-run failed jobs：
+  # 同一次运行里还有别的作业红着时（比如 Linux 开关关着、Linux 出包红了），它会把依赖
+  # 它们的 publish 也带着重跑，又要批一次、又传一遍更新源。
   #
   # GITHUB_TOKEN 建的 Release 不会触发 release:published 工作流，所以在这里显式同步；
   # 补发平台和重跑走同一条路。开关 XINGMANG_COS_SYNC_ENABLED 默认关着。COS 只是多一个
@@ -1105,7 +1113,9 @@ jobs:
       - name: Install locked script dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # 下载条件和 publish 的一模一样：publish 发了哪些平台，这里就同步哪些。
+      # publish 发了哪些平台，这里就同步哪些。Windows / macOS 只看出包结果，整次运行里不会
+      # 变，条件和 publish 的一字不差；Linux 照 publish 当时实际下没下（outputs.linux），
+      # 不再看开关。
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: ${{ needs.windows-build.result == 'success' }}
         with:
@@ -1119,7 +1129,7 @@ jobs:
           path: release-artifacts
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
+        if: ${{ needs.publish.outputs.linux == 'true' }}
         with:
           pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
           merge-multiple: true

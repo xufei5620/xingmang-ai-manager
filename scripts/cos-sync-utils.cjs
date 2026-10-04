@@ -16,10 +16,14 @@ const DEFAULT_REGION = 'ap-shanghai'
 const FAILURE_CODES = new Set(['network-request-failed', 'response-header-timeout', 'response-body-timeout', 'http-status', 'redirect-rejected', 'response-too-large', 'etag-changed', 'size-mismatch', 'digest-mismatch', 'cos-upload-unconfirmed', 'cos-readback-failed', 'cos-multipart-unconfirmed'])
 const TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_PREMATURE_CLOSE', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'])
 // Failures of the path to COS, not answers about the object. ENOTFOUND is left
-// out on purpose: a misspelt or never-enabled endpoint must fail at once
-// instead of waiting through every retry.
+// out on purpose: a misspelt or unknown host must fail at once instead of
+// waiting through every retry.
 const TRANSIENT_TRANSPORT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_PREMATURE_CLOSE'])
-// The connection was never established, so COS cannot have seen the request.
+// Refused, unresolvable or unroutable: in practice the request never reached
+// COS. Linux can report EHOSTUNREACH/ENETUNREACH on an established connection
+// too, but only after many minutes of failed retransmission: Complete's
+// 30-second header timeout fires first, and a repeated latest pointer PUT
+// resends identical bytes.
 const UNDELIVERED_TRANSPORT_CODES = new Set(['ECONNREFUSED', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'])
 const COS_ERROR_CODES = new Set(['RequestTimeout', 'BadDigest', 'InvalidDigest', 'AccessDenied', 'SignatureDoesNotMatch', 'NoSuchUpload', 'EntityTooSmall', 'InvalidPart', 'InvalidPartOrder', 'InvalidArgument', 'UserNetworkTooSlow', 'IncompleteBody', 'EntitySizeNotMatch', 'MissingRequestBodyError', 'BadRequest', 'InvalidRequest', 'UnexpectedContent', 'EntityTooLarge', 'MalformedXML'])
 const COS_ERROR_BODY_STATUSES = new Set(['recognized-code', 'unrecognized-code', 'missing-code', 'empty-body', 'invalid-utf8', 'invalid-xml', 'unsupported-field', 'duplicate-field', 'invalid-entity', 'unsupported-encoding', 'invalid-content-length', 'declared-too-large', 'body-too-large', 'body-timeout', 'body-stream-failed', 'length-mismatch'])
