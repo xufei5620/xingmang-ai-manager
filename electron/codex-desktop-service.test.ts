@@ -2078,6 +2078,83 @@ describe('Codex Desktop install on macOS', () => {
     expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
   })
 
+  // 点「安装」那一刻检测没做完：照「没装」往下走的话，安装那一步会把「应用程序」里客户自己装好的
+  // 正版 ChatGPT 说成「不是官方原版」，叫客户移到废纸篓。
+  it('checks once more when the first detection did not finish, and leaves the app it then finds alone', async () => {
+    const installed = {
+      app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+      detectionFailed: false,
+      detectionError: null,
+    }
+    const unfinished = { app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' }
+    const firstAttempts: Array<() => Promise<MacosCodexAppInspection>> = [
+      async () => unfinished,
+      async () => { throw new Error('plutil 没有起来') },
+    ]
+    for (const first of firstAttempts) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+        .mockImplementationOnce(first)
+        .mockResolvedValueOnce(installed)
+      const f = macInstallFixture({ detectMacosCodexApp })
+      await expect(f.service.installCodexDesktop(f.target))
+        .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
+      expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+      expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+    }
+  })
+
+  // 没做完的原因不一定和 ChatGPT.app 有关（Spotlight 查不了、扫应用目录超时）：一律停下会让这类 Mac
+  // 再也装不上。
+  it('installs as before when the second detection does not finish either', async () => {
+    const unfinished = { app: null, detectionFailed: true, detectionError: '应用目录扫描达到时间上限，Codex 检测未能完成' }
+    const secondAttempts: Array<() => Promise<MacosCodexAppInspection>> = [
+      async () => unfinished,
+      async () => { throw new Error('plutil 没有起来') },
+    ]
+    for (const second of secondAttempts) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+        .mockResolvedValueOnce(unfinished)
+        .mockImplementationOnce(second)
+      const f = macInstallFixture({ detectMacosCodexApp })
+      await expect(f.service.installCodexDesktop(f.target))
+        .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
+      expect(f.installMacosDesktopApp).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('does not detect a second time once the customer has cancelled during the first one', async () => {
+    let finishFirst = (): void => {}
+    const firstFinished = new Promise<void>((resolve) => { finishFirst = resolve })
+    const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>(async () => {
+      await firstFinished
+      return { app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' }
+    })
+    const f = macInstallFixture({ detectMacosCodexApp })
+    const install = f.service.installCodexDesktop(f.target)
+    await vi.waitFor(() => expect(detectMacosCodexApp).toHaveBeenCalledTimes(1))
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    finishFirst()
+    const error = await install.then(() => null, (reason: unknown) => reason)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(detectMacosCodexApp).toHaveBeenCalledTimes(1)
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
+  })
+
+  it('detects only once when the first detection finished and found nothing', async () => {
+    const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>(async () => ({
+      app: null,
+      detectionFailed: false,
+      detectionError: null,
+    }))
+    const f = macInstallFixture({ detectMacosCodexApp })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+    expect(detectMacosCodexApp).toHaveBeenCalledTimes(1)
+  })
+
   it('will not install for root, whose copy the customer could never update', async () => {
     const f = macInstallFixture({ getuid: () => 0 })
     await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。')

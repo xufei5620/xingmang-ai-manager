@@ -3028,7 +3028,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
-    const current = await detectMacosCodexApp().catch(() => null)
+    let current = await detectMacosCodexApp().catch(() => null)
+    // 检测没做完（深度核对签名超时、某条命令没起来，或者检测本身出错）不等于没装。照「没装」往下走的话，
+    // 「应用程序」里客户自己装好的正版 ChatGPT 会被安装那一步当成认不出来的同名应用，叫客户移到废纸篓。
+    // 所以再检测一次：慢多半是一时的（刚开机、别的程序在抢磁盘），首页同一时间的扫描核对过了，这次也直接
+    // 用它记下的结果（macos-codex-app.ts 的 verifiedBundles）。还没做完就照旧往下走，不在这里停下：没做完
+    // 的原因不一定和 ChatGPT.app 有关（Spotlight 查不了、扫应用目录超时），一律停下会让这些 Mac 再也装不上。
+    if (!current || (!current.app && current.detectionFailed)) {
+      // 检测慢正是客户会点「取消」的时候，点了就不再多等一次检测。
+      cancellation?.throwIfCancelled()
+      current = await detectMacosCodexApp().catch(() => null)
+    }
     if (current?.app) {
       sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
       return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
