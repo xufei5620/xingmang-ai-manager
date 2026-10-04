@@ -1488,6 +1488,20 @@ export function npmRegistryLabel(registry: string): string {
 export const npmResolutionTimeoutMs = 10 * 60_000
 export const npmDownloadTimeoutMs = 5 * 60_000
 export const npmResolutionHeartbeatMs = 15_000
+/**
+ * `npm ci` is where the package bytes move, and a fixed five minutes was not
+ * enough of them: Claude Code and Codex are 90-160 MB per platform, so a link
+ * under roughly 0.3-0.5 MB/s ran out of time mid-download, and the next
+ * registry started again from zero because every attempt has its own cache.
+ * npm never ends a transfer that is slow but still moving, so neither does
+ * this step: it ends only once the attempt directory has stopped changing for
+ * the stall window, and the ceiling is a backstop for a download that trickles
+ * forever. The `--offline` install that follows still uses
+ * npmDownloadTimeoutMs; it reads the verified cache and fetches nothing.
+ */
+export const npmDownloadStallTimeoutMs = 3 * 60_000
+export const npmDownloadCeilingMs = 30 * 60_000
+export const npmDownloadProgressCheckMs = 15_000
 export const grokDownloadStallHeartbeatMs = 15_000
 
 export function grokDownloadStallMessage(idleMs: number): string {
@@ -1511,6 +1525,125 @@ export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: numbe
   return `仍在解析${npmRegistryLabel(registry)}的依赖图…（已用时 ${formatElapsedDuration(elapsedMs)}）`
 }
 
+/** 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按它归成「下载超时」）。 */
+const npmDownloadTimedOutMessage = '下载超时，长时间没有完成，已中止'
+
+/**
+ * Bytes under `directory`, counted without following links. Entries that vanish
+ * mid-walk (npm moves a finished download out of its temp folder) are skipped
+ * and an unreadable root counts as empty, so this never throws. The walk is
+ * sequential on purpose: it runs every few seconds next to the download it
+ * watches and must not compete with it for the disk.
+ */
+export async function measureDirectoryBytes(directory: string): Promise<number> {
+  let total = 0
+  const pending = [directory]
+  while (pending.length) {
+    const current = pending.pop()
+    if (current === undefined) break
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const child = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        pending.push(child)
+      } else if (entry.isFile()) {
+        try {
+          total += (await fs.promises.lstat(child)).size
+        } catch {
+          // 量的这一刻刚被挪走或删掉：这次少算它，下一次再量。
+        }
+      }
+    }
+  }
+  return total
+}
+
+export interface NpmDownloadStallWatch {
+  /** Fires once the measured size has not changed for the stall window. */
+  readonly signal: AbortSignal
+  /** True once this watch ended the download, as opposed to the user's cancel or the ceiling. */
+  readonly stalled: boolean
+  /** The last size measured; null until the first measurement lands. */
+  readonly bytes: number | null
+  stop(): void
+}
+
+export interface NpmDownloadStallWatchOptions {
+  checkIntervalMs?: number
+  stallTimeoutMs?: number
+  /** Monotonic milliseconds: a wall-clock correction must never read as a stall. */
+  now?: () => number
+}
+
+/**
+ * The size of the attempt directory is the progress report npm never prints:
+ * make-fetch-happen tees every response into cacache, which appends to a temp
+ * file as chunks arrive, while tar unpacks into node_modules as it reads. Any
+ * change counts, a shrink included, since npm discarding a broken partial
+ * download before its own retry is activity rather than a hang. A measurement
+ * that fails counts as activity too: a download is never ended on evidence the
+ * watch could not collect.
+ */
+export function createNpmDownloadStallWatch(
+  measureBytes: () => Promise<number>,
+  options: NpmDownloadStallWatchOptions = {},
+): NpmDownloadStallWatch {
+  const checkIntervalMs = options.checkIntervalMs ?? npmDownloadProgressCheckMs
+  const stallTimeoutMs = options.stallTimeoutMs ?? npmDownloadStallTimeoutMs
+  const now = options.now ?? (() => performance.now())
+  const controller = new AbortController()
+  let lastBytes: number | null = null
+  let lastChangeAt = now()
+  let measuring = false
+  let stopped = false
+  let stalled = false
+  const timer = setInterval(() => { void check() }, checkIntervalMs)
+
+  function stop(): void {
+    if (stopped) return
+    stopped = true
+    clearInterval(timer)
+  }
+
+  async function check(): Promise<void> {
+    // 上一次还没量完（盘慢、文件多）就跳过这一拍，不叠着量。
+    if (measuring || stopped) return
+    measuring = true
+    let bytes: number | null
+    try {
+      bytes = await measureBytes()
+    } catch {
+      bytes = null
+    } finally {
+      measuring = false
+    }
+    if (stopped) return
+    const checkedAt = now()
+    if (bytes === null || bytes !== lastBytes) {
+      if (bytes !== null) lastBytes = bytes
+      lastChangeAt = checkedAt
+      return
+    }
+    if (checkedAt - lastChangeAt < stallTimeoutMs) return
+    stalled = true
+    stop()
+    controller.abort(new Error(npmDownloadTimedOutMessage))
+  }
+
+  void check()
+  return {
+    signal: controller.signal,
+    get stalled() { return stalled },
+    get bytes() { return lastBytes },
+    stop,
+  }
+}
+
 /**
  * CommandRunnerError keeps npm's stderr on the error object, but its message
  * only says "命令执行失败（退出码 1）：node". The renderer classifies install
@@ -1527,7 +1660,7 @@ export function describeNpmCommandFailure(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) {
     return error instanceof Error ? error.message : String(error)
   }
-  if (error.code === 'TIMED_OUT') return '下载超时，长时间没有完成，已中止'
+  if (error.code === 'TIMED_OUT') return npmDownloadTimedOutMessage
   const highlights = npmFailureHighlights(error.stderr)
   return highlights ? `${error.message}（${highlights}）` : error.message
 }
@@ -4352,11 +4485,17 @@ export function createSystemService(
         cwd: string,
         cache: string,
         timeoutMs = npmDownloadTimeoutMs,
+        signal?: AbortSignal,
       ) => {
         // 提权执行会对 argv 里的每个绝对路径做 realpath，路径不存在即判定为
         // 「位于用户可写目录」而拒绝。npm 自己会建缓存目录，但那发生在校验之后。
         await fs.promises.mkdir(cache, { recursive: true })
         const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
+        // 调用处自己的信号（下载卡住）和客户的取消，哪个先到都结束这次 npm；
+        // 是哪一个由调用处分辨，取消照旧报「安装已取消」。
+        const abortSignal = cancellation && signal
+          ? AbortSignal.any([cancellation.signal, signal])
+          : cancellation?.signal ?? signal
         return executeCommand({
           executable: npmExecutable,
           argv: [
@@ -4376,7 +4515,7 @@ export function createSystemService(
           trustedPaths: managedNpmLayout
             ? [npmUserConfig, transaction]
             : undefined,
-          ...(cancellation ? { signal: cancellation.signal } : {}),
+          ...(abortSignal ? { signal: abortSignal } : {}),
           cwd,
           timeoutMs,
           maxOutputBytes: 8 * 1024 * 1024,
@@ -4483,8 +4622,8 @@ export function createSystemService(
             { stage: 'switch-route' },
           )
         }
+        const attemptRoot = path.join(transaction, `attempt-${index}`)
         try {
-          const attemptRoot = path.join(transaction, `attempt-${index}`)
           const resolution = path.join(attemptRoot, 'resolution')
           const cache = path.join(attemptRoot, 'cache')
           const attemptPrefix = managedNpmLayout
@@ -4511,13 +4650,37 @@ export function createSystemService(
             undefined,
             { stage: 'verify' },
           )
-          await executeNpm([
-            'ci',
-            '--ignore-scripts',
-            '--omit=dev',
-            `--registry=${registry}`,
-            '--replace-registry-host=always',
-          ], resolution, cache)
+          // 下载这一步看的是还在不在下，不是总共下了多久：网慢的客户以前满 5 分钟就被掐、换源
+          // 从零再下，怎么点都装不上。这一轮的临时目录 3 分钟一点没变才算卡住、换下一个源，
+          // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
+          const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
+          const downloadStartedAt = performance.now()
+          try {
+            await executeNpm([
+              'ci',
+              '--ignore-scripts',
+              '--omit=dev',
+              `--registry=${registry}`,
+              '--replace-registry-host=always',
+            ], resolution, cache, npmDownloadCeilingMs, stallWatch.signal)
+          } catch (error) {
+            if (!stallWatch.stalled) throw error
+            runtimeLog?.log(
+              'warn',
+              'install',
+              'cli.install.download-stalled',
+              `${definition.name} 从${npmRegistryLabel(registry)}下载 ${formatElapsedDuration(npmDownloadStallTimeoutMs)}没有进展，已中止`,
+              {
+                provider,
+                registry,
+                elapsedMs: Math.round(performance.now() - downloadStartedAt),
+                attemptBytes: stallWatch.bytes,
+              },
+            )
+            throw new Error(npmDownloadTimedOutMessage, { cause: error })
+          } finally {
+            stallWatch.stop()
+          }
           // npm ci 跳过下载失败的平台主程序包也照样退出 0，所以下完就在它解出来的包里查。普通权限
           // 那条路没有暂存目录，后面 npm 直接写进正在用的工具目录，写完再查就晚了，旧版已经被盖掉；
           // 在这里查出缺了，记成这个源失败、换下一个源，旧版还没动（第二十八批 A）。Grok 的两条
@@ -4613,6 +4776,9 @@ export function createSystemService(
           installErrors.push(
             `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
           )
+          // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
+          // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
+          await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
         }
       }
       if (!installed) {
