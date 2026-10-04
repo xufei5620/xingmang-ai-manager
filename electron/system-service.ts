@@ -512,6 +512,15 @@ export interface SystemScanOptions {
   acceptCached?: boolean
 }
 
+/** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
+export interface CliUninstallOptions {
+  /**
+   * 这次卸载是「换成星芒装的」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
+   * 先按安装那一道门槛看盘：装不下就一个文件都不动，免得客户卸完落得一份都没有。
+   */
+  reinstall?: boolean
+}
+
 export interface CodexDesktopLaunchResult {
   restarted: boolean
   status: DesktopAppStatus
@@ -978,7 +987,7 @@ export interface SystemService {
   installGitRuntime(target: RendererMessageTarget): Promise<GitRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
-  uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
+  uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
   cancelCodexDesktopInstall(): InstallCancellationOutcome
@@ -4733,10 +4742,22 @@ export function createSystemService(
     // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
     // 否则用户只能干等前一个工具装完。
     const cancellation = installCancellations.begin(key)
+    let started = false
     const finished = installationQueue.enqueue(
       key,
-      () => installCliOperation(provider, target, version, cancellation),
-    ).finally(() => cancellation.release())
+      () => {
+        started = true
+        return installCliOperation(provider, target, version, cancellation)
+      },
+      { signal: cancellation.signal },
+    ).catch((error: unknown) => {
+      if (started) throw error
+      // 排着队时取消的那次直接出队，installCliOperation 没跑过：取消的那句和进度在这里补上，
+      // 和跑起来以后取消一样。
+      const cancelled = new InstallCancelledError(`${cliCatalog[provider].name} 安装已取消`)
+      sendInstallProgress(target, provider, 'error', cancelled.message)
+      throw cancelled
+    }).finally(() => cancellation.release())
     // 装好一次顺手清掉以前中途被打断的残留：这次自己的临时目录已经在 finally 里删了，
     // 剩下的只会是更早的。排在队列末尾，不拖慢这次安装的完成提示。
     void finished.then(() => cleanupInstallLeftovers(), () => undefined)
@@ -4894,7 +4915,7 @@ export function createSystemService(
     ),
   })
 
-  async function uninstallCliOperation(provider: ProviderId): Promise<ToolUninstallResult> {
+  async function uninstallCliOperation(provider: ProviderId, options: CliUninstallOptions = {}): Promise<ToolUninstallResult> {
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装、更新或卸载中`)
     installing.add(provider)
     try {
@@ -4905,6 +4926,8 @@ export function createSystemService(
       if (!initial.status.installed || !initial.installation) {
         return { outcome: 'not-installed', previousVersion: null }
       }
+      // 和装的时候问同一句、用同一个门槛（installCliOperation），只是提前到动手卸之前。
+      if (options.reinstall) await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
       let current = initial
       const removedInstallations: string[] = []
       const retainedClaudeVersionFiles: string[] = []
@@ -5049,8 +5072,8 @@ export function createSystemService(
     }
   }
 
-  function uninstallCli(provider: ProviderId): Promise<ToolUninstallResult> {
-    const finished = installationQueue.enqueue(`cli:uninstall:${provider}`, () => uninstallCliOperation(provider))
+  function uninstallCli(provider: ProviderId, options: CliUninstallOptions = {}): Promise<ToolUninstallResult> {
+    const finished = installationQueue.enqueue(`cli:uninstall:${provider}`, () => uninstallCliOperation(provider, options))
     // 卸掉命令行不会让谁读不进型号名单，只是下次写名单时要重新看装没装。
     if (provider === 'codex') void finished.then(forgetCodexModelCatalogReaders, forgetCodexModelCatalogReaders)
     return finished

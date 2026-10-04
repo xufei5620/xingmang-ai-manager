@@ -124,8 +124,8 @@ export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolI
 
 /**
  * 原生安装器或 PATH 上其他来源装的 CLI，本工具的 npm 安装/回滚通道不该碰它：跑一次
- * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。对这类安装隐藏
- * 「更新」「回到推荐版本」按钮，改用一句被动提示。
+ * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。界面上给不给
+ * 「更新」「回到推荐版本」按钮看 updatesOutsideApp（能先卸再装的那一种照样给）。
  */
 export function isExternallyManagedInstall(
   status: Pick<ToolStatus, 'installed' | 'installSource'> | null | undefined,
@@ -133,6 +133,31 @@ export function isExternallyManagedInstall(
   return status?.installed === true
     && status.installSource != null
     && status.installSource !== 'npm'
+}
+
+/**
+ * 官方安装器装的 Claude Code 能换成星芒装的（第三十一批 B）：星芒写配置时关了它自己的
+ * 自动更新，又不在它旁边另装一份（#481），不给出路它就永远停在原来的版本。客户点过头，
+ * 星芒先用那条核对过的卸载把它卸掉（uninstall.available），再用自己的通道装回来。
+ * 别的方式装的、星芒卸不掉的（Codex 官方那份）不在此列。
+ */
+export function canSwitchToManagedInstall(
+  id: ToolId,
+  status: Pick<ToolStatus, 'installed' | 'installSource' | 'uninstall'> | null | undefined,
+): boolean {
+  return id === 'claude' && status?.installed === true && status.installSource === 'native'
+    && status.uninstall?.available === true
+}
+
+/**
+ * 只能用它自己的方式更新：外部来源装的，能换成星芒装的那一种除外。首页、新手引导、
+ * 安装卸载页对它只给被动提示、不给按钮，系统通知也不为它把人叫回来。
+ */
+export function updatesOutsideApp(
+  id: ToolId,
+  status: Pick<ToolStatus, 'installed' | 'installSource' | 'uninstall'> | null | undefined,
+): boolean {
+  return isExternallyManagedInstall(status) && !canSwitchToManagedInstall(id, status)
 }
 
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
@@ -459,7 +484,7 @@ export interface ToolUpdateOffer {
   newer: boolean
   /** 装着的版本落在名单的不兼容区间里。 */
   knownIssue: boolean
-  /** 不是本工具装的：只给这句提示，不给按钮（与首页同一条规矩）。 */
+  /** 只能用它自己的方式更新（updatesOutsideApp）：只给这句提示，不给按钮（与首页同一条规矩）。 */
   manualHint: string | null
 }
 
@@ -479,7 +504,7 @@ export function toolUpdateOffer(
   const advice = tool.versionAdvice
   const knownIssue = Boolean(advice?.blockedReason)
   const recommended = rollbackVersion(tool)
-  const manualHint = isExternallyManagedInstall(tool.status) ? externalInstallHint(tool.status.installSource) : null
+  const manualHint = updatesOutsideApp(tool.id, tool.status) ? externalInstallHint(tool.status.installSource) : null
   if (recommended && (advice?.recommendedIsNewer || knownIssue)) {
     return { version: recommended, target: recommended, newer: advice?.recommendedIsNewer === true, knownIssue, manualHint }
   }

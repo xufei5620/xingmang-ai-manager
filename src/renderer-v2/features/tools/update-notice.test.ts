@@ -19,6 +19,8 @@ const cliStatus: Record<string, unknown> = {
   latestVersion: '1.2.3', updateAvailable: false,
   uninstall: { available: true, reason: null, manualCommand: null },
 }
+/** 星芒卸不掉的那份（Codex 官方安装器装的就是这样）：只给手动的办法。 */
+const officialOnly = { available: false, reason: '请用它原来的方式卸载', manualCommand: null }
 const providerConfig = {
   exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account',
   baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model',
@@ -91,14 +93,14 @@ describe('renderer-v2 pending CLI updates', () => {
 
   it('keeps installs the app cannot update out of the notification while the badge still counts them', () => {
     const state = snapshot({
-      claude: { ...cliStatus, latestVersion: '2.1.288', updateAvailable: true, installSource: 'native' },
-      codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true, installSource: 'npm' },
-      gemini: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'path' },
+      claude: { ...cliStatus, latestVersion: '2.1.288', updateAvailable: true, installSource: 'path' },
+      codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true, installSource: 'native', uninstall: officialOnly },
+      gemini: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'npm' },
       grok: cliStatus,
     })
     const tools = presentTools(state)
-    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Codex 那一行有「更新」按钮。
-    expect(inAppToolUpdates(tools)).toEqual([{ id: 'codex', version: '1.9.0' }])
+    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Gemini 那一行有「更新」按钮。
+    expect(inAppToolUpdates(tools)).toEqual([{ id: 'gemini', version: '0.62.0' }])
     // 角标和卡片上的数字照旧数全部：那两行自己写着该怎么更新。
     expect(pendingToolUpdates(tools).map((entry) => entry.id)).toEqual(['claude', 'codex', 'gemini'])
     const home = renderHome(state)
@@ -107,13 +109,21 @@ describe('renderer-v2 pending CLI updates', () => {
     expect(home).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
   })
 
-  it('has nothing to announce when the only pending update belongs to the official installer', () => {
+  it('has nothing to announce when the only pending update belongs to an official installer the app cannot replace', () => {
+    const tools = presentTools(snapshot({
+      claude: cliStatus, gemini: cliStatus, grok: cliStatus,
+      codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true, installSource: 'native', uninstall: officialOnly },
+    }))
+    expect(pendingToolUpdates(tools)).toEqual([{ id: 'codex', version: '1.9.0' }])
+    expect(inAppToolUpdates(tools)).toEqual([])
+  })
+
+  it('announces the official-installer Claude Code, which the app can switch to its own install', () => {
     const tools = presentTools(snapshot({
       claude: { ...cliStatus, latestVersion: '2.1.288', updateAvailable: true, installSource: 'native' },
       codex: cliStatus, gemini: cliStatus, grok: cliStatus,
     }))
-    expect(pendingToolUpdates(tools)).toEqual([{ id: 'claude', version: '2.1.288' }])
-    expect(inAppToolUpdates(tools)).toEqual([])
+    expect(inAppToolUpdates(tools)).toEqual([{ id: 'claude', version: '2.1.288' }])
   })
 
   it('builds an event key the main process will accept, whatever the upstream version string looks like', () => {

@@ -3366,10 +3366,21 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     // 句柄在入队之前登记：排在别的安装后面等待时也要能取消。
     const cancellation = installCancellations.begin(codexDesktopInstallKey)
+    let started = false
     return installationQueue.enqueue(
       codexDesktopInstallKey,
-      () => installCodexDesktopOperationWithProgress(target, cancellation),
-    ).finally(() => cancellation.release())
+      () => {
+        started = true
+        return installCodexDesktopOperationWithProgress(target, cancellation)
+      },
+      { signal: cancellation.signal },
+    ).catch((error: unknown) => {
+      if (started) throw error
+      // 排着队时取消的那次直接出队，不用等前面那项装完；它没跑过，取消的那句和进度在这里补上。
+      const cancelled = new InstallCancelledError('Codex 桌面端安装已取消')
+      sendCodexDesktopInstallProgress(target, { phase: 'error', percent: null, message: cancelled.message })
+      throw cancelled
+    }).finally(() => cancellation.release())
   }
 
   function cancelCodexDesktopInstall(): InstallCancellationOutcome {
