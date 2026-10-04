@@ -8,6 +8,11 @@ import { describeUpdateDiskShortfall } from '../../../electron/disk-space-copy'
 export const macDesktopTutorialTopic = 'mac-desktop-apps'
 /** 同理：教程里讲「Mac 上怎么自己装 Node.js 和 Python」的那一章。 */
 export const macRuntimeTutorialTopic = 'runtime-mac'
+/**
+ * 同理：「Codex 桌面端怎么安装？」那一章；安装卸载页桌面端那一行（不在 Mac 上时）的
+ * 「查看安装步骤」跳到这里。教程那边还写着字面量，pages-maintenance.test.ts 钉着两边一致。
+ */
+export const desktopInstallTutorialTopic = 'install'
 /** 同理：「备份、更新与数据」那一章，里面有「磁盘快满了、更新下不下来怎么办」。 */
 export const updatesTutorialTopic = 'safety'
 /** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
@@ -78,6 +83,20 @@ export function updateCardTitle(update: UpdateOfferState): string {
   if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
   if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
   return updateLabels[update.phase]
+}
+/** 更新页「当前版本」下面那行「新版本」写哪一版。退回旧版本不是新版本，那时没有这一行。 */
+export function updateNewVersion(update: Pick<UpdateSnapshot, 'currentVersion' | 'availableVersion' | 'rollback'> | null | undefined): string | null {
+  if (!update?.availableVersion || update.rollback || update.availableVersion === update.currentVersion) return null
+  return update.availableVersion
+}
+/**
+ * 人就在更新页时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
+ * 页面上写着的同一件事，不弹；离开更新页照旧弹。别的几种（「这个版本有已知问题」等）照旧。
+ */
+export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'failedStep'>): boolean {
+  if (update.error) return update.failedStep === 'download'
+  if (update.phase === 'downloading') return true
+  return update.phase === 'available' && !update.rollback && !update.diskShortfall
 }
 export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'downloaded') return '更新已下载'

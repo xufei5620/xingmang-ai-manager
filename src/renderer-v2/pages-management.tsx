@@ -40,6 +40,7 @@ import {
 import {
   displayDate,
   RelativeTime,
+  relativeTimeText,
   errorMessage,
   ListState,
   Pagination,
@@ -2396,6 +2397,16 @@ function RestoreCheckNotice({
   )
 }
 
+/**
+ * 备份按列表上看到的日期搜：「今天 14:20」「10月2日」照着写就搜得到，鼠标停上去看到的
+ * 完整时间也算。备份编号列表上看不到，不再拿它比。
+ */
+export function backupMatchesQuery(createdAt: string | null | undefined, query: string, now: number): boolean {
+  const words = query.trim().toLowerCase()
+  if (!words) return true
+  return `${relativeTimeText(createdAt, now)} ${displayDate(createdAt)}`.toLowerCase().includes(words)
+}
+
 function BackupKeyPill({ backup }: { backup: Backup }) {
   const view = backup.valid ? backupKeyView(backup) : null
   if (!view) return null
@@ -2429,6 +2440,8 @@ export function BackupsPage({
   const [restoreCheck, setRestoreCheck] = useState<RestoreCheck | null>(null)
   const checkSequence = useRef(0)
   const previewKey = preview ? backupKeyView(preview) : null
+  // 列表上的「今天 14:20」和搜索比的是同一个时刻算出来的字。
+  const now = Date.now()
   // 连着恢复两份时只认最后一次的结论（T6）。
   const checkRestored = async (restored: Provider) => {
     const sequence = ++checkSequence.current
@@ -2441,17 +2454,12 @@ export function BackupsPage({
     }
     if (checkSequence.current === sequence) setRestoreCheck(next)
   }
-  const list = useMemo(
-    () =>
-      resource.data?.filter(
-        (item) =>
-          (provider === 'all' || item.provider === provider) &&
-          `${item.id} ${item.createdAt}`
-            .toLowerCase()
-            .includes(query.toLowerCase()),
-      ) ?? [],
-    [resource.data, provider, query],
-  )
+  const list =
+    resource.data?.filter(
+      (item) =>
+        (provider === 'all' || item.provider === provider) &&
+        backupMatchesQuery(item.createdAt, query, now),
+    ) ?? []
   const inspect = (backup: Backup) =>
     void operation.execute(
       'inspect',
@@ -2460,11 +2468,11 @@ export function BackupsPage({
       },
       '',
     )
-  const create = () =>
+  const create = (target: Provider) =>
     void operation.execute(
       'create',
       async () => {
-        await api.createBackup(backupProvider)
+        await api.createBackup(target)
         await resource.reload()
       },
       '备份已保存到本机',
@@ -2491,13 +2499,15 @@ export function BackupsPage({
       <Toolbar
         left={<ProviderFilter value={provider} all onChange={(value) => {
           setProvider(value)
+          // 右边「马上备份」的下拉跟着上面的筛选走；选「全部工具」时不动。
+          if (value !== 'all') setBackupProvider(value)
           operation.clear()
         }} />}
         search={
           <SearchInput
             value={query}
             onChange={setQuery}
-            placeholder="搜索日期或备份编号"
+            placeholder="搜索日期"
             testId="backups-search"
           />
         }
@@ -2519,8 +2529,11 @@ export function BackupsPage({
             filtered={Boolean(query)}
             retry={() => void resource.reload()}
             clear={() => setQuery('')}
+            emptyTitle={provider === 'all' ? '还没有备份' : `${providerName(provider)} 还没有备份`}
+            emptyDescription="改工具配置前会自动留一份。想现在就留一份，点下面的按钮。"
             action={
-              <Button icon={Archive} onClick={create}>
+              // 上面筛选选了哪个工具就备份哪个；「全部工具」时用右边下拉里的。
+              <Button icon={Archive} onClick={() => create(provider === 'all' ? backupProvider : provider)}>
                 创建第一份备份
               </Button>
             }
@@ -2528,15 +2541,13 @@ export function BackupsPage({
             {list.map((backup) => (
               <ListRow
                 key={backup.id}
+                leading={<BrandIcon tool={backup.provider ?? ''} size={18} />}
                 title={
-                  <>
-                    <BrandIcon tool={backup.provider ?? ''} size={24} />
-                    {backup.provider
-                      ? providerName(backup.provider)
-                      : '无法识别的备份'}
-                  </>
+                  backup.provider
+                    ? providerName(backup.provider)
+                    : '无法识别的备份'
                 }
-                desc={<RelativeTime value={backup.createdAt} />}
+                desc={<RelativeTime value={backup.createdAt} now={now} />}
                 badge={
                   <>
                     <Pill tone={backup.valid ? 'neutral' : 'bad'}>
@@ -2591,12 +2602,12 @@ export function BackupsPage({
                   setBackupProvider(event.target.value)
               }}
             />
-            <p>备份保存在本机，可能包含配置凭据。请妥善保管。</p>
+            <p>备份在本机，可能含凭据，请妥善保管。</p>
             <Button
               variant="primary"
               icon={Archive}
               loading={operation.busy === 'create'}
-              onClick={create}
+              onClick={() => create(backupProvider)}
               testId="backups-create"
             >
               创建备份

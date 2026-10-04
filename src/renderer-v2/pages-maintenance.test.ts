@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installResultMessage, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialTopicsFor } from './registry/tutorials'
@@ -350,6 +350,23 @@ describe('updates page startup switches', () => {
   })
 })
 
+describe('updates page layout', () => {
+  it('lines the current version up with the other rows and writes it in body text', () => {
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+    const row = markup.match(/<div class="xm-list-row"[^>]*data-testid="updates-current-version"[^>]*>.*?<\/div><div class="xm-row-actions">/)?.[0] ?? ''
+    expect(row).toContain('当前版本')
+    expect(row).not.toContain('xm-row-icon')
+    expect(row).toContain('class="v2-update-version"')
+  })
+
+  it('shows what to know before installing without a fold', () => {
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('<details')
+    expect(markup).toContain('<h3>安装前需要知道</h3>')
+    expect(markup).toMatch(/data-testid="updates-install-note"[^>]*><h3>安装前需要知道<\/h3><p>装之前先保存工具里没做完的东西。/)
+  })
+})
+
 describe('settings onboarding entries', () => {
   it('offers both 「再看一遍」 and 「重看导览」 when the app can drive them', () => {
     const markup = renderToStaticMarkup(
@@ -384,12 +401,30 @@ describe('settings onboarding entries', () => {
 
 describe('withElevationNotice', () => {
   it('hangs the notice off the line the row already shows, with the same separator', () => {
-    // ToolStatusReason 把后面的原因也用 ' · ' 接上，这里换个分隔符会让一行里出现两种。
     expect(withElevationNotice('OpenAI', '这一步需要管理员授权')).toBe('OpenAI · 这一步需要管理员授权')
   })
 
   it('leaves the row untouched where nothing elevates', () => {
     expect(withElevationNotice('命令行工具需要的运行环境', null)).toBe('命令行工具需要的运行环境')
+  })
+})
+
+describe('installGuideTopic', () => {
+  it('sends each maintenance row to the chapter that installs it instead of the first chapter', () => {
+    const title = (id: string) => tutorialTopics.find((entry) => entry.id === id)?.title
+    expect(title(installGuideTopic('codexDesktop', 'macos'))).toBe('Mac 上装桌面端')
+    expect(title(installGuideTopic('codexDesktop', 'windows'))).toBe('Codex 桌面端怎么安装？')
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+      expect(title(installGuideTopic(provider, 'macos'))).toBe('进阶：安装与使用命令行工具')
+      expect(title(installGuideTopic(provider, 'windows'))).toBe('进阶：安装与使用命令行工具')
+    }
+    for (const runtime of ['node', 'python'] as const) {
+      expect(title(installGuideTopic(runtime, 'macos'))).toBe('Mac 上准备 Node.js 和 Python')
+      expect(title(installGuideTopic(runtime, 'windows'))).toBe('进阶：安装与使用命令行工具')
+      expect(title(installGuideTopic(runtime, 'linux'))).toBe('进阶：安装与使用命令行工具')
+      // 还没读到是哪种电脑时不猜 Mac。
+      expect(title(installGuideTopic(runtime, undefined))).toBe('进阶：安装与使用命令行工具')
+    }
   })
 })
 
@@ -404,5 +439,14 @@ describe('installResultMessage', () => {
 
   it('says nothing when the customer turned down switching the official-installer copy', () => {
     expect(installResultMessage('declined')).toBeNull()
+  })
+})
+
+describe('installJobRunning', () => {
+  // 首页的卸载也挂在工具编号下；「安装卸载」页那一行不能把它当成在装，标「安装中」。
+  it('counts a Home job as an install unless it is an uninstall', () => {
+    expect(installJobRunning(undefined)).toBe(false)
+    expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
+    expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
   })
 })

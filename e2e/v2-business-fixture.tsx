@@ -375,6 +375,8 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
 const apiMethods = {
   onInstallProgress: () => () => undefined,
   onCodexDesktopInstallProgress: () => () => undefined,
+  onNodeRuntimeInstallProgress: () => () => undefined,
+  onPythonRuntimeInstallProgress: () => () => undefined,
   onCodexDesktopLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
@@ -874,15 +876,26 @@ const apiMethods = {
     directory: 'C:/test-logs',
     filePath: 'C:/test-logs/log',
     sizeBytes: 64,
-    total: 3,
-    truncated: false,
+    total: query.has('manyLogs') ? 650 : 3,
+    // manyLogs：日志多到主进程只回了最近一部分，列表一次先放 100 条。
+    truncated: query.has('manyLogs'),
     counts: { debug: 0, info: 2, warn: 0, error: 1 },
     sources: ['fixture', 'updater'],
     currentProcessId: 4242,
     startedAt: time,
     entries: empty
       ? []
-      : [
+      : query.has('manyLogs')
+        ? Array.from({ length: 150 }, (_, index) => ({
+            id: `${time}:4242:${index + 1}`,
+            timestamp: time,
+            level: 'info' as const,
+            source: 'fixture',
+            event: 'test',
+            message: `第 ${index + 1} 条测试日志`,
+            detail: null,
+          }))
+        : [
           {
             id: `${time}:4242:1`,
             timestamp: time,

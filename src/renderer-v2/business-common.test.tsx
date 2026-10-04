@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ListState, RelativeTime, ResultNotice } from './business-common'
+import { ListState, RelativeTime, ResultNotice, relativeTimeText, resultNoticeLead } from './business-common'
 
 describe('renderer-v2 result notice', () => {
   it('leads with the catalog wording and keeps the backend sentence for support', () => {
@@ -75,6 +75,19 @@ describe('renderer-v2 result notice', () => {
   })
 })
 
+// 安装卸载页没装上的那一行，名字下面写的就是红框领头的这一句。
+describe('renderer-v2 result notice lead', () => {
+  it('leads with the title the red banner shows when the catalog knows the failure', () => {
+    const error = 'Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir'
+    expect(resultNoticeLead(error)).toBe('写不进安装目录')
+    expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>写不进安装目录</strong>')
+  })
+
+  it('falls back to the sentence itself when the catalog does not know it', () => {
+    expect(resultNoticeLead('这一步没做完')).toBe('这一步没做完')
+  })
+})
+
 describe('renderer-v2 relative time', () => {
   const now = new Date(2026, 9, 4, 15, 0).getTime()
 
@@ -95,6 +108,14 @@ describe('renderer-v2 relative time', () => {
   it('keeps the old wording when the time is missing or unreadable', () => {
     expect(renderToStaticMarkup(<RelativeTime value={null} now={now} />)).toBe('暂未记录')
     expect(renderToStaticMarkup(<RelativeTime value="not a date" now={now} />)).toBe('时间不可用')
+  })
+
+  // 备份页按列表上看到的字搜，搜的那份字和 RelativeTime 画出来的必须是同一句。
+  it('gives the same words as text that the list shows', () => {
+    for (const value of [new Date(2026, 9, 3, 9, 12).toISOString(), new Date(2026, 8, 28, 20, 0).getTime() / 1000, null, 'not a date']) {
+      const markup = renderToStaticMarkup(<RelativeTime value={value} now={now} />)
+      expect(markup.replace(/<[^>]+>/g, '')).toBe(relativeTimeText(value, now))
+    }
   })
 })
 
@@ -126,6 +147,14 @@ describe('renderer-v2 list empty states', () => {
     const titled = renderToStaticMarkup(<ListState page="mcp" noun="外接工具" emptyTitle="还没有添加连接" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
     expect(titled).toContain('还没有添加连接')
     expect(titled).not.toContain('还没有外接工具')
+  })
+
+  it('lets a page say what to do when the list could not be read', () => {
+    const markup = renderToStaticMarkup(<ListState page="feedback" noun="运行日志" errorDescription="点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。" loading={false} error="操作没有成功，请重试或查看反馈日志。" count={0} retry={() => undefined}>{null}</ListState>)
+    expect(markup).toContain('运行日志暂时没有读到')
+    expect(markup).toContain('点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。')
+    expect(markup).not.toContain('请重试或查看反馈日志')
+    expect(markup).toContain('>重新加载<')
   })
 
   it('puts the empty state buttons side by side in one row', () => {

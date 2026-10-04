@@ -99,7 +99,8 @@ describe('maintenanceFailureNotice', () => {
     const notice = maintenanceFailureNotice({ partition: 'system', message: '探测没有完成' })
     expect(notice.title).toBe('工具状态暂未读到')
     expect(notice.reason).toBe('探测没有完成')
-    expect(notice.hint).toContain('重新检测')
+    // 这时各行既不给安装也不给卸载，提示不能再说卸载入口不受影响。
+    expect(notice.hint).toBe('下面各行的版本和安装状态还没读到，读到之前装不了也卸不了。点「重新检测」再试一次。')
   })
 
   it('says the states still hold when only the platform capabilities are missing', () => {
