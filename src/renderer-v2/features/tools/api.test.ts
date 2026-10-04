@@ -139,6 +139,17 @@ describe('CLI install cancellation routing', () => {
     expect(cancelCliInstall).not.toHaveBeenCalled()
   })
 
+  it('sends a desktop client cancel to its own channel', async () => {
+    const refusal = { cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' }
+    const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const cancelExternalClientInstall = vi.fn(async () => refusal)
+    const api = createToolsApi({ cancelCliInstall, cancelExternalClientInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelExternalInstall('claudeDesktop')).resolves.toEqual(refusal)
+    expect(cancelExternalClientInstall).toHaveBeenCalledWith('claudeDesktop')
+    expect(cancelCliInstall).not.toHaveBeenCalled()
+  })
+
   it('passes the Codex Desktop refusal through once the MSIX install has begun', async () => {
     const refusal = { cancelled: false, reason: '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。' }
     const cancelCodexDesktopInstall = vi.fn(async () => refusal)
