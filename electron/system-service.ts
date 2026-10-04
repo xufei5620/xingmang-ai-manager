@@ -1530,10 +1530,11 @@ const npmDownloadTimedOutMessage = '下载超时，长时间没有完成，已�
 
 /**
  * Bytes under `directory`, counted without following links. Entries that vanish
- * mid-walk (npm moves a finished download out of its temp folder) are skipped
- * and an unreadable root counts as empty, so this never throws. The walk is
- * sequential on purpose: it runs every few seconds next to the download it
- * watches and must not compete with it for the disk.
+ * mid-walk (npm moves a finished download out of its temp folder) are skipped.
+ * A root that cannot be read rejects instead of counting as empty: a reading
+ * that stays at zero would look exactly like a download that stopped moving.
+ * The walk is sequential on purpose: it runs every few seconds next to the
+ * download it watches and must not compete with it for the disk.
  */
 export async function measureDirectoryBytes(directory: string): Promise<number> {
   let total = 0
@@ -1544,7 +1545,8 @@ export async function measureDirectoryBytes(directory: string): Promise<number> 
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(current, { withFileTypes: true })
-    } catch {
+    } catch (error) {
+      if (current === directory) throw error
       continue
     }
     for (const entry of entries) {

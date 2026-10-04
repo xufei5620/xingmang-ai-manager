@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -51,6 +52,43 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+/** 另起一个进程开着文件往里写：先写一块，stdin 每来一行再写一块，stdin 关了才关文件。 */
+const growingFileWriter = `
+const fs = require('node:fs')
+const fd = fs.openSync(process.argv[1], 'w')
+let blocks = 0
+function grow() {
+  fs.writeSync(fd, Buffer.alloc(65536, 97))
+  blocks += 1
+  process.stdout.write(blocks + '\\n')
+}
+grow()
+process.stdin.on('data', grow)
+process.stdin.on('end', () => {
+  fs.closeSync(fd)
+  process.exit(0)
+})
+`
+
+function writerOutput(writer: ChildProcess, line: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let output = ''
+    function onData(chunk: Buffer): void {
+      output += chunk.toString('utf8')
+      if (!output.split('\n').includes(line)) return
+      writer.stdout?.off('data', onData)
+      writer.off('exit', onExit)
+      resolve()
+    }
+    function onExit(code: number | null): void {
+      writer.stdout?.off('data', onData)
+      reject(new Error(`写文件的进程提前退出了（${code}）`))
+    }
+    writer.stdout?.on('data', onData)
+    writer.once('exit', onExit)
+  })
+}
+
 // 只拨 setInterval 和单调时钟：安装流程里其余的计时器（取地区、读盘超时）照真实时间走，
 // 假时钟拨几分钟也不会把它们一起触发。
 function useWatchClock(): void {
@@ -89,21 +127,46 @@ describe('measureDirectoryBytes', () => {
     await expect(measureDirectoryBytes(root)).resolves.toBe(1_820)
   })
 
-  it('counts a directory that does not exist yet as empty', async () => {
+  it('rejects when it cannot read the directory itself instead of reporting zero', async () => {
+    // A reading stuck at zero would look exactly like a download that stopped moving.
     const root = temporaryDirectory('xingmang-measure-missing-')
-    await expect(measureDirectoryBytes(path.join(root, 'attempt-0'))).resolves.toBe(0)
+    await expect(measureDirectoryBytes(path.join(root, 'attempt-0'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it.runIf(process.platform !== 'win32')('does not follow links out of the directory', async () => {
+  it('does not follow links or junctions out of the directory', async () => {
     const root = temporaryDirectory('xingmang-measure-links-')
     const outside = temporaryDirectory('xingmang-measure-outside-')
     fs.writeFileSync(path.join(outside, 'large'), Buffer.alloc(50_000))
     fs.mkdirSync(path.join(root, 'attempt'))
     fs.writeFileSync(path.join(root, 'attempt', 'own'), Buffer.alloc(10))
-    fs.symlinkSync(path.join(outside, 'large'), path.join(root, 'attempt', 'file-link'))
-    fs.symlinkSync(outside, path.join(root, 'attempt', 'folder-link'))
+    // Windows 上普通权限建得了目录联接，建不了文件符号链接。
+    fs.symlinkSync(outside, path.join(root, 'attempt', 'folder-link'), 'junction')
+    if (process.platform !== 'win32') fs.symlinkSync(path.join(outside, 'large'), path.join(root, 'attempt', 'file-link'))
 
     await expect(measureDirectoryBytes(path.join(root, 'attempt'))).resolves.toBe(10)
+  })
+
+  it('sees a file grow while another process still has it open', async () => {
+    // npm 下载时，缓存里的临时文件一直开着、边下边长，到下完才关。Windows 上文件夹列表里记的
+    // 大小要等关了才更新，所以这里要量到的是文件此刻真正的大小。
+    const root = temporaryDirectory('xingmang-measure-open-')
+    const partial = path.join(root, 'cache', '_cacache', 'tmp', 'partial')
+    fs.mkdirSync(path.dirname(partial), { recursive: true })
+    const writer = spawn(process.execPath, ['-e', growingFileWriter, partial], { stdio: ['pipe', 'pipe', 'inherit'] })
+    try {
+      await writerOutput(writer, '1')
+      await expect(measureDirectoryBytes(root)).resolves.toBe(64 * 1024)
+      const second = writerOutput(writer, '2')
+      writer.stdin?.write('more\n')
+      await second
+      await expect(measureDirectoryBytes(root)).resolves.toBe(2 * 64 * 1024)
+    } finally {
+      if (writer.exitCode === null && writer.signalCode === null) {
+        const exited = new Promise<void>((resolve) => writer.once('exit', () => resolve()))
+        writer.stdin?.end()
+        await exited
+      }
+    }
   })
 })
 
