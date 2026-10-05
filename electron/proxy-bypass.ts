@@ -65,12 +65,12 @@ export interface ProxyBypass {
   tryBypass(): Promise<ProxyBypassOutcome>
   /**
    * 账号请求在网络层失败后问一句：要不要换条路再发一次。startedAt 是那次请求
-   * 发出的时刻，reason 是失败原因。返回 true 表示现在走的路和那次请求走的不一样了，
-   * 值得重发：多半是改了直连、那次请求走的是改之前那条路，也可能是站点那一路刚交还
-   * 给系统代理、那次请求走的是交还掉的直连；false 表示别重发，按原错误报。代理本身
-   * 连不上才整个改直连（先等一会儿再看一眼，代理只断了一下、又连得上了，就答 true，
-   * 照旧经系统代理重发），超时、连接被断只让连那个站点的请求改走专用的直连会话：
-   * siteProbeUrl 是那次请求所连站点的探测地址，缺省用 probeUrl()。
+   * 发出的时刻，reason 是失败原因。返回 true 表示值得重发：多半是改了直连、那次请求
+   * 走的是改之前那条路，也可能是站点那一路刚交还给系统代理、那次请求走的是交还掉的
+   * 直连，或者代理只断了一下、再看已经连得上了，照旧经系统代理重发；false 表示别重发，
+   * 按原错误报。代理本身连不上才整个改直连（先等一会儿再看一眼），超时、连接被断只让
+   * 连那个站点的请求改走专用的直连会话：siteProbeUrl 是那次请求所连站点的探测地址，
+   * 缺省用 probeUrl()。
    */
   recoverFailedRequest(startedAt: number, reason: NetworkFailureReason, siteProbeUrl?: string): Promise<boolean>
   /** 现在是不是整个改成了直连；经系统代理又连得上星芒以后会改回去。 */
@@ -244,7 +244,8 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     if (active) return 'down'
     const failure = await dependencies.probe(url).then(
       (answered) => answered ? null : 'no-answer',
-      (error: unknown) => classifyNetworkFailure(error) ?? 'no-answer',
+      // 探测自己等满了抛的是 AbortSignal.timeout 的 TimeoutError，classifyNetworkFailure 认不出来。
+      (error: unknown) => error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : classifyNetworkFailure(error) ?? 'no-answer',
     )
     if (failure === null) {
       dependencies.log?.('info', 'proxy-bypass.proxy-back', '系统代理断了一下，再看已经连得上，照旧跟随系统代理')
@@ -438,6 +439,10 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
       // 换节点、重启内核时也会这样断一下：先等一会儿再看一眼，又连得上了就照旧经系统代理重发；
       // 代理起来了、这一下却没走通，先什么都不改，后面的请求再超时自有站点那一路接着。
       if (reason === 'proxy') {
+        // 等直连那一路再看的那一会儿，别处可能开始试整个改直连了：默认会话正切着直连，这时读到的
+        // 「没走代理」不算数，等它试完。
+        if (pending) await pending.catch(() => undefined)
+        if (active) return startedAt < activatedAt
         if (backingOff(automaticBypassCooldownMs) || !url || await bypassBlocker(url)) return false
         const look = await lookAgainAtProxy(url)
         if (look !== 'down') return look === 'answered'

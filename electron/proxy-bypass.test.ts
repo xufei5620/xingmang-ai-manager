@@ -94,7 +94,7 @@ describe('proxy bypass', () => {
     expect(await bypass.tryBypass()).toBe('direct')
     expect(bypass.active()).toBe(true)
     expect(modes).toEqual(['direct'])
-    // Once direct works it stays for the run; no more flipping.
+    // Once direct works it stays; another try does not flip it.
     expect(await bypass.tryBypass()).toBe('direct')
     expect(modes).toEqual(['direct'])
   })
@@ -829,18 +829,73 @@ describe('proxy bypass when the proxy app only blinks', () => {
   })
 
   it.each([
-    ['times out', new DOMException('The operation was aborted due to timeout', 'TimeoutError')],
-    ['has its connection cut', new Error('net::ERR_CONNECTION_RESET')],
-    ['finds no network', new Error('net::ERR_INTERNET_DISCONNECTED')],
-  ] as const)('changes nothing and does not resend when the look a moment later %s', async (_case, failure) => {
-    const { deps, modes, logs, probe } = proxyApp()
-    probe.mockRejectedValueOnce(failure)
+    ['times out', new DOMException('The operation was aborted due to timeout', 'TimeoutError'), 'timeout'],
+    ['has its connection cut', new Error('net::ERR_CONNECTION_RESET'), 'refused'],
+    ['finds no network', new Error('net::ERR_INTERNET_DISCONNECTED'), 'offline'],
+  ] as const)('changes nothing and does not resend when the look a moment later %s', async (_case, error, failure) => {
+    const logged: Record<string, unknown>[] = []
+    const { deps, modes, probe } = proxyApp({ log: (_level, event, _message, detail) => { logged.push({ event, ...detail }) } })
+    probe.mockRejectedValueOnce(error)
     const bypass = createProxyBypass(deps)
     expect(await bypass.recoverFailedRequest(900, 'proxy')).toBe(false)
     expect(probe).toHaveBeenCalledTimes(1)
     expect(modes).toEqual([])
     expect(bypass.active()).toBe(false)
-    expect(logs).toEqual(['proxy-bypass.proxy-unclear'])
+    expect(logged).toEqual([{ event: 'proxy-bypass.proxy-unclear', failure }])
+  })
+
+  it('waits for a switch to direct still under way when the moment is up, and resends over direct once it is made', async () => {
+    const timers = heldTimers()
+    const { deps, modes, state, probe } = proxyApp({ schedule: timers.schedule })
+    let finishDirect: (reachable: boolean) => void = () => undefined
+    probe.mockImplementation((_url: string) => state.mode === 'direct'
+      ? new Promise<boolean>((resolve) => { finishDirect = resolve })
+      : Promise.reject(new Error('net::ERR_PROXY_CONNECTION_FAILED')))
+    const bypass = createProxyBypass(deps)
+    const answer = bypass.recoverFailedRequest(900, 'proxy')
+    await vi.waitFor(() => expect(timers.waiting()).toEqual([proxyRecheckDelayMs]))
+    // The customer asks to check the network again; that switch is still probing direct when the moment is up.
+    const switching = bypass.tryBypass()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    timers.runNext()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The app session is direct for the moment, so a look through it would say nothing about the proxy.
+    expect(probe).toHaveBeenCalledTimes(1)
+    finishDirect(true)
+    expect(await switching).toBe('direct')
+    expect(await answer).toBe(true)
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(modes).toEqual(['direct'])
+  })
+
+  it('waits for a switch to direct that starts while a refused request waits on a look at the direct session, and resends it over direct', async () => {
+    const timers = heldTimers()
+    const probeSiteDirect = vi.fn<(url: string) => Promise<boolean>>(async () => true)
+    const { deps, modes, probe } = proxyApp({ now: () => 1_000, schedule: timers.schedule, probeSiteDirect })
+    const held: ((answered: boolean) => void)[] = []
+    probe.mockImplementation(() => new Promise<boolean>((resolve) => { held.push(resolve) }))
+    const bypass = createProxyBypass(deps)
+    // The proxy app first stopped forwarding the service, which went direct on its own.
+    expect(await bypass.recoverFailedRequest(900, 'timeout')).toBe(true)
+    let siteDirectAnswer: (answered: boolean) => void = () => undefined
+    probeSiteDirect.mockImplementation(() => new Promise<boolean>((resolve) => { siteDirectAnswer = resolve }))
+    // A request on the direct session fails, so both ways get looked at again.
+    bypass.siteRouteFailed(bypass.routeSiteRequest(siteUrl)!)
+    await vi.waitFor(() => expect(probeSiteDirect).toHaveBeenCalledTimes(2))
+    // A request still out through the proxy is refused, and waits for that look.
+    const answer = bypass.recoverFailedRequest(950, 'proxy')
+    // Meanwhile the customer asks to check the network again, and the app session is switched over for the test.
+    const switching = bypass.tryBypass()
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
+    // The look at the direct session ends while that switch is still probing.
+    siteDirectAnswer(false)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    held[1](true)
+    expect(await switching).toBe('direct')
+    expect(await answer).toBe(true)
+    expect(modes).toEqual(['direct'])
+    expect(timers.waiting()).toEqual([])
+    held[0](false)
   })
 
   it('looks again once for several requests refused together', async () => {
