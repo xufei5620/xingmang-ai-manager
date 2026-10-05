@@ -2399,10 +2399,11 @@ export async function installGitAlongsideClaude(
 }
 
 /**
- * 上面那段 Git 是在 Claude Code 那一项出队之后才装的，界面上却仍是同一次「安装」，那一行的「取消」
- * 也还亮着。装 Git 接不上取消，所以这次安装的取消句柄先不收、改成封住：这时点「取消」回「这一步已经
- * 不能取消了。」，而不是「这个工具当前没有正在进行的安装。」（第四十批 C）。Git 那段结束（装上、没装上
- * 都算）再收。Claude Code 自己没装成（失败或被取消）就不进 Git 这段，照旧马上收。
+ * Windows 上装 Claude Code 时，顺带的 Git（installGitAlongsideClaude）是在 Claude Code 那一项出队之后
+ * 才装的，界面上却仍是同一次「安装」，那一行的「取消」也还亮着。装 Git 接不上取消，所以这次安装的取消
+ * 句柄先不收、改成封住：这时点「取消」回「这一步已经不能取消了。」，而不是「这个工具当前没有正在进行的
+ * 安装。」（第四十批 C）。Git 那段结束（装上、没装上都算）再收。Claude Code 自己没装成（失败或被取消）
+ * 就不进 Git 这段，照旧马上收。
  */
 export async function finishClaudeInstallWithGit(
   claude: Promise<void>,
