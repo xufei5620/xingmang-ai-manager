@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangePending, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -215,6 +215,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const onlineResync = useRef(idleOnlineResync())
   const resumeOnline = useRef<(() => void) | null>(null)
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
+  const accountBootstrapRef = useRef(accountBootstrap)
+  accountBootstrapRef.current = accountBootstrap
   // 会话变化事件来过几次。启动那次读取可能在事件之后才落地（账号恢复超时先放行
   // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
   const sessionEvents = useRef(0)
@@ -1061,6 +1063,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   function launchIsCurrent(epoch: number): boolean {
     return mounted.current && accountEpoch.current === epoch
   }
+  function accountConnectionPending(provider: ProviderId): boolean {
+    const latest = accountBootstrapRef.current
+    return accountKeyChangePending({ signedIn: session.authenticated, restoring,
+      bootstrap: latest?.scope === scope ? latest : null }, provider)
+  }
   async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
     try {
       if (!launchIsCurrent(epoch)) return false
@@ -1072,6 +1079,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
+      // Shortcuts and tray actions share this entry, including after the scan
+      // finishes but account configuration is still waiting on the backend.
+      const waitForAccountConnection = () => {
+        if (tool?.source !== 'account' || !accountConnectionPending(tool.provider)) return false
+        toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral')
+        return true
+      }
+      if (waitForAccountConnection()) return false
       // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
       // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
@@ -1128,8 +1143,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       if (!launchIsCurrent(epoch)) return false
       const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName)
+      let connectionDeferred = false
       const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
         if (!launchIsCurrent(epoch)) return
+        if (waitForAccountConnection()) { connectionDeferred = true; return }
         const result = await toolsApi.launch(id, workspace, mode)
         const warning = launchWarning(result)
         if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
@@ -1144,7 +1161,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
         }
       })
-      return launchIsCurrent(epoch) && started
+      return launchIsCurrent(epoch) && started && !connectionDeferred
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       throw cause

@@ -2075,6 +2075,35 @@ test('a tool whose account key changes this startup keeps waiting for the scan w
 
 // 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
 // 问完了、谁都不用换，检测没跑完也能打开。
+test('an applied route migration blocks home and native launch after scanning until configuration finishes', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    await page.evaluate(() => { window.v2Test.holdNextConfigSave(); window.v2Test.releaseScan() })
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].providers.includes('claude')))
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
+    await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    const shortcutNumber = await page.evaluate(async () => {
+      const { tools } = await import('/src/renderer-v2/registry/tools.ts')
+      return tools.filter((entry) => !entry.hidden?.('win')).findIndex((entry) => entry.id === 'claude') + 1
+    })
+    await page.keyboard.press(`Control+${shortcutNumber}`)
+    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
+    const configured = await page.evaluate(async () => (await window.xingmang.getConfig()).providers.claude)
+    assert.equal(configured.actualBaseUrl, configured.baseUrl)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('opening waits while the account key sync has not answered yet, then opens before the scan finishes', async () => {
   const page = await open('allInstalled=1&cachedScan=1&bootstrapPending=1')
   try {
@@ -3812,8 +3841,13 @@ test('NewAPI read states survive collection updates and stay isolated between ac
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '已读'])
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'other-user', group: 'default', role: 1, quota: 1, usedQuota: 0 } }))
+    await page.getByRole('button', { name: '打开个人中心 other-user', exact: true }).waitFor()
     await page.getByTestId('announcement-open').click()
-    await list.waitFor()
+    // Opening reloads the new account's collection. The container can briefly
+    // exist before that reload clears it; wait for both rows and their read
+    // states to finish loading before taking the original synchronous snapshot.
+    await expect(list.locator('.v2-announcement-title')).toHaveText(['第一条', '第二条'])
+    await expect(list.locator('.v2-announcement-read-state')).toHaveText(['未读', '未读'])
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读'])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
     await clean(page)
@@ -6135,6 +6169,8 @@ test('a window narrower than the design collapses the sidebar by itself, floats 
     await page.screenshot({ path: path.join(artifacts, 'shell-narrow-overlay.png') })
     await page.keyboard.press('Escape')
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    // Escape restores focus in the next animation frame, after the class changes.
+    await expect(page.getByTestId('sidebar-collapse')).toBeFocused()
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '展开侧栏')
     await page.getByTestId('sidebar-collapse').click()
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')

@@ -6674,6 +6674,10 @@ export function createSystemService(
       }
       const model = payload.model.trim()
       const activeSite = providerRelaySite(payload.provider, before)
+      const previousRoute = relaySiteForProviderBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl)
+      const automaticRouteMigration = ownership?.automatic === true
+        && relayRouting.selection(activeSite.id) !== undefined && previousRoute !== null
+        && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
       const assertUnchanged = () => {
         assertOwner()
         const current = inspectNativeProviderConfig(payload.provider)
@@ -6695,6 +6699,20 @@ export function createSystemService(
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       // 同上：要问一遍 Codex 命令行是哪一版，也放在「校验没变」之前。
       const codexModelCatalog = payload.provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
+      if (automaticRouteMigration) {
+        // A Start Menu launch can happen while the models request is in flight.
+        // Probe after asynchronous preparation, before invalidating ownership or
+        // changing any native file. This is a process snapshot, not an OS lock.
+        let stopped = false
+        try {
+          const report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([payload.provider])
+          stopped = !report.running.includes(payload.provider) && !report.unknown.includes(payload.provider)
+            && (payload.provider !== 'codex' || report.codexDesktopRunning === false)
+        } catch {
+          // A failed probe must preserve the account's working configuration.
+        }
+        if (!stopped) throw new Error('工具可能还开着，已保留原配置；请完全退出工具后重新同步连接线路')
+      }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.

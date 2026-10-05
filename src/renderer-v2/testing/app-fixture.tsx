@@ -9,6 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { accountScope } from '../account-context'
+import { relayProviderBaseUrls } from '../../../electron/relay-sites'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -81,6 +82,12 @@ const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop',
 const externalOwnerSite = session.siteId ?? 'solov'
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
+if (query.has('restoreDirectRoute')) {
+  settings.relayEndpointIds = { solov: 'direct', 'solov-api': 'primary' }
+  settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
+  config.providers.claude = { ...config.providers.claude, baseUrl: relayProviderBaseUrls('solov', 'direct').claude,
+    actualBaseUrl: relayProviderBaseUrls('solov', 'primary').claude }
+}
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
   claude: ['claude-opus-4-8', 'claude-opus-5', 'fixture-model'],
