@@ -30,6 +30,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   paymentReturn?: { sequence: number; order: string | null }
   /** 记录页「接着聊」成功、归档或恢复后回调，用来作废并重读首页那份「最近」缓存。 */
   onSessionsChanged?: () => void
+  /** 记录页「接着聊」真打开之前，先过首页「打开」那几道关；缺省 = 不检查（旧行为）。 */
+  beforeResume?: Parameters<typeof SessionsPage>[0]['beforeResume']
   /** 备份页恢复成功后回调，用来让首页重读这份配置。 */
   onBackupRestored?: Parameters<typeof BackupsPage>[0]['onRestored']
   /** 密钥页「配置到工具」写成功后回调，让首页重读工具配置（#479）。 */
@@ -53,6 +55,7 @@ export function BusinessPage({
   tutorialTopic,
   paymentReturn,
   onSessionsChanged,
+  beforeResume,
   onBackupRestored,
   onToolConfigSaved,
   toolConfigConfirmed,
@@ -85,7 +88,7 @@ export function BusinessPage({
       />
     )
   if (page === 'sessions')
-    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} />
+    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} />
   if (page === 'mcp')
     return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'skills')
