@@ -310,6 +310,9 @@ const npmMirrorRegistry = 'https://registry.npmmirror.com'
 // CLI 既跑不起来也回不去。这两条是拒绝取消时给用户看的原因。
 const managedPrefixSwapSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
 const grokBinarySwapSealReason = '正在替换 Grok CLI 可执行文件，这一步中断会让工具用不了，请等它结束。'
+// Windows 上装完 Claude Code 接着顺带装 Git 的那一段接不上取消（第四十批 C），
+// 用界面上别处「停不下来」时的同一句。
+const gitAlongsideClaudeSealReason = '这一步已经不能取消了。'
 const networkLocationUrl = 'https://www.cloudflare.com/cdn-cgi/trace'
 const networkLocationFallbackUrls = [
   'https://myip.ipip.net/',
@@ -2392,6 +2395,26 @@ export async function installGitAlongsideClaude(
     if (result.action === 'installed') note('Git 也顺带装好了')
   } catch {
     note('Git 这次没装上，不影响使用 Claude Code；以后可以在首页「运行环境」里点「安装 Git」再试')
+  }
+}
+
+/**
+ * 上面那段 Git 是在 Claude Code 那一项出队之后才装的，界面上却仍是同一次「安装」，那一行的「取消」
+ * 也还亮着。装 Git 接不上取消，所以这次安装的取消句柄先不收、改成封住：这时点「取消」回「这一步已经
+ * 不能取消了。」，而不是「这个工具当前没有正在进行的安装。」（第四十批 C）。Git 那段结束（装上、没装上
+ * 都算）再收。Claude Code 自己没装成（失败或被取消）就不进 Git 这段，照旧马上收。
+ */
+export async function finishClaudeInstallWithGit(
+  claude: Promise<void>,
+  cancellation: InstallCancellationHandle,
+  installGit: () => Promise<void>,
+): Promise<void> {
+  try {
+    await claude
+    cancellation.seal(gitAlongsideClaudeSealReason)
+    await installGit()
+  } finally {
+    cancellation.release()
   }
 }
 
@@ -4976,6 +4999,9 @@ export function createSystemService(
     const key = `cli:install:${provider}`
     // 重复点击复用队列里的同一个 Promise,所以这里也不能再开一个取消句柄:
     // 后点的那次会把前一次的句柄挤掉,取消按钮就再也找不到正在跑的安装。
+    // Windows 上 Claude Code 接着装 Git 的那一段句柄也还登记着(见 finishClaudeInstallWithGit),
+    // 这时再装一次 Claude Code 会走到这里,另排一次取消不了的安装;界面上同一个工具
+    // 一次只放一个安装(useToolbox 的 run 按工具加锁),碰不到。
     if (installCancellations.has(key)) {
       return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
     }
@@ -4997,14 +5023,14 @@ export function createSystemService(
       const cancelled = new InstallCancelledError(`${cliCatalog[provider].name} 安装已取消`)
       sendInstallProgress(target, provider, 'error', cancelled.message)
       throw cancelled
-    }).finally(() => cancellation.release())
+    })
     // 装好一次顺手清掉以前中途被打断的残留：这次自己的临时目录已经在 finally 里删了，
     // 剩下的只会是更早的。排在队列末尾，不拖慢这次安装的完成提示。
     void finished.then(() => cleanupInstallLeftovers(), () => undefined)
     // Windows 上 Claude Code 靠 Git 自带的 bash 跑技能和插件里的命令。Claude Code 自己
     // 那一项出队之后才排 Git：队列是全局串行的，在队列任务里再入队会互相等死。
-    if (provider !== 'claude' || platform !== 'win32') return finished
-    return finished.then(() => installGitAlongsideClaude(
+    if (provider !== 'claude' || platform !== 'win32') return finished.finally(() => cancellation.release())
+    return finishClaudeInstallWithGit(finished, cancellation, () => installGitAlongsideClaude(
       () => installGitRuntime(target, (progress) => sendInstallProgress(
         target, provider, 'output', progress.message, progress.percent ?? undefined)),
       (message) => sendInstallProgress(target, provider, 'output', message),
