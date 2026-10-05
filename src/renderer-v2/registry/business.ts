@@ -1,5 +1,6 @@
 import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-contract'
 import { describeUpdateDiskShortfall } from '../../../electron/disk-space-copy'
+import { connectionRouteSettings } from './connection-routes'
 /**
  * 教程里讲「Mac 上怎么自己装桌面端」的那一章。首页那几行点不动的「安装」要直接跳到
  * 这一章而不是教程首页，所以 id 放在注册表里由两边共用：教程页写章节、App 写跳转，
@@ -365,6 +366,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'terminal', group: 'tools', label: '用哪个终端打开工具', keywords: [] },
   { id: 'install-location', group: 'tools', label: '工具装在哪里', keywords: [] },
+  ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', label: route.label, keywords: ['线路', '直连', '备用', '重启', '连不上'] })),
   { id: 'mirror', group: 'network', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
   { id: 'proxy', group: 'network', label: '网络连接', keywords: ['代理', 'VPN', '梯子'] },
   { id: 'network-check', group: 'network', label: '网络检查', keywords: [] },

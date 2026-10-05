@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
+import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
 import { accountSwitchTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
@@ -66,6 +67,60 @@ describe('renderer tool source', () => {
     expect(sourceFor(config, 'codex', storage)).toBe('manual')
     expect(connectionReady(config, 'codex', storage)).toBe(true)
     expect(providerFor('codexDesktop')).toBe('codex')
+  })
+
+  describe('known routes for the same relay site', () => {
+    const primaryBaseUrl = relayProviderBaseUrls('solov', 'primary').codex
+    const directBaseUrl = relayProviderBaseUrls('solov', 'direct').codex
+    const routes = [
+      { baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm-direct.solov.cc/v1' },
+      { baseUrl: 'https://xm-direct.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1' },
+      { baseUrl: primaryBaseUrl, actualBaseUrl: directBaseUrl },
+      { baseUrl: directBaseUrl, actualBaseUrl: primaryBaseUrl },
+    ]
+
+    it.each(routes)('recognizes the current account through $actualBaseUrl', (route) => {
+      const config = { ...relayConfig(), ...route, configurationOwnership: 'changed' as const, configurationAccountMatched: true }
+      expect(sourceFor(config, 'codex', null)).toBe('account')
+      expect(connectionReady(config, 'codex', null)).toBe(true)
+      expect(sourceFor({ ...config, configurationAccountMatched: false }, 'codex', null)).toBe('changed')
+    })
+
+    it.each(routes)('preserves manual ownership through $actualBaseUrl', (route) => {
+      const storage = memoryStorage()
+      const config = { ...relayConfig(), ...route, configurationOwnership: 'changed' as const, configurationAccountMatched: true }
+      expect(sourceFor({ ...config, configurationOwnership: 'manual' }, 'codex', null)).toBe('manual')
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('manual')
+      expect(connectionReady(config, 'codex', storage)).toBe(true)
+    })
+
+    it.each(routes)('keeps stale ChatGPT tokens over $actualBaseUrl in the repair state', (route) => {
+      const storage = memoryStorage()
+      const config = {
+        ...relayConfig(), ...route, hasApiKey: false, matchesRelay: false,
+        codexAuthMode: 'chatgpt' as const, configurationOwnership: 'account' as const,
+      }
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('changed')
+      expect(connectionReady(config, 'codex', storage)).toBe(false)
+      expect(sourceFor({ ...config, actualBaseUrl: '' }, 'codex', storage)).toBe('official')
+    })
+
+    it.each([
+      'https://api.solov.cc/v1',
+      'https://other.example/v1',
+      'https://xm-direct.solov.cc.evil.example/v1',
+    ])('does not turn a different site into the current account: %s', (actualBaseUrl) => {
+      const config = {
+        ...relayConfig(), actualBaseUrl, matchesRelay: false,
+        configurationOwnership: 'account' as const, configurationAccountMatched: true,
+      }
+      const storage = memoryStorage()
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('unknown')
+      expect(connectionReady(config, 'codex', storage)).toBe(false)
+    })
   })
 
   describe('a configuration CC Switch left behind', () => {

@@ -11,6 +11,7 @@ import { InstallationQueue } from './installation-queue'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls } from './relay-sites'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
   CommandRunnerError,
@@ -487,7 +488,8 @@ describe('createSystemService', () => {
   it('delegates settings reads and merged durable updates to AppSettingsStore', async () => {
     const service = createService()
     const initial = service.readStoredConfig()
-    expect(initial).toEqual(defaultAppSettings(initial.workspace))
+    expect(initial).toEqual({ ...defaultAppSettings(initial.workspace),
+      activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' } })
 
     const merged = await service.updateStoredConfig({ version: 2, theme: 'light' })
 
@@ -511,6 +513,63 @@ describe('createSystemService', () => {
       relaySiteId: 'solov-api',
       sidebarMoreExpanded: true,
     })
+  })
+
+  it('persists pending endpoint preferences without changing live transport or snapshot', async () => {
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ relayFetch })
+    const saved = await service.updateStoredConfig({ version: 2, relayEndpointIds: { solov: 'direct' } })
+    expect(saved.relayEndpointIds).toEqual({ solov: 'direct' })
+    expect(saved.activeRelayEndpointIds).toEqual({ solov: 'primary', 'solov-api': 'primary' })
+    expect(service.readStoredConfig().activeRelayEndpointIds).toEqual(saved.activeRelayEndpointIds)
+    await service.fetchAvailableModels('sk-fixture')
+    expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
+  })
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] satisfies ProviderId[])(
+    'uses one selected origin for the %s write and its model probe after restart', async (provider) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-selected-endpoint-'))
+      temporaryDirectories.push(root)
+      const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+      const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+      const service = createService({ providerRoots, relayFetch,
+        relayEndpointRouting: createRelayEndpointRoutingSnapshot({ solov: 'direct' }) })
+      await service.saveConfig({ provider, apiKey: 'sk-fixture', model: 'fixture-model', mode: 'reset' }, false)
+      const direct = relayProviderBaseUrls('solov', 'direct')
+      expect(relayFetch.mock.calls[0][0]).toBe(`${direct.claude}/v1/models`)
+      const written = inspectProviderConfig(provider, providerRoots, providerBaseUrls)
+      expect(written.actualBaseUrl).toBe(direct[provider])
+      expect(written.matchesRelay).toBe(true)
+      expect(inspectProviderConfig(provider, providerRoots, sub2ApiProviderBaseUrls).matchesRelay).toBe(false)
+    },
+  )
+
+  it('keeps a recognized existing native endpoint during an ordinary save with no line preference', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-preserved-endpoint-'))
+    temporaryDirectories.push(root)
+    const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+    const direct = relayProviderBaseUrls('solov', 'direct')
+    saveProviderConfig('codex', 'sk-fixture', 'fixture-model', 'reset', providerRoots, {}, direct)
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ providerRoots, relayFetch })
+    await service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false)
+    expect(inspectProviderConfig('codex', providerRoots, providerBaseUrls).actualBaseUrl).toBe(direct.codex)
+    expect(relayFetch.mock.calls[0][0]).toBe(`${direct.claude}/v1/models`)
+  })
+
+  it('applies an explicit primary preference through the normal config ownership flow', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-explicit-endpoint-'))
+    temporaryDirectories.push(root)
+    const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+    saveProviderConfig('codex', 'sk-fixture', 'fixture-model', 'reset', providerRoots, {}, relayProviderBaseUrls('solov', 'direct'))
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ providerRoots, relayFetch,
+      relayEndpointRouting: createRelayEndpointRoutingSnapshot({ solov: 'primary' }) })
+    await service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false)
+    const written = service.getConfig(false).providers.codex
+    expect(written.actualBaseUrl).toBe(providerBaseUrls.codex)
+    expect(written.configurationOwnership).not.toBe('account')
+    expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
   })
 
   it('saves provider configuration under the injected roots', async () => {

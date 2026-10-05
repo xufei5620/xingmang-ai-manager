@@ -65,6 +65,8 @@ if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
 if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
+settings.relayEndpointIds = { solov: query.has('directRelayActive') ? 'direct' : 'primary', 'solov-api': 'primary' }
+settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as ExternalToolId[]).map((tool) => ({
@@ -223,7 +225,7 @@ let nextUninstallHeld = false
 let releaseUninstall: () => void = () => undefined
 let nextInstallHeld = false
 let releaseInstall: (error?: string) => void = () => undefined
-const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource'])
+const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
 window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
@@ -290,7 +292,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => ({ ...settings }),
-  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settings },
+  saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {
