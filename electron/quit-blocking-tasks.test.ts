@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { providerIds } from './catalog'
+import { externalToolIds } from './external-client-contract'
+import { isKeepAwakeInstallKey } from './install-keep-awake'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
@@ -23,8 +26,20 @@ describe('interruptible install tasks', () => {
     expect(descriptions).toEqual(['正在安装 Node.js 运行环境', '正在安装 Python 运行环境', '正在安装 Codex 桌面端'])
   })
 
+  it('names Git, which Windows installs right after Claude Code', () => {
+    expect(resolveInterruptibleInstallTask(snapshot('runtime:git'))).toEqual({
+      key: 'runtime:git', description: '正在安装 Git', count: 1,
+    })
+  })
+
+  it('names the external client being installed', () => {
+    const descriptions = ['external-client:install:workbuddy', 'external-client:install:claudeDesktop', 'external-client:install:opencode']
+      .map((key) => resolveInterruptibleInstallTask(snapshot(key))?.description)
+    expect(descriptions).toEqual(['正在安装 WorkBuddy', '正在安装 Claude Desktop', '正在安装 OpenCode'])
+  })
+
   it('ignores launches and uninstalls, which lose nothing when interrupted', () => {
-    const keys = ['cli:launch:codex', 'desktop:codex:launch:new:default', 'cli:uninstall:gemini', 'desktop:codex:uninstall']
+    const keys = ['cli:launch:codex', 'desktop:codex:launch:new:default', 'cli:uninstall:gemini', 'desktop:codex:uninstall', 'external-client:launch:workbuddy']
     for (const key of keys) expect(resolveInterruptibleInstallTask(snapshot(key, keys))).toBeNull()
   })
 
@@ -32,6 +47,12 @@ describe('interruptible install tasks', () => {
     expect(resolveInterruptibleInstallTask(snapshot('cli:install:'))).toBeNull()
     expect(resolveInterruptibleInstallTask(snapshot('cli:install:__proto__'))).toBeNull()
     expect(resolveInterruptibleInstallTask(snapshot('something:else'))).toBeNull()
+  })
+
+  it('ignores an unknown or malformed external client the same way', () => {
+    for (const key of ['external-client:install:', 'external-client:install:__proto__', 'external-client:install:cursor', 'external-client:install:claudedesktop']) {
+      expect(resolveInterruptibleInstallTask(snapshot(key))).toBeNull()
+    }
   })
 
   it('counts queued installs but keeps the name of the one the user is watching', () => {
@@ -42,6 +63,24 @@ describe('interruptible install tasks', () => {
   it('still warns when only a queued install is waiting behind a launch', () => {
     const result = resolveInterruptibleInstallTask(snapshot('cli:launch:grok', ['cli:install:gemini']))
     expect(result).toEqual({ key: 'cli:install:gemini', description: '正在安装 Gemini CLI', count: 1 })
+  })
+
+  it('counts a client queued behind the Git install and keeps naming Git', () => {
+    const result = resolveInterruptibleInstallTask(snapshot('runtime:git', ['external-client:install:workbuddy']))
+    expect(result).toEqual({ key: 'runtime:git', description: '正在安装 Git', count: 2 })
+  })
+
+  it('blocks quitting for exactly the queue keys that also keep the computer awake', () => {
+    // 程序里会进安装队列的每一种 key。防睡和退出拦截各认一份，新加一种安装时两边要一起认，
+    // 不然就是「电脑不睡了，退出却不拦」。
+    const keys = [
+      'runtime:node', 'runtime:python', 'runtime:git', 'maintenance:install-leftovers',
+      'desktop:codex:install', 'desktop:codex:uninstall', 'desktop:codex:reset', 'desktop:codex:launch:new:zh-CN',
+      ...providerIds.flatMap((provider) => [`cli:install:${provider}`, `cli:uninstall:${provider}`, `cli:launch:${provider}:new:/work`]),
+      ...externalToolIds.flatMap((tool) => [`external-client:install:${tool}`, `external-client:launch:${tool}`]),
+    ]
+    const blocking = keys.map((key) => [key, resolveInterruptibleInstallTask(snapshot(key)) !== null])
+    expect(blocking).toEqual(keys.map((key) => [key, isKeepAwakeInstallKey(key)]))
   })
 })
 
