@@ -396,6 +396,71 @@ describe('ProviderSessionsService', () => {
     expect(detail.messageStats.invalidLines).toBe(1)
   })
 
+  it('lists a claude conversation once, leaving out the subagent transcripts it spawned', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const subagent = {
+      type: 'user',
+      isSidechain: true,
+      agentId: 'a1b2c3',
+      sessionId: 'claude-native',
+      cwd: 'C:/claude',
+      timestamp: '2026-07-24T05:00:00.000Z',
+      message: { role: 'user', content: 'Look through this folder and report what is there' },
+    }
+    const companion = path.join(data.claude, 'project-a', 'claude-session')
+    // 现在的存法：放在与记录同名的文件夹里，下面还可能再分一层。
+    writeJsonLines(path.join(companion, 'subagents', 'agent-a1b2c3.jsonl'), [subagent])
+    writeJsonLines(path.join(companion, 'subagents', 'workflows', 'run-1', 'agent-a4d5e6.jsonl'), [
+      { ...subagent, agentId: 'a4d5e6' },
+    ])
+    // 同名文件夹里不叫 agent- 的过程记录也属于这一次对话。
+    writeJsonLines(path.join(companion, 'remote-agents', 'remote-1.jsonl'), [subagent])
+    // Claude Code 2.0 到 2.1 初期的存法：和记录并排放在项目文件夹里。
+    writeJsonLines(path.join(data.claude, 'project-a', 'agent-7f3e9a1c.jsonl'), [{ ...subagent, agentId: '7f3e9a1c' }])
+    const sessions = service(data, codexReader([]))
+
+    const opened = vi.spyOn(fsPromises, 'open')
+    try {
+      const page = await sessions.list({ provider: 'claude', pageSize: 100 })
+      expect(page.total).toBe(1)
+      expect(page.stats.byProvider.claude).toBe(1)
+      expect(page.items[0]).toMatchObject({ nativeId: 'claude-native', title: 'Claude 自定义标题' })
+      expect(opened.mock.calls.map(([target]) => path.basename(String(target)))).toEqual(['claude-session.jsonl'])
+    } finally {
+      opened.mockRestore()
+    }
+  })
+
+  it('keeps transcripts in ordinary sub-folders and names that only contain agent', async () => {
+    const data = fixture()
+    writeJsonLines(path.join(data.claude, 'project-a', 'nested', 'deeper.jsonl'), [
+      { type: 'user', sessionId: 'deeper', message: { role: 'user', content: '子文件夹里的对话' } },
+    ])
+    writeJsonLines(path.join(data.claude, 'project-a', 'my-agent-notes.jsonl'), [
+      { type: 'user', sessionId: 'my-agent-notes', message: { role: 'user', content: '名字里带 agent 的对话' } },
+    ])
+
+    const page = await service(data, codexReader([])).list({ provider: 'claude', pageSize: 100 })
+
+    expect(page.items.map((item) => item.nativeId).sort()).toEqual(['deeper', 'my-agent-notes'])
+  })
+
+  it('does not count subagent transcripts against the per-provider file limit', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    for (const agentId of ['a1', 'a2', 'a3']) {
+      writeJsonLines(path.join(data.claude, 'project-a', 'claude-session', 'subagents', `agent-${agentId}.jsonl`), [
+        { type: 'user', isSidechain: true, agentId, sessionId: 'claude-native', message: { role: 'user', content: '子任务' } },
+      ])
+    }
+
+    const page = await service(data, codexReader([]), { maxFilesPerProvider: 1 }).list({ provider: 'claude' })
+
+    expect(page.capabilities.claude.readable).toBe(true)
+    expect(page.items.map((item) => item.nativeId)).toEqual(['claude-native'])
+  })
+
   it('skips directory junctions so discovery cannot escape a provider root', async () => {
     const data = fixture()
     writeJsonLines(path.join(data.claude, 'inside.jsonl'), [{
@@ -743,6 +808,8 @@ describe('ProviderSessionsService.delete', () => {
     fs.writeFileSync(neighbour, 'keep')
     const sessions = service(data)
     const page = await sessions.list({ provider: 'claude', pageSize: 100 })
+    // 子任务在列表里不另算一条，删的时候跟着这一条一起走。
+    expect(page.items).toHaveLength(1)
     const target = page.items.find((item) => item.nativeId === 'claude-native')
     expect(target).toBeDefined()
 
