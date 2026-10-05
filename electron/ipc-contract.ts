@@ -1263,6 +1263,11 @@ export interface XingmangEventContract {
     AccountPaymentWindowTerminalEvent
   >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
+  /**
+   * 星芒替用户绕开连不上的代理、整个改了直连以后，代理软件又连得上了，已经改回跟随系统代理
+   * （electron/proxy-bypass.ts）。载荷为空：界面只拿它收起「已经改为直接联网」那条提示。
+   */
+  onProxyBypassEnded: IpcEventDefinition<'network:proxy-bypass-ended', undefined>
 }
 
 export type XingmangApi = {
@@ -1493,6 +1498,7 @@ export const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onProxyBypassEnded: 'network:proxy-bypass-ended',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

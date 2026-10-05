@@ -228,6 +228,7 @@ const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onProxyBypassEnded: 'network:proxy-bypass-ended',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }
@@ -474,6 +475,7 @@ const xingmangApi: XingmangApi = {
   onUpdateState: (listener) => subscribe('onUpdateState', listener),
   onAccountPaymentWindowTerminal: (listener) => subscribe('onAccountPaymentWindowTerminal', listener),
   onAiChatStream: (listener) => subscribe('onAiChatStream', listener),
+  onProxyBypassEnded: (listener) => subscribe('onProxyBypassEnded', listener),
 }
 
 contextBridge.exposeInMainWorld('xingmang', xingmangApi)

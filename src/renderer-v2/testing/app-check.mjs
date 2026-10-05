@@ -6007,6 +6007,30 @@ test('going offline swaps the announcement bar for the offline bar and brings it
   } finally { await page.close() }
 })
 
+test('the note that the app went direct closes by itself once the app is back on the system proxy', async () => {
+  const page = await open('sub2api=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    // 电脑里的代理软件关了：读余额连着被拒两次，星芒自己改成直连，余额又读得到了。
+    await page.evaluate(() => {
+      window.v2Test.fail = 'getAccountBalance'
+      window.v2Test.failMessage = "Error invoking remote method 'account:get-balance': Error: 系统里设置的代理连不上，请检查代理或加速设置后再试。"
+    })
+    const refresh = page.getByTestId('sidebar-balance-refresh')
+    await refresh.click()
+    await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
+    await refresh.click()
+    const notice = page.getByTestId('proxy-bypass-banner')
+    await notice.waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'bypassBrokenProxy').length), 1)
+    // 代理软件又开起来，主进程改回跟随系统代理：不用点「知道了」，这条提示自己收起。
+    await page.evaluate(() => window.v2Test.emit('onProxyBypassEnded', undefined))
+    await notice.waitFor({ state: 'detached' })
+    assert.equal(await page.getByTestId('offline-banner').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the status bar says whether the environment is fine and follows the latest check', async () => {
   const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {

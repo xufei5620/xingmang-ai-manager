@@ -59,6 +59,8 @@ export interface ProxyBypassDependencies {
   /** 测试注入用；缺省 Date.now。 */
   now?(): number
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
+  /** 整个改了直连、后来又改回跟随系统代理的那一刻：界面上「已经改为直接联网」那条提示跟着收起。 */
+  directEnded?(): void
 }
 
 export interface ProxyBypass {
@@ -411,6 +413,7 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     site = null
     siteHandedBack = { probeUrl: url, at: now() }
     dependencies.log?.('info', 'proxy-bypass.direct-ended', '经系统代理又连得上了，本次运行改回跟随系统代理')
+    dependencies.directEnded?.()
   }
 
   // 隔 systemProxyCheckIntervalMs 才看一次系统代理，同一时刻只看一次；看的这一下在后台，

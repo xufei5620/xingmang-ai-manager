@@ -955,6 +955,23 @@ describe('proxy bypass after the whole app went direct', () => {
     expect(bypass.routeSiteRequest(siteUrl)).toBeNull()
   })
 
+  it('lets the window know once the app is back on the system proxy, and not while it stays direct', async () => {
+    const directEnded = vi.fn()
+    const { bypass, clock, state, probeSystemProxy } = await wentDirect({ directEnded })
+    // Still down at the first look.
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(probeSystemProxy).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(directEnded).not.toHaveBeenCalled()
+    // Back at the next one.
+    state.up = true
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(bypass.active()).toBe(false))
+    expect(directEnded).toHaveBeenCalledTimes(1)
+  })
+
   it('stays direct while the proxy app is still down, and looks again only after another five minutes', async () => {
     const { bypass, clock, modes, probeSystemProxy } = await wentDirect()
     clock.now += systemProxyCheckIntervalMs

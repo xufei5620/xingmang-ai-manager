@@ -279,6 +279,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     })
   }, [native, toast])
   const dismissProxyBypassNotice = useCallback(() => setProxyBypassNotice(false), [])
+  // 代理软件好了以后主进程会改回跟随系统代理（electron/proxy-bypass.ts），这条提示说的就不对了：自己收起，不用等用户点「知道了」。
+  useEffect(() => native.onProxyBypassEnded?.(() => setProxyBypassNotice(false)), [native])
   const onlineStatus = useMemo<OnlineStatus>(() => ({
     offline,
     cause: onlineCause,

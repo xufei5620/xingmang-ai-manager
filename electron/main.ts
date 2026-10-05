@@ -1169,6 +1169,13 @@ if (!hasSingleInstanceLock) {
       sessionFetch,
       siteDirectFetch,
       systemProxyFetch,
+      // 代理软件好了、改回跟随系统代理：界面上「已经改为直接联网」那条提示跟着收起。
+      // 窗口是后面才建的，改回最早也在改直连 5 分钟以后，那时早就建好了。
+      directEnded: () => {
+        if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+        if (managedMainWindow.webContents.isDestroyed()) return
+        managedMainWindow.webContents.send(ipcEventChannels.onProxyBypassEnded, undefined)
+      },
     })
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
