@@ -35,20 +35,27 @@ export function resumeSessionNotice(result: CliLaunchResult | void | undefined, 
   return warning ? `${opened}。${warning}` : opened
 }
 
+// 这几类任务不拿来说在等谁：另一个工具的「打开」几秒就完；「改用当前账号」「修提醒设置」
+// 只改配置、不进安装队列，「打开」根本不等它们，以前却会说成「正在等 另一个工具 安装完」。
+const notWaitedOn = ['launch:', 'switch:', 'repair-hooks:']
+
 /**
  * 安装、卸载、打开工具在主进程排同一个队（AGENTS.md I11），前面那一项没做完，
  * 「打开」只能干等，装一个工具最长要十几分钟。工具行以前只写「正在打开工具」，
  * 用户以为卡死了（全面检测 Q15）。这里挑出排在前面、还在跑的那一项，说清在等谁。
- * 另一个工具的「打开」几秒就完，不算。
+ * WorkBuddy、Claude Desktop、OpenCode 的「打开」排的是同一个队，前面没人时说
+ * 「正在打开客户端」，由 idle 传进来（第三十九批 C）。
  */
 export function launchWaitLabel(
   jobs: Record<string, { label: string }>,
   nameOf: (key: string) => string | undefined,
+  idle = '正在打开工具',
 ): string {
-  const ahead = Object.entries(jobs).find(([key]) => !key.startsWith('launch:'))
-  if (!ahead) return '正在打开工具'
+  const ahead = Object.entries(jobs).find(([key]) => !notWaitedOn.some((prefix) => key.startsWith(prefix)))
+  if (!ahead) return idle
   const [key, job] = ahead
-  if (key === 'node' || key === 'python') return '正在等运行环境准备好，好了马上打开'
+  // Git 不在工具表里，和 Node.js、Python 一样摆在首页「运行环境」那张卡上。
+  if (key === 'node' || key === 'python' || key === 'git') return '正在等运行环境准备好，好了马上打开'
   const action = /卸载/.test(job.label) ? '卸载' : '安装'
   return `正在等 ${nameOf(key) ?? '另一个工具'} ${action}完，${action}完马上打开`
 }

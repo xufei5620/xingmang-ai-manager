@@ -112,6 +112,11 @@ function notifyAnnouncement(eventKey: string) {
   void platformApi()?.notifyActivity('announcement', eventKey).catch(() => undefined)
 }
 
+// 「打开」排队时说在等谁（launchWaitLabel）：工具行任务的 key 就是工具或客户端的编号。
+function jobToolName(key: string): string | undefined {
+  return tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name
+}
+
 function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangApi; accelerationPreview?: boolean }) {
   useReducedMotion()
   const app = useMemo(() => createAppApi(native), [native])
@@ -1030,7 +1035,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   async function launchExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
     try {
-      const launched = await toolbox.run(`launch:${id}`, '正在打开客户端', () => toolsApi.launchExternal(id))
+      // 和命令行工具的「打开」排同一个队：前面有东西在装，这一行写清在等谁（第三十九批 C）。
+      const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName, '正在打开客户端')
+      const launched = await toolbox.run(`launch:${id}`, waitLabel, () => toolsApi.launchExternal(id))
       // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
       if (launched && mounted.current && epoch === accountEpoch.current) toolbox.noteExternalLaunched(id)
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
@@ -1114,7 +1121,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         workspace = selectedWorkspace
       }
       if (!launchIsCurrent(epoch)) return false
-      const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
+      const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName)
       const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
         if (!launchIsCurrent(epoch)) return
         const result = await toolsApi.launch(id, workspace, mode)
