@@ -123,9 +123,10 @@ export interface NewApiClientOptions {
   // Main process only. Asked once after a request fails at the network layer
   // (timeout, proxy, connection failure): resolve true when the host has just
   // taken this client's requests off a system proxy that stopped forwarding,
-  // so the same request is worth one more try. The host owns the proxy
-  // decision (and which session the next request goes through); this client
-  // only decides which failures may be replayed safely.
+  // or found that a proxy which refused the request was only restarting and
+  // answers again, so the same request is worth one more try. The host owns
+  // the proxy decision (and which session the next request goes through);
+  // this client only decides which failures may be replayed safely.
   retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
 }
 

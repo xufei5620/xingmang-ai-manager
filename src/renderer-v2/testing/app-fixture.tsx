@@ -310,6 +310,11 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
+  // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。
+  bypassBrokenProxy: async () => {
+    if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''
+    return 'direct' as const
+  },
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}), ...(query.has('claudeDesktopRepaired') ? { claudeDesktopRepaired: true as const } : {}) }),
   relaunchApp: async () => true,
   uninstallApp: async () => ({ trashed: true, leftovers: [] }),
