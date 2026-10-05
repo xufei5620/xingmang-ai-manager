@@ -508,7 +508,7 @@ const methods = {
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async (_provider, workspace) => {
-    // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（system-service.ts 的 launchCli）。
+    // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（system-service.ts 的 launchProviderOperation）。
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
