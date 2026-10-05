@@ -10,14 +10,19 @@
  * 位置」都按默认会话走；以前一次超时就整个改直连到重启（#741），它们跟着丢了代理，
  * 笔记本换到必须走代理的网络后账号也连不回去。
  *
+ * 代理软件换节点、改设置时会重启内核，开机时也常比星芒晚起来几秒，端口往往只断这一下。
+ * 所以撞上「代理连不上」先等几秒再经系统代理看一眼，还连不上才整个改直连；改了以后也隔
+ * 一阵经一个只跟随系统代理的会话看一眼，代理又连得上星芒了就改回跟随系统代理（星芒自己
+ * 的加速开着时除外）。以前改了就一直直连到退出，装工具、拉插件都不再走用户的代理。
+ *
  * 只改星芒自己这个进程的会话，不碰电脑的代理设置；也不落盘：下次打开软件，照旧
- * 跟随系统代理，用户把代理软件重新打开就什么都不用管。
+ * 跟随系统代理。
  */
 
 import { classifyNetworkFailure, type NetworkFailureReason } from './network-failure'
 
 export type ProxyBypassOutcome =
-  /** 直连通了：本次运行一直直连。 */
+  /** 直连通了：改成直连，经系统代理又连得上以后再改回去。 */
   | 'direct'
   /** 直连也不通，已经改回跟随系统代理。 */
   | 'unreachable'
@@ -37,11 +42,17 @@ export interface ProxyBypassDependencies {
   /**
    * 在默认会话上发一次请求；服务真的回了话才算通，网络层失败照原样抛出。整个改直连时
    * 用它看直连通不通；站点改直连期间，默认会话还跟着系统代理，用它看代理软件还在不在、
-   * 直连那一路出错以后系统代理连不连得上星芒站点。
+   * 直连那一路出错以后系统代理连不连得上星芒站点；撞上「代理连不上」以后，也用它再看一眼
+   * 代理是不是只断了一下。
    */
   probe(url: string): Promise<boolean>
   /** 在连星芒站点专用的直连会话上发一次请求，默认会话不动；服务真的回了话才算通。 */
   probeSiteDirect(url: string): Promise<boolean>
+  /**
+   * 在只跟随系统代理的会话上发一次请求；服务真的回了话才算通，网络层失败照原样抛出。整个
+   * 改了直连以后默认会话不再经过系统代理，用它看代理是不是又连得上星芒站点了。
+   */
+  probeSystemProxy(url: string): Promise<boolean>
   accelerationActive(): Promise<boolean>
   /** 测试注入用；缺省 setTimeout。 */
   schedule?(callback: () => void, delayMs: number): () => void
@@ -57,17 +68,19 @@ export interface ProxyBypass {
    * 发出的时刻，reason 是失败原因。返回 true 表示现在走的路和那次请求走的不一样了，
    * 值得重发：多半是改了直连、那次请求走的是改之前那条路，也可能是站点那一路刚交还
    * 给系统代理、那次请求走的是交还掉的直连；false 表示别重发，按原错误报。代理本身
-   * 连不上才整个改直连，超时、连接被断只让连那个站点的请求改走专用的直连会话：
+   * 连不上才整个改直连（先等一会儿再看一眼，代理只断了一下、又连得上了，就答 true，
+   * 照旧经系统代理重发），超时、连接被断只让连那个站点的请求改走专用的直连会话：
    * siteProbeUrl 是那次请求所连站点的探测地址，缺省用 probeUrl()。
    */
   recoverFailedRequest(startedAt: number, reason: NetworkFailureReason, siteProbeUrl?: string): Promise<boolean>
-  /** 本次运行是否已经整个改成直连。 */
+  /** 现在是不是整个改成了直连；经系统代理又连得上星芒以后会改回去。 */
   active(): boolean
   /** 连星芒站点的请求现在是不是改走专用的直连会话（整个改了直连时不算）。 */
   siteDirect(): boolean
   /**
    * 这个地址的请求该不该走连星芒站点专用的直连会话：该走就给出这一轮改直连的编号，
-   * 不该（不是星芒站点、没改直连、已经整个改了直连）返回 null。
+   * 不该（不是星芒站点、没改直连、已经整个改了直连）返回 null。整个改了直连时，也借
+   * 这一下隔一阵在后台看看系统代理是不是又连得上了。
    */
   routeSiteRequest(url: string): number | null
   /**
@@ -93,9 +106,16 @@ export const siteProbeBackoffMs = 60_000
 /**
  * 连星芒站点的请求改走直连以后不再经过系统代理，代理软件后来关了、崩了就没人发现
  * （#578 靠的是账号请求撞上「代理连不上」）。所以这期间每隔这么久，借一次站点请求的
- * 时机经系统代理探一下。
+ * 时机经系统代理探一下。整个改了直连以后也一样：每隔这么久借一次连星芒的请求的时机，
+ * 看代理软件是不是又好了；代理时好时坏，来回切也最多这么久一趟。
  */
 export const systemProxyCheckIntervalMs = 5 * 60_000
+
+/**
+ * 撞上「代理连不上」以后，先等这么久再经系统代理看一眼，还连不上才整个改直连：代理软件
+ * 换节点、改设置时会重启内核，开机时也常比星芒晚起来几秒，端口往往只断这一下。
+ */
+export const proxyRecheckDelayMs = 3_000
 
 /**
  * 直连那一路出错以后，系统代理和直连都没连上星芒站点（多半是断网、刚换了网络，还没
@@ -144,6 +164,12 @@ interface SiteRecheck {
   failedAgain: boolean
 }
 
+/**
+ * 撞上「代理连不上」等一会儿再看的那一眼：又连得上了（answered）、还是连不上（down），
+ * 或者换成了别的错（unclear：代理多半已经起来，线路还没缓过来，或者这会儿没网）。
+ */
+type ProxyLook = 'answered' | 'down' | 'unclear'
+
 const proxyAnswersMessage = '经系统代理现在连得上了，账号和 AI 请求改回跟随系统代理'
 
 export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyBypass {
@@ -160,9 +186,11 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   let sitePending: Promise<boolean> | null = null
   let siteRecheck: SiteRecheck | null = null
   let cancelSiteFollowUp: (() => void) | null = null
-  // 站点那一路最近一次交还给系统代理是什么时候、交还的是哪个站点。
+  // 连星芒站点的请求最近一次交还给系统代理是什么时候、交还的是哪个站点：站点那一路交还的，
+  // 和整个改了直连以后改回跟随系统代理的，都算。
   let siteHandedBack: { probeUrl: string, at: number } | null = null
   let proxyCheck: Promise<void> | null = null
+  let proxyLook: Promise<ProxyLook> | null = null
   const now = dependencies.now ?? Date.now
   const schedule = dependencies.schedule ?? scheduleTimeout
 
@@ -189,6 +217,8 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     if (reachable) {
       active = true
       activatedAt = now()
+      // 隔 systemProxyCheckIntervalMs 再看代理软件是不是又好了（见 restoreSystemProxy）。
+      proxyCheckedAt = activatedAt
       unreachableAt = null
       dependencies.log?.('info', 'proxy-bypass.direct', '系统代理连不上，本次运行改为直接联网')
       return 'direct'
@@ -204,6 +234,32 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     // 横幅和「重新检测」可能前后脚各点一次：同一时刻只试一次，不来回切代理。
     if (!pending) pending = attempt().finally(() => { pending = null })
     return pending
+  }
+
+  async function lookAgain(url: string): Promise<ProxyLook> {
+    await new Promise<void>((resolve) => { schedule(resolve, proxyRecheckDelayMs) })
+    // 等的这一会儿有人在试整个改直连（「重新检测」）：那时默认会话切着直连，经它探的不算数，
+    // 等它试完；已经改成直连了就照那边答。
+    if (pending) await pending.catch(() => undefined)
+    if (active) return 'down'
+    const failure = await dependencies.probe(url).then(
+      (answered) => answered ? null : 'no-answer',
+      (error: unknown) => classifyNetworkFailure(error) ?? 'no-answer',
+    )
+    if (failure === null) {
+      dependencies.log?.('info', 'proxy-bypass.proxy-back', '系统代理断了一下，再看已经连得上，照旧跟随系统代理')
+      return 'answered'
+    }
+    if (failure === 'proxy') return 'down'
+    dependencies.log?.('warn', 'proxy-bypass.proxy-unclear', '系统代理连不上，再看时换成了别的错，先照旧跟随系统代理', { failure })
+    return 'unclear'
+  }
+
+  // 撞上「代理连不上」以后先别急着整个改直连：代理软件换节点、重启内核时端口只断这一下。
+  // 等一会儿经默认会话（这时还跟着系统代理）再探一次；几个请求一起撞上时只看一次。
+  function lookAgainAtProxy(url: string): Promise<ProxyLook> {
+    if (!proxyLook) proxyLook = lookAgain(url).finally(() => { proxyLook = null })
+    return proxyLook
   }
 
   // 在连星芒站点专用的直连会话上探一下。这台电脑这会儿没网（断网、刚换了网络）时
@@ -331,9 +387,37 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   async function checkSystemProxy(url: string): Promise<void> {
     const failure = await dependencies.probe(url).then(() => null, classifyNetworkFailure)
     // 代理还活着（哪怕照旧不转发星芒站点）就什么都不改；代理本身连不上了，才照 #578
-    // 整个改直连，装工具、拉插件也就跟着不再撞上一个已经关掉的代理。
+    // 整个改直连，装工具、拉插件也就跟着不再撞上一个已经关掉的代理。正好撞上代理软件
+    // 重启内核的那一下不算：等一会儿再看一眼，还连不上才改。
     if (failure !== 'proxy' || backingOff(automaticBypassCooldownMs)) return
+    // 等的这一会儿别处刚试过整个改直连、直连也不通：不接着再试一遍。
+    if (await lookAgainAtProxy(url) !== 'down' || backingOff(automaticBypassCooldownMs)) return
     await tryBypass()
+  }
+
+  // 整个改了直连以后，经只跟随系统代理的会话看一眼：连得上星芒，就把默认会话改回跟随系统
+  // 代理，装工具、拉插件也就跟着走回用户的代理。星芒自己的加速开着时不改：那时系统代理归
+  // 加速管，加速一断又指回那个关掉的代理（#578 的取舍，#841 也照这个做），读不到加速状态
+  // 按开着算。改的那一刻正在走默认会话的请求和下载接着走直连，新发的才走代理。
+  async function restoreSystemProxy(): Promise<void> {
+    const url = dependencies.probeUrl()
+    if (!url || !await dependencies.probeSystemProxy(url).catch(() => false)) return
+    if (await dependencies.accelerationActive().catch(() => true)) return
+    await dependencies.setProxy('system')
+    active = false
+    // 经系统代理连得上星芒，连它的请求也就不用再分去直连那一路。这之前发出、后来才失败的
+    // 请求走的是直连，换系统代理重发一次，不为它回头再探直连（见 recoverFailedRequest）。
+    site = null
+    siteHandedBack = { probeUrl: url, at: now() }
+    dependencies.log?.('info', 'proxy-bypass.direct-ended', '经系统代理又连得上了，本次运行改回跟随系统代理')
+  }
+
+  // 隔 systemProxyCheckIntervalMs 才看一次系统代理，同一时刻只看一次；看的这一下在后台，
+  // 不拖着借它时机的那次请求。
+  function startProxyCheck(check: () => Promise<void>): void {
+    if (proxyCheck || now() - proxyCheckedAt < systemProxyCheckIntervalMs) return
+    proxyCheckedAt = now()
+    proxyCheck = check().catch(() => undefined).finally(() => { proxyCheck = null })
   }
 
   return {
@@ -349,9 +433,16 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
       // 另一个先把会话切了），重发一次就走直连；之后发出的本来就是直连，重发没用。
       if (active) return startedAt < activatedAt
       if (site && reason !== 'proxy') return startedAt < site.since
-      // 代理本身连不上（代理软件关了、崩了）时走代理的什么都通不了，这才整个改直连。
-      if (reason === 'proxy') return !backingOff(automaticBypassCooldownMs) && await tryBypass() === 'direct'
       const url = siteProbeUrl ?? dependencies.probeUrl()
+      // 代理本身连不上（代理软件关了、崩了）时走代理的什么都通不了，这才整个改直连。代理软件
+      // 换节点、重启内核时也会这样断一下：先等一会儿再看一眼，又连得上了就照旧经系统代理重发；
+      // 代理起来了、这一下却没走通，先什么都不改，后面的请求再超时自有站点那一路接着。
+      if (reason === 'proxy') {
+        if (backingOff(automaticBypassCooldownMs) || !url || await bypassBlocker(url)) return false
+        const look = await lookAgainAtProxy(url)
+        if (look !== 'down') return look === 'answered'
+        return !backingOff(automaticBypassCooldownMs) && await tryBypass() === 'direct'
+      }
       // 这次请求在站点交还给系统代理之前就发出了（同一毫秒也算），走的是交还掉的那条直连：交还时
       // 已经看过系统代理连得上星芒站点（或者现在本来就不该绕），换现在这条路重发一次（重不重发还要
       // 看请求本身，见 new-api-client 的 mayReplayOffProxy）。不为它回头再探直连，不然刚交还就又
@@ -365,11 +456,14 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     active: () => active,
     siteDirect: () => site !== null && !active,
     routeSiteRequest(url) {
-      if (!site || active || originOf(url) !== site.origin) return null
-      if (!proxyCheck && now() - proxyCheckedAt >= systemProxyCheckIntervalMs) {
-        proxyCheckedAt = now()
-        proxyCheck = checkSystemProxy(site.probeUrl).catch(() => undefined).finally(() => { proxyCheck = null })
+      if (active) {
+        // 这次请求照旧走默认会话（已经是直连），借它的时机看看代理软件是不是又好了。
+        startProxyCheck(restoreSystemProxy)
+        return null
       }
+      if (!site || originOf(url) !== site.origin) return null
+      const current = site
+      startProxyCheck(() => checkSystemProxy(current.probeUrl))
       return site.id
     },
     siteRouteFailed(route) {
@@ -424,11 +518,13 @@ export function createSiteFetch(
   }
 }
 
-export interface SiteRoutingOptions extends Omit<ProxyBypassDependencies, 'probe' | 'probeSiteDirect'> {
+export interface SiteRoutingOptions extends Omit<ProxyBypassDependencies, 'probe' | 'probeSiteDirect' | 'probeSystemProxy'> {
   /** 默认会话：跟随系统代理，整个改直连以后就是直连。 */
   sessionFetch: typeof fetch
   /** 连星芒站点专用的直连会话。 */
   siteDirectFetch: typeof fetch
+  /** 只跟随系统代理的会话：整个改了直连以后，只用它看代理软件是不是又好了。 */
+  systemProxyFetch: typeof fetch
 }
 
 export interface SiteRouting {
@@ -440,14 +536,15 @@ export interface SiteRouting {
 }
 
 /**
- * main.ts 的接线收在这里，好单测。两个探测都直接用会话本身的 fetch，不经过上面的分流：
+ * main.ts 的接线收在这里，好单测。探测都直接用会话本身的 fetch，不经过上面的分流：
  * 改直连期间看代理还在不在的那一下要是也被分去了直连，就永远看不到代理已经没了。
  */
-export function createSiteRouting({ sessionFetch, siteDirectFetch, ...dependencies }: SiteRoutingOptions): SiteRouting {
+export function createSiteRouting({ sessionFetch, siteDirectFetch, systemProxyFetch, ...dependencies }: SiteRoutingOptions): SiteRouting {
   const bypass = createProxyBypass({
     ...dependencies,
     probe: (url) => probeDirectConnection(sessionFetch, url),
     probeSiteDirect: (url) => probeDirectConnection(siteDirectFetch, url),
+    probeSystemProxy: (url) => probeDirectConnection(systemProxyFetch, url),
   })
   return {
     bypass,
