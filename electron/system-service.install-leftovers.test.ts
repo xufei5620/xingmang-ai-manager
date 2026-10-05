@@ -7,11 +7,13 @@ import type { InstallLeftoverLocation, InstallLeftoverSweepResult } from './inst
 import {
   managedNpmTransactionLeftoverPrefixes,
   managedNpmTransactionPreservedEntries,
+  trustedCacheLeftoverPrefixes,
   userTemporaryLeftoverPrefixes,
 } from './install-leftovers'
 import { managedNpmCacheRoot } from './managed-cli-paths'
 import { clearTrustedManagedWindowsRootsForTests, registerTrustedManagedWindowsRoot } from './managed-path-trust'
 import { createSystemService } from './system-service'
+import { trustedInstallerCacheRoot } from './trusted-temp'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 
 const temporaryDirectories: string[] = []
@@ -102,6 +104,38 @@ describe('cleaning up downloads left by interrupted installs', () => {
     registerTrustedManagedWindowsRoot(resolveWindowsMachinePaths().programData)
     await service.cleanupInstallLeftovers()
     expect(sweep.mock.calls[1]?.[0]).toContainEqual(managedNpmCache)
+  })
+
+  // Same as above: the installer cache sits next to the managed directory in ProgramData\XingMangAI.
+  it.runIf(process.platform === 'win32')('leaves the installer cache alone as administrator until this run has checked its ACL', async () => {
+    const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[]) => ({ removed: 0, freedBytes: 0, failed: 0 }))
+    const { service } = createFixture(sweep, { platform: 'win32', windowsExecutionMode: 'trusted-only' })
+    const installerCache = {
+      directory: trustedInstallerCacheRoot(process.env, 'win32'),
+      prefixes: trustedCacheLeftoverPrefixes,
+    }
+
+    // The sweep a couple of minutes after startup runs before any install has hardened that directory.
+    await service.cleanupInstallLeftovers()
+    expect(sweep.mock.calls[0]?.[0]).not.toContainEqual(installerCache)
+
+    // Stands in for the hardening an install runs before it creates its temporary directory there.
+    registerTrustedManagedWindowsRoot(resolveWindowsMachinePaths().programData)
+    await service.cleanupInstallLeftovers()
+    expect(sweep.mock.calls[1]?.[0]).toContainEqual(installerCache)
+  })
+
+  // Off Windows the installer cache lives in this user's own temp directory, with no ACL for a run to check.
+  it('keeps sweeping the installer cache when not running on Windows', async () => {
+    const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[]) => ({ removed: 0, freedBytes: 0, failed: 0 }))
+    const { service } = createFixture(sweep)
+
+    await service.cleanupInstallLeftovers()
+
+    expect(sweep.mock.calls[0]?.[0]).toContainEqual({
+      directory: trustedInstallerCacheRoot(process.env, 'linux'),
+      prefixes: trustedCacheLeftoverPrefixes,
+    })
   })
 
   it('runs in the installation queue so it never overlaps an install', async () => {
