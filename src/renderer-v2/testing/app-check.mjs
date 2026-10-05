@@ -1273,6 +1273,8 @@ test('a folder picked on home opens CLIs from the tray and shortcuts, even when 
   try {
     await page.getByTestId('tool-codex-primary').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    // 上一次打开收完尾再发托盘事件：还在打开时，requestLaunch 会把新来的请求直接丢掉。
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
     // 记录读不到就只看上次选过的文件夹，不因此弹选择框，也不报错。
     const readsBefore = await sessionReads()
     await page.evaluate(() => { window.v2Test.fail = 'listProviderSessions' })
