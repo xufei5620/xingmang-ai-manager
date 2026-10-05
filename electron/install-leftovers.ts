@@ -77,7 +77,7 @@ export interface InstallLeftoverLocationOptions {
   platform: NodeJS.Platform
   windowsExecutionMode: 'same-user' | 'trusted-only'
   temporaryDirectory: string
-  /** trustedInstallerCacheRoot() 的结果；解析不出来时传 null。 */
+  /** trustedInstallerCacheRoot() 的结果；解析不出来，或 Windows 上这次运行还没核过时传 null。 */
   trustedCacheRoot: string | null
   /** managedNpmCacheRoot() 的结果；不传或传 null（解析不出来，或 Windows 上这次运行还没核过）时不扫那里。 */
   managedNpmCacheRoot?: string | null
