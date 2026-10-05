@@ -1140,8 +1140,20 @@ if (!hasSingleInstanceLock) {
       })
       return siteDirectProxy.then(() => siteDirectSession.fetch(input instanceof URL ? input.href : input, init))
     }
+    // 整个改了直连以后默认会话不再经过系统代理，看代理软件是不是又好了，得另走一个只跟随
+    // 系统代理的会话。同样是内存分区，只用来探那一下。
+    const systemProxySession = session.fromPartition('xingmang-system-proxy')
+    let systemProxyMode: Promise<void> | null = null
+    const systemProxyFetch: typeof fetch = (input, init) => {
+      systemProxyMode ??= systemProxySession.setProxy({ mode: 'system' }).catch((error: unknown) => {
+        systemProxyMode = null
+        throw error
+      })
+      return systemProxyMode.then(() => systemProxySession.fetch(input instanceof URL ? input.href : input, init))
+    }
     // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连，
+    // 代理软件好了以后再一起改回来。
     // AI 聊天画图、连通检查、查模型（relayFetch）都连星芒站点，账号请求（accountFetch）
     // 改直连时跟着一起改，它们自己不触发改直连；别的地址照旧走默认会话。建在这里是因为
     // relayFetch 马上就要用；站点设置、加速状态都是出了事才去读。
@@ -1156,6 +1168,14 @@ if (!hasSingleInstanceLock) {
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
       sessionFetch,
       siteDirectFetch,
+      systemProxyFetch,
+      // 代理软件好了、改回跟随系统代理：界面上「已经改为直接联网」那条提示跟着收起。
+      // 窗口是后面才建的，改回最早也在改直连 5 分钟以后，那时早就建好了。
+      directEnded: () => {
+        if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+        if (managedMainWindow.webContents.isDestroyed()) return
+        managedMainWindow.webContents.send(ipcEventChannels.onProxyBypassEnded, undefined)
+      },
     })
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
@@ -2028,11 +2048,13 @@ if (!hasSingleInstanceLock) {
       const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
       const retry = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
       if (retry) {
-        // 直连那一路刚交还给系统代理时，重发走的是系统代理。
+        // 直连那一路刚交还给系统代理、或者代理只断了一下又连得上时，重发走的是系统代理。
         const scope = proxyBypass.active() ? 'app' : proxyBypass.siteDirect() ? 'site' : 'proxy'
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope === 'proxy'
-          ? '账号请求直接联网没走通，已改回跟随系统代理'
-          : '账号请求经系统代理没走通，已改直接联网', {
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope !== 'proxy'
+          ? '账号请求经系统代理没走通，已改直接联网'
+          : failure.reason === 'proxy'
+            ? '账号请求撞上系统代理断了一下，代理又连得上了，经系统代理重发'
+            : '账号请求直接联网没走通，已改回跟随系统代理', {
           reason: failure.reason,
           method: failure.method,
           scope,

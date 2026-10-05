@@ -33,7 +33,7 @@ export interface PlatformSystemDependencies {
   /** 托盘建没建出来；null = 还不知道。只影响 Linux 那句说明。 */
   trayAvailable?: () => boolean | null
   relaySiteId?: () => string | undefined
-  /** 本次运行是否因为系统代理连不上而改成了直连（见 electron/proxy-bypass.ts）。 */
+  /** 现在是否因为系统代理连不上而改成了直连；代理又连得上以后会改回去（见 electron/proxy-bypass.ts）。 */
   proxyBypassed?: () => boolean
   onError?: (error: unknown) => void
   notify?: (
