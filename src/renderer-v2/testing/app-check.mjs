@@ -400,6 +400,34 @@ test('opening a desktop client marks its row running and leaves the client rows 
   } finally { await page.close() }
 })
 
+// 第三十九批 C：客户端的「打开」和命令行工具排同一个队。前面没东西在装时照旧写「正在打开客户端」；
+// 正在装别的工具时写清在等谁装完，不再一直只写「正在打开客户端」。
+test('opening a desktop client behind a running install says which install it waits for', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy&externalLaunchPending=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    const opener = page.getByTestId('tool-workbuddy-primary')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await opener.click()
+    await row.getByText('正在打开客户端', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByText(/运行中/).waitFor()
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    await expect(opener).toBeEnabled()
+    await opener.click()
+    await row.getByText('正在等 Gemini CLI 安装完，安装完马上打开', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByText('正在等 Gemini CLI 安装完，安装完马上打开', { exact: true }).waitFor({ state: 'detached' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy', 'workbuddy'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a background recheck that fails after opening a desktop client keeps the last result without an error bar', async () => {
   const page = await open('externalInstalled=1&externalReady=workbuddy')
   try {
