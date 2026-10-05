@@ -1231,6 +1231,84 @@ test('a folder picked for one CLI opens the others there without asking again', 
   } finally { await page.close() }
 })
 
+// 第四十批 A：托盘「已安装的工具」和 Ctrl+1～5 以前什么文件夹都不带，每次都弹选择框；
+// 现在和首页那颗「打开 xx」挑同一个文件夹，都没有才弹。
+test('the tray and Ctrl+1-5 open a CLI in the folder its home button shows', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args))
+  const choices = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length)
+  async function settled(id, count) {
+    await page.waitForFunction((expected) => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === expected, count)
+    await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"]`)?.disabled, `tool-${id}-primary`)
+  }
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent === '打开 my-app')
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await settled('claude', 1)
+    // Ctrl+2 是工具表里的第二个，Codex CLI。
+    await page.keyboard.press('Control+2')
+    await settled('codex', 2)
+    assert.deepEqual(await launches(), [['claude', 'C:\\work\\my-app'], ['codex', 'C:\\work\\codex-app']])
+    assert.equal(await choices(), 0)
+
+    // Grok 没有记录，也没选过文件夹：照旧先问。
+    await page.keyboard.press('Control+5')
+    await settled('grok', 3)
+    assert.deepEqual((await launches())[2], ['grok', 'C:\\Selected Project'])
+    assert.equal(await choices(), 1)
+
+    // Codex 桌面端自己管工作区，从托盘打开和以前一样。
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codexDesktop'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const desktop = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args))
+    assert.deepEqual(desktop, [['open']])
+    assert.equal(await choices(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a folder picked on home opens CLIs from the tray and shortcuts, even when records cannot be read', async () => {
+  const page = await open('launchRemembers=1')
+  const sessionReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderSessions').length)
+  try {
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    // 记录读不到就只看上次选过的文件夹，不因此弹选择框，也不报错。
+    const readsBefore = await sessionReads()
+    await page.evaluate(() => { window.v2Test.fail = 'listProviderSessions' })
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    assert.equal(await sessionReads(), readsBefore + 1)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+
+    await page.keyboard.press('Control+1')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 3)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)),
+      [['codex', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project']])
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the tray says the remembered folder is gone and asks for another one', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&workspaceGone=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent === '打开 my-app')
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '上次用的目录已经找不到了，请重新选择。')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['claude', 'C:\\work\\my-app'], ['claude', 'C:\\Selected Project']])
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('canceling the CLI workspace picker keeps the tool closed without an error dialog', async () => {
   const page = await open('workspaceCancel=1')
   try {
