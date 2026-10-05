@@ -101,8 +101,9 @@ describe('cliVerifiedVersions coverage', () => {
     // shipped 0.155.1 the next day. Codex had no list at all until then, so a
     // customer who pressed "更新" in that window installed exactly 0.155.0.
     // 0.156.1 is the first release whose bundled catalog knows gpt-6-sol and
-    // gpt-6-luna; on 0.155.1 they run on fallback metadata.
-    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.156.1')
+    // gpt-6-luna; on 0.155.1 they run on fallback metadata. 0.160.0 is the tag
+    // the bundled model catalog was copied from (codex-model-catalog.ts).
+    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.160.0')
     expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
     expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()
     expect(findBlockedCliVersion('codex', '0.154.0')).toBeNull()
@@ -114,9 +115,9 @@ describe('cliVerifiedVersions coverage', () => {
   })
 
   it('pins Grok to a release that is both npm latest and the xAI stable channel', () => {
-    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.44')
+    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.46')
     expect(cliVerifiedVersions.grok.blocked).toEqual([])
-    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.44', source: 'recommended' })
+    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.46', source: 'recommended' })
     expect(resolveCliInstallVersion('grok', { alwaysLatest: true })).toEqual({ version: 'latest', source: 'latest' })
   })
 })
@@ -228,7 +229,7 @@ describe('buildCliVersionAdvice', () => {
 
   it('tells a Codex user on the blocked release to move forward, not back', () => {
     const advice = buildCliVersionAdvice('codex', '0.155.0')
-    expect(advice.recommendedVersion).toBe('0.156.1')
+    expect(advice.recommendedVersion).toBe('0.160.0')
     expect(advice.blockedReason).toMatch(/拒绝/)
     expect(advice.rollbackAvailable).toBe(true)
     expect(advice.recommendedIsNewer).toBe(true)
