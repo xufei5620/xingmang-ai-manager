@@ -2130,18 +2130,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const save = () => options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
     if (parsed.mode !== 'reset') return save()
-    // 「备份并重置」答应过先备份。配置旁的 *.bak.<时间> 每个文件只留 5 份，每次在新
-    // 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以
-    // 重置前在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。
-    return (async () => {
-      try {
-        options.backupStore.create(parsed.provider, 'pre-save', undefined, await readBackupAccountContext())
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
-      }
-      return save()
-    })()
+    return backupBeforeReset(parsed.provider).then(save)
   })
   registerTrustedHandler('config:open-directory', async (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
@@ -2201,6 +2190,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
+    if (mode === 'reset') return backupBeforeReset(provider).then(() => service.switchToOfficialAccount(provider, 'reset'))
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
   // 同一个工具的一键切换一次只跑一个（全面检测 Q35）。切换要备份、写入、自检，
@@ -2997,6 +2987,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       keyDigests: new Set(keys.map((entry) => apiKeyDigest(entry.key))),
     }
   }
+  /**
+   * 「重置为初始状态」答应过先备份。配置旁的 *.bak.<时间> 每个文件只留 5 份，每次在新
+   * 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以重置前
+   * 在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。四个重置入口都
+   * 走这里：config:save、选的账号 Key、自动准备的 Key、官方账号（以前只有第一个留）；
+   * 首页「配置文件坏了」的「修好它」走后两个。
+   */
+  async function backupBeforeReset(provider: ProviderId): Promise<void> {
+    try {
+      options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
+    }
+  }
   registerTrustedHandler('backups:list', async () => options.backupStore.list(await readBackupAccountContext()))
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的配置类型')
@@ -3422,7 +3427,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
-    return configureManagedClis(
+    const configure = () => configureManagedClis(
       parsed.intent === 'explicit' ? explicitProvisioning : automaticProvisioning,
       service,
       parsed.providers,
@@ -3432,6 +3437,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       parsed.mode,
       parsed.intent,
     )
+    if (parsed.mode !== 'reset') return configure()
+    return (async () => {
+      for (const provider of parsed.providers) await backupBeforeReset(provider)
+      return configure()
+    })()
   })
   registerTrustedHandler('account:register', (_event, input: unknown) => (
     accountService.register(parseAccountRegisterInput(input))
@@ -3642,6 +3652,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const models = await service.fetchAvailableModels(apiKey)
     assertAccountSessionUser(userId)
     if (!models.includes(parsed.model)) throw new Error('所选 Key 当前不支持该模型，请重新检测')
+    if (parsed.mode === 'reset') await backupBeforeReset(parsed.provider)
     const result = await service.saveConfig({
       provider: parsed.provider,
       apiKey,

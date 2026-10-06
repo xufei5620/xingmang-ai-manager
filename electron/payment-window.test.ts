@@ -6,6 +6,7 @@ vi.mock('electron', () => ({
 vi.mock('qrcode', () => ({ default: { toDataURL: vi.fn(async () => 'data:image/png;base64,AA==') } }))
 
 import QRCode from 'qrcode'
+import { classifyNetworkFailure } from './network-failure'
 import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import {
@@ -386,6 +387,23 @@ describe('createPaymentWindowController', () => {
     )
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.controller.isOpen()).toBe(false)
+  })
+
+  // The runtime log records the cause; the address carries the order number and the signature.
+  it('keeps only the error code of a failed load as the cause, never the payment address', async () => {
+    const address = 'https://pay.example.com/submit?channel=alipay&out_trade_no=XM-20260815-1&sign=private-signature'
+    const harness = createHarness(Object.assign(new Error(`ERR_CONNECTION_RESET (-101) loading '${address}'`), {
+      errno: -101,
+      code: 'ERR_CONNECTION_RESET',
+      url: address,
+    }))
+
+    const failure: unknown = await harness.controller.open(paymentForm()).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error && failure.message).toBe('支付页面打开失败，请稍后重试')
+    expect(failure instanceof Error && failure.cause).toEqual({ code: 'ERR_CONNECTION_RESET' })
+    // The failure log still tells a cut connection apart from a certificate or a lookup.
+    expect(classifyNetworkFailure(failure)).toBe('refused')
   })
 })
 

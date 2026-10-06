@@ -62,8 +62,8 @@ const account = { userId: 17, username: 'fixture-user', group: 'default', role: 
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
-// 开机账号恢复超过启动画面的等待上限：会话先答「正在恢复 17 号账号」。
-if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
+// 开机账号恢复超过启动画面的等待上限：会话先答「正在恢复 17 号账号」（restoring=solov-api 恢复的是历史账号）。
+if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: query.get('restoring') === 'solov-api' ? 'solov-api' : 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
 settings.relayEndpointIds = { solov: query.has('directRelayActive') ? 'direct' : 'primary', 'solov-api': 'primary' }
@@ -123,9 +123,14 @@ if (query.has('keyOptions')) {
 const selectedKeyIds = new Map<ProviderId, number>()
 const keyMetadataReads = new Map<ProviderId, number>()
 const pendingKeyMetadata = new Map<ProviderId, () => void>()
+// 扣住某个工具「读配置里那把 Key 的模型」：扣着时来几次都等着（开发模式下 React 会把
+// 打开窗口时的那次读连发两遍），放开时一起答。
+const heldConfiguredModels = new Map<ProviderId, Array<() => void>>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
 if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
+// ?codexBroken：Codex 自己读不了 config.toml（主进程 codexConfigBroken），重置之后才好。
+if (query.has('codexBroken')) config.providers.codex.codexConfigBroken = true
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
   config.providers.claude = { ...configValue, configurationOwnership: 'manual' }
@@ -225,7 +230,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -257,7 +262,7 @@ let releaseUninstall: () => void = () => undefined
 let nextInstallHeld = false
 let releaseInstall: (error?: string) => void = () => undefined
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
@@ -505,8 +510,8 @@ const methods = {
     if (query.has('noticeMarkdown')) return { id: 'markdown-notice', text: '# 服务公告\n\n- 第一项\n- 第二项\n\n**重点提醒**：请查看 [官方说明](https://xm.solov.cc/help)。' }
     if (session.siteId === 'solov-api') return query.has('noticeEmpty') ? null : {
       id: 'sub2api-notices', text: '服务通知\n\n套餐更新', entries: [
-        { id: '12', title: query.has('noticeLongTitle') ? '服务通知：模型与套餐更新说明 / Service announcement: updated models and subscriptions, pricing details and account usage policies' : '服务通知', text: '**系统升级完成**，请重新读取分组。', read: noticesRead.has('12') },
-        { id: '8', title: '套餐更新', text: '<p>套餐详情已更新</p><script>window.nativeXss=true</script>', read: noticesRead.has('8') },
+        { id: '12', title: query.has('noticeLongTitle') ? '服务通知：模型与套餐更新说明 / Service announcement: updated models and subscriptions, pricing details and account usage policies' : '服务通知', text: '**系统升级完成**，请重新读取分组。', read: noticesRead.has('12'), publishedAt: '2026-09-28T12:00:00.000Z' },
+        { id: '8', title: '套餐更新', text: '<p>套餐详情已更新</p><script>window.nativeXss=true</script>', read: noticesRead.has('8'), publishedAt: '2026-09-20T12:00:00.000Z' },
       ],
     }
     return { id: 'local-notice', text: '本地测试公告' }
@@ -637,10 +642,11 @@ const methods = {
     config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
     return { backups: [], files: [] }
   },
-  switchToOfficialAccount: async (provider: ProviderId) => {
+  switchToOfficialAccount: async (provider: ProviderId, mode?: 'merge' | 'reset') => {
     // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
-      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}) }
+      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}),
+      ...(provider === 'codex' && mode === 'reset' ? { codexConfigBroken: false } : {}) }
     return { backups: [], files: [] }
   },
   switchAccountSource: async (provider: ProviderId, target: 'account' | 'official') => {
@@ -674,7 +680,11 @@ const methods = {
     window.v2Test.emit('onAccountSessionChanged', session)
     return { changed: true as const }
   },
-  listConfiguredModels: async (provider: ProviderId) => query.has('clientModels') ? ['gpt-fixture', 'deepseek-fixture', 'claude-fixture'] : query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model'],
+  listConfiguredModels: async (provider: ProviderId) => {
+    const held = heldConfiguredModels.get(provider)
+    if (held) await new Promise<void>((resolve) => held.push(resolve))
+    return query.has('clientModels') ? ['gpt-fixture', 'deepseek-fixture', 'claude-fixture'] : query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model']
+  },
   configureExternalTool: async (tool, input) => {
     if (query.has('clientSaveFailure')) throw new Error('配置保存失败，原配置已保留')
     Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
@@ -706,7 +716,7 @@ const methods = {
         continue
       }
       keyRewritten.add(provider)
-      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(provider === 'codex' && input.mode === 'reset' ? { codexConfigBroken: false } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'

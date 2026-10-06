@@ -7,7 +7,8 @@
  * - **下次打开软件时**：上一次运行就已经下好了，这次启动刚打开、用户还没开始用，装上。
  *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。开机自启的要等开机安静期过了才查
  *   更新（login-launch.ts），「刚打开」从那时算；窗口一直没打开过时没人在看，就不预告、
- *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装（resolveLaunchInstallMode）。
+ *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装。Windows 上那就等用户
+ *   第一次打开窗口，再照平常打开时那样先预告再装（resolveLaunchInstallMode）。
  *
  * 第二条最怕的是死循环：安装器每次都起不来，软件就会每次一打开就关掉。所以每个版本
  * 在启动时只试一次，先记下「试过了」再去装；没装成的版本退回到「退出时装」和更新页
@@ -17,6 +18,12 @@
  * 退出时装同样每个版本只自动试一次：授权窗被点了「否」、安装器没起来时，软件已经
  * 退出了，这次失败只能等下次打开时从记录里认出来（见 resolvePreviousAutoInstallFailure）。
  * 认出来之后这个版本不再自动装，只在提示气泡和更新页留「重新安装」，别让授权窗一直弹。
+ * 装上了的版本，打开时就从记录里清掉（resolveRecordToWriteAtLaunch）：客户之后装回旧版，
+ * 旧版再下好它时不能被当成上次没装上。
+ *
+ * Windows 上账号不在管理员组的电脑（公司、学校配的，家里长辈的子账号）两个时机都不装：
+ * 授权窗口要输一个管理员账号的密码，他多半没有，自动装只会把软件关掉、再弹一个他填不了的
+ * 窗口。下好后由提示说清楚，等有管理员账号的人在更新页点「重启安装」（第二十四批 2）。
  *
  * 记录读坏了一律当作没有记录：最多少装一次，绝不会多装。
  */
@@ -105,6 +112,32 @@ export function resolveDownloadedVersionToRecord(snapshot: UpdateSnapshot, recor
   return version && version !== record.downloadedVersion ? version : null
 }
 
+/**
+ * 启动时要写回的记录，不用改时返回 null。后台装的那一条只认一次，读到就清掉。记着的版本
+ * 就是正在运行的这一版，说明已经装上了，「下好了」「试过了」都清掉：留着的话，客户装回
+ * 旧版以后，旧版再下好这一版时会照「试过了」说它上次没装上，之后退出、打开都不再自动装。
+ * 只清和这一版一样的：比它旧的，可能是本机版本被撤回后往回退的那一版（updater.ts 的
+ * allowDowngrade），它没装上就得一直记着，不然每次退出都再去装一次，Windows 上授权窗口
+ * 一回回地弹。
+ */
+export function resolveRecordToWriteAtLaunch(record: PendingUpdateRecord, currentVersion: string): PendingUpdateRecord | null {
+  const settled: PendingUpdateRecord = {
+    downloadedVersion: forgetInstalledVersion(record.downloadedVersion, currentVersion),
+    attemptedVersion: forgetInstalledVersion(record.attemptedVersion, currentVersion),
+    quitAttemptedVersion: forgetInstalledVersion(record.quitAttemptedVersion, currentVersion),
+    backgroundInstall: null,
+  }
+  const unchanged = settled.downloadedVersion === record.downloadedVersion
+    && settled.attemptedVersion === record.attemptedVersion
+    && settled.quitAttemptedVersion === (record.quitAttemptedVersion ?? null)
+    && !record.backgroundInstall
+  return unchanged ? null : settled
+}
+
+function forgetInstalledVersion(version: string | null | undefined, currentVersion: string): string | null {
+  return version === currentVersion ? null : version ?? null
+}
+
 export interface LaunchInstallInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
@@ -114,11 +147,13 @@ export interface LaunchInstallInput {
   elapsedSinceLaunchMs: number
   /** 有安装任务在跑（装 CLI、装 Node 之类）时不打断。 */
   busy: boolean
+  /** Windows 上这个账号不在管理员组（windows-elevation.ts 问出来的 'standard'）。缺省＝不是，或者没问出来。 */
+  standardAccount?: boolean
 }
 
 /** 返回要在启动时装上的版本；不该装时返回 null。 */
 export function decideLaunchInstall(input: LaunchInstallInput): string | null {
-  if (!input.autoUpdate || input.busy) return null
+  if (!input.autoUpdate || input.busy || input.standardAccount) return null
   // 交给系统安装器的版本（Linux）从不自己装：一打开（常常是开机自启）就弹一个要开机密码
   // 的窗口，客户只会当成来路不明的东西点掉。
   if (input.snapshot.installMethod === 'system-installer') return null
@@ -131,9 +166,10 @@ export function decideLaunchInstall(input: LaunchInstallInput): string | null {
   return version
 }
 
-export type LaunchInstallMode = 'notice' | 'background' | 'skip'
+export type LaunchInstallMode = 'notice' | 'background' | 'window' | 'skip'
 
 export interface LaunchInstallModeInput {
+  platform: NodeJS.Platform
   /** 开机自启拉起的；后台装好新版后重新拉起的那一次也算。 */
   launchedAtLogin: boolean
   /** 这次运行里主窗口显示过。 */
@@ -148,11 +184,14 @@ export interface LaunchInstallModeInput {
  * 打开时装怎么装。照旧是先预告、几秒后关掉软件去装，装好打开窗口（'notice'）。开机自启、
  * 窗口一直没打开过时没人在看：预告没人看得到，装好也不该自己弹出窗口，就不预告、在后台装，
  * 装好照旧待在后台（'background'）。装的时候会弹出东西等人点（Windows 的授权窗口、Mac 要
- * 输开机密码），或者开机后已经从托盘开了加速，开机时就不装，留到退出时（'skip'）。
+ * 输开机密码），或者开机后已经从托盘开了加速，开机时就不装。Windows 上每次装都弹授权窗口，
+ * 开机自启、只关机不退出的人留到退出时就一直装不上，所以等用户第一次打开窗口、人在电脑前
+ * 了，再照平常打开时那样先预告再装（'window'）；其余留到退出时（'skip'）。
  */
 export function resolveLaunchInstallMode(input: LaunchInstallModeInput): LaunchInstallMode {
   if (!input.launchedAtLogin || input.windowShown) return 'notice'
-  return input.unattended && !input.accelerationActive ? 'background' : 'skip'
+  if (input.unattended && !input.accelerationActive) return 'background'
+  return input.platform === 'win32' ? 'window' : 'skip'
 }
 
 export interface LaunchInstallRecheckInput {
@@ -160,19 +199,23 @@ export interface LaunchInstallRecheckInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
   busy: boolean
-  background: boolean
+  mode: Exclude<LaunchInstallMode, 'skip'>
   windowShown: boolean
   accelerationActive: boolean
 }
 
 /**
  * 预告等完、或者后台装写完记录，真去装之前再看一眼：这几秒里用户可能关了自动更新、开始
- * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。
+ * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。等到第一次
+ * 打开窗口才装的，离开机可能已经过了几个小时，预告之前也先看这一眼：开着加速时不装，用户
+ * 这时多半正靠它连着别的工具，装的时候加速会断，装好也不会自己连回去，留到退出时再装。
  */
 export function shouldStillInstallAtLaunch(input: LaunchInstallRecheckInput): boolean {
   if (!input.autoUpdate || input.busy) return false
   if (resolveInstallableUpdateOnQuit(input.snapshot)?.version !== input.version) return false
-  return !input.background || (!input.windowShown && !input.accelerationActive)
+  if (input.mode === 'notice') return true
+  if (input.accelerationActive) return false
+  return input.mode === 'window' || !input.windowShown
 }
 
 /**
@@ -243,6 +286,8 @@ export interface QuitInstallInput {
   installMethod?: UpdateInstallMethod | null
   /** 系统已经在关机、重启或注销。缺省＝没有。 */
   systemShuttingDown?: boolean
+  /** 见 LaunchInstallInput.standardAccount。 */
+  standardAccount?: boolean
 }
 
 /**
@@ -253,11 +298,16 @@ export interface QuitInstallInput {
  * 系统在关机、重启或注销时这次不装也不问（'later'）：安装器会被关机一起结束，问了也没人
  * 回答。也不记「退出时试过了」，记了下次打开就会被当成上次没装上；不记，下次打开照常
  * 自动装（decideLaunchInstall）。
+ *
+ * 账号不在管理员组的 Windows 电脑也是不装不问，直接退出（'leave'）：问了他多半点「安装
+ * 并退出」，软件关掉后弹出来的是要管理员密码的窗口，每次退出都这样白跑一趟。下好的版本
+ * 留着，等有管理员账号的人在更新页点。自动更新关着时照旧问，那是他自己要的。
  */
-export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 'later' {
+export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 'later' | 'leave' {
   if (input.systemShuttingDown) return 'later'
   const version = parseVersion(input.version)
   if (!input.autoUpdate || !version || input.installMethod === 'system-installer') return 'ask'
+  if (input.standardAccount) return 'leave'
   return input.record.quitAttemptedVersion === version ? 'ask' : 'install'
 }
 

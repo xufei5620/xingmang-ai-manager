@@ -23,7 +23,10 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   accountTabRequest?: number
   /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
   accountRechargeAmount?: number
-  /** 外壳手上的登录状态，个人中心自己读回来之前先拿它摆出左边分页；缺省 = 等个人中心自己读。 */
+  /**
+   * 外壳手上的登录状态，个人中心自己读回来之前先拿它摆出左边分页；检查页拿它认「星芒 AI 网络」
+   * 给不给「去处理」。缺省 = 等个人中心自己读，检查页按访客算。
+   */
   accountSession?: Parameters<typeof AccountPage>[0]['accountSession']
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
@@ -104,7 +107,7 @@ export function BusinessPage({
         active={actions.active}
       />
     )
-  if (page === 'health') return <HealthPage api={api} {...actions} />
+  if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'updates') return <UpdatesPage api={api} {...actions} />
   if (page === 'maintenance') return <MaintenancePage api={api} {...actions} />

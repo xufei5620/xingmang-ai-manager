@@ -88,8 +88,12 @@ export interface UpdateSnapshot {
   /**
    * `message` 是给用户看的中文；认不出的英文原话脱敏后放在可选的 `detail` 里，只为
    * 进 runtime.jsonl 给客服排查，界面不显示。
+   *
+   * `automatic`：这次没查成的检查不是客户点的，是开机或每 3 小时自己跑的那次。首页不为它
+   * 弹红框（网络一抖就凭空冒出「失败」，断网时又和顶上的断网横幅说两遍），更新页照常显示。
+   * 只跟着 error 走，错误一清就没了；缺省＝客户点的，旧行为。
    */
-  error: { code: string; message: string; detail?: string } | null
+  error: { code: string; message: string; detail?: string; automatic?: boolean } | null
   /**
    * 与 `error` 同生共死：有错才有步骤，错误被清掉时一并回到 null。可选是为了
    * 向后兼容（AGENTS.md §6「缺省 = 旧行为」）——旧快照没有这个字段，界面照旧
@@ -145,6 +149,12 @@ export interface UpdateSnapshot {
   launchInstallNotice?: LaunchInstallNotice | null
   /** 见 UpdateInstallMethod。可选＝旧快照，界面照旧按「重启安装」说。 */
   installMethod?: UpdateInstallMethod | null
+  /**
+   * Windows 上这个账号不在管理员组：装更新时授权窗口要输一个管理员账号的密码，所以下好的
+   * 版本不自动装（auto-update-install.ts）。界面据此改说「要输入管理员密码」，不再说「点「是」」
+   * 「会自动装上」。主进程问出来是这样才有这一项；可选＝不是、没问出来或旧快照，界面照旧。
+   */
+  installNeedsAdminPassword?: boolean
 }
 
 export interface LaunchInstallNotice {
@@ -242,6 +252,8 @@ export interface UpdaterService {
   setServiceStatus(status: ServiceStatus | null): void
   /** 开机自动装前的预告摆出来（或收回，null）。 */
   setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
+  /** 主进程问出了这个 Windows 账号不在管理员组（见 UpdateSnapshot.installNeedsAdminPassword）。 */
+  setInstallNeedsAdminPassword(value: boolean): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -1466,14 +1478,15 @@ export function createUpdaterService(
   // 一次的，那一次接回了同一个请求就和它一起报，还没发出请求就会重新发，这里再报只会让「检查更新
   // 失败」在它查的时候闪一下。开机那次已经说过「网络有点慢…在后台接着查」、之后没人再点过检查的，
   // 那句留着：掐掉挂住的那次只是为了让之后的「重试」和三小时那次能重新发请求。
-  const reportCheckFailure = (error: unknown, failedCheck: number) => {
+  const reportCheckFailure = (error: unknown, failedCheck: number, manual: boolean) => {
     const stalledCheck = error instanceof UpdateCheckAborted
     if (stalledCheck && (failedCheck !== latestCheck || snapshot.error?.code === 'STARTUP_UPDATE_TIMEOUT')) return
+    const failure = stalledCheck
+      ? { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout }
+      : safeError(error, platform)
     emit({
       phase: 'error',
-      error: stalledCheck
-        ? { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout }
-        : safeError(error, platform),
+      error: manual ? failure : { ...failure, automatic: true },
       failedStep: 'check',
       progress: null,
     })
@@ -1507,10 +1520,10 @@ export function createUpdaterService(
             result = await checkWatched()
           })
         } catch (retryError) {
-          reportCheckFailure(retryError, thisCheck)
+          reportCheckFailure(retryError, thisCheck, options.manual === true)
         }
       } else {
-        reportCheckFailure(error, thisCheck)
+        reportCheckFailure(error, thisCheck, options.manual === true)
       }
     } finally {
       manualCheck = false
@@ -1790,6 +1803,7 @@ export function createUpdaterService(
             error: {
               code: 'STARTUP_UPDATE_TIMEOUT',
               message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+              automatic: true,
             },
             failedStep: 'check',
           })
@@ -1835,6 +1849,10 @@ export function createUpdaterService(
       if (notice && (snapshot.phase !== 'downloaded' || notice.version !== snapshot.availableVersion)) return
       if (!notice && !snapshot.launchInstallNotice) return
       emit({ launchInstallNotice: notice ? { ...notice } : null })
+    },
+    setInstallNeedsAdminPassword(value) {
+      if (disposed || value === (snapshot.installNeedsAdminPassword === true)) return
+      emit({ installNeedsAdminPassword: value })
     },
     subscribe(listener) {
       listeners.add(listener)

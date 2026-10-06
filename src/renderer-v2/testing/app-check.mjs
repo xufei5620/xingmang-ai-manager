@@ -925,6 +925,41 @@ test('the home recent card greys out a row whose folder is gone', async () => {
   } finally { await page.close() }
 })
 
+// 只装了 Codex 桌面端、或卸掉过某个工具时，「最近」里照样有那家的对话。「接着聊」走的是同一个「打开」，
+// 那家没装，点了只会报「工具尚未安装，请先完成准备。」，所以不给这颗按钮；装上以后再给（第四十一批 A）。
+test('the home recent card offers no resume for a tool that is not installed (第四十一批 A)', async () => {
+  const page = await open('desktopOnly=1&recentWorkspaces=1')
+  try {
+    // 等检测回来再看：那之前还不知道装没装，按钮照旧摆着、灰着等。
+    await expect(page.getByTestId('home-available').getByTestId('tool-claude-primary')).toHaveText('安装')
+    // 在桌面端里聊过的一条也记在 Codex 名下，排在最前面；接着聊开的却是 Codex CLI，它没装。
+    await page.evaluate(() => window.v2Test.addRecentSession('9', 'codex', 'C:\\work\\desk-app', 500))
+    await page.getByTestId('home-rescan').click()
+    const codex = page.getByTestId('home-recent-row-codex:9')
+    await codex.waitFor()
+    const card = page.getByTestId('home-recent-card')
+    assert.equal(await card.locator('[data-testid^="home-recent-resume-"]').count(), 0)
+    // 这一行的字、「打开文件夹」「查看」都照旧。
+    assert.equal(await codex.locator('.xm-row-desc').innerText(), 'Codex CLI · desk-app')
+    assert.equal(await page.getByTestId('home-recent-open-directory-codex:9').count(), 1)
+    assert.equal(await card.getByRole('button', { name: '查看', exact: true }).count(), 3)
+
+    // 装上 Claude Code（星芒先替客户准备好 Node.js）：它那条的按钮回来，Codex 那条照旧没有。
+    await page.getByTestId('tool-claude-primary').click()
+    const resume = page.getByTestId('home-recent-resume-claude:1')
+    await resume.waitFor()
+    assert.equal(await page.getByTestId('home-recent-resume-codex:9').count(), 0)
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:1"]')?.disabled === false)
+    await resume.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the records page opens the folder a record was made in (第七批 8)', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
@@ -3380,6 +3415,33 @@ test('the update failure bubble retries the failed step without a detour', async
   } finally { await page.close() }
 })
 
+// 开机和每 3 小时自己跑的检查没查成，客户什么都没点：首页不弹红框，更新页照常能看到
+// 这次失败和「重试」。客户自己点的检查没查成，照旧弹。
+test('an automatic update check that fails stays off the home bubble but shows on the updates page', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const emit = (automatic) => page.evaluate((flag) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
+      error: { code: 'ERR_INTERNET_DISCONNECTED', message: '设备当前没有连上网络，请先连接网络再试。', ...(flag ? { automatic: true } : {}) }, development: true,
+    }), automatic)
+
+    await emit(true)
+    const notice = updates.getByTestId('updates-failure-check')
+    await notice.waitFor()
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    assert.equal(await page.getByRole('alert').filter({ hasText: '检查更新失败' }).count(), 0)
+
+    await emit(false)
+    await page.getByRole('alert').filter({ hasText: '检查更新失败' }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 校验新版本签名没通过时，同一个包装多少遍都一样：更新页和首页气泡都不再给
 //「重新安装」，改给「打开下载页」，让客户手动装一次。
 test('a Mac signature rejection offers the download page instead of reinstalling', async () => {
@@ -3463,6 +3525,36 @@ test('a stalled update download offers the download page next to downloading aga
     await emit('ETIMEDOUT')
     await expect.poll(() => bubble.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
     await bubble.getByRole('button', { name: '重新下载', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 检查更新 45 秒没动静被掐断：连更新清单都拿不回来的网络，再点「重试」多半一样。更新页在
+//「重试」旁边多给「打开下载页」；别的检查失败照旧只给「重试」。
+test('a stalled update check offers the download page next to retrying', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
+      error: { code: value.code, message: value.reason }, development: true,
+    }), { code, reason })
+    await emit('UPDATE_CHECK_STALLED')
+    const notice = updates.getByTestId('updates-failure-check')
+    await notice.getByText('检查更新失败', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual(['https://docs-new.solov.cc/guide/manager#download-installers'])
+
+    await emit('ENOTFOUND')
+    await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -3552,6 +3644,54 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
       await clean(page)
     } finally { await page.close() }
   }
+})
+
+// 账号不在管理员组的 Windows 电脑：下好的新版本不自动装（第二十四批 2）。首页气泡和更新页「重启安装」
+// 旁边说清要管理员密码、要谁来点，还没下好时也不说会自动装上，确认框不再只叫他点「是」，强制更新
+// 那道门同样改口；字都是 yoyo 2026-10-06 批的原话。管理员账号照旧。
+test('a Windows account outside the administrators group is told an administrator has to install updates', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const state = {
+      phase: 'downloading', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: { percent: 40, bytesPerSecond: 1, transferred: 40, total: 100 }, failedStep: null, error: null, development: true,
+      autoUpdateSupported: true, installNeedsAdminPassword: true,
+    }
+    const emit = (patch) => page.evaluate((value) => window.v2Test.emit('onUpdateState', value), { ...state, ...patch })
+    await emit({})
+    await page.locator('.xm-notice').getByText('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。', { exact: true }).waitFor()
+
+    await emit({ phase: 'downloaded', progress: null })
+    const bubble = page.locator('.xm-notice').filter({ hasText: '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。' })
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    // 更新页进来自己再读一次状态：主进程读回的就是上面这份，夹具读回的是默认那份，所以再发一次。
+    await emit({ phase: 'downloaded', progress: null })
+    await updates.getByText('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。', { exact: true }).waitFor()
+    await updates.getByText('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装', { exact: true }).waitFor()
+    const notice = updates.getByTestId('updates-admin-password')
+    await notice.getByText('这台电脑的账号不是管理员，装更新时要输入管理员密码', { exact: true }).waitFor()
+    await notice.getByText('让有管理员账号的人点一次「重启安装」，或者找客服。', { exact: true }).waitFor()
+    // 原话叫他点的就是卡片头上这颗按钮：自己点照样能装，确认框说清要输管理员密码。
+    await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+    await dialog.getByTestId('updates-windows-consent-hint').getByText('Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
+
+    await emit({ phase: 'downloaded', progress: null, installNeedsAdminPassword: false })
+    await notice.waitFor({ state: 'detached' })
+    await updates.getByText('新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。', { exact: true }).waitFor()
+
+    // 强制更新那道门在开发环境不拦，这里按正式环境发。
+    await emit({ phase: 'available', progress: null, development: false, requiredVersion: '0.1.32' })
+    const gate = page.getByTestId('required-update-gate')
+    await gate.getByTestId('required-update-admin-password').getByText('要输入管理员密码；让有管理员账号的人来点，或联系客服。', { exact: true }).waitFor()
+    assert.equal(await gate.getByText('是否允许更改', { exact: false }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
 })
 
 // Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
@@ -3901,6 +4041,43 @@ test('a key from another site is named for the account and switched from the row
   } finally { await page.close() }
 })
 
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」就是配置里的
+// 「重置为初始状态」，按现在用的账号重新生成，不换来源。
+test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
+  const page = await open('codexBroken=1')
+  try {
+    for (const tool of ['codex', 'codexDesktop']) {
+      const row = page.getByTestId(`tool-row-${tool}`)
+      await row.getByText('配置文件坏了', { exact: true }).waitFor()
+      await row.getByText('Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留', { exact: true }).waitFor()
+      assert.equal(await page.getByTestId(`tool-${tool}-repair-config`).getAttribute('title'), '改之前会先备份原来的设置')
+    }
+    assert.equal(await page.getByText('还没配 Key', { exact: true }).count(), 0)
+    await page.getByTestId('tool-codexDesktop-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    for (const tool of ['codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a ChatGPT login whose Codex config cannot be read is reset on the official account', async () => {
+  const page = await open('codexBroken=1&official=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.getByText('配置文件坏了', { exact: true }).waitFor()
+    await page.getByTestId('tool-codex-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    await row.locator('.xm-tool-status').getByText('官方账号', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchToOfficialAccount').map((entry) => entry.args))
+    assert.deepEqual(resets, [['codex', 'reset']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the config dialog switches a foreign key in place without the old manual-key buttons', async () => {
   const page = await open('unknown=1')
   try {
@@ -4232,8 +4409,8 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await button.click()
     const dialog = page.getByRole('dialog', { name: '公告', exact: true })
     const list = dialog.getByTestId('announcement-list')
-    await list.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
-    await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('announcement-detail').count(), 0)
     assert.equal(await dialog.getByText('系统升级完成', { exact: true }).count(), 0)
     assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
@@ -4243,12 +4420,14 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await list.getByTestId('announcement-item-12').click()
     const detail = dialog.getByTestId('announcement-detail')
     await detail.getByRole('heading', { name: '服务通知', level: 2, exact: true }).waitFor()
+    // 历史账号的公告没有类型标签，详情里只写发布时间。
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^2026-09-28 \d{2}:\d{2} · \d+ (天|个月|年)前$/)
     assert.equal(await detail.locator('strong').innerText(), '系统升级完成')
     assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead'))
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
 
     await list.getByTestId('announcement-item-12').click()
@@ -4265,8 +4444,8 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await page.screenshot({ path: path.join(artifacts, 'sub2api-announcement-detail.png') })
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await button.click()
-    await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await list.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 09-20 已读', exact: true }).waitFor()
     assert.equal(await detail.count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -4284,7 +4463,7 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await dialog.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     await dialog.getByTestId('announcement-item-12').click()
     await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
     await page.evaluate(() => { window.v2Test.fail = '' })
@@ -4292,8 +4471,8 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     await dialog.getByRole('alert').waitFor({ state: 'hidden' })
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     const writes = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead'))
     assert.deepEqual(writes.map((call) => call.args), Array.from({ length: 3 }, () => ['sub2api-notices', '12']))
@@ -4319,10 +4498,10 @@ test('Sub2API pending read updates stay attached to their own announcement after
     assert.equal(await detail.getByRole('heading', { name: '套餐更新', exact: true }).isVisible(), true)
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     await page.evaluate(() => window.v2Test.releaseNoticeMark('8'))
-    await dialog.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 09-20 已读', exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead').map((call) => call.args)), [['sub2api-notices', '12'], ['sub2api-notices', '8']])
     await clean(page)
@@ -4457,7 +4636,7 @@ test('Sub2API announcements keep server-read and empty states and recover from r
       await dialog.getByText(query.includes('noticeEmpty') ? '暂无公告' : '服务通知', { exact: true }).waitFor()
       assert.equal(await page.locator('.v2-unread').count(), 0)
       if (query.includes('noticesRead')) {
-        await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).click()
+        await dialog.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).click()
         await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
         await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
       }
@@ -4701,7 +4880,7 @@ test('a saved account with the same id switches platform without reusing NewAPI 
     assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
     await page.getByTestId('announcement-open').click()
     const notice = page.getByRole('dialog', { name: '公告', exact: true })
-    await notice.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    await notice.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     assert.equal(await notice.getByText('本地测试公告', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -4943,6 +5122,121 @@ test('configuration keeps the current local key by default and saves through the
   } finally { await page.close() }
 })
 
+// 「为什么没有 6.1 Sol」：下拉框里只有已选的那一个，客户以为只能用它。工具里已经是当前
+// 账号的 Key 时，打开窗口就读一次：只填下拉框，选中的型号不动，也不算改动。
+test('configuration lists the current key models on open without changing the selected model', async () => {
+  const page = await open('keyOptions=1&cliDefaultModels=1')
+  try {
+    const start = await page.evaluate(() => window.v2Test.calls.length)
+    await openToolConfiguration(page)
+    const model = page.getByTestId('tool-default-model')
+    await model.locator('option[value="gpt-6-astra"]').waitFor({ state: 'attached' })
+    await expect(page.getByTestId('tool-detect-models')).toBeEnabled()
+    assert.equal(await model.inputValue(), 'fixture-model')
+    assert.deepEqual(await model.locator('option').evaluateAll((options) => options.map((option) => option.value)), ['codex-auto-review', 'gpt-6-astra', 'fixture-model'])
+    const calls = await page.evaluate((from) => window.v2Test.calls.slice(from), start)
+    const reads = calls.filter((entry) => entry.method === 'listConfiguredModels').map((entry) => entry.args)
+    assert.ok(reads.length >= 1)
+    assert.ok(reads.every((args) => args.length === 1 && args[0] === 'codex'))
+    assert.equal(calls.some((entry) => ['revealApiKey', 'revealAccountKey', 'listModels', 'listAccountKeyModels', 'saveConfig', 'saveConfigWithAccountKey'].includes(entry.method)), false)
+    const dialog = page.getByTestId('config-dialog')
+    assert.equal(await dialog.getByRole('alert').count(), 0)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByRole('dialog', { name: '要放弃未保存的修改吗？' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('configuration stays quiet when the model read on open fails and the detect button still explains why', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'listConfiguredModels'; window.v2Test.failMessage = '模型接口暂时不可用' })
+    await openToolConfiguration(page)
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels'))
+    const detect = page.getByTestId('tool-detect-models')
+    await expect(detect).toBeEnabled()
+    const dialog = page.getByTestId('config-dialog')
+    assert.equal(await dialog.getByRole('alert').count(), 0)
+    assert.equal(await page.getByTestId('tool-default-model').inputValue(), 'fixture-model')
+    await detect.click()
+    await dialog.getByRole('alert').filter({ hasText: '模型接口暂时不可用' }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('configuration stays usable while the model read on open is pending and drops a late answer for the previous tool', async () => {
+  const page = await open('keyOptions=1&cliDefaultModels=1')
+  try {
+    await page.evaluate(() => window.v2Test.holdConfiguredModels('codex'))
+    await openToolConfiguration(page)
+    const detect = page.getByTestId('tool-detect-models')
+    await expect(detect).toHaveAttribute('aria-busy', 'true')
+    assert.equal(await page.locator('.v2-config-controls').evaluate((element) => element.disabled), false)
+    assert.equal(await page.getByTestId('tool-key-select').isDisabled(), false)
+    await page.getByTestId('config-dialog').getByRole('tab', { name: 'Claude Code', exact: true }).click()
+    const model = page.getByTestId('tool-default-model')
+    await model.locator('option[value="claude-opus-5"]').waitFor({ state: 'attached' })
+    await expect(detect).toBeEnabled()
+    await page.evaluate(async () => {
+      window.v2Test.releaseConfiguredModels('codex')
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await model.locator('option[value="gpt-6-astra"]').count(), 0)
+    assert.equal(await model.inputValue(), 'fixture-model')
+    await expect(detect).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const { name, query, tool } of [
+  { name: 'signed out', query: 'guest=1&existing=1&allInstalled=1', tool: 'codex' },
+  { name: 'manually entered key', query: 'manualClaude=1', tool: 'claude' },
+  { name: 'key from another site', query: 'unknown=1', tool: 'codex' },
+]) test(`configuration does not read models on open for a ${name}`, async () => {
+  const page = await open(query)
+  try {
+    await openGuestToolConfiguration(page, tool, true)
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知11：保存时文件被占用这类失败，以前红字只有一句「保存配置没有成功」。
+// 现在和页顶红条一个说法：先说是什么原因，原来那句跟在后面；重置的确认框里也一样。
+test('configuration save failures name the cause like the page notice in the dialog and the reset confirmation', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.evaluate(() => {
+      window.v2Test.fail = 'saveConfig'
+      window.v2Test.failMessage = "EBUSY: resource busy or locked, rename 'C:\\Users\\fixture\\.codex\\config.toml.tmp' -> 'C:\\Users\\fixture\\.codex\\config.toml'"
+    })
+    await page.getByTestId('tool-save-config').click()
+    const dialog = page.getByTestId('config-dialog')
+    const alert = dialog.getByRole('alert').filter({ hasText: '保存配置没有成功' })
+    await alert.waitFor()
+    assert.equal(await alert.locator('strong').innerText(), '工具正在运行')
+    assert.match(await alert.innerText(), /文件被占用。先关掉正在使用这个工具的窗口，再重试。/)
+    assert.doesNotMatch(await alert.innerText(), /EBUSY|fixture|config\.toml/)
+    await openConfigAdvanced(page)
+    await page.getByTestId('tool-save-reset').click()
+    const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
+    await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
+    const resetAlert = reset.getByRole('alert').filter({ hasText: '保存配置没有成功' })
+    await resetAlert.waitFor()
+    assert.equal(await resetAlert.locator('strong').innerText(), '工具正在运行')
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await reset.getByRole('button', { name: '取消', exact: true }).click()
+    await reset.waitFor({ state: 'hidden' })
+    await page.getByTestId('tool-save-config').click()
+    await waitForSavedConfiguration(page)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 for (const tool of matchedToolIds) test(`read-only account matches retain account display after keeping the current key and changing the ${tool} model`, async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&keyOptions=1&cliDefaultModels=1')
   const provider = tool === 'codexDesktop' ? 'codex' : tool
@@ -5017,11 +5311,13 @@ test('explicit automatic key configuration shows the right group and adopts the 
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.disabled === false)
     assert.equal(await select.inputValue(), 'current')
     assert.equal(await select.locator('option[value="automatic"]').innerText(), '自动准备（推荐）')
+    // 打开时那把「当前」的 Key 会先读一次模型；改选自动准备以后，保存前不该再读、也不该写。
+    const opened = await page.evaluate(() => window.v2Test.calls.length)
     await select.selectOption('automatic')
     assert.equal(await page.getByTestId('tool-detect-models').count(), 0)
     assert.equal(await page.getByTestId('tool-key-summary').innerText(), '保存时自动准备好密钥，不用自己创建')
     const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
-    assert.equal(before.includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
+    assert.equal(before.slice(opened).includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
     await openConfigAdvanced(page)
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
     await page.getByTestId('tool-save-config').click()
@@ -5030,7 +5326,7 @@ test('explicit automatic key configuration shows the right group and adopts the 
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"]')?.value === 'current' && document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('coding-key'))
     assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
     assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key · sk-se••••9012/)
-    assert.equal(await page.getByTestId('tool-detect-models').isDisabled(), false)
+    await expect(page.getByTestId('tool-detect-models')).toBeEnabled()
     await clean(page)
   } finally { await page.close() }
 })
@@ -5097,6 +5393,8 @@ test('Chinese locale can be retried after a runtime failure without mistaking th
     await openToolConfiguration(page)
     await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
     await page.getByText('界面语言与文件夹权限', { exact: true }).click()
+    // Codex 的中文开关只在从星芒打开时拿得到：这段先说清从哪打开，再说重试。
+    await page.getByText('中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。', { exact: true }).waitFor()
     await page.getByRole('button', { name: '检查中文界面', exact: true }).click()
     await page.getByText('已保存的语言设置：简体中文。如果仍显示英文，可再次启用中文界面。', { exact: true }).waitFor()
     await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
@@ -5124,7 +5422,9 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     for (const button of [decline, page.getByTestId('codex-chinese-enable')]) {
       assert.equal(await button.evaluate((element) => element.classList.contains('xm-btn-primary')), false)
     }
-    assert.doesNotMatch(await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText(), /调试端口/)
+    const question = await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText()
+    assert.doesNotMatch(question, /调试端口/)
+    assert.match(question, /关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
 
     await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
@@ -6286,7 +6586,8 @@ test('tutorial actions land on the account tab or settings group the step descri
 })
 
 // 检查页网络项以前的「去处理」跳到「设置 → 网络」，那里没有能处理它的东西、「去检查」又跳回来，
-// 等于绕一圈（新手引导梳理 9-25 第 2 条）。现在这一行只给结论，不再带人去设置页兜圈。
+// 等于绕一圈（新手引导梳理 9-25 第 2 条）。说不出换线路救不救得回来的（这里不带原因），
+// 这一行照旧只给结论，不带人去设置页兜圈。
 test('the health network row no longer sends the user around through settings', async () => {
   const page = await open()
   try {
@@ -6300,6 +6601,72 @@ test('the health network row no longer sends the user around through settings', 
     await expect(page.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
+})
+
+// 第四十三批 B：「星芒 AI 网络」被当地网络切断（连接被切断、解析不出、等不到回话），登着星芒账号的人
+// 在这一行拿到「去处理」，一点就到「设置 → 网络」里「星芒账号线路」那一行、亮一下，选「备用直连」再重开。
+async function stubCutOffNetwork(page, siteId) {
+  await stubHealthReport(page, [{ code: 'XINGMANG_NETWORK', title: '星芒 AI 网络', state: 'fail',
+    summary: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
+    details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'refused', siteId } }])
+}
+
+test('a cut-off network row takes a signed-in account to its route setting', async () => {
+  const page = await open()
+  try {
+    await stubCutOffNetwork(page, 'solov')
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    const settings = page.getByTestId('page-settings')
+    await expect(settings.getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('settings-relay-route-solov')).toBeFocused()
+    await page.getByTestId('settings-relay-route-solov').selectOption('direct')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 线路被切断时开机恢复登录多半也联不上：登录还在，照样给。
+test('the cut-off network row offers the route setting while the startup restore still holds the login', async () => {
+  const page = await open('restoring=1')
+  try {
+    await stubCutOffNetwork(page, 'solov')
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 历史账号只有默认线路，访客没有账号：都不给，这一行照旧只有结论。开机恢复历史账号时，
+// 主进程查的还是默认那个站，那条线路不是这个账号的，也不给。
+test('a historical account or a guest gets no route fix on the cut-off network row', async () => {
+  const historical = await open('sub2api=1')
+  try {
+    await stubCutOffNetwork(historical, 'solov-api')
+    await historical.getByTestId('nav-health').click()
+    await expect(historical.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(historical.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await historical.evaluate(() => window.v2Test.errors), [])
+  } finally { await historical.close() }
+  const restoring = await open('restoring=solov-api')
+  try {
+    await stubCutOffNetwork(restoring, 'solov')
+    await restoring.getByTestId('nav-health').click()
+    await expect(restoring.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(restoring.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await restoring.evaluate(() => window.v2Test.errors), [])
+  } finally { await restoring.close() }
+  const guest = await open('guest=1&existing=1')
+  try {
+    await enterWorkspaceWithoutAccount(guest)
+    await stubCutOffNetwork(guest, 'solov')
+    await guest.getByTestId('nav-health').click()
+    await expect(guest.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(guest.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await guest.evaluate(() => window.v2Test.errors), [])
+  } finally { await guest.close() }
 })
 
 // 顶部搜索能搜到设置里的每一行，靠的是每一行都带着注册表里的 id。这里把注册表和

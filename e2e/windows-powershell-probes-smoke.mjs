@@ -37,7 +37,8 @@ const {
 const { parseWindowsProcessesJson } = compiled('codex-desktop')
 const { windowsExternalClientInventoryScript } = compiled('external-client-runtime')
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
-const { trustedCommandEnvironment } = compiled('command-runner')
+const { trustedCommandEnvironment, windowsSystemExecutable } = compiled('command-runner')
+const { applyWindowsRootHardening } = compiled('trusted-temp')
 const {
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAvailability,
@@ -103,6 +104,27 @@ async function runMockedCodexProcessProbe(scope) {
   return { calls, processIds: parseWindowsProcessesJson(lines.join('\n')).map((entry) => entry.processId) }
 }
 
+// Three uninstall roots holding one key each whose Get-ItemProperty fails the
+// way a malformed value makes it fail; the key's own GetValue answers with
+// `values`, a PowerShell body over $name. The current-user Claude AppX package
+// is there, so the verified result is seen to survive either way.
+function malformedUninstallKeyMocks(values) {
+  return String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem {
+  param([string]$LiteralPath)
+  $key = [pscustomobject]@{ PSPath='malformed-key'; PSChildName='nbi-nb-all-8.0.2.0' }
+  $key | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($name) ${values} }
+  $key
+}
+function Get-ItemProperty { param([string]$LiteralPath) throw [System.InvalidCastException]::new('Specified cast is not valid.') }
+function Get-Process { @() }
+function Get-AppxPackage {
+  [pscustomobject]@{ PackageFamilyName='Claude_pzs8sxrjxfjjc'; InstallLocation='C:\Program Files\WindowsApps\Claude_2.110.1.0_x64__pzs8sxrjxfjjc'; Version='2.110.1.0'; Publisher='CN="Anthropic, PBC", O="Anthropic, PBC", C=US' }
+}
+`
+}
+
 const externalClientSubjects = {
   workbuddy: 'CN=Tencent Technology (Shenzhen) Company Limited, O=Tencent Technology (Shenzhen) Company Limited, C=CN',
   opencode: 'CN="Anomaly Innovations, Inc https://anoma.ly/", O="Anomaly Innovations, Inc https://anoma.ly/", C=US',
@@ -162,6 +184,27 @@ function Get-AppxPackage {
     assert.equal(data.clients[0].tool, 'claudeDesktop')
     assert.equal(data.clients[0].version, '2.110.1.0')
     assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
+    // The mocked key cannot be read value by value either; why goes to the log, once per root.
+    assert.deepEqual(data.registryFailures.map((failure) => failure.reason), Array(3).fill('Access denied to unrelated registry item'))
+  }],
+  // An installer that writes a malformed value (an 8-byte REG_DWORD, say) makes
+  // Get-ItemProperty fail its whole key. The key is then read again for just the
+  // values the matching uses: here they read, so nothing is unreadable, and the
+  // check below has one of those values malformed too.
+  ['external client inventory reads past a value Get-ItemProperty cannot convert in an unrelated uninstall key', async () => {
+    const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' }") + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.equal(data.clients.length, 1)
+    assert.equal(data.clients[0].tool, 'claudeDesktop')
+    assert.deepEqual(data.errors, {})
+    assert.deepEqual(data.registryFailures, [])
+  }],
+  ['external client inventory still cannot tell when one of the values it reads is malformed as well', async () => {
+    const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' } elseif ($name -eq 'DisplayVersion') { [long]8 }") + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.equal(data.clients.length, 1)
+    assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
+    assert.deepEqual(data.registryFailures, Array(3).fill({ entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
   }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
@@ -452,6 +495,101 @@ for (const [name, limit, run] of trustedProbes) {
     assert.ok(elapsed < limit, `took ${elapsed}ms, the app gives it ${limit}ms`)
   }])
 }
+
+// The managed-root hardening, run for real once, under ProgramData where the
+// real root lives. A fresh folder there inherits ProgramData's Users
+// create/write ACE, so this reproduces the standard-user write window; the unit
+// tests pin the icacls ORDER, and this proves that on a real runner the window
+// is gone the instant the first step (harden the root) returns, before the
+// contents reset and setowner run, and that the contents reset's `\*` wildcard
+// and the whole sequence produce a tree only SYSTEM/Administrators can write.
+// Needs the elevated runner, as /setowner Administrators does.
+checks.push(['the managed-root hardening closes the standard-user write window under ProgramData', async () => {
+  const icacls = windowsSystemExecutable('icacls.exe', process.env, 'win32', machinePaths)
+  const trusted = new Set(['S-1-5-18', 'S-1-5-32-544'])
+  const usersWrite = new Set(['S-1-5-32-545', 'S-1-1-0', 'S-1-5-11'])
+  const rootWriters = (dir) => inspectWindowsDirectoryTreeAcl(dir, machinePaths)
+    .entries[0].allowWriteSids.map((sid) => String(sid).toUpperCase())
+  const root = path.join(machinePaths.programData, `xingmang-probe-smoke-harden-${process.pid}`)
+  fs.rmSync(root, { recursive: true, force: true })
+  try {
+    fs.mkdirSync(path.join(root, 'Cli', 'npm', 'node_modules'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'Cli', 'npm', 'node_modules', 'payload.js'), '// content')
+
+    // The window's premise: before hardening, a standard user can write the
+    // root. Asserted closed below only when this runner's ProgramData actually
+    // grants it (a locked-down ProgramData would not, and is not a failure).
+    const writableBefore = rootWriters(root).some((sid) => usersWrite.has(sid))
+    console.log(`info managed-root hardening: fresh ProgramData child writable by a standard user before = ${writableBefore}`)
+
+    let afterHarden = null
+    let step = 0
+    await applyWindowsRootHardening(root, async (args, timeoutMs) => {
+      await new Promise((resolve, reject) => {
+        const child = execFile(icacls, args, { env: trustedCommandEnvironment(), windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error) => error ? reject(error) : resolve())
+        child.stdin?.end()
+      })
+      step += 1
+      // Right after the harden step, before the reset and setowner run.
+      if (step === 1) afterHarden = rootWriters(root)
+    })
+    assert.ok(afterHarden, 'the harden step did not run')
+    for (const sid of afterHarden) assert.ok(trusted.has(sid), `${sid} can still write the root right after hardening`)
+    if (writableBefore) console.log('info managed-root hardening: the pre-harden write window is closed the instant the root is hardened')
+
+    const snapshot = inspectWindowsDirectoryTreeAcl(root, machinePaths)
+    assert.ok(snapshot.entries.length > 0)
+    for (const entry of snapshot.entries) {
+      assert.ok(trusted.has(String(entry.ownerSid).toUpperCase()), `${entry.ownerSid} owns a hardened item`)
+      assert.equal(entry.reparsePoint, false)
+      for (const sid of entry.allowWriteSids) {
+        assert.ok(trusted.has(String(sid).toUpperCase()), `${sid} can write a hardened item`)
+      }
+    }
+    return `${snapshot.entries.length} entr(ies), window reproduced=${writableBefore}, root locked after harden`
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}])
+
+function runFile(executable, argv) {
+  return new Promise((resolve, reject) => {
+    execFile(executable, argv, { encoding: 'utf8', windowsHide: true, timeout: probeBudgetMs }, (error, stdout, stderr) => {
+      if (error) reject(new Error(`${error.message}\n${stderr}`))
+      else resolve(stdout)
+    })
+  })
+}
+
+// The malformed value of the mocked checks above, in a real uninstall key under
+// this runner's HKCU for the length of the check: an 8-byte REG_DWORD, which
+// Windows stores as written and reg import takes in the hex(4) form regedit
+// exports it in. It shows the premise holds (Get-ItemProperty fails the key) and
+// that the shipped script, run as the app runs it, reads the key all the same.
+checks.push(['external client inventory reads a real uninstall key that holds a malformed DWORD', async () => {
+  const name = `XingmangProbeSmoke${process.pid}`
+  const key = `HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${name}`
+  const registryFile = path.join(scratch, 'malformed-uninstall-key.reg')
+  const contents = ['Windows Registry Editor Version 5.00', '', `[${key}]`, '"DisplayName"="Xingmang probe smoke"', '"NoModify"=hex(4):01,00,00,00,00,00,00,00', ''].join('\r\n')
+  fs.writeFileSync(registryFile, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(contents, 'utf16le')]))
+  const reg = path.join(machinePaths.system32, 'reg.exe')
+  try {
+    // Inside the try: an import that fails halfway may still have created the key.
+    await runFile(reg, ['import', registryFile])
+    const premise = (await runEncoded(String.raw`
+$ErrorActionPreference = 'Stop'
+try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catch { 'failed: ' + $_.Exception.Message }
+`)).trim()
+    assert.match(premise, /^failed: /, `Get-ItemProperty read the malformed key, so this check no longer stands for the customer's case: ${premise}`)
+    const script = windowsExternalClientInventoryScript()
+      + `\n'SMOKE:' + @($registry | Where-Object { [string]$_.PSChildName -eq '${name}' }).Count + ':' + @($registryFailures | Where-Object { $_.entry -eq '${name}' }).Count`
+    const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
+    assert.equal(output.split(/\r?\n/).find((line) => line.startsWith('SMOKE:')), 'SMOKE:1:0', output)
+    console.log(`info malformed uninstall key: Get-ItemProperty ${premise}; the inventory read it`)
+  } finally {
+    await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete the malformed uninstall key (left behind, unless the import never created it): ${error.message}`))
+  }
+}])
 
 // The CLI terminal itself stays closed, but the step of its launch that reads
 // the folder's name runs here. The broker's Start-Process resolves

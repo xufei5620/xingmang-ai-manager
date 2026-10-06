@@ -20,6 +20,7 @@ import {
   parsePendingUpdateRecord,
   quitInstallPrompt,
   resolveDownloadedVersionToRecord,
+  resolveRecordToWriteAtLaunch,
   undoQuitInstallAttempt,
   type LaunchInstallInput,
   type LaunchInstallModeInput,
@@ -88,7 +89,7 @@ describe('decideLaunchInstall', () => {
 
 describe('resolveLaunchInstallMode', () => {
   function modeInput(patch: Partial<LaunchInstallModeInput> = {}): LaunchInstallModeInput {
-    return { launchedAtLogin: true, windowShown: false, accelerationActive: false, unattended: true, ...patch }
+    return { platform: 'darwin', launchedAtLogin: true, windowShown: false, accelerationActive: false, unattended: true, ...patch }
   }
 
   it('keeps the announced install for a normal launch or once the window has been shown', () => {
@@ -96,6 +97,8 @@ describe('resolveLaunchInstallMode', () => {
     expect(resolveLaunchInstallMode(modeInput({ launchedAtLogin: false, accelerationActive: true, unattended: false }))).toBe('notice')
     expect(resolveLaunchInstallMode(modeInput({ windowShown: true }))).toBe('notice')
     expect(resolveLaunchInstallMode(modeInput({ windowShown: true, unattended: false }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', launchedAtLogin: false, unattended: false }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', windowShown: true, unattended: false }))).toBe('notice')
   })
 
   it('installs in the background after a login launch whose window was never opened', () => {
@@ -105,12 +108,18 @@ describe('resolveLaunchInstallMode', () => {
   it('leaves the version for the quit when installing would pop up a prompt or cut off acceleration', () => {
     expect(resolveLaunchInstallMode(modeInput({ unattended: false }))).toBe('skip')
     expect(resolveLaunchInstallMode(modeInput({ accelerationActive: true }))).toBe('skip')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'linux', unattended: false }))).toBe('skip')
+  })
+
+  it('waits on Windows for the first time the window is opened, since every install asks for permission there', () => {
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', unattended: false }))).toBe('window')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', unattended: false, accelerationActive: true }))).toBe('window')
   })
 })
 
 describe('shouldStillInstallAtLaunch', () => {
   function recheck(patch: Partial<LaunchInstallRecheckInput> = {}): LaunchInstallRecheckInput {
-    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, background: false, windowShown: false, accelerationActive: false, ...patch }
+    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, mode: 'notice', windowShown: false, accelerationActive: false, ...patch }
   }
 
   it('goes ahead when nothing changed while the notice was up', () => {
@@ -119,16 +128,23 @@ describe('shouldStillInstallAtLaunch', () => {
   })
 
   it('backs off when auto-update was turned off, a tool install started or the version is no longer installable', () => {
-    expect(shouldStillInstallAtLaunch(recheck({ autoUpdate: false }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ busy: true }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+    for (const mode of ['notice', 'background', 'window'] as const) {
+      expect(shouldStillInstallAtLaunch(recheck({ mode, autoUpdate: false }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, busy: true }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+    }
   })
 
   it('backs off a background install once the window was opened or acceleration was turned on', () => {
-    expect(shouldStillInstallAtLaunch(recheck({ background: true }))).toBe(true)
-    expect(shouldStillInstallAtLaunch(recheck({ background: true, windowShown: true }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ background: true, accelerationActive: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'background' }))).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'background', windowShown: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'background', accelerationActive: true }))).toBe(false)
+  })
+
+  it('installs on the first window open unless acceleration is connected by then', () => {
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'window', windowShown: true }))).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'window', windowShown: true, accelerationActive: true }))).toBe(false)
   })
 })
 
@@ -222,6 +238,51 @@ describe('resolveDownloadedVersionToRecord', () => {
     expect(resolveDownloadedVersionToRecord(snapshot(), { ...emptyPendingUpdateRecord })).toBe('0.2.12')
     expect(resolveDownloadedVersionToRecord(snapshot(), { downloadedVersion: '0.2.12', attemptedVersion: null })).toBeNull()
     expect(resolveDownloadedVersionToRecord(snapshot({ phase: 'available' }), { ...emptyPendingUpdateRecord })).toBeNull()
+  })
+})
+
+describe('resolveRecordToWriteAtLaunch', () => {
+  const backgroundInstall = { version: '0.2.12', startedAt: 1_760_000_000_000 }
+
+  it('forgets the version that is now running, so rolling back does not report it as a failed install', () => {
+    const installedOnQuit = { downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12', backgroundInstall: null }
+    const settled = resolveRecordToWriteAtLaunch(installedOnQuit, '0.2.12')
+    expect(settled).toEqual(emptyPendingUpdateRecord)
+    // Back on 0.2.11 the same version is downloaded again: no failure message,
+    // and the next quit installs it the way auto-update does for any new version.
+    const afterRollback = settled ?? installedOnQuit
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', afterRollback)).toBeNull()
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: afterRollback })).toBe('install')
+    expect(decideLaunchInstall(input({ recordAtLaunch: afterRollback }))).toBeNull()
+    // Forgetting only the attempt would put a still-cached package straight back
+    // at the first launch after rolling back.
+    expect(decideLaunchInstall(input({ recordAtLaunch: { ...installedOnQuit, quitAttemptedVersion: null } }))).toBe('0.2.12')
+    // Kept as it was, the old version took it for a failed install and stopped installing it.
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', installedOnQuit)).toBe('0.2.12')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: installedOnQuit })).toBe('ask')
+  })
+
+  it('also forgets a version installed at launch, along with the one-shot background install', () => {
+    expect(resolveRecordToWriteAtLaunch({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', backgroundInstall }, '0.2.12')).toEqual(emptyPendingUpdateRecord)
+    expect(resolveRecordToWriteAtLaunch({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' }, '0.2.12')).toEqual(emptyPendingUpdateRecord)
+  })
+
+  it('keeps a newer version that did not install, so the failure is still reported once', () => {
+    const failed = { downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', quitAttemptedVersion: '0.2.12', backgroundInstall: null }
+    expect(resolveRecordToWriteAtLaunch(failed, '0.2.11')).toBeNull()
+    expect(resolveRecordToWriteAtLaunch({ ...failed, backgroundInstall }, '0.2.11')).toEqual(failed)
+  })
+
+  it('keeps an older version a withdrawn release failed to go back to, so the consent window does not return on every quit', () => {
+    const failedGoingBack = { downloadedVersion: '0.2.11', attemptedVersion: null, quitAttemptedVersion: '0.2.11', backgroundInstall: null }
+    expect(resolveRecordToWriteAtLaunch(failedGoingBack, '0.2.12')).toBeNull()
+    expect(resolvePreviousAutoInstallFailure('0.2.11', '0.2.12', failedGoingBack)).toBe('0.2.11')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.11', record: failedGoingBack })).toBe('ask')
+  })
+
+  it('leaves a record with nothing to clear alone', () => {
+    expect(resolveRecordToWriteAtLaunch({ ...emptyPendingUpdateRecord }, '0.2.12')).toBeNull()
+    expect(resolveRecordToWriteAtLaunch({ downloadedVersion: '0.2.13', attemptedVersion: null }, '0.2.12')).toBeNull()
   })
 })
 
@@ -349,6 +410,25 @@ describe('auto install wording', () => {
       previousAutoInstallFailureMessage('darwin'),
     ]
     for (const text of texts) expect(text).not.toMatch(/UAC|NSIS|installer|updater|管理员权限|用户账户控制/i)
+  })
+})
+
+describe('Windows account outside the administrators group', () => {
+  const record = { downloadedVersion: '0.2.12', attemptedVersion: null }
+
+  it('never installs at launch, so the first window open after a login launch does not install either', () => {
+    expect(decideLaunchInstall(input({ standardAccount: true }))).toBeNull()
+    // 管理员账号、没问出来的照旧装。
+    expect(decideLaunchInstall(input({ standardAccount: false }))).toBe('0.2.12')
+    expect(decideLaunchInstall(input())).toBe('0.2.12')
+  })
+
+  it('quits without installing or asking when auto-update is on, and asks as before when it is off', () => {
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, standardAccount: true })).toBe('leave')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: { ...record, quitAttemptedVersion: '0.2.12' }, standardAccount: true })).toBe('leave')
+    expect(decideQuitInstall({ autoUpdate: false, version: '0.2.12', record, standardAccount: true })).toBe('ask')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, standardAccount: true, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, standardAccount: false })).toBe('install')
   })
 })
 

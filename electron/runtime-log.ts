@@ -138,11 +138,20 @@ function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
         .slice(0, MAX_DETAIL_ITEMS)
         .map(([name, entry]) => [name, sanitizeValue(entry, depth + 1, name)]),
     )
+    // `new Error(message, { cause })` defines cause as non-enumerable, so the
+    // entries above never reach it, and a wrapped failure would be logged as
+    // the translated outer sentence only: the errno, exit code and stderr that
+    // explain it live on the cause. An error that assigns `this.cause` itself
+    // (RealmAccountError) already has it among the entries.
+    const cause = value.cause === undefined || 'cause' in metadata
+      ? {}
+      : { cause: sanitizeValue(value.cause, depth + 1, 'cause') }
     return {
       ...metadata,
       name: safeText(value.name),
       message: safeText(value.message),
       stack: value.stack ? safeText(value.stack) : null,
+      ...cause,
     }
   }
   if (Array.isArray(value)) {

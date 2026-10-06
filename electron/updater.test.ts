@@ -180,6 +180,7 @@ describe('updater service', () => {
       error: {
         code: 'STARTUP_UPDATE_TIMEOUT',
         message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+        automatic: true,
       },
     })
     expect(client.downloadUpdate).not.toHaveBeenCalled()
@@ -1510,6 +1511,22 @@ describe('downloaded package digest verification', () => {
     service.dispose()
   })
 
+  it('marks a check nobody asked for so the home bubble can stay quiet', async () => {
+    const offline = () => Object.assign(new Error('net::ERR_INTERNET_DISCONNECTED'), { code: 'ERR_INTERNET_DISCONNECTED' })
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(offline()).mockRejectedValueOnce(offline()).mockRejectedValueOnce(offline())
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+
+    // 每 3 小时那次和开机那次都不是客户点的。
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ failedStep: 'check', error: { code: 'ERR_INTERNET_DISCONNECTED', automatic: true } })
+    await expect(service.check()).resolves.toMatchObject({ error: { automatic: true } })
+    // 客户自己点「检查更新」的照旧报给首页。
+    const manual = await service.check({ manual: true })
+    expect(manual).toMatchObject({ failedStep: 'check', error: { code: 'ERR_INTERNET_DISCONNECTED' } })
+    expect(manual.error?.automatic).toBeUndefined()
+    service.dispose()
+  })
+
   it('reports a failed download as the download step', async () => {
     const client = new FakeUpdater()
     client.downloadUpdate.mockRejectedValueOnce(
@@ -1834,7 +1851,8 @@ describe('plain-language install failures', () => {
     const raw = "ENOENT: no such file or directory, open 'C:\\\\pending\\\\setup.exe'"
     client.checkForUpdates.mockRejectedValueOnce(Object.assign(new Error(raw), { code: 'ENOENT' }))
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32' })
-    await service.check()
+    // 客户点的那次，error 上不带 automatic，下面才能整个对上。
+    await service.check({ manual: true })
     expect(service.getState().error).toEqual({
       code: 'ENOENT',
       message: '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。',
@@ -3276,6 +3294,26 @@ describe('launch install notice', () => {
     service.setLaunchInstallNotice(notice)
     client.emit('checking-for-update')
     expect(service.getState().launchInstallNotice).toBeNull()
+    service.dispose()
+  })
+})
+
+describe('Windows account outside the administrators group', () => {
+  it('leaves the field out until the host finds a standard account, then keeps it across checks', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const seen: Array<boolean | undefined> = []
+    service.subscribe((state) => { seen.push(state.installNeedsAdminPassword) })
+    expect('installNeedsAdminPassword' in service.getState()).toBe(false)
+    service.setInstallNeedsAdminPassword(false)
+    expect(seen).toEqual([])
+
+    service.setInstallNeedsAdminPassword(true)
+    service.setInstallNeedsAdminPassword(true)
+    expect(seen).toEqual([true])
+    client.emit('checking-for-update')
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', installNeedsAdminPassword: true })
     service.dispose()
   })
 })

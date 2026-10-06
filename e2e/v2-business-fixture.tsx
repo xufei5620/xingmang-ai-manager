@@ -429,6 +429,10 @@ const apiMethods = {
     profile.displayName = input.displayName
     return { updated: true as const }
   },
+  transferAccountAffiliateQuota: async (input: { quota: number }) => {
+    record('transfer-affiliate-quota', input)
+    profile.affQuota -= input.quota
+  },
   getAccountBalance: async () => { record('get-balance'); return { ...balance, ...(query.has('sub2apiReliability') ? { quotaPerUnit: 1 } : {}) } },
   listSavedAccounts: async () => [
     {
@@ -720,6 +724,15 @@ const apiMethods = {
           { period: 'monthly' as const, limit: null, used: 12, limitState: 'unknown' as const, windowStartedAt: null },
         ],
       }],
+    }
+    // 两个账号后台报回来的各种订阅状态，外加一个界面不认识的。
+    if (query.has('subscriptionStates')) return {
+      billingPreference: 'subscription_first' as const,
+      activeSubscriptions: [],
+      allSubscriptions: ([['月卡一号', 'active'], ['月卡二号', 'expired'], ['月卡三号', 'cancelled'], ['月卡四号', 'suspended'], ['月卡五号', 'paused']] as const).map(([groupName, status], index) => ({
+        id: 10 + index, planId: 1, groupName, status, source: 'order', amountTotal: 1000, amountUsed: 100,
+        startedAt: time, endsAt: '2026-10-01T00:00:00Z', nextResetAt: null,
+      })),
     }
     return {
     billingPreference: 'subscription_first' as const,

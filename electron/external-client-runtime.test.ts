@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { CommandRunnerError, runCommand, type CommandSpec, type CommandErrorDetails } from './command-runner'
+import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import type { ExternalClientInstallProgress } from './external-client-contract'
 import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
@@ -86,6 +86,64 @@ describe('external desktop client lifecycle', () => {
     expect(statuses[0].detectionError).toContain('部分软件安装记录')
     await expect(f.runtime.install('workbuddy')).rejects.toThrow('不能确认')
     expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
+  })
+
+  // 第四十四批 A：首页只说「部分软件安装记录无法读取」，是哪几条、为什么只进运行日志。
+  it('logs which uninstall keys could not be read, once for each distinct list', async () => {
+    const registryIncomplete = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
+    const castFailure = { entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }
+    const onRegistryIncomplete = vi.fn<NonNullable<ExternalClientRuntimeOptions['onRegistryIncomplete']>>()
+    let failures: unknown = [castFailure]
+    const f = fixture({ onRegistryIncomplete })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify({
+      clients: [], errors: { workbuddy: registryIncomplete, claudeDesktop: registryIncomplete, opencode: registryIncomplete },
+      ...(failures === undefined ? {} : { registryFailures: failures }),
+    })))
+    expect((await f.runtime.scan())[0].detectionError).toBe(registryIncomplete)
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete.mock.calls).toEqual([[[castFailure]]])
+    // Another list is logged again, flattened to one line.
+    const root = 'Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+    const rootFailures = [{ entry: root, reason: 'Requested registry\r\naccess is not allowed.' }]
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenLastCalledWith([{ entry: root, reason: 'Requested registry access is not allowed.' }])
+    // A scan that read everything, or printed nothing about it, forgets the last
+    // list: the very same list coming back afterwards is logged again.
+    failures = []
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(2)
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(3)
+    failures = undefined
+    await f.runtime.scan({ force: true })
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(4)
+  })
+
+  it('passes at most ten unreadable keys on, each bounded, whatever the script printed', async () => {
+    const onRegistryIncomplete = vi.fn<NonNullable<ExternalClientRuntimeOptions['onRegistryIncomplete']>>()
+    const f = fixture({ onRegistryIncomplete })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify({
+      clients: [candidate('workbuddy')], errors: {},
+      registryFailures: Array.from({ length: 12 }, (_, index) => ({ entry: `entry-${index}`, reason: 'x'.repeat(2_000) })),
+    })))
+    expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, detectionError: null })
+    const logged = onRegistryIncomplete.mock.calls[0][0]
+    expect(logged).toHaveLength(10)
+    expect(logged[0]).toEqual({ entry: 'entry-0', reason: 'x'.repeat(500) })
+  })
+
+  it('reads just the matched values again from an uninstall key Get-ItemProperty cannot convert', () => {
+    // The Windows packaging job runs this against a real key with a malformed
+    // value (e2e/windows-powershell-probes-smoke.mjs); here only what it reads.
+    const script = windowsExternalClientInventoryScript()
+    expect(script).toContain("foreach ($name in @('DisplayName', 'InstallLocation', 'DisplayIcon', 'DisplayVersion'))")
+    expect(script).toContain('try { $registry.Add((Read-UninstallValues $key)) }')
+    expect(script).toContain('$registryFailures.Count -lt 10')
+    expect(script).toContain('registryFailures=@($registryFailures.ToArray())')
   })
 
   it('detects signed installed desktop applications and current-user Claude Store without executing their binaries', async () => {
@@ -284,6 +342,29 @@ describe('external desktop client lifecycle', () => {
     expect(f.execute).toHaveBeenCalledTimes(3)
   })
 
+  // 第四十三批 A：换线路动客户端配置之前看它开没开，要的是这次调用之后才开始的那一轮。
+  it('answers a fresh scan with an inventory taken after the call, never the cached or in-flight one', async () => {
+    const f = fixture()
+    f.setInventory([candidate('opencode')])
+    await f.runtime.scan()
+    f.setInventory([candidate('opencode', { running: true })])
+    expect((await f.runtime.scan())[2].running).toBe(false)
+    expect((await f.runtime.scan({ fresh: true }))[2].running).toBe(true)
+    expect(f.execute).toHaveBeenCalledTimes(2)
+
+    // 盘点已经在跑，客户这时才把 OpenCode 关掉：正在跑的那次读的是关之前的，fresh 等它跑完再盘点一轮。
+    const gate = deferred<ReturnType<typeof commandResult>>()
+    f.execute.mockImplementationOnce(() => gate.promise)
+    const inFlight = f.runtime.scan({ force: true })
+    f.setInventory([candidate('opencode')])
+    const fresh = f.runtime.scan({ fresh: true })
+    expect(f.runtime.scan({ force: true })).toBe(inFlight)
+    gate.resolve(commandResult({ executable: powershell, argv: [] }, JSON.stringify({ clients: [candidate('opencode', { running: true })], errors: {} })))
+    expect((await inFlight)[2].running).toBe(true)
+    expect((await fresh)[2].running).toBe(false)
+    expect(f.execute).toHaveBeenCalledTimes(4)
+  })
+
   it('does not cache a scan that could not tell whether a client is installed', async () => {
     const f = fixture()
     f.execute.mockRejectedValueOnce(new Error('PowerShell probe timed out'))
@@ -429,6 +510,49 @@ describe('external desktop client lifecycle', () => {
     expect(progress.some((event) => event.percent === 42)).toBe(true)
     expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
     expect(progress.some((event) => event.phase === 'error')).toBe(false)
+  })
+
+  // 第四十四批 B：winget 自己的软件源坏了（源数据没有、对不上）也发生在动手之前，同连不上一样换腾讯官方。
+  it.each([0x8a15000f, 0x8a15000f | 0, 0x8a15003f])('recovers WorkBuddy through its official installer when the winget source itself is broken (%s)', async (exitCode) => {
+    const f = fixture()
+    const progress: ExternalClientInstallProgress[] = []
+    f.execute.mockImplementation(async (spec) => {
+      if (spec.executable === winget) {
+        throw wingetError({
+          exitCode,
+          stdout: "Failed when opening source(s); try the 'source reset' command if the problem persists.\r\nAn unexpected error occurred while executing the command:\r\n0x8a15000f : Data required by the source is missing\r\n",
+        })
+      }
+      return commandResult(spec, JSON.stringify({ clients: f.officialInstaller.mock.calls.length ? [candidate('workbuddy')] : [], errors: {} }))
+    })
+    f.officialInstaller.mockResolvedValue(undefined)
+    await expect(f.runtime.install('workbuddy', (event) => progress.push(event))).resolves.toMatchObject({ installed: true })
+    expect(f.officialInstaller).toHaveBeenCalledOnce()
+    expect(progress.map((event) => event.message)).toContain('连不上微软的软件下载源，正在切换到腾讯官方下载')
+    expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
+  })
+
+  it('leaves WorkBuddy to winget once its installer started, even when winget then reports missing source data', async () => {
+    const f = fixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) {
+        options?.onOutput?.({ stream: 'stdout', text: 'Starting package install...' })
+        throw wingetError({ exitCode: 0x8a15000f })
+      }
+      return commandResult(spec, '{"clients":[],"errors":{}}')
+    })
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('安装没有完成（错误码 0x8a15000f）')
+    expect(f.officialInstaller).not.toHaveBeenCalled()
+  })
+
+  it('still reports a broken winget source for OpenCode, which has no other route', async () => {
+    const f = fixture()
+    f.execute.mockImplementation(async (spec) => {
+      if (spec.executable === winget) throw wingetError({ exitCode: 0x8a15000f })
+      return commandResult(spec, '{"clients":[],"errors":{}}')
+    })
+    await expect(f.runtime.install('opencode')).rejects.toThrow('安装没有完成（错误码 0x8a15000f），请查看运行日志中的安装器输出。')
+    expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 
   it('uses the official WorkBuddy installer when trusted winget is unavailable', async () => {
@@ -1070,5 +1194,75 @@ describe('macOS external client signature checks', () => {
     f.execute.mockClear()
     await f.runtime.scan({ force: true })
     for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+
+  // 第四十四批 D：苹果明说不放行时，首页那一行说的和 Windows 上签名不对时同一句；苹果的原话只进运行日志。
+  const signatureMismatch = '客户端数字签名无效或签名发布者与官方发布者不一致'
+  /** runCommand 报一条外部命令没跑成时抛的就是它；stderr 是命令自己写的原话。 */
+  function commandFailure(executable: string, code: CommandErrorCode, exitCode: number | null, stderr = '') {
+    const name = executable.split('/').pop()
+    return new CommandRunnerError(code === 'TIMED_OUT' ? `命令执行时间过长，已中止：${name}` : `命令执行失败（退出码 ${exitCode}）：${name}`, {
+      code, executable, argv: [], exitCode, signal: null, stdout: '', stderr, outputBytes: stderr.length, maxOutputBytes: 262_144, durationMs: 5,
+    })
+  }
+  /** 三家都装着的 Mac，其中一个包的某道核对按 fail() 给的失败；fail(null) 恢复放行。 */
+  function oneRefused(bundle: string) {
+    const onMacVerificationFailed = vi.fn<NonNullable<ExternalClientRuntimeOptions['onMacVerificationFailed']>>()
+    const f = allInstalled({ onMacVerificationFailed })
+    const allowed = f.execute.getMockImplementation()!
+    let failure: CommandRunnerError | null = null
+    f.execute.mockImplementation(async (spec, options) => {
+      if (failure && spec.executable === failure.executable && spec.argv.includes(bundle)) throw failure
+      return allowed(spec, options)
+    })
+    return { ...f, onMacVerificationFailed, fail(next: CommandRunnerError | null) { failure = next } }
+  }
+
+  it('says the signature sentence when Gatekeeper refuses a client and logs what spctl said, once', async () => {
+    const f = oneRefused(bundles.claudeDesktop)
+    const said = '/Applications/Claude.app: rejected\nsource=Unnotarized Developer ID'
+    f.fail(commandFailure('/usr/sbin/spctl', 'EXIT_NON_ZERO', 3, `${said}\n`))
+    const statuses = await f.runtime.scan()
+    expect(statuses[1]).toMatchObject({ tool: 'claudeDesktop', installed: false, launchSupported: false, detectionError: signatureMismatch })
+    expect(statuses[0]).toMatchObject({ installed: true, detectionError: null })
+    expect(f.onMacVerificationFailed.mock.calls).toEqual([[
+      { tool: 'claudeDesktop', path: bundles.claudeDesktop, command: 'spctl', code: 'EXIT_NON_ZERO', exitCode: 3, output: said },
+    ]])
+    // Rescanning and opening meet the same refusal: the same sentence, no second log line.
+    expect((await f.runtime.scan({ force: true }))[1].detectionError).toBe(signatureMismatch)
+    await expect(f.runtime.launch('claudeDesktop')).rejects.toThrow(signatureMismatch)
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/usr/bin/open')).toBe(false)
+    expect(f.onMacVerificationFailed).toHaveBeenCalledOnce()
+    // Once it passes, a later refusal is news again.
+    f.fail(null)
+    expect((await f.runtime.scan({ force: true }))[1].installed).toBe(true)
+    f.advance(5 * 60_000)
+    f.fail(commandFailure('/usr/sbin/spctl', 'EXIT_NON_ZERO', 3, `${said}\n`))
+    expect((await f.runtime.scan({ force: true }))[1].detectionError).toBe(signatureMismatch)
+    expect(f.onMacVerificationFailed).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    [1, '/Applications/WorkBuddy.app: a sealed resource is missing or invalid'],
+    [3, 'test-requirement: code failed to satisfy specified code requirement(s)'],
+  ] as const)('says the same sentence when codesign refuses WorkBuddy with exit code %s', async (exitCode, said) => {
+    const f = oneRefused(bundles.workbuddy)
+    f.fail(commandFailure('/usr/bin/codesign', 'EXIT_NON_ZERO', exitCode, said))
+    expect((await f.runtime.scan())[0]).toMatchObject({ tool: 'workbuddy', installed: false, detectionError: signatureMismatch })
+    expect(f.onMacVerificationFailed).toHaveBeenCalledExactlyOnceWith({
+      tool: 'workbuddy', path: bundles.workbuddy, command: 'codesign', code: 'EXIT_NON_ZERO', exitCode, output: said,
+    })
+  })
+
+  it.each([
+    ['a timeout', commandFailure('/usr/sbin/spctl', 'TIMED_OUT', null), '命令执行时间过长，已中止：spctl'],
+    ['any other exit code', commandFailure('/usr/sbin/spctl', 'EXIT_NON_ZERO', 1, 'spctl: internal error'), '命令执行失败（退出码 1）：spctl'],
+  ] as const)('keeps %s as it was on screen, and still logs it', async (_case, failure, shown) => {
+    const f = oneRefused(bundles.opencode)
+    f.fail(failure)
+    expect((await f.runtime.scan())[2]).toMatchObject({ tool: 'opencode', installed: false, detectionError: shown })
+    expect(f.onMacVerificationFailed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      tool: 'opencode', command: 'spctl', code: failure.code, exitCode: failure.exitCode, output: failure.stderr,
+    }))
   })
 })

@@ -80,6 +80,7 @@ import {
   settingsGroups,
   settingsItemLabel,
   skinOptions,
+  standardAccountUpdateNotice,
   updateFailureLabel,
   updateCardTitle,
   updateDiskShortfallText,
@@ -100,9 +101,10 @@ import { ToolStatusMeta, toolStatusView } from './features/tools/ToolStatusMeta'
 import { installProgressLabel } from './features/tools/install-stage-text'
 import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
-import { accountScope, sessionRestoring } from './account-context'
+import { accountScope, sessionRestoring, signedInSiteId } from './account-context'
 import { AppUninstallRow } from './features/app/AppUninstall'
 import { RelayRouteSettings } from './features/app/RelayRouteSettings'
+import { connectionRouteOptions, connectionRouteSettings } from './registry/connection-routes'
 import { createSettingsQueue } from './features/app/settings-queue'
 export { createSettingsQueue } from './features/app/settings-queue'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
@@ -148,6 +150,7 @@ import {
 import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
 import type {
+  AccountSessionState,
   AppSettingsV2Update,
   DataTransferImportPreview,
   DiagnosticFixKind,
@@ -276,11 +279,32 @@ export function withElevationNotice(lead: string, notice: string | null): string
 }
 
 /**
+ * 「星芒 AI 网络」连不上的几种原因里，换一条线路有可能救回来的：解析不出地址、连接被切断、
+ * 一直等不到回话，当地网络切断某一条线路时就是这几种样子。没网、代理软件、证书、上网认证、
+ * 服务维护，换线路救不了。
+ */
+const reroutableNetworkReasons: readonly string[] = ['dns', 'refused', 'timeout']
+
+/**
+ * 「星芒 AI 网络」的「去处理」翻到「设置 → 网络」里哪一行线路（第四十三批 B）。三样都对上才给：
+ * 查的就是登着的这个账号的站（访客不给；开机恢复历史账号时查的是默认那个站，也不给）、
+ * 原因换线路有可能救回来、这个站不止一条线路（历史账号只有默认线路，那一行是灰的）。
+ */
+function networkRouteSetting(details: Diagnostic['details'], accountSiteId: string | null): string | null {
+  const reason = details?.reason
+  if (!accountSiteId || details?.siteId !== accountSiteId) return null
+  if (typeof reason !== 'string' || !reroutableNetworkReasons.includes(reason)) return null
+  if (connectionRouteOptions(accountSiteId).length < 2) return null
+  return connectionRouteSettings.find((route) => route.siteId === accountSiteId)?.id ?? null
+}
+
+/**
  * 「去处理」要落在真能处理这件事的地方。落不到的（磁盘满、系统版本、运行权限、
  * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
  * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
+ * accountSiteId 是登着的那个账号所在的站（signedInSiteId），只有「星芒 AI 网络」用得上；缺省 = 访客。
  */
-export function diagnosticTarget(code: string, details?: Diagnostic['details']): V2Page | null {
+export function diagnosticTarget(code: string, details?: Diagnostic['details'], accountSiteId: string | null = null): V2Page | null {
   // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理：去「安装卸载」换新版。
   // 电脑自己也不认、以管理员身份打开这两种，结论里已经说了怎么办。
   if (code === 'CERTIFICATE_TRUST') return details?.verdict === 'outdatedNode' ? 'maintenance' : null
@@ -289,9 +313,11 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details']):
   // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
   if (code === 'ACCELERATION_BUNDLE') return 'acceleration'
   // 网络和代理软件这两项以前跳「设置 → 网络」，那一组里没有能处理它们的东西，
-  // 「去检查」又跳回这一页，等于绕一圈（新手引导梳理 9-25 第 2 条）。结论里已经
-  // 写了该怎么做，不再给「去处理」。
-  if (code === 'XINGMANG_NETWORK' || code === 'CLASH_VERGE_TUN') return null
+  // 「去检查」又跳回这一页，等于绕一圈（新手引导梳理 9-25 第 2 条），就拿掉了。
+  // #872 以后那一组最上面就是「星芒账号线路」：换一条线路有可能救回来的那几种连不上，
+  // 「去处理」直接翻到那一行。别的情况和代理软件那一项，结论里已经写了该怎么做。
+  if (code === 'XINGMANG_NETWORK') return networkRouteSetting(details, accountSiteId) ? 'settings' : null
+  if (code === 'CLASH_VERGE_TUN') return null
   // 电脑里的代理设置在设置页没有能处理它的东西；能清的那种在行里直接给「清掉这条旧设置」。
   if (code === 'PROXY_ENVIRONMENT') return null
   // 能删的（Windows 上当前账号那一份）在行里直接给「删掉这几项设置」。
@@ -310,8 +336,13 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details']):
   return null
 }
 
-export function diagnosticHasFix(code: string, details?: Diagnostic['details']): boolean {
-  return diagnosticTarget(code, details) !== null
+export function diagnosticHasFix(code: string, details?: Diagnostic['details'], accountSiteId: string | null = null): boolean {
+  return diagnosticTarget(code, details, accountSiteId) !== null
+}
+
+/** 「去处理」落到那一页里的哪一行；缺省 = 只跳页。 */
+export function diagnosticSection(code: string, details?: Diagnostic['details'], accountSiteId: string | null = null): string | undefined {
+  return code === 'XINGMANG_NETWORK' ? networkRouteSetting(details, accountSiteId) ?? undefined : undefined
 }
 
 /** 检查结果按轻重排：待处理在前，然后需留意，正常的在最后；同一档里照原来的次序。 */
@@ -426,7 +457,12 @@ export function HealthPage({
   onRewriteKey,
   rewritableKeys,
   active,
-}: { api: V2Bridge } & BusinessActions) {
+  accountSession,
+}: {
+  api: V2Bridge
+  /** 外壳手上的登录状态：「星芒 AI 网络」给不给「去处理」看它（networkRouteSetting）；缺省 = 按访客算，不给（旧行为）。 */
+  accountSession?: AccountSessionState
+} & BusinessActions) {
   // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
   const load = useCallback(() => api.runDiagnostics().then((report) => {
     publishDiagnosticsCounts(report.counts)
@@ -434,6 +470,7 @@ export function HealthPage({
   }), [api])
   const resource = useResource(load)
   const pageRef = useRef<HTMLElement>(null)
+  const accountSiteId = accountSession ? signedInSiteId(accountSession) : null
   const diagnostics = sortDiagnosticsBySeverity(resource.data?.items ?? [])
   const problems = diagnostics.filter((item) => item.state !== 'pass')
   const passing = diagnostics.filter((item) => item.state === 'pass')
@@ -615,9 +652,9 @@ export function HealthPage({
       openConfig(provider)
       return
     }
-    const target = diagnosticTarget(item.code, item.details)
+    const target = diagnosticTarget(item.code, item.details, accountSiteId)
     if (!target) return
-    navigate?.(target)
+    navigate?.(target, diagnosticSection(item.code, item.details, accountSiteId))
   }
   const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
   const connectionDetails = connections?.find((row) => row.id === connectionDetailsId) ?? null
@@ -705,7 +742,7 @@ export function HealthPage({
               打开文件夹
             </Button>
           )}
-          {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
+          {item.state !== 'pass' && diagnosticHasFix(item.code, item.details, accountSiteId) && (
             <Button
               size="sm"
               icon={Wrench}
@@ -1506,7 +1543,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod, update?.installNeedsAdminPassword)} />
       <ResultNotice
         error={resource.error || settingsError || operation.error}
         detail={resource.error ? resource.detail : settingsError ? undefined : operation.detail}
@@ -1538,6 +1575,15 @@ export function UpdatesPage({
               testId="updates-current-withdrawn"
             />
           )}
+          {/* 账号不是管理员的 Windows 电脑：下好的新版本不自动装，就在「重启安装」旁边说清要谁来点。 */}
+          {update?.phase === 'downloaded' && update.installNeedsAdminPassword && (
+            <Notice
+              tone="warn"
+              title={standardAccountUpdateNotice.title}
+              body={standardAccountUpdateNotice.body}
+              testId="updates-admin-password"
+            />
+          )}
           {update?.unsignedChannel && !update.autoUpdateSupported && (
             <ListRow
               title="更新方式"
@@ -1558,7 +1604,7 @@ export function UpdatesPage({
           {update?.autoUpdateSupported && (
             <ListRow
               title={settingsItemLabel('auto-update')}
-              desc={autoUpdateSettingDescription(update.installMethod)}
+              desc={autoUpdateSettingDescription(update.installMethod, update.installNeedsAdminPassword)}
               actions={settingSwitch(
                 '自动更新',
                 settings ? autoUpdateSetting : undefined,
@@ -1714,7 +1760,7 @@ export function UpdatesPage({
           ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
           : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
-        {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
+        {isWindows && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
@@ -1725,6 +1771,8 @@ export function UpdatesPage({
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
 // 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
 export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
+// 账号不在管理员组时那个窗口要的是管理员密码，只点「是」过不去。
+export const windowsAdminPasswordUpdateHint = 'Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。'
 // Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
 export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
@@ -3518,7 +3566,7 @@ export function SettingsPage({
           {resource.data?.update?.autoUpdateSupported &&
             row(
               'auto-update',
-              autoUpdateSettingDescription(resource.data.update.installMethod),
+              autoUpdateSettingDescription(resource.data.update.installMethod, resource.data.update.installNeedsAdminPassword),
               <Switch
                 testId="settings-auto-update"
                 checked={settings.autoUpdate !== false}

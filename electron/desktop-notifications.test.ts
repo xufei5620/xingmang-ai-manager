@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createDesktopNotificationController,
   getDesktopNotificationCapability,
+  standardAccountUpdateNotice,
   updateDesktopNotification,
   type DesktopNotificationControllerOptions,
   type DesktopNotificationRuntime,
@@ -202,6 +203,40 @@ describe('auto-update wording', () => {
     const { controller, runtime } = fixture({ readAutoUpdate: () => true })
     controller.handleUpdate(update({ phase: 'downloaded' }))
     expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('自动装上') }))
+  })
+})
+
+describe('Windows account outside the administrators group', () => {
+  // yoyo 2026-10-06 批的原话（句末补了句号）；渲染层 registry/business.ts 那一份也钉着同一句。
+  const approved = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。'
+
+  it('says an administrator has to install the downloaded version instead of promising it installs itself', () => {
+    expect(standardAccountUpdateNotice).toBe(approved)
+    for (const autoUpdate of [true, false]) {
+      const downloaded = updateDesktopNotification(update({ phase: 'downloaded', installNeedsAdminPassword: true }), autoUpdate)!
+      expect(downloaded).toMatchObject({ stage: 'downloaded', title: '星芒AI更新已下载', body: approved })
+      expect(downloaded.body).not.toContain('自动装上')
+    }
+    // 管理员账号照旧。
+    expect(updateDesktopNotification(update({ phase: 'downloaded', installNeedsAdminPassword: false }), true)!.body).toContain('自动装上')
+  })
+
+  it('does not promise an install while the update is still downloading', () => {
+    // 他 2026-10-06 回「改」批的原话。
+    expect(updateDesktopNotification(update({ installNeedsAdminPassword: true }), true)!.body).toBe('新版 0.2.0 正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。')
+    expect(updateDesktopNotification(update({ installNeedsAdminPassword: true }), false)!.body).toBe('版本 0.2.0 已可下载。')
+    expect(updateDesktopNotification(update(), true)!.body).toBe('新版 0.2.0 正在后台下载，下好后关掉软件时自动装上。')
+  })
+
+  it('replaces a downloaded notice shown before the account was known, once', () => {
+    const { controller, notifications, runtime } = fixture({ readAutoUpdate: () => true })
+    expect(controller.handleUpdate(update({ phase: 'downloaded' }))).toBe('requested')
+    expect(controller.handleUpdate(update({ phase: 'downloaded', installNeedsAdminPassword: true }))).toBe('requested')
+    expect(notifications[0].close).toHaveBeenCalledOnce()
+    expect(vi.mocked(runtime.create).mock.calls[1][0].body).toBe(approved)
+    expect(controller.handleUpdate(update({ phase: 'downloaded', installNeedsAdminPassword: true }))).toBe('duplicate')
+    expect(controller.handleUpdate(update({ installNeedsAdminPassword: true }))).toBe('duplicate')
+    expect(runtime.create).toHaveBeenCalledTimes(2)
   })
 })
 

@@ -334,8 +334,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const updateLabel = update?.newer === false ? '换成推荐版本' : '更新'
   const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare) && (!guideNeedsPython(route, tool) || tool.pythonReady || tool.pythonAutoPrepare))
   // Node.js 由本软件准备的平台，运行环境那几句说「自动」「一键」，别把人支到软件外面去。
-  // Linux 版拆分 ② 起 Linux 也是，按能力判断；Windows、Mac 两边的字样这次不动。
-  const runtimeByApp = platform === 'win' || (platform === 'linux' && tools.some((entry) => entry.runtimeAutoPrepare === true))
+  // Mac、Linux 按能力判断（Mac 第十六批 2 起、Linux 版拆分 ② 起由本软件准备）。Mac 以前照旧写
+  // 「在应用外安装」、按钮叫「安装指南」，点下去其实是星芒自己去下（已知9）。
+  const runtimeByApp = platform === 'win' || tools.some((entry) => entry.runtimeAutoPrepare === true)
   const currentStep = steps.findIndex((item) => item.id === step)
   const locked = busy || Boolean(pending)
   const saveProgress = (chosen: GuideRoute, currentStep: GuideStep) => {

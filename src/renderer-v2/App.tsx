@@ -26,7 +26,7 @@ import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwap
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { brokenConfigRepairTarget, canSwitchToManagedInstall, codexNeedsRepair, configBrokenDetail, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './features/tools/recent-workspaces'
@@ -59,7 +59,7 @@ import { OperationErrorDialog, supportFailureOf, type OperationFailure } from '.
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
+import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureBubbleQuiet, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
 import { LaunchInstallNotice } from './features/app/LaunchInstallNotice'
@@ -547,6 +547,39 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
     })
   }, [toast, toolbox.refreshConfig, toolbox.run, toolsApi])
+  /**
+   * 首页「配置文件坏了」的「修好它」：Codex 自己都读不了 config.toml，桌面端停在「无法加载
+   * 组织设置」。做的就是配置里「高级」的「重置为初始状态」：主进程先备份、再按现在用的账号
+   * 整份重新生成。登录 ChatGPT 的照旧用官方账号，其余按当前账号；没登录就先去登录。
+   */
+  const repairBrokenToolConfig = useCallback(async (tool: ToolId): Promise<boolean> => {
+    const provider = providerFor(tool)
+    const config = toolbox.snapshot?.config.providers[provider]
+    if (!config) throw new Error('请先完成工具检测')
+    const target = brokenConfigRepairTarget(config)
+    if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return false }
+    let written = false
+    // 按工具家族登记：两行 Codex 共用一份配置，一行在修时另一行也是「修复中」，不会两次重置叠着跑。
+    await toolbox.run(`repair-config:${provider}`, configBrokenDetail, async () => {
+      try {
+        if (target === 'official') await toolsApi.official(tool, 'reset')
+        else {
+          // 还读得出模型的照旧用它，同配置里的重置；读不出就用账号的默认模型。
+          const result = await toolsApi.configureManaged(tool, config.model.trim() || undefined, 'reset')
+          if (result.failed.length) throw new Error(result.failed.map((item) => item.message).join('；'))
+          if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
+        }
+        written = true
+        // 与配置对话框重置时一样：整份重新生成了，「自己填写密钥」的本机标记跟着清掉。
+        const markerWarning = config.baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), config.baseUrl, provider, false) : ''
+        toast.show('配置保存成功', 'ok')
+        if (markerWarning) toast.show(markerWarning, 'warn')
+      } finally {
+        await toolbox.refresh(true).catch(() => undefined)
+      }
+    })
+    return written
+  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi])
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
   const rewritableKeys = useMemo(
@@ -1451,7 +1484,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const launchInstall = update?.launchInstallNotice ?? null
   const maintenanceKey = maintenanceNoticeKey(maintenance)
   // 人就在更新页时，说的是页面上同一件事的那几种气泡不弹，离开更新页照旧。
-  const showUpdate = update && (update.error || update.currentVersionWithdrawn || ['available', 'downloading', 'downloaded'].includes(update.phase)) && dismissedUpdate !== updateKey
+  const showUpdate = update && !updateFailureBubbleQuiet(update) && (update.error || update.currentVersionWithdrawn || ['available', 'downloading', 'downloaded'].includes(update.phase)) && dismissedUpdate !== updateKey
     && !(page === 'updates' && updateBubbleRepeatsUpdatesPage(update))
   // 「自动更新」勾选跟着提示气泡走：用户第一次看到「有新版本」时就能看到它、改它。
   // 这台电脑的更新通道不支持自动更新时不显示，免得勾了没用。
@@ -1500,7 +1533,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
           notification={showUpdate && <Notice tone={update.error ? updateFailureTone(update) : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
-            body={update.error ? userFacingErrorMessage(update.error) : updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn, update.installMethod)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
+            body={update.error ? userFacingErrorMessage(update.error) : updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn, update.installMethod, update.installNeedsAdminPassword)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
             actions={<>{update.error && !updateNeedsManualReinstall(update) && <Button size="sm" variant="primary" testId="update-bubble-retry" loading={updateRetrying} onClick={retryUpdate}>{updateFailureLabel(update.failedStep).retry}</Button>}
               {updateOffersDownloadPage(update) && <Button size="sm" variant={updateNeedsManualReinstall(update) ? 'primary' : 'secondary'} onClick={() => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl))}>打开下载页</Button>}
               {updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
@@ -1531,6 +1564,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
+              onRepairConfig={(id) => void perform('重置为初始状态', async () => { if (await repairBrokenToolConfig(id)) confirmToolKeyWritten(id) }, id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
@@ -1652,11 +1686,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>
     </>}><p>可以直接打开现有窗口；需要重新加载配置时，选择重启 Codex。</p></Dialog>}
     {/* 显示中文要在本机开一个调试端口（早先审查标过的安全点），所以仍然问一次、不替用户默认开。
-        两个按钮同等样式，键盘焦点落在「先不用」：随手一按回车不会开端口，想要中文的人点一下就行。 */}
+        两个按钮同等样式，键盘焦点落在「先不用」：随手一按回车不会开端口，想要中文的人点一下就行。
+        Codex 的中文开关每次启动时才拿，只有星芒打开的那一下连了加速、开了通道，开机后直接点 Codex 自己的图标还是英文，
+        所以第一段末尾先说清，免得客户以为汉化掉了。 */}
     {chineseDialog && <Dialog open title="要让 Codex 的界面显示中文吗？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
       <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>先不用</Button>
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
-    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。</p>
+    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
       <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
     {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5）；关掉对话框 = 这次先不打开。 */}
     {modelSwap && <Dialog open title="默认模型用不了了" onClose={() => modelSwap.answer('cancel')} footer={<>

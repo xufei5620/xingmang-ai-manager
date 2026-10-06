@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, lowBalanceText, pickFirstRunTool, type HomeProps } from './Home'
+import { Home, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -138,7 +138,7 @@ describe('renderer-v2 home install cancellation', () => {
   it('reports that the cancel request is still being handled', () => {
     const markup = render({ claude: { label: '正在安装', log: [], cancellable: true, cancelling: true } })
     expect(markup).toContain('data-testid="tool-claude-cancel"')
-    expect(markup).toContain('取消中')
+    expect(markup).toContain('正在停止')
   })
 
   it('leaves an install that cannot be cancelled without the button', () => {
@@ -228,6 +228,40 @@ describe('renderer-v2 home first-run suggestion', () => {
   // 「最近」里已经有它的记录，说明早就用起来了。
   it('skips a tool that already shows up in the records', () => {
     expect(pickFirstRunTool(installedTools(), {}, [], new Set<ProviderId>(['claude', 'codex']))?.id).toBe('grok')
+  })
+})
+
+// 「最近」卡在静态渲染里还没读到记录，按钮本身由 app-check.mjs 的浏览器用例盯着；这里只盯判断。
+describe('renderer-v2 home recent resume for tools that are not installed (第四十一批 A)', () => {
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const missing = { ...cliStatus, installed: false, version: null, path: null }
+
+  it('offers it for an installed tool', () => {
+    expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'claude')).toBe(true)
+  })
+
+  // 点下去走的是同一个「打开」，只会弹「工具尚未安装，请先完成准备。」。
+  it('drops it for a tool that is not installed', () => {
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: missing }), null), 'claude')).toBe(false)
+  })
+
+  // 只装了 Codex 桌面端：记录在 Codex 名下，接着聊开的却是 Codex CLI。
+  it('looks at Codex CLI rather than the desktop app for a Codex record', () => {
+    const desktopOnly = { ...snapshot({ ...allTools, codex: missing }), platform: { codexDesktop: { launch: true } } } as unknown as ToolboxSnapshot
+    const tools = presentTools(desktopOnly, null)
+    expect(tools.find((tool) => tool.id === 'codexDesktop')?.status.installed).toBe(true)
+    expect(recentResumeOffered(tools, 'codex')).toBe(false)
+  })
+
+  // 检测失败不当没装（A4）：按钮照旧给，点了说检测失败的原因。
+  it('keeps it when detection failed instead of calling the tool missing', () => {
+    const failed = { ...missing, detectionFailed: true, detectionError: 'npm 查询超时' }
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: failed }), null), 'claude')).toBe(true)
+  })
+
+  // 检测结果还没回来：照旧摆着、灰着等，回来是没装的再收走。
+  it('keeps it while the scan has not come back yet', () => {
+    expect(recentResumeOffered([], 'claude')).toBe(true)
   })
 })
 
@@ -813,6 +847,103 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
       expect(markup).not.toContain('data-testid="tool-claude-repair-codex"')
       expect(markup).toContain('已配好')
+    })
+  })
+
+  // 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml，命令行和桌面端都打不开。
+  // 原来首页把它当成没有配置，写的是「还没配 Key」。
+  describe('a Codex configuration Codex itself cannot read', () => {
+    const brokenDetail = 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留'
+    function brokenSnapshot(codex: Record<string, unknown> = {}): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, codex: { ...providerConfig, configurationOwnership: 'account', codexConfigBroken: true, ...codex } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+    function rowButton(markup: string, testId: string): string {
+      const index = markup.indexOf(`data-testid="${testId}"`)
+      return index < 0 ? '' : markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('</button>', index))
+    }
+    function toolRow(markup: string, tool: string): string {
+      const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+      const next = markup.indexOf('data-testid="tool-row-', start + 1)
+      return start < 0 ? '' : markup.slice(start, next < 0 ? undefined : next)
+    }
+
+    it('says the file is broken on both Codex rows and offers the fix on each', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        const row = toolRow(markup, tool)
+        expect(row, tool).toContain('配置文件坏了')
+        expect(row, tool).toContain(`>${brokenDetail}<`)
+        const button = rowButton(row, `tool-${tool}-repair-config`)
+        expect(button, tool).toContain('title="改之前会先备份原来的设置"')
+        expect(button, tool).toContain('修好它')
+      }
+      expect(markup).not.toContain('solov')
+    })
+
+    it('no longer reports a file it cannot parse as a missing key', () => {
+      const unparsed = brokenSnapshot({ matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' })
+      const markup = render({}, undefined, { snapshot: unparsed, onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(toolRow(markup, tool), tool).toContain('配置文件坏了')
+        expect(toolRow(markup, tool), tool).not.toContain('还没配 Key')
+        expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
+      }
+    })
+
+    it('says so on a ChatGPT login too, instead of calling it the official account', () => {
+      const chatgpt = brokenSnapshot({ hasApiKey: false, matchesRelay: false, actualBaseUrl: '', codexAuthMode: 'chatgpt', configurationOwnership: 'missing' })
+      const markup = render({}, undefined, { snapshot: chatgpt, onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(toolRow(markup, tool), tool).toContain('配置文件坏了')
+        expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
+      }
+    })
+
+    it('puts the broken file ahead of the fixes that would have to read it', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot({ codexProviderShadowed: true }), onRepairConfig: () => undefined, onSwitchAccount: () => undefined })
+      expect(toolRow(markup, 'codex')).toContain('配置文件坏了')
+      expect(markup).not.toContain('连接设置要修')
+      expect(markup).not.toContain('data-testid="tool-codex-repair-codex"')
+    })
+
+    it('leaves the other tools on their usual state', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
+      expect(toolRow(markup, 'claude')).toContain('已配好')
+      expect(toolRow(markup, 'claude')).not.toContain('data-testid="tool-claude-repair-config"')
+    })
+
+    it('shows the state without a button when the host offers no fix', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot() })
+      expect(toolRow(markup, 'codex')).toContain('配置文件坏了')
+      expect(markup).not.toContain('-repair-config"')
+    })
+
+    // 两行读的是同一份配置：从哪一行点的，两行都是「修复中」，菜单收起，不会再叠一次重置。
+    it('keeps both Codex rows busy while the fix runs', () => {
+      const markup = render({ 'repair-config:codex': { label: brokenDetail, log: [brokenDetail] } }, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(rowButton(markup, `tool-${tool}-primary`), tool).toContain('修复中')
+        expect(toolRow(markup, tool), tool).not.toContain('aria-haspopup="menu"')
+      }
+      expect(rowButton(markup, 'tool-claude-primary')).not.toContain('修复中')
+    })
+
+    // 开机先画的是上次的检测结果，文件可能已经被改好了，等这次的结果再说。
+    it('waits for this run\'s check before calling the file broken', () => {
+      const base = brokenSnapshot()
+      const cached = { ...base, system: { ...base.system, cachedAt: '2026-10-06T00:00:00.000Z' } } as unknown as ToolboxSnapshot
+      const markup = render({}, undefined, { snapshot: cached, onRepairConfig: () => undefined })
+      expect(markup).toContain('data-testid="tool-row-codex"')
+      expect(markup).not.toContain('配置文件坏了')
+      expect(markup).not.toContain('-repair-config"')
     })
   })
 

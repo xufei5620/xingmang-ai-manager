@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { UpdateSnapshot } from '../../../../electron/ipc-contract'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './update-retry'
+import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureBubbleQuiet, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './update-retry'
 
 function snapshot(patch: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
   return {
@@ -66,6 +66,15 @@ describe('redownloadUpdate', () => {
   })
 })
 
+describe('updateFailureBubbleQuiet', () => {
+  it('keeps the home bubble quiet only for checks nobody asked for', () => {
+    expect(updateFailureBubbleQuiet(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'ENOTFOUND', message: '连不上', automatic: true } }))).toBe(true)
+    expect(updateFailureBubbleQuiet(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'ENOTFOUND', message: '连不上' } }))).toBe(false)
+    expect(updateFailureBubbleQuiet(snapshot())).toBe(false)
+    expect(updateFailureBubbleQuiet(null)).toBe(false)
+  })
+})
+
 describe('updateFailureTone', () => {
   it('uses the warning tone for a startup check that only ran out of time', () => {
     expect(updateFailureTone(snapshot({ error: { code: 'STARTUP_UPDATE_TIMEOUT', message: '网络有点慢' } }))).toBe('warn')
@@ -91,6 +100,13 @@ describe('updateOffersDownloadPage', () => {
     // 停住了照样能「重新下载」：换个网络、过一会儿再点也可能就好了。
     expect(updateNeedsManualReinstall(stalled)).toBe(false)
     expect(updateOffersDownloadPage(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
+  })
+
+  it('offers the download page when the update check itself stalls', () => {
+    // 主进程 updater.test.ts 钉住检查被看门狗掐断时报的这个代码。
+    const stalled = snapshot({ phase: 'error', failedStep: 'check', error: { code: 'UPDATE_CHECK_STALLED', message: '连接更新服务器超时，请检查网络后再试。' } })
+    expect(updateOffersDownloadPage(stalled)).toBe(true)
+    expect(updateNeedsManualReinstall(stalled)).toBe(false)
   })
 
   it('keeps other failures to the retry button alone', () => {

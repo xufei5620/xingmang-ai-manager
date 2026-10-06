@@ -5,7 +5,8 @@ import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlMatches, relaySites } from './relay-sites'
-import { readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
+import { isCodexConfigBroken } from './codex-config-syntax'
 import { tomlErrorLocation } from './toml-error-location'
 import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
 import {
@@ -92,6 +93,12 @@ export interface NativeConfigInspection {
    * matchesRelay 认出「这是我们写的中转配置」，那部分判断必须照旧。
    */
   codexProviderShadowed?: boolean
+  /**
+   * Codex 自己也读不了这份 config.toml（不是 UTF-8、有控制字符、键重复、写了一半……，判定见
+   * codex-config-syntax.ts）：桌面端会停在「无法加载组织设置」，命令行直接报错。首页据此说
+   * 「配置文件坏了」并给「修好它」。只给 Codex；缺省 = 没发现。
+   */
+  codexConfigBroken?: boolean
   /**
    * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
@@ -271,9 +278,23 @@ function readJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
+function readCodexConfigBroken(filePath: string): boolean {
+  try {
+    const info = fs.lstatSync(filePath)
+    if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return false
+    return isCodexConfigBroken(readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
+  } catch {
+    return false
+  }
+}
+
 function readToml(filePath: string): Record<string, unknown> | null {
   const content = readText(filePath)
   if (!content) return null
+  return parseTomlOrNull(content)
+}
+
+function parseTomlOrNull(content: string): Record<string, unknown> | null {
   try {
     return TOML.parse(content)
   } catch {
@@ -1224,7 +1245,11 @@ function createCodexOfficialConfigPlans(
   const currentText = fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null
-  const currentParsed = currentText ? requireToml(paths.active, '现有 Codex config.toml') : null
+  // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「修好它」也走这里），登录 ChatGPT 的
+  // 客户也一样：坏文件照旧先备份再整份换掉。只更新（merge）仍然拒绝，不悄悄重置客户的设置。
+  const currentParsed = !currentText ? null
+    : mode === 'reset' ? parseTomlOrNull(currentText)
+      : requireToml(paths.active, '现有 Codex config.toml')
   if (currentText && classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
     plans.push({ path: paths.relay, content: withTrailingNewline(currentText) })
   }
@@ -1563,7 +1588,11 @@ export function inspectProviderConfig(
     officialAccountEmail: officialAccount.email,
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
-    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths), ...readCodexProviderSelection(paths, baseUrl) } : {}),
+    ...(provider === 'codex' ? {
+      codexAuthMode: readCodexAuthMode(paths),
+      ...readCodexProviderSelection(paths, baseUrl),
+      ...(readCodexConfigBroken(paths[0]) ? { codexConfigBroken: true } : {}),
+    } : {}),
     ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
@@ -3302,7 +3331,12 @@ export function switchProviderToOfficialAccount(
   // 切回，才能同时恢复官方 config.toml 与 auth.json。
   const knownCodexRelay = provider === 'codex'
     && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
-  const mode = knownCodexRelay ? 'relay' : providerAccountMode(inspection)
+  // 登录 ChatGPT 换来的那把 Key 常和令牌一起留在 auth.json 里（auth_mode 说了算，Codex 不用它），
+  // config.toml 又坏到 Codex 读不了：看着像「有 Key、地址不是星芒」的第三方，其实用的就是官方
+  // 账号。首页「配置文件坏了」的「修好它」走的是这条重置，先备份，坏文件里没有能用的设置可护。
+  const brokenChatgptLogin = provider === 'codex' && saveMode === 'reset'
+    && inspection.codexConfigBroken === true && inspection.codexAuthMode === 'chatgpt'
+  const mode = knownCodexRelay ? 'relay' : brokenChatgptLogin ? 'official' : providerAccountMode(inspection)
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
