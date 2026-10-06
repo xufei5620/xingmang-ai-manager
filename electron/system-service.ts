@@ -1507,6 +1507,7 @@ export const npmResolutionHeartbeatMs = 15_000
 export const npmDownloadStallTimeoutMs = 3 * 60_000
 export const npmDownloadCeilingMs = 30 * 60_000
 export const npmDownloadProgressCheckMs = 15_000
+export const npmDownloadHeartbeatMs = 15_000
 export const grokDownloadStallHeartbeatMs = 15_000
 
 export function grokDownloadStallMessage(idleMs: number): string {
@@ -1528,6 +1529,16 @@ export function npmResolutionStartMessage(registry: string): string {
 
 export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: number): string {
   return `仍在解析${npmRegistryLabel(registry)}的依赖图…（已用时 ${formatElapsedDuration(elapsedMs)}）`
+}
+
+/**
+ * npm 下载时也一声不出，网慢时这一步能下到 30 分钟（第三十七批 A），进度停在一句话上像卡死了。
+ * 写法照解析那句，只报已用时：总量不知道，不猜百分比。两句是 2026-10-06 拍板的原话（第三十七批 D），
+ * 「从」后面接 npm 时空一格，所以不拼 npmRegistryLabel。
+ */
+export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number): string {
+  const source = registry === npmMirrorRegistry ? '从国内 npm 镜像' : '从 npm 官方源'
+  return `仍在${source}下载…（已用时 ${formatElapsedDuration(elapsedMs)}）`
 }
 
 /** 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按它归成「下载超时」）。 */
@@ -4749,6 +4760,19 @@ export function createSystemService(
           // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
           const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
           const downloadStartedAt = performance.now()
+          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「还在下载，已经等了……」，
+          // 这句原话进安装日志；运行日志不记这种每隔几秒一条的（第三十七批 D）。
+          const downloadTicker = setInterval(() => {
+            const elapsedMs = Math.round(performance.now() - downloadStartedAt)
+            sendInstallProgress(
+              target,
+              provider,
+              'output',
+              npmDownloadHeartbeatMessage(registry, elapsedMs),
+              undefined,
+              { stage: 'download', elapsedMs },
+            )
+          }, npmDownloadHeartbeatMs)
           try {
             await executeNpm([
               'ci',
@@ -4773,6 +4797,7 @@ export function createSystemService(
             )
             throw new Error(npmDownloadTimedOutMessage, { cause: error })
           } finally {
+            clearInterval(downloadTicker)
             stallWatch.stop()
           }
           // npm ci 跳过下载失败的平台主程序包也照样退出 0，所以下完就在它解出来的包里查。普通权限
