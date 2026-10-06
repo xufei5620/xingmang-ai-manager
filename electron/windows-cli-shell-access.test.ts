@@ -521,6 +521,29 @@ describe('createCliTerminalAccess', () => {
     expect(ensureShellProfile).toHaveBeenCalledTimes(2)
   })
 
+  it('on macOS says in the log that a login shell it does not handle was left alone', async () => {
+    const cases = [
+      ['added', '已让新开的终端可以直接敲工具名'],
+      ['present', '终端启动设置无需改动'],
+      ['already-handled', '终端启动设置无需改动'],
+      ['unsupported-shell', '登录 shell 不是 zsh、bash、fish，没改终端启动设置'],
+    ] as const
+    for (const [outcome, message] of cases) {
+      const log = vi.fn()
+      const access = createCliTerminalAccess({
+        platform: 'darwin',
+        executionMode: 'same-user',
+        isManaged: () => true,
+        ensureShellProfile: async () => outcome,
+        log,
+      })
+
+      await access.prepare({ provider: 'claude', installation: npmInstall('/Users/ann/Library/Application Support/XingMangAI/Cli/npm') }, 'install')
+
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', message, { provider: 'claude', reason: 'install', outcome }))
+    }
+  })
+
   it('does nothing on release outside Linux', async () => {
     const ensureShellProfile = vi.fn(async () => 'added')
     const syncTerminalCommands = vi.fn(async () => ({ outcome: 'removed', skipped: [] }))

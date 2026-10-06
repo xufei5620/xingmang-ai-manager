@@ -8,7 +8,7 @@ import {
 import { describeClaudeDesktopMsixDownload, installClaudeDesktopFromOfficial } from './claude-desktop-msix-installer'
 import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
-  type CommandSpec, type RunCommandOptions,
+  type CommandErrorCode, type CommandSpec, type RunCommandOptions,
 } from './command-runner'
 import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
@@ -40,6 +40,13 @@ const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
 export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
+// Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
+const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
+// winget 自己的软件源坏了：源数据没有（多半是之前那次更新源没下下来），或者下下来的
+// 源数据对不上。两种都出在打开源的时候，那时连客户端的清单都还没读到，安装程序一步没动。
+const wingetSourceDataFailures = [0x8a15000f, 0x8a15003f]
+// 检测脚本最多交回几条读不出来的安装记录（只进运行日志）。
+const maximumRegistryFailures = 10
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
 // 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
 const defaultScanCacheTtlMs = 5 * 60_000
@@ -105,6 +112,29 @@ export interface ExternalClientRuntimeOptions {
   now?: () => number
   /** 系统 winget 用不了的原因只进运行日志，不上屏。 */
   onWingetUnavailable?: (reason: string) => void
+  /** Windows 上哪几条安装记录读不出来、为什么，只进运行日志；内容和上一次一样就不再调。 */
+  onRegistryIncomplete?: (failures: ExternalClientRegistryFailure[]) => void
+  /** Mac 上苹果的签名核对没过时它自己说的原因，只进运行日志；同一个应用包原因没变就不再调。 */
+  onMacVerificationFailed?: (failure: ExternalClientMacVerificationFailure) => void
+}
+
+/** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
+export interface ExternalClientRegistryFailure {
+  // 不叫 key：运行日志把名字正好是 key 的字段当凭据打码（runtime-log.ts 的 SENSITIVE_KEY），
+  // 叫了它，客服在日志里就只看得到 [REDACTED]。
+  entry: string
+  reason: string
+}
+
+/** spctl 或 codesign 没放行时的那几项；output 是它们写在标准错误里的原话。 */
+export interface ExternalClientMacVerificationFailure {
+  tool: ExternalToolId
+  /** 被核对的那个应用包（「应用程序」和主目录下的「应用程序」里可能各有一个）。 */
+  path: string
+  command: string
+  code: CommandErrorCode
+  exitCode: number | null
+  output: string
 }
 
 export interface ExternalClientScanOptions {
@@ -146,6 +176,13 @@ function wingetNetworkFailure(error: unknown): boolean {
   return [0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(error.exitCode >>> 0)
 }
 
+/** 连不上微软的软件下载源，或者连上了但 winget 自己的软件源坏了：这两种都还没开始装。 */
+function wingetSourceUnavailable(error: unknown): boolean {
+  if (wingetNetworkFailure(error)) return true
+  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO' && error.exitCode !== null && !error.signal
+    && wingetSourceDataFailures.includes(error.exitCode >>> 0)
+}
+
 function wingetCancelled(error: unknown): boolean {
   return error instanceof CommandRunnerError
     && (error.code === 'ABORTED' || error.exitCode !== null && [1223, 0x800704c7].includes(error.exitCode >>> 0))
@@ -183,6 +220,32 @@ function record(value: unknown): Record<string, unknown> {
 }
 function localWindowsPath(value: string): boolean {
   return /^[a-z]:\\/i.test(value) && !/[<>"|?*\x00-\x1f]/.test(value) && !value.slice(2).includes(':')
+}
+function registryFailureText(value: unknown, limit: number): string {
+  return typeof value === 'string' ? cleanCommandOutput(value).replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, limit) : ''
+}
+/** 检测脚本交回的读不出来的安装记录。格式不对就当没有：少的只是一行日志，检测结论照旧。 */
+function registryFailures(value: unknown): ExternalClientRegistryFailure[] {
+  if (!Array.isArray(value)) return []
+  try {
+    return value.slice(0, maximumRegistryFailures).map((raw) => {
+      const item = record(raw)
+      return { entry: registryFailureText(item.entry, 260), reason: registryFailureText(item.reason, 500) }
+    })
+  } catch { return [] }
+}
+/** spctl 退出码 3 是 Gatekeeper 拒绝；codesign 1 是核对没过，3 是签名完好但不满足钉住的要求（团队、包名）。 */
+function macSignatureRefused(error: unknown): boolean {
+  if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.signal) return false
+  const command = path.posix.basename(error.executable)
+  return command === 'spctl' ? error.exitCode === 3 : command === 'codesign' && (error.exitCode === 1 || error.exitCode === 3)
+}
+function describeMacVerificationFailure(tool: ExternalToolId, bundle: string, error: unknown): ExternalClientMacVerificationFailure | null {
+  if (!(error instanceof CommandRunnerError)) return null
+  return {
+    tool, path: bundle, command: path.posix.basename(error.executable), code: error.code, exitCode: error.exitCode,
+    output: cleanCommandOutput(error.stderr || error.stdout).trim().slice(0, 500),
+  }
 }
 
 export async function verifyExternalClientPath(candidate: string, kind: 'file' | 'directory' | 'appx-file'): Promise<string> {
@@ -257,15 +320,40 @@ function Test-LocalExecutablePath([string]$candidate) {
 }
 $roots = @('Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
 $registryIncomplete = $false
+$registryFailures = [System.Collections.Generic.List[object]]::new()
+# Get-ItemProperty converts every value of a key, and a single malformed one fails
+# the whole key: some installers write an 8-byte REG_DWORD (NetBeans' NoModify, for
+# one), which the registry provider cannot cast, so that key throws on every scan.
+# A key that throws is read again for just the values matched below, straight from
+# the key; it counts as unreadable only when one of those is not readable as text.
+function Read-UninstallValues($key) {
+  $entry = [ordered]@{ PSChildName = [string]$key.PSChildName }
+  foreach ($name in @('DisplayName', 'InstallLocation', 'DisplayIcon', 'DisplayVersion')) {
+    $value = $key.GetValue($name)
+    if ($null -ne $value -and $value -isnot [string]) { throw "$name is not text" }
+    $entry[$name] = $value
+  }
+  [pscustomobject]$entry
+}
 foreach ($root in $roots) {
   try {
     if (Test-Path -LiteralPath $root) {
       foreach ($key in Get-ChildItem -LiteralPath $root) {
         try { $registry.Add((Get-ItemProperty -LiteralPath $key.PSPath)) }
-        catch { $registryIncomplete = $true }
+        catch {
+          $failure = $_
+          try { $registry.Add((Read-UninstallValues $key)) }
+          catch {
+            $registryIncomplete = $true
+            if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=[string]$key.PSChildName; reason=[string]$failure.Exception.Message }) }
+          }
+        }
       }
     }
-  } catch { $registryIncomplete = $true }
+  } catch {
+    $registryIncomplete = $true
+    if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=$root; reason=[string]$_.Exception.Message }) }
+  }
 }
 $processes = @(Get-Process -Name WorkBuddy,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })
 $products = @(
@@ -312,7 +400,7 @@ foreach ($product in $products) {
     }
   }
 }
-@{ clients=@($clients.ToArray()); errors=$errors } | ConvertTo-Json -Depth 5 -Compress
+@{ clients=@($clients.ToArray()); errors=$errors; registryFailures=@($registryFailures.ToArray()) } | ConvertTo-Json -Depth 5 -Compress
 `.trim()
 }
 
@@ -381,6 +469,22 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     lastWingetReason = reason
     return winget
   }
+  // 读不出来的安装记录、苹果没放行的原因同理：每次检测都会再碰到一次，内容没变就不重复记。
+  let lastRegistryFailures: string | null = null
+  const lastMacVerificationFailures = new Map<string, string>()
+  function noteRegistryFailures(failures: ExternalClientRegistryFailure[]) {
+    const signature = failures.length ? JSON.stringify(failures) : null
+    if (signature && signature !== lastRegistryFailures) options.onRegistryIncomplete?.(failures)
+    lastRegistryFailures = signature
+  }
+  function noteMacVerificationFailure(tool: ExternalToolId, bundle: string, error: unknown) {
+    const failure = describeMacVerificationFailure(tool, bundle, error)
+    if (!failure) return
+    const signature = JSON.stringify(failure)
+    if (lastMacVerificationFailures.get(bundle) === signature) return
+    lastMacVerificationFailures.set(bundle, signature)
+    options.onMacVerificationFailed?.(failure)
+  }
 
   function rememberSignature(item: Record<string, unknown>) {
     const file = textValue(item.path)
@@ -395,6 +499,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, systemOptions())
     const data = record(JSON.parse(cleanCommandOutput(result.stdout).trim()) as unknown)
     if (!Array.isArray(data.clients)) throw new Error('客户端安装检测未返回有效列表')
+    noteRegistryFailures(registryFailures(data.registryFailures))
     const errors: Inspection['errors'] = {}
     if (data.errors !== undefined) {
       const rawErrors = record(data.errors)
@@ -424,7 +529,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             || path.win32.relative(location, canonical).toLowerCase() !== 'app\\claude.exe') throw new Error('Claude 桌面端 AppX 身份或安装路径不可信')
           applicationId = claudeApplicationId
         } else if (item.signatureStatus !== 'Valid' || !publisherPatterns[tool].test(textValue(item.signatureSubject) ?? '')) {
-          throw new Error('客户端数字签名无效或签名发布者与官方发布者不一致')
+          throw new Error(signatureMismatchMessage)
         }
         clients.push({ tool, path: canonical, version: versionValue(item.version), running: item.running === true, ...(applicationId ? { applicationId } : {}) })
       } catch (error) { errors[tool] = errorText(error) }
@@ -482,8 +587,11 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             } catch (error) {
               // 现验没过就忘掉上次那份：不然下一次展示用的检测会拿旧的「通过」把它报成好的。
               verifiedBundles.delete(canonical)
-              throw error
+              noteMacVerificationFailure(tool, canonical, error)
+              // 苹果说的原话只进运行日志；它明说不放行的，首页那一行说的和 Windows 上签名不对时同一句。
+              throw macSignatureRefused(error) ? new Error(signatureMismatchMessage) : error
             }
+            lastMacVerificationFailures.delete(canonical)
             if (fingerprint !== null) verifiedBundles.set(canonical, { fingerprint, verifiedAt: now() })
           }
           const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, { ...systemOptions(), trustedOnly: false })
@@ -646,7 +754,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             // Claude 官网的离线安装包是 MSIX：Windows 的应用部署要么整个装上、要么什么都不留，
             // 前一路装到一半也不会和它打架，所以除了客户自己取消，怎么没装上都换它接着装。
             const claudeFallback = tool === 'claudeDesktop' && !wingetCancelled(error)
-            if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetNetworkFailure(error))) throw installationError(wingetFailureMessage(error), error)
+            if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetSourceUnavailable(error))) throw installationError(wingetFailureMessage(error), error)
             sourceFailure = error
             // 换星芒自己下官方安装包的那一路：下载时又能取消了。
             cancellation.unseal()

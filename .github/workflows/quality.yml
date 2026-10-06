@@ -360,7 +360,7 @@ jobs:
   # Folds the Windows shards back into the single `test` check they replaced.
   # Two things depend on that name surviving: a branch protection rule may name
   # it, and a reader scanning a pull request should still find one check that
-  # answers "is Windows green" without counting six. It evaluates the change
+  # answers "is Windows green" without counting seven. It evaluates the change
   # scope itself, so it reports success — never "skipped" — for a
   # documentation-only change, which is what the aggregate below relies on.
   test:

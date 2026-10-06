@@ -262,10 +262,11 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
   assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
 
-  // test:v2:browser runs whole nowhere in CI. The two suites that bring a Vite
-  // cacheDir of their own get a runner of their own; the configFile:false
-  // browser-checks are test:v2:browser:fixture, which Linux runs whole and
-  // Windows cuts into the numbered halves below.
+  // quality.yml runs test:v2:browser whole nowhere (the release gates still run
+  // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
+  // runner of their own; the configFile:false browser-checks are
+  // test:v2:browser:fixture, which Linux runs whole and Windows cuts into the
+  // numbered halves below.
   const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
   for (const script of ['test:v2:browser', 'test:v2:browser:fixture', 'test:v2:browser:e2e']) {
     assert.match(scripts[script], /^node --test --test-concurrency=1 /, `${script} must stay serialised`)
@@ -297,17 +298,27 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   const dealtImport = /import \{ test \} from '(?:\.\.\/)+e2e\/shard-tests\.mjs'/
   const dealt = fixture.filter((file) => dealtImport.test(fs.readFileSync(path.join(root, file), 'utf8')))
   assert.ok(dealt.includes('src/renderer-v2/testing/app-check.mjs'), 'app-check.mjs must deal its tests across the fixture runners')
+  // Only hooks may come from node:test in a dealt file: test, it, describe or a
+  // default import would register tests past the deal, in every half.
+  const hooks = ['before', 'after', 'beforeEach', 'afterEach', 'mock']
   for (const file of dealt) {
-    const nodeTestImport = fs.readFileSync(path.join(root, file), 'utf8').match(/import \{([^}]*)\} from 'node:test'/)
-    assert.doesNotMatch(nodeTestImport?.[1] ?? '', /\btest\b/, `${file} must register every test through the deal, not node:test directly`)
+    const source = fs.readFileSync(path.join(root, file), 'utf8')
+    for (const { index } of source.matchAll(/\bfrom\s+'node:test'/g)) {
+      const clause = source.slice(source.lastIndexOf('import', index) + 'import'.length, index).trim()
+      const names = /^\{([^}]*)\}$/.exec(clause)?.[1].split(',').map((name) => name.trim()).filter(Boolean)
+      assert.ok(names && names.every((name) => hooks.includes(name)),
+        `${file} must register every test through the deal, so it may only take hooks from node:test, not ${clause}`)
+    }
   }
+  // A file listed twice in one half still runs there once (node --test drops
+  // the repeat), so each half counts once per file.
   const placed = new Map(fixture.map((file) => [file, 0]))
   fixtureShards.forEach((name, index) => {
     assert.equal(name, `test:v2:browser:fixture:${index + 1}`, 'fixture halves must be numbered from 1 without gaps')
     assert.ok(shardCommands.includes(`npm run ${name}`), `the matrix must dispatch ${name}`)
     assert.ok(scripts[name].startsWith(`cross-env XINGMANG_TEST_SHARD=${index + 1}/${total} node --test --test-concurrency=1 `),
       `${name} must stay serialised and select share ${index + 1} of ${total}`)
-    for (const file of suites(name)) {
+    for (const file of new Set(suites(name))) {
       assert.ok(placed.has(file), `${name} runs ${file}, which test:v2:browser:fixture does not`)
       placed.set(file, placed.get(file) + 1)
     }
@@ -368,6 +379,9 @@ test('dealing a file across the fixture halves runs each of its tests exactly on
     return registered
   }
   assert.deepEqual(deal(undefined), names, 'an unsharded run must register every test')
+  // Unsharded, a file gets node:test's own test, so local and Linux runs still
+  // report each test at its own line rather than at the wrapper.
+  assert.equal(shard.test === test, !process.env.XINGMANG_TEST_SHARD, 'only a named shard may wrap test')
   for (const total of [1, 2, 3]) {
     const shares = Array.from({ length: total }, (_, index) => deal(`${index + 1}/${total}`))
     assert.deepEqual(shares.flat().sort(), [...names].sort(), `${total} shares must add up to the whole file exactly once`)

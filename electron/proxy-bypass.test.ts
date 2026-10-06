@@ -911,6 +911,69 @@ describe('proxy bypass when the proxy app only blinks', () => {
   })
 
   it.each([
+    ['is not running', 'net::ERR_PROXY_CONNECTION_FAILED', 'ERR_PROXY_CONNECTION_FAILED'],
+    ['turns the request to the service away', 'net::ERR_TUNNEL_CONNECTION_FAILED', 'ERR_TUNNEL_CONNECTION_FAILED'],
+  ])('logs the code the look a moment later ran into when the proxy app %s and the whole app goes direct', async (_case, message, failureCode) => {
+    const logged: Record<string, unknown>[] = []
+    const { deps, probe } = proxyApp({ log: (_level, event, _message, detail) => { logged.push({ event, ...detail }) } })
+    probe.mockRejectedValueOnce(new Error(message))
+    expect(await createProxyBypass(deps).recoverFailedRequest(900, 'proxy')).toBe(true)
+    expect(logged).toEqual([{ event: 'proxy-bypass.direct', failureCode }])
+  })
+
+  it('logs the code the look ran into when direct does not work either', async () => {
+    const logged: Record<string, unknown>[] = []
+    const { deps, state } = proxyApp({ log: (_level, event, _message, detail) => { logged.push({ event, ...detail }) } })
+    state.direct = false
+    expect(await createProxyBypass(deps).recoverFailedRequest(900, 'proxy')).toBe(false)
+    expect(logged).toEqual([{ event: 'proxy-bypass.unreachable', failureCode: 'ERR_PROXY_CONNECTION_FAILED' }])
+  })
+
+  it('logs no code for a check the customer asks for, which goes direct without a look first', async () => {
+    const logged: Record<string, unknown>[] = []
+    const { deps } = proxyApp({ log: (_level, event, _message, detail) => { logged.push({ event, ...detail }) } })
+    expect(await createProxyBypass(deps).tryBypass()).toBe('direct')
+    expect(logged).toEqual([{ event: 'proxy-bypass.direct', failureCode: null }])
+  })
+
+  it('does not hand the code of a look that switched nothing to a later check the customer asks for', async () => {
+    const timers = heldTimers()
+    const logged: Record<string, unknown>[] = []
+    const { deps, state } = proxyApp({ schedule: timers.schedule, log: (_level, event, _message, detail) => { logged.push({ event, ...detail }) } })
+    state.direct = false
+    const bypass = createProxyBypass(deps)
+    const answer = bypass.recoverFailedRequest(900, 'proxy')
+    await vi.waitFor(() => expect(timers.waiting()).toEqual([proxyRecheckDelayMs]))
+    // The customer checks the network again while it waits, and direct is dead as well.
+    expect(await bypass.tryBypass()).toBe('unreachable')
+    timers.runNext()
+    // The look still finds the proxy refused, but nothing is tried again so soon after.
+    expect(await answer).toBe(false)
+    expect(await bypass.tryBypass()).toBe('unreachable')
+    expect(logged).toEqual([
+      { event: 'proxy-bypass.unreachable', failureCode: null },
+      { event: 'proxy-bypass.unreachable', failureCode: null },
+    ])
+  })
+
+  it('logs the code when a look beside a request on the direct session finds the proxy app gone and the whole app goes direct', async () => {
+    const clock = { now: 1_000 }
+    const logged: Record<string, unknown>[] = []
+    const { deps, state } = proxyApp({ now: () => clock.now, log: (_level, event, _message, detail) => { logged.push({ event, ...detail }) } })
+    // At first the proxy app ran but did not forward the service, so only the service went direct.
+    state.up = true
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(900, 'timeout')).toBe(true)
+    // Then the proxy app went away.
+    state.up = false
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(bypass.active()).toBe(true))
+    expect(logged.filter((entry) => entry.event === 'proxy-bypass.direct'))
+      .toEqual([{ event: 'proxy-bypass.direct', failureCode: 'ERR_PROXY_CONNECTION_FAILED' }])
+  })
+
+  it.each([
     ['no proxy is in use', { resolveProxy: async () => 'DIRECT' }],
     ['acceleration owns the proxy', { accelerationActive: async () => true }],
   ] as const)('answers a refused request at once without looking again when %s', async (_case, overrides) => {
@@ -1145,15 +1208,20 @@ describe('proxy bypass after the whole app went direct', () => {
   })
 
   it.each([
-    ['is refused because the proxy app is gone', 'net::ERR_PROXY_CONNECTION_FAILED'],
+    ['is refused because the proxy app is gone', 'net::ERR_PROXY_CONNECTION_FAILED', 'ERR_PROXY_CONNECTION_FAILED'],
     // The rest of the bypass counts this as the proxy being down, so switching back would only go direct again five minutes on.
-    ['is turned away by the proxy itself', 'net::ERR_TUNNEL_CONNECTION_FAILED'],
-    ['finds no network', 'net::ERR_INTERNET_DISCONNECTED'],
-    ['fails for a reason that says nothing about the proxy app', 'something unexpected'],
-  ])('stays direct when the look through the system proxy %s', async (_case, message) => {
+    ['is turned away by the proxy itself', 'net::ERR_TUNNEL_CONNECTION_FAILED', 'ERR_TUNNEL_CONNECTION_FAILED'],
+    ['finds no network', 'net::ERR_INTERNET_DISCONNECTED', null],
+    ['fails for a reason that says nothing about the proxy app', 'something unexpected', null],
+  ])('stays direct when the look through the system proxy %s', async (_case, message, failureCode) => {
     const directEnded = vi.fn()
     const probeSiteDirect = vi.fn(async () => true)
-    const { bypass, clock, modes, probeSystemProxy } = await wentDirect({ directEnded, probeSiteDirect })
+    const stillProxy: unknown[] = []
+    const { bypass, clock, modes, probeSystemProxy } = await wentDirect({
+      directEnded,
+      probeSiteDirect,
+      log: (_level, event, _message, detail) => { if (event === 'proxy-bypass.still-proxy') stillProxy.push(detail) },
+    })
     probeSystemProxy.mockRejectedValue(new Error(message))
     clock.now += systemProxyCheckIntervalMs
     bypass.routeSiteRequest(siteUrl)
@@ -1164,6 +1232,32 @@ describe('proxy bypass after the whole app went direct', () => {
     expect(probeSiteDirect).not.toHaveBeenCalled()
     expect(modes).toEqual(['direct'])
     expect(directEnded).not.toHaveBeenCalled()
+    // A proxy still refused is said once with its code, not again at the look five minutes on.
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(probeSystemProxy).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(stillProxy).toEqual(failureCode ? [{ failureCode }] : [])
+  })
+
+  it('says again that the proxy is still refused once the code it is refused with changes', async () => {
+    const stillProxy: unknown[] = []
+    const { bypass, clock, probeSystemProxy } = await wentDirect({
+      log: (_level, event, _message, detail) => { if (event === 'proxy-bypass.still-proxy') stillProxy.push(detail) },
+    })
+    // The proxy app is still not running at the first two looks; by the third it runs but turns the service away.
+    probeSystemProxy
+      .mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+      .mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+      .mockRejectedValueOnce(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))
+    for (let looks = 1; looks <= 3; looks += 1) {
+      clock.now += systemProxyCheckIntervalMs
+      bypass.routeSiteRequest(siteUrl)
+      await vi.waitFor(() => expect(probeSystemProxy).toHaveBeenCalledTimes(looks))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    expect(bypass.active()).toBe(true)
+    expect(stillProxy).toEqual([{ failureCode: 'ERR_PROXY_CONNECTION_FAILED' }, { failureCode: 'ERR_TUNNEL_CONNECTION_FAILED' }])
   })
 
   it('stays direct while acceleration is running, even though the proxy app is back without forwarding the service', async () => {

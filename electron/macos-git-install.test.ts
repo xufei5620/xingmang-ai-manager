@@ -63,6 +63,14 @@ describe('macOS Git install through the Command Line Tools installer', () => {
     })).rejects.toThrow('没能打开苹果的安装窗口')
   })
 
+  it('keeps what xcode-select said as the cause when the installer window does not open', async () => {
+    const refused = exitError('xcode-select: error: invalid developer directory')
+    const failure: unknown = await requestMacCommandLineToolsInstall(async () => { throw refused })
+      .catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error && failure.cause).toBe(refused)
+  })
+
   it('finds the Apple installer in the process list', () => {
     expect(isCommandLineToolsInstallerListed([
       '/sbin/launchd',

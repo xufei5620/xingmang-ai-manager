@@ -338,9 +338,12 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
     const ensureShellProfile = options.ensureShellProfile
     if (!ensureShellProfile || shellProfileCheck) return
     shellProfileCheck = ensureShellProfile(reason).then((outcome) => {
+      // 跳过的 shell 要明说，别让客服看成「这一步没问题」。
       options.log?.('info', 'cli.shell-profile.checked', outcome === 'added'
         ? '已让新开的终端可以直接敲工具名'
-        : '终端启动设置无需改动', { provider, reason, outcome })
+        : outcome === 'unsupported-shell'
+          ? '登录 shell 不是 zsh、bash、fish，没改终端启动设置'
+          : '终端启动设置无需改动', { provider, reason, outcome })
     }, (error: unknown) => {
       // Forget the failure so the next install tries again.
       shellProfileCheck = null
