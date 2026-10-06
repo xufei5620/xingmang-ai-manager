@@ -5097,6 +5097,8 @@ test('Chinese locale can be retried after a runtime failure without mistaking th
     await openToolConfiguration(page)
     await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
     await page.getByText('界面语言与文件夹权限', { exact: true }).click()
+    // Codex 的中文开关只在从星芒打开时拿得到：这段先说清从哪打开，再说重试。
+    await page.getByText('中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。', { exact: true }).waitFor()
     await page.getByRole('button', { name: '检查中文界面', exact: true }).click()
     await page.getByText('已保存的语言设置：简体中文。如果仍显示英文，可再次启用中文界面。', { exact: true }).waitFor()
     await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
@@ -5124,7 +5126,9 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     for (const button of [decline, page.getByTestId('codex-chinese-enable')]) {
       assert.equal(await button.evaluate((element) => element.classList.contains('xm-btn-primary')), false)
     }
-    assert.doesNotMatch(await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText(), /调试端口/)
+    const question = await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText()
+    assert.doesNotMatch(question, /调试端口/)
+    assert.match(question, /关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
 
     await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
