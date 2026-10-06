@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, lowBalanceText, pickFirstRunTool, type HomeProps } from './Home'
+import { Home, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -228,6 +228,40 @@ describe('renderer-v2 home first-run suggestion', () => {
   // 「最近」里已经有它的记录，说明早就用起来了。
   it('skips a tool that already shows up in the records', () => {
     expect(pickFirstRunTool(installedTools(), {}, [], new Set<ProviderId>(['claude', 'codex']))?.id).toBe('grok')
+  })
+})
+
+// 「最近」卡在静态渲染里还没读到记录，按钮本身由 app-check.mjs 的浏览器用例盯着；这里只盯判断。
+describe('renderer-v2 home recent resume for tools that are not installed (第四十一批 A)', () => {
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const missing = { ...cliStatus, installed: false, version: null, path: null }
+
+  it('offers it for an installed tool', () => {
+    expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'claude')).toBe(true)
+  })
+
+  // 点下去走的是同一个「打开」，只会弹「工具尚未安装，请先完成准备。」。
+  it('drops it for a tool that is not installed', () => {
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: missing }), null), 'claude')).toBe(false)
+  })
+
+  // 只装了 Codex 桌面端：记录在 Codex 名下，接着聊开的却是 Codex CLI。
+  it('looks at Codex CLI rather than the desktop app for a Codex record', () => {
+    const desktopOnly = { ...snapshot({ ...allTools, codex: missing }), platform: { codexDesktop: { launch: true } } } as unknown as ToolboxSnapshot
+    const tools = presentTools(desktopOnly, null)
+    expect(tools.find((tool) => tool.id === 'codexDesktop')?.status.installed).toBe(true)
+    expect(recentResumeOffered(tools, 'codex')).toBe(false)
+  })
+
+  // 检测失败不当没装（A4）：按钮照旧给，点了说检测失败的原因。
+  it('keeps it when detection failed instead of calling the tool missing', () => {
+    const failed = { ...missing, detectionFailed: true, detectionError: 'npm 查询超时' }
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: failed }), null), 'claude')).toBe(true)
+  })
+
+  // 检测结果还没回来：照旧摆着、灰着等，回来是没装的再收走。
+  it('keeps it while the scan has not come back yet', () => {
+    expect(recentResumeOffered([], 'claude')).toBe(true)
   })
 })
 
