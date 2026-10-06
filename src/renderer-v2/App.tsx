@@ -28,7 +28,7 @@ import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeR
 import { canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
-import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -1237,6 +1237,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       return launch(id, 'open', undefined, false, epoch)
     }
   }
+  /**
+   * 托盘「已安装的工具」和快捷键 Ctrl / Command + 1～5 没有按钮可看，就在首页那颗「打开 xx」
+   * 写的同一个文件夹打开（launchWorkspaces）。以前这两处什么都不带，每次都弹选择框（第四十批 A）。
+   * 记录读不到就只看上次选过的文件夹，都没有才弹；文件夹不在了，launchRemembered 提示一句再弹。
+   * Codex 桌面端自己管工作区，照旧。
+   */
+  async function requestLaunchInLastWorkspace(id: ToolId) {
+    if (id === 'codexDesktop') { requestLaunch(id); return }
+    const epoch = accountEpoch.current
+    const recent = await toolsApi.recent().catch(() => null)
+    // 读记录的这一下换了账号：这次按下去是上一个账号的，不接着打开（同 launch 里的 epoch）。
+    if (!launchIsCurrent(epoch)) return
+    requestLaunch(id, launchWorkspaces(recent?.items ?? [], providerFor(id), toolbox.snapshot?.config.rememberedWorkspace)[0]?.path)
+  }
   // 设置窗口写进了新 Key：读回配置成功才告诉密钥页，好收起那条「还在用刚撤销的密钥」（#546）。
   // 读回失败就不收，警告宁可多留一会儿。
   function confirmToolKeyWritten(tool: ToolId) {
@@ -1320,7 +1334,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (target === 'announcement') { if (session.authenticated) setAnnouncementOpen(true) }
     else navigate(target)
   }), [native, navigate, session])
-  useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) requestLaunch(id) }), [native, toolbox.snapshot, session.authenticated])
+  useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) void requestLaunchInLastWorkspace(id) }), [native, toolbox.snapshot, session.authenticated])
   useEffect(() => {
     const unsubscribe = native.onWindowCloseRequest(({ requestId }) => {
       void native.replyWindowClose(requestId, {
@@ -1346,7 +1360,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
       if (/^[1-5]$/.test(event.key)) {
         const tool = tools.filter((entry) => !entry.hidden?.(os))[Number(event.key) - 1]
-        if (tool && isToolId(tool.id)) { event.preventDefault(); requestLaunch(tool.id) }
+        if (tool && isToolId(tool.id)) { event.preventDefault(); void requestLaunchInLastWorkspace(tool.id) }
       }
     }
     document.addEventListener('keydown', onShortcut)
