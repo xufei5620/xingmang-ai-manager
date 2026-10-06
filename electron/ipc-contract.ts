@@ -100,6 +100,7 @@ import type {
 import type {
   AppConfigSummary as MainAppConfigSummary,
   CliLaunchResult as MainCliLaunchResult,
+  CliLeftoverCleanupResult as MainCliLeftoverCleanupResult,
   CliStatus as MainCliStatus,
   CliUninstallOptions as MainCliUninstallOptions,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
@@ -305,6 +306,7 @@ export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
+export type CliLeftoverCleanupResult = MainCliLeftoverCleanupResult
 export type CliUninstallOptions = MainCliUninstallOptions
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
@@ -820,6 +822,11 @@ export interface XingmangInvokeContract {
   cancelCliInstall: IpcInvokeDefinition<'cli:cancel-install', [provider: ProviderId], InstallCancelResult>
   /** options 省略 = 只卸载；reinstall = 「换成星芒装的」那一次，主进程先看盘够不够装回来再动手。 */
   uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId, options?: CliUninstallOptions], ToolUninstallResult>
+  /**
+   * 卸载框里的「帮我清理」（已知48）：只说是哪个工具。删哪几个文件由主进程按那次卸载自己记下的定，
+   * 删之前逐个再核对；不收渲染层给的路径。
+   */
+  cleanUninstallLeftovers: IpcInvokeDefinition<'cli:clean-uninstall-leftovers', [provider: ProviderId], CliLeftoverCleanupResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
   installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>
@@ -1315,6 +1322,7 @@ export const ipcInvokeChannels = {
   installCli: 'cli:install',
   cancelCliInstall: 'cli:cancel-install',
   uninstallCli: 'cli:uninstall',
+  cleanUninstallLeftovers: 'cli:clean-uninstall-leftovers',
   checkCliUpdate: 'cli:check-update',
   getCodexSetupStatus: 'setup:codex-status',
   installCodexDesktop: 'desktop:install-codex',

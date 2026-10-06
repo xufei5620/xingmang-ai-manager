@@ -129,7 +129,7 @@ import type { Conversation } from './features/chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './features/app/data-transfer'
 import { rememberedLoginAction, rememberedLoginForgottenMessage, sessionOnlyLoginNotice } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
-import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
+import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { describeNodeReplaceOutcome, nodeReplaceOffered } from './features/tools/node-replace'
@@ -2435,13 +2435,14 @@ export function MaintenancePage({
                       if (result.outcome === 'manual-required') {
                         // The backend text promises a copyable cleanup command,
                         // so it has to reach a surface that can show one.
-                        setManualUninstall({
-                          name:
+                        setManualUninstall(
+                          manualUninstallState(
                             tools.find((tool) => tool.id === remove)?.name ??
+                              remove,
                             remove,
-                          reason: result.manualHelp.reason,
-                          manualCommand: result.manualHelp.manualCommand,
-                        })
+                            result.manualHelp,
+                          ),
+                        )
                         setRemove(null)
                         // 程序已经卸掉了一部分，首页那份也要重查。
                         onSystemChanged?.()
@@ -2478,6 +2479,7 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+          cleanUp={(tool) => api.cleanUninstallLeftovers(tool)}
         />
       )}
       {nodeReplaceOpen && (

@@ -1374,6 +1374,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'runtime:install-python': 'Python 3.12 自动安装',
   'cli:install': 'CLI 安装或更新',
   'cli:uninstall': 'CLI 卸载',
+  'cli:clean-uninstall-leftovers': 'CLI 卸载残留清理',
   'cli:check-update': 'CLI 单项更新检查',
   'setup:codex-status': 'Codex 初始化状态检测',
   'desktop:install-codex': 'Codex 桌面端安装',
@@ -1685,6 +1686,10 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'runtime:install-node') return 'Node.js LTS 自动安装完成'
   if (channel === 'runtime:install-python') return 'Python 3.12 自动安装完成'
   if (channel === 'cli:uninstall' && provider) return `${provider} 卸载已完成`
+  // 还剩文件时不写「完成」：客服看反馈报告要分得清是删干净了，还是客户又点了一次。
+  if (channel === 'cli:clean-uninstall-leftovers' && provider && isRecord(result) && typeof result.remaining === 'number') {
+    return result.remaining > 0 ? `${provider} 卸载残留还剩 ${result.remaining} 个文件没删掉` : `${provider} 卸载残留已清理`
+  }
   if (channel === 'cli:check-update' && provider) return `${provider} 更新检查已完成`
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
   if (channel === 'desktop:reset-codex') return 'Codex 桌面端重置已完成'
@@ -2567,6 +2572,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.runtimeLog.exception('maintenance', 'cli.uninstall.failed', error, { provider })
       throw error
     }
+  })
+  // 只收工具名：删哪几个文件由主进程按那次卸载自己记下的定，渲染层多传什么都不看。
+  registerTrustedHandler('cli:clean-uninstall-leftovers', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    return service.cleanUninstallLeftovers(provider)
   })
   registerTrustedHandler('cli:check-update', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')

@@ -319,6 +319,13 @@
 .v2-business-legal {
   font: 14px/1.75 var(--font);
 }
+/* 卸载没删干净的框：「帮我清理」放在「复制命令」前面，连同「命令已复制」排一行。 */
+.v2-manual-uninstall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .v2-business-update-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;

@@ -259,6 +259,7 @@ let nextAccountSessionHeld = false
 let releaseAccountSession: () => void = () => undefined
 let nextUninstallHeld = false
 let releaseUninstall: () => void = () => undefined
+let leftoverCleanups = 0
 let nextInstallHeld = false
 let releaseInstall: (error?: string) => void = () => undefined
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
@@ -623,9 +624,14 @@ const methods = {
     if (query.has('uninstallLeftovers')) {
       const reason = 'Claude Code 已卸载，但有 1 个旧版本文件没能删除，可能还有 Claude Code 在运行。'
       return { outcome: 'manual-required' as const, previousVersion, error: reason,
-        manualHelp: { reason, manualCommand: 'Remove-Item -LiteralPath "C:\\Users\\Fixture\\.local\\share\\claude\\versions\\1.2.3"' } }
+        manualHelp: { reason, manualCommand: 'Remove-Item -LiteralPath "C:\\Users\\Fixture\\.local\\share\\claude\\versions\\1.2.3"', cleanUpAvailable: true } }
     }
     return { outcome: 'uninstalled' as const, previousVersion }
+  },
+  // 「帮我清理」：第一次那个文件还被占着，第二次删掉了。
+  cleanUninstallLeftovers: async () => {
+    leftoverCleanups += 1
+    return { remaining: leftoverCleanups === 1 ? 1 : 0 }
   },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
   getAccountKeys: async () => ({ keys: query.has('keyOptions') ? [
