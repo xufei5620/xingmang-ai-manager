@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { before, after, test } from 'node:test'
+import { before, after } from 'node:test'
+// Windows CI deals this file's tests across runners; see e2e/shard-tests.mjs.
+import { test } from '../../../e2e/shard-tests.mjs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import react from '@vitejs/plugin-react'
@@ -4682,6 +4684,30 @@ test('a saved account with the same id switches platform without reusing NewAPI 
   } finally { await page.close() }
 })
 
+test('tools on the backup route follow a switch to a historical account', async () => {
+  const page = await open('crossSite=1&directRelayActive=1&routedSwitch=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    const list = page.getByTestId('saved-accounts-list')
+    await expect(list.getByTestId('account-sync-claude')).toBeChecked()
+    await expect(list.getByTestId('account-sync-codex')).toBeChecked()
+    await list.getByRole('button', { name: '切换', exact: true }).click()
+    // 两个都换过去了，没有要用户看的：切换框自己关掉，不留「用的是别处的配置，保持原配置」。
+    await page.getByRole('dialog', { name: '切换账号', exact: true }).waitFor({ state: 'hidden' })
+    const writes = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').map((entry) => entry.args[0]))
+    assert.deepEqual(writes, [
+      { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
+      { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
+    ])
+    const addresses = await page.evaluate(async () => {
+      const { providers } = await window.xingmang.getConfig()
+      return [providers.claude.actualBaseUrl, providers.codex.actualBaseUrl]
+    })
+    assert.deepEqual(addresses, ['https://api.solov.cc', 'https://api.solov.cc/v1'])
+    await clean(page)
+  } finally { await page.close() }
+})
 
 test('relogin on an expired saved account opens the login dialog on that account source with its remembered email, not its nickname', async () => {
   const page = await open('crossSite=1&rememberedLegacy=1')

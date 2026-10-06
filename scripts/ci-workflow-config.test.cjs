@@ -262,31 +262,59 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
   assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
 
-  // test:v2:browser is dispatched as two runners, split only along the seam
-  // that leaves the shared Vite dependency cache alone. Its configFile:false
-  // files each build a dev server on the same root and share one on-disk
-  // node_modules/.vite cache that the earlier files warm for the later ones.
-  // Split across runners, app-check.mjs — which runs last and benefits most —
-  // got a cold cache and blew its 90s fixture mount budget on a mid-run
-  // re-optimisation. So those stay on one runner in their original order, and
-  // only suites that bring a cacheDir of their own may leave.
+  // test:v2:browser runs whole nowhere in CI. The two suites that bring a Vite
+  // cacheDir of their own get a runner of their own; the configFile:false
+  // browser-checks are test:v2:browser:fixture, which Linux runs whole and
+  // Windows cuts into the numbered halves below.
   const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
   for (const script of ['test:v2:browser', 'test:v2:browser:fixture', 'test:v2:browser:e2e']) {
     assert.match(scripts[script], /^node --test --test-concurrency=1 /, `${script} must stay serialised`)
     assert.ok(suites(script).length > 0, `${script} must still name its suites`)
   }
-  assert.ok(shardCommands.includes('npm run test:v2:browser:fixture'), 'the matrix must dispatch test:v2:browser:fixture')
   assert.ok(shardCommands.includes('npm run test:v2:browser:e2e'), 'the matrix must dispatch test:v2:browser:e2e')
-  assert.ok(!shardCommands.includes('npm run test:v2:browser'), 'test:v2:browser must not also run whole in CI')
+  for (const whole of ['npm run test:v2:browser', 'npm run test:v2:browser:fixture']) {
+    assert.ok(!shardCommands.includes(whole), `${whole} must not also run whole on Windows`)
+  }
   const whole = suites('test:v2:browser')
   const fixture = suites('test:v2:browser:fixture')
   const e2e = suites('test:v2:browser:e2e')
-  assert.deepEqual([...fixture, ...e2e].sort(), [...whole].sort(), 'the two runners must add up to exactly test:v2:browser')
-  assert.deepEqual(fixture, whole.filter((file) => fixture.includes(file)), 'the fixture runner must keep the original order')
-  assert.equal(fixture.at(-1), 'src/renderer-v2/testing/app-check.mjs', 'app-check.mjs must run last, after the files that warm its cache')
+  assert.deepEqual([...fixture, ...e2e].sort(), [...whole].sort(), 'the fixture and e2e runners must add up to exactly test:v2:browser')
   for (const file of e2e) {
     assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /cacheDir: 'node_modules\/\.vite-[\w-]+'/,
-      `${file} may only leave the fixture runner because it brings its own Vite cacheDir`)
+      `${file} may only leave the fixture runners because it brings its own Vite cacheDir`)
+  }
+
+  // The Windows fixture halves. app-check.mjs alone is two thirds of the
+  // fixture time, so it deals its tests to every half through
+  // e2e/shard-tests.mjs and runs in all of them; every other file runs in
+  // exactly one. Each half names its own share, and every share must be
+  // dispatched, or the tests dealt to a missing one would run nowhere.
+  const fixtureShards = Object.keys(scripts)
+    .filter((name) => /^test:v2:browser:fixture:\d+$/.test(name))
+    .sort((left, right) => Number(left.split(':').at(-1)) - Number(right.split(':').at(-1)))
+  const total = fixtureShards.length
+  assert.ok(total >= 2, 'the fixture browser-checks must be cut into at least two Windows runners')
+  const dealtImport = /import \{ test \} from '(?:\.\.\/)+e2e\/shard-tests\.mjs'/
+  const dealt = fixture.filter((file) => dealtImport.test(fs.readFileSync(path.join(root, file), 'utf8')))
+  assert.ok(dealt.includes('src/renderer-v2/testing/app-check.mjs'), 'app-check.mjs must deal its tests across the fixture runners')
+  for (const file of dealt) {
+    const nodeTestImport = fs.readFileSync(path.join(root, file), 'utf8').match(/import \{([^}]*)\} from 'node:test'/)
+    assert.doesNotMatch(nodeTestImport?.[1] ?? '', /\btest\b/, `${file} must register every test through the deal, not node:test directly`)
+  }
+  const placed = new Map(fixture.map((file) => [file, 0]))
+  fixtureShards.forEach((name, index) => {
+    assert.equal(name, `test:v2:browser:fixture:${index + 1}`, 'fixture halves must be numbered from 1 without gaps')
+    assert.ok(shardCommands.includes(`npm run ${name}`), `the matrix must dispatch ${name}`)
+    assert.ok(scripts[name].startsWith(`cross-env XINGMANG_TEST_SHARD=${index + 1}/${total} node --test --test-concurrency=1 `),
+      `${name} must stay serialised and select share ${index + 1} of ${total}`)
+    for (const file of suites(name)) {
+      assert.ok(placed.has(file), `${name} runs ${file}, which test:v2:browser:fixture does not`)
+      placed.set(file, placed.get(file) + 1)
+    }
+  })
+  for (const [file, count] of placed) {
+    assert.equal(count, dealt.includes(file) ? total : 1,
+      dealt.includes(file) ? `${file} deals its tests, so every fixture half must run it` : `${file} must run in exactly one fixture half`)
   }
 
   // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
@@ -317,6 +345,38 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.deepEqual(named('test:browser', /\.cjs$/), [])
   assert.ok(named('test:browser', /\.mjs$/).length > 0, 'test:browser must still name its suites')
   assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
+})
+
+// The halves above only add up to the whole file while the deal gives every
+// test to exactly one share, and a misspelt share has to stop the run rather
+// than quietly register everything or nothing.
+test('dealing a file across the fixture halves runs each of its tests exactly once', async () => {
+  const shard = await import(require('node:url').pathToFileURL(path.join(root, 'e2e', 'shard-tests.mjs')).href)
+
+  assert.equal(shard.parseTestShard(undefined), null)
+  assert.equal(shard.parseTestShard(''), null)
+  assert.deepEqual(shard.parseTestShard('2/3'), { index: 2, total: 3 })
+  for (const malformed of ['0/2', '3/2', '1/0', '1', '1/2/3', ' 1/2', '-1/2', 'a/b']) {
+    assert.throws(() => shard.parseTestShard(malformed), /XINGMANG_TEST_SHARD must name one shard as index\/total/, malformed)
+  }
+
+  const names = Array.from({ length: 11 }, (_, index) => `case ${index}`)
+  function deal(value) {
+    const registered = []
+    const register = shard.createShardedTest(shard.parseTestShard(value), (name) => registered.push(name))
+    for (const name of names) register(name, () => {})
+    return registered
+  }
+  assert.deepEqual(deal(undefined), names, 'an unsharded run must register every test')
+  for (const total of [1, 2, 3]) {
+    const shares = Array.from({ length: total }, (_, index) => deal(`${index + 1}/${total}`))
+    assert.deepEqual(shares.flat().sort(), [...names].sort(), `${total} shares must add up to the whole file exactly once`)
+    const sizes = shares.map((share) => share.length)
+    assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 1, `${total} shares must split the file evenly`)
+  }
+  // Declaration order, not names: a test added in the middle moves the ones
+  // after it to the next share, and that is fine as long as every share runs.
+  assert.deepEqual(deal('1/2'), ['case 0', 'case 2', 'case 4', 'case 6', 'case 8', 'case 10'])
 })
 
 test('the release gate only runs smoke scripts the Windows required job also runs', () => {
