@@ -12,7 +12,7 @@ import { Shell as AppFrame } from './features/shell/Shell'
 import { createChatTransfer } from './features/chat/transfer'
 import { isOffline, offlineActionMessage, offlineCause } from './features/shell/online-status'
 import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './features/shell/useOnlineStatus'
-import { buildEnvironmentStatus, publishDiagnosticsCounts, useDiagnosticsCounts } from './features/app/environment-status'
+import { buildEnvironmentStatus, diagnosticsRevision, environmentJobsFinished, markDiagnosticsStale, publishDiagnosticsCounts, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
@@ -95,6 +95,8 @@ interface PendingConfirmation { title: string; body: string; label: string; dang
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
   result?: AccountBootstrapResult
+  /** result 落下来的时刻，首页「已完成…」那句据此到点收起（已知12）。 */
+  finishedAt?: number
   error?: string
 }
 
@@ -249,6 +251,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { subscription, refresh: refreshSubscription } = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
   const browserOnline = useBrowserOnline()
   const diagnosticsCounts = useDiagnosticsCounts()
+  // 工具行上装、卸、换来源这类任务一收尾，状态栏那份检查结果就说不准了（已知6）。
+  const previousJobs = useRef<readonly string[]>([])
+  useEffect(() => {
+    const current = Object.keys(toolbox.jobs)
+    if (environmentJobsFinished(previousJobs.current, current)) markDiagnosticsStale()
+    previousJobs.current = current
+  }, [toolbox.jobs])
   const offline = isOffline({ browserOnline, networkFailures: session.authenticated ? balanceState.networkFailures : 0 })
   // 安装任务跑到一半要看的是「现在」断没断网（换成星芒装的，动手卸之前），闭包里的 offline 停在点按钮那一刻。
   const offlineNow = useRef(offline)
@@ -410,6 +419,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       try {
         const result = await bootstrapAccountTools(native, userId, updateProgress, mode, onlyProviders)
         outcome.result = result
+        // 真往工具配置里写了（或顺手修了 Codex 认不出的老配置），状态栏那份检查结果就说不准了（已知6）。
+        // 换了账号也照样算：文件已经改了。
+        if (result.configured.length || result.repairedShadowed?.length) markDiagnosticsStale()
         logAccountBootstrap(describeAccountBootstrapResult(mode, result))
         // 开机恢复只核对连没连上、一个字不写，老客户因此拿不到后来加进模板的设置。
         // 这里让主进程给当前账号写过、版本落后的配置补一次缺省项；补不成只进日志，
@@ -425,7 +437,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         }
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
-          ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result }
+          ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result, finishedAt: Date.now() }
           : current)
         setWorkspaceEntered(true)
         // 只重读配置，不再把整轮环境探测走第二遍：跟着 Key 变的只有配置状态，
@@ -643,9 +655,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (boot !== 'ready' || !session.authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
     diagnosticsStarted.current = true
     // 开机这次紧跟着首页扫描，让主进程直接用那轮的探测结果，不再重跑一遍子进程。
+    const started = diagnosticsRevision()
     void native.runDiagnostics({ reuseRecentScan: true }).then((report) => {
       if (!mounted.current) return
-      publishDiagnosticsCounts(report.counts)
+      publishDiagnosticsCounts(report.counts, started)
       const notice = startupDiagnosticsIssues(report.counts)
       if (notice) noteStartupCheck(notice)
     }).catch((cause) => { if (mounted.current) noteStartupCheck(startupCheckFailure('diagnostics', errorMessage(cause, '启动环境检查没有完成'))) })
@@ -1313,6 +1326,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   function finishConfigSave(warning?: string) {
     const epoch = accountEpoch.current
+    markDiagnosticsStale()
     setConfigTool(null)
     toast.show('配置保存成功', 'ok')
     if (warning) toast.show(warning, 'warn')
@@ -1584,11 +1598,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   onSessionsChanged={refreshRecent}
                   beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
-                  onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
-                  onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
+                  onBackupRestored={() => { markDiagnosticsStale(); void toolbox.refreshConfig().catch(() => undefined) }}
+                  onToolConfigSaved={() => { markDiagnosticsStale(); void toolbox.refreshConfig().catch(() => undefined) }}
                   toolConfigConfirmed={toolConfigConfirmed}
                   installedProviders={installedProviders}
-                  onSystemChanged={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
+                  onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
