@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
-import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -791,5 +791,38 @@ describe('renderer subscription warning', () => {
 
   it('warns regardless of the wallet when only the subscription is spent', () => {
     expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10 月 3 日到期，到期后工具就用不了了，续费后可继续使用。')
+  })
+})
+
+describe('renderer official account subtitle', () => {
+  const now = new Date(2026, 9, 6, 12, 0, 0).getTime()
+
+  it('names the plan and how soon it renews, with the full date for the hover', () => {
+    const renewsAt = new Date(2026, 9, 10, 12, 0, 0).toISOString()
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: renewsAt }, now))
+      .toEqual({ text: '官方账号 · Plus · 4天后续期', renewal: '2026年10月10日续期' })
+  })
+
+  it('counts hours and minutes when the renewal is less than a day away', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Pro', officialAccountRenewsAt: new Date(now + 5 * 3_600_000).toISOString() }, now).text)
+      .toBe('官方账号 · Pro · 5小时后续期')
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Pro', officialAccountRenewsAt: new Date(now + 20 * 60_000).toISOString() }, now).text)
+      .toBe('官方账号 · Pro · 20分钟后续期')
+  })
+
+  it('shows the plan alone when no renewal date was read', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: null }, now))
+      .toEqual({ text: '官方账号 · Plus' })
+  })
+
+  it('leaves out a renewal date that has already passed or cannot be read', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: new Date(now - 86_400_000).toISOString() }, now))
+      .toEqual({ text: '官方账号 · Plus' })
+    expect(officialAccountSubtitle({ officialAccountPlan: null, officialAccountRenewsAt: 'not a date' }, now))
+      .toEqual({ text: '官方账号' })
+  })
+
+  it('keeps the plain wording when nothing about the plan is known', () => {
+    expect(officialAccountSubtitle({}, now)).toEqual({ text: '官方账号' })
   })
 })

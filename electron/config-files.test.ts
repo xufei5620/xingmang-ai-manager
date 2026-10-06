@@ -1159,6 +1159,25 @@ describe('native CLI configuration files', () => {
     expect(asRecord(merged.env)?.CUSTOM_TOKEN).toBe('preserved')
   })
 
+  it('skips command confirmation on merge only when the user wrote no permission mode', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ permissions: { allow: ['Bash(ls:*)'] } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const filled = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(filled.permissions)?.defaultMode).toBe('bypassPermissions')
+    expect(asRecord(filled.permissions)?.allow).toEqual(['Bash(ls:*)'])
+    expect(filled.skipDangerousModePermissionPrompt).toBe(true)
+
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }, null, 2)}\n`, 'utf8')
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const chosen = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(chosen.permissions)?.defaultMode).toBe('acceptEdits')
+  })
+
   it('keeps the Claude self-updater off after switching back to the official account', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -3667,6 +3686,25 @@ describe('bringing an older account config up to the current template', () => {
     expect(parsed.language).toBe('English')
     expect(parsed.cleanupPeriodDays).toBe(365)
     expect(parsed.model).toBe('claude-opus-4-6')
+    expect(parsed.permissions.defaultMode).toBe('bypassPermissions')
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(true)
+  })
+
+  it('leaves a Claude permission mode the user chose when filling defaults', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const settingsPath = providerConfigPaths('claude', roots)[0]
+    writeFile(settingsPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+      permissions: { defaultMode: 'default' },
+      skipDangerousModePermissionPrompt: false,
+    }))
+
+    fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.permissions.defaultMode).toBe('default')
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(false)
   })
 
   it('fills Gemini defaults and adds the helper model mapping only when none is there', () => {

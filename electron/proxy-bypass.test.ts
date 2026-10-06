@@ -143,12 +143,30 @@ describe('proxy bypass', () => {
 })
 
 describe('direct connection probe', () => {
-  it('counts any real answer from the service, without following redirects or reading the body', async () => {
-    const cancel = vi.fn(async () => undefined)
-    const fetchImpl = vi.fn(async () => ({ status: 503, type: 'basic', body: { cancel } }) as unknown as Response)
+  it.each([200, 503])('counts a JSON answer from the service whatever its status (%s), without following redirects', async (code) => {
+    const fetchImpl = vi.fn(async () => new Response('{"success":true}', { status: code, headers: { 'Content-Type': 'application/json; charset=utf-8' } }))
     expect(await probeDirectConnection(fetchImpl, probeUrl)).toBe(true)
-    expect(fetchImpl).toHaveBeenCalledWith(probeUrl, expect.objectContaining({ method: 'GET', redirect: 'manual', signal: expect.any(AbortSignal) }))
+    expect(fetchImpl).toHaveBeenCalledWith(probeUrl, expect.objectContaining({
+      method: 'GET', redirect: 'manual', headers: { Accept: 'application/json' }, signal: expect.any(AbortSignal),
+    }))
+  })
+
+  it('does not count a page someone else answered with, as a company gateway, a sign-in portal or a broken gateway does', async () => {
+    const cancel = vi.fn(async () => undefined)
+    const page = vi.fn(async () => ({ status: 200, type: 'basic', headers: new Headers({ 'Content-Type': 'text/html' }), body: { cancel } }) as unknown as Response)
+    expect(await probeDirectConnection(page, probeUrl)).toBe(false)
+    // Not read: whatever a page holds, it is not the service.
     expect(cancel).toHaveBeenCalled()
+    const gateway = vi.fn(async () => new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } }))
+    expect(await probeDirectConnection(gateway, probeUrl)).toBe(false)
+    // Labelled JSON, but it is not.
+    const mislabelled = vi.fn(async () => new Response('<html>blocked</html>', { headers: { 'Content-Type': 'application/json' } }))
+    expect(await probeDirectConnection(mislabelled, probeUrl)).toBe(false)
+  })
+
+  it('reads no more of an answer than a status answer could ever be', async () => {
+    const huge = vi.fn(async () => new Response(JSON.stringify({ padding: 'x'.repeat(70 * 1024) }), { headers: { 'Content-Type': 'application/json' } }))
+    await expect(probeDirectConnection(huge, probeUrl)).rejects.toThrow('安全上限')
   })
 
   it('rejects a redirect, which is what a sign-in portal answers with', async () => {
@@ -1392,6 +1410,67 @@ describe('site fetch', () => {
     await expect(accountFetch(probeUrl, { signal: controller.signal })).rejects.toThrow('aborted')
     expect(bypass.siteRouteFailed).toHaveBeenCalledWith(1)
   })
+
+  it.each([
+    ['a company gateway\'s block page', () => new Response('<html>访问受限</html>', { status: 403, headers: { 'Content-Type': 'text/html; charset=utf-8' } })],
+    ['a sign-in portal\'s page', () => new Response('<html>登录</html>', { status: 200, headers: { 'Content-Type': 'text/html' } })],
+    ['a redirect it was not allowed to follow', () => ({ type: 'opaqueredirect', status: 0, headers: new Headers(), body: null }) as unknown as Response],
+  ])('reports %s on the direct session as not getting through, and hands it to the caller as it came', async (_case, answer) => {
+    const { bypass, viaSession, viaDirect } = routes(1)
+    const page = answer()
+    viaDirect.mockResolvedValueOnce(page)
+    expect(await createSiteFetch(bypass, viaSession, viaDirect)(siteUrl)).toBe(page)
+    expect(bypass.siteRouteFailed).toHaveBeenCalledWith(1)
+  })
+
+  it('reports a reply cut midway on the direct session once the caller reads that far, and the caller still gets the error', async () => {
+    const { bypass, viaSession, viaDirect } = routes(1)
+    let sent = false
+    viaDirect.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[]}\n\n'))
+        } else controller.error(new TypeError('terminated', { cause: new Error('net::ERR_CONNECTION_RESET') }))
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } }))
+    const response = await createSiteFetch(bypass, viaSession, viaDirect)(siteUrl, { method: 'POST' })
+    expect(bypass.siteRouteFailed).not.toHaveBeenCalled()
+    await expect(response.text()).rejects.toThrow('terminated')
+    expect(bypass.siteRouteFailed).toHaveBeenCalledWith(1)
+  })
+
+  it('does not report a reply the caller stopped reading itself, but does for account requests, which only stop when no answer came in time', async () => {
+    function stoppedWhileReading(controller: AbortController): Response {
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(stream) {
+          controller.abort()
+          stream.error(new DOMException('This operation was aborted', 'AbortError'))
+        },
+      }), { headers: { 'Content-Type': 'application/json' } })
+    }
+    const ai = routes(1)
+    const stopped = new AbortController()
+    ai.viaDirect.mockResolvedValueOnce(stoppedWhileReading(stopped))
+    await expect((await createSiteFetch(ai.bypass, ai.viaSession, ai.viaDirect)(siteUrl, { signal: stopped.signal })).text()).rejects.toThrow('aborted')
+    expect(ai.bypass.siteRouteFailed).not.toHaveBeenCalled()
+
+    const account = routes(1)
+    const timedOut = new AbortController()
+    account.viaDirect.mockResolvedValueOnce(stoppedWhileReading(timedOut))
+    const accountFetch = createSiteFetch(account.bypass, account.viaSession, account.viaDirect, { abortMeansUnreachable: true })
+    await expect((await accountFetch(probeUrl, { signal: timedOut.signal })).text()).rejects.toThrow('aborted')
+    expect(account.bypass.siteRouteFailed).toHaveBeenCalledWith(1)
+  })
+
+  it('leaves the answers of the service itself alone, JSON errors included, and reads them through unchanged', async () => {
+    const { bypass, viaSession, viaDirect } = routes(1)
+    viaDirect.mockResolvedValueOnce(new Response('{"error":{"message":"余额不足"}}', { status: 402, headers: { 'Content-Type': 'application/json' } }))
+    const response = await createSiteFetch(bypass, viaSession, viaDirect)(siteUrl, { method: 'POST' })
+    expect(response.status).toBe(402)
+    expect(await response.json()).toEqual({ error: { message: '余额不足' } })
+    expect(bypass.siteRouteFailed).not.toHaveBeenCalled()
+  })
 })
 
 describe('site routing as main.ts wires it', () => {
@@ -1412,18 +1491,23 @@ describe('site routing as main.ts wires it', () => {
     return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   }
 
+  // What the service answers at its status address, whichever way the request got there.
+  function statusAnswer(): Response {
+    return new Response(JSON.stringify({ success: true, message: '', data: status }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   function routing(overrides: Partial<Parameters<typeof createSiteRouting>[0]> = {}) {
     const modes: string[] = []
     // The app session's proxy forwards everything except the service, where it hangs until
     // the caller gives up. Once the whole app is switched, the session itself goes direct.
     const sessionFetch = vi.fn<typeof fetch>(async (input) => {
-      if (modes.at(-1) === 'direct') return new Response('direct')
+      if (modes.at(-1) === 'direct') return requestUrl(input) === probeUrl ? statusAnswer() : new Response('direct')
       if (requestUrl(input).startsWith('https://relay.example/')) throw new DOMException('This operation was aborted', 'AbortError')
       return new Response('through the proxy')
     })
-    const siteDirectFetch = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ success: true, message: '', data: status }), {
-      headers: { 'Content-Type': 'application/json' },
-    }))
+    const siteDirectFetch = vi.fn<typeof fetch>(async () => statusAnswer())
     // Only ever follows the system proxy, so it meets the same proxy the app session did before any switch.
     const systemProxyFetch = vi.fn<typeof fetch>(async (input) => {
       if (requestUrl(input).startsWith('https://relay.example/')) throw new DOMException('This operation was aborted', 'AbortError')
@@ -1481,7 +1565,7 @@ describe('site routing as main.ts wires it', () => {
       throw new DOMException('This operation was aborted', 'AbortError')
     })
     // The proxy forwards the service again.
-    sessionFetch.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    sessionFetch.mockResolvedValueOnce(statusAnswer())
     await expect(accountFetch(probeUrl, { signal: timedOut.signal })).rejects.toThrow('aborted')
     await vi.waitFor(() => expect(bypass.routeSiteRequest(siteUrl)).toBeNull())
     expect(sessionFetch).toHaveBeenCalledTimes(1)
@@ -1524,9 +1608,7 @@ describe('site routing as main.ts wires it', () => {
     expect(sessionFetch).toHaveBeenCalledTimes(1)
     // The proxy forwards the service again. The next read has its connection reset on the direct
     // session, and direct then takes its time over the probe.
-    sessionFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true, message: '', data: status }), {
-      headers: { 'Content-Type': 'application/json' },
-    }))
+    sessionFetch.mockImplementation(async () => statusAnswer())
     siteDirectFetch.mockRejectedValueOnce(new Error('net::ERR_CONNECTION_RESET'))
     siteDirectFetch.mockImplementationOnce(() => new Promise<Response>(() => undefined))
     await expect(client.getStatus()).resolves.toBeTruthy()
@@ -1534,6 +1616,59 @@ describe('site routing as main.ts wires it', () => {
     // The look through the proxy, then the read sent again through it.
     expect(sessionFetch).toHaveBeenCalledTimes(3)
     expect(siteDirectFetch).toHaveBeenCalledTimes(4)
+  })
+
+  it('hands the service back to the proxy once the direct session answers with a company gateway\'s page and the proxy reaches the service again', async () => {
+    const { bypass, accountFetch, sessionFetch, siteDirectFetch } = routing()
+    const client = createNewApiClient({
+      baseUrl: 'https://relay.example',
+      fetchImpl: accountFetch,
+      retryOffProxy: (failure) => bypass.recoverFailedRequest(failure.startedAt, failure.reason),
+    })
+    await expect(client.getStatus()).resolves.toBeTruthy()
+    expect(bypass.siteDirect()).toBe(true)
+    // The laptop moved to the office: the proxy forwards the service again, and the company
+    // gateway answers whatever goes out directly with its own page.
+    sessionFetch.mockImplementation(async () => statusAnswer())
+    siteDirectFetch.mockImplementation(async () => new Response('<html>访问受限</html>', { status: 403, headers: { 'Content-Type': 'text/html' } }))
+    await expect(client.getStatus()).rejects.toThrow()
+    await vi.waitFor(() => expect(bypass.siteDirect()).toBe(false))
+    // The next read goes through the proxy and gets the service.
+    const before = sessionFetch.mock.calls.length
+    await expect(client.getStatus()).resolves.toBeTruthy()
+    expect(sessionFetch.mock.calls.length).toBe(before + 1)
+  })
+
+  it('hands the service back to the proxy once an AI reply is cut midway on the direct session and the proxy reaches the service again', async () => {
+    const { bypass, relayFetch, sessionFetch, siteDirectFetch } = routing()
+    expect(await bypass.recoverFailedRequest(0, 'timeout')).toBe(true)
+    sessionFetch.mockImplementation(async () => statusAnswer())
+    let sent = false
+    siteDirectFetch.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[]}\n\n'))
+        } else controller.error(new TypeError('terminated', { cause: new Error('net::ERR_CONNECTION_RESET') }))
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } }))
+    const reply = await relayFetch(siteUrl, { method: 'POST' })
+    await expect(reply.text()).rejects.toThrow('terminated')
+    await vi.waitFor(() => expect(bypass.routeSiteRequest(siteUrl)).toBeNull())
+  })
+
+  it('does not move the service to a direct session that only gets a sign-in portal\'s page', async () => {
+    const { bypass, accountFetch, siteDirectFetch } = routing()
+    siteDirectFetch.mockImplementation(async () => new Response('<html>请先登录上网</html>', { headers: { 'Content-Type': 'text/html' } }))
+    const client = createNewApiClient({
+      baseUrl: 'https://relay.example',
+      fetchImpl: accountFetch,
+      retryOffProxy: (failure) => bypass.recoverFailedRequest(failure.startedAt, failure.reason),
+    })
+    await expect(client.getStatus()).rejects.toThrow()
+    expect(siteDirectFetch).toHaveBeenCalledWith(probeUrl, expect.objectContaining({ method: 'GET', redirect: 'manual' }))
+    expect(bypass.siteDirect()).toBe(false)
+    expect(bypass.routeSiteRequest(siteUrl)).toBeNull()
   })
 
   it('looks for a dead proxy through the app session, which the diversion never touches', async () => {
@@ -1558,7 +1693,7 @@ describe('site routing as main.ts wires it', () => {
     expect(await bypass.tryBypass()).toBe('direct')
     sessionFetch.mockClear()
     // The proxy app is back and reaches the service.
-    systemProxyFetch.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    systemProxyFetch.mockResolvedValueOnce(statusAnswer())
     clock += systemProxyCheckIntervalMs
     // This AI request still goes over the app session, direct for now; the look runs alongside it.
     expect(await (await relayFetch(siteUrl, { method: 'POST' })).text()).toBe('direct')
