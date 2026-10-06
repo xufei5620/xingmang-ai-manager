@@ -284,7 +284,7 @@ import {
   type ExternalToolId,
 } from './external-tool-config'
 import { externalClientNames, type ExternalClientConfigResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
-import { createExternalClientRuntime, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
+import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
@@ -294,6 +294,7 @@ import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
+import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
 import { BoundedOperationQueue } from './bounded-operation-queue'
 
 const execFileAsync = promisify(execFile)
@@ -1042,6 +1043,11 @@ export interface SystemService {
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
+  /**
+   * 本次启动还没真检测过客户端时，给出上次落盘的结果（每条带 `cachedAt`）；检测过了、或没有可用的
+   * 旧结果时是空列表。只读文件、不起盘点，只给首页「先画个样子」用（已知13）。
+   */
+  cachedExternalClients(): Promise<ExternalClientStatus[]>
   /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
   getLastExternalClients(): ExternalClientStatus[] | null
   /**
@@ -2504,6 +2510,8 @@ export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
+  /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
+  externalClientSnapshotCacheFile?: string
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
@@ -2924,6 +2932,11 @@ export function buildExternalClientMacVerificationLogDetail(failure: ExternalCli
   return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
 }
 
+/** 检测失败时 PowerShell 的原话进运行日志的那几项：读签名报的错里常带着客户端的完整路径。 */
+export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClientDetectionErrorDetail, userHome: string) {
+  return { ...failure, message: redactHomeDirectory(failure.message, userHome) }
+}
+
 /** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
 function sameRouteUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
@@ -3041,6 +3054,9 @@ export function createSystemService(
       buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
     onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
       buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
+    // 首页只说「无法读取客户端数字签名」这类前半句中文（已知3），系统给的原话客服在反馈报告里看这一行。
+    onDetectionErrorDetail: (failure) => runtimeLog?.log('warn', 'system', 'external-client.detection-error-detail', '桌面客户端检测失败时系统给的原话',
+      buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
   })
   let nodeRuntimeInstalling = false
   // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
@@ -6132,6 +6148,14 @@ export function createSystemService(
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
   let latestExternalClients: ExternalClientStatus[] | null = null
+  const externalClientCache = serviceOptions.externalClientSnapshotCacheFile
+    ? createExternalClientSnapshotCache({
+        filePath: serviceOptions.externalClientSnapshotCacheFile,
+        onWarning: (code, message) => runtimeLog?.log('warn', 'system', code, '上次客户端检测结果没有读写成功', { error: message }),
+      })
+    : null
+  let externalScansStarted = 0
+  let newestExternalScanSaved = 0
   // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
@@ -6236,6 +6260,7 @@ export function createSystemService(
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
   async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
+    const started = ++externalScansStarted
     // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
     // 保存配置之后那次刷新要看到的正是刚写下去的那份。
     const clients = await followExternalClientRoutes(await externalClientRuntime.scan({ force }))
@@ -6243,7 +6268,19 @@ export function createSystemService(
     // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
     // 数据源：只在用户自己点检测时更新。
     latestExternalClients = clients
+    // 下次开机首页先摆它（已知13）。强制重扫与普通扫描可能交错完成，落盘只让后开始的那一轮
+    // 覆盖先开始的，同 CLI 那份快照。
+    if (started > newestExternalScanSaved) {
+      newestExternalScanSaved = started
+      void externalClientCache?.save(clients)
+    }
     return clients
+  }
+  async function cachedExternalClients(): Promise<ExternalClientStatus[]> {
+    if (latestExternalClients || !externalClientCache) return []
+    const cached = await externalClientCache.load()
+    // 读文件这几毫秒里真的检测可能已经回来了，那就不必再给旧的。
+    return latestExternalClients || !cached ? [] : cached
   }
   /** 反馈报告用的上一份客户端快照；还没检测过时为 null，那一段写「未能读取」。 */
   function getLastExternalClients(): ExternalClientStatus[] | null {
@@ -7397,6 +7434,7 @@ export function createSystemService(
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,
+    cachedExternalClients,
     getLastExternalClients,
     checkExternalClientConnection,
     installExternalClient,

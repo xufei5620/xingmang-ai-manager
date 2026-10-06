@@ -1403,6 +1403,23 @@ export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): D
     : item)
 }
 
+const cliCheckCodes: readonly string[] = providerIds.map((provider) => `CLI_${provider.toUpperCase()}`)
+
+/**
+ * 一个命令行工具都没装（只用 Codex 桌面端，它自带运行环境）时，Node.js、npm 没装只是
+ * 「需留意」：首页运行环境卡这时也只写「可选 · 未装」、不挂橙点（第二十七批 B），检查页
+ * 却是两行红色「待处理」，状态栏和开机提示跟着数进去（已知7）。仍旧要提、不能不出：
+ * Codex 桌面端的「星芒画图」要 Node.js。有一家装着、或者这次没查出来装没装的，照旧红。
+ */
+export function reconcileNodeRuntimeWithClis(items: DiagnosticItem[]): DiagnosticItem[] {
+  const clis = items.filter((item) => cliCheckCodes.includes(item.code))
+  if (clis.length === 0 || clis.some((item) => item.details?.installed !== false)) return items
+  return items.map((item) => (item.code === 'RUNTIME_NODE' || item.code === 'RUNTIME_NPM')
+    && item.state === 'fail' && item.details?.installed === false
+    ? { ...item, state: 'warn' }
+    : item)
+}
+
 /**
  * 「操作系统」一项的结论说人话：Windows 11（64 位）、macOS 15（Apple 芯片）。
  * Windows 11 的内核号仍是 10.0，只能按版本号 22000 起算；macOS 从 Darwin 20
@@ -2445,10 +2462,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
   ]
 
-  const items = reconcileCertificateTrustWithNetwork(
+  const items = reconcileNodeRuntimeWithClis(reconcileCertificateTrustWithNetwork(
     (await Promise.all(checks.map((check) => runIsolatedCheck(check, timeoutMs, sanitize))))
       .filter((item): item is DiagnosticItem => item !== null),
-  )
+  ))
   return {
     version: 1,
     generatedAt: now().toISOString(),

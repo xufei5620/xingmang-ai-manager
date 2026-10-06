@@ -35,9 +35,10 @@ export function resumeSessionNotice(result: CliLaunchResult | void | undefined, 
   return warning ? `${opened}。${warning}` : opened
 }
 
-// 这几类任务不拿来说在等谁：另一个工具的「打开」几秒就完；「改用当前账号」「修提醒设置」
-// 只改配置、不进安装队列，「打开」根本不等它们，以前却会说成「正在等 另一个工具 安装完」。
-const notWaitedOn = ['launch:', 'switch:', 'repair-hooks:']
+// 这几类任务不拿来说在等谁：另一个工具的「打开」几秒就完；「改用当前账号」「修提醒设置」、
+// 配置文件坏了的「修好它」只改配置、不进安装队列，「打开」根本不等它们，以前却会说成
+// 「正在等 另一个工具 安装完」。
+const notWaitedOn = ['launch:', 'switch:', 'repair-hooks:', 'repair-config:']
 
 /**
  * 安装、卸载、打开工具在主进程排同一个队（AGENTS.md I11），前面那一项没做完，
