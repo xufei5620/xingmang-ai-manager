@@ -222,6 +222,19 @@ export const orderStates = {
   expired: { label: '已超时', tone: 'neutral' },
   unknown: { label: '待确认', tone: 'neutral' },
 } as const
+/**
+ * 订阅卡上的状态。两个账号后台报的都是英文原值：星芒账号有 active / expired / cancelled（后台作废），
+ * 历史账号有 active / expired / suspended（暂停）/ revoked（删掉）。这里没有的值界面写「待确认」，
+ * 不把英文原样放上去。
+ */
+export const subscriptionStates: Record<string, { label: string; tone: 'ok' | 'warn' | 'neutral' }> = {
+  active: { label: '生效中', tone: 'ok' },
+  exhausted: { label: '额度已用完', tone: 'warn' },
+  expired: { label: '已到期', tone: 'neutral' },
+  cancelled: { label: '已撤销', tone: 'neutral' },
+  revoked: { label: '已撤销', tone: 'neutral' },
+  suspended: { label: '已停用', tone: 'neutral' },
+}
 export const billingOptions = [
   { value: 'subscription_first', label: '优先用订阅' },
   { value: 'wallet_first', label: '优先用余额' },

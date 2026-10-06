@@ -185,7 +185,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
 
     <div className="acceleration-workbench">
       <section className="acceleration-stage" aria-label="网络连接状态">
-        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span></div>
+        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> 游戏加速</span></div>
         <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
         <div className="acceleration-orb"><Globe /></div>
         <div className="acceleration-route-info">
