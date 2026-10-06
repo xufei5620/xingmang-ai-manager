@@ -4492,7 +4492,7 @@ describe('Darwin CLI launch planning', () => {
       CODEX_HOME: '/Users/tester/custom-codex',
       PATH: '/opt/homebrew/bin:/usr/bin:/bin',
     }
-    expect(buildDarwinCliLaunchPlan('codex', {
+    expect(buildDarwinCliLaunchPlan({
       executable: '/opt/homebrew/bin/node',
       argv: ['/Users/tester/.npm-global/lib/node_modules/@openai/codex/bin/codex.js', '--dangerously-skip-permissions'],
     }, '/Users/tester/project', env)).toEqual({
@@ -4503,44 +4503,40 @@ describe('Darwin CLI launch planning', () => {
     })
   })
 
-  it('tells the Terminal launcher which login-shell variables to drop for the tool it opens', () => {
+  it('hands the Terminal launcher the login-shell variables to drop only when there are some', () => {
     const command = { executable: '/Users/tester/.local/bin/claude', argv: [] }
     const env = { HOME: '/Users/tester', PATH: '/usr/bin:/bin' }
 
-    expect(buildDarwinCliLaunchPlan('claude', command, '/Users/tester/project', env).clearedEnvironmentKeys)
+    expect(buildDarwinCliLaunchPlan(command, '/Users/tester/project', env, ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']).clearedEnvironmentKeys)
       .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'])
-    expect(buildDarwinCliLaunchPlan('gemini', command, '/Users/tester/project', env).clearedEnvironmentKeys)
-      .toEqual([...macosShellOverrideVariables('gemini')])
-    expect(buildDarwinCliLaunchPlan('grok', command, '/Users/tester/project', env)).not.toHaveProperty('clearedEnvironmentKeys')
+    expect(buildDarwinCliLaunchPlan(command, '/Users/tester/project', env, [])).not.toHaveProperty('clearedEnvironmentKeys')
   })
 })
 
 describe('login-shell variables kept from tools opened on macOS', () => {
-  // diagnostics.test.ts 里那四个「待处理」：实测会让工具绕开当前账号（breaksAccount）。
-  it('drops every variable the check page counts as taking the tool off the current account', () => {
-    expect(macosShellOverrideVariables('claude')).toEqual(expect.arrayContaining(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']))
-    expect(macosShellOverrideVariables('gemini')).toEqual(expect.arrayContaining(['GOOGLE_GEMINI_BASE_URL', 'GEMINI_API_KEY']))
+  // 两个都是检查页实测会绕开当前账号的；ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，不在里面。
+  it('drops the Claude Code key and config folder only while Claude Code is on the Xingmang account', () => {
+    expect(macosShellOverrideVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'])
+    // 用自己的 Claude 账号时，这两个可能就是客户自己的 Key 和登录。
+    expect(macosShellOverrideVariables('claude', 'official')).toEqual([])
   })
 
-  it('drops for Gemini CLI exactly what Windows and Linux leave out of its environment', () => {
+  it.each(['relay', 'official'] as const)('drops for Gemini CLI on the %s account exactly what Windows and Linux leave out of its environment', (accountMode) => {
     const candidates = [
       'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL', 'GOOGLE_GENAI_API_VERSION',
       'GOOGLE_GEMINI_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'ANTHROPIC_API_KEY', 'KEEP_THIS',
     ]
     const kept = providerCommandEnvironment('gemini', Object.fromEntries(candidates.map((name) => [name, 'x'])), {})
 
-    expect([...macosShellOverrideVariables('gemini')].sort())
+    expect([...macosShellOverrideVariables('gemini', accountMode)].sort())
       .toEqual(candidates.filter((name) => kept[name] === undefined).sort())
   })
 
-  it('leaves the Claude Code variables that the written settings already win over', () => {
-    expect(macosShellOverrideVariables('claude')).not.toContain('ANTHROPIC_BASE_URL')
-    expect(macosShellOverrideVariables('claude')).not.toContain('ANTHROPIC_AUTH_TOKEN')
-  })
-
   it('drops nothing for Codex CLI and Grok CLI', () => {
-    expect(macosShellOverrideVariables('codex')).toEqual([])
-    expect(macosShellOverrideVariables('grok')).toEqual([])
+    for (const accountMode of ['relay', 'official'] as const) {
+      expect(macosShellOverrideVariables('codex', accountMode)).toEqual([])
+      expect(macosShellOverrideVariables('grok', accountMode)).toEqual([])
+    }
   })
 })
 

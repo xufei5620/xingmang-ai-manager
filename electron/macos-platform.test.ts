@@ -804,6 +804,25 @@ describe('macOS terminal launcher with tool settings left by the login shell', (
     expect(() => scriptWith([name])).toThrow(TypeError)
   })
 
+  it('carries the names to clear from the launch plan into the launcher it writes', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-cleared-env-'))
+    temporaryDirectories.push(directory)
+    let launcherContent = ''
+
+    await launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: directory,
+      env: { HOME: directory, PATH: '/usr/bin:/bin' },
+      clearedEnvironmentKeys: ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'],
+    }, async (spec) => {
+      temporaryDirectories.push(path.dirname(spec.argv[2]))
+      launcherContent = fs.readFileSync(spec.argv[2], 'utf8')
+    }, () => undefined)
+
+    expect(launcherContent.split('\n')).toContain('unset ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR')
+  })
+
   it.runIf(zshAvailable)('keeps what the login shell exported away from the tool and puts the managed values back', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-tool-env-'))
     temporaryDirectories.push(directory)

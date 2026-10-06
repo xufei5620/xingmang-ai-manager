@@ -70,6 +70,8 @@ const persistedTerminalEnvironmentKeys = new Set([
   'CLICOLOR',
   'CLICOLOR_FORCE',
 ])
+// export、unset 后面的名字不带引号写进启动脚本，所以只收普通的变量名。
+const environmentKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function isAbsolutePath(value: string): boolean {
   return Boolean(value) && !value.includes('\0') && path.isAbsolute(value)
@@ -215,14 +217,14 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
   }
   const environmentEntries = Object.entries(plan.env)
   for (const [key, value] of environmentEntries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!environmentKeyPattern.test(key)) {
       throw new TypeError(`invalid environment key: ${key}`)
     }
     if (value?.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
   }
   const clearedEnvironmentKeys = plan.clearedEnvironmentKeys ?? []
   for (const key of clearedEnvironmentKeys) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!environmentKeyPattern.test(key)) {
       throw new TypeError(`invalid environment key: ${key}`)
     }
   }

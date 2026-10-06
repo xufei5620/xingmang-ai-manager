@@ -97,6 +97,7 @@ import {
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
+  providerAccountMode,
   readCodexAuthTokens,
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
@@ -113,6 +114,7 @@ import {
   type NativeConfigInspection,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
+  type ProviderAccountMode,
 } from './config-files'
 import {
   ProjectInstructionsStateStore,
@@ -476,16 +478,15 @@ export function externalCliInstallRefusal(provider: ProviderId, installSource: C
 
 /** Keeps service-level macOS launching bound to the command already verified by CLI resolution. */
 export function buildDarwinCliLaunchPlan(
-  provider: ProviderId,
   command: { executable: string; argv: readonly string[] },
   workspace: string,
   env: NodeJS.ProcessEnv,
+  clearedEnvironmentKeys: readonly string[] = [],
 ): MacosTerminalLaunchPlan {
   if (!path.isAbsolute(command.executable)) {
     throw new Error('macOS CLI executable must be an absolute resolved path')
   }
   if (!path.isAbsolute(workspace)) throw new Error('macOS workspace must be an absolute path')
-  const clearedEnvironmentKeys = macosShellOverrideVariables(provider)
   return {
     executable: command.executable,
     argv: [...command.argv],
@@ -2660,16 +2661,18 @@ export function providerCommandEnvironment(
  * Mac 上「终端」先起客户自己的登录 shell 读 ~/.zshrc 这些启动文件，再跑星芒的启动脚本，那里 export
  * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
  * 启动脚本先把这里列的 unset 掉，再写星芒自己的值：
- * - Claude Code：ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude，是检查页
- *   实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN
- *   盖不过 settings.json 的 env 段，不动。
- * - Gemini CLI：和 Windows、Linux 一样，星芒管的这几个一律不用客户 shell 里的。
+ * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
+ *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
+ *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
+ *   不动。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，也不动。
+ * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
+ *   里的，要给的值启动时另给。
  * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
  */
-export function macosShellOverrideVariables(provider: ProviderId): readonly string[] {
+export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
   switch (provider) {
     case 'claude':
-      return ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']
+      return accountMode === 'relay' ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'] : []
     case 'gemini':
       return managedGeminiVariables
     case 'codex':
@@ -5832,13 +5835,13 @@ export function createSystemService(
           ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
         await launchMacosTerminal(buildDarwinCliLaunchPlan(
-          provider,
           {
             ...command,
             argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),
           },
           workspace,
           withSystemCertificateTrust(providerEnv),
+          macosShellOverrideVariables(provider, providerAccountMode(nativeConfig)),
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
