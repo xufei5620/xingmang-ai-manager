@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { before, after, test } from 'node:test'
+import { before, after } from 'node:test'
+// Windows CI deals this file's tests across runners; see e2e/shard-tests.mjs.
+import { test } from '../../../e2e/shard-tests.mjs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import react from '@vitejs/plugin-react'
