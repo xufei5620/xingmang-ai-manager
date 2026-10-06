@@ -1426,7 +1426,7 @@ test('backup restore requires preview and confirmation before touching files', a
     await page
       .getByRole('button', { name: '备份当前配置并恢复', exact: true })
       .click()
-    await page.getByText('配置已恢复，恢复前备份已保留').waitFor()
+    await waitForToast(page, '配置已恢复，恢复前备份已保留')
     assert.equal(
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
