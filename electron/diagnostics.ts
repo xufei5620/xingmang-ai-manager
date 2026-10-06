@@ -48,7 +48,7 @@ import {
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
 import { isRelayLineFailureReason } from './relay-line-fetch'
-import { relayApiProbeBaseUrl, resolveRelaySite, type RelayEndpointId, type RelaySite } from './relay-sites'
+import { relayApiProbeBaseUrl, relayEndpointForUrl, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite, type RelayEndpointId, type RelayRouteLines, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import { inspectDocumentsWritability, type DocumentsWritability } from './documents-fallback'
@@ -1214,6 +1214,19 @@ export function relayStatusProbeUrl(site: RelaySite): string {
     case 'sub2api':
       return new URL('/api/v1/settings/public', origin).href
   }
+}
+
+/**
+ * 一个地址所在站点每条线路的探测地址，这会儿用的那条排第一；不是星芒的地址给空的。代理分流
+ * （proxy-bypass.ts）靠它把同一个站的几个入口当成一个站点：「自动」中途换了入口，分去直连会话
+ * 的请求照样分过去，再看时探的也是这会儿用的入口。
+ */
+export function relaySiteStatusProbeUrls(url: string, lines: RelayRouteLines): string[] {
+  const endpoint = relayEndpointForUrl(url)
+  if (!endpoint) return []
+  const current = lines[endpoint.siteId].line
+  const others = relaySiteEndpointChoices(endpoint.siteId).map((choice) => choice.id).filter((line) => line !== current)
+  return [current, ...others].map((line) => relayStatusProbeUrl(requireRelaySite(endpoint.siteId, line)))
 }
 
 type RelayStatusProbe =

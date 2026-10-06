@@ -144,6 +144,7 @@ import {
   createDiagnosticsExport,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
+  relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
   type DiagnosticsRelayRoute,
@@ -1182,6 +1183,8 @@ if (!hasSingleInstanceLock) {
         try { return relayStatusProbeUrl(relayRouting.resolve(systemService.readStoredConfig().relaySiteId)) }
         catch { return null }
       },
+      // 同一个站的默认线路和直连算一个站点：「自动」中途换了线路，分去直连会话的请求照样分过去。
+      siteProbeUrls: (url) => relaySiteStatusProbeUrls(url, relayRouting.lines()),
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
       setProxy: (mode) => session.defaultSession.setProxy({ mode }),
       accelerationActive: accelerationRunning,

@@ -20,6 +20,7 @@ import {
   operatingSystemSummary,
   reconcileNodeRuntimeWithClis,
   relayNetworkPassSummary,
+  relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
   windowsProxySettingsOutcome,
@@ -835,6 +836,25 @@ describe('diagnostics', () => {
     it('refuses to probe a site that is not served over https', () => {
       const site = { ...relaySites[0], providerBaseUrls: { ...relaySites[0].providerBaseUrls, claude: 'http://xm.solov.cc' } }
       expect(() => relayStatusProbeUrl(site)).toThrow('https')
+    })
+  })
+
+  describe('relaySiteStatusProbeUrls', () => {
+    const onDirect = { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: true } } as const
+
+    it('lists where to probe each entrance of the site an address belongs to, the one in use first', () => {
+      expect(relaySiteStatusProbeUrls('https://xm.solov.cc/api/status', onDirect))
+        .toEqual(['https://xm-direct.solov.cc/api/status', 'https://xm.solov.cc/api/status'])
+      expect(relaySiteStatusProbeUrls('https://xm-direct.solov.cc/v1/chat/completions', onDirect))
+        .toEqual(['https://xm-direct.solov.cc/api/status', 'https://xm.solov.cc/api/status'])
+      expect(relaySiteStatusProbeUrls('https://api-direct.solov.cc/api/v1/settings/public', onDirect))
+        .toEqual(['https://api.solov.cc/api/v1/settings/public', 'https://api-direct.solov.cc/api/v1/settings/public'])
+    })
+
+    it('knows nothing of addresses that are not an entrance of a site, the retired IP entry included', () => {
+      expect(relaySiteStatusProbeUrls('https://github.com/anthropics', onDirect)).toEqual([])
+      expect(relaySiteStatusProbeUrls('https://38.147.105.28:8443/api/status', onDirect)).toEqual([])
+      expect(relaySiteStatusProbeUrls('not a url', onDirect)).toEqual([])
     })
   })
 
