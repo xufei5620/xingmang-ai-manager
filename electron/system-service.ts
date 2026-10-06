@@ -475,6 +475,7 @@ export function externalCliInstallRefusal(provider: ProviderId, installSource: C
 
 /** Keeps service-level macOS launching bound to the command already verified by CLI resolution. */
 export function buildDarwinCliLaunchPlan(
+  provider: ProviderId,
   command: { executable: string; argv: readonly string[] },
   workspace: string,
   env: NodeJS.ProcessEnv,
@@ -483,7 +484,14 @@ export function buildDarwinCliLaunchPlan(
     throw new Error('macOS CLI executable must be an absolute resolved path')
   }
   if (!path.isAbsolute(workspace)) throw new Error('macOS workspace must be an absolute path')
-  return { executable: command.executable, argv: [...command.argv], workspace, env }
+  const clearedEnvironmentKeys = macosShellOverrideVariables(provider)
+  return {
+    executable: command.executable,
+    argv: [...command.argv],
+    workspace,
+    env,
+    ...(clearedEnvironmentKeys.length ? { clearedEnvironmentKeys: [...clearedEnvironmentKeys] } : {}),
+  }
 }
 
 export type { OfficialChatGptAccount, OfficialChatGptWindow }
@@ -2616,6 +2624,15 @@ export interface SystemServiceOptions {
   sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
 }
 
+// Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
+// already present. A shell-level stale gateway/key/model would otherwise
+// override the account configuration just written by the manager and send
+// requests to another relay (or select a model that is not in the group).
+const managedGeminiVariables = [
+  'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
+  'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
+] as const
+
 export function providerCommandEnvironment(
   provider: ProviderId,
   processEnv: NodeJS.ProcessEnv,
@@ -2623,19 +2640,34 @@ export function providerCommandEnvironment(
 ): NodeJS.ProcessEnv {
   const environment = commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
   if (provider === 'gemini') {
-    // Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
-    // already present. A shell-level stale gateway/key/model would otherwise
-    // override the account configuration just written by the manager and send
-    // requests to another relay (or select a model that is not in the group).
-    const managedGeminiVariables = new Set([
-      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
-      'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
-    ])
+    const managed = new Set<string>(managedGeminiVariables)
     for (const key of Object.keys(environment)) {
-      if (managedGeminiVariables.has(key.toUpperCase())) delete environment[key]
+      if (managed.has(key.toUpperCase())) delete environment[key]
     }
   }
   return environment
+}
+
+/**
+ * Mac 上「终端」先起客户自己的登录 shell 读 ~/.zshrc 这些启动文件，再跑星芒的启动脚本，那里 export
+ * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
+ * 启动脚本先把这里列的 unset 掉，再写星芒自己的值：
+ * - Claude Code：ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude，是检查页
+ *   实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN
+ *   盖不过 settings.json 的 env 段，不动。
+ * - Gemini CLI：和 Windows、Linux 一样，星芒管的这几个一律不用客户 shell 里的。
+ * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
+ */
+export function macosShellOverrideVariables(provider: ProviderId): readonly string[] {
+  switch (provider) {
+    case 'claude':
+      return ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']
+    case 'gemini':
+      return managedGeminiVariables
+    case 'codex':
+    case 'grok':
+      return []
+  }
 }
 
 /** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
@@ -5784,6 +5816,7 @@ export function createSystemService(
           ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
         await launchMacosTerminal(buildDarwinCliLaunchPlan(
+          provider,
           {
             ...command,
             argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),

@@ -106,6 +106,7 @@ import {
   parseCloudflareNetworkLocation,
   parseGrokLocalVersion,
   parseLatestNpmVersion,
+  macosShellOverrideVariables,
   providerCommandEnvironment,
   createScanCoalescer,
   scanProbeConcurrency,
@@ -4491,7 +4492,7 @@ describe('Darwin CLI launch planning', () => {
       CODEX_HOME: '/Users/tester/custom-codex',
       PATH: '/opt/homebrew/bin:/usr/bin:/bin',
     }
-    expect(buildDarwinCliLaunchPlan({
+    expect(buildDarwinCliLaunchPlan('codex', {
       executable: '/opt/homebrew/bin/node',
       argv: ['/Users/tester/.npm-global/lib/node_modules/@openai/codex/bin/codex.js', '--dangerously-skip-permissions'],
     }, '/Users/tester/project', env)).toEqual({
@@ -4500,6 +4501,46 @@ describe('Darwin CLI launch planning', () => {
       workspace: '/Users/tester/project',
       env,
     })
+  })
+
+  it('tells the Terminal launcher which login-shell variables to drop for the tool it opens', () => {
+    const command = { executable: '/Users/tester/.local/bin/claude', argv: [] }
+    const env = { HOME: '/Users/tester', PATH: '/usr/bin:/bin' }
+
+    expect(buildDarwinCliLaunchPlan('claude', command, '/Users/tester/project', env).clearedEnvironmentKeys)
+      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'])
+    expect(buildDarwinCliLaunchPlan('gemini', command, '/Users/tester/project', env).clearedEnvironmentKeys)
+      .toEqual([...macosShellOverrideVariables('gemini')])
+    expect(buildDarwinCliLaunchPlan('grok', command, '/Users/tester/project', env)).not.toHaveProperty('clearedEnvironmentKeys')
+  })
+})
+
+describe('login-shell variables kept from tools opened on macOS', () => {
+  // diagnostics.test.ts 里那四个「待处理」：实测会让工具绕开当前账号（breaksAccount）。
+  it('drops every variable the check page counts as taking the tool off the current account', () => {
+    expect(macosShellOverrideVariables('claude')).toEqual(expect.arrayContaining(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']))
+    expect(macosShellOverrideVariables('gemini')).toEqual(expect.arrayContaining(['GOOGLE_GEMINI_BASE_URL', 'GEMINI_API_KEY']))
+  })
+
+  it('drops for Gemini CLI exactly what Windows and Linux leave out of its environment', () => {
+    const candidates = [
+      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL', 'GOOGLE_GENAI_API_VERSION',
+      'GOOGLE_GEMINI_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'ANTHROPIC_API_KEY', 'KEEP_THIS',
+    ]
+    const kept = providerCommandEnvironment('gemini', Object.fromEntries(candidates.map((name) => [name, 'x'])), {})
+
+    expect([...macosShellOverrideVariables('gemini')].sort())
+      .toEqual(candidates.filter((name) => kept[name] === undefined).sort())
+  })
+
+  it('leaves the Claude Code variables that the written settings already win over', () => {
+    expect(macosShellOverrideVariables('claude')).not.toContain('ANTHROPIC_BASE_URL')
+    expect(macosShellOverrideVariables('claude')).not.toContain('ANTHROPIC_AUTH_TOKEN')
+  })
+
+  it('drops nothing for Codex CLI and Grok CLI', () => {
+    expect(macosShellOverrideVariables('codex')).toEqual([])
+    expect(macosShellOverrideVariables('grok')).toEqual([])
   })
 })
 
