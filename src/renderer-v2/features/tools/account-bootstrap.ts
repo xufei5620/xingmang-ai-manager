@@ -5,6 +5,7 @@ import {
   type AppSettingsV2,
   type ProviderId,
   type RendererLogLevel,
+  type RunningToolsReport,
   type SystemSnapshot,
   type XingmangApi,
 } from '../../../../electron/ipc-contract'
@@ -136,6 +137,22 @@ export type AccountBootstrapBridge = Pick<
 
 function nameOf(provider: ProviderId) {
   return tools.find((tool) => tool.id === provider)?.name ?? provider
+}
+
+/**
+ * 换线路先不迁时说清在等谁。Codex CLI 和 Codex 桌面端共用一份配置，只是桌面端开着
+ * 也要等；那时还说「Codex CLI」，只用桌面端的人会去找命令行窗口。Mac 上只关窗口
+ * 桌面端还在后台跑，不说 Command + Q 就会一直卡在「重新同步」上（第四十三批 C）。
+ * 什么时候等由调用方定，这里只挑说法。
+ */
+export function routeDeferredMessage(provider: ProviderId, running: RunningToolsReport | null | undefined) {
+  if (provider !== 'codex' || !running || running.running.includes(provider) || running.unknown.includes(provider)) {
+    return `${nameOf(provider)} 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步`
+  }
+  if (running.codexDesktopRunning === true && !running.canRestartCodexDesktop) {
+    return 'Codex 桌面端还开着，连接线路暂未改动；只关窗口不算，要在它的窗口里按 Command + Q 完全退出，再点「重新同步」'
+  }
+  return 'Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
 }
 
 function installedState(system: SystemSnapshot, provider: ProviderId) {
@@ -396,7 +413,7 @@ export async function bootstrapAccountTools(
     for (const provider of migrating) {
       if (!running || running.running.includes(provider) || running.unknown.includes(provider)
         || (provider === 'codex' && running.codexDesktopRunning !== false)) {
-        deferred.push({ provider, message: `${nameOf(provider)} 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步` })
+        deferred.push({ provider, message: routeDeferredMessage(provider, running) })
       }
     }
     await assertAccount(api, expectedUserId, expectedSiteId)
