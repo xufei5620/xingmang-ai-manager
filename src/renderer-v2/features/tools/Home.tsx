@@ -121,6 +121,18 @@ export function pickFirstRunTool(installed: ToolPresentation[], jobs: Record<str
 }
 
 /**
+ * 「最近」里这一家的对话给不给「接着聊」。它点下去走的是同一个「打开」，没装的那家那一行只有
+ * 「安装」，点了只会弹「工具尚未安装，请先完成准备。」（第四十一批 A）：卸掉的工具旧记录还在，
+ * 只装了 Codex 桌面端的人在桌面端里聊过的多半也记在 Codex 名下。所以按工具 id 找，不按 provider：
+ * 桌面端装着不等于 Codex CLI 装着。检测结果还没回来时照旧摆着、灰着等；检测失败的不当没装（A4），
+ * 点了照旧说失败的原因。
+ */
+export function recentResumeOffered(tools: readonly ToolPresentation[], provider: ProviderId): boolean {
+  const tool = tools.find((entry) => entry.id === provider)
+  return tool === undefined || tool.status.installed || tool.error !== null
+}
+
+/**
  * 断网启动时这条横幅原来会先说一句「账号 Key 已同步」，再跟上一串网络失败原文，
  * 自相矛盾且没交代下一步。网络类失败改说这一句：已装好的工具照常能用，网络回来
  * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
@@ -598,7 +610,7 @@ export function Home(props: HomeProps) {
                 desc={<span title={session.cwd || undefined}>{recentSessionSubtitle(session)}</span>} meta={formatRecentTime(session.updatedAt, Date.now())}
                 badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
-                  {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchWaitingForAccount(session.provider) || launchBusy || session.cwdExists === false}
+                  {resumable.has(session.id) && !session.archived && recentResumeOffered(tools, session.provider) && <Button size="xs" disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchWaitingForAccount(session.provider) || launchBusy || session.cwdExists === false}
                     onClick={() => props.onLaunch(session.provider, session.cwd, resumeLaunchChoice(session))}
                     title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
                   {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}
