@@ -6959,17 +6959,22 @@ test('the cut-off network row offers the route setting while the startup restore
   } finally { await page.close() }
 })
 
-// 历史账号只有默认线路，访客没有账号：都不给，这一行照旧只有结论。开机恢复历史账号时，
-// 主进程查的还是默认那个站，那条线路不是这个账号的，也不给。
-test('a historical account or a guest gets no route fix on the cut-off network row', async () => {
-  const historical = await open('sub2api=1')
+// 直连适配第二步起历史账号也能选直连：它的「去处理」翻到「历史账号线路」那一行。
+test('a cut-off network row takes a historical account to its own route setting', async () => {
+  const page = await open('sub2api=1')
   try {
-    await stubCutOffNetwork(historical, 'solov-api')
-    await historical.getByTestId('nav-health').click()
-    await expect(historical.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
-    await expect(historical.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
-    assert.deepEqual(await historical.evaluate(() => window.v2Test.errors), [])
-  } finally { await historical.close() }
+    await stubCutOffNetwork(page, 'solov-api')
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov-api"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeFocused()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 访客没有账号，不给，这一行照旧只有结论。开机恢复历史账号时，主进程查的还是默认那个站，
+// 那条线路不是这个账号的，也不给。
+test('a guest or a check of another site gets no route fix on the cut-off network row', async () => {
   const restoring = await open('restoring=solov-api')
   try {
     await stubCutOffNetwork(restoring, 'solov')
