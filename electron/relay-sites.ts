@@ -180,6 +180,18 @@ function knownEndpointOrigins(endpoint: RelayEndpoint): readonly string[] {
 }
 
 /**
+ * The retired addresses of the line reached at exactly this origin. Recognition only, like
+ * knownEndpointOrigins: lets a record kept under an old address be found and moved.
+ */
+export function relayEndpointAliasOrigins(origin: string): readonly string[] {
+  for (const endpoints of siteEndpoints.values()) {
+    const endpoint = endpoints.find((candidate) => candidate.origin === origin)
+    if (endpoint) return endpoint.aliases ?? []
+  }
+  return []
+}
+
+/**
  * Every address one provider of a site is known by, aliases included, with the
  * line it belongs to. Recognition only: a configuration found on an alias moves
  * to the line's own origin, nothing is ever written to an alias.

@@ -7,6 +7,7 @@ import {
   relayApiProbeBaseUrl,
   relayDirectHosts,
   relayDirectIps,
+  relayEndpointAliasOrigins,
   relayProviderBaseUrlMatches,
   relayProviderBaseUrls,
   relaySiteEndpointChoices,
@@ -251,6 +252,13 @@ describe('relay site registry', () => {
     // 写进配置、发请求只用各条线路自己的地址。
     const direct = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).require('solov')
     expect(JSON.stringify([direct, relayProviderBaseUrls('solov', 'direct')])).not.toContain('38.147.105.28')
+  })
+
+  it('names the retired addresses of a line only by the exact origin of that line', () => {
+    expect(relayEndpointAliasOrigins('https://xm-direct.solov.cc')).toEqual(['https://38.147.105.28:8443'])
+    for (const origin of ['https://xm.solov.cc', 'https://api.solov.cc', 'https://38.147.105.28:8443', 'https://xm-direct.solov.cc/', 'https://other.example']) {
+      expect(relayEndpointAliasOrigins(origin)).toEqual([])
+    }
   })
 
   it('freezes active transport independently of pending settings and canonical site identity', () => {
