@@ -31,6 +31,8 @@ export interface CliKeepAwakeOptions {
   now?: () => number
   maxHoldMs?: number
   log?: (level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>) => void
+  /** 挡着的工具变了（开始挡、换了一批、放开）：托盘那行「暂不让电脑自动睡眠」跟着换。 */
+  onChange?: () => void
 }
 
 export function createCliKeepAwake(options: CliKeepAwakeOptions) {
@@ -40,6 +42,7 @@ export function createCliKeepAwake(options: CliKeepAwakeOptions) {
   let blockerId: number | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let disposed = false
+  let announced = ''
 
   function release(): void {
     if (blockerId !== null) {
@@ -55,7 +58,29 @@ export function createCliKeepAwake(options: CliKeepAwakeOptions) {
     timer = null
   }
 
+  // 真挡着时才算：挡不上（start 抛错）的时候托盘不能说「暂不让电脑睡眠」。
+  function heldTools(): string[] {
+    if (blockerId === null) return []
+    return [...new Set([...active.keys()].map((key) => key.split(':')[0]))].sort()
+  }
+
+  function announce(): void {
+    const current = heldTools().join(',')
+    if (current === announced) return
+    announced = current
+    try {
+      options.onChange?.()
+    } catch (error) {
+      options.log?.('warn', 'cli-keep-awake.notify-failed', '托盘没跟上防睡状态', { reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   function update(): void {
+    refresh()
+    announce()
+  }
+
+  function refresh(): void {
     const current = now()
     for (const [key, entry] of active) {
       if (current - entry.since >= maxHoldMs) active.delete(key)
@@ -111,6 +136,10 @@ export function createCliKeepAwake(options: CliKeepAwakeOptions) {
     /** 现在是不是正挡着睡眠；测试与日志用。 */
     holding(): boolean {
       return blockerId !== null
+    },
+    /** 正挡着睡眠时，是哪几个工具在干活（claude、gemini、grok）；没在挡时为空。 */
+    tools(): string[] {
+      return heldTools()
     },
     dispose(): void {
       disposed = true

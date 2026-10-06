@@ -60,7 +60,7 @@ import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitFo
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
-import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -70,7 +70,7 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
-import { providerIds, type ProviderId } from './catalog'
+import { cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -1811,6 +1811,8 @@ if (!hasSingleInstanceLock) {
     const cliKeepAwake = createCliKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+      // 托盘那行「暂不让电脑自动睡眠」跟着换（已知35）。
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     const cliHookEvents = createCliHookEventMonitor({
       directory: cliHookEventsDirectory(managerDataDirectory),
@@ -1823,6 +1825,7 @@ if (!hasSingleInstanceLock) {
     const installKeepAwake = createInstallKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'main', event, message, detail),
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     const unsubscribeInstallKeepAwakeQueue = systemService.onInstallationQueueChange((snapshot) => installKeepAwake.observeQueue(snapshot))
     installKeepAwake.observeQueue(systemService.inspectInstallationQueue())
@@ -3549,6 +3552,11 @@ if (!hasSingleInstanceLock) {
           ],
           update: resolveTrayUpdateEntry(updaterService.getState()),
           acceleration: trayAcceleration?.entry() ?? null,
+          keepAwakeLabel: trayKeepAwakeLabel({
+            tools: cliKeepAwake.tools().map((tool) => isProviderId(tool) ? cliCatalog[tool].name : tool),
+            installing: installKeepAwake.reasons().includes('install'),
+            downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
+          }),
         }
       },
       onOpen: showMainWindow,

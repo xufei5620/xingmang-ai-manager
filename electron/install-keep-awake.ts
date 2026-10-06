@@ -35,6 +35,8 @@ export interface InstallKeepAwakeOptions {
   now?: () => number
   maxHoldMs?: number
   log?: (level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>) => void
+  /** 挡着的原因变了（开始挡、换了原因、放开）：托盘那行「暂不让电脑自动睡眠」跟着换。 */
+  onChange?: () => void
 }
 
 export function createInstallKeepAwake(options: InstallKeepAwakeOptions) {
@@ -47,6 +49,7 @@ export function createInstallKeepAwake(options: InstallKeepAwakeOptions) {
   let blockerId: number | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let disposed = false
+  let announced = ''
 
   function release(): void {
     if (blockerId !== null) {
@@ -62,7 +65,28 @@ export function createInstallKeepAwake(options: InstallKeepAwakeOptions) {
     timer = null
   }
 
+  // 真挡着时才算：挡不上、挡满两小时交还给系统以后，托盘不能还说「暂不让电脑睡眠」。
+  function heldReasons(): InstallKeepAwakeReason[] {
+    return blockerId === null ? [] : [...active.keys()].sort()
+  }
+
+  function announce(): void {
+    const current = heldReasons().join(',')
+    if (current === announced) return
+    announced = current
+    try {
+      options.onChange?.()
+    } catch (error) {
+      options.log?.('warn', 'install.keep-awake.notify-failed', '托盘没跟上防睡状态', { reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   function update(): void {
+    refresh()
+    announce()
+  }
+
+  function refresh(): void {
     const current = now()
     for (const [reason, since] of active) {
       if (current - since >= maxHoldMs) {
@@ -111,6 +135,10 @@ export function createInstallKeepAwake(options: InstallKeepAwakeOptions) {
     /** 现在是不是正挡着睡眠；测试与日志用。 */
     holding(): boolean {
       return blockerId !== null
+    },
+    /** 正挡着睡眠时是为了什么（装东西、下载星芒新版本）；没在挡时为空。 */
+    reasons(): InstallKeepAwakeReason[] {
+      return heldReasons()
     },
     dispose(): void {
       disposed = true
