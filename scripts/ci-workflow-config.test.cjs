@@ -651,6 +651,16 @@ test('real PowerShell runs once in the packaging job, never in the unit test sha
       if (startsPowerShell.test(source) || source.includes('XINGMANG_POWERSHELL_TEST_TIMEOUT_MS')) offenders.push(relative)
     }
   }
+  // The script suites run in the same kind of shard, many files at once. The
+  // recovery script's logic test ran out its 30 seconds there on #782 and now
+  // lives in the smoke above. A script suite that builds the system
+  // PowerShell's path and can start a process is the shape it had.
+  const buildsPowerShellPath = /'WindowsPowerShell',\s*'v1\.0',\s*'powershell\.exe'|(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  for (const entry of fs.readdirSync(path.join(root, 'scripts'))) {
+    if (!/\.test\.c?js$/.test(entry)) continue
+    const source = fs.readFileSync(path.join(root, 'scripts', entry), 'utf8')
+    if (source.includes("require('node:child_process')") && buildsPowerShellPath.test(source)) offenders.push(path.join('scripts', entry))
+  }
   assert.deepEqual(offenders, [])
 })
 
