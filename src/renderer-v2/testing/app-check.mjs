@@ -2667,7 +2667,10 @@ test('a folder picked while the startup scan runs stays on the button after the 
   try {
     await page.getByTestId('home-cached-scan').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
-    await page.getByTestId('tool-claude-primary').click()
+    // 第一次点「打开」会替人新建（已知40）；自己挑文件夹从「⋯」里选。
+    await recentRead(page)
+    await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
     // 账号这一轮写完 Key 也会重读一次配置，先按住它，看的是检测落地这一下本身。
     await page.evaluate(() => window.v2Test.holdNextConfigSave())
