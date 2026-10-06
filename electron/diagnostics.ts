@@ -1207,13 +1207,13 @@ async function readMacosShellSettings(
 function overridesFromShellSettings(
   variable: EnvironmentOverrideVariable,
   value: string | null,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): boolean {
   if (value === null) return true
   if (value === '') return false
   if (variable.kind === 'directory') return !isProviderConfigDirectory(variable.provider, value, userHome)
-  if (variable.kind === 'baseUrl') return !sameHostAs(value, providerBaseUrls[variable.provider])
+  if (variable.kind === 'baseUrl') return !accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider]))
   return true
 }
 
@@ -1226,7 +1226,7 @@ function overridesFromShellSettings(
 async function collectMacosShellOverrides(
   userHome: string,
   relayProviders: ReadonlySet<ProviderId>,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   skipped: (file: string, error: unknown) => void,
 ): Promise<EnvironmentOverrideMatch[]> {
   const variables = ENVIRONMENT_OVERRIDE_VARIABLES
@@ -1235,7 +1235,7 @@ async function collectMacosShellOverrides(
   const found = await readMacosShellSettings(userHome, variables.map((variable) => variable.name), skipped)
   return variables.flatMap((variable) => found
     .filter((settings) => settings.exports.some((exported) => exported.name === variable.name
-      && overridesFromShellSettings(variable, exported.value, providerBaseUrls, userHome)))
+      && overridesFromShellSettings(variable, exported.value, accountBaseUrls, userHome)))
     .map((settings) => ({
       name: variable.name,
       provider: variable.provider,
@@ -2716,7 +2716,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const matches = platform === 'darwin'
           ? withShellSettingsOverrides(
             environment,
-            await collectMacosShellOverrides(userHome, relayProviders, relaySite.providerBaseUrls, skipped),
+            await collectMacosShellOverrides(userHome, relayProviders, accountBaseUrls, skipped),
           )
           : environment
         return withIgnoredCodexHome(

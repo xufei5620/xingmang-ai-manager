@@ -1224,6 +1224,29 @@ describe('diagnostics', () => {
         })
       })
 
+      // 直连适配第二步：同进程环境那边一套判法，「自动」走直连时指着默认线路的也算当前账号。
+      it.runIf(posixHost)('takes the default line as the current account while auto runs on direct, but not direct once it fell back', async () => {
+        const home = realHome()
+        const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+        const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+        function onRoute(line: 'direct' | 'primary') {
+          const input = macosInput(home)
+          input.relaySite = line === 'direct' ? directSite : primarySite
+          input.relayRoute = { line, automatic: true, settled: true, primarySite, reportDirectFailure: vi.fn() }
+          return input
+        }
+
+        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc\n')
+        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
+
+        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm-direct.solov.cc\n')
+        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
+        expect(overrideItem(await runDiagnostics(onRoute('primary')))).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.zshrc）' },
+        })
+      })
+
       it.runIf(posixHost)('reports a value it cannot work out, and one export that points away is enough', async () => {
         const home = realHome()
         writeShellSettings(home, '.zshrc', [
