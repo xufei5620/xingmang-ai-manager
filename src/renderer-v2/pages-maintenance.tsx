@@ -1405,6 +1405,8 @@ export function UpdatesPage({
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
   const [isWindows, setIsWindows] = useState(false)
+  // 星芒这次本身就带着管理员权限在跑（自带 Administrator 之类）：装更新不弹授权窗口，确认框不说会弹（已知19）。
+  const [processElevated, setProcessElevated] = useState(false)
   const [ownSettings, setOwnSettings] = useState<AppSettings | null>(null)
   const [settingsReadFailed, setSettingsReadFailed] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
@@ -1419,6 +1421,7 @@ export function UpdatesPage({
         if (!current) return
         setIsMac(capability.platform === 'macos')
         setIsWindows(capability.platform === 'windows')
+        setProcessElevated(capability.processElevated === true)
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -1760,7 +1763,7 @@ export function UpdatesPage({
           ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
           : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
-        {isWindows && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
+        {isWindows && !processElevated && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
@@ -2181,7 +2184,7 @@ export function MaintenancePage({
             const lead = withElevationNotice(
               tool.vendor,
               externalHint ?? (id === 'codexDesktop' && !status?.installed && !statusUnknown && !detectionFailed
-                ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install, capability?.processElevated)
                 : null),
             )
             return (
@@ -2299,7 +2302,7 @@ export function MaintenancePage({
                   : '命令行工具需要的运行环境'
                 : '部分工具需要的可选运行环境',
               id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
-                ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
+                ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall, capability?.processElevated)
                 : null,
             )
             // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而

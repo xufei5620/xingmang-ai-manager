@@ -253,6 +253,11 @@ export interface IpcRegistrationOptions {
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
   getWindowCapabilities?(): WindowCapabilities
+  /**
+   * Windows 上这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）。为真时
+   * platform:get-capabilities 叠上 processElevated，界面不再说会弹授权窗口。缺省 = 不是（旧行为）。
+   */
+  windowsProcessElevated?: boolean
   /** 见 electron/proxy-bypass.ts；不传 = 不绕（测试与旧调用方）。 */
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
@@ -2014,7 +2019,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.runtimeLog.log('warn', 'system', line.event, `${line.name} 检测失败：${reason}`, line.detail)
     }
   }
-  registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
+  registerTrustedHandler('platform:get-capabilities', () => options.windowsProcessElevated
+    ? Object.freeze({ ...platformCapabilitiesFor(), processElevated: true })
+    : platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown, input: unknown) => {
     if (forceRefresh !== undefined && typeof forceRefresh !== 'boolean') {
       throw new Error('更新检查参数格式错误')
