@@ -51,6 +51,7 @@
 - `system-service.ts` (3751) — **最大模块**。`createSystemService` 之前是纯函数库（可直接单测），它之后是闭包工厂
 - `tool-installation.ts` (705) / `node-runtime.ts` (1198) / `grok-installer.ts` (662) / `grok-update.ts` (161)
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
+- `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面
 
 **配置与数据**
