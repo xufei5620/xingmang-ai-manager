@@ -5089,6 +5089,39 @@ for (const { name, query, tool } of [
   } finally { await page.close() }
 })
 
+// 已知11：保存时文件被占用这类失败，以前红字只有一句「保存配置没有成功」。
+// 现在和页顶红条一个说法：先说是什么原因，原来那句跟在后面；重置的确认框里也一样。
+test('configuration save failures name the cause like the page notice in the dialog and the reset confirmation', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.evaluate(() => {
+      window.v2Test.fail = 'saveConfig'
+      window.v2Test.failMessage = "EBUSY: resource busy or locked, rename 'C:\\Users\\fixture\\.codex\\config.toml.tmp' -> 'C:\\Users\\fixture\\.codex\\config.toml'"
+    })
+    await page.getByTestId('tool-save-config').click()
+    const dialog = page.getByTestId('config-dialog')
+    const alert = dialog.getByRole('alert').filter({ hasText: '保存配置没有成功' })
+    await alert.waitFor()
+    assert.equal(await alert.locator('strong').innerText(), '工具正在运行')
+    assert.match(await alert.innerText(), /文件被占用。先关掉正在使用这个工具的窗口，再重试。/)
+    assert.doesNotMatch(await alert.innerText(), /EBUSY|fixture|config\.toml/)
+    await openConfigAdvanced(page)
+    await page.getByTestId('tool-save-reset').click()
+    const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
+    await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
+    const resetAlert = reset.getByRole('alert').filter({ hasText: '保存配置没有成功' })
+    await resetAlert.waitFor()
+    assert.equal(await resetAlert.locator('strong').innerText(), '工具正在运行')
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await reset.getByRole('button', { name: '取消', exact: true }).click()
+    await reset.waitFor({ state: 'hidden' })
+    await page.getByTestId('tool-save-config').click()
+    await waitForSavedConfiguration(page)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 for (const tool of matchedToolIds) test(`read-only account matches retain account display after keeping the current key and changing the ${tool} model`, async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&keyOptions=1&cliDefaultModels=1')
   const provider = tool === 'codexDesktop' ? 'codex' : tool
