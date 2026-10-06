@@ -15,6 +15,7 @@ import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './feat
 import { buildEnvironmentStatus, publishDiagnosticsCounts, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
+import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
@@ -70,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -214,6 +215,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const onlineResync = useRef(idleOnlineResync())
   const resumeOnline = useRef<(() => void) | null>(null)
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
+  const accountBootstrapRef = useRef(accountBootstrap)
+  accountBootstrapRef.current = accountBootstrap
   // 会话变化事件来过几次。启动那次读取可能在事件之后才落地（账号恢复超时先放行
   // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
   const sessionEvents = useRef(0)
@@ -1056,10 +1059,19 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   function launchIsCurrent(epoch: number): boolean {
     return mounted.current && accountEpoch.current === epoch
   }
+  function accountConnectionPending(provider: ProviderId): boolean {
+    const latest = accountBootstrapRef.current
+    return accountKeyChangeInProgress(latest?.scope === scope ? latest : null, provider)
+  }
+  function waitForAccountConnection(tool: { source: ToolSource; provider: ProviderId }): boolean {
+    if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return false
+    toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral')
+    return true
+  }
   /**
    * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
    * 首页「打开」「接着聊」走 launch()，记录页「接着聊」自己叫主进程打开，两边都先过这里
-   * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照和配置；null = 不往下走
+   * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照、配置和工具；null = 不往下走
    * （问话框里关掉了，或者中途换了账号），什么都不打开，也不报错。
    */
   async function prepareToolLaunch(id: ToolId, epoch: number) {
@@ -1073,6 +1085,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
+      // Shortcuts, tray actions and the records page share this entry, including
+      // after the scan finishes but account configuration is still waiting on the backend.
+      if (waitForAccountConnection(tool)) return null
       // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
       // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
@@ -1124,7 +1139,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           }
         }
       }
-      return { current, config }
+      return { current, config, tool }
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return null
       throw cause
@@ -1138,7 +1153,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     try {
       const prepared = await prepareToolLaunch(id, epoch)
       if (!prepared) return false
-      const { current, config } = prepared
+      const { current, config, tool } = prepared
       let workspace = config.workspace
       if (id !== 'codexDesktop') {
         // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
@@ -1148,8 +1163,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       if (!launchIsCurrent(epoch)) return false
       const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName)
+      let connectionDeferred = false
       const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
         if (!launchIsCurrent(epoch)) return
+        if (waitForAccountConnection(tool)) { connectionDeferred = true; return }
         const result = await toolsApi.launch(id, workspace, mode)
         const warning = launchWarning(result)
         if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
@@ -1164,7 +1181,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
         }
       })
-      return launchIsCurrent(epoch) && started
+      return launchIsCurrent(epoch) && started && !connectionDeferred
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       throw cause
@@ -1543,6 +1560,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           </div>
         </AppFrame>}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
+      connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
       suppressRestoredBootstrap.current.add(authenticatedScope)

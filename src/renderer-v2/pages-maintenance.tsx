@@ -101,6 +101,9 @@ import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
 import { AppUninstallRow } from './features/app/AppUninstall'
+import { RelayRouteSettings } from './features/app/RelayRouteSettings'
+import { createSettingsQueue } from './features/app/settings-queue'
+export { createSettingsQueue } from './features/app/settings-queue'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import {
@@ -2420,26 +2423,6 @@ export function MaintenancePage({
   )
 }
 
-export function createSettingsQueue(
-  save: V2Bridge['saveSettings'],
-  onSaved: (settings: AppSettings) => void,
-) {
-  let tail: Promise<unknown> = Promise.resolve()
-  return (patch: SettingsUpdate) => {
-    const finish = beginBusinessOperation('保存设置')
-    const task = tail
-      .catch(() => undefined)
-      .then(() => save(patch))
-      .then((value) => {
-        onSaved(value)
-        return value
-      })
-      .finally(finish)
-    tail = task
-    return task
-  }
-}
-
 /** 设置页顶上那句。原来那句后面加半句会折成两行，所以整句换短；Mac 上写 ⌘K。 */
 export function settingsPageLead(os: WindowOs): string {
   return `改完自动保存。找不到某一项，按 ${os === 'mac' ? '⌘K' : 'Ctrl K'} 搜它的名字。`
@@ -3135,6 +3118,20 @@ export function SettingsPage({
       ),
       network: (
         <>
+          <RelayRouteSettings
+            settings={settings}
+            saving={pending > 0}
+            restarting={Boolean(operation.busy)}
+            onChange={(patch) => void update(patch)}
+            onRestart={() => void operation.execute(
+              'relaunch',
+              () => api.relaunchApp(),
+              (started) => {
+                if (!started) showToast('已取消重开', 'neutral')
+                return null
+              },
+            )}
+          />
           {row(
             'mirror',
             '自动选择可用来源；下载失败时可切换后重试',

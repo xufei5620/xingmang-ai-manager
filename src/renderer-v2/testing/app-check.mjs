@@ -2219,6 +2219,35 @@ test('a tool whose account key changes this startup keeps waiting for the scan w
 
 // 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
 // 问完了、谁都不用换，检测没跑完也能打开。
+test('an applied route migration blocks home and native launch after scanning until configuration finishes', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    await page.evaluate(() => { window.v2Test.holdNextConfigSave(); window.v2Test.releaseScan() })
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].providers.includes('claude')))
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
+    await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    const shortcutNumber = await page.evaluate(async () => {
+      const { tools } = await import('/src/renderer-v2/registry/tools.ts')
+      return tools.filter((entry) => !entry.hidden?.('win')).findIndex((entry) => entry.id === 'claude') + 1
+    })
+    await page.keyboard.press(`Control+${shortcutNumber}`)
+    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
+    const configured = await page.evaluate(async () => (await window.xingmang.getConfig()).providers.claude)
+    assert.equal(configured.actualBaseUrl, configured.baseUrl)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('opening waits while the account key sync has not answered yet, then opens before the scan finishes', async () => {
   const page = await open('allInstalled=1&cachedScan=1&bootstrapPending=1')
   try {
@@ -2448,6 +2477,27 @@ test('read-only account matches switch only explicitly selected CLI providers on
     // 没勾的两个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
     for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('tools switched to a saved account open right away instead of waiting for a key sync that never runs', async () => {
+  const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    await page.getByTestId('account-sync-grok').waitFor()
+    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
+    await expect(page.locator('dialog[open]')).toHaveCount(0)
+    // 切换账号时 Key 已经在切换框里换好，开机那一轮同步不会再跑：「打开」不能一直灰着等它。
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codex'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.getByTestId('tool-claude-primary').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)).toBe(2)
+    assert.equal(await page.getByText('正在同步这个工具的账号连接，请稍后再打开。').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2779,6 +2829,146 @@ test('turning the display switch off in settings asks for a relaunch, and later 
     await page.getByTestId('settings-display-relaunch-later').click()
     await expect.poll(() => page.getByTestId('settings-display-relaunch').count()).toBe(0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a first login network failure can change routes without losing its draft or bypassing relaunch', async () => {
+  const page = await open('guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.evaluate(() => { window.v2Test.fail = 'loginAccount'; window.v2Test.failMessage = '连接账号服务超时' })
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').waitFor()
+    await page.getByTestId('auth-connection-settings').click()
+    const panel = page.getByTestId('auth-connection-routes')
+    await panel.waitFor()
+    await expect(page.locator('dialog[open]')).toHaveCount(1)
+    const route = panel.getByTestId('settings-relay-route-solov')
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await route.selectOption('direct')
+    await expect(route).toBeDisabled()
+    await expect(page.getByTestId('auth-connection-back')).toBeDisabled()
+    await expect(route).toHaveValue('primary')
+    await page.evaluate(() => window.v2Test.releaseConfigSave('线路设置没有保存成功'))
+    await panel.getByRole('alert').filter({ hasText: '线路设置没有保存成功' }).waitFor()
+    await expect(route).toHaveValue('primary')
+    await route.selectOption('direct')
+    await panel.getByTestId('settings-relay-relaunch').waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
+    await page.getByTestId('auth-connection-back').click()
+    await expect(page.getByTestId('login-account')).toHaveValue('fixture-user')
+    await expect(page.getByTestId('login-password')).toHaveValue('fixture-password')
+    await expect(page.getByTestId('auth-agree')).toBeChecked()
+    await page.getByTestId('auth-connection-settings').click()
+    await expect(route).toHaveValue('direct')
+    await page.evaluate(() => window.v2Test.emit('onWindowCloseRequest', { requestId: 'fixture-route-relaunch' }))
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === 'fixture-route-relaunch')?.args[1]?.unsavedChanges)).toBe(true)
+    await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
+    await panel.getByTestId('settings-relay-relaunch-now').click()
+    await waitForToast(page, '已取消重开')
+    await expect(panel.getByTestId('settings-relay-relaunch')).toBeVisible()
+    await page.screenshot({ path: path.join(artifacts, 'auth-relay-route-pending.png'), fullPage: true })
+    await page.getByTestId('auth-connection-back').click()
+    await expect(page.getByTestId('login-password')).toHaveValue('fixture-password')
+    assert.equal(await page.evaluate(async () => (await window.xingmang.getAccountSession()).authenticated), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unsigned first-run guide reaches connection routes before it can configure any tool', async () => {
+  const page = await open('guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-chat').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    await page.getByTestId('guide-login').click()
+    await page.getByTestId('auth-connection-settings').click()
+    const panel = page.getByTestId('auth-connection-routes')
+    await panel.getByTestId('settings-relay-route-solov').selectOption('direct')
+    await panel.getByTestId('settings-relay-relaunch').waitFor()
+    await page.getByTestId('auth-connection-back').click()
+    await page.getByTestId('login-cancel').click()
+    await expect(page.getByTestId('start-guide')).toHaveAttribute('data-guide-step', 'connect')
+    const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(calls.includes('loginAccount') || calls.includes('configureManagedCliKeys') || calls.includes('relaunchApp'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('relay route settings stay confirmed while saving and keep the restart notice across page visits', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await expect(route).toHaveValue('primary')
+    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeDisabled()
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await route.selectOption('direct')
+    await expect(route).toBeDisabled()
+    await expect(route).toHaveValue('primary')
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await expect(route).toHaveValue('direct')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } })
+    assert.equal(await page.evaluate(async () => (await window.xingmang.getSettings()).activeRelayEndpointIds.solov), 'primary')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-settings').click()
+    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await page.screenshot({ path: path.join(artifacts, 'settings-relay-route-pending.png'), fullPage: true })
+    await page.getByTestId('settings-relay-relaunch-now').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
+    await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('relay route settings roll back a failed save and do not announce a pending restart', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await page.evaluate(() => { window.v2Test.fail = 'saveSettings' })
+    await route.selectOption('direct')
+    await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
+    await expect(route).toHaveValue('primary')
+    await expect(route).toBeEnabled()
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await route.selectOption('direct')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await route.selectOption('primary')
+    await expect.poll(() => page.getByTestId('settings-relay-relaunch').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('relay route settings compare against the active backup route and preserve a cancelled restart', async () => {
+  const page = await open('directRelayActive=1')
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await expect(route).toHaveValue('direct')
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await route.selectOption('primary')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
+    await page.getByTestId('settings-relay-relaunch-now').click()
+    await waitForToast(page, '已取消重开')
+    await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
+    assert.equal(await page.evaluate(async () => (await window.xingmang.getAccountSession()).account.userId), 17)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3839,8 +4029,13 @@ test('NewAPI read states survive collection updates and stay isolated between ac
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '已读'])
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'other-user', group: 'default', role: 1, quota: 1, usedQuota: 0 } }))
+    await page.getByRole('button', { name: '打开个人中心 other-user', exact: true }).waitFor()
     await page.getByTestId('announcement-open').click()
-    await list.waitFor()
+    // Opening reloads the new account's collection. The container can briefly
+    // exist before that reload clears it; wait for both rows and their read
+    // states to finish loading before taking the original synchronous snapshot.
+    await expect(list.locator('.v2-announcement-title')).toHaveText(['第一条', '第二条'])
+    await expect(list.locator('.v2-announcement-read-state')).toHaveText(['未读', '未读'])
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读'])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
     await clean(page)
@@ -6348,6 +6543,8 @@ test('a window narrower than the design collapses the sidebar by itself, floats 
     await page.screenshot({ path: path.join(artifacts, 'shell-narrow-overlay.png') })
     await page.keyboard.press('Escape')
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    // Escape restores focus in the next animation frame, after the class changes.
+    await expect(page.getByTestId('sidebar-collapse')).toBeFocused()
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '展开侧栏')
     await page.getByTestId('sidebar-collapse').click()
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')
