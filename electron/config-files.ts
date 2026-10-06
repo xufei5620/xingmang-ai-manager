@@ -3455,6 +3455,14 @@ const claudeForeignEnvKeys = [
 ] as const
 const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
 
+/**
+ * 上面选型号的那几项。客户在系统设置或 ~/.zshrc 里设的同名环境变量 Claude Code 一样认，所以用星芒账号
+ * 从星芒打开 Claude Code 时也不交给它（system-service.ts 的 launchExcludedEnvironmentVariables，已知45 跟进），
+ * 范围靠这一处和这里挪开的对齐。ANTHROPIC_API_KEY 不在内：Windows、Linux 上它由检查页提示，Mac 的启动
+ * 脚本另外去掉（macosShellOverrideVariables）。
+ */
+export const claudeForeignModelEnvKeys: readonly string[] = claudeForeignEnvKeys.filter((key) => key !== 'ANTHROPIC_API_KEY')
+
 interface ClaudeForeignSettings {
   env: Record<string, unknown>
   settings: Record<string, unknown>

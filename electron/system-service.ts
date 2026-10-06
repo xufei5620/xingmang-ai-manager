@@ -85,6 +85,7 @@ import {
 } from './codex-model-catalog'
 import {
   canLaunchManagedProvider,
+  claudeForeignModelEnvKeys,
   geminiCliCompatibleModel,
   ensureCodexPermissionDefaults,
   ensureGeminiProjectContextFiles,
@@ -99,6 +100,7 @@ import {
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
+  providerAccountMode,
   readCodexAuthTokens,
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
@@ -116,6 +118,7 @@ import {
   type NativeConfigInspection,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
+  type ProviderAccountMode,
 } from './config-files'
 import {
   ProjectInstructionsStateStore,
@@ -482,12 +485,19 @@ export function buildDarwinCliLaunchPlan(
   command: { executable: string; argv: readonly string[] },
   workspace: string,
   env: NodeJS.ProcessEnv,
+  clearedEnvironmentKeys: readonly string[] = [],
 ): MacosTerminalLaunchPlan {
   if (!path.isAbsolute(command.executable)) {
     throw new Error('macOS CLI executable must be an absolute resolved path')
   }
   if (!path.isAbsolute(workspace)) throw new Error('macOS workspace must be an absolute path')
-  return { executable: command.executable, argv: [...command.argv], workspace, env }
+  return {
+    executable: command.executable,
+    argv: [...command.argv],
+    workspace,
+    env,
+    ...(clearedEnvironmentKeys.length ? { clearedEnvironmentKeys: [...clearedEnvironmentKeys] } : {}),
+  }
 }
 
 export type { OfficialChatGptAccount, OfficialChatGptWindow }
@@ -2538,6 +2548,8 @@ export interface SystemServiceOptions {
   launchLinuxTerminal?: typeof launchLinuxTerminal
   /** Test seam: the real one has a hidden PowerShell start the terminal and hand back its process id (windows-elevation.ts). */
   launchCliPowerShell?: typeof launchCliPowerShell
+  /** Test seam: the real one writes the zsh launcher and has `open -a Terminal` run it (macos-platform.ts). */
+  launchMacosTerminal?: typeof launchMacosTerminal
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
@@ -2635,6 +2647,15 @@ export interface SystemServiceOptions {
   sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
 }
 
+// Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
+// already present. A shell-level stale gateway/key/model would otherwise
+// override the account configuration just written by the manager and send
+// requests to another relay (or select a model that is not in the group).
+const managedGeminiVariables = [
+  'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
+  'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
+] as const
+
 export function providerCommandEnvironment(
   provider: ProviderId,
   processEnv: NodeJS.ProcessEnv,
@@ -2642,19 +2663,54 @@ export function providerCommandEnvironment(
 ): NodeJS.ProcessEnv {
   const environment = commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
   if (provider === 'gemini') {
-    // Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
-    // already present. A shell-level stale gateway/key/model would otherwise
-    // override the account configuration just written by the manager and send
-    // requests to another relay (or select a model that is not in the group).
-    const managedGeminiVariables = new Set([
-      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
-      'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
-    ])
+    const managed = new Set<string>(managedGeminiVariables)
     for (const key of Object.keys(environment)) {
-      if (managedGeminiVariables.has(key.toUpperCase())) delete environment[key]
+      if (managed.has(key.toUpperCase())) delete environment[key]
     }
   }
   return environment
+}
+
+/**
+ * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进）。用星芒账号时，客户自己设的 ANTHROPIC_MODEL 这类
+ * 选型号的变量会让 Claude Code 去要当前账号没有的型号；接账号时 settings.json 里的同名项已经挪开
+ * （config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。用自己的 Claude 账号时照旧带。
+ */
+export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  return provider === 'claude' && accountMode === 'relay' ? claudeForeignModelEnvKeys : []
+}
+
+/** 名字不分大小写：Windows 上 `anthropic_model` 和大写是同一个变量（同 providerCommandEnvironment）。 */
+export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
+  const excluded = new Set(names.map((name) => name.toUpperCase()))
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !excluded.has(key.toUpperCase())))
+}
+
+/**
+ * Mac 上「终端」先起客户自己的登录 shell 读 ~/.zshrc 这些启动文件，再跑星芒的启动脚本，那里 export
+ * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
+ * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
+ * 都在里面，另加 Mac 才要的：
+ * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
+ *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
+ *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
+ *   不动。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，也不动。
+ * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
+ *   里的，要给的值启动时另给。
+ * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
+ */
+export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  switch (provider) {
+    case 'claude':
+      return accountMode === 'relay'
+        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...launchExcludedEnvironmentVariables(provider, accountMode)]
+        : []
+    case 'gemini':
+      return managedGeminiVariables
+    case 'codex':
+    case 'grok':
+      return []
+  }
 }
 
 /** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
@@ -2977,6 +3033,7 @@ export function createSystemService(
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
   const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
   const launchCliPowerShellForService = serviceOptions.launchCliPowerShell ?? launchCliPowerShell
+  const launchMacosTerminalForService = serviceOptions.launchMacosTerminal ?? launchMacosTerminal
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
@@ -5727,11 +5784,16 @@ export function createSystemService(
       }
     }
     const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
+    const accountMode = providerAccountMode(nativeConfig)
+    const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
     // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
     // 只在不跨提权边界时补；trusted-only 的终端 PATH 由 trustedCommandEnvironment 重建，不收用户可写的目录（I2）。
-    const providerEnv = provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
-      ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
-      : providerEnvironment(provider)
+    const providerEnv = withoutEnvironmentVariables(
+      provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
+        ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
+        : providerEnvironment(provider),
+      excludedVariables,
+    )
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
       // and it never overwrites conflicting parent-process variables. Pass the
@@ -5800,13 +5862,14 @@ export function createSystemService(
           darwinStagingRetention: 'retained',
           ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
-        await launchMacosTerminal(buildDarwinCliLaunchPlan(
+        await launchMacosTerminalForService(buildDarwinCliLaunchPlan(
           {
             ...command,
             argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),
           },
           workspace,
           withSystemCertificateTrust(providerEnv),
+          macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
@@ -5832,6 +5895,8 @@ export function createSystemService(
         workspace,
         title: `${definition.name} · 星芒AI`,
         env: environment,
+        // 交给已经开着的命令窗口程序时，工具拿到的是那个程序自己的环境，上面去掉的得在脚本里再去一次。
+        ...(excludedVariables.length ? { clearedEnvironmentKeys: excludedVariables } : {}),
       })
       runtimeLog?.log('info', 'system', 'terminal.opened', `${definition.name} 已在「${opened.terminal.label}」里打开`, {
         provider,

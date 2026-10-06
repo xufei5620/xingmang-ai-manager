@@ -24,6 +24,11 @@ export interface MacosTerminalScriptPlan {
   workspace: string
   launcherPath: string
   env: NodeJS.ProcessEnv
+  /**
+   * 客户的登录 shell 可能带进来、这次不能交给工具的变量（system-service.ts 的 macosShellOverrideVariables）。
+   * 先 unset，再写 env 里星芒自己的值。缺省 = 不 unset（旧行为）。
+   */
+  clearedEnvironmentKeys?: readonly string[]
 }
 
 export interface MacosTerminalLaunchPlan extends Omit<MacosTerminalScriptPlan, 'launcherPath'> {}
@@ -65,6 +70,8 @@ const persistedTerminalEnvironmentKeys = new Set([
   'CLICOLOR',
   'CLICOLOR_FORCE',
 ])
+// export、unset 后面的名字不带引号写进启动脚本，所以只收普通的变量名。
+const environmentKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function isAbsolutePath(value: string): boolean {
   return Boolean(value) && !value.includes('\0') && path.isAbsolute(value)
@@ -210,10 +217,16 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
   }
   const environmentEntries = Object.entries(plan.env)
   for (const [key, value] of environmentEntries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!environmentKeyPattern.test(key)) {
       throw new TypeError(`invalid environment key: ${key}`)
     }
     if (value?.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
+  }
+  const clearedEnvironmentKeys = plan.clearedEnvironmentKeys ?? []
+  for (const key of clearedEnvironmentKeys) {
+    if (!environmentKeyPattern.test(key)) {
+      throw new TypeError(`invalid environment key: ${key}`)
+    }
   }
   for (const requiredKey of ['HOME', 'PATH'] as const) {
     if (!plan.env[requiredKey]?.trim()) {
@@ -246,6 +259,9 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     ...macosFolderAccessHintLines.unreadable.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
     '  exit 1',
     'fi',
+    // ~/.zshrc 里设的 ANTHROPIC_API_KEY 这类变量会盖过星芒写的配置，这一次不带给工具（已知45）；
+    // 星芒自己要给的值紧接着在下面写回去。
+    ...(clearedEnvironmentKeys.length ? [`unset ${clearedEnvironmentKeys.join(' ')}`] : []),
     ...environmentExports,
     // ~/.zshrc 里留着、却已经没开的本机代理，这一次不带给工具（第三十四批 B）。
     ...buildMacosClosedProxyGuard(),
