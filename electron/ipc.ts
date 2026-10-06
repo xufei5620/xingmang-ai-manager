@@ -2275,10 +2275,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         }
       },
       writeAccountConfig: async (id) => {
+        // 工具自己读不了的配置，只更新要照着原文件改，只会报「写错了」；来源没确认时配置窗口里
+        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走重置：这次切换
+        // 开头已经在「备份」页留过一份，切不成照样从它恢复。
+        const current = service.getConfig(options.previewOnboarding).providers[id]
+        const mode = current?.configBroken === true || current?.codexAuthBroken === true ? 'reset' : 'merge'
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
         // 切换来源没有确认丢弃读坏的额度记录；签发仍走保留限制、读坏就停止的入口。
         const outcome = await configureManagedClis(
-          automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
+          automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, mode, 'explicit',
         )
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))

@@ -283,22 +283,50 @@ export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProvi
 }
 
 /**
- * Codex 自己也读不了这份 config.toml（主进程 codexConfigBroken）：桌面端会停在「无法加载
- * 组织设置」，命令行直接报错。这时读出来的 Key、来源都不作数，首页先说文件坏了。
+ * 工具自己也读不了的配置文件（主进程 configBroken、codexAuthBroken，判法见 cli-config-health.ts）。
+ * 这时读出来的 Key、来源都不作数，首页先说文件坏了：
+ * - codexConfig：Codex 的 config.toml。桌面端会停在「无法加载组织设置」，命令行直接报错。
+ * - codexAuth：Codex 的 auth.json。Codex 不报错，当成没登录，打开就要重新登录。
+ * - claudeSettings、geminiSettings：settings.json。Claude Code 弹英文的「Settings Error」、整份不用，
+ *   Gemini CLI 直接退出。星芒自己读不出 Key 时会把它认成官方账号，其实不是。
+ * Grok CLI 的配置主进程不判。
  */
-export function codexConfigBroken(config: Pick<ProviderConfigSummary, 'codexConfigBroken'>, provider: ProviderId): boolean {
-  return provider === 'codex' && config.codexConfigBroken === true
+export type BrokenConfig = 'codexConfig' | 'codexAuth' | 'claudeSettings' | 'geminiSettings'
+
+export function brokenConfigOf(config: Pick<ProviderConfigSummary, 'configBroken' | 'codexAuthBroken'>, provider: ProviderId): BrokenConfig | null {
+  if (provider === 'codex') return config.configBroken === true ? 'codexConfig' : config.codexAuthBroken === true ? 'codexAuth' : null
+  if (config.configBroken !== true) return null
+  return provider === 'claude' ? 'claudeSettings' : provider === 'gemini' ? 'geminiSettings' : null
 }
 
 /** 「配置文件坏了」那一行的小字；修的过程中行上照旧是这句（yoyo 2026-10-06 定的原话）。 */
-export const configBrokenDetail = 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留'
+export const brokenConfigDetails: Record<BrokenConfig, string> = {
+  codexConfig: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+  codexAuth: 'Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留',
+  claudeSettings: 'Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+  geminiSettings: 'Gemini CLI 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+}
 
 /**
  * 「配置文件坏了」的「修好它」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
- * 登录的是 ChatGPT 账号就照旧用官方账号，不顺手换成当前账号；其余按当前账号。
+ * 看得出原来用的是官方登录就照旧用官方账号，不顺手换成当前账号：Codex 登录的是 ChatGPT，
+ * 或者只坏了 auth.json、config.toml 里又没有别的服务地址；Gemini CLI 读得出选的是 Google 登录。
+ * 其余按当前账号（Claude Code 的官方登录不记在 settings.json 里，看不出来）。
  */
-export function brokenConfigRepairTarget(config: Pick<ProviderConfigSummary, 'codexAuthMode'>): AccountSourceTarget {
-  return config.codexAuthMode === 'chatgpt' ? 'official' : 'account'
+export function brokenConfigRepairTarget(
+  broken: BrokenConfig,
+  config: Pick<ProviderConfigSummary, 'codexAuthMode' | 'actualBaseUrl' | 'authType'>,
+): AccountSourceTarget {
+  switch (broken) {
+    case 'codexConfig':
+      return config.codexAuthMode === 'chatgpt' ? 'official' : 'account'
+    case 'codexAuth':
+      return config.codexAuthMode === 'chatgpt' || !config.actualBaseUrl ? 'official' : 'account'
+    case 'geminiSettings':
+      return config.authType === 'oauth-personal' ? 'official' : 'account'
+    case 'claudeSettings':
+      return 'account'
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
-import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, codexConfigBroken, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -60,14 +60,32 @@ describe('renderer tool source', () => {
 
   // 2026-10-02 客户的「无法加载组织设置」：Codex 自己读不了 config.toml。修的时候不换账号来源。
   it('flags a Codex config Codex cannot read and repairs it on the account it already uses', () => {
-    const broken = { ...relayConfig(), configurationOwnership: 'account' as const, codexConfigBroken: true }
-    expect(codexConfigBroken(broken, 'codex')).toBe(true)
-    expect(codexConfigBroken(broken, 'grok')).toBe(false)
-    expect(codexConfigBroken(relayConfig(), 'codex')).toBe(false)
-    expect(brokenConfigRepairTarget({ codexAuthMode: 'chatgpt' })).toBe('official')
-    expect(brokenConfigRepairTarget({ codexAuthMode: 'apikey' })).toBe('account')
-    expect(brokenConfigRepairTarget({ codexAuthMode: null })).toBe('account')
-    expect(brokenConfigRepairTarget({})).toBe('account')
+    const broken = { ...relayConfig(), configurationOwnership: 'account' as const, configBroken: true }
+    expect(brokenConfigOf(broken, 'codex')).toBe('codexConfig')
+    expect(brokenConfigOf({ ...broken, codexAuthBroken: true }, 'codex')).toBe('codexConfig')
+    expect(brokenConfigOf(relayConfig(), 'codex')).toBeNull()
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: 'chatgpt', actualBaseUrl: '' })).toBe('official')
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: 'apikey', actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: null, actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('codexConfig', { actualBaseUrl: '' })).toBe('account')
+  })
+
+  // 已知44：Codex 读不了 auth.json 时当成没登录；Claude Code、Gemini CLI 读不了 settings.json 时星芒会把它认成官方账号。
+  it('flags the other files the tools cannot read and keeps an official login official', () => {
+    expect(brokenConfigOf({ codexAuthBroken: true }, 'codex')).toBe('codexAuth')
+    expect(brokenConfigOf({ configBroken: true }, 'claude')).toBe('claudeSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'gemini')).toBe('geminiSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'grok')).toBeNull()
+    expect(brokenConfigOf({ codexAuthBroken: true }, 'claude')).toBeNull()
+    expect(brokenConfigOf({ configBroken: false, codexAuthBroken: false }, 'codex')).toBeNull()
+
+    const relay = relayConfig()
+    expect(brokenConfigRepairTarget('codexAuth', relay)).toBe('account')
+    expect(brokenConfigRepairTarget('codexAuth', { ...relay, codexAuthMode: 'chatgpt' })).toBe('official')
+    expect(brokenConfigRepairTarget('codexAuth', { ...relay, actualBaseUrl: '' })).toBe('official')
+    expect(brokenConfigRepairTarget('claudeSettings', { ...relay, actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('geminiSettings', relay)).toBe('account')
+    expect(brokenConfigRepairTarget('geminiSettings', { ...relay, authType: 'oauth-personal' })).toBe('official')
   })
 
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {
