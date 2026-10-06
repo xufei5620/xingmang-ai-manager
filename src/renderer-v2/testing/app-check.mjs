@@ -1583,7 +1583,7 @@ test('the maintenance page does not reinstall over a CLI from an official instal
     // 这一页的「重新安装」不点名版本：框里写的 1.2.3 必须原样交给主进程，而不是由主进程另挑一版。
     await page.getByTestId('maintenance-install-claude').click()
     await dialog.getByRole('button', { name: '换成星芒装的', exact: true }).click()
-    await page.getByText('安装完成，工具状态已更新', { exact: true }).waitFor()
+    await waitForToast(page, '安装完成，工具状态已更新')
     assert.deepEqual(await switched(), [
       { method: 'uninstallCli', args: ['claude', { reinstall: true }] },
       { method: 'installCli', args: ['claude', '1.2.3'] },
@@ -2289,7 +2289,7 @@ test('an unreachable startup restore keeps the login on the home page and waits 
     assert.equal(await page.getByText('当前登录已结束').count(), 0)
     assert.equal(await page.getByText('配置被改过').count(), 0)
     await page.getByTestId('nav-chat').click()
-    await page.getByText('暂时连不上服务，登录还在').waitFor()
+    await waitForToast(page, '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。')
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
     await row.getByText('配置被改过').waitFor()
     assert.equal(await page.getByText('暂时连不上，登录还在').count(), 0)
