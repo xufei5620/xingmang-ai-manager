@@ -2,7 +2,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import type { ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
-import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
+import { ensureSafeDataDirectory, readSafeUtf8FileSync, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
  * `changed` 只收窄 `unknown` 的一角：这份配置确实是本程序替当前账号写下的，
@@ -76,6 +76,26 @@ export class ToolConfigOwnershipStore {
       if (value.source === 'manual') return 'manual'
       return ours ? 'account' : 'unknown'
     } catch { return 'unknown' }
+  }
+
+  /**
+   * 原样记下这份配置眼下的来源记录（没有记录也算一种），返回把它放回去的办法。保存前要先把来源
+   * 记成「手动」以防写到一半崩掉；没写成、配置也一点没动时，就该一点痕迹都不留。读不出来时
+   * 返回 null：那样的记录本来就读成「未知」，不放回也照样挡着自动写入。
+   */
+  remember(provider: ProviderId, config: NativeConfigInspection): (() => Promise<void>) | null {
+    const file = this.file(provider, config)
+    let raw: string | null
+    try {
+      raw = readSafeUtf8FileSync(file, '工具配置来源', 4096)
+    } catch {
+      return null
+    }
+    return async () => {
+      if (raw === null) return removeSafeDataFile(file, '工具配置来源')
+      ensureSafeDataDirectory(this.directory, '工具配置来源目录')
+      await writeAtomicSafeUtf8File(file, raw, '工具配置来源')
+    }
   }
 
   /** 这份配置记录下来的模板版本；没有记录或读不懂 = null，老记录没有这个字段 = 0。 */

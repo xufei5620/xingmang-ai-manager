@@ -1,10 +1,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8FileSync, renameWithTransientRetrySync } from './safe-local-data'
+import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8FileSync, removeSafeDataFileSync, renameWithTransientRetrySync } from './safe-local-data'
 
 const label = 'Claude Desktop 第三方推理配置'
 const maximumBytes = 512 * 1024
+// 每次保存给改到的每个文件留一份 .bak.<随机>，里面有旧 Key，以前从来不清（已知20）。
+// 同 config-files.ts 的 MAX_BACKUPS_PER_FILE，每个文件只留最近 5 份。
+const maximumBackupsPerFile = 5
+const backupIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 interface FilePlan { path: string; content: string }
 interface PreparedFile extends FilePlan {
   before: string | null
@@ -38,6 +42,29 @@ function stage(filePath: string, content: string): fs.BigIntStats {
         if (assertSafeDataFile(filePath, label) && sameIdentity(identity, fs.lstatSync(filePath, { bigint: true }))) fs.unlinkSync(filePath)
       } catch { /* Preserve any replacement created by another writer. */ }
     }
+  }
+}
+
+/**
+ * 只认这里自己起的名字（randomUUID 那种后缀），手工或别的程序放的 .bak 不碰。名字是随机的，
+ * 先后只能看修改时间；刚留的那份无论如何不删。清不掉的照旧留着：保存已经成功了，不能因为
+ * 清备份变成失败。
+ */
+function pruneBackups(filePath: string, latest: string): void {
+  const directory = path.dirname(filePath)
+  const prefix = `${path.basename(filePath)}.bak.`
+  const latestName = path.basename(latest)
+  let names: string[]
+  try { names = fs.readdirSync(directory) } catch { return }
+  const older: { path: string; modified: bigint }[] = []
+  for (const name of names) {
+    if (name === latestName || !name.startsWith(prefix) || !backupIdPattern.test(name.slice(prefix.length))) continue
+    const candidate = path.join(directory, name)
+    try { older.push({ path: candidate, modified: fs.lstatSync(candidate, { bigint: true }).mtimeNs }) } catch { continue }
+  }
+  older.sort((left, right) => left.modified === right.modified ? 0 : left.modified > right.modified ? -1 : 1)
+  for (const backup of older.slice(maximumBackupsPerFile - 1)) {
+    try { removeSafeDataFileSync(backup.path, label) } catch { /* Kept: the save itself already succeeded. */ }
   }
 }
 
@@ -126,5 +153,7 @@ export function commitClaudeDesktopFiles(
       try { if (ownedFile(plan.temporaryPath, plan.temporaryIdentity, plan.content)) fs.unlinkSync(plan.temporaryPath) } catch { /* Never remove a temporary file replaced by another writer. */ }
     }
   }
+  // 只在整次保存成功以后清：没成功时那句报错要客户从 .bak 恢复。
+  for (const plan of prepared) if (plan.backupPath) pruneBackups(plan.path, plan.backupPath)
   return { files: plans.map((plan) => plan.path), backups: prepared.flatMap((plan) => plan.backupPath ? [plan.backupPath] : []) }
 }

@@ -459,7 +459,15 @@ const methods = {
     if (holdConfigRead) { holdConfigRead = false; await new Promise<void>((resolve) => { releaseConfigRead = resolve }) }
     return result
   },
-  scanExternalClients: async () => {
+  scanExternalClients: async (_force, options) => {
+    // 同主进程：开机那一读只要上次落盘的那份，没有就是空列表。?externalCached 时上次的结果是
+    // WorkBuddy 已装好、已配好（这次真检测回来的照夹具的默认值，没装）。
+    if (options?.cachedOnly) {
+      if (!query.has('externalCached')) return []
+      return structuredClone(externalStatuses).map((entry) => ({ ...entry,
+        ...(entry.tool === 'workbuddy' ? { installed: true, version: '0.9.0', configured: true, configurationSource: 'xingmang' as const, model: 'cached-model' } : {}),
+        cachedAt: '2026-10-05T10:00:00.000Z' }))
+    }
     const result = structuredClone(externalStatuses)
     if (query.has('externalAccountOwned') && (!session.authenticated || session.account?.userId !== account.userId || (session.siteId ?? 'solov') !== externalOwnerSite)) {
       const owned = result.find((entry) => entry.tool === query.get('externalAccountOwned'))

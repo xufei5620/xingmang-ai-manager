@@ -1,6 +1,8 @@
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
+import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
+import { speaksChinese, userFacingErrorMessage } from '../../business-common'
 import { canReadImages, chatLimits } from './api'
 
 export type ChatMode = 'text' | 'image'
@@ -235,12 +237,15 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   return '本次请求没有完成，已保留内容，请稍后重试'
 }
 
-/** 选图、贴图失败时主进程说的就是原因和下一步，原话上屏；IPC 的英文前缀从第一个汉字截掉。 */
+/**
+ * 选图、贴图失败时主进程说的就是原因和下一步，中文原话上屏（剥掉 IPC 前缀、脱路径、打码）。
+ * 英文原话（图片存不进去时系统给的 EPERM 这类）换成兜底句。以前从第一个汉字截起，
+ * Windows 用户名是中文时会从用户名那里截，带出半截路径；是不是中文按 speaksChinese 判（第三十批 A）。
+ */
 export function attachmentErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  const message = userFacingErrorMessage(error)
   if (/请先登录/.test(message)) return '请先登录，再加图片'
-  const start = message.search(/[\u4e00-\u9fff]/)
-  return start >= 0 ? message.slice(start) : '图片没有加上，请再试一次'
+  return speaksChinese(message) ? redactSecretPatterns(message) : '图片没有加上，请再试一次'
 }
 
 export function addDraftImages(conversation: Conversation, images: readonly AiChatAsset[]): Conversation {
