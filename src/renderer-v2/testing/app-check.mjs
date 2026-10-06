@@ -6249,6 +6249,149 @@ test('the startup notice lands on the first problem of the check results', async
   } finally { await page.close() }
 })
 
+// 第四十二批 A：检查页每次查都现取 window.__health.items；hold 为真时先停住，release() 了才回结果。
+async function stubHeldHealthReport(page, items) {
+  await page.evaluate((initial) => {
+    window.__health = { items: initial, hold: false, release: () => undefined }
+    window.xingmang.runDiagnostics = async () => {
+      if (window.__health.hold) await new Promise((resolve) => { window.__health.release = resolve })
+      const items = window.__health.items.map((item) => ({ durationMs: 1, ...item }))
+      const counts = { pass: 0, warn: 0, fail: 0, error: 0 }
+      for (const item of items) counts[item.state] += 1
+      return { version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts, items }
+    }
+  }, items)
+}
+
+// 只数检查页自己那一轮（不带参数）；开机检查带 reuseRecentScan，不算。
+function healthChecks(page) {
+  return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics' && entry.args.length === 0).length)
+}
+
+// 第四十二批 A：去过的页面换走时只藏起来、不卸载，再显示时自己重读一次，和点页头那颗按钮一样。
+// 从错误框「检查网络」、侧栏回到检查页，看到的是现在的结果；还在查的时候换走再回来，不再起一轮。
+// 开发模式挂两遍会让第一次查几轮不固定，所以只数「多了几轮」。
+test('the check page checks again when it is shown again, but not while a check is still running', async () => {
+  const page = await open()
+  try {
+    await stubHeldHealthReport(page, [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '连接正常' }])
+    const health = page.getByTestId('page-health')
+    await page.getByTestId('nav-health').click()
+    await expect(health.getByTestId('health-passing')).toContainText('全部 1 项正常')
+    const first = await healthChecks(page)
+    await page.evaluate(() => { window.__health.items = [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务' }] })
+    // 藏着的检查页不查。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.waitForTimeout(100)
+    assert.equal(await healthChecks(page), first)
+    // 回来不用点「重新检查」就是新结果，右上照旧写「上次检查」。
+    await page.getByTestId('nav-health').click()
+    await expect(health.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连不上星芒服务')
+    assert.equal(await healthChecks(page), first + 1)
+    await expect(health.locator('.xm-toolbar')).toContainText('上次检查')
+    // 查着的时候换走再回来：那一轮还没查完，不再起一轮；查完照样换上新结果。
+    await page.evaluate(() => {
+      window.__health.hold = true
+      window.__health.items = [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '连接正常' }]
+    })
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-health').click()
+    await expect.poll(() => healthChecks(page)).toBe(first + 2)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-health').click()
+    await page.waitForTimeout(100)
+    assert.equal(await healthChecks(page), first + 2)
+    await page.evaluate(() => { window.__health.hold = false; window.__health.release() })
+    await expect(health.getByTestId('health-passing')).toContainText('全部 1 项正常')
+    assert.equal(await healthChecks(page), first + 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 去过检查页、换走，再从设置「网络检查」点「去检查页」：这时正在重查，等新结果出来再翻到网络那一项、
+// 亮一下，不先在上回那份结果上亮。
+test('pointing at an item of a check page visited before waits for the new results', async () => {
+  const page = await open()
+  try {
+    await stubHeldHealthReport(page, [
+      { code: 'CLI_CODEX', title: 'Codex CLI', state: 'fail', summary: 'Codex CLI 打不开' },
+      { code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '上回查：连接正常' },
+    ])
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-row-CLI_CODEX').waitFor()
+    await page.evaluate(() => {
+      window.__health.hold = true
+      window.__health.items = [
+        { code: 'CLI_CODEX', title: 'Codex CLI', state: 'fail', summary: 'Codex CLI 打不开' },
+        { code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '这回查：连接正常' },
+      ]
+    })
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-network-health').click()
+    await page.getByTestId('page-health').waitFor()
+    // 新结果还没回来：哪一项都不亮，正常的几项也还收着。
+    await page.waitForTimeout(300)
+    assert.equal(await page.locator('[data-testid="page-health"] [data-anchor-focus]').count(), 0)
+    await expect(page.getByTestId('health-passing-toggle')).toHaveText('展开')
+    await page.evaluate(() => { window.__health.hold = false; window.__health.release() })
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="XINGMANG_NETWORK"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('这回查：连接正常')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 错误框「查看日志」把人带回去过的反馈页：刚出的那个错不点「刷新」就在「运行日志」最上面。
+test('the feedback page reads the run log again when it is shown again', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      const entry = (index, level, message) => ({ id: `2026-10-06T00:00:0${index}.000Z:4242:${index}`, timestamp: `2026-10-06T00:00:0${index}.000Z`, level, source: 'fixture', event: 'test', message, detail: null })
+      window.__logs = [entry(1, 'info', '上回进来时就有的日志')]
+      window.__logError = () => window.__logs.unshift(entry(2, 'error', '刚出的那个错'))
+      window.xingmang.getRuntimeLogs = async () => ({ generatedAt: new Date().toISOString(), directory: 'C:/logs', filePath: 'C:/logs/runtime.log', sizeBytes: 64,
+        total: window.__logs.length, truncated: false, counts: { debug: 0, info: 1, warn: 0, error: window.__logs.length - 1 }, sources: ['fixture'],
+        currentProcessId: 4242, startedAt: '2026-10-06T00:00:00.000Z', entries: window.__logs.map((item) => ({ ...item })) })
+    })
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-feedback').click()
+    const logs = page.getByTestId('page-feedback').locator('button.v2-feedback-log')
+    await expect(logs.first()).toContainText('上回进来时就有的日志')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.__logError())
+    await page.getByTestId('nav-feedback').click()
+    await expect(logs.first()).toContainText('刚出的那个错')
+    await expect(logs).toHaveCount(2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 改用失败的错误框叫人「到「备份」里恢复改用之前的那一份」：去过的备份页回来时，列表里得有这一份。
+test('the backups page lists a backup made while it was hidden once it is shown again', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.__backups = []
+      window.xingmang.listBackups = async () => window.__backups.map((item) => ({ ...item }))
+    })
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-backups').click()
+    await page.getByTestId('backups-empty').waitFor()
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => {
+      window.__backups.push({ id: 'backup-before-switch', provider: 'codex', reason: 'pre-save', createdAt: new Date().toISOString(),
+        fileCount: 2, existingFileCount: 2, totalSize: 2048, valid: true, error: null, keyOwnership: 'current', keyAccountName: null })
+    })
+    await page.getByTestId('nav-backups').click()
+    await expect(page.getByTestId('backups-row-backup-before-switch')).toContainText('配置前备份')
+    await expect(page.getByTestId('backups-empty')).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第五部分第 39 条：结论是「网络」时，「去处理」打开设置的「网络」那一组，不再落在第一组「外观」。
 test('a network self-check result sends 去处理 to the network group of settings', async () => {
   const page = await open()

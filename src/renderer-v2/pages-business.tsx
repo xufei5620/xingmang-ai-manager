@@ -101,6 +101,7 @@ export function BusinessPage({
         api={api}
         onRestored={onBackupRestored}
         navigate={actions.navigate}
+        active={actions.active}
       />
     )
   if (page === 'health') return <HealthPage api={api} {...actions} />
