@@ -150,3 +150,20 @@ export type CliLaunchChoice = CliLaunchMode | { resumeSessionId: string }
 export function resumeLaunchChoice(session: Pick<SessionSummary, 'id' | 'provider'>): CliLaunchChoice {
   return session.provider === 'codex' ? { resumeSessionId: session.id } : 'resumeLast'
 }
+
+/**
+ * 「接着聊」点下去之前要不要先读一份最新的记录再对一次（已知4）。按文件夹接最近一条的那三家要：
+ * 手上的列表可能是在终端里聊之前读的，刚聊的那条不在，按钮还挂在同一文件夹更早那条上。
+ * Codex 带着记录 id 接，点哪条接哪条，不用对。
+ */
+export function resumeNeedsRecheck(session: Pick<SessionSummary, 'id' | 'provider'>): boolean {
+  return typeof resumeLaunchChoice(session) !== 'object'
+}
+
+/**
+ * 刚读回来的那份记录里，点的这条还是不是它那个（工具 × 文件夹）最近的一条：是，打开接上的就是它；
+ * 不是（终端里又聊了一条、或者这条已经删了、归档了），这次就不打开，换上新列表，按钮自己挪到该挂的那条上。
+ */
+export function resumeStillLatest(session: Pick<SessionSummary, 'id'>, sessions: readonly SessionSummary[]): boolean {
+  return latestSessionIdsByWorkspace(sessions).has(session.id)
+}

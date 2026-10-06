@@ -358,6 +358,20 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
 })
 
+// test:scripts is a hand-kept list, and a suite missing from it is not reported
+// anywhere: three of them (the installer directory guard and both macOS
+// artifact-name suites) sat in scripts/ for weeks with neither npm test nor CI
+// running them. Every suite has to be named by some npm script; the macOS-only
+// ones count through test:mac:free-signing.
+test('every script suite is run by some npm script', () => {
+  const named = new Set(Object.values(packageJson.scripts).flatMap((command) => command.split(/\s+/)))
+  const suites = fs.readdirSync(path.join(root, 'scripts'))
+    .filter((name) => /\.test\.[cm]?js$/.test(name))
+    .map((name) => `scripts/${name}`)
+  assert.ok(suites.length > 0, 'scripts/ must still hold its suites')
+  assert.deepEqual(suites.filter((suite) => !named.has(suite)), [])
+})
+
 // The halves above only add up to the whole file while the deal gives every
 // test to exactly one share, and a misspelt share has to stop the run rather
 // than quietly register everything or nothing.
@@ -650,6 +664,16 @@ test('real PowerShell runs once in the packaging job, never in the unit test sha
       // real through the shipped function, which the pattern above cannot see.
       if (startsPowerShell.test(source) || source.includes('XINGMANG_POWERSHELL_TEST_TIMEOUT_MS')) offenders.push(relative)
     }
+  }
+  // The script suites run in the same kind of shard, many files at once. The
+  // recovery script's logic test ran out its 30 seconds there on #782 and now
+  // lives in the smoke above. A script suite that builds the system
+  // PowerShell's path and can start a process is the shape it had.
+  const buildsPowerShellPath = /'WindowsPowerShell',\s*'v1\.0',\s*'powershell\.exe'|(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  for (const entry of fs.readdirSync(path.join(root, 'scripts'))) {
+    if (!/\.test\.c?js$/.test(entry)) continue
+    const source = fs.readFileSync(path.join(root, 'scripts', entry), 'utf8')
+    if (source.includes("require('node:child_process')") && buildsPowerShellPath.test(source)) offenders.push(path.join('scripts', entry))
   }
   assert.deepEqual(offenders, [])
 })

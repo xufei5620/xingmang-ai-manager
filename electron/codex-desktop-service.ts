@@ -2459,7 +2459,10 @@ export interface CodexDesktopServiceOptions {
   getuid?: () => number
   /** Mac 上按哪种芯片挑安装包；缺省 = process.arch，测试换成假的。 */
   architecture?: NodeJS.Architecture
-  /** Optional seams used by tests; production uses the constrained CDP module. */
+  /**
+   * Optional seams used by tests; production uses the constrained CDP module,
+   * with the CDP activation wrapped only to log why it failed.
+   */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
   getAvailableLoopbackPort?: typeof getAvailableLoopbackPortDefault

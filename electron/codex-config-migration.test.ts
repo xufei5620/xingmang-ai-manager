@@ -111,9 +111,9 @@ describe('one-time Codex context limit migration', () => {
   })
 
   it.each([
-    ['model_context_window', 250000],
-    ['model_auto_compact_token_limit', 123456],
-  ])('removes an individually present %s even with a custom value', async (key, value) => {
+    ['model_context_window', 1000000],
+    ['model_auto_compact_token_limit', 900000],
+  ])('removes an individually present %s holding the old template value', async (key, value) => {
     const { roots, managerDataDirectory, paths } = fixture()
     writeConfig(paths.active, `${key} = ${value}\nmodel = "custom"\n`)
 
@@ -124,6 +124,22 @@ describe('one-time Codex context limit migration', () => {
     expect(TOML.parse(readConfig(paths.active))).toEqual({ model: 'custom' })
     expect(fs.existsSync(paths.chatgpt)).toBe(false)
     expect(fs.existsSync(paths.relay)).toBe(false)
+  })
+
+  it.each([
+    ['model_context_window', 250000],
+    ['model_auto_compact_token_limit', 123456],
+  ])('keeps a %s the user set to their own value and records completion', async (key, value) => {
+    const { roots, managerDataDirectory, paths } = fixture()
+    const original = `${key} = ${value}\nmodel = "custom"\n`
+    writeConfig(paths.active, original)
+
+    expect(await runCodexContextLimitsMigration(managerDataDirectory, roots)).toEqual({
+      skipped: false, files: [], backups: [],
+    })
+    expect(readConfig(paths.active)).toBe(original)
+    expect(fs.readdirSync(roots.codexHome)).toEqual(['config.toml'])
+    expect((await runCodexContextLimitsMigration(managerDataDirectory, roots)).skipped).toBe(true)
   })
 
   it('leaves a config with no root limits byte-for-byte unchanged and records completion', async () => {
