@@ -360,6 +360,37 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
+// 已知29：写不进配置文件时不再叫人去查安装目录，按钮照旧。
+test('a switch that cannot write the config file says what to close and keeps the same buttons', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-switch-account').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
+    assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
+    assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
+    assert.equal((await page.getByTestId('guide-exit-log').textContent())?.trim(), '查看日志')
+    assert.equal(await page.getByTestId('guide-exit-support').count(), 0)
+    const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
+    assert.equal(failure.reason, '写不进配置文件')
+    assert.match(failure.detail, /EPERM/)
+    assert.doesNotMatch(failure.detail, /Users/)
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    const copied = await page.evaluate(() => window.copiedSupport)
+    assert.match(copied, /做什么：新手引导 · Codex CLI 改用当前账号/)
+    assert.match(copied, /原因：写不进配置文件/)
+    assert.doesNotMatch(copied, /写不进安装目录|Users/)
+    await page.getByTestId('guide-retry').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'switch'])
+  } finally { await page.close() }
+})
+
 // 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
 // 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
 test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
