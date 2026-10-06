@@ -1,12 +1,12 @@
 // 密钥扫描：只扫这次改动新加进来的提交，挡住两类东西。
 //
 // 仓库是公开的，提交一推上来就等于公开了，所以这道检查管的不是「别让密钥进 main」，
-// 而是「推上来的那一刻就告诉人去作废它」。挡合并只是让它没法被当成小事放过去。
+// 而是「推上来以后马上告诉人去作废它」。挡合并只是让它没法被当成小事放过去。
 //
 // 挡的：
 //   1. TruffleHog 拿去对方平台核实过、现在还能用的密钥（GitHub、OpenAI、Anthropic、
-//      AWS、Cloudflare 等八百多种）。核实不了的不挡：测试里到处是故意写的假值，
-//      按样子挡会天天误挡正常的 PR。
+//      AWS、Cloudflare 等八百多种）。核实不了的不挡：按样子认出来的多半是测试里
+//      故意写的假值，按样子挡会误挡正常的 PR。
 //   2. 和星芒 Key 一个样子的字符串（sk- 加 48～64 位字母数字）。星芒 Key 没有外部平台
 //      能帮着核实，又是这个项目最可能漏、漏了直接花客户余额的那一种，所以单独按样子挡。
 //      加这条规则时（2026-10）把仓库全部分支的全部历史连同 zip 里的文件都扫过一遍，
@@ -14,6 +14,11 @@
 //
 // 只提示、不挡的：核实时出了错的（对方平台连不上之类），和私钥。私钥没有接口可以试，
 // TruffleHog 说「没核实」只代表它没在 GitHub、GitLab 上开得了门，不代表是假的。
+//
+// 故意公开的东西（比如 bundled-acceleration/profile.yaml 里的加速节点密码）不会被当成
+// 泄露：TruffleHog 不认 `password:` 这种通用写法（它那条通用规则默认关着），试扫全部
+// 历史时那个文件一处都没报。以后真有故意公开、又被核实为能用的密钥，在那一行末尾加
+// 注释 trufflehog:ignore。
 //
 // 本机跑：没有 docker 的话，把 XINGMANG_TRUFFLEHOG 设成本机 trufflehog 程序的路径，
 // 再按 GitHub 的格式准备好 GITHUB_EVENT_PATH 和 GITHUB_EVENT_NAME。
@@ -33,9 +38,10 @@ const TRUFFLEHOG_IN_IMAGE = '/usr/bin/trufflehog'
 const PULL_ATTEMPTS = 3
 
 const RELAY_KEY_DETECTOR = 'XingmangRelayKey'
-// new-api 签发的 Key 是 sk- 后面 48 位字母数字；上限放到 64，把同类中转站更长的 Key
-// 也算进来。OpenAI 的老格式（中间带 T3BlbkFJ）长度也落在这个区间，排除掉交给 TruffleHog
-// 自己的 OpenAI 检测去核实：两条规则命中同一串时它会停掉核实，真 Key 反而只剩个「没核实」。
+// new-api 签发的 Key 是 sk- 后面 48 位字母数字（rc.24 的 common.GenerateKey）；上限放到 64，
+// 给以后加长留点余地。OpenAI 的老格式（中间带 T3BlbkFJ）长度也落在这个区间，排除掉交给
+// TruffleHog 自己的 OpenAI 检测去核实：两条规则命中同一串时它会停掉核实，真 Key 反而只剩个
+// 「没核实」。
 const RELAY_KEY_PATTERN = '\\bsk-[A-Za-z0-9]{48,64}\\b'
 const OPENAI_LEGACY_MARKER = 'T3BlbkFJ'
 
@@ -78,8 +84,8 @@ function buildScanArgs({ repository, base, head, configPath }) {
     '--json',
     '--results=verified,unknown,unverified',
     // The URI detector "verifies" a URL with credentials in it by sending a
-    // request to that URL. Our tests are full of fake ones pointing at the
-    // production relay and update hosts, and CI must never send them requests.
+    // request to that URL. Our tests hold dozens of fake ones on the production
+    // relay and update hosts, and CI must never send those hosts requests.
     '--exclude-detectors=URI',
     `--config=${configPath}`,
     // Without this a scan that could not read the range still exits 0 with no
@@ -199,7 +205,7 @@ function scanErrors(stderr) {
     }
     if (entry?.level !== 'error') continue
     const detail = Array.isArray(entry.errors) ? entry.errors.join('；') : entry.error
-    errors.push(`${entry.msg ?? '扫描出错'}${detail ? `：${detail}` : ''}`.slice(0, 500))
+    errors.push(oneLine(`${entry.msg ?? '扫描出错'}${detail ? `：${detail}` : ''}`).slice(0, 500))
   }
   return errors
 }
@@ -234,9 +240,15 @@ function reportLines(report, scope) {
   return lines
 }
 
+// Error text quoted into the log is flattened to one line: the runner reads
+// any log line that starts with `::` as a workflow command.
+function oneLine(text) {
+  return String(text || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()
+}
+
 function tail(text) {
-  const trimmed = String(text || '').trim()
-  return trimmed.length > 500 ? `…${trimmed.slice(-500)}` : trimmed
+  const flat = oneLine(text)
+  return flat.length > 500 ? `…${flat.slice(-500)}` : flat
 }
 
 function defaultRun(command, args) {
@@ -289,6 +301,9 @@ async function installTrufflehog({ run = defaultRun, directory, wait = delay }) 
     run('docker', ['rm', container])
   }
   const version = run(binary, ['--version'])
+  if (version.status === null) {
+    throw new Error(`从 TruffleHog 镜像里取出的程序运行不了，这次没扫，不能当作通过：${tail(version.stderr)}`)
+  }
   const reported = `${version.stdout}${version.stderr}`
   if (version.status !== 0 || !new RegExp(`\\b${TRUFFLEHOG_VERSION.replaceAll('.', '\\.')}\\b`).test(reported)) {
     throw new Error(`镜像里的 TruffleHog 不是钉住的 ${TRUFFLEHOG_VERSION} 版，这次没扫，不能当作通过。`)
@@ -334,7 +349,7 @@ async function scanNewCommits({ env = process.env, run = defaultRun, log = conso
     const scanned = run(binary, buildScanArgs({ repository, base, head: range.head, configPath }))
     if (scanned.status !== 0) {
       const errors = scanErrors(scanned.stderr)
-      throw new Error(`TruffleHog 没扫完（退出码 ${scanned.status ?? '无'}），不能当作通过。${errors.length ? errors.join('\n') : tail(scanned.stderr)}`)
+      throw new Error(`TruffleHog 没扫完（退出码 ${scanned.status ?? '无'}），不能当作通过。${errors.length ? errors.join('；') : tail(scanned.stderr)}`)
     }
     const report = buildReport(parseResults(scanned.stdout))
     for (const finding of report.blocking) log(annotation('error', finding))

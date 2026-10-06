@@ -52,7 +52,7 @@ function noWait() {
   return Promise.resolve()
 }
 
-function fakeDocker({ pullFailures = 0, pullStatus = 1, copyStatus = 0, version = `trufflehog ${TRUFFLEHOG_VERSION}\n` } = {}) {
+function fakeDocker({ pullFailures = 0, pullStatus = 1, copyStatus = 0, versionStatus = 0, version = `trufflehog ${TRUFFLEHOG_VERSION}\n` } = {}) {
   const calls = []
   let pulls = 0
   function run(command, args) {
@@ -66,7 +66,7 @@ function fakeDocker({ pullFailures = 0, pullStatus = 1, copyStatus = 0, version 
     if (command === 'docker' && args[0] === 'cp') return { status: copyStatus, stdout: '', stderr: copyStatus ? 'Could not find the file' : '' }
     if (command === 'docker' && args[0] === 'rm') return { status: 0, stdout: CONTAINER, stderr: '' }
     // kingpin prints the version on stderr.
-    if (args[0] === '--version') return { status: 0, stdout: '', stderr: version }
+    if (args[0] === '--version') return { status: versionStatus, stdout: '', stderr: versionStatus === null ? 'spawnSync EACCES' : version }
     throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
   }
   return { run, calls }
@@ -267,6 +267,8 @@ test('a scan that stops early is explained with the error lines the scanner logg
   ].join('\n')
   assert.deepEqual(scanErrors(stderr), ['encountered errors during scan：bad revision；clone failed'])
   assert.ok(scanErrors(JSON.stringify({ level: 'error', msg: 'x', error: 'y'.repeat(2000) }))[0].length <= 500)
+  // Quoted error text stays on one line, so none of it can start a workflow command.
+  assert.deepEqual(scanErrors(JSON.stringify({ level: 'error', msg: 'bad', error: 'one\n::error::two' })), ['bad：one ::error::two'])
 })
 
 test('the scanner comes out of the image pinned by digest and must be the pinned release', async () => {
@@ -303,6 +305,7 @@ test('a scanner that cannot be had or is not the pinned release fails the scan',
   await assert.rejects(installTrufflehog({ run: broken.run, directory: '/tmp/scan', wait: noWait }), /取出程序/)
   assert.ok(broken.calls.some(([, verb]) => verb === 'rm'))
 
+  await assert.rejects(installTrufflehog({ run: fakeDocker({ versionStatus: null }).run, directory: '/tmp/scan', wait: noWait }), /取出的程序运行不了/)
   for (const version of ['trufflehog 3.97.8', 'trufflehog 13.97.9', 'trufflehog 3.97.91', 'trufflehog v3.97.9x', 'trufflehog dev']) {
     await assert.rejects(installTrufflehog({ run: fakeDocker({ version }).run, directory: '/tmp/scan', wait: noWait }), /不是钉住的/, version)
   }
@@ -342,6 +345,9 @@ test('a scan that did not finish never reads as a pass', async (t) => {
   const stderr = JSON.stringify({ level: 'error', msg: 'encountered errors during scan', errors: ['bad revision'] })
   const runner = fakeRunner({ scan: { status: 1, stdout: '', stderr } })
   await assert.rejects(scanNewCommits({ env, run: runner.run, log: () => {}, wait: noWait }), /没扫完（退出码 1）[\s\S]*bad revision/)
+  // Raw output from a crash is quoted on one line for the same reason.
+  const crashed = fakeRunner({ scan: { status: 2, stdout: '', stderr: 'panic: boom\n::warning::x\ngoroutine 1' } })
+  await assert.rejects(scanNewCommits({ env, run: crashed.run, log: () => {}, wait: noWait }), (error) => /panic: boom/.test(error.message) && !/[\r\n]/.test(error.message))
 })
 
 test('a base commit missing from the checkout widens the scan to all of head', async (t) => {
