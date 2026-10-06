@@ -5043,7 +5043,8 @@ test('a tool opened from the tray while the records page question is open takes 
     await waitForRecordsIdle(page)
     await page.getByTestId('model-swap-keep').click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCli'))
-    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\Selected Project']])
+    // 托盘开的是新对话，文件夹和首页按钮挑的一样（第四十批 A）：Claude Code 最近一条记录在 my-app。
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app']])
     await assertNoToast(page, recordsResumedNotice)
     await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
     await clean(page)
