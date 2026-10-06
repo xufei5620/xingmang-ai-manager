@@ -17,6 +17,10 @@ type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
  *
  * 注意这里说的不是「请用管理员身份运行本软件」：本软件自己始终以普通权限运行，
  * 提权只发生在这两个安装程序上。
+ *
+ * 例外是星芒这次本身就带着管理员权限在跑（`elevated`，即 PlatformCapabilities.processElevated：
+ * 自带 Administrator、关了 UAC、右键「以管理员身份运行」，都不是星芒自己要的）：装的时候 Windows
+ * 不弹授权窗口，这句和下面两句都不说（已知19）。缺省 = 会弹（旧行为）。
  */
 export type ElevatedInstallSubject = 'node' | 'codexDesktop'
 
@@ -24,8 +28,9 @@ export function elevatedInstallNotice(
   subject: ElevatedInstallSubject,
   platform: PlatformFamily | undefined,
   management: InstallManagement | undefined,
+  elevated?: boolean,
 ): string | null {
-  if (platform !== 'windows' || management !== 'managed') return null
+  if (platform !== 'windows' || management !== 'managed' || elevated) return null
   const name = subject === 'node' ? 'Node.js' : 'Codex 桌面端'
   return `这一步需要管理员授权：点「安装」后 Windows 会弹一次授权窗口，请选「是」，${name} 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。`
 }
@@ -38,8 +43,9 @@ export function elevatedInstallShortNotice(
   subject: ElevatedInstallSubject,
   platform: PlatformFamily | undefined,
   management: InstallManagement | undefined,
+  elevated?: boolean,
 ): string | null {
-  if (!elevatedInstallNotice(subject, platform, management)) return null
+  if (!elevatedInstallNotice(subject, platform, management, elevated)) return null
   return '安装时需要管理员授权，Windows 会弹一次授权窗口'
 }
 
@@ -56,8 +62,9 @@ export function homeNodeElevationNotice(
   platform: PlatformFamily | undefined,
   management: InstallManagement | undefined,
   optional: boolean,
+  elevated?: boolean,
 ): string | null {
-  if (!elevatedInstallNotice('node', platform, management)) return null
+  if (!elevatedInstallNotice('node', platform, management, elevated)) return null
   return optional
     ? 'Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
     : '这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'

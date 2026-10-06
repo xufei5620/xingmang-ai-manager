@@ -45,7 +45,18 @@ export interface ExternalClientConnectionStatus {
   routePending?: boolean
 }
 
-export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {}
+export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {
+  /**
+   * 只有开机先摆出来的「上次的检测结果」才有：落盘的时间（已知13）。界面见到它就当作还在检测，
+   * 真的检测结果回来会整份替换（见 external-client-snapshot-cache.ts）。缺省 = 这次真检测的结果。
+   */
+  cachedAt?: string
+}
+
+/** 首页开机那一次可以只要上次落盘的结果（见 SystemService.cachedExternalClients）；其余调用方不传。 */
+export interface ExternalClientScanOptions {
+  cachedOnly?: boolean
+}
 
 /**
  * 展示与遍历顺序。首页、反馈报告与检查页都按这一份走，各处不再自写字面量数组

@@ -21,10 +21,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
+export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -759,7 +759,7 @@ export interface XingmangInvokeContract {
     [tool: ExternalToolId, options: ExternalClientConfigRequest],
     ExternalClientConfigResult
   >
-  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
+  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean, options?: ExternalClientScanOptions], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
   /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
