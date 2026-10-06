@@ -367,7 +367,7 @@ export function Home(props: HomeProps) {
   const cachedPhase = loading && Boolean(snapshot?.system.cachedAt)
   function launchReadyBeforeScan(tool: ToolPresentation): boolean {
     if (!cachedPhase || !tool.status.installed || tool.error || !tool.configured || configFailure) return false
-    if ([tool.id, `launch:${tool.id}`, `switch:${tool.id}`, `repair-hooks:${tool.id}`].some((key) => jobs[key])) return false
+    if ([tool.id, `launch:${tool.id}`, `switch:${tool.id}`, `repair-hooks:${tool.id}`, `repair-config:${tool.provider}`].some((key) => jobs[key])) return false
     return !accountKeyChangePending({ signedIn: account !== null, restoring: props.accountRestoring === true, bootstrap: props.bootstrap ?? null }, tool.provider)
   }
   // 「接着聊」点下去走的是同一个「打开」，跟着它那一行走。
@@ -390,7 +390,7 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
     const switchJob = jobs[`switch:${tool.id}`]
-    const repairJob = jobs[`repair-hooks:${tool.id}`] ?? jobs[`repair-config:${tool.id}`]
+    const repairJob = jobs[`repair-hooks:${tool.id}`] ?? jobs[`repair-config:${tool.provider}`]
     const job = launchJob ?? switchJob ?? repairJob ?? installJob
     // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。

@@ -559,7 +559,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const target = brokenConfigRepairTarget(config)
     if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return false }
     let written = false
-    await toolbox.run(`repair-config:${tool}`, configBrokenDetail, async () => {
+    // 按工具家族登记：两行 Codex 共用一份配置，一行在修时另一行也是「修复中」，不会两次重置叠着跑。
+    await toolbox.run(`repair-config:${provider}`, configBrokenDetail, async () => {
       try {
         if (target === 'official') await toolsApi.official(tool, 'reset')
         else {

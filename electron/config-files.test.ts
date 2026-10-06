@@ -304,6 +304,51 @@ describe('native CLI configuration files', () => {
     expect(fs.existsSync(codexConfigSnapshotPaths(roots).relay)).toBe(false)
   })
 
+  // ChatGPT 登录换来的 Key 和令牌一起留在 auth.json 里时，Codex 按 auth_mode 用令牌，
+  // 读不出地址的坏文件不能因此被当成第三方挡住重置。
+  it('resets an unreadable Codex config.toml for a ChatGPT login that also keeps an exchanged key', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: 'sk-exchanged-by-login',
+      tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
+    }), 'utf8')
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt', hasApiKey: true, matchesRelay: false, codexConfigBroken: true })
+
+    // 只更新照旧不碰：分不清来源时宁可不动。
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow('当前配置不是星芒中转')
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens: { access_token: string } }
+    expect(auth.tokens.access_token).toBe('access-token')
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt' })
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+  })
+
+  it('still refuses to reset a readable third-party Codex setup behind a ChatGPT login', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const thirdParty = 'model_provider = "other"\n\n[model_providers.other]\nname = "other"\nbase_url = "https://other.example.test/v1"\n'
+    fs.writeFileSync(configPath, thirdParty, 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: 'sk-exchanged-by-login',
+      tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
+    }), 'utf8')
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset'))
+      .toThrow('当前配置不是星芒中转')
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(thirdParty)
+  })
+
   it('points the customer at the reset when a save cannot read the existing config', () => {
     // 以前只说「现有 … 无法解析，未执行修改」，客户不知道「重置为初始状态」能救，只能反复重试（第三十批 C）。
     const userHome = temporaryHome()

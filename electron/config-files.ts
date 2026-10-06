@@ -3324,7 +3324,12 @@ export function switchProviderToOfficialAccount(
   // 切回，才能同时恢复官方 config.toml 与 auth.json。
   const knownCodexRelay = provider === 'codex'
     && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
-  const mode = knownCodexRelay ? 'relay' : providerAccountMode(inspection)
+  // 登录 ChatGPT 换来的那把 Key 常和令牌一起留在 auth.json 里（auth_mode 说了算，Codex 不用它），
+  // config.toml 又坏到 Codex 读不了：看着像「有 Key、地址不是星芒」的第三方，其实用的就是官方
+  // 账号。首页「配置文件坏了」的「修好它」走的是这条重置，先备份，坏文件里没有能用的设置可护。
+  const brokenChatgptLogin = provider === 'codex' && saveMode === 'reset'
+    && inspection.codexConfigBroken === true && inspection.codexAuthMode === 'chatgpt'
+  const mode = knownCodexRelay ? 'relay' : brokenChatgptLogin ? 'official' : providerAccountMode(inspection)
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')

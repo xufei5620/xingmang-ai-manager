@@ -926,9 +926,14 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).not.toContain('-repair-config"')
     })
 
-    it('keeps the row busy while the fix runs', () => {
+    // 两行读的是同一份配置：从哪一行点的，两行都是「修复中」，菜单收起，不会再叠一次重置。
+    it('keeps both Codex rows busy while the fix runs', () => {
       const markup = render({ 'repair-config:codex': { label: brokenDetail, log: [brokenDetail] } }, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
-      expect(rowButton(markup, 'tool-codex-primary')).toContain('修复中')
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(rowButton(markup, `tool-${tool}-primary`), tool).toContain('修复中')
+        expect(toolRow(markup, tool), tool).not.toContain('aria-haspopup="menu"')
+      }
+      expect(rowButton(markup, 'tool-claude-primary')).not.toContain('修复中')
     })
 
     // 开机先画的是上次的检测结果，文件可能已经被改好了，等这次的结果再说。
