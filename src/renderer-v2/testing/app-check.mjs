@@ -1175,6 +1175,129 @@ test('home re-reads the recent list when the window is shown again, so the open 
   } finally { await page.close() }
 })
 
+// 第四十二批 B：记录页读两份，列表本身（pageSize 20）和定「接着聊」挂在哪条上的最新 100 条；首页那份是 60，不混着数。
+// 开发模式挂两遍会让第一次进来读几次不固定，所以只数「多了几次」。
+async function recordsReads(page) {
+  return page.evaluate(() => [20, 100].map((size) => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === size).length))
+}
+
+// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
+// 而 Claude Code 按文件夹接最近一条（#292），点下去接上的是刚聊的那条。
+test('the records page reads both lists again when it is shown again, so 接着聊 sits on the newest record of the folder', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-resume-claude:1').waitFor()
+    const [list, latest] = await recordsReads(page)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    // 在首页打开 Claude Code，在 my-app 里新聊了一条。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-resume-claude:6').waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 刚聊的排第一、带「接着聊」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
+    assert.equal(await page.locator('[data-testid^="sessions-row-"]').first().getAttribute('data-testid'), 'sessions-row-claude:6')
+    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 停在记录页、窗口回到前面时也重读，离上次读不到半分钟不读，窗口藏着时不读。时钟停着，等的那一下在测试这边等。
+test('the records page reads again when the window comes back after half a minute, but not sooner and not while hidden', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1', true)
+  async function foreground(event) {
+    await page.evaluate((name) => {
+      if (name === 'focus') window.dispatchEvent(new Event('focus'))
+      else document.dispatchEvent(new Event('visibilitychange'))
+    }, event)
+    await page.waitForTimeout(100)
+  }
+  async function visibility(state) {
+    await page.evaluate((value) => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => value }), state)
+    await foreground('visibilitychange')
+  }
+  try {
+    await page.getByTestId('nav-sessions').click()
+    // 记录页是懒加载的：React 换下「正在加载」前要等那个占位摆满 300 毫秒（setTimeout），时钟停着就一直等，往前拨一秒。
+    await page.clock.runFor(1_000)
+    await page.getByTestId('sessions-resume-claude:1').waitFor()
+    const [list, latest] = await recordsReads(page)
+    // 刚进来：半分钟内回到窗口不读。
+    await foreground('focus')
+    assert.deepEqual(await recordsReads(page), [list, latest])
+    await page.clock.fastForward(30_000)
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await foreground('focus')
+    await page.getByTestId('sessions-resume-claude:6').waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 马上又回来一次：不读。
+    await foreground('focus')
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 缩在托盘里时不读；过了半分钟再显示出来，读。
+    await page.clock.fastForward(30_000)
+    await visibility('hidden')
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    await visibility('visible')
+    await expect.poll(() => recordsReads(page)).toEqual([list + 2, latest + 2])
+    // 换到别的页以后，窗口回到前面不替藏着的记录页读。
+    await page.clock.fastForward(30_000)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await foreground('focus')
+    assert.deepEqual(await recordsReads(page), [list + 2, latest + 2])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 在记录页点「接着聊」，在终端里聊完切回来：不用等半分钟，回到窗口那一下就重读，开着的详情里也是新的对话，
+// 读的时候不闪成「正在读取对话…」。
+test('after 接着聊 on the records page the next return to the window reads again at once, open record included', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  async function focusWindow() {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForTimeout(100)
+  }
+  try {
+    await page.evaluate(() => {
+      window.__transcript = [{ role: 'user', text: '上回问到这里' }]
+      window.xingmang.getProviderSessionDetail = async (id) => ({
+        session: { id, provider: 'claude', nativeId: '1', title: '会话 1', cwd: 'C:\\work\\my-app', model: 'fixture-model', archived: false, readonly: true,
+          createdAt: 400, updatedAt: 400, messageCount: window.__transcript.length, sourcePath: 'C:\\Fixture\\1.jsonl', detailAvailable: true, cwdExists: true },
+        messages: window.__transcript.map((message) => ({ ...message })),
+        messageStats: { total: window.__transcript.length, user: window.__transcript.length, assistant: 0, system: 0, other: 0, invalidLines: 0 },
+        messagesTruncated: false, sourceTruncated: false,
+      })
+    })
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-view-claude:1').click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    await drawer.getByText('上回问到这里', { exact: true }).waitFor()
+    const [list, latest] = await recordsReads(page)
+    // 刚进来：回到窗口不读。
+    await focusWindow()
+    assert.deepEqual(await recordsReads(page), [list, latest])
+    await drawer.getByTestId('session-detail-resume').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="session-detail-resume"]')?.disabled === false)
+    // 在终端里又问了一句，然后切回星芒。
+    await page.evaluate(() => {
+      window.__transcript.push({ role: 'user', text: '刚在终端里问的' })
+      window.__sawTranscriptLoading = false
+      new MutationObserver(() => {
+        if (document.querySelector('[data-testid="session-detail-drawer"]')?.textContent?.includes('正在读取对话')) window.__sawTranscriptLoading = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+    })
+    await focusWindow()
+    await drawer.getByText('刚在终端里问的', { exact: true }).waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    await expect(drawer.getByText('上回问到这里', { exact: true })).toBeVisible()
+    assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home shows the last usage right away instead of asking the account backend on every visit', async () => {
   const page = await open('allInstalled=1')
   const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
@@ -1714,6 +1837,43 @@ test('the home runtime card shows the Git version and no warning when Git is pre
     await page.getByTestId('page-home').waitFor()
     assert.equal(await page.getByTestId('home-runtime-git-hint').count(), 0)
     assert.equal(await page.getByTestId('home-runtime-git').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+// 第四十三批 F：在「外接工具」页点「自动安装 Python」装好以后回首页，「运行环境」里 Python 那一行是版本号，
+// 不再写「可选 · 未装」、不再给安装按钮。
+test('installing Python from the MCP page brings the home runtime card along', async () => {
+  const page = await open('pythonMissing=1')
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        runtimes: { python: window.v2Test.calls.some((entry) => entry.method === 'installPythonRuntime'), uv: false },
+      })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+    })
+    const row = page.getByTestId('home-runtime-row-python')
+    await expect(row).toContainText('可选 · 未装')
+    await page.getByTestId('home-runtime-python').waitFor()
+    await page.getByTestId('home-suggestion-mcp').click()
+    await page.getByTestId('page-mcp').waitFor()
+    // 还没有连接时空状态里也有一颗「添加」，点页头那颗。
+    await page.getByTestId('mcp-add').first().click()
+    await page.getByRole('button', { name: '本地程序', exact: true }).click()
+    await page.getByTestId('mcp-source').fill('python')
+    const notice = page.getByTestId('mcp-runtime-notice')
+    await notice.getByTestId('mcp-install-python').click()
+    // 本页重读以后有 Python 了，那条提示自己收起。这回先不加，关掉添加框回首页。
+    await notice.waitFor({ state: 'detached' })
+    const dialog = page.getByRole('dialog', { name: /添加连接/ })
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await page.getByTestId('nav-home').click()
+    await expect(row).toContainText('3.13.7')
+    assert.equal(await page.getByTestId('home-runtime-python').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2414,6 +2574,29 @@ test('cancelling on the maintenance page during the key sync after an install sa
     await page.evaluate(() => window.v2Test.releaseScan())
     await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
     assert.equal(await page.getByTestId('maintenance-cancel-gemini').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 取消被拒那句红条只说这次安装还会跑完：跑完了就收起，照常提示装好了，不再挂着「未完成」。
+test('a refused cancel on the maintenance page stops showing once the install finishes', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const maintenance = page.getByTestId('page-maintenance')
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
+    await page.getByTestId('maintenance-cancel-gemini').click()
+    await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await waitForToast(page, '安装完成，工具状态已更新')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    await expect(maintenance.getByRole('alert')).toHaveCount(0)
+    assert.doesNotMatch(await maintenance.innerText(), /这一步已经不能取消了。/)
     await clean(page)
   } finally { await page.close() }
 })
