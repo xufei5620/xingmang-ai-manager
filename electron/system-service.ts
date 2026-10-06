@@ -55,6 +55,7 @@ import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
+import { isChineseSentence } from './chinese-sentence'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
@@ -203,7 +204,7 @@ import {
   inspectWindowsProcessorArchitecture,
   type WindowsProcessorArchitecture,
 } from './windows-processor'
-import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
+import { createCliTerminalAccess, type UserPathOutcome, type UserPathRemoval } from './windows-cli-shell-access'
 import type { MacosShellProfileOutcome } from './macos-shell-profile'
 import type { LinuxTerminalCommandsReason, LinuxTerminalCommandsResult } from './linux-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
@@ -932,15 +933,18 @@ export function grokManualUninstallResult(
       },
     }
   }
+  const fallback = 'Grok CLI 自动卸载安全验证失败'
   const raw = error instanceof Error ? error.message : String(error)
   const message = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500)
-    || 'Grok CLI 自动卸载安全验证失败'
   return {
     outcome: 'manual-required',
     previousVersion,
-    error: message,
+    // 原话留在这里，卸载日志记的就是它。
+    error: message || fallback,
     manualHelp: {
-      reason: `自动卸载安全验证失败：${message}`,
+      // 安全核对里不少是英文原话（链接、目录不合规矩的那几句），Mac 上卸不了时整句英文上屏（已知48）。
+      // 英文只进日志，屏上换成现成的那句；中文原话照旧接在后面。
+      reason: message && isChineseSentence(message) ? `自动卸载安全验证失败：${message}` : fallback,
       manualCommand: null,
     },
   }
@@ -2608,6 +2612,11 @@ export interface SystemServiceOptions {
    * 敲工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
    */
   ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
+  /**
+   * Windows 上卸掉 ~/.grok/bin 里的 Grok 后，把这个目录从当前用户的 PATH 里拿掉（官方安装脚本
+   * 加的那一段）。缺省 = 不改（测试里不起 PowerShell），只有 main.ts 接真实现。
+   */
+  removeWindowsUserPath?: (directory: string) => Promise<UserPathRemoval>
   /**
    * Mac 上对应的那一步：往当前用户登录 shell 读的启动文件补几行（zsh 的 ~/.zprofile、
    * bash 的 ~/.bash_profile 或 ~/.profile、fish 的 conf.d 文件），让自己开的终端也能直接敲
@@ -5227,32 +5236,6 @@ export function createSystemService(
     return installCancellations.cancel(`cli:install:${provider}`)
   }
 
-  async function removeDirectoryFromUserPath(directory: string): Promise<void> {
-    if (process.platform !== 'win32') return
-    const script = [
-      '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-      '$target = [IO.Path]::GetFullPath($env:XINGMANG_REMOVE_PATH).TrimEnd("\\")',
-      '$current = [Environment]::GetEnvironmentVariable("Path", "User")',
-      '$next = @(($current -split ";") | Where-Object {',
-      '  if (-not $_) { return $false }',
-      '  try { [IO.Path]::GetFullPath($_).TrimEnd("\\") -ine $target } catch { $true }',
-      '}) -join ";"',
-      '[Environment]::SetEnvironmentVariable("Path", $next, "User")',
-    ].join('\n')
-    await execFileAsync(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      script,
-    ], {
-      env: { ...trustedCommandEnvironment(), XINGMANG_REMOVE_PATH: directory },
-      windowsHide: true,
-      timeout: 8_000,
-      maxBuffer: 1024 * 1024,
-    })
-  }
-
   /** 返回命令入口已经删掉、但没能删掉的程序文件（只有 Linux 会有）。 */
   async function uninstallNativeGrok(installation: CliInstallation): Promise<string[]> {
     const cliEnvironment = commandEnvironment()
@@ -5289,7 +5272,9 @@ export function createSystemService(
       label: 'Grok CLI',
       platform: process.platform,
     })
-    if (!managed) await removeDirectoryFromUserPath(result.directory)
+    // 官方安装脚本把 ~/.grok/bin 加进了当前用户的 PATH，卸完顺手拿掉。程序文件这时已经删完，所以不等它、
+    // 也不算进卸载结果：以前等着它、只给 8 秒，慢机器上 PowerShell 冷启动一超时就把卸完的说成失败（已知48）。
+    if (!managed) cliTerminalAccess.forgetUserPath('grok', result.directory)
     return []
   }
 
@@ -5320,6 +5305,7 @@ export function createSystemService(
     executionMode: windowsExecutionMode,
     isManaged: isManagedNpmInstallation,
     ensureUserPath: serviceOptions.ensureWindowsUserPath,
+    removeUserPath: serviceOptions.removeWindowsUserPath,
     ensureShellProfile: serviceOptions.ensureMacosShellProfile,
     syncTerminalCommands: serviceOptions.syncLinuxTerminalCommands,
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),

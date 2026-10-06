@@ -2104,25 +2104,6 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(occurrences).toBeGreaterThanOrEqual(2)
   })
 
-  it.each([
-    ['missing link', 'Grok automatic uninstall requires a verified grok symbolic link'],
-    ['escaped target', 'Grok agent link target must remain under ~/.grok'],
-    ['wrong owner', 'Grok CLI 符号链接 agent 所有者与卸载计划不一致'],
-    ['wrong type', 'Grok canonical link must be a symbolic link'],
-    ['link identity replacement', 'Grok CLI 符号链接 grok 身份与卸载计划不一致'],
-    ['quarantine race', 'Grok CLI 隔离文件 grok 在最终删除前发生变化'],
-  ])('returns manual help after %s validation failure', (_case, message) => {
-    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
-      outcome: 'manual-required',
-      previousVersion: '0.2.118',
-      error: message,
-      manualHelp: {
-        reason: `自动卸载安全验证失败：${message}`,
-        manualCommand: null,
-      },
-    })
-  })
-
   it('repairs a missing agent link before uninstalling through the public service', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
@@ -2381,6 +2362,55 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       expect(environment?.DYLD_INSERT_LIBRARIES).toBeUndefined()
       expect(environment?.XINGMANG_SYSTEM_SERVICE_SENTINEL).toBe('ordinary-value')
     }
+  })
+})
+
+// Linux 卸不了时走的也是它，所以不跟着上面那组只在 Mac 上跑。
+describe('grokManualUninstallResult', () => {
+  it.each([
+    ['wrong owner', 'Grok CLI 符号链接 agent 所有者与卸载计划不一致'],
+    ['link identity replacement', 'Grok CLI 符号链接 grok 身份与卸载计划不一致'],
+    ['quarantine race', 'Grok CLI 隔离文件 grok 在最终删除前发生变化'],
+  ])('returns manual help after %s validation failure', (_case, message) => {
+    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: '0.2.118',
+      error: message,
+      manualHelp: {
+        reason: `自动卸载安全验证失败：${message}`,
+        manualCommand: null,
+      },
+    })
+  })
+
+  // 已知48：Mac 上卸不了时这几句英文原话整句上屏。屏上换成现成的那句，原话留在 error 里给日志。
+  it.each([
+    ['missing link', 'Grok automatic uninstall requires a verified grok symbolic link; use the official manual uninstall instructions'],
+    ['escaped target', 'Grok agent link target must remain under ~/.grok'],
+    ['wrong type', 'Grok canonical link must be a symbolic link'],
+    ['non-plain directory under a Chinese user name', 'Grok uninstall path /Users/张三/.grok/bin must be a plain owned directory'],
+  ])('keeps the English %s validation failure off the screen', (_case, message) => {
+    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: '0.2.118',
+      error: message,
+      manualHelp: {
+        reason: 'Grok CLI 自动卸载安全验证失败',
+        manualCommand: null,
+      },
+    })
+  })
+
+  it('says the plain sentence once when the failure carries no message', () => {
+    expect(grokManualUninstallResult(null, new Error('  '))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: null,
+      error: 'Grok CLI 自动卸载安全验证失败',
+      manualHelp: {
+        reason: 'Grok CLI 自动卸载安全验证失败',
+        manualCommand: null,
+      },
+    })
   })
 })
 
@@ -6120,6 +6150,44 @@ describe('installing or uninstalling a CLI', () => {
 
     expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: null }))
     expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  // 已知48：PATH 那一步以前就在这里等着、只给 8 秒，慢机器上 PowerShell 冷启动一超时，已经卸完的就被说成卸载失败。
+  // 真 Windows 上要删的文件名和托管目录跟着 process.platform 走，这里只验调用点，所以在 Mac、Linux 上模拟 Windows 的服务。
+  it.runIf(process.platform !== 'win32')('reports a Windows Grok uninstall without waiting for the PATH clean-up, which only logs a failure', async () => {
+    const userHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-path-')))
+    temporaryDirectories.push(userHome)
+    const bin = path.join(userHome, '.grok', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'grok'), 'grok binary')
+    fs.writeFileSync(path.join(bin, 'agent'), 'agent binary')
+    vi.stubEnv('HOME', userHome)
+    let failPathCleanUp: (error: Error) => void = () => undefined
+    const removeWindowsUserPath = vi.fn(() => new Promise<'removed'>((_resolve, reject) => { failPathCleanUp = reject }))
+    const log = vi.fn()
+    const service = createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation: vi.fn(async (provider: ProviderId) => provider === 'grok' && fs.existsSync(path.join(bin, 'grok'))
+        ? { commandPath: path.join(bin, 'grok'), installDirectory: bin, packageRoot: null, npmPrefix: null, source: 'native' as const }
+        : null),
+      findExecutable: vi.fn(async () => null),
+      runCommand: versionProbeRunner(),
+      removeWindowsUserPath,
+      runtimeLog: { log },
+    })
+
+    // The clean-up never settles until told to below, so this only resolves because nothing waits for it.
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    expect(fs.existsSync(path.join(bin, 'grok'))).toBe(false)
+    await vi.waitFor(() => expect(removeWindowsUserPath).toHaveBeenCalledWith(bin))
+    failPathCleanUp(new Error('Command failed: powershell.exe'))
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'install', 'cli.user-path.remove-failed', expect.any(String), {
+      provider: 'grok',
+      error: 'Command failed: powershell.exe',
+    }))
   })
 })
 
