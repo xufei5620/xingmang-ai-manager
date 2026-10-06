@@ -988,8 +988,39 @@ test('change classification does not skip code, workflow, or unknown revisions',
   assert.equal(requiresCodeChecks(['electron/ipc.ts']), true)
   assert.equal(changedFiles({ before: '0'.repeat(40), after: 'a'.repeat(40) }, 'push'), null)
   assert.equal(changedFiles({ before: 'unsafe;command', after: 'a'.repeat(40) }, 'push'), null)
-  const values = changedFiles({ pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } } }, 'pull_request', (_cmd, argv) => { assert.equal(argv.at(-1), '--'); return 'docs/guide.md\0src/app.ts\0' })
+  const values = changedFiles({ pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } } }, 'pull_request', (_cmd, argv) => {
+    if (argv[0] === 'merge-base') return `${'c'.repeat(40)}\n`
+    assert.equal(argv.at(-1), '--')
+    return 'docs/guide.md\0src/app.ts\0'
+  })
   assert.deepEqual(values, ['docs/guide.md', 'src/app.ts'])
+})
+
+test('a pull request counts only its own commits, from where it left the base branch', () => {
+  const { changedFiles } = require('./ci-change-scope.cjs')
+  const base = 'a'.repeat(40)
+  const head = 'b'.repeat(40)
+  const fork = 'c'.repeat(40)
+  const pullRequest = { pull_request: { base: { sha: base }, head: { sha: head } } }
+  const calls = []
+  const git = (_cmd, argv) => {
+    calls.push(argv)
+    return argv[0] === 'merge-base' ? `${fork}\n` : 'docs/RELEASING.md\0'
+  }
+  // base.sha is main's tip when the event fired. Diffing it against the head
+  // directly also counted what main gained after the branch was cut, so a
+  // documentation-only pull request behind main ran every job (#926).
+  assert.deepEqual(changedFiles(pullRequest, 'pull_request', git), ['docs/RELEASING.md'])
+  assert.deepEqual(calls, [['merge-base', base, head], ['diff', '--name-only', '-z', fork, head, '--']])
+
+  calls.length = 0
+  changedFiles({ before: base, after: head }, 'push', git)
+  assert.deepEqual(calls, [['diff', '--name-only', '-z', base, head, '--']])
+
+  // No merge base (or nothing usable from git) leaves the range unknown, and
+  // an unknown range runs everything.
+  assert.equal(changedFiles(pullRequest, 'pull_request', () => { throw new Error('fatal: no merge base') }), null)
+  assert.equal(changedFiles(pullRequest, 'pull_request', (_cmd, argv) => (argv[0] === 'merge-base' ? '\n' : 'src/app.ts\0')), null)
 })
 
 test('the relay probe runs exactly when the verified-version list moves', () => {

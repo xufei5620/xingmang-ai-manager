@@ -7,6 +7,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlMatches, relaySites } from './relay-sites'
 import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
 import { isCodexConfigBroken } from './codex-config-syntax'
+import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
 import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
 import {
@@ -94,11 +95,17 @@ export interface NativeConfigInspection {
    */
   codexProviderShadowed?: boolean
   /**
-   * Codex 自己也读不了这份 config.toml（不是 UTF-8、有控制字符、键重复、写了一半……，判定见
-   * codex-config-syntax.ts）：桌面端会停在「无法加载组织设置」，命令行直接报错。首页据此说
-   * 「配置文件坏了」并给「修好它」。只给 Codex；缺省 = 没发现。
+   * 工具自己也读不了它的主配置（Codex 的 config.toml、Claude Code 与 Gemini CLI 的 settings.json；
+   * 判定见 codex-config-syntax.ts、cli-config-health.ts）：Codex 桌面端停在「无法加载组织设置」、
+   * 命令行报错，Claude Code 弹「Settings Error」整份不用，Gemini CLI 报错退出。这时读出来的 Key、
+   * 地址都不作数，首页据此说「配置文件坏了」并给「修好它」。Grok 不判；缺省 = 没发现。
    */
-  codexConfigBroken?: boolean
+  configBroken?: boolean
+  /**
+   * Codex 读不了 auth.json（判定见 cli-config-health.ts）。它不报错，当成没登录：打开就要重新
+   * 登录。只给 Codex；缺省 = 没发现。
+   */
+  codexAuthBroken?: boolean
   /**
    * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
@@ -189,9 +196,25 @@ export interface NativeConfigWriteHooks {
   beforeReplace?: (targetPath: string, index: number) => void
 }
 
-export interface FilePlan {
+export type FilePlan = FileWritePlan | FileRemovePlan
+
+export interface FileWritePlan {
   path: string
   content: string
+}
+
+/**
+ * 整份拿掉这个文件，不留空壳：Codex 把 `{}` 这样的 auth.json 当成没有令牌的 ChatGPT 登录，
+ * 每次请求都报错，没登录只能是没有这个文件。和写入在同一次两阶段提交里：先留 .bak，再把它
+ * 挪成临时文件，全部提交成功才清掉；中途失败照旧从 .bak 放回。不在的文件跳过。
+ */
+export interface FileRemovePlan {
+  path: string
+  remove: true
+}
+
+function isRemovePlan(plan: FilePlan): plan is FileRemovePlan {
+  return 'remove' in plan
 }
 
 function normalizeProviderConfigRoots(
@@ -278,13 +301,30 @@ function readJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function readCodexConfigBroken(filePath: string): boolean {
+// 每个工具的主配置（providerConfigPaths 的第一份）它自己读不读得了；null = 不判。
+const mainConfigBrokenChecks: Record<ProviderId, ((content: Buffer) => boolean) | null> = {
+  codex: isCodexConfigBroken,
+  claude: isClaudeSettingsBroken,
+  gemini: isGeminiSettingsBroken,
+  grok: null,
+}
+
+// 判断编码要看原始字节（解码会把坏字节悄悄换成 U+FFFD），读不到、不是单链接普通文件都当没坏。
+function readFileBroken(filePath: string, broken: (content: Buffer) => boolean): boolean {
   try {
     const info = fs.lstatSync(filePath)
     if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return false
-    return isCodexConfigBroken(readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
+    return broken(readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
   } catch {
     return false
+  }
+}
+
+function readConfigFilesBroken(provider: ProviderId, paths: string[]): Pick<NativeConfigInspection, 'configBroken' | 'codexAuthBroken'> {
+  const check = mainConfigBrokenChecks[provider]
+  return {
+    ...(check && readFileBroken(paths[0], check) ? { configBroken: true } : {}),
+    ...(provider === 'codex' && readFileBroken(paths[1], isCodexAuthBroken) ? { codexAuthBroken: true } : {}),
   }
 }
 
@@ -496,6 +536,18 @@ function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
 // 一样只在星芒来源下写，切回官方账号时撤掉。
 function skipClaudeWebFetchPreflight(parsed: Record<string, unknown>): void {
   parsed.skipWebFetchPreflight = true
+}
+
+/**
+ * 新客户的模板一直写「不逐条确认」。Claude Code 2.1.283 起接第三方中转、又没写
+ * permissions.defaultMode 的会话进自动模式，有些命令会停下来问「允许吗」；先装过 Claude
+ * Code 再接星芒的老客户走合并写入，以前没补这一项，升上去就会被问。没写才补，写过任何
+ * 模式的一律不动（2026-10-06 yoyo 定）。skipDangerousModePermissionPrompt 一并补上，
+ * 否则交互会话一打开先弹一屏英文的「绕过权限模式」确认。
+ */
+function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissions: Record<string, unknown>): void {
+  if (permissions.defaultMode === undefined) permissions.defaultMode = 'bypassPermissions'
+  if (parsed.skipDangerousModePermissionPrompt === undefined) parsed.skipDangerousModePermissionPrompt = true
 }
 
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
@@ -1390,23 +1442,43 @@ export function snapshotCodexChatGptAuth(value: unknown): Record<string, unknown
   return snapshot
 }
 
-function createCodexRelayAuthPlans(apiKey: string, roots: ProviderConfigRoots): FilePlan[] {
+/**
+ * 读现有的 auth.json，好把里面的 ChatGPT 登录、Key 存进快照再换掉它。只更新（merge）读不懂就停，
+ * 指去重置；重置时读不懂不挡路（读不懂返回 null）：Codex 自己也读不了这样的文件，当成没登录，
+ * 里面没有它还认得的登录可留。换掉之前照旧先备份。
+ */
+function readCodexAuthForSave(filePath: string, mode: NativeConfigSaveMode): Record<string, unknown> | null {
+  if (!fs.existsSync(filePath)) return null
+  if (mode === 'merge') return requireJson(filePath, '现有 Codex auth.json', 'Codex')
+  const content = requireConfigText(filePath, '现有 Codex auth.json')
+  if (!content) return null
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return isJsonRecord(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function createCodexRelayAuthPlans(apiKey: string, roots: ProviderConfigRoots, mode: NativeConfigSaveMode): FilePlan[] {
   const paths = codexAuthSnapshotPaths(roots)
   const plans: FilePlan[] = []
-  if (fs.existsSync(paths.active)) {
-    const current = requireJson(paths.active, '现有 Codex auth.json')
-    const chatgpt = snapshotCodexChatGptAuth(current)
-    if (chatgpt) plans.push({ path: paths.chatgpt, content: jsonContent(chatgpt) })
-  }
+  const chatgpt = snapshotCodexChatGptAuth(readCodexAuthForSave(paths.active, mode))
+  if (chatgpt) plans.push({ path: paths.chatgpt, content: jsonContent(chatgpt) })
   const apikeyAuth = buildCodexApiKeyAuth(apiKey)
   plans.push({ path: paths.apikey, content: jsonContent(apikeyAuth) })
   plans.push({ path: paths.active, content: jsonContent(apikeyAuth) })
   return plans
 }
 
-function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
+// 拿掉 Key 和 auth_mode 之后只剩这些（或什么都不剩）时，留下的不是一份登录：Codex 0.159 把没写
+// auth_mode、又没有 Key 的 auth.json 当成 ChatGPT 登录，没有令牌就每次请求都报「plan type is
+// required for chatgpt authentication」，桌面端多半停在「无法加载组织设置」，也不会叫人重新登录。
+const codexAuthLeftovers: ReadonlySet<string> = new Set(['tokens', 'last_refresh'])
+
+function createCodexOfficialAuthPlans(roots: ProviderConfigRoots, mode: NativeConfigSaveMode): FilePlan[] {
   const paths = codexAuthSnapshotPaths(roots)
-  const current = fs.existsSync(paths.active) ? requireJson(paths.active, '现有 Codex auth.json') : null
+  const current = readCodexAuthForSave(paths.active, mode)
   const plans: FilePlan[] = []
   const currentKey = typeof current?.OPENAI_API_KEY === 'string' ? current.OPENAI_API_KEY.trim() : ''
   if (currentKey) {
@@ -1424,8 +1496,14 @@ function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
   if (current) {
     delete current.OPENAI_API_KEY
     delete current.auth_mode
-    plans.push({ path: paths.active, content: jsonContent(current) })
+    if (Object.keys(current).some((key) => !codexAuthLeftovers.has(key))) {
+      plans.push({ path: paths.active, content: jsonContent(current) })
+      return plans
+    }
   }
+  // 没有可换回的 ChatGPT 登录：和 Codex 自己退出登录一样不留这个文件，打开时它会叫人登录。
+  // 重置时读不懂的那份也走这里（readCodexAuthForSave 读成 null）。
+  if (current || mode === 'reset') plans.push({ path: paths.active, remove: true })
   return plans
 }
 
@@ -1661,8 +1739,8 @@ export function inspectProviderConfig(
     ...(provider === 'codex' ? {
       codexAuthMode: readCodexAuthMode(paths),
       ...readCodexProviderSelection(paths, baseUrl),
-      ...(readCodexConfigBroken(paths[0]) ? { codexConfigBroken: true } : {}),
     } : {}),
+    ...readConfigFilesBroken(provider, paths),
     ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
@@ -2399,7 +2477,7 @@ function createPlans(
     case 'codex':
       return [
         ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook, codexModelCatalog),
-        ...createCodexRelayAuthPlans(apiKey, roots),
+        ...createCodexRelayAuthPlans(apiKey, roots, 'reset'),
       ]
     case 'claude': {
       const env: Record<string, unknown> = {
@@ -2519,7 +2597,7 @@ function createMergePlans(
     case 'codex':
       return [
         ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, codexModelCatalog),
-        ...createCodexRelayAuthPlans(apiKey, roots),
+        ...createCodexRelayAuthPlans(apiKey, roots, 'merge'),
       ]
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
@@ -2528,7 +2606,9 @@ function createMergePlans(
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
-      denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
+      const permissions = ensureRecord(parsed, 'permissions')
+      denyClaudeRelayTool(permissions)
+      skipClaudeCommandConfirmation(parsed, permissions)
       skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
@@ -2604,7 +2684,7 @@ function backupSuffix(): string {
   return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 17)
 }
 
-interface PreparedFilePlan extends FilePlan {
+type PreparedFilePlan = FilePlan & {
   backupPath: string | null
   existed: boolean
   temporaryPath: string
@@ -2787,7 +2867,7 @@ function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFile
       backupPath: existed ? uniqueBackupPath(plan.path, suffix) : null,
       temporaryPath: `${plan.path}.xingmang-${randomUUID()}.tmp`,
     }
-  })
+  }).filter((plan) => plan.existed || !isRemovePlan(plan))
 }
 
 function rollbackCommittedPlans(
@@ -2859,6 +2939,7 @@ export function executeFilePlans(
   try {
     // No target is touched until every new file has been written successfully.
     for (const plan of prepared) {
+      if (isRemovePlan(plan)) continue
       assertSafeConfigPath(plan.path, providerRoot, 'parent')
       fs.mkdirSync(path.dirname(plan.path), { recursive: true })
       writeDurableUtf8(plan.temporaryPath, plan.content, providerRoot)
@@ -2870,13 +2951,17 @@ export function executeFilePlans(
       }
     }
     for (const [index, plan] of prepared.entries()) {
-      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
+      // Removal moves the file aside instead of deleting it, so the rollback
+      // below can still put the .bak copy back; the cleanup after a full commit
+      // deletes the moved-aside file together with the other temporaries.
+      const [source, target] = isRemovePlan(plan) ? [plan.path, plan.temporaryPath] : [plan.temporaryPath, plan.path]
+      assertSafeSourceAndTarget(source, target, providerRoot)
       // A hook may re-read what this save was computed from (external-tool-config
       // does), so it runs again before every retry: whoever held the file may
       // have just saved its own change.
-      renameWithTransientRetrySync(plan.temporaryPath, plan.path, () => {
+      renameWithTransientRetrySync(source, target, () => {
         hooks.beforeReplace?.(plan.path, index)
-        assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
+        assertSafeSourceAndTarget(source, target, providerRoot)
       })
       committed.push(plan)
     }
@@ -2969,7 +3054,8 @@ export function saveProviderConfig(
 // 这个号记在工具配置来源记录里（tool-config-ownership.ts）：记录落后于它、来源又确认是
 // 当前账号的配置，开机时由 fillRelayTemplateDefaults 补一次缺省项。往下面那几个
 // fill*RelayTemplateDefaults 里加了新的一项，就把这个号加一，否则老客户拿不到。
-export const relayTemplateRevision = 1
+// 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
+export const relayTemplateRevision = 2
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
 function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -2992,6 +3078,7 @@ function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void 
   if (env && env.DISABLE_AUTOUPDATER === undefined) disableClaudeSelfUpdate(env)
   const permissions = fillableRecord(parsed, 'permissions')
   if (permissions && (permissions.deny === undefined || Array.isArray(permissions.deny))) denyClaudeRelayTool(permissions)
+  if (permissions) skipClaudeCommandConfirmation(parsed, permissions)
   if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
   ensureClaudeResponseLanguage(parsed)
   extendClaudeSessionRetention(parsed)
@@ -3386,6 +3473,14 @@ export function managedProviderLaunchBlockedMessage(provider: ProviderId): strin
   }
 }
 
+// 读不懂时指路那句里的工具名，用首页那一行的叫法；Codex CLI 和桌面端共用一份配置，就叫「Codex」。
+const brokenConfigToolNames: Record<ProviderId, string> = {
+  codex: 'Codex',
+  claude: 'Claude Code',
+  gemini: 'Gemini CLI',
+  grok: 'Grok CLI',
+}
+
 /**
  * merge 只处理已存在的配置；显式 reset 可以建立当前账号来源的初始配置。
  * 官方登录和历史数据均独立保留，不属于重置范围。
@@ -3401,7 +3496,7 @@ function createOfficialAccountPlans(
     case 'codex':
       return [
         ...createCodexOfficialConfigPlans(roots, siteBaseUrls, mode),
-        ...createCodexOfficialAuthPlans(roots),
+        ...createCodexOfficialAuthPlans(roots, mode),
       ]
     case 'claude': {
       // 切回官方账号不收回自动更新开关：CLI 仍由本软件装、也由本软件更新。语言与记录
@@ -3417,7 +3512,7 @@ function createOfficialAccountPlans(
         return [...restore, { path: paths[0], content: jsonContent(settings) }]
       }
       if (!fs.existsSync(paths[0])) return []
-      const parsed = requireJson(paths[0], '现有 Claude settings.json')
+      const parsed = requireJson(paths[0], '现有 Claude settings.json', brokenConfigToolNames.claude)
       const env = parsed.env
       if (env && typeof env === 'object' && !Array.isArray(env)) {
         const envRecord = env as Record<string, unknown>
@@ -3457,7 +3552,7 @@ function createOfficialAccountPlans(
       }
       const plans: FilePlan[] = []
       if (fs.existsSync(paths[0])) {
-        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json', brokenConfigToolNames.gemini)
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
@@ -3478,7 +3573,7 @@ function createOfficialAccountPlans(
     case 'grok': {
       if (mode === 'reset') return [{ path: paths[0], content: ['[cli]', 'auto_update = false', ''].join('\n') }]
       if (!fs.existsSync(paths[0])) return []
-      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      const parsed = requireToml(paths[0], '现有 Grok config.toml', brokenConfigToolNames.grok)
       removeGrokRelayConfig(parsed, siteBaseUrls.grok)
       disableGrokSelfUpdate(parsed)
       // 与 Claude / Gemini 同理钩子跟着收回；[compat.claude] 那一行留着，Claude Code 可能还接着当前账号。
@@ -3516,8 +3611,14 @@ export function switchProviderToOfficialAccount(
   // config.toml 又坏到 Codex 读不了：看着像「有 Key、地址不是星芒」的第三方，其实用的就是官方
   // 账号。首页「配置文件坏了」的「修好它」走的是这条重置，先备份，坏文件里没有能用的设置可护。
   const brokenChatgptLogin = provider === 'codex' && saveMode === 'reset'
-    && inspection.codexConfigBroken === true && inspection.codexAuthMode === 'chatgpt'
+    && inspection.configBroken === true && inspection.codexAuthMode === 'chatgpt'
   const mode = knownCodexRelay ? 'relay' : brokenChatgptLogin ? 'official' : providerAccountMode(inspection)
+  // 工具自己读不了的文件，读出来的「没有 Key」不说明在用官方账号（Claude Code 的 settings.json
+  // 坏了以前就被说成「无需切换」）。只更新要照着原文件改，指去重置；认得出是星芒中转的照常往下走，
+  // 读不懂的那一份由下面的计划报同一句。
+  if (mode !== 'relay' && saveMode !== 'reset' && (inspection.configBroken === true || inspection.codexAuthBroken === true)) {
+    throw new Error(describeBrokenConfig(brokenConfigToolNames[provider]))
+  }
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
