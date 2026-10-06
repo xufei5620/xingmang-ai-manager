@@ -3611,6 +3611,8 @@ test('a Windows account outside the administrators group is told an administrato
     await bubble.getByRole('button', { name: '查看更新', exact: true }).click()
     const updates = page.getByTestId('page-updates')
     await updates.waitFor()
+    // 更新页进来自己再读一次状态：主进程读回的就是上面这份，夹具读回的是默认那份，所以再发一次。
+    await emit({ phase: 'downloaded', progress: null })
     await updates.getByText('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。', { exact: true }).waitFor()
     await updates.getByText('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装', { exact: true }).waitFor()
     const notice = updates.getByTestId('updates-admin-password')
