@@ -1,24 +1,127 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
 import {
+  buildMacosClosedProxyGuard,
   buildMacosTerminalScript,
   cleanupStaleTerminalDirectories,
   launchMacosTerminal,
   quotePosixArgument,
 } from './macos-platform'
+import { parseLoopbackProxyTarget, staleProxyVariableNames } from './stale-proxy-environment'
 
+const execFileAsync = promisify(execFile)
 const temporaryDirectories: string[] = []
+const servers: net.Server[] = []
 
-afterEach(() => {
+// 真跑那几行 zsh 的用例：Mac 上总有 /bin/zsh；Linux 上装了 zsh 也跑（探测换成假的 nc，见下）。
+const zshAvailable = process.platform !== 'win32' && fs.existsSync('/bin/zsh')
+
+afterEach(async () => {
   vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
+  await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))))
 })
+
+async function listeningPort(): Promise<number> {
+  const server = net.createServer((socket) => socket.destroy())
+  servers.push(server)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('no port')
+  return address.port
+}
+
+async function closedPort(): Promise<number> {
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('no port')
+  await new Promise((resolve) => server.close(resolve))
+  return address.port
+}
+
+/**
+ * Stands in for /usr/bin/nc where it is not the macOS one: Linux nc has no -G.
+ * It records every probe and answers "open" only for the ports listed in
+ * FAKE_NC_OPEN (or for every port when that says `all`). Like nc without -v it
+ * fails silently; with FAKE_NC_BROKEN set it complains the way nc does about an
+ * option it does not know.
+ */
+function writeFakePortProbe(directory: string): string {
+  const file = path.join(directory, 'fake-nc')
+  fs.writeFileSync(file, [
+    '#!/bin/sh',
+    'printf \'%s\\n\' "$*" >> "$FAKE_NC_LOG"',
+    'if [ -n "${FAKE_NC_BROKEN:-}" ]; then echo "nc: illegal option -- G" >&2; exit 1; fi',
+    'for port in $FAKE_NC_OPEN; do',
+    '  if [ "$port" = all ] || [ "$port" = "$6" ]; then exit 0; fi',
+    'done',
+    'exit 1',
+    '',
+  ].join('\n'), { mode: 0o700 })
+  return file
+}
+
+interface GuardRun {
+  /** What a program started after the guard sees. */
+  env: NodeJS.ProcessEnv
+  /** The probe's arguments, one line per call. */
+  probes: string[]
+  /** Everything that would have shown up in the user's Terminal window as an error. */
+  stderr: string
+}
+
+let guardRuns = 0
+
+/**
+ * Runs the guard the way the launcher does (`zsh -f` under `set -eu`, in the
+ * UTF-8 locale Terminal sets), with the proxies as a login shell that read
+ * ~/.zshrc would have passed them down. The script exits 7 when the guard
+ * leaves errexit or nounset switched off.
+ */
+async function runClosedProxyGuard(
+  directory: string,
+  probe: string,
+  proxies: Record<string, string>,
+  openPorts: string,
+  extraEnv: Record<string, string> = {},
+): Promise<GuardRun> {
+  guardRuns += 1
+  const script = path.join(directory, `guard-${guardRuns}.zsh`)
+  const log = path.join(directory, `probes-${guardRuns}.log`)
+  fs.writeFileSync(script, [
+    '#!/bin/zsh -f',
+    'set -eu',
+    ...buildMacosClosedProxyGuard(probe),
+    '[[ -o errexit && -o nounset ]] || exit 7',
+    `${quotePosixArgument(process.execPath)} -e 'process.stdout.write(JSON.stringify(process.env))'`,
+    '',
+  ].join('\n'), { mode: 0o700 })
+  const { stdout, stderr } = await execFileAsync('/bin/zsh', ['-f', script], {
+    env: {
+      HOME: directory,
+      PATH: '/usr/bin:/bin',
+      LANG: 'en_US.UTF-8',
+      FAKE_NC_LOG: log,
+      FAKE_NC_OPEN: openPorts,
+      ...extraEnv,
+      ...proxies,
+    },
+  })
+  return {
+    env: JSON.parse(stdout) as NodeJS.ProcessEnv,
+    probes: fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : [],
+    stderr,
+  }
+}
 
 describe('macOS terminal launcher', () => {
   it('quotes POSIX argument metacharacters as inert data', () => {
@@ -481,5 +584,177 @@ describe('macOS terminal launcher', () => {
 
     expect(created).not.toBe('')
     expect(fs.existsSync(created)).toBe(false)
+  })
+})
+
+describe('macOS terminal launcher with proxies left by the login shell', () => {
+  function probeLine(host: string, port: number): string {
+    return `-z -n -G 1 ${host} ${port}`
+  }
+
+  it('checks the proxies after the exports and before the CLI starts', () => {
+    const script = buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: { HOME: '/tmp/home', PATH: '/usr/bin' },
+    })
+    const guard = buildMacosClosedProxyGuard().join('\n')
+    const start = script.indexOf(guard)
+    expect(start).toBeGreaterThan(script.indexOf('export PATH='))
+    expect(start + guard.length).toBeLessThan(script.indexOf("trap ':' INT"))
+    // The SIP-protected system nc by absolute path: PATH is never consulted.
+    expect(guard).toContain("if failure=$('/usr/bin/nc' -z -n -G 1 $address $port 2>&1 </dev/null >/dev/null); then")
+    // Nothing the guard itself might say reaches the user's Terminal window.
+    expect(guard.endsWith('} 2>/dev/null')).toBe(true)
+  })
+
+  it('looks at the same proxy names as Windows and Linux, in both spellings', () => {
+    const loop = buildMacosClosedProxyGuard().find((line) => line.trimStart().startsWith('for name in '))
+    expect(loop?.trim()).toBe(`for name in ${staleProxyVariableNames.flatMap((name) => [name, name.toLowerCase()]).join(' ')}; do`)
+  })
+
+  it.runIf(zshAvailable)('drops a proxy only when its loopback port does not answer', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-proxy-guard-'))
+    temporaryDirectories.push(directory)
+
+    const { env, probes, stderr } = await runClosedProxyGuard(directory, writeFakePortProbe(directory), {
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      https_proxy: 'http://127.0.0.1:7890',
+      http_proxy: 'http://user:secret@LOCALHOST:1080/',
+      ALL_PROXY: 'socks5://proxy.corp.example:1080',
+      all_proxy: 'not a proxy',
+    }, '1080')
+
+    expect(env.HTTPS_PROXY).toBeUndefined()
+    expect(env.https_proxy).toBeUndefined()
+    expect(env.http_proxy).toBe('http://user:secret@LOCALHOST:1080/')
+    expect(env.ALL_PROXY).toBe('socks5://proxy.corp.example:1080')
+    expect(env.all_proxy).toBe('not a proxy')
+    // One probe per port; a remote or unreadable value is never probed.
+    expect(probes).toEqual([probeLine('127.0.0.1', 1080), probeLine('127.0.0.1', 7890)])
+    expect(stderr).toBe('')
+  })
+
+  it.runIf(zshAvailable)('tries both loopback addresses before calling localhost closed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-proxy-guard-'))
+    temporaryDirectories.push(directory)
+
+    const { env, probes, stderr } = await runClosedProxyGuard(directory, writeFakePortProbe(directory), {
+      HTTP_PROXY: 'http://[::1]:7892',
+      ALL_PROXY: 'socks5://localhost:7891',
+    }, '')
+
+    expect(env.HTTP_PROXY).toBeUndefined()
+    expect(env.ALL_PROXY).toBeUndefined()
+    expect(probes).toEqual([probeLine('::1', 7892), probeLine('127.0.0.1', 7891), probeLine('::1', 7891)])
+    expect(stderr).toBe('')
+  })
+
+  it.runIf(zshAvailable)('keeps the proxy when the probe itself reports an error rather than a closed port', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-proxy-guard-'))
+    temporaryDirectories.push(directory)
+
+    const { env, probes, stderr } = await runClosedProxyGuard(directory, writeFakePortProbe(directory), {
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      ALL_PROXY: 'socks5://localhost:7891',
+    }, '', { FAKE_NC_BROKEN: '1' })
+
+    // An nc that rejects its options would otherwise strip every working proxy.
+    expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7890')
+    expect(env.ALL_PROXY).toBe('socks5://localhost:7891')
+    expect(probes).toEqual([probeLine('127.0.0.1', 7890), probeLine('127.0.0.1', 7891), probeLine('::1', 7891)])
+    expect(stderr).toBe('')
+  })
+
+  it.runIf(zshAvailable)('leaves every proxy alone when there is nothing to probe with', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-proxy-guard-'))
+    temporaryDirectories.push(directory)
+
+    const { env, probes, stderr } = await runClosedProxyGuard(directory, path.join(directory, 'missing-nc'), {
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+    }, '')
+
+    expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7890')
+    expect(probes).toEqual([])
+    expect(stderr).toBe('')
+  })
+
+  it.runIf(zshAvailable)('recognizes the same loopback targets as parseLoopbackProxyTarget', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-proxy-guard-'))
+    temporaryDirectories.push(directory)
+    const probe = writeFakePortProbe(directory)
+    // 表里不放 http 的 :80、https 的 :443：那边的 URL 解析把默认端口当成没写、照旧带上，
+    // 这里写出来的端口照样探。那两个端口上没人开代理，不为它多写几行。也不放 127.1、
+    // [0:0:0:0:0:0:0:1] 这类简写：那边还原成本机地址去探，这里不认、照旧带上。
+    const values = [
+      'http://127.0.0.1:7890',
+      '127.0.0.1:7890',
+      ' socks5://LOCALHOST:1080 ',
+      'http://user:secret@127.0.0.2:8080/',
+      'http://[::1]:7890',
+      'socks5h://localhost:7891',
+      'HTTP://Localhost:07890/path?x=1#y',
+      'http://a@b@127.0.0.1:7890',
+      'http://127.0.0.1:7890@proxy.corp.example:8080',
+      'http://proxy.corp.example:8080',
+      'http://10.0.0.5:7890',
+      'http://[::2]:7890',
+      'http://localhost.:7890',
+      'http://127.0.0.1',
+      'http://127.0.0.1:0',
+      'http://127.0.0.1:65536',
+      'http://127.0.0.1:7890abc',
+      'http://127.0.0.1:７８９０',
+      'http://代理.example:7890',
+      'not a url at all',
+    ]
+
+    for (const value of values) {
+      const target = parseLoopbackProxyTarget(value)
+      const { probes, stderr } = await runClosedProxyGuard(directory, probe, { HTTPS_PROXY: value }, 'all')
+      expect({ value, probes, stderr }).toEqual({
+        value,
+        probes: target ? [probeLine(target.host === 'localhost' ? '127.0.0.1' : target.host, target.port)] : [],
+        stderr: '',
+      })
+    }
+  })
+
+  it.runIf(process.platform === 'darwin')('tells an open loopback proxy from a closed one with the macOS nc', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-proxy-launch-'))
+    temporaryDirectories.push(directory)
+    const open = await listeningPort()
+    const closed = await closedPort()
+    const output = path.join(directory, 'env.json')
+    const launcher = path.join(fs.mkdtempSync(path.join(directory, 'launcher-')), 'launcher.zsh')
+    fs.writeFileSync(launcher, buildMacosTerminalScript({
+      executable: process.execPath,
+      argv: ['-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', output],
+      workspace: directory,
+      launcherPath: launcher,
+      env: { HOME: directory, PATH: '/usr/bin:/bin' },
+    }), { mode: 0o700 })
+
+    // What Terminal's login shell hands down after reading ~/.zshrc.
+    const { stderr } = await execFileAsync('/bin/zsh', ['-f', launcher], {
+      env: {
+        HOME: directory,
+        PATH: '/usr/bin:/bin',
+        LANG: 'en_US.UTF-8',
+        https_proxy: `http://127.0.0.1:${closed}`,
+        all_proxy: `socks5://localhost:${closed}`,
+        HTTPS_PROXY: `http://localhost:${open}`,
+        HTTP_PROXY: 'http://proxy.corp.example:8080',
+      },
+    })
+
+    const env = JSON.parse(fs.readFileSync(output, 'utf8')) as NodeJS.ProcessEnv
+    expect(env.https_proxy).toBeUndefined()
+    expect(env.all_proxy).toBeUndefined()
+    expect(env.HTTPS_PROXY).toBe(`http://localhost:${open}`)
+    expect(env.HTTP_PROXY).toBe('http://proxy.corp.example:8080')
+    expect(stderr).toBe('')
   })
 })

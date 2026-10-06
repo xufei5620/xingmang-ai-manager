@@ -68,6 +68,10 @@ describe('Codex Desktop locale result messages', () => {
     expect(macLocaleNote).not.toMatch(/通道|重新打开/)
   })
 
+  it('tells a Mac user that Chinese only shows when the toolbox opens Codex', () => {
+    expect(macLocaleNote).toBe('中文界面只在从星芒打开 Codex 时生效，直接点程序坞或启动台里的 ChatGPT 打开还是英文。点「启用中文界面」只是把设置改好，不会替你重开 Codex。Codex 开着的话，先在 Codex 窗口里按 Command + Q 完全退出，再回星芒点「打开」。')
+  })
+
   it('tells a Mac user how an open Codex picks up a newly trusted folder', () => {
     expect(describeWorkspaceTrustResult(true, 'mac'))
       .toBe('文件夹信任已保存。Codex 开着的话，先在 Codex 窗口里按 Command + Q 完全退出，再回星芒点「打开」。')

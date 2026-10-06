@@ -361,7 +361,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         </>}
       </>}
       <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button></div>
-      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary>{os === 'mac' ? <p>{macLocaleNote}</p> : <><p>已设置中文但仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
+      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary>{os === 'mac' ? <p>{macLocaleNote}</p> : <><p>中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
         <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p></>}<div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value, os)) })}>检查中文界面</Button>
         <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result, os)) } })}>启用中文界面</Button>
         <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result, os)) })}>跟随系统语言</Button>

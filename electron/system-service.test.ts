@@ -28,7 +28,7 @@ import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } fr
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
-import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
@@ -6337,6 +6337,59 @@ describe('opening a CLI on Linux', () => {
   })
 })
 
+describe('opening a CLI on macOS', () => {
+  it.runIf(process.platform !== 'win32')('keeps the reason a tool did not open as the cause, so the log records it', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-open-fail-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const refused = new CommandRunnerError('命令执行失败（退出码 1）：codesign', {
+      code: 'EXIT_NON_ZERO',
+      executable: '/usr/bin/codesign',
+      argv: ['--verify', '--strict', path.join(userHome, '.local', 'bin', 'claude')],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: 'code object is not signed at all',
+      outputBytes: 32,
+      maxOutputBytes: 1024,
+      durationMs: 3,
+    })
+    const service = createService({
+      platform: 'darwin',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(userHome, '.local', 'bin', 'claude'),
+        installDirectory: path.join(userHome, '.local', 'share', 'claude'),
+        packageRoot: path.join(userHome, '.local', 'share', 'claude'),
+        npmPrefix: null,
+        packageVersion: '2.1.283',
+        source: 'native' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => { throw refused }),
+      findExecutable: vi.fn(async () => null),
+    })
+
+    const failure: unknown = await service.launchProvider('claude', workspace).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error && failure.message).toBe('未能打开 Claude Code：命令执行失败（退出码 1）：codesign')
+    expect(failure instanceof Error && failure.cause).toBe(refused)
+  })
+})
+
 describe('opening a CLI on Windows', () => {
   function windowsLaunchService(userHome: string, launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
     return createService({
@@ -6682,5 +6735,239 @@ describe('telling which Codex builds would read the model catalog', () => {
     expect(late).not.toHaveBeenCalled()
     await expect(unlessStopped(async () => 'ok', new AbortController().signal)).resolves.toBe('ok')
     await expect(unlessStopped(async () => { throw new Error('探测失败') }, new AbortController().signal)).rejects.toThrow('探测失败')
+  })
+})
+
+// 第三十四批 A：Mac 上客户自己那份 Node.js 太旧时，本软件自己检测、装工具、开工具都改用代下的
+// 那份；客户自己那份够新、或者没有代下的那份时，一切照旧。判断看产品目录里的真文件，路径按 Mac
+// 的写法拼，所以 Windows 主机上不跑。
+describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too old for the tools', () => {
+  interface OldNodeMac {
+    home: string
+    customerBin: string
+    managedBin: string
+    findExecutable: ReturnType<typeof vi.fn<typeof productionFindExecutable>>
+    runCommand: ReturnType<typeof vi.fn<typeof productionRunCommand>>
+    placeManagedCopy(version: string): void
+  }
+
+  function oldNodeMac(options: { customerNode?: string; managedNode?: string | null } = {}): OldNodeMac {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-mac-old-node-')))
+    temporaryDirectories.push(home)
+    vi.stubEnv('HOME', home)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    // 客户自己装的那份（比如官网安装包放在 /usr/local/bin 的 Node.js 16）；夹具里不放真文件，
+    // `npm root --global` 这类真去跑的命令找不到它就当问不到。
+    const customerBin = path.join(home, 'usr-local', 'bin')
+    const managedBin = managedNodeRuntimeBinDirectory({ HOME: home }, 'darwin')
+    const versions = new Map<string, string>([
+      [path.join(customerBin, 'node'), options.customerNode ?? 'v16.20.2'],
+      [path.join(customerBin, 'npm'), '8.19.4'],
+    ])
+    function placeManagedCopy(version: string) {
+      fs.mkdirSync(managedBin, { recursive: true })
+      fs.writeFileSync(path.join(managedBin, 'node'), 'node', { mode: 0o755 })
+      versions.set(path.join(managedBin, 'node'), version)
+      versions.set(path.join(managedBin, 'npm'), '10.9.2')
+    }
+    if (options.managedNode !== null) placeManagedCopy(options.managedNode ?? 'v22.12.0')
+    // 同 darwinCommandPathCandidates：additionalPaths 排最前，客户自己的在中间，代下的那份最后。
+    const findExecutable = vi.fn<typeof productionFindExecutable>(async (command, findOptions = {}) => {
+      for (const directory of [...findOptions.additionalPaths ?? [], customerBin, managedBin]) {
+        const candidate = path.join(directory, command)
+        if (versions.has(candidate)) return candidate
+      }
+      return null
+    })
+    const runCommand = vi.fn<typeof productionRunCommand>(async (spec) => {
+      // 装工具的用例只看第一次 `npm install` 用的是哪个 npm、带着什么 PATH，到这里就停。
+      if (spec.argv.includes('install')) throw new Error('stopped at the first npm install')
+      const stdout = `${versions.get(spec.executable) ?? ''}\n`
+      return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: stdout.length, durationMs: 1 }
+    })
+    return { home, customerBin, managedBin, findExecutable, runCommand, placeManagedCopy }
+  }
+
+  function macService(mac: OldNodeMac, options: SystemServiceOptions = {}) {
+    return createSystemService(new AppSettingsStore(path.join(mac.home, 'settings.json'), mac.home), {
+      platform: 'darwin',
+      providerRoots: { userHome: mac.home, codexHome: path.join(mac.home, '.codex') },
+      findExecutable: mac.findExecutable,
+      runCommand: mac.runCommand,
+      resolveCliInstallation: async () => null,
+      macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      ...options,
+    })
+  }
+
+  const downloaded: NodeRuntimeInstallResult = {
+    installed: true,
+    action: 'installed',
+    method: 'archive',
+    source: 'npmmirror',
+    version: 'v22.12.0',
+    architecture: 'arm64',
+    pathRefreshRequired: false,
+    systemRestartRequired: false,
+  }
+
+  it('reports its own copy on the home page and asks npm for its version with that copy', async () => {
+    const mac = oldNodeMac()
+    const snapshot = await macService(mac).scanSystem(false)
+
+    expect(snapshot.runtime.node).toMatchObject({
+      installed: true,
+      version: 'v22.12.0',
+      path: path.join(mac.managedBin, 'node'),
+      tooOld: false,
+      versionStatus: 'supported',
+    })
+    expect(snapshot.runtime.npm).toMatchObject({ installed: true, version: '10.9.2', path: path.join(mac.managedBin, 'npm') })
+    // npm 靠 `#!/usr/bin/env node` 找 node：问它版本时代下的那份也得排在 PATH 最前，不然又落到旧的上面。
+    const npmVersion = mac.runCommand.mock.calls.find(([spec]) => spec.executable === path.join(mac.managedBin, 'npm'))
+    expect(npmVersion?.[1]?.env?.PATH?.split(path.delimiter)[0]).toBe(mac.managedBin)
+  })
+
+  it('leaves everything on the customer\'s own Node.js when it is new enough', async () => {
+    const mac = oldNodeMac({ customerNode: 'v22.1.0' })
+    const snapshot = await macService(mac).scanSystem(false)
+
+    expect(snapshot.runtime.node).toMatchObject({ path: path.join(mac.customerBin, 'node'), version: 'v22.1.0', versionStatus: 'supported' })
+    expect(snapshot.runtime.npm.path).toBe(path.join(mac.customerBin, 'npm'))
+    for (const [, findOptions] of mac.findExecutable.mock.calls) expect(findOptions?.additionalPaths).toBeUndefined()
+  })
+
+  it('does not download Node.js again once its own copy is ready', async () => {
+    const mac = oldNodeMac()
+    const installNodeRuntime = vi.fn(async () => downloaded)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(macService(mac, { installNodeRuntime }).installNodeRuntime(target))
+      .resolves.toMatchObject({ action: 'unchanged', version: 'v22.12.0' })
+    expect(installNodeRuntime).not.toHaveBeenCalled()
+  })
+
+  it('switches to the copy it just downloaded without waiting for the next check', async () => {
+    const mac = oldNodeMac({ managedNode: null })
+    const installNodeRuntime = vi.fn(async () => {
+      mac.placeManagedCopy('v22.12.0')
+      return downloaded
+    })
+    const service = macService(mac, { installNodeRuntime })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    const before = await service.scanSystem(false)
+    expect(before.runtime.node).toMatchObject({ path: path.join(mac.customerBin, 'node'), tooOld: true, versionStatus: 'too-old' })
+
+    await expect(service.installNodeRuntime(target)).resolves.toMatchObject({ action: 'installed' })
+    const after = await service.scanSystem(false)
+    expect(after.runtime.node).toMatchObject({ path: path.join(mac.managedBin, 'node'), tooOld: false, versionStatus: 'supported' })
+    expect(after.runtime.npm.path).toBe(path.join(mac.managedBin, 'npm'))
+
+    // 装工具前那一步再问一次也不会重下。
+    await expect(service.installNodeRuntime(target)).resolves.toMatchObject({ action: 'unchanged' })
+    expect(installNodeRuntime).toHaveBeenCalledTimes(1)
+  })
+
+  it('installs a tool with the npm that came with its own copy, run by that copy', async () => {
+    const mac = oldNodeMac()
+    const expectedVersion = recommendedCodexVersion()
+    const integrity = `sha512-${Buffer.alloc(64, 0x33).toString('base64')}`
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
+        return new Response(JSON.stringify({ name: '@openai/codex', version: expectedVersion, dist: { integrity } }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(macService(mac).installCli('codex', target)).rejects.toThrow('stopped at the first npm install')
+
+    const npmInstall = mac.runCommand.mock.calls.find(([spec]) => spec.argv.includes('install'))
+    expect(npmInstall?.[0].executable).toBe(path.join(mac.managedBin, 'npm'))
+    // npm 和工具的安装脚本都靠 `#!/usr/bin/env node` 找 node，跑 npm 的 PATH 得先找到代下的那份。
+    expect(npmInstall?.[1]?.env?.PATH?.split(path.delimiter)[0]).toBe(mac.managedBin)
+  })
+
+  it('runs a JavaScript tool with its own copy but hands the terminal the customer\'s own PATH', async () => {
+    const mac = oldNodeMac()
+    const workspace = path.join(mac.home, 'project')
+    fs.mkdirSync(workspace)
+    // 到解析出要跑的命令为止：真的去开终端要靠 /usr/bin/open，用例里不开。
+    const resolveCliCommand = vi.fn<typeof resolveVerifiedToolCommand>(async () => {
+      throw new Error('stopped before opening Terminal')
+    })
+    const service = macService(mac, {
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'gemini-3-pro-preview',
+        dataDirectory: path.join(mac.home, '.gemini'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(mac.home, 'Library', 'Application Support', 'XingMangAI', 'Cli', 'npm', 'bin', 'gemini'),
+        installDirectory: path.join(mac.home, 'Library', 'Application Support', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@google', 'gemini-cli'),
+        packageRoot: path.join(mac.home, 'Library', 'Application Support', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@google', 'gemini-cli'),
+        npmPrefix: path.join(mac.home, 'Library', 'Application Support', 'XingMangAI', 'Cli', 'npm'),
+        packageVersion: '0.59.0',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand,
+    })
+
+    await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
+
+    expect(resolveCliCommand).toHaveBeenCalledTimes(1)
+    const [provider, terminalEnvironment, , launchOptions] = resolveCliCommand.mock.calls[0]
+    expect(provider).toBe('gemini')
+    expect(launchOptions?.nodeDirectories).toEqual([mac.managedBin])
+    // 交给终端的就是这份环境：客户在工具里跑 node，用的还是他自己那份。
+    expect(terminalEnvironment?.PATH?.split(path.delimiter)[0]).not.toBe(mac.managedBin)
+  })
+
+  it('opens the tool exactly as before when the customer\'s own Node.js is new enough', async () => {
+    const mac = oldNodeMac({ customerNode: 'v22.1.0' })
+    const workspace = path.join(mac.home, 'project')
+    fs.mkdirSync(workspace)
+    const resolveCliCommand = vi.fn<typeof resolveVerifiedToolCommand>(async () => {
+      throw new Error('stopped before opening Terminal')
+    })
+    const service = macService(mac, {
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'gemini-3-pro-preview',
+        dataDirectory: path.join(mac.home, '.gemini'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(mac.home, '.npm-global', 'bin', 'gemini'),
+        installDirectory: path.join(mac.home, '.npm-global', 'lib', 'node_modules', '@google', 'gemini-cli'),
+        packageRoot: path.join(mac.home, '.npm-global', 'lib', 'node_modules', '@google', 'gemini-cli'),
+        npmPrefix: path.join(mac.home, '.npm-global'),
+        packageVersion: '0.59.0',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand,
+    })
+
+    await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
+
+    expect(resolveCliCommand.mock.calls[0]?.[3]).toEqual({ darwinStagingRetention: 'retained' })
   })
 })
