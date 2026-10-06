@@ -65,6 +65,7 @@ import {
   resultNoticeLead,
   type OperationNotice,
   useOperation,
+  useReloadWhenShown,
   useResource,
   userFacingErrorMessage,
 } from './business-common'
@@ -254,6 +255,11 @@ export type BusinessActions = {
    * 「自动更新」）各有一个开关，哪边改了另一边要跟着变；缺省 = 只用页面自己读到的那份（旧行为）。
    */
   appSettings?: AppSettings
+  /**
+   * 外壳告诉页面「现在显示的是你」。去过的页面换走时只藏起来、不卸载（App.tsx 的 visitedPages），
+   * 再显示时页面自己重读一次（useReloadWhenShown），和点页头那颗按钮一样；缺省 = 不重读（旧行为）。
+   */
+  active?: boolean
 }
 /** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
 const networkDiagnosticCode = 'XINGMANG_NETWORK'
@@ -419,6 +425,7 @@ export function HealthPage({
   openConfig,
   onRewriteKey,
   rewritableKeys,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
   // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
   const load = useCallback(() => api.runDiagnostics().then((report) => {
@@ -433,8 +440,9 @@ export function HealthPage({
   // 正常的项默认收成一行；从别处点名要看的那一项正好是正常的，就先摆出来再翻过去。
   const [showPassing, setShowPassing] = useState(false)
   // 设置里「企业证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
-  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。
-  useRowFocus('health', pageRef, Boolean(resource.data), (anchor) => {
+  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
+  // 等新结果出来再翻，不在几个小时前那份上亮。
+  useRowFocus('health', pageRef, Boolean(resource.data) && !resource.loading, (anchor) => {
     const code = anchor === firstProblemAnchor ? problems[0]?.code ?? null : anchor
     if (code && passing.some((item) => item.code === code)) setShowPassing(true)
     return code
@@ -455,13 +463,20 @@ export function HealthPage({
   const responsesEpoch = useRef(0)
   // 这张卡只对装了 Codex 的人有意义；没读到装没装时先不显示，免得没装的人看到一个点了只会报错的按钮。
   const [codexInstalled, setCodexInstalled] = useState(false)
+  const [codexProbe, setCodexProbe] = useState(0)
   useEffect(() => {
     let current = true
     api.scanSystem(false)
       .then((snapshot) => { if (current) setCodexInstalled(snapshot.clis.codex.installed === true) })
       .catch(() => { if (current) setCodexInstalled(false) })
     return () => { current = false }
-  }, [api])
+  }, [api, codexProbe])
+  // 从错误框「检查网络」、侧栏回到这一页，看到的该是现在的结果，不是几个小时前那份。
+  // 还在查就不再起一轮：探测要起好几个子进程，那一轮本来就是刚起的。
+  useReloadWhenShown(active, () => {
+    if (!resource.loading) void resource.reload()
+    setCodexProbe((value) => value + 1)
+  })
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
       responsesEpoch.current += 1
@@ -964,9 +979,12 @@ export function FeedbackPage({
   api,
   openHelp,
   navigate,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.getRuntimeLogs(runtimeLogLimit), [api])
   const resource = useResource(load)
+  // 错误框「查看日志」把人带回这一页时，刚出的那个错要在「运行日志」最上面，不用再点「刷新」。
+  useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState(anyRuntimeLogValue)

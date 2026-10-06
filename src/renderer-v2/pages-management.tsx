@@ -46,6 +46,7 @@ import {
   Pagination,
   ResultNotice,
   useOperation,
+  useReloadWhenShown,
   useResource,
 } from './business-common'
 import { scopeOptions } from './registry/business'
@@ -2434,15 +2435,21 @@ export function BackupsPage({
   api,
   onRestored,
   navigate,
+  active,
 }: {
   api: V2Bridge
   /** 恢复成功后回调，用来让首页重读配置。 */
   onRestored?: (provider: Provider) => void
   /** section：连接测试结论是「网络」时落到设置的「网络」组；缺省 = 只跳页。 */
   navigate?: (page: V2Page, section?: string) => void
+  /** 外壳说的「现在显示的是这一页」：再显示时重读一次列表（同 BusinessActions.active）；缺省 = 不重读（旧行为）。 */
+  active?: boolean
 }) {
   const load = useCallback(() => api.listBackups(), [api])
   const resource = useResource(load)
+  // 改配置、改用账号前都会自动留一份，改用失败的错误框还叫人「到「备份」里恢复改用之前的那一份」：
+  // 去过这一页的话，回来时列表里得有它。
+  useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [backupProvider, setBackupProvider] = useState<Provider>('claude')
