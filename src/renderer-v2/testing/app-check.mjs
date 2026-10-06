@@ -1178,6 +1178,58 @@ test('home re-reads the recent list when the window comes back after a tool was 
   } finally { await page.close() }
 })
 
+// 已知4：从终端直接点回星芒，回到前面时那次重读是异步的，这一下用的还是旧列表：「接着聊」还挂在同一文件夹更早那条上，
+// Claude Code 按文件夹接最近一条，接上的却是刚聊的那条。点下去先现读一份对一次，点的这条已经不是最近的就这次不打开，
+// 按钮挪到刚聊的那条上；还是最近的就照常打开。
+test('home 接着聊 checks the newest records first and holds back when a newer chat took over the folder (已知4)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  try {
+    const resume = page.getByTestId('home-recent-resume-claude:1')
+    await resume.waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:1"]')?.disabled === false)
+    const reads = await homeReads()
+    // 在终端里又聊了一条，回到前面的那次重读还没赶上：卡片上还是旧的。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await resume.click()
+    await page.getByTestId('home-recent-resume-claude:6').waitFor()
+    assert.equal(await homeReads(), reads + 1)
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    // 挪过去的那颗还是最近的，照常打开。
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:6"]')?.disabled === false)
+    await page.getByTestId('home-recent-resume-claude:6').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    assert.equal(await homeReads(), reads + 2)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
+      [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// Codex 带着记录 id 接，点哪条接哪条，不用先对一次。
+test('home 接着聊 on a Codex record opens right away without reading the records again (已知4)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    await page.evaluate(() => window.v2Test.addRecentSession('9', 'codex', 'C:\\work\\codex-app', 500))
+    await page.getByTestId('home-rescan').click()
+    const resume = page.getByTestId('home-recent-resume-codex:9')
+    await resume.waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-codex:9"]')?.disabled === false)
+    const reads = await homeReads()
+    await resume.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    assert.equal(await homeReads(), reads)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
+      [['codex', 'C:\\work\\codex-app', 'resumeLast', 'codex:9']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home re-reads the recent list when the window is shown again, so the open button names the folder just used', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   const homeReads = () => page.evaluate(() => window.v2Test.calls
@@ -1233,6 +1285,79 @@ test('the records page reads both lists again when it is shown again, so 接着�
     // 刚聊的排第一、带「接着聊」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
     assert.equal(await page.locator('[data-testid^="sessions-row-"]').first().getAttribute('data-testid'), 'sessions-row-claude:6')
     assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知4：记录页同一下。停在记录页时在终端里又聊了一条，半分钟内回到窗口不重读；这时点同一文件夹更早那条的「接着聊」，
+// 先读一份最新的对一次，不是最近的就这次不打开，列表换成新的、按钮挪到刚聊的那条上。
+test('the records page 接着聊 checks the newest records first and holds back when a newer chat took over the folder (已知4)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    const resume = page.getByTestId('sessions-resume-claude:1')
+    await resume.waitFor()
+    const [list, latest] = await recordsReads(page)
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await resume.click()
+    await page.getByTestId('sessions-resume-claude:6').waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    // 什么都没打开：不说「已打开」，也不报错。
+    assert.equal(await page.locator('.v2-business-notice.is-error').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知5：外接工具、技能、插件、安装卸载这几页去过以后只藏不卸，在首页或终端里装好、删掉东西再回来，看到的还是
+// 第一次进去时那份。再显示时各自重读一次；外接工具的连接检测要挨个连一遍，照旧不跟着重跑。
+test('the extension pages and the maintenance page read again when shown again (已知5)', async () => {
+  const page = await open()
+  const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
+  // 第一次进来读几次不固定（开发模式挂两遍、检测结果晚到时换默认工具），等它不再涨再数。
+  async function settled(method) {
+    let previous = -1
+    let current = await calls(method)
+    while (current !== previous) {
+      previous = current
+      await page.waitForTimeout(150)
+      current = await calls(method)
+    }
+    return current
+  }
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+      })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+    })
+    for (const id of ['mcp', 'skills', 'plugins']) {
+      await page.getByTestId(`nav-${id}`).click()
+      await page.getByTestId(`page-${id}`).waitFor()
+      const lists = await settled('listProviderExtensions')
+      const health = await settled('checkProviderMcpHealth')
+      await page.getByTestId('nav-home').click()
+      await page.getByTestId('page-home').waitFor()
+      await page.getByTestId(`nav-${id}`).click()
+      await expect.poll(() => calls('listProviderExtensions')).toBe(lists + 1)
+      assert.equal(await calls('checkProviderMcpHealth'), health)
+    }
+    // 安装卸载页：首页的任务跑完它本来就重读；在终端里自己装了 Gemini CLI（首页那份任务看不见）再回来，
+    // 那一行也不再写「未安装」。
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.xingmang.installCli('gemini'))
+    // 「更多」那一组点开以后一直开着，再点一下反而收起来。
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).not.toHaveText('未安装')
     await clean(page)
   } finally { await page.close() }
 })
@@ -1324,7 +1449,8 @@ test('after 接着聊 on the records page the next return to the window reads ag
     })
     await focusWindow()
     await drawer.getByText('刚在终端里问的', { exact: true }).waitFor()
-    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 「最新 100 条」多读的那一次是点「接着聊」时先对的一下（已知4）。
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 2])
     await expect(drawer.getByText('上回问到这里', { exact: true })).toBeVisible()
     assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
     await clean(page)
@@ -2544,6 +2670,26 @@ test('installing a new CLI while signed in writes only that provider Key', async
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
     assert.deepEqual(calls.at(-1).args[0].providers, ['gemini'])
     await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知12：「已完成 N 组工具的 Key 配置。」只是说一声做完了：照右下角提示条的读完时长摆着，到点自己收起，换页回来
+// 也不再冒出来。以前登录后整场挂着，装完一个工具又换成「已完成 1 组…」。
+test('the all-done key line on home goes away by itself after the toast reading time (已知12)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    const done = page.locator('.v2-bootstrap-notice').filter({ hasText: '已完成 1 组工具的 Key 配置。' })
+    await done.waitFor()
+    // 14 个字：2400 + 2 × 200 毫秒。
+    await done.waitFor({ state: 'detached', timeout: 10_000 })
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.waitForTimeout(100)
+    assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -7425,6 +7571,48 @@ test('the status bar says whether the environment is fine and follows the latest
     assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot is-ok')
     await clean(unchecked)
   } finally { await unchecked.close() }
+})
+
+// 已知6：状态栏那句是上一次检查的结论。在首页装好工具、改好设置以后它就说不准了，退回灰点「环境待检测」，不再挂着
+// 原来的数；只是打开工具不改环境，不算。点进检查页重查一遍，跟着变。
+test('the status bar drops back to not-checked once a tool was installed, and follows the next check (已知6)', async () => {
+  const page = await open('diagnostics=1&diagnosticIssues=2&recentWorkspaces=1')
+  try {
+    const environment = page.getByTestId('statusbar-environment')
+    await expect.poll(() => environment.textContent()).toBe('环境有 2 项需要处理')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
+    assert.equal(await environment.textContent(), '环境有 2 项需要处理')
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await expect.poll(() => environment.textContent()).toBe('环境待检测')
+    assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot')
+    await environment.click()
+    await page.getByTestId('page-health').waitFor()
+    await expect.poll(() => environment.textContent()).toBe('环境有 2 项需要处理')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 检查页开着的时候在这一页重新写了 Key：状态栏退回「环境待检测」，这一页跟着重查一遍，不用再点「重新检查」，两处说的一样。
+test('the check page checks again by itself when the environment changed while it is shown (已知6)', async () => {
+  const page = await open('connectionCredential=1&diagnosticIssues=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const environment = page.getByTestId('statusbar-environment')
+    await expect.poll(() => environment.textContent()).toBe('环境有 1 项需要处理')
+    await page.waitForTimeout(100)
+    const checks = await healthChecks(page)
+    await page.getByTestId('health-connection-run').click()
+    await page.getByTestId('health-connection-rewrite-claude').click()
+    await expect.poll(() => healthChecks(page)).toBe(checks + 1)
+    await expect.poll(() => environment.textContent()).toBe('环境有 1 项需要处理')
+    await clean(page)
+  } finally { await page.close() }
 })
 
 test('cards on a page sit 16 apart, a list in a card reaches its edges and a long card note leaves the title on one line', async () => {

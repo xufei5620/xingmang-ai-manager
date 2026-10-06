@@ -63,7 +63,7 @@ import {
 } from './registry/curated-extensions'
 import { skillImportTutorialExtra } from './registry/tutorials'
 import { tools } from './registry/tools'
-import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest } from './features/tools/recent-workspaces'
 import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import { backupKeyView } from './features/tools/backup-key'
@@ -864,6 +864,20 @@ export function SessionsPage({
     )
   }
   /**
+   * 「接着聊」点下去先读一份最新的对一次（已知4，同首页 resumeRecent）：窗口回到前面时的那次重读是
+   * 异步的，从终端直接点回来，这一下用的还是旧列表。点的这条已经不是它那个文件夹最近的了，就换上新列表、
+   * 这次不打开，按钮自己挪到该挂的那条上。返回 false = 不打开；读不到就照旧打开。
+   */
+  const recheckResume = async (session: Session): Promise<boolean> => {
+    const fresh = await latestLoad().catch(() => null)
+    if (!fresh) return true
+    latestResource.setData(fresh)
+    if (resumeStillLatest(session, fresh.items)) return true
+    // 刚聊的那条多半也该出现在这一页上，列表一起换。
+    void resource.reload()
+    return false
+  }
+  /**
    * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
    * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
    * 就是接上的。Codex 另外带上这条记录的 id:它自己按目录找时还按连接名过滤,
@@ -876,6 +890,8 @@ export function SessionsPage({
     void operation.execute(
       'resume',
       async () => {
+        // 先对一次再过下面那几道关：问完话再说「这次不打开」，客户等于白答了一遍。
+        if (resumeNeedsRecheck(session) && !(await recheckResume(session))) return null
         // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
         // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
         if (beforeResume && !(await beforeResume(session.provider))) return null
@@ -1299,6 +1315,7 @@ export function ExtensionsPage({
   onOpenTutorial,
   installedProviders,
   onSystemChanged,
+  active,
 }: {
   api: V2Bridge
   kind: ExtensionKind
@@ -1312,6 +1329,11 @@ export function ExtensionsPage({
    * 缺省 = 只刷新本页（旧行为）。
    */
   onSystemChanged?: () => void
+  /**
+   * 外壳说的「现在显示的是这一页」（同 BusinessActions.active）：再显示时重读列表；
+   * 缺省 = 只在第一次进来时读（旧行为）。
+   */
+  active?: boolean
 }) {
   const page =
     kind === 'skill' ? 'skills' : kind === 'plugin' ? 'plugins' : 'mcp'
@@ -1347,6 +1369,12 @@ export function ExtensionsPage({
     [api, kind, provider],
   )
   const resource = useResource(load)
+  // 去过的页面只藏不卸：在首页、「安装卸载」或终端里装好、删掉东西，回来还是第一次进来时那份，
+  // 要自己点「重新加载」（已知5）。再显示时重读列表；读列表要问一遍工具本身，还在读就不再起一轮。
+  // 外接工具的连接检测要挨个连一遍，比读列表重得多，照旧只在进页、换工具和点「重新检测」时做。
+  useReloadWhenShown(active, () => {
+    if (!resource.loading) void resource.reload()
+  })
   const health = useMcpHealth(api, provider, kind === 'mcp')
   const operation = useOperation()
   const [form, setForm] = useState<'add' | 'market' | null>(null)
