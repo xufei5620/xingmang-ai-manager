@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react'
 import { Copy } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
-import { operationFallbackActions, presentOperationFailure, type OperationAction, type OperationActionId } from '../../operation-error'
+import { operationFallbackActions, presentOperationFailure, type OperationAction, type OperationActionId, type OperationTarget } from '../../operation-error'
 import type { ToolId } from '../tools/model'
 import { buildSupportBundle, type SupportFailure, type SupportIdentityInput } from './SupportIdentity'
 
@@ -23,6 +23,8 @@ export interface OperationFailure {
    * 不再丢：错误框里折一行给客服看，「复制给客服」一起带走。
    */
   detail?: string
+  /** 写的是工具的配置文件时为 'config'：没权限就说「写不进配置文件」，不说安装目录（已知29）。 */
+  target?: OperationTarget
 }
 
 /** 错误框和帮助框「最近一次出错」共用的那份：原因取错误框认出来的标题。 */

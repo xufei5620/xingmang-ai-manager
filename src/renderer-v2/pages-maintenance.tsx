@@ -1761,10 +1761,13 @@ export function UpdatesPage({
                 void operation.execute(
                   'install',
                   async () => {
-                    await api.installUpdate()
+                    // 有工具在装或排着队时主进程先问一句再重启（已知31）。
+                    const result = await api.installUpdate({ askIfInstalling: true })
                     setConfirm(false)
+                    return result
                   },
-                  '安装请求已提交',
+                  // 还有工具在装、客户在问的那一句里点了「继续安装」：这次不装，回到原来的样子（已知31）。
+                  (result) => (result.postponed ? null : '安装请求已提交'),
                 )
               }
             >

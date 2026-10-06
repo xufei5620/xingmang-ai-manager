@@ -8,6 +8,14 @@ import { errors } from './registry/errors'
 export type OperationErrorKey = keyof typeof errors
 export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopDownload'
 export interface OperationAction { id: OperationActionId; label: string }
+/**
+ * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
+ * 同样一句 EPERM，写安装目录时下一步是看目录权限、复制路径；写的是工具的配置文件
+ * （改用当前账号、重新写入 Key、保存配置、恢复备份、扩展页……）时，多半是安全软件
+ * 拦了或者文件正被别的程序占着，安装目录跟它没关系（已知29）。原话里分不出是哪一种：
+ * 路径上屏前都换成了「本地配置文件」，只有调用方知道自己在写什么。
+ */
+export type OperationTarget = 'config'
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
   title: string
@@ -131,8 +139,16 @@ function networkFailure(message: string): boolean {
   return /ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|超时|连接(失败|不上)|网络(不可用|异常|受限)?/i.test(message)
 }
 
-export function classifyOperationError(message: string): OperationErrorKey {
-  return rules.find((rule) => rule.match(message))?.key ?? 'unknown'
+export function classifyOperationError(message: string, target?: OperationTarget): OperationErrorKey {
+  const key = rules.find((rule) => rule.match(message))?.key ?? 'unknown'
+  return key === 'permission' && target === 'config' ? 'configPermission' : key
+}
+
+// 首页这几件事改的是工具的配置文件，不碰安装目录；名字就是 App 里交给 perform 的动作名。
+const configWritingActions: ReadonlySet<string> = new Set(['改用当前账号', '切回官方账号', '重新写入 Key', '修提醒设置', '重置为初始状态'])
+
+export function operationTargetOf(action: string): OperationTarget | undefined {
+  return configWritingActions.has(action) ? 'config' : undefined
 }
 
 /**
@@ -238,11 +254,11 @@ export function operationLogPage(failure: { message: string; detail?: string | u
   return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
-export function presentOperationError(message: string): OperationErrorHint | null {
+export function presentOperationError(message: string, target?: OperationTarget): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
   if (undoFailed(text)) return null
-  const key = classifyOperationError(text)
+  const key = classifyOperationError(text, target)
   if (key === 'unknown') return null
   const entry = errors[key]
   // The backend sometimes already speaks the catalog's own sentence (the
@@ -266,6 +282,6 @@ export function presentOperationError(message: string): OperationErrorHint | nul
  * 只留在原话 `detail` 里。先看上屏那句（主进程自己写好的中文以它为准），认不出再拿
  * 原话去认，这张规则表才对纯英文的失败也起作用。
  */
-export function presentOperationFailure(failure: { message: string; detail?: string | undefined }): OperationErrorHint | null {
-  return presentOperationError(failure.message) ?? (failure.detail ? presentOperationError(failure.detail) : null)
+export function presentOperationFailure(failure: { message: string; detail?: string | undefined; target?: OperationTarget | undefined }): OperationErrorHint | null {
+  return presentOperationError(failure.message, failure.target) ?? (failure.detail ? presentOperationError(failure.detail, failure.target) : null)
 }

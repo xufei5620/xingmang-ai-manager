@@ -10,6 +10,7 @@ import {
 import {
   assertTrustedElevatedCliCommand,
   buildCliLaunchPlan,
+  buildUnelevatedCommandScript,
   buildWindowsCliLaunchOutput,
   buildWindowsTokenElevationProbeScript,
   decodeWindowsPowerShellCommand,
@@ -1061,5 +1062,47 @@ describe('PowerShell wildcard escaping', () => {
     expect(containsPowerShellWildcard('D:\\作业[1]')).toBe(true)
     // Escaping only the brackets is not enough once a backtick comes before one.
     expect(containsPowerShellWildcard('C:\\a`[1]'.replace(/[[\]]/g, '`$&'))).toBe(true)
+  })
+})
+
+describe('unelevated uninstall command window', () => {
+  const text = {
+    title: '星芒：卸载 Claude Code',
+    running: '正在卸载 Claude Code，请稍等，别关这个窗口。',
+    succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
+    failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+  }
+  const chcp = 'C:\\Windows\\System32\\chcp.com'
+
+  it('switches the window to UTF-8 before any Chinese line is read', () => {
+    // 已知33：窗口里的字说中文。cmd 一行一行按当时的代码页读，头两行必须只有 ASCII。
+    const script = buildUnelevatedCommandScript('npm.cmd uninstall -g @anthropic-ai/claude-code', text, chcp)
+    const lines = script.split('\r\n')
+    expect(lines.slice(0, 2)).toEqual(['@echo off', '"C:\\Windows\\System32\\chcp.com" 65001 >nul'])
+    expect(lines.slice(0, 2).every((line) => /^[\x20-\x7E]*$/.test(line))).toBe(true)
+    expect(lines).toEqual([
+      '@echo off',
+      '"C:\\Windows\\System32\\chcp.com" 65001 >nul',
+      'title 星芒：卸载 Claude Code',
+      'echo 正在卸载 Claude Code，请稍等，别关这个窗口。',
+      'echo.',
+      'call npm.cmd uninstall -g @anthropic-ai/claude-code',
+      'echo.',
+      'if errorlevel 1 (echo 卸载没有完成（错误代码 %errorlevel%）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。) else (echo 卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。)',
+      'echo.',
+      'pause',
+      'del "%~f0"',
+      '',
+    ])
+    expect(script).not.toMatch(/Running:|Completed successfully|FAILED with code|refresh the app/)
+  })
+
+  it('refuses a command line or a sentence that could become another command', () => {
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g 包', text, chcp)).toThrow('非 ASCII')
+    for (const unsafe of ['卸载 & calc', '卸载 | more', '卸载 > out', '卸载 ^', '卸载 %PATH%', '卸载 "x"', '卸载 (x)', '卸载\r\ncalc'])
+      expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', { ...text, running: unsafe }, chcp)).toThrow('命令符号')
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', { ...text, title: ' ' }, chcp)).toThrow('命令符号')
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', text, 'chcp.com')).toThrow('chcp 路径')
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', text, 'C:\\系统\\chcp.com')).toThrow('chcp 路径')
   })
 })

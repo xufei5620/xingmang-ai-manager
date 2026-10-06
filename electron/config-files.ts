@@ -2336,6 +2336,107 @@ export function trustManagedWorkspace(
   }
 }
 
+/**
+ * 检查页「个人文件夹里早先留下的设置」（已知36）看哪几个工具记着「信任整个个人文件夹」。
+ * #321 以前客户选个人文件夹打开工具时，本软件替他写过 Claude Code 与 Gemini CLI 的信任；
+ * Codex 的来自配置窗口那颗按钮，或者 Codex 自己问过之后写下的。只读不改：信任是客户的
+ * 设置，这里只说一声。哪一家读不了、读不懂就当它没记着，那份配置坏没坏由那个工具自己
+ * 那一项去说，这一项不为它另报一条错。
+ */
+export type HomeFolderTrustProvider = Extract<ProviderId, 'claude' | 'codex' | 'gemini'>
+
+// Codex on Windows may record a folder in its verbatim form (\\?\C:\...);
+// strip that prefix so the same folder compares equal.
+function trustedFolderKey(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('\\\\?\\UNC\\')) return normalizeWorkspacePathKey(`\\\\${trimmed.slice(8)}`)
+  return normalizeWorkspacePathKey(trimmed.startsWith('\\\\?\\') ? trimmed.slice(4) : trimmed)
+}
+
+export function claudeRootConfigTrustsFolder(content: string | null, folder: string): boolean {
+  if (!content?.trim()) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content) as unknown
+  } catch {
+    return false
+  }
+  if (!isJsonRecord(parsed) || !isJsonRecord(parsed.projects)) return false
+  const wanted = trustedFolderKey(folder)
+  return Object.entries(parsed.projects).some(([key, entry]) =>
+    trustedFolderKey(key) === wanted && isJsonRecord(entry) && entry.hasTrustDialogAccepted === true)
+}
+
+export function codexConfigTrustsFolder(content: string | null, folder: string): boolean {
+  if (!content?.trim()) return false
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(content)
+  } catch {
+    return false
+  }
+  if (!isJsonRecord(parsed.projects)) return false
+  const wanted = trustedFolderKey(folder)
+  return Object.entries(parsed.projects).some(([key, entry]) =>
+    trustedFolderKey(key) === wanted && isJsonRecord(entry) && entry.trust_level === 'trusted')
+}
+
+// Gemini CLI trusts the parent of a TRUST_PARENT entry, so a project directly
+// under the home folder answered that way trusts the whole home folder.
+export function geminiTrustedFoldersTrustFolder(content: string | null, folder: string): boolean {
+  if (!content?.trim()) return false
+  let parsed: Record<string, unknown>
+  try {
+    parsed = parseGeminiJsonObject(content, 'Gemini CLI trustedFolders.json')
+  } catch {
+    return false
+  }
+  const wanted = trustedFolderKey(folder)
+  return Object.entries(parsed).some(([key, level]) => {
+    const trusted = trustedFolderKey(key)
+    if (level === 'TRUST_FOLDER') return trusted === wanted
+    if (level !== 'TRUST_PARENT') return false
+    const parent = /^[a-z]:\\|^\\\\/.test(trusted) ? path.win32.dirname(trusted) : path.posix.dirname(trusted)
+    return parent !== trusted && parent === wanted
+  })
+}
+
+function readTrustConfigText(filePath: string, root: string, label: string, maximumBytes?: number): string | null {
+  if (!fs.existsSync(filePath)) return null
+  assertSafeConfigPath(filePath, root, 'file')
+  return requireConfigText(filePath, label, maximumBytes)
+}
+
+export function inspectHomeFolderTrust(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): HomeFolderTrustProvider[] {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const home = roots.userHome
+  const codexConfig = codexConfigSnapshotPaths(roots).active
+  const geminiRoot = providerConfigRoot('gemini', roots)
+  const checks: ReadonlyArray<readonly [HomeFolderTrustProvider, () => boolean]> = [
+    ['claude', () => claudeRootConfigTrustsFolder(
+      readTrustConfigText(path.join(home, '.claude.json'), home, '现有 Claude Code ~/.claude.json', MAX_CLAUDE_ROOT_CONFIG_BYTES),
+      home,
+    )],
+    ['codex', () => codexConfigTrustsFolder(
+      readTrustConfigText(codexConfig, path.dirname(codexConfig), '现有 Codex config.toml'),
+      home,
+    )],
+    ['gemini', () => geminiTrustedFoldersTrustFolder(
+      readTrustConfigText(path.join(geminiRoot, 'trustedFolders.json'), geminiRoot, '现有 Gemini CLI trustedFolders.json'),
+      home,
+    )],
+  ]
+  return checks.filter(([, trusts]) => {
+    try {
+      return trusts()
+    } catch {
+      return false
+    }
+  }).map(([provider]) => provider)
+}
+
 function updateEnvContent(content: string, updates: Record<string, string>): string {
   const lines = content.split(/\r?\n/)
   if (lines.at(-1) === '') lines.pop()

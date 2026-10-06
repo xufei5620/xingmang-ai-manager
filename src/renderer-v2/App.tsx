@@ -35,7 +35,7 @@ import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './fea
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
-import { operationLogPage, type OperationActionId } from './operation-error'
+import { operationLogPage, operationTargetOf, type OperationActionId } from './operation-error'
 import { accountSwitchAnchor, accountTabs, macDesktopTutorialTopic, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
@@ -91,6 +91,12 @@ const AccelerationPage = lazy(() => import('./features/acceleration/Acceleration
 const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
 
 type AccountTab = typeof accountTabs[number]['value']
+/**
+ * 没有现成目录时怎么定：'choose' 弹选择器；'create' 替用户新建项目文件夹（下拉、引导里那一项）；
+ * 'firstOpen' 是首页第一次点「打开」（已知40）：主进程记着的文件夹还在就用它，没有才新建，
+ * 建不成说一句再弹选择器。
+ */
+type LaunchFolder = 'choose' | 'create' | 'firstOpen'
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
@@ -758,11 +764,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => native.onAccountVaultRecovered?.(() => noteStartupCheck(vaultRecoveredNotice())), [native, noteStartupCheck])
   // tool 只是把「这次失败关系到哪个工具」记下来；具体目录在渲染那一刻从当时的
   // 快照里取，装完又失败的第二次点击才不会拿到上一次的旧路径。
+  // 改用账号、重新写入 Key 这几件写的是配置文件，错误框按配置文件说（已知29）。
   const perform = useCallback(async function run(label: string, work: () => Promise<unknown>, tool?: ToolId): Promise<void> {
     setOperationError(null)
     try { await work() }
     catch (cause) {
-      setOperationError({ ...operationFailureFrom(cause, label), action: label, retry: () => void run(label, work, tool), ...(tool ? { tool } : {}) })
+      const target = operationTargetOf(label)
+      setOperationError({ ...operationFailureFrom(cause, label), action: label, retry: () => void run(label, work, tool), ...(tool ? { tool } : {}), ...(target ? { target } : {}) })
     }
   }, [])
   // 兼容显示提示里的二选一：两颗都写进设置，主进程据此清掉崩溃记录。「一直用」现在
@@ -1217,15 +1225,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
    */
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, folder: LaunchFolder = 'choose', epoch = accountEpoch.current): Promise<boolean> {
     try {
       const prepared = await prepareToolLaunch(id, epoch)
       if (!prepared) return false
       const { current, config, tool } = prepared
       let workspace = config.workspace
       if (id !== 'codexDesktop') {
-        // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
-        const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(newFolder ? { createStarter: true } : undefined)
+        // 不弹选择器的两种：主进程在「文档」下替用户建一个空的项目文件夹；第一次点「打开」
+        // 时先用主进程记着的（上次建好了却没打开成），建不成再弹选择器（已知40）。
+        const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(folder === 'choose' ? undefined
+          : folder === 'create' ? { createStarter: true } : { createStarter: true, firstOpen: true })
         if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
         workspace = selectedWorkspace
       }
@@ -1282,12 +1292,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!launchIsCurrent(epoch)) return
       setSettings(nextSettings)
       setChineseDialog(false)
-      await launch('codexDesktop', 'open', undefined, false, epoch)
+      await launch('codexDesktop', 'open', undefined, 'choose', epoch)
     } catch (cause) {
       if (launchIsCurrent(epoch)) throw cause
     }
   }
-  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', newFolder = false) {
+  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', folder: LaunchFolder = 'choose') {
     const request = { epoch: accountEpoch.current }
     if (launchRequest.current?.epoch === request.epoch) return
     launchRequest.current = request
@@ -1302,7 +1312,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           if (!launchIsCurrent(request.epoch) || asking) return
         }
         if (remembered) await launchRemembered(id, remembered, mode, request.epoch)
-        else await launch(id, mode, undefined, newFolder, request.epoch)
+        else await launch(id, mode, undefined, folder, request.epoch)
       } catch (cause) {
         if (launchIsCurrent(request.epoch)) throw cause
       }
@@ -1313,13 +1323,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
    */
   async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchChoice = 'new', epoch = accountEpoch.current): Promise<boolean> {
-    try { return await launch(id, mode, remembered, false, epoch) }
+    try { return await launch(id, mode, remembered, 'choose', epoch) }
     catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       if (!isMissingWorkspace(cause)) throw cause
       // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
       toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
-      return launch(id, 'open', undefined, false, epoch)
+      return launch(id, 'open', undefined, 'choose', epoch)
     }
   }
   /**
@@ -1361,6 +1371,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   function requestUninstall(id: ToolId) {
     const definition = tools.find((tool) => tool.id === id)!
     setConfirmation({ title: `卸载 ${definition.name}？`, body: '工具配置、账户数据和历史记录会保留。', label: '卸载工具', danger: true, tool: id, work: async () => {
+      let uninstalled = false
       await toolbox.run(id, '正在卸载', async () => {
         const result = await toolsApi.uninstall(id)
         if (result.outcome === 'manual-required') {
@@ -1370,8 +1381,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 管理员模式下卸载转交给普通窗口：是预料之中的一步，给中性提示，不当失败弹红框。
         const handedOff = uninstallHandOffNotice(result)
         if (handedOff && mounted.current) toast.show(handedOff, 'neutral')
+        uninstalled = result.outcome === 'uninstalled'
       }, { kind: 'uninstall' })
-      await toolbox.refresh(true)
+      // 真卸掉了、紧接着的检测没读到（已知32）：卸载本身做成了，不弹「操作没有完成」，确认框
+      // 照常关，免得客户以为没卸成又点一次「卸载工具」。首页顶上检测自己的那句照旧。转交给
+      // 命令窗口的、要自己手动卸的，照旧当没做完。
+      await toolbox.refresh(true).catch((cause: unknown) => {
+        if (!uninstalled) throw cause
+        if (mounted.current) toast.show(`${definition.name} 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。`, 'warn')
+      })
     } })
   }
   function requestRevert(id: ToolId, version: string) {
@@ -1562,7 +1580,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
-      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
+      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
@@ -1610,7 +1628,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                 refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
                 // 上一轮有工具开着、连接线路先没改：退出工具后点这里就是要它跟着换（首页那句提示这么说的）。
                 if (session.account && accountBootstrap?.scope === scope && accountBootstrap.result?.routeDeferred?.length) void runAccountBootstrap(session.account.userId, 'restore', true)
-              }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
+              }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, presentOperationFailure, type OperationErrorKey } from './operation-error'
+import { classifyOperationError, operationFallbackActions, operationLogPage, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
@@ -15,7 +15,7 @@ import { operationFailureFrom } from './business-common'
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
  * 为什么这条不可能从失败消息里认出来。这张表就是「还有几类是死代码」的答案。
  */
-const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreachable: string }> = {
+const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: OperationTarget } | { unreachable: string }> = {
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。' },
@@ -47,6 +47,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
+  // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
+  configPermission: { sample: "重新写入 Key 没有完成：EPERM: operation not permitted, rename '本地配置文件'", target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
@@ -172,6 +174,31 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('安装失败：EACCES permission denied')
     expect(hint?.title).toBe('写不进安装目录')
     expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('says the config file could not be written when the caller writes one, never the install directory', () => {
+    // 已知29：改用当前账号、重新写入 Key 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件'"
+    const hint = presentOperationError(raw, 'config')
+    expect(hint?.key).toBe('configPermission')
+    expect(hint?.title).toBe('写不进配置文件')
+    expect(hint?.body).toBe('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '找客服' }])
+    // 原话认不出、要看 detail 的那一种也一样。
+    expect(presentOperationFailure({ message: '重新写入 Key 没有完成', detail: 'EACCES: permission denied', target: 'config' })?.key).toBe('configPermission')
+    // 不说写的是什么时照旧（装工具、更新工具）。
+    expect(presentOperationError(raw)?.title).toBe('写不进安装目录')
+    // 只换权限这一类：文件被占用、搬过的文件夹、磁盘满还是原来那几句。
+    expect(classifyOperationError('写入失败：文件被占用', 'config')).toBe('toolRunning')
+    expect(classifyOperationError('Provider 配置根目录不能经过符号链接或目录联接（EPERM）', 'config')).toBe('folderRelocated')
+    expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('diskFull')
+    // 日志照旧落「反馈」页：运行日志记得全。
+    expect(operationLogPage({ message: raw, tool: 'claude' })).toBe('feedback')
+  })
+
+  it('treats exactly the home actions that rewrite a tool config as config writes', () => {
+    for (const action of ['改用当前账号', '切回官方账号', '重新写入 Key', '修提醒设置', '重置为初始状态']) expect([action, operationTargetOf(action)]).toEqual([action, 'config'])
+    for (const action of ['安装工具', '卸载工具', '退回工具版本', '保留当前配置', '打开工具', '准备环境']) expect([action, operationTargetOf(action)]).toEqual([action, undefined])
   })
 
   it('keeps 以管理员身份重试 out of the catalog and out of the honoured labels', () => {
@@ -353,7 +380,7 @@ describe('renderer-v2 operation error classification', () => {
   it('accounts for every catalog entry, either with a real message or a reason it cannot be reached', () => {
     expect(Object.keys(catalogCoverage).sort()).toEqual(Object.keys(errors).sort())
     for (const [key, coverage] of Object.entries(catalogCoverage)) {
-      if ('sample' in coverage) expect([key, classifyOperationError(coverage.sample)]).toEqual([key, key])
+      if ('sample' in coverage) expect([key, classifyOperationError(coverage.sample, coverage.target)]).toEqual([key, key])
       else expect(coverage.unreachable.length).toBeGreaterThan(0)
     }
   })

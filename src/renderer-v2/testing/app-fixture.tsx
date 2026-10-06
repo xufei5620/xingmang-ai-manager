@@ -392,6 +392,8 @@ const methods = {
     return { phase: 'idle' as const, currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
   },
   downloadUpdate: async () => ({ phase: 'downloading' as const, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }),
+  // 已知31：带 installPostponed 时当作还有工具在装、客户在主进程问的那一句里点了「继续安装」。
+  installUpdate: async () => ({ accepted: true as const, ...(query.has('installPostponed') ? { postponed: true as const } : {}) }),
   runDiagnostics: async () => {
     if (query.has('diagnosticsFail')) throw new Error('本机环境检查没有跑完')
     const fail = Number(query.get('diagnosticIssues') ?? 0)
@@ -566,7 +568,8 @@ const methods = {
   loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},
   logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
-  listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions.map((item) => ({ ...item })) : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
+  // codexOlderSessions：Codex 聊过两次，只是都比首页取的最近 60 条旧，列表里一条也没有（已知40）。
+  listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions.map((item) => ({ ...item })) : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : query.has('codexOlderSessions') ? 2 : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : query.has('codexOlderSessions') ? 2 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   openProviderSessionDirectory: async () => true,
   getProviderSessionDetail: async (id: string) => {
     const item = recentWorkspaceSessions.find((entry) => entry.id === id)

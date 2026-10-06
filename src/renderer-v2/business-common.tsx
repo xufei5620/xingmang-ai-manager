@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { Button, Empty, Pill, useToast } from './ui'
 import { errors } from './registry/errors'
-import { presentOperationFailure } from './operation-error'
+import { presentOperationFailure, type OperationTarget } from './operation-error'
 import { formatCalendarTime } from './calendar-time'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
@@ -306,6 +306,8 @@ export function useOperation() {
   const [error, setError] = useState('')
   // 页头红条只认上屏那句时，落到兜底句的失败就认不出类别了；原话跟着交给 ResultNotice。
   const [detail, setDetail] = useState('')
+  // 红条上那次失败是哪个动作的（execute 的 name）：页面据此判断它写的是不是配置文件。
+  const [failed, setFailed] = useState('')
   const lock = useRef(false)
   const execute = async <T,>(
     name: string,
@@ -320,6 +322,7 @@ export function useOperation() {
     setBusy(name)
     setError('')
     setDetail('')
+    setFailed('')
     setMessage('')
     setRevealPath('')
     try {
@@ -339,6 +342,7 @@ export function useOperation() {
       const failure = failureWithDetail(cause)
       setError(failure.message)
       setDetail(failure.detail ?? '')
+      setFailed(name)
       return false
     } finally {
       finish()
@@ -352,12 +356,14 @@ export function useOperation() {
     revealPath,
     error,
     detail,
+    failed,
     execute,
     clear: () => {
       setMessage('')
       setRevealPath('')
       setError('')
       setDetail('')
+      setFailed('')
     },
   }
 }
@@ -410,8 +416,8 @@ function RevealExportedFile({
  * its wording leads and the backend sentence stays underneath, because support
  * still needs the original text.
  */
-export function FailureReason({ error, detail }: { error: string; detail?: string }) {
-  const hint = presentOperationFailure({ message: error, detail })
+export function FailureReason({ error, detail, target }: { error: string; detail?: string; target?: OperationTarget }) {
+  const hint = presentOperationFailure({ message: error, detail, target })
   return hint ? (
     <>
       <strong>{hint.title}</strong>
@@ -434,6 +440,7 @@ export function ResultNotice({
   onReveal,
   onSupport,
   retry,
+  target,
 }: {
   error?: string
   /**
@@ -448,13 +455,15 @@ export function ResultNotice({
   onSupport?: () => void
   /** 读取失败时红条右边那颗重试按钮（比如设置页的「重新读取」）；缺省 = 没有。 */
   retry?: { label: string; onClick: () => void }
+  /** 这次失败写的是工具的配置文件时为 'config'（已知29）；缺省 = 只按原话认。 */
+  target?: OperationTarget
 }) {
-  const hint = error ? presentOperationFailure({ message: error, detail }) : null
+  const hint = error ? presentOperationFailure({ message: error, detail, target }) : null
   return error ? (
     <div className="v2-business-notice is-error" role="alert">
       <Pill tone="bad">未完成</Pill>
       <span>
-        <FailureReason error={error} detail={detail} />
+        <FailureReason error={error} detail={detail} target={target} />
       </span>
       {onSupport && hint?.actions.some((action) => action.id === 'support') && (
         <Button size="sm" icon={HelpCircle} onClick={onSupport} testId="result-notice-support">
