@@ -283,7 +283,7 @@ import {
   type ExternalToolId,
 } from './external-tool-config'
 import type { ExternalClientConfigResult, ExternalClientStatus, ExternalClientRuntimeStatus } from './external-client-contract'
-import { createExternalClientRuntime } from './external-client-runtime'
+import { createExternalClientRuntime, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
@@ -1507,6 +1507,7 @@ export const npmResolutionHeartbeatMs = 15_000
 export const npmDownloadStallTimeoutMs = 3 * 60_000
 export const npmDownloadCeilingMs = 30 * 60_000
 export const npmDownloadProgressCheckMs = 15_000
+export const npmDownloadHeartbeatMs = 15_000
 export const grokDownloadStallHeartbeatMs = 15_000
 
 export function grokDownloadStallMessage(idleMs: number): string {
@@ -1528,6 +1529,16 @@ export function npmResolutionStartMessage(registry: string): string {
 
 export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: number): string {
   return `仍在解析${npmRegistryLabel(registry)}的依赖图…（已用时 ${formatElapsedDuration(elapsedMs)}）`
+}
+
+/**
+ * npm 下载时也一声不出，网慢时这一步能下到 30 分钟（第三十七批 A），进度停在一句话上像卡死了。
+ * 写法照解析那句，只报已用时：总量不知道，不猜百分比。两句是 2026-10-06 拍板的原话（第三十七批 D），
+ * 「从」后面接 npm 时空一格，所以不拼 npmRegistryLabel。
+ */
+export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number): string {
+  const source = registry === npmMirrorRegistry ? '从国内 npm 镜像' : '从 npm 官方源'
+  return `仍在${source}下载…（已用时 ${formatElapsedDuration(elapsedMs)}）`
 }
 
 /** 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按它归成「下载超时」）。 */
@@ -2869,6 +2880,16 @@ export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now
   }
 }
 
+/** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
+export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
+  return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
+}
+
+/** 苹果没放行时进运行日志的那几项：应用包可能在主目录下的「应用程序」里，原话里也会带着这个路径。 */
+export function buildExternalClientMacVerificationLogDetail(failure: ExternalClientMacVerificationFailure, userHome: string) {
+  return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -2976,6 +2997,11 @@ export function createSystemService(
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
+    // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
+    onRegistryIncomplete: (failures) => runtimeLog?.log('warn', 'system', 'external-client.registry-incomplete', '部分软件安装记录无法读取，桌面客户端检测不完整',
+      buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
+    onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
+      buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
   })
   let nodeRuntimeInstalling = false
   // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
@@ -4779,6 +4805,19 @@ export function createSystemService(
           // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
           const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
           const downloadStartedAt = performance.now()
+          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「还在下载，已经等了……」，
+          // 这句原话进安装日志；运行日志不记这种每隔几秒一条的（第三十七批 D）。
+          const downloadTicker = setInterval(() => {
+            const elapsedMs = Math.round(performance.now() - downloadStartedAt)
+            sendInstallProgress(
+              target,
+              provider,
+              'output',
+              npmDownloadHeartbeatMessage(registry, elapsedMs),
+              undefined,
+              { stage: 'download', elapsedMs },
+            )
+          }, npmDownloadHeartbeatMs)
           try {
             await executeNpm([
               'ci',
@@ -4803,6 +4842,7 @@ export function createSystemService(
             )
             throw new Error(npmDownloadTimedOutMessage, { cause: error })
           } finally {
+            clearInterval(downloadTicker)
             stallWatch.stop()
           }
           // npm ci 跳过下载失败的平台主程序包也照样退出 0，所以下完就在它解出来的包里查。普通权限
@@ -5746,7 +5786,9 @@ export function createSystemService(
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
+        // 随这次失败一起进运行日志。
+        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`, { cause: error })
       }
       return launchResult
     }

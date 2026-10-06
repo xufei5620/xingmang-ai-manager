@@ -6337,6 +6337,59 @@ describe('opening a CLI on Linux', () => {
   })
 })
 
+describe('opening a CLI on macOS', () => {
+  it.runIf(process.platform !== 'win32')('keeps the reason a tool did not open as the cause, so the log records it', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-open-fail-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const refused = new CommandRunnerError('命令执行失败（退出码 1）：codesign', {
+      code: 'EXIT_NON_ZERO',
+      executable: '/usr/bin/codesign',
+      argv: ['--verify', '--strict', path.join(userHome, '.local', 'bin', 'claude')],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: 'code object is not signed at all',
+      outputBytes: 32,
+      maxOutputBytes: 1024,
+      durationMs: 3,
+    })
+    const service = createService({
+      platform: 'darwin',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(userHome, '.local', 'bin', 'claude'),
+        installDirectory: path.join(userHome, '.local', 'share', 'claude'),
+        packageRoot: path.join(userHome, '.local', 'share', 'claude'),
+        npmPrefix: null,
+        packageVersion: '2.1.283',
+        source: 'native' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => { throw refused }),
+      findExecutable: vi.fn(async () => null),
+    })
+
+    const failure: unknown = await service.launchProvider('claude', workspace).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error && failure.message).toBe('未能打开 Claude Code：命令执行失败（退出码 1）：codesign')
+    expect(failure instanceof Error && failure.cause).toBe(refused)
+  })
+})
+
 describe('opening a CLI on Windows', () => {
   function windowsLaunchService(userHome: string, launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
     return createService({
