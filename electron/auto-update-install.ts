@@ -18,6 +18,8 @@
  * 退出时装同样每个版本只自动试一次：授权窗被点了「否」、安装器没起来时，软件已经
  * 退出了，这次失败只能等下次打开时从记录里认出来（见 resolvePreviousAutoInstallFailure）。
  * 认出来之后这个版本不再自动装，只在提示气泡和更新页留「重新安装」，别让授权窗一直弹。
+ * 装上了的版本，打开时就从记录里清掉（resolveRecordToWriteAtLaunch）：客户之后装回旧版，
+ * 旧版再下好它时不能被当成上次没装上。
  *
  * 记录读坏了一律当作没有记录：最多少装一次，绝不会多装。
  */
@@ -104,6 +106,32 @@ export function resolveDownloadedVersionToRecord(snapshot: UpdateSnapshot, recor
   const installable = resolveInstallableUpdateOnQuit(snapshot)
   const version = parseVersion(installable?.version)
   return version && version !== record.downloadedVersion ? version : null
+}
+
+/**
+ * 启动时要写回的记录，不用改时返回 null。后台装的那一条只认一次，读到就清掉。记着的版本
+ * 就是正在运行的这一版，说明已经装上了，「下好了」「试过了」都清掉：留着的话，客户装回
+ * 旧版以后，旧版再下好这一版时会照「试过了」说它上次没装上，之后退出、打开都不再自动装。
+ * 只清和这一版一样的：比它旧的，可能是本机版本被撤回后往回退的那一版（updater.ts 的
+ * allowDowngrade），它没装上就得一直记着，不然每次退出都再去装一次，Windows 上授权窗口
+ * 一回回地弹。
+ */
+export function resolveRecordToWriteAtLaunch(record: PendingUpdateRecord, currentVersion: string): PendingUpdateRecord | null {
+  const settled: PendingUpdateRecord = {
+    downloadedVersion: forgetInstalledVersion(record.downloadedVersion, currentVersion),
+    attemptedVersion: forgetInstalledVersion(record.attemptedVersion, currentVersion),
+    quitAttemptedVersion: forgetInstalledVersion(record.quitAttemptedVersion, currentVersion),
+    backgroundInstall: null,
+  }
+  const unchanged = settled.downloadedVersion === record.downloadedVersion
+    && settled.attemptedVersion === record.attemptedVersion
+    && settled.quitAttemptedVersion === (record.quitAttemptedVersion ?? null)
+    && !record.backgroundInstall
+  return unchanged ? null : settled
+}
+
+function forgetInstalledVersion(version: string | null | undefined, currentVersion: string): string | null {
+  return version === currentVersion ? null : version ?? null
 }
 
 export interface LaunchInstallInput {
