@@ -265,6 +265,14 @@ export function isJsonContentType(value: string | null | undefined): boolean {
   return typeof value === 'string' && /^\s*application\/(?:[\w.+-]+\+)?json\b/i.test(value)
 }
 
+/**
+ * 星芒的接口回的都是 JSON（流式的是 text/event-stream），回网页的是半路上别人答的：公司网的
+ * 拦截页、上网认证页、网关的错误页。
+ */
+export function isHtmlContentType(value: string | null | undefined): boolean {
+  return typeof value === 'string' && /^\s*(?:text\/html|application\/xhtml\+xml)\b/i.test(value)
+}
+
 /** 读完了响应体的调用方用：能解析成 JSON 对象（或数组）才算「是 JSON」。 */
 export function parsesAsJsonObject(text: string): boolean {
   if (!text) return false

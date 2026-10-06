@@ -325,10 +325,10 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
-| Codex CLI | `0.156.1`（2026-09-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1 的依据见下一段 |
-| Gemini CLI | `0.60.0`（2026-09-21） | 无 | 当前 npm `latest`；0.57~0.60 四个正式版全是安全加固，未发现与第三方 base URL 相关的回归 |
-| Grok CLI | `1.0.44`（2026-09-30） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（见下文） |
+| Claude Code | `2.1.291`（2026-10-06） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291 的依据见下文 |
+| Codex CLI | `0.160.1`（2026-10-06） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1 的依据见下文 |
+| Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文 |
+| Grok CLI | `1.0.46`（2026-10-05） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44 与 1.0.46 各一遍，见下文） |
 
 四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
 
@@ -369,6 +369,69 @@ base URL 指本地假接口，型号名故意起成内置目录里没有的 `rel
 抬版本前按上面五条在沙箱里重跑一遍（假接口脚本思路：本地 HTTP 服务回 Responses 流、另起一个只记录不放行的
 出网代理），挑一个**同时是 npm `latest` 和 xAI stable** 的版本——只打 `alpha` 或没打 `latest` 的不选。
 
+**Claude Code 2.1.277 → 2.1.281（2026-09-24）：修的都是接中转才碰得到的毛病，没有新回归。**
+npm `latest` 是 2.1.281（2.1.279 没发过）。上游 changelog 2.1.278、2.1.280、2.1.281 三段逐条读过，
+跟代理、网关、第三方端点、鉴权、400、请求体、型号沾边的全部是修复，没有「自某版起」的回归：
+
+- 2.1.281：*Fixed responses cut short by a proxy or gateway that closes the stream cleanly being shown
+  as complete with no warning, and tool calls running twice on duplicated stream events*；
+  *Fixed responses failing with "Content block not found" when a proxy drops a stream event
+  mid-response*；*Fixed the stop reason being lost when a proxy sends a trailing usage-only frame*；
+  *Fixed an empty completed response being requested twice when the connection dropped before the
+  stream's final event*；*Fixed interactive startup waiting on the managed-settings network request
+  (about 80 ms, 17+ seconds when the network is unreachable) when no MCP servers or plugins are
+  configured*；*Fixed API errors from an HTML error page (such as a proxy's 429 or 502 page) printing
+  the page's raw markup*。
+- 2.1.280：*Fixed conversations with the advisor on failing every turn with API Error 400 "Input tag
+  'advisor_20260301'" behind a proxy or gateway that doesn't support it; the request now retries
+  without it*——比 2.1.277 的修法多了一层兜底；另外把 Opus 5.5 设为默认 Opus，本产品写了
+  `ANTHROPIC_DEFAULT_MODEL` 与 `modelPicker`，不受影响。
+- 2.1.278：只改了 auto mode 在网关上默认用服务端分类器；本产品模板写的是 `bypassPermissions`，不走 auto mode。
+
+沙箱实测（空 HOME、非 root、`env -i`、出网代理指死端口，`settings.json` 按本产品模板写
+`ANTHROPIC_BASE_URL` 指本地假接口、`bypassPermissions`、`skipWebFetchPreflight`、`language`、
+`DISABLE_AUTOUPDATER`）与 2.1.277 对照：`claude -p "hi"` 两版都正常拿到假接口的回复；请求体字段、
+`anthropic-beta` 头、鉴权头（只有 `Authorization`、没有 `x-api-key`）完全一样；不写 deny 时两版都发
+21 个工具（含 `DesignSync`、不含 `Artifact`），每个工具的输入 schema 一字不差，写上
+`deny: ['Artifact', 'DesignSync']` 后都剩 20 个；`claude doctor` 仍是
+`Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`；`--continue` 还在。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**Claude Code 2.1.281 → 2.1.289（2026-10-05 每周巡检）：没有新的网关回归，但上下文窗口的算法变了。**
+2.1.282~2.1.289 逐条读过，和接中转有关的修复：
+
+- 2.1.282：*Fixed every request failing with a 400 error in conversations whose history holds web search
+  results the API cannot decrypt (for example, from a turn answered through a third-party gateway)*。
+- 2.1.284：流被打坏时不再把「JSON Parse error」或单词 undefined 写进回答；认不出的型号 id（比如代理后面的
+  自定义型号）下 Explore 子任务不再擅自换成 Opus。
+- 2.1.286：*Fixed API 400 errors after a tool or hook returned an object, number or boolean instead of text*。
+- 2.1.288：*Fixed session titles, memory recall and prompt hooks failing on Mantle or behind gateways that
+  reject structured outputs*，并加了 `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS`。
+
+看着会咬到我们、实际不会的：2.1.283 / 2.1.285 把没配权限模式的会话（含 `claude -p`）默认改成 auto mode，
+模板写死 `permissions.defaultMode: 'bypassPermissions'`；2.1.284 把 Sonnet 5.5 设为 API 上的默认 Sonnet，
+模板用 `modelPicker` 整份换掉菜单、`ANTHROPIC_DEFAULT_MODEL` 自己写。
+
+**上下文窗口变了（2.1.285）**：原文 *Changed sessions behind a custom `ANTHROPIC_BASE_URL` to use the 1M
+context window of models that have one (Opus 4.7+, Sonnet 5+, Fable); run `/autocompact 200k` if your gateway
+stops at 200K*。沙箱里按模板写配置跑 `claude -p /context`：2.1.277 显示 `1.9k / 200k`，2.1.289 显示
+`2k / 1m`——也就是到 200K 附近不再自动压缩，要一路涨到 1M 才压。2026-10-06 yoyo 确认中转支持 1M 上下文，
+所以模板不压，交给 Claude Code 按 1M 算。哪天某个渠道只收 200K，退路是在 `env` 里写
+`CLAUDE_CODE_DISABLE_1M_CONTEXT=1`（2.1.289 实测写了以后显示 `2k / 200k`，请求照常）。
+
+沙箱实测（同上一段的做法）与 2.1.277 对照：`claude -p "hi"` 两版都拿到假接口的回复；请求体字段一样
+（`model`、`messages`、`system`、`tools`、`metadata`、`max_tokens`、`thinking`、`context_management`、
+`output_config`、`stream`），写了 deny 后都是 20 个工具、没有 `Artifact` / `DesignSync`，鉴权只有
+`Authorization`；`anthropic-beta` 头 2.1.289 少了 `fallback-credit-2026-06-01`，没有新增。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**2.1.289 → 2.1.291（2026-10-06，合并前 npm latest 又往前走了两版）。** 2.1.290 和接中转有关的是
+*Fixed requests failing behind proxies and gateways that reject one of Claude Code's beta headers with a status
+other than 400, or together with a second beta*；2.1.291 修了 2.1.288 起退出时可能丢掉会话最后几条消息
+（2.1.289 也带着这个毛病）。没有新的网关回归，上下文窗口的算法没再变。沙箱同上：`claude -p "hi"` 拿到
+回复，请求体字段、20 个工具、只带 `Authorization` 都和 2.1.289 一样；`/context` 是 `2k / 1m`，
+写了 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 是 `2k / 200k`，退路照样管用。
+
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
 每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
@@ -387,24 +450,107 @@ base URL 指本地假接口，型号名故意起成内置目录里没有的 `rel
 没做的：中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；中转那边有没有开这两个模型要在
 服务端「GPT-中转/订阅」分组的渠道里看。配置窗口的模型下拉取自当前账号的模型清单，开了就能选到。
 
+**Codex 0.156.1 → 0.160.0、Grok 1.0.44 → 1.0.46（2026-10-05 每周巡检）。**
+
+Codex 区间内的正式版是 0.157.0、0.157.1、0.158.0、0.159.0~0.159.3、0.160.0，逐个读了
+`rust-v<版本>` 的 release note（0.157.1 的正文是空的）。和本产品写的配置有关的只有这几条，
+没有一条是对自定义 `model_providers` / `base_url` / `wire_api` 的回归：
+
+- 0.157.0：交互会话默认自动拉起后台服务——上面那张表的 `daemon_auto_start = false` 与
+  `--no-daemon` 就是为它加的；0.160.0 的 `codex --help` 里 `--no-daemon` 仍在。
+- 0.158.0：修了 Windows 沙箱在普通 Windows 10 路径上失败；提权运行的命令默认要确认终端输入
+  （本软件不提权，碰不到）。
+- 0.159.0 / 0.159.2 / 0.160.0：Windows 上 MCP、后台程序、沙箱命令不再弹黑色窗口；PowerShell
+  回退与长路径权限修复。
+- 0.159.1：随包型号名单的默认型号换成 GPT-6.1 Sol。本产品写自己的 `model_catalog_json`，随包名单
+  已经是 `rust-v0.160.0`，这次不用换。
+- 0.160.0：重连后排队的消息不再重复发送；显式给出型号名单的 provider 不再混进它不支持的内置型号。
+- 0.160.1（2026-10-06 合并前抬上来）：只有一条，Windows 上启动远程 stdio MCP 时保留 `SYSTEMROOT` /
+  `TEMP` / `TMP`。`codex-rs/models-manager/models.json` 与 `rust-v0.160.0` 逐字相同（sha256 一致），
+  随包名单不用换；同样的沙箱实测 `codex exec` 拿到回复，请求与出网记录和 0.160.0 一样。
+
+沙箱实测（空 HOME、`env -i`、按 `buildCodexRelayConfigTemplate` 写配置，`model_catalog_json`
+指随包名单，base URL 指本地假接口，出网代理只记录不放行）：0.160.0 的 `codex debug models` 列出
+名单里全部 11 个型号；`codex exec` 用 `gpt-6.1-sol` 拿到假接口的回复，没有
+`Model metadata ... not found`，Key 从 `auth.json` 进 `Authorization`，配置无告警。出网代理记下的
+`github.com`、`api.github.com`、`chatgpt.com` 几条连接 0.156.1 也一模一样，不是新出现的。
+
+Grok 没有可读的变更记录（x.ai 与 docs.x.ai 在沙箱里连不上，npm 包没写仓库地址）。npm 上 1.0.47~1.0.49
+已经发了，但 `latest` 与 xAI stable 都还停在 1.0.46，所以选它。用上一节同样的办法（一次性 HOME、
+按 `config-files.ts` 的模板写配置、型号名 `relay-x`、出网代理只记录不放行）在 1.0.46 上重跑：
+
+- **型号名单（K3）**：有 `allowed_models` 时 `grok models` 只列 `grok`；去掉后又出现 `grok-4.6`、`grok-4.5`。
+- **起标题的型号（K4）**：`grok -p` 一轮里起标题那次请求是 `relay-x`；去掉 `session_summary` 变回 `grok-4.6`。
+- **出图地址（K1）**：假接口让模型调一次 `image_gen`，请求打到本地 `POST /v1/images/generations`
+  （型号 `grok-imagine-image-quality`，带 `Authorization`），出网代理一条记录都没有；去掉
+  `[endpoints] xai_api_base_url` 后出网代理记下 `CONNECT api.x.ai:443`。
+- **钩子**：`[compat.claude] hooks = false` 加六类 `[[hooks.*]]`，一轮 `-p` 触发 `UserPromptSubmit`、
+  `Stop`、`SessionEnd`，配置无解析错误。
+
+没做的：两家都没有中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；Grok 1.0.46 Windows 版挑
+哪个 shell 没有重读二进制字符串。
+
+**Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
+上游只有 8 个提交，和中转有关的是两条：
+
+- `ed2ac40df` *fix(core): preserve explicit versioned Flash model IDs*（#29252）：0.60.0 用 API Key 登录时，
+  **名字以 `flash` 结尾的型号一律改发成 `gemini-3.5-flash`**。本软件早就靠
+  `geminiCliCompatibleModel` 把 `gemini-3.7-flash` / `gemini-3.8-flash` 写成带 `-high` 的名字绕开，
+  默认的 `gemini-3.8-flash-high` 也不受影响，所以今天的客户基本碰不到；碰得到的是自己选了别的
+  `*-flash` 型号（比如 `gemini-2.5-flash`）的人。
+- `62364cb20` *Feat/gemini 3.8 flash 3.5 flash lite*（#29443，以 cherry-pick 进 0.61.0-preview.1）：内置表加了
+  `gemini-3.8-flash` 与 `gemini-3.5-flash-lite`，`/model` 菜单里也列着它们；另外给 API Key 这条路
+  **新加了一层出网前的改名**（`getBackendModelMappings`）：`gemini-3.5-flash`、`gemini-3-flash` 改发
+  `gemini-3.8-flash`，`gemini-3.1-flash-lite` 改发 `gemini-3.5-flash-lite`。这一层在
+  `modelConfigs.customOverrides` 之后，本软件改不动。
+
+其余是安全加固（构建文件改动引起的间接提示注入、沙箱文件边界）和一处内部对象展开的修复；设置
+文件、`.env`、信任目录、MCP 状态行、base URL 与鉴权那几段代码没有改动。
+
+沙箱实测（空 HOME、`GEMINI_API_KEY` + `GOOGLE_GEMINI_BASE_URL` 指本地假接口、按
+`config-files.ts` 写 `settings.json`，看假接口收到的型号）：
+
+| 配的型号 | 0.60.0 实际发出 | 0.61.0 实际发出 |
+|---|---|---|
+| `gemini-3.8-flash-high`（默认） | 原样 | 原样 |
+| `gemini-3.8-flash` / `gemini-3.7-flash`（不经本软件改名时） | `gemini-3.5-flash` | 原样 |
+| `gemini-2.5-flash` | `gemini-3.5-flash` | 原样 |
+| `gemini-3-flash` | `gemini-3.5-flash` | `gemini-3.8-flash` |
+| `gemini-3.5-flash` | 原样 | `gemini-3.8-flash`，且联网搜索那一请求丢了 `googleSearch` 工具 |
+| `gemini-3.1-flash-lite` | 原样 | `gemini-3.5-flash-lite` |
+
+- 主型号 `gemini-3.8-flash-high` 下，联网搜索（带 `googleSearch`）、读网页（带 `urlContext`）、
+  Auto 模式的分流请求与之后的主请求，两版都只发中转型号。不写改写时 0.61.0 的 Auto 分流改用
+  `gemini-3.5-flash-lite`（0.60.0 是 `gemini-3.1-flash-lite`），现有的 `flash-lite` 改写照样接住。
+- 在 `/model` 里选 `gemini-3.8-flash` / `gemini-3.5-flash-lite`：旧改写表下 0.61.0 原样发出官方
+  型号名，所以两者已补进 `geminiRelayHelperModels`，补后都改发中转型号。
+- 完整的本软件模板（含 `ide`、`sessionRetention`、`context.fileName`）加信任目录读 `~/.gemini/.env`：
+  0.61.0 正常启动、请求打到 base URL，终端输出与 0.60.0 一致。
+
+**要留意的一点**：中转的 Gemini 分组如果有型号恰好叫 `gemini-3.5-flash`、`gemini-3-flash` 或
+`gemini-3.1-flash-lite`，0.61.0 上选它们会被改发成别的型号（见上表），本软件在客户端这边拦不住。
+今天默认的 `gemini-3.8-flash-high` 不在其列。没做的：中转上的真实请求（secret 没配，`verifiedSites`
+仍为空）。
+
+**Gemini CLI 0.61.0 → 0.62.0（2026-10-05 每周巡检）。** v0.62.0 的 release note 大多是 PTY、终端、OAuth 刷新
+的修复，没有一条碰到 `GOOGLE_GEMINI_BASE_URL`、`selectedType`、`.env` 或 `modelConfigs`；「Added support for
+Gemini 3.8, Flash 3.5, and Flash Lite models」那条在 0.61.0 已经以 cherry-pick 进来（见上一段）。装上两版对比
+bundle：`DEFAULT_MODEL_CONFIGS` 整个对象逐字相同，出网前改名的 `getBackendModelMappings` 也逐字相同，所以
+上一段补过的改写表不用再动。沙箱实测（同上一段的做法，按 `config-files.ts` 写 `settings.json` 与 `.env`）：
+`gemini -p` 默认发 `gemini-3.8-flash-high`；`-m gemini-3.8-flash`、`-m gemini-3.5-flash-lite`、
+`-m gemini-3.1-flash-lite` 都改发成 `gemini-3.8-flash-high`，Key 走 `x-goog-api-key`。没做的：中转上的真实请求。
+
 加第四个工具只需要填上它的 `recommended`，其余代码不用动；要让中转实测也覆盖它，还得在 `scripts/probe-cli-relay.cjs` 的 `probeRunners` 里加一条。
 
 ## 谁来跑：每周巡检
 
 名单越旧，默认装的版本离上游越远；而没人盯着的话，它只会在客户报障那天才被想起来。所以有一条每周的巡检例程（Routine）替人盯着：
 
-- **名字**：`Claude Code 新版每周巡检`
+- **名字**：`四家 CLI 新版每周巡检`（2026-10-01 前叫「Claude Code 新版每周巡检」，只看 Claude Code）
 - **频率**：每周一 01:00 UTC（北京时间周一 09:00）
-- **它做什么**：取 npm 上 `@anthropic-ai/claude-code` 的 `latest`，和名单里的推荐版本比。一样就只回一句「本周无新版」；不一样就把这两个版本之间的上游 changelog 逐条读一遍，摘出与网关 / 代理 / 第三方 base URL / 鉴权 / 400 相关的行。没有回归就开一个**草稿 PR** 抬推荐版本（含文档与 `changes/unreleased/` 分片）；有回归就改为把新版加进 `blocked` 并写清原因。
+- **它做什么**：四家各取 npm `latest`（Grok 再和 xAI stable 取小），和名单比。都一样就只回一句「本周四家无新版」；有新版的逐个读上游变更记录——Claude Code 读仓库的 `CHANGELOG.md`，Codex 读 GitHub Releases 的 `rust-v*`（仓库里的 CHANGELOG 只是占位），Gemini 读 `docs/changelogs/index.md` 加缺的 release 页，Grok 没有可读的变更记录、只能装上新版在本地假接口重核配置。没有回归就抬推荐版本，有回归就加 `blocked`；一次巡检只开**一个草稿 PR**，含文档与 `changes/unreleased/` 分片。某个工具已经有别的 PR 在抬，就不再为它开，改为把评估结论交给那条线程。
 - **它不做什么**：不自己合并。抬版本的 PR 一律留给人复核——中转实测没跑过、或者跑红了，都不许合。
-
-**建议把这条巡检扩到 Codex 与 Gemini**（这份 PR 没有动 routine 本身，它归「Claude Code 新版每周巡检」那条线程管）：
-
-- **Codex 最该扩**。它现在几乎每天发 alpha、正式版每周一发，0.155.0 那次回归的窗口只有一天——每周看一次仍会漏，但至少名单不会一直停在几个月前。上游看 `https://github.com/openai/codex/releases`（`rust-v*` tag），关注的关键词是 reasoning summary、wire API、`requires_openai_auth`、third-party provider。
-  **抬 Codex 推荐版本时顺手换随包型号名单**（`bundled-catalog/codex-models/models.json`，步骤见同目录 README）：桌面端菜单靠它列出中转开着的新 GPT 型号，名单停在旧 tag 上，新型号就进不了菜单。
-- **Gemini 一并扩，但频次可以低**。它一周一个正式版，0.57~0.60 都是安全加固；要盯的是 `GOOGLE_GEMINI_BASE_URL` 与 `security.auth.selectedType` 这两处——上游已经把带 base URL 的情形单独识别成 `AuthType.GATEWAY`，哪天它把 `gateway` 做成正式的 `selectedType`，本产品写的 `gemini-api-key` 就要跟着改。
-- **Grok 也要扩**（2026-09-30 起名单里有它）：比 npm `latest` 与 xAI stable 两处，两者一致且比名单新才考虑抬；抬之前在沙箱重核上一节那五条配置。
-- 扩之后那条 routine 的判据不变：只看 npm `latest`（`stable` 这个 dist-tag 不可信，它曾经指向 blocked 区间里的版本），比对上游 changelog，开草稿 PR，不自合。
+- **抬 Codex 推荐版本时顺手换随包型号名单**（`bundled-catalog/codex-models/models.json`，步骤见同目录 README）：桌面端菜单靠它列出中转开着的新 GPT 型号，名单停在旧 tag 上，新型号就进不了菜单。
 
 npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指向 `2.1.267`，而那个版本正落在名单里 2.1.265–2.1.268 那条不兼容区间内。只看 `latest`。
 
