@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { UpdateSnapshot } from '../../../../electron/ipc-contract'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './update-retry'
+import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureBubbleQuiet, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './update-retry'
 
 function snapshot(patch: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
   return {
@@ -63,6 +63,15 @@ describe('redownloadUpdate', () => {
     const api = { checkForUpdates: vi.fn(async () => failed), downloadUpdate: vi.fn(async () => snapshot()) }
     await expect(redownloadUpdate(api)).resolves.toBe(failed)
     expect(api.downloadUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('updateFailureBubbleQuiet', () => {
+  it('keeps the home bubble quiet only for checks nobody asked for', () => {
+    expect(updateFailureBubbleQuiet(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'ENOTFOUND', message: '连不上', automatic: true } }))).toBe(true)
+    expect(updateFailureBubbleQuiet(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'ENOTFOUND', message: '连不上' } }))).toBe(false)
+    expect(updateFailureBubbleQuiet(snapshot())).toBe(false)
+    expect(updateFailureBubbleQuiet(null)).toBe(false)
   })
 })
 
