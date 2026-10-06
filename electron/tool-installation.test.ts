@@ -1068,6 +1068,35 @@ describe('CLI installation resolution', () => {
     expect(command.argv).toEqual([fs.realpathSync(path.join(packageRoot, 'bin', 'codex.js'))])
   })
 
+  // 第三十四批 A：Mac 上客户自己那份 Node.js 太旧时，开工具用本软件代下的那份。
+  it('runs a JavaScript CLI with node from the preferred directories before its own', async () => {
+    const directory = temporaryDirectory()
+    const prefix = path.join(directory, 'hermes', 'node')
+    write(path.join(prefix, process.platform === 'win32' ? 'codex.cmd' : 'codex'))
+    write(path.join(prefix, process.platform === 'win32' ? 'node.exe' : 'node'))
+    const packageRoot = npmPackage(prefix, '@openai/codex', 'codex')
+    const preferred = path.join(directory, 'Runtime', 'node', 'bin')
+    const preferredNode = write(path.join(preferred, process.platform === 'win32' ? 'node.exe' : 'node'))
+
+    const command = await resolveCliCommand('codex', { PATH: prefix, HOME: directory }, 'same-user', {
+      nodeDirectories: [preferred],
+    })
+
+    expect(command.executable).toBe(path.resolve(preferredNode))
+    expect(command.argv).toEqual([fs.realpathSync(path.join(packageRoot, 'bin', 'codex.js'))])
+  })
+
+  it.skipIf(process.platform === 'win32')('runs npm root --global with node from the preferred directories first', async () => {
+    const queryNpmRoot = vi.fn(async (_npm: string, env: NodeJS.ProcessEnv) => {
+      expect(env.PATH?.split(path.delimiter)[0]).toBe('/preferred/node/bin')
+      return '/prefix/lib/node_modules'
+    })
+    await expect(resolveNpmGlobalRoot('/usr/local/bin/npm', { PATH: '/usr/local/bin', HOME: '/Users/tester' }, queryNpmRoot, 'darwin', [
+      '/preferred/node/bin',
+    ])).resolves.toBe('/prefix/lib/node_modules')
+    expect(queryNpmRoot).toHaveBeenCalledOnce()
+  })
+
   it('rejects oversized package manifests before parsing them', () => {
     const packageRoot = path.join(temporaryDirectory(), 'oversized-package')
     write(path.join(packageRoot, 'package.json'), ' '.repeat(256 * 1024 + 1))

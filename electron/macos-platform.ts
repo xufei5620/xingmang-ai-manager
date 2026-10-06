@@ -118,7 +118,9 @@ export function darwinCommandPathCandidates(
     '/usr/local/bin',
     ...inheritedPath.split(path.delimiter),
     // 本软件代下的 Node.js 排在最后：客户自己装过（Homebrew、官网安装包、nvm）
-    // 的那份永远先被找到，这一份只在他什么都没有时才顶上（第十六批 2）。
+    // 的那份先被找到，这一份只在他什么都没有时才顶上（第十六批 2）。他那份太旧时，
+    // 本软件自己干活另把这一份经 additionalPaths 排到最前（第三十四批 A，
+    // macos-node-runtime.ts 的 resolveDarwinPreferredNodeDirectory），交给工具的终端仍是这个顺序。
     managedNodeRuntimeBinDirectory({ ...baseEnv, HOME: homeDirectory }, 'darwin'),
   ]
 }

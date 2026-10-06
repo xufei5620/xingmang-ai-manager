@@ -78,6 +78,11 @@ export interface ResolveCliCommandOptions {
     spec: { executable: string; argv: readonly string[] },
   ) => Promise<DarwinCodexCommandResult>
   darwinStagingRetention?: 'ephemeral' | 'retained'
+  /**
+   * JS 写的工具先在这几个目录里找 node：Mac 上客户自己那份太旧时是本软件代下的那份
+   * （第三十四批 A）。只决定拿哪个 node 跑工具，交给工具的环境不变。
+   */
+  nodeDirectories?: readonly string[]
 }
 
 export interface ResolvedCliCommand extends CommandSpec {
@@ -471,9 +476,11 @@ export async function resolveNpmGlobalRoot(
   envInput: NodeJS.ProcessEnv = process.env,
   queryNpmRoot = defaultQueryNpmRoot,
   platform: NodeJS.Platform = process.platform,
+  /** 排在 PATH 最前的目录：跑这份 npm 的 node 从这里找（第三十四批 A）。 */
+  additionalPaths: readonly string[] = [],
 ): Promise<string | null> {
   if (!npmExecutable) return null
-  const env = commandEnvironment(envInput)
+  const env = commandEnvironment(envInput, additionalPaths)
   if (platform === 'win32') {
     // Running `npm root --global` from an elevated Electron process executes
     // npm-cli.js with administrator rights. The Windows global root is beside
@@ -847,7 +854,7 @@ export async function resolveCliCommand(
         if (fallback) {
           const node = await findExecutable('node', {
             env,
-            additionalPaths: [path.dirname(installation.commandPath)],
+            additionalPaths: [...(options.nodeDirectories ?? []), path.dirname(installation.commandPath)],
           })
           if (node) return { executable: node, argv: [fallback] }
         }
@@ -855,7 +862,7 @@ export async function resolveCliCommand(
       }
       const node = await findExecutable('node', {
         env,
-        additionalPaths: [path.dirname(installation.commandPath)],
+        additionalPaths: [...(options.nodeDirectories ?? []), path.dirname(installation.commandPath)],
         trustedOnly: platform === 'win32'
           && windowsExecutionMode === 'trusted-only'
           && !isUserWritablePath(installation.packageRoot, env),
