@@ -56,7 +56,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -109,6 +109,7 @@ function serviceStub(): SystemService {
     fetchAvailableModels: vi.fn() as never,
     configureExternalTool: vi.fn() as never,
     scanExternalClients: vi.fn(async () => []),
+    cachedExternalClients: vi.fn(async () => []),
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
@@ -2168,6 +2169,31 @@ describe('registerIpcHandlers', () => {
     expect(service.saveConfig).not.toHaveBeenCalled()
   })
 
+  // 首页「配置文件坏了」的「修好它」和配置里「重置为初始状态」选官方账号都走这条：
+  // 答应过先备份，备份页里就得找得回来（以前只留配置旁边会被挤掉的 .bak）。
+  it('keeps a restorable backup before an official reset and refuses to reset without one', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-to-official-account')!
+
+    await handler(trustedEvent(), 'codex', 'merge')
+    await handler(trustedEvent(), 'codex')
+    expect(create).not.toHaveBeenCalled()
+
+    await handler(trustedEvent(), 'codex', 'reset')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'reset')
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[2])
+
+    vi.mocked(service.switchToOfficialAccount).mockClear()
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
+  })
+
   it('validates and forwards the official save mode while accepting legacy calls', async () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('config:switch-to-official-account')!
@@ -2682,6 +2708,48 @@ describe('registerIpcHandlers', () => {
     busy = false
     finishRestore()
     await expect(result).resolves.toEqual([])
+  })
+
+  // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
+  it('answers the startup read of the last saved client rows without scanning or waiting for the account, and logs it as that read', async () => {
+    const restored = new Promise<void>(() => undefined)
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { throw new Error('switching') } })
+    const service = serviceStub()
+    const cached = [{ tool: 'workbuddy', detectionError: 'Code signature check failed', cachedAt: '2026-10-05T10:00:00.000Z' }]
+    vi.mocked(service.cachedExternalClients).mockResolvedValue(cached as never)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: restored })
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+
+    await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toBe(cached)
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toEqual([])
+    // Nothing was detected, so the feedback report must not read 「外部客户端检测完成」 here.
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan')).toEqual([
+      ['info', 'ipc', 'external-clients:scan', '已先显示上次的客户端检测结果，共 1 项', expect.any(Object)],
+    ])
+    vi.mocked(service.cachedExternalClients).mockResolvedValueOnce([])
+    await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toEqual([])
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan').at(-1)?.[3]).toBe('没有可先显示的上次客户端检测结果')
+    // A real scan still waits for the account to be restored.
+    void Promise.resolve(handler(trustedEvent(), false)).catch(() => undefined)
+    void Promise.resolve(handler(trustedEvent(), false, { cachedOnly: false })).catch(() => undefined)
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.cachedExternalClients).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects malformed client scan options', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+    for (const input of ['cachedOnly', { cachedOnly: 'yes' }, { cachedOnly: true, path: '/etc' }, [true]]) {
+      await expect(Promise.resolve().then(() => handler(trustedEvent(), false, input)), JSON.stringify(input)).rejects.toThrow('客户端检测参数格式错误')
+    }
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.cachedExternalClients).not.toHaveBeenCalled()
+    expect(parseExternalClientScanOptions(undefined)).toEqual({})
+    expect(parseExternalClientScanOptions({ cachedOnly: false })).toEqual({})
+    expect(parseExternalClientScanOptions({ cachedOnly: true })).toEqual({ cachedOnly: true })
   })
 
   it('resolves external-client keys in the main process and never accepts a renderer URL', async () => {
@@ -6893,6 +6961,35 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
     })
 
+    it('keeps a restorable backup before an account-key reset and refuses to reset without one', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.revealKey).mockResolvedValue('sk-selected-account-key')
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const create = vi.fn(() => ({ id: 'backup-1' }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, {
+        backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      })
+      const handler = electronMocks.handlers.get('account:configure-cli-with-key')!
+      const input = { provider: 'codex', keyId: 88, model: 'gpt-5.6-sol' }
+
+      await handler(trustedEvent(), { ...input, mode: 'merge' })
+      expect(create).not.toHaveBeenCalled()
+
+      await handler(trustedEvent(), { ...input, mode: 'reset' })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+      vi.mocked(service.saveConfig).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
     it('rejects stale or malformed account-key CLI configuration before writing', async () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
@@ -6965,6 +7062,41 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         mode: mode ?? 'merge',
       }, false, expect.any(Function), { source: 'account', automatic: true })
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
+    })
+
+    it('keeps a restorable backup before a managed-key reset and refuses to reset without one', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const create = vi.fn(() => ({ id: 'backup-1' }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, {
+        backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      })
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+      const input = { providers: ['codex'], preferredModels: {}, intent: 'explicit' }
+
+      await handler(trustedEvent(), { ...input, mode: 'merge' })
+      expect(create).not.toHaveBeenCalled()
+
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).resolves.toEqual({ configured: ['codex'], failed: [] })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+      vi.mocked(service.saveConfig).mockClear()
+      vi.mocked(accountService.provisionCliKey).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
     it('rejects unknown save modes before provisioning or writing config', () => {

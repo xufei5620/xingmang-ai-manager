@@ -284,7 +284,7 @@ import {
   type ExternalToolId,
 } from './external-tool-config'
 import { externalClientNames, type ExternalClientConfigResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
-import { createExternalClientRuntime, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
+import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
@@ -294,6 +294,7 @@ import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
+import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
 import { BoundedOperationQueue } from './bounded-operation-queue'
 
 const execFileAsync = promisify(execFile)
@@ -1034,6 +1035,11 @@ export interface SystemService {
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
+  /**
+   * 本次启动还没真检测过客户端时，给出上次落盘的结果（每条带 `cachedAt`）；检测过了、或没有可用的
+   * 旧结果时是空列表。只读文件、不起盘点，只给首页「先画个样子」用（已知13）。
+   */
+  cachedExternalClients(): Promise<ExternalClientStatus[]>
   /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
   getLastExternalClients(): ExternalClientStatus[] | null
   /**
@@ -2496,6 +2502,8 @@ export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
+  /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
+  externalClientSnapshotCacheFile?: string
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
@@ -2722,6 +2730,15 @@ export function permitsShadowedCodexRepair(
     && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
 }
 
+/**
+ * 「保存前读到的那份配置一点没动」只有这一个口径：检测模型期间被人改了就不写；写失败以后，
+ * 也只有这样才把来源原样放回。修改时间也要一样：回滚会把内容照原样写回去，身份和型号都对得上，
+ * 可那几个文件毕竟被这次保存动过，按「写到一半」处理，照旧留着保护。
+ */
+export function sameNativeConfigSnapshot(before: NativeConfigInspection, current: NativeConfigInspection): boolean {
+  return toolConfigIdentity(current) === toolConfigIdentity(before) && current.updatedAt === before.updatedAt && current.model === before.model
+}
+
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
 export function ccSwitchLeftoverField(leftover: CcSwitchLeftover | null): { ccSwitchLeftover?: CcSwitchLeftover } {
   return leftover ? { ccSwitchLeftover: leftover } : {}
@@ -2892,6 +2909,11 @@ export function buildExternalClientMacVerificationLogDetail(failure: ExternalCli
   return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
 }
 
+/** 检测失败时 PowerShell 的原话进运行日志的那几项：读签名报的错里常带着客户端的完整路径。 */
+export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClientDetectionErrorDetail, userHome: string) {
+  return { ...failure, message: redactHomeDirectory(failure.message, userHome) }
+}
+
 /** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
 function sameRouteUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
@@ -3009,6 +3031,9 @@ export function createSystemService(
       buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
     onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
       buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
+    // 首页只说「无法读取客户端数字签名」这类前半句中文（已知3），系统给的原话客服在反馈报告里看这一行。
+    onDetectionErrorDetail: (failure) => runtimeLog?.log('warn', 'system', 'external-client.detection-error-detail', '桌面客户端检测失败时系统给的原话',
+      buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
   })
   let nodeRuntimeInstalling = false
   // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
@@ -6099,6 +6124,14 @@ export function createSystemService(
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
   let latestExternalClients: ExternalClientStatus[] | null = null
+  const externalClientCache = serviceOptions.externalClientSnapshotCacheFile
+    ? createExternalClientSnapshotCache({
+        filePath: serviceOptions.externalClientSnapshotCacheFile,
+        onWarning: (code, message) => runtimeLog?.log('warn', 'system', code, '上次客户端检测结果没有读写成功', { error: message }),
+      })
+    : null
+  let externalScansStarted = 0
+  let newestExternalScanSaved = 0
   // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
@@ -6203,6 +6236,7 @@ export function createSystemService(
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
   async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
+    const started = ++externalScansStarted
     // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
     // 保存配置之后那次刷新要看到的正是刚写下去的那份。
     const clients = await followExternalClientRoutes(await externalClientRuntime.scan({ force }))
@@ -6210,7 +6244,19 @@ export function createSystemService(
     // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
     // 数据源：只在用户自己点检测时更新。
     latestExternalClients = clients
+    // 下次开机首页先摆它（已知13）。强制重扫与普通扫描可能交错完成，落盘只让后开始的那一轮
+    // 覆盖先开始的，同 CLI 那份快照。
+    if (started > newestExternalScanSaved) {
+      newestExternalScanSaved = started
+      void externalClientCache?.save(clients)
+    }
     return clients
+  }
+  async function cachedExternalClients(): Promise<ExternalClientStatus[]> {
+    if (latestExternalClients || !externalClientCache) return []
+    const cached = await externalClientCache.load()
+    // 读文件这几毫秒里真的检测可能已经回来了，那就不必再给旧的。
+    return latestExternalClients || !cached ? [] : cached
   }
   /** 反馈报告用的上一份客户端快照；还没检测过时为 null，那一段写「未能读取」。 */
   function getLastExternalClients(): ExternalClientStatus[] | null {
@@ -6921,6 +6967,15 @@ export function createSystemService(
     return repaired
   }
 
+  // 读不出来（比如路径里冒出了联接）就当动过：宁可留着「手动」保护，也不能让读配置的错误顶掉保存本来的错误。
+  function untouchedSince(provider: ProviderId, before: NativeConfigInspection): boolean {
+    try {
+      return sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))
+    } catch {
+      return false
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -6954,8 +7009,7 @@ export function createSystemService(
         && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
       const assertUnchanged = () => {
         assertOwner()
-        const current = inspectNativeProviderConfig(payload.provider)
-        if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
+        if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(payload.provider))) {
           throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
         }
         if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
@@ -6992,16 +7046,35 @@ export function createSystemService(
       // saves. A crash or persistence failure then leaves a protected source.
       const source = ownership?.source ?? (payload.apiKey.trim() ? 'manual'
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
+      const restoreOwnership = configOwnership.remember(payload.provider, before)
       await configOwnership.write(payload.provider, before, 'manual', owner)
-      assertUnchanged()
-      // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
-      // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
-      const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
       let result: ReturnType<typeof saveProviderConfig>
       try {
-        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+        assertUnchanged()
+        // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
+        // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
+        const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
+        try {
+          result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+        } catch (error) {
+          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+          throw error
+        }
       } catch (error) {
-        if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+        // 上面那条「手动」防的是写到一半崩掉。没写成、配置也一点没动时（最常见的是工具开着、
+        // 文件被占用）要原样放回：不然客户关掉工具再保存一次就成功了，可这一次把「手动」当成了
+        // 原来的来源，「当前账号」从此变成「手动」，开机同步 Key、换账号、换连接线路都不再改它
+        // （10-06 写 #899 真机清单时看到）。账号中途换了就照旧留着「手动」：那一刻是谁在操作已经
+        // 说不清，宁可多挡一次自动写入。
+        const sameOwner = (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
+        if (restoreOwnership && sameOwner && untouchedSince(payload.provider, before)) {
+          await restoreOwnership().catch((restoreError: unknown) => {
+            runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '保存没成功，工具配置的来源记录也没能原样放回', {
+              provider: payload.provider,
+              reason: credentialFailureReason(restoreError),
+            })
+          })
+        }
         throw error
       }
       // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
@@ -7364,6 +7437,7 @@ export function createSystemService(
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,
+    cachedExternalClients,
     getLastExternalClients,
     checkExternalClientConnection,
     installExternalClient,

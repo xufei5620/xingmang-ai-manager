@@ -283,6 +283,25 @@ export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProvi
 }
 
 /**
+ * Codex 自己也读不了这份 config.toml（主进程 codexConfigBroken）：桌面端会停在「无法加载
+ * 组织设置」，命令行直接报错。这时读出来的 Key、来源都不作数，首页先说文件坏了。
+ */
+export function codexConfigBroken(config: Pick<ProviderConfigSummary, 'codexConfigBroken'>, provider: ProviderId): boolean {
+  return provider === 'codex' && config.codexConfigBroken === true
+}
+
+/** 「配置文件坏了」那一行的小字；修的过程中行上照旧是这句（yoyo 2026-10-06 定的原话）。 */
+export const configBrokenDetail = 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留'
+
+/**
+ * 「配置文件坏了」的「修好它」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
+ * 登录的是 ChatGPT 账号就照旧用官方账号，不顺手换成当前账号；其余按当前账号。
+ */
+export function brokenConfigRepairTarget(config: Pick<ProviderConfigSummary, 'codexAuthMode'>): AccountSourceTarget {
+  return config.codexAuthMode === 'chatgpt' ? 'official' : 'account'
+}
+
+/**
  * 本软件写进这个工具的提醒设置（钩子、状态行）指向了不存在或不是这次安装的程序、脚本
  * （主进程 cliHooksStale）。只影响终端里多不多报一行错，连不连得上照旧。
  */

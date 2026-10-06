@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { copyBoundedFileExclusive, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
+import { copyBoundedFileExclusive, readBoundedFileSync, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 
 const temporaryDirectories: string[] = []
 
@@ -74,6 +74,16 @@ function temporaryFile(content: string): string {
 describe('readBoundedUtf8FileSync', () => {
   it('reads a UTF-8 file within the byte limit', () => {
     expect(readBoundedUtf8FileSync(temporaryFile('星芒 AI'), 64, '测试文件')).toBe('星芒 AI')
+  })
+
+  it('hands back the bytes as stored, invalid UTF-8 included', () => {
+    // 解码会把坏字节悄悄换成 U+FFFD；要判断 Codex 读不读得了 config.toml，得看原始字节。
+    const filePath = temporaryFile('')
+    const gbk = Buffer.from([0x23, 0x20, 0xd6, 0xd0, 0xce, 0xc4, 0x0a])
+    fs.writeFileSync(filePath, gbk)
+    expect(readBoundedFileSync(filePath, 64, '测试文件').equals(gbk)).toBe(true)
+    expect(readBoundedUtf8FileSync(filePath, 64, '测试文件')).toContain('\uFFFD')
+    expect(() => readBoundedFileSync(filePath, 4, '测试文件')).toThrow('测试文件超过 0 KB 安全上限')
   })
 
   it('rejects a file larger than the byte limit', () => {
