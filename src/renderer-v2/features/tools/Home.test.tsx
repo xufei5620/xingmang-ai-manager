@@ -1519,3 +1519,41 @@ describe('Home sections and balance labels', () => {
     expect(render({}, undefined, { accountRestoring: true })).toContain('正在恢复登录')
   })
 })
+
+// v0.1.31 的旧界面在 Codex 卡片上挂过「套餐 Plus」「续期 4天后」，重做新界面后只剩「官方账号」。
+describe('renderer-v2 home official ChatGPT plan', () => {
+  function officialSnapshot(codex: Record<string, unknown>): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      config: {
+        ...base.config,
+        providers: { ...base.config.providers, codex: { ...providerConfig, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', configurationOwnership: 'missing', codexAuthMode: 'chatgpt', ...codex } },
+      },
+    } as unknown as ToolboxSnapshot
+  }
+  function toolRow(markup: string, tool: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    return start < 0 ? '' : markup.slice(start, next < 0 ? undefined : next)
+  }
+
+  it('puts the plan and the renewal on both Codex rows', () => {
+    const renewsAt = new Date(Date.now() + 4 * 86_400_000 + 3_600_000)
+    const markup = render({}, undefined, { snapshot: officialSnapshot({ officialAccountPlan: 'Plus', officialAccountRenewsAt: renewsAt.toISOString() }) })
+    const date = `${renewsAt.getFullYear()}年${renewsAt.getMonth() + 1}月${renewsAt.getDate()}日续期`
+    for (const tool of ['codex', 'codexDesktop']) {
+      const row = toolRow(markup, tool)
+      expect(row, tool).toContain('官方账号 · Plus · 4天后续期')
+      expect(row, tool).toContain(date)
+    }
+  })
+
+  it('keeps the plain wording when the plan was not read', () => {
+    const markup = render({}, undefined, { snapshot: officialSnapshot({ officialAccountPlan: null, officialAccountRenewsAt: null }) })
+    const row = toolRow(markup, 'codex')
+    expect(row).toContain('官方账号')
+    expect(row).not.toContain('续期')
+  })
+})

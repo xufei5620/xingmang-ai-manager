@@ -450,6 +450,35 @@ export function recommendedVersionVerb(tool: Pick<ToolPresentation, 'versionAdvi
 }
 
 /**
+ * 用官方账号登录时，版本号后面那段。v0.1.31 的旧界面在 Codex 卡片上挂过套餐和续期两个
+ * 标签，重做新界面时收进了「官方账户额度」弹窗，卡片上只剩「官方账号」，客户看不到套餐
+ * 哪天续期。读不到就不写，不拿「尚未获取」占位；续期日已经过了也不写：那多半是登录
+ * 信息还没刷新，不等于套餐真的停了，写「几天前」反而像在说过期。
+ */
+export function officialAccountSubtitle(
+  config: Pick<ProviderConfigSummary, 'officialAccountPlan' | 'officialAccountRenewsAt'>,
+  now: number,
+): { text: string; renewal?: string } {
+  const parts = ['官方账号']
+  if (config.officialAccountPlan) parts.push(config.officialAccountPlan)
+  const renewsAt = config.officialAccountRenewsAt ? new Date(config.officialAccountRenewsAt) : null
+  const left = renewsAt ? renewsAt.getTime() - now : Number.NaN
+  if (!renewsAt || !(left > 0)) return { text: parts.join(' · ') }
+  parts.push(`${renewalDistance(left)}续期`)
+  return { text: parts.join(' · '), renewal: `${renewsAt.getFullYear()}年${renewsAt.getMonth() + 1}月${renewsAt.getDate()}日续期` }
+}
+
+// 与旧界面 formatOfficialRelative 的分档一致，客户在两个版本之间看到的说法不变。
+function renewalDistance(ms: number): string {
+  if (ms < 90_000) return '马上'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `${minutes}分钟后`
+  const hours = Math.round(ms / 3_600_000)
+  if (hours < 24) return `${hours}小时后`
+  return `${Math.round(ms / 86_400_000)}天后`
+}
+
+/**
  * 工具行副标题里的版本文案。推荐版本与当前版本一致时不出现,避免每一行都
  * 挂一句用户不需要读的话。站点信息永远不出现在这里(双站点对用户无感)。
  * 推荐版本修了什么(recommendedNote)接在「推荐 x」后面:只写版本号时小白看
