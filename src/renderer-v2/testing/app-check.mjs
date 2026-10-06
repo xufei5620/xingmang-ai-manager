@@ -538,13 +538,50 @@ test('external client inventory waits for the first tool scan, and the home resc
   try {
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
     await page.waitForTimeout(300)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    // 开机只先要上次落盘的那份（已知13），主进程不起盘点；真的盘点照旧等首屏扫描。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients' && entry.args[1]?.cachedOnly === true)), true)
     await page.evaluate(() => window.v2Test.releaseScan())
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients'))
-    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').map((entry) => entry.args)), [[false]])
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).map((entry) => entry.args)), [[false]])
     await page.getByTestId('home-rescan').click()
-    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > 1)
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length > 1)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').at(-1).args), [true])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知13：开机先摆上次落盘的客户端检测结果，以前那几行要等首屏扫描和自己那轮都完了才出来。
+test('desktop client rows show the last saved result at startup and wait for the real scan before acting', async () => {
+  const page = await open('cachedScan=1&externalCached=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('v0.9.0 · cached-model', { exact: true }).waitFor()
+    await page.getByTestId('home-external-detecting').waitFor()
+    assert.equal(await page.getByTestId('tool-workbuddy-primary').isDisabled(), true)
+    await row.getByRole('button', { name: '配置和更多操作', exact: true }).click()
+    assert.equal(await page.getByRole('menu').getByRole('menuitem', { name: '配置', exact: true }).isDisabled(), true)
+    await page.keyboard.press('Escape')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    // 真的结果回来整份替换：这次 WorkBuddy 没装。
+    await row.getByRole('button', { name: '安装', exact: true }).waitFor()
+    assert.equal(await row.getByText('v0.9.0 · cached-model', { exact: true }).count(), 0)
+    await page.getByTestId('home-external-detecting').waitFor({ state: 'detached' })
+    assert.equal(await row.getByRole('button', { name: '安装', exact: true }).isEnabled(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed first desktop client scan takes the last saved rows down instead of leaving them waiting', async () => {
+  const page = await open('cachedScan=1&externalCached=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('v0.9.0 · cached-model', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'scanExternalClients'; window.v2Test.releaseScan() })
+    await page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' }).waitFor()
+    assert.equal(await row.count(), 0)
+    assert.equal(await page.getByTestId('home-external-detecting').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

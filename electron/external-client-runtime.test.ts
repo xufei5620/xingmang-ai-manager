@@ -146,6 +146,56 @@ describe('external desktop client lifecycle', () => {
     expect(script).toContain('registryFailures=@($registryFailures.ToArray())')
   })
 
+  // 已知3：AppX 注册信息、数字签名读不出时，首页那一行只说前半句中文，PowerShell 的原话只进运行日志。
+  it('keeps what PowerShell said out of the sentences the inventory script prints', () => {
+    // The Windows packaging job runs both failures for real (e2e/windows-powershell-probes-smoke.mjs).
+    const script = windowsExternalClientInventoryScript()
+    expect(script).toContain("$errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'; $errorDetails.claudeDesktop = [string]$_.Exception.Message")
+    expect(script).toContain("$errors[$product.tool] = '无法读取客户端数字签名'; $errorDetails[$product.tool] = [string]$_.Exception.Message")
+    expect(script).toContain('errorDetails=$errorDetails')
+    expect(script).not.toMatch(/\$errors[^\r\n]*\+ \$_\.Exception\.Message/)
+  })
+
+  it('logs what PowerShell said beside a Chinese detection failure, once for each distinct message', async () => {
+    const appxReason = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'
+    const signatureReason = '无法读取客户端数字签名'
+    const signatureMessage = 'Access to the path C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe is denied.'
+    const onDetectionErrorDetail = vi.fn<NonNullable<ExternalClientRuntimeOptions['onDetectionErrorDetail']>>()
+    const failing = {
+      // OpenCode's own sentence is replaced by the runtime's check of the signature
+      // it did read: PowerShell's words no longer belong to what the row says.
+      clients: [candidate('opencode', { signatureStatus: 'HashMismatch' })],
+      errors: { workbuddy: signatureReason, claudeDesktop: appxReason, opencode: signatureReason },
+      errorDetails: { workbuddy: signatureMessage, claudeDesktop: 'The AppX Deployment Service\r\nis not running.', opencode: 'stale' },
+    }
+    let output: Record<string, unknown> = failing
+    const f = fixture({ onDetectionErrorDetail })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify(output)))
+    expect((await f.runtime.scan()).map((status) => status.detectionError)).toEqual([
+      signatureReason, appxReason, '客户端数字签名无效或签名发布者与官方发布者不一致',
+    ])
+    expect(onDetectionErrorDetail.mock.calls).toEqual([
+      [{ tool: 'workbuddy', reason: signatureReason, message: signatureMessage }],
+      [{ tool: 'claudeDesktop', reason: appxReason, message: 'The AppX Deployment Service is not running.' }],
+    ])
+    await f.runtime.scan({ force: true })
+    expect(onDetectionErrorDetail).toHaveBeenCalledTimes(2)
+    // Claude Desktop found this time: its message is forgotten, and the same one
+    // coming back afterwards is logged again. WorkBuddy's never went away.
+    output = { ...failing, clients: [...failing.clients, appx()] }
+    expect((await f.runtime.scan({ force: true }))[1]).toMatchObject({ installed: true, detectionError: null })
+    output = failing
+    await f.runtime.scan({ force: true })
+    expect(onDetectionErrorDetail).toHaveBeenCalledTimes(3)
+    expect(onDetectionErrorDetail).toHaveBeenLastCalledWith({ tool: 'claudeDesktop', reason: appxReason, message: 'The AppX Deployment Service is not running.' })
+    // Output from an older script, or a malformed list, only loses the log line.
+    output = { ...failing, errorDetails: ['not', 'a', 'map'] }
+    expect((await f.runtime.scan({ force: true }))[0].detectionError).toBe(signatureReason)
+    output = failing
+    await f.runtime.scan({ force: true })
+    expect(onDetectionErrorDetail).toHaveBeenCalledTimes(5)
+  })
+
   it('detects signed installed desktop applications and current-user Claude Store without executing their binaries', async () => {
     const f = fixture()
     f.setInventory([candidate('workbuddy'), appx(), candidate('opencode')])

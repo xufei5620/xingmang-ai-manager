@@ -116,6 +116,11 @@ export interface ExternalClientRuntimeOptions {
   onRegistryIncomplete?: (failures: ExternalClientRegistryFailure[]) => void
   /** Mac 上苹果的签名核对没过时它自己说的原因，只进运行日志；同一个应用包原因没变就不再调。 */
   onMacVerificationFailed?: (failure: ExternalClientMacVerificationFailure) => void
+  /**
+   * Windows 上 AppX 注册信息、数字签名读不出时 PowerShell 给的原话（多是系统英文），只进运行日志：
+   * 首页那一行只说前半句中文（已知3）。同一个客户端内容没变就不再调。
+   */
+  onDetectionErrorDetail?: (failure: ExternalClientDetectionErrorDetail) => void
 }
 
 /** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
@@ -124,6 +129,13 @@ export interface ExternalClientRegistryFailure {
   // 叫了它，客服在日志里就只看得到 [REDACTED]。
   entry: string
   reason: string
+}
+
+/** 检测失败时首页那句中文（reason），和 PowerShell 给的原话（message）。 */
+export interface ExternalClientDetectionErrorDetail {
+  tool: ExternalToolId
+  reason: string
+  message: string
 }
 
 /** spctl 或 codesign 没放行时的那几项；output 是它们写在标准错误里的原话。 */
@@ -221,7 +233,7 @@ function record(value: unknown): Record<string, unknown> {
 function localWindowsPath(value: string): boolean {
   return /^[a-z]:\\/i.test(value) && !/[<>"|?*\x00-\x1f]/.test(value) && !value.slice(2).includes(':')
 }
-function registryFailureText(value: unknown, limit: number): string {
+function scriptLogText(value: unknown, limit: number): string {
   return typeof value === 'string' ? cleanCommandOutput(value).replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, limit) : ''
 }
 /** 检测脚本交回的读不出来的安装记录。格式不对就当没有：少的只是一行日志，检测结论照旧。 */
@@ -230,9 +242,19 @@ function registryFailures(value: unknown): ExternalClientRegistryFailure[] {
   try {
     return value.slice(0, maximumRegistryFailures).map((raw) => {
       const item = record(raw)
-      return { entry: registryFailureText(item.entry, 260), reason: registryFailureText(item.reason, 500) }
+      return { entry: scriptLogText(item.entry, 260), reason: scriptLogText(item.reason, 500) }
     })
   } catch { return [] }
+}
+/** 检测脚本交回的 PowerShell 原话，按客户端。格式不对同样当没有。 */
+function scriptErrorDetails(value: unknown): Partial<Record<ExternalToolId, string>> {
+  const details: Partial<Record<ExternalToolId, string>> = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return details
+  for (const tool of tools) {
+    const message = scriptLogText((value as Record<string, unknown>)[tool], 500)
+    if (message) details[tool] = message
+  }
+  return details
 }
 /** spctl 退出码 3 是 Gatekeeper 拒绝；codesign 1 是核对没过，3 是签名完好但不满足钉住的要求（团队、包名）。 */
 function macSignatureRefused(error: unknown): boolean {
@@ -300,6 +322,9 @@ foreach ($entry in $knownList) {
 }
 $clients = [System.Collections.Generic.List[object]]::new()
 $errors = @{}
+# The screen gets only the Chinese sentence in $errors; what PowerShell said, most
+# often system English, goes back beside it for the runtime log alone.
+$errorDetails = @{}
 $registry = [System.Collections.Generic.List[object]]::new()
 function Test-LocalExecutablePath([string]$candidate) {
   # Registry entries are user writable. Reject remote paths, alternate streams
@@ -368,7 +393,7 @@ try {
       $clients.Add([pscustomobject]@{ tool='claudeDesktop'; path=$exe; version=[string]$package.Version; running=($processes -contains $exe); family=[string]$package.PackageFamilyName; publisher=[string]$package.Publisher; installLocation=[string]$package.InstallLocation; applicationId='Claude_pzs8sxrjxfjjc!Claude' })
     }
   }
-} catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息：' + $_.Exception.Message }
+} catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'; $errorDetails.claudeDesktop = [string]$_.Exception.Message }
 foreach ($product in $products) {
   if ($registryIncomplete -and !$errors.ContainsKey($product.tool)) {
     $errors[$product.tool] = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
@@ -396,11 +421,11 @@ foreach ($product in $products) {
           $signatureSubject = [string]$signature.SignerCertificate.Subject
         }
         $clients.Add([pscustomobject]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp })
-      } catch { $errors[$product.tool] = '无法读取客户端数字签名：' + $_.Exception.Message }
+      } catch { $errors[$product.tool] = '无法读取客户端数字签名'; $errorDetails[$product.tool] = [string]$_.Exception.Message }
     }
   }
 }
-@{ clients=@($clients.ToArray()); errors=$errors; registryFailures=@($registryFailures.ToArray()) } | ConvertTo-Json -Depth 5 -Compress
+@{ clients=@($clients.ToArray()); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures.ToArray()) } | ConvertTo-Json -Depth 5 -Compress
 `.trim()
 }
 
@@ -472,6 +497,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   // 读不出来的安装记录、苹果没放行的原因同理：每次检测都会再碰到一次，内容没变就不重复记。
   let lastRegistryFailures: string | null = null
   const lastMacVerificationFailures = new Map<string, string>()
+  const lastDetectionErrorDetails = new Map<ExternalToolId, string>()
   function noteRegistryFailures(failures: ExternalClientRegistryFailure[]) {
     const signature = failures.length ? JSON.stringify(failures) : null
     if (signature && signature !== lastRegistryFailures) options.onRegistryIncomplete?.(failures)
@@ -484,6 +510,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (lastMacVerificationFailures.get(bundle) === signature) return
     lastMacVerificationFailures.set(bundle, signature)
     options.onMacVerificationFailed?.(failure)
+  }
+  // 这一次没有原话（检测成了，或失败的是别的原因）就忘掉，下次同样的原话再来时照样记。
+  function noteDetectionErrorDetail(tool: ExternalToolId, reason: string | undefined, message: string | undefined) {
+    if (!reason || !message) { lastDetectionErrorDetails.delete(tool); return }
+    const signature = JSON.stringify([reason, message])
+    if (lastDetectionErrorDetails.get(tool) === signature) return
+    lastDetectionErrorDetails.set(tool, signature)
+    options.onDetectionErrorDetail?.({ tool, reason, message })
   }
 
   function rememberSignature(item: Record<string, unknown>) {
@@ -505,6 +539,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       const rawErrors = record(data.errors)
       for (const tool of tools) if (textValue(rawErrors[tool])) errors[tool] = textValue(rawErrors[tool])!
     }
+    const scriptErrors = { ...errors }
+    const details = scriptErrorDetails(data.errorDetails)
     const clients: LocatedClient[] = []
     for (const raw of data.clients.slice(0, 100)) {
       const item = record(raw)
@@ -535,6 +571,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       } catch (error) { errors[tool] = errorText(error) }
     }
     for (const client of clients) delete errors[client.tool]
+    // 原话只配脚本自己说的那句：这一行最后报的要是这边核对路径、签名时另起的错，它就对不上了。
+    for (const tool of tools) noteDetectionErrorDetail(tool, errors[tool] === scriptErrors[tool] ? errors[tool] : undefined, details[tool])
     return { clients, errors }
   }
 

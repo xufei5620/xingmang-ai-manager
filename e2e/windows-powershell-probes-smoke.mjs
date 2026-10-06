@@ -205,6 +205,34 @@ function Get-AppxPackage {
     assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
     assert.deepEqual(data.registryFailures, Array(3).fill({ entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
   }],
+  // The row on the home page says only the Chinese sentence; what PowerShell said
+  // comes back beside it for the runtime log (external-client-runtime.test.ts reads it).
+  ['external client inventory keeps what PowerShell said out of the sentence when AppX cannot be read', async () => {
+    const output = await runEncoded(String.raw`
+function Test-Path { param([string]$LiteralPath) return $false }
+function Get-Process { @() }
+function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }
+` + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.deepEqual(data.clients, [])
+    assert.deepEqual(data.errors, { claudeDesktop: '无法读取当前用户 Claude 桌面端的 AppX 注册信息' })
+    assert.deepEqual(data.errorDetails, { claudeDesktop: 'The AppX Deployment Service is not running.' })
+  }],
+  ['external client inventory keeps what PowerShell said out of the sentence when a signature cannot be read', async () => {
+    const output = await runEncoded(String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' } }
+function Get-ItemProperty { param([string]$LiteralPath) [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
+function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=1; LastWriteTimeUtc=[datetime]::UtcNow; CreationTimeUtc=[datetime]::UtcNow } }
+function Get-AuthenticodeSignature { param([string]$LiteralPath) throw 'The signature service is not available.' }
+function Get-Process { @() }
+function Get-AppxPackage { @() }
+` + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.deepEqual(data.clients, [])
+    assert.deepEqual(data.errors, { workbuddy: '无法读取客户端数字签名' })
+    assert.deepEqual(data.errorDetails, { workbuddy: 'The signature service is not available.' })
+  }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
       { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: externalClientSubjects.workbuddy },

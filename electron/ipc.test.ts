@@ -56,7 +56,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -109,6 +109,7 @@ function serviceStub(): SystemService {
     fetchAvailableModels: vi.fn() as never,
     configureExternalTool: vi.fn() as never,
     scanExternalClients: vi.fn(async () => []),
+    cachedExternalClients: vi.fn(async () => []),
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
@@ -2681,6 +2682,41 @@ describe('registerIpcHandlers', () => {
     busy = false
     finishRestore()
     await expect(result).resolves.toEqual([])
+  })
+
+  // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
+  it('answers the startup read of the last saved client rows without scanning, logging or waiting for the account', async () => {
+    const restored = new Promise<void>(() => undefined)
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { throw new Error('switching') } })
+    const service = serviceStub()
+    const cached = [{ tool: 'workbuddy', detectionError: 'Code signature check failed', cachedAt: '2026-10-05T10:00:00.000Z' }]
+    vi.mocked(service.cachedExternalClients).mockResolvedValue(cached as never)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: restored })
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+
+    await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toBe(cached)
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toEqual([])
+    // A real scan still waits for the account to be restored.
+    void Promise.resolve(handler(trustedEvent(), false)).catch(() => undefined)
+    void Promise.resolve(handler(trustedEvent(), false, { cachedOnly: false })).catch(() => undefined)
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.cachedExternalClients).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects malformed client scan options', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+    for (const input of ['cachedOnly', { cachedOnly: 'yes' }, { cachedOnly: true, path: '/etc' }, [true]]) {
+      await expect(Promise.resolve().then(() => handler(trustedEvent(), false, input)), JSON.stringify(input)).rejects.toThrow('客户端检测参数格式错误')
+    }
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.cachedExternalClients).not.toHaveBeenCalled()
+    expect(parseExternalClientScanOptions(undefined)).toEqual({})
+    expect(parseExternalClientScanOptions({ cachedOnly: false })).toEqual({})
+    expect(parseExternalClientScanOptions({ cachedOnly: true })).toEqual({ cachedOnly: true })
   })
 
   it('resolves external-client keys in the main process and never accepts a renderer URL', async () => {

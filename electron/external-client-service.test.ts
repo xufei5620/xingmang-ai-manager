@@ -11,7 +11,7 @@ const selectedKey = 'sk-selected-external-client-key'
 const selectedModel = 'claude-sonnet-4-6'
 const hostPlatform = process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux'
 
-function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Platform; nativeClaudePaths?: boolean } = {}) {
+function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Platform; nativeClaudePaths?: boolean; snapshotCache?: boolean } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-client-service-'))
   temporaryDirectories.push(directory)
   const userHome = path.join(directory, 'user')
@@ -53,6 +53,7 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
     assertClaudeDesktopUnmanaged,
     inspectClaudeDesktopStoreVirtualization,
     externalClientRuntime: runtime,
+    ...(options.snapshotCache ? { externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json') } : {}),
   }
   return {
     directory, userHome, managerDataDirectory, claudeProfileDirectory, store, relayFetch, assertClaudeDesktopUnmanaged, inspectClaudeDesktopStoreVirtualization, runtime, runtimeStatuses,
@@ -231,6 +232,47 @@ describe('external client system-service integration', () => {
     ])
     expect(f.runtime.scan).not.toHaveBeenCalled()
     expect(JSON.stringify(f.service.getLastExternalClients())).not.toContain(selectedKey)
+  })
+
+  it('shows the next start the last whole detection until that start has scanned, never as running and without the key', async () => {
+    const f = fixture({ snapshotCache: true })
+    const cacheFile = path.join(f.managerDataDirectory, 'external-client-snapshot.json')
+    await expect(f.service.cachedExternalClients()).resolves.toEqual([])
+    await f.service.configureExternalTool('workbuddy', { apiKey: selectedKey, model: selectedModel })
+    f.runtimeStatuses[1].running = true
+    f.runtimeStatuses[1].version = '2.2600.0.0'
+    const scanned = await f.service.scanExternalClients()
+    expect(scanned[1]).toMatchObject({ tool: 'claudeDesktop', running: true })
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('2.2600.0.0'))
+    expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain(selectedKey)
+    // This launch already has its own answer.
+    await expect(f.service.cachedExternalClients()).resolves.toEqual([])
+
+    const restarted = f.restart()
+    vi.mocked(f.runtime.scan).mockClear()
+    f.relayFetch.mockClear()
+    const cached = await restarted.cachedExternalClients()
+    expect(cached).toEqual(scanned.map((status) => ({ ...status, running: false, cachedAt: expect.any(String) })))
+    expect(cached[0]).toMatchObject({ tool: 'workbuddy', configured: true, configurationSource: 'xingmang', model: selectedModel })
+    // Reading it probes nothing and asks the relay nothing.
+    expect(f.runtime.scan).not.toHaveBeenCalled()
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    // The feedback report still says it has not detected anything this launch.
+    expect(restarted.getLastExternalClients()).toBeNull()
+
+    f.runtimeStatuses[1].version = '2.2700.0.0'
+    const fresh = await restarted.scanExternalClients()
+    expect(fresh.every((status) => status.cachedAt === undefined)).toBe(true)
+    await expect(restarted.cachedExternalClients()).resolves.toEqual([])
+    // scanExternalClients 不等落盘就返回；等这次改名到位再收尾，免得删目录时撞上临时文件。
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('2.2700.0.0'))
+  })
+
+  it('keeps no last detection when it is given no file for it', async () => {
+    const f = fixture()
+    await f.service.scanExternalClients()
+    await expect(f.restart().cachedExternalClients()).resolves.toEqual([])
+    expect(fs.existsSync(path.join(f.managerDataDirectory, 'external-client-snapshot.json'))).toBe(false)
   })
 
   it('keeps a failed management check separate from an installed runtime', async () => {
