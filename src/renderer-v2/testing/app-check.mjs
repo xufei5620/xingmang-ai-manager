@@ -1109,6 +1109,70 @@ test('home reuses the recent list instead of rescanning session folders on every
   } finally { await page.close() }
 })
 
+// 首页一直开着就不会重新挂载。以前从这里打开工具、在终端里聊完再切回来，「最近」一直是打开前那份：
+// 刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，点下去接上的却是刚聊的那条（第四十一批 C）。
+test('home re-reads the recent list when the window comes back after a tool was opened', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  // 等一会儿再数：React 处理完这一下、该读的已经发出去了，才能说「没读」。
+  const focusWindow = () => page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'))
+    return new Promise((resolve) => setTimeout(resolve, 100))
+  })
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    assert.equal(await homeReads(), 1)
+    // 一分钟内、又没打开过工具：回到窗口还是那一份，不读盘。
+    await focusWindow()
+    assert.equal(await homeReads(), 1)
+
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    // 在终端里聊了一条，然后切回星芒。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 1)
+    await focusWindow()
+    await page.getByTestId('home-recent-resume-claude:6').waitFor()
+    assert.equal(await homeReads(), 2)
+    // 刚聊的排第一；my-app 里更早的 claude:1 不再挂「接着聊」，不会再有一颗接到别的对话上的按钮。
+    assert.equal(await page.locator('[data-testid^="home-recent-row-"]').first().getAttribute('data-testid'), 'home-recent-row-claude:6')
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('home re-reads the recent list when the window is shown again, so the open button names the folder just used', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  const visibility = (value) => page.evaluate((state) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    document.dispatchEvent(new Event('visibilitychange'))
+    return new Promise((resolve) => setTimeout(resolve, 100))
+  }, value)
+  try {
+    const button = page.getByTestId('tool-claude-primary')
+    await button.waitFor()
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 这次换了个文件夹：「换一个目录」→「选择其他目录…」，在那儿聊了一条。
+    await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\Selected Project', 500))
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 缩在托盘里、窗口看不见的时候不读。
+    await visibility('hidden')
+    assert.equal(await homeReads(), 1)
+    await visibility('visible')
+    await expect(button).toHaveAttribute('title', '在 C:\\Selected Project 打开')
+    assert.equal(await homeReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home shows the last usage right away instead of asking the account backend on every visit', async () => {
   const page = await open('allInstalled=1')
   const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
@@ -5410,6 +5474,80 @@ test('installing from the maintenance page writes the account Key and refreshes 
     await row.getByText('已安装', { exact: true }).waitFor()
     await page.getByTestId('nav-home').click()
     await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第四十一批 B：「安装卸载」页和首页各记各的那几条路。R-G3 只补了「安装卸载」页装工具这一条。
+test('uninstalling on the maintenance page takes the tool off the home page tools', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('home-your-tools').getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('已安装')
+    await page.getByRole('button', { name: 'Claude Code 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '卸载工具', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载工具？', exact: true }).getByRole('button', { name: '确认卸载', exact: true }).click()
+    await waitForToast(page, '工具已卸载，配置已保留')
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('未安装')
+    // 以前首页还摆着它、写着「打开」，点了才报「未检测到 Claude Code，请先安装」。
+    await page.getByTestId('nav-home').click()
+    await expect(page.getByTestId('home-available').getByTestId('tool-claude-primary')).toHaveText('安装')
+    assert.equal(await page.getByTestId('home-your-tools').getByTestId('tool-row-claude').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+test('installing Node.js on the maintenance page updates the home runtime card', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    const node = page.getByTestId('home-runtime-row-node')
+    await expect(node).toContainText('未装')
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await page.getByTestId('maintenance-runtime-action-node').click()
+    await expect(page.getByTestId('maintenance-runtime-state-node')).toHaveText('已安装')
+    assert.match(await page.getByTestId('maintenance-runtime-node').innerText(), /24\.0\.0/)
+    await page.getByTestId('nav-home').click()
+    await expect(page.getByTestId('home-runtime-row-node')).toContainText('v24.0.0')
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a tool installed from the home page reads as installed on a maintenance page opened earlier', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.getByTestId('nav-home').click()
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('安装中')
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    // 以前任务一完这一行就回到进页时读的那份：又写「未安装」，按钮又是「安装」。
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    assert.match(await page.getByTestId('maintenance-tool-gemini').innerText(), /2\.0\.0/)
+    await expect(page.getByTestId('maintenance-install-gemini')).toHaveText('重新安装')
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a tool uninstalled from the home page reads as missing on a maintenance page opened earlier', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('已安装')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    await page.getByTestId('home-available').getByTestId('tool-row-grok').waitFor()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
+    await page.getByRole('button', { name: 'Grok CLI 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '检查更新', exact: true }).waitFor()
+    assert.equal(await page.getByRole('menuitem', { name: '卸载工具', exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

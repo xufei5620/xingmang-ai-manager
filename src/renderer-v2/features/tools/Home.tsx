@@ -53,8 +53,8 @@ export interface HomeProps {
   externalError: string
   /**
    * 「最近」这份列表在 toolsApi 里缓存 60 秒。外层作废缓存时把这个数字加一，
-   * 首页就重读一遍（装卸工具、打开工具、换账号、主动重新检测都会走到）。
-   * 省略 = 不主动重读（旧行为）。
+   * 首页就重读一遍（装卸工具、换账号、主动重新检测都会走到）。打开工具只作废、不加一：
+   * 那一下终端里还没聊，首页等窗口回到前面时再读。省略 = 不主动重读（旧行为）。
    */
   recentRevision?: number
   onScan(): void
@@ -239,8 +239,8 @@ export function Home(props: HomeProps) {
   }, [account?.userId, props.accountScope, props.api, props.supportsUsage])
   /**
    * 「最近」那三行的「打开文件夹」。只传会话 id，路径由主进程从记录里取并校验。
-   * 失败（文件夹刚被删掉、盘符掉了）只提示一句，不动这份列表：它 60 秒后自己
-   * 会重读，而这一下点击不值得让整张卡重来一遍。
+   * 失败（文件夹刚被删掉、盘符掉了）只提示一句，不动这份列表：过了一分钟、窗口
+   * 再回到前面时它自己会重读，而这一下点击不值得让整张卡重来一遍。
    */
   async function openRecentDirectory(sessionId: string) {
     try { await props.api.openSessionDirectory(sessionId) }
@@ -261,6 +261,21 @@ export function Home(props: HomeProps) {
     })
     return () => { current = false }
   }, [props.api, recentAttempt, props.recentRevision])
+  // 首页一直开着就不会重新挂载：从这里打开工具、在终端里聊完再切回来，「最近」和工具那一行
+  // 「打开 xx」还是打开前读的那份。刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
+  // 而 Claude Code、Gemini CLI、Grok CLI 续接是按文件夹找最近一条（#292），点下去接上的是刚聊的那条。
+  // 所以窗口回到前面时再读一次：一分钟内又没打开过工具，toolsApi 给的还是原来那一份，不读盘，页面也不变。
+  useEffect(() => {
+    function foreground() {
+      if (document.visibilityState !== 'hidden') setRecentAttempt((value) => value + 1)
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+    }
+  }, [])
   const tools = snapshot ? presentTools(snapshot) : []
   const installed = tools.filter((tool) => tool.status.installed || jobs[tool.id])
   // 检测失败的不当成没装：留在「你的工具」里，那一行写「检测失败」、给「重新检测」，不挪进「还可以装」。
