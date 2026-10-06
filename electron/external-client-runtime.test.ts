@@ -392,6 +392,29 @@ describe('external desktop client lifecycle', () => {
     expect(f.execute).toHaveBeenCalledTimes(3)
   })
 
+  // 第四十三批 A：换线路动客户端配置之前看它开没开，要的是这次调用之后才开始的那一轮。
+  it('answers a fresh scan with an inventory taken after the call, never the cached or in-flight one', async () => {
+    const f = fixture()
+    f.setInventory([candidate('opencode')])
+    await f.runtime.scan()
+    f.setInventory([candidate('opencode', { running: true })])
+    expect((await f.runtime.scan())[2].running).toBe(false)
+    expect((await f.runtime.scan({ fresh: true }))[2].running).toBe(true)
+    expect(f.execute).toHaveBeenCalledTimes(2)
+
+    // 盘点已经在跑，客户这时才把 OpenCode 关掉：正在跑的那次读的是关之前的，fresh 等它跑完再盘点一轮。
+    const gate = deferred<ReturnType<typeof commandResult>>()
+    f.execute.mockImplementationOnce(() => gate.promise)
+    const inFlight = f.runtime.scan({ force: true })
+    f.setInventory([candidate('opencode')])
+    const fresh = f.runtime.scan({ fresh: true })
+    expect(f.runtime.scan({ force: true })).toBe(inFlight)
+    gate.resolve(commandResult({ executable: powershell, argv: [] }, JSON.stringify({ clients: [candidate('opencode', { running: true })], errors: {} })))
+    expect((await inFlight)[2].running).toBe(true)
+    expect((await fresh)[2].running).toBe(false)
+    expect(f.execute).toHaveBeenCalledTimes(4)
+  })
+
   it('does not cache a scan that could not tell whether a client is installed', async () => {
     const f = fixture()
     f.execute.mockRejectedValueOnce(new Error('PowerShell probe timed out'))

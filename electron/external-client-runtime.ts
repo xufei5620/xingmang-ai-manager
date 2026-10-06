@@ -152,6 +152,11 @@ export interface ExternalClientMacVerificationFailure {
 export interface ExternalClientScanOptions {
   /** 用户亲手点「重新检测」：不用缓存里那份，但仍与正在跑的那次合并。 */
   force?: boolean
+  /**
+   * 要一轮这次调用之后才开始的盘点（换线路动客户端配置之前看它开没开）：正在跑的那次可能是在
+   * 客户端打开之前起的，等它跑完，再并进那之后起的一轮或者另起一轮。不用缓存。
+   */
+  fresh?: boolean
 }
 
 /** A signature verdict the inventory script may reuse while the file stamp is unchanged. */
@@ -668,8 +673,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     cachedScan = null
   }
   function scan(scanOptions: ExternalClientScanOptions = {}): Promise<ExternalClientRuntimeStatus[]> {
+    if (inFlightScan && scanOptions.fresh) {
+      // 正在跑的那次一结束（它自己先清掉 inFlightScan），之后再有正在跑的也是这次调用之后起的。
+      const after = () => scan({ force: true })
+      return inFlightScan.then(after, after)
+    }
     if (inFlightScan) return inFlightScan
-    if (!scanOptions.force && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
+    if (!scanOptions.force && !scanOptions.fresh && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
     const generation = scanGeneration
     const promise = Promise.all([inspect({ reuseSignatures: true }), resolveWinget()]).then(([inspection, winget]) => {
       const statuses = tools.map((tool) => status(tool, inspection, winget))

@@ -46,10 +46,14 @@ function document(clientsOnDisk: unknown, overrides: Record<string, unknown> = {
 
 describe('external client snapshot cache', () => {
   it('round-trips the last scan, marks every row with when it was saved and never claims a client is still running', () => {
-    const content = serializeExternalClientSnapshotCache(clients(), new Date('2026-10-05T10:00:05.000Z'))
+    const scanned = clients()
+    scanned[0].routePending = true
+    const content = serializeExternalClientSnapshotCache(scanned, new Date('2026-10-05T10:00:05.000Z'))
     const parsed = parseExternalClientSnapshotCache(content!)
 
     expect(parsed).toEqual(clients().map((status) => ({ ...status, running: false, cachedAt: '2026-10-05T10:00:05.000Z' })))
+    // Only an open client waits to switch routes, and nothing here is known to be open.
+    expect(parsed?.[0]).not.toHaveProperty('routePending')
   })
 
   it('keeps only a whole scan: one row for each of the three clients', () => {
