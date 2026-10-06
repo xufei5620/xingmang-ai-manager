@@ -2131,12 +2131,15 @@ describe('Codex Desktop install on macOS', () => {
     const unfinished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' })
     const broken = async (): Promise<MacosCodexAppInspection> => { throw new Error('plutil 没有起来') }
     const finished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: false, detectionError: null })
+    const rejected = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: true, detectionError: '命令执行失败（退出码 1）：codesign', rejected: true })
     const cases: Array<[Array<() => Promise<MacosCodexAppInspection>>, string]> = [
       [[unfinished, unfinished], detectionUnfinishedMessage],
       [[broken, broken], detectionUnfinishedMessage],
-      // A detection that finished and still did not find it has turned that app down.
+      // A detection that finished and still did not find it has turned that app down,
+      // and so has one that checked it and found it is not the official app.
       [[finished], macosDesktopNameTakenMessage('ChatGPT')],
       [[unfinished, finished], macosDesktopNameTakenMessage('ChatGPT')],
+      [[rejected, rejected], macosDesktopNameTakenMessage('ChatGPT')],
     ]
     for (const [attempts, message] of cases) {
       const applications = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-applications-'))

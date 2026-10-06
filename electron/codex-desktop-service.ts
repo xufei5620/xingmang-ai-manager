@@ -3052,7 +3052,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     // 两次都没做完时，安装那一步看到「应用程序」里占着名字、又自称是正版的那份，就说「检测未完成」：
     // 它多半是客户装好的正版，只是没来得及核对，说「不是官方原版」、叫客户移到废纸篓就错了。
-    const detectionUnfinished = !current || current.detectionFailed
+    // 核对下来确定不过关的（签名不对、架构不兼容、可执行文件坏了）不算没做完：再测几次都一样，
+    // 照旧说不是官方原版，客户才知道要把它挪走。
+    const detectionUnfinished = !current || (current.detectionFailed && !current.rejected)
     const architecture = await resolveMacosInstallArchitecture()
     cancellation?.throwIfCancelled()
     const signal = cancellation?.signal

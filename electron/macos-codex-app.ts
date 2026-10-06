@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { runCommand, trustedCommandEnvironment, type CommandSpec } from './command-runner'
+import { CommandRunnerError, runCommand, trustedCommandEnvironment, type CommandSpec } from './command-runner'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { readMacosExecutableArchitectures } from './macos-executable-architectures'
 import { describeProbeFailure } from './probe-failure'
@@ -99,6 +99,14 @@ export interface MacosCodexAppInspection {
   app: MacosCodexAppInfo | null
   detectionFailed: boolean
   detectionError: string | null
+  /**
+   * Set when a bundle that identified itself as Codex was conclusively turned
+   * down (see isBundleRejection) rather than left unchecked, which
+   * `detectionFailed` alone cannot tell apart. Checking again gives the same
+   * answer, so a caller must not describe it as a detection that merely did
+   * not finish.
+   */
+  rejected?: boolean
 }
 
 export interface MacosCodexAppInspectionOptions {
@@ -230,6 +238,9 @@ async function* applicationDirectoryCandidates(directory: string): AsyncGenerato
   }
 }
 
+/** This Mac could not be asked what it runs; it says nothing about the bundle being checked. */
+class ArchitectureProbeUnavailable extends Error {}
+
 function createArchitectureCheck(
   architecture: NodeJS.Architecture,
   command: SystemCommandRunner,
@@ -246,7 +257,7 @@ function createArchitectureCheck(
           await command('/usr/bin/arch', ['-x86_64', '/usr/bin/true'])
           return true
         } catch (error) {
-          throw new Error(`无法确认 Mac 的 Rosetta 兼容环境：${describeProbeFailure(error)}`)
+          throw new ArchitectureProbeUnavailable(`无法确认 Mac 的 Rosetta 兼容环境：${describeProbeFailure(error)}`)
         }
       })()
       return rosettaAvailable
@@ -264,7 +275,7 @@ function createArchitectureCheck(
         throw new Error('macOS 硬件架构检测返回了无效结果')
       } catch (error) {
         // A failed sysctl, including a non-zero exit, does not prove Intel hardware.
-        throw new Error(`无法确认 Mac 是否支持 arm64：${describeProbeFailure(error)}`)
+        throw new ArchitectureProbeUnavailable(`无法确认 Mac 是否支持 arm64：${describeProbeFailure(error)}`)
       }
     })()
     return hardwareArm64
@@ -285,10 +296,27 @@ interface CandidateInspection {
   app: { path: string, version: string | null } | null
   detectionFailed: boolean
   detectionError: string | null
+  rejected?: boolean
 }
 
 /** Shared by every early "this candidate is not a match" exit below. */
 const notAMatch: CandidateInspection = { app: null, detectionFailed: false, detectionError: null }
+
+/**
+ * Tells a bundle that failed validation apart from a check that never reached
+ * an answer. Only the latter can come out differently next time: a command
+ * that timed out or never started, a file that could not be read, or a Mac
+ * that could not be asked what it runs. Anything else is the bundle's own
+ * answer (codesign or plutil ran and exited non-zero, the executable is
+ * missing, not a usable Mach-O file or built for another CPU), and stays the
+ * same however often it is checked.
+ */
+function isBundleRejection(error: unknown): boolean {
+  if (error instanceof CommandRunnerError) return error.code === 'EXIT_NON_ZERO'
+  if (error instanceof ArchitectureProbeUnavailable) return false
+  if (typeof (error as NodeJS.ErrnoException | null)?.code === 'string') return isMissingPath(error)
+  return true
+}
 
 /**
  * Known names and Spotlight hits retain even initial metadata failures: a
@@ -385,7 +413,12 @@ async function inspectCandidate(
     return { app: { path: canonical, version }, detectionFailed: false, detectionError: null }
   } catch (error) {
     if (!matchesIdentity && !reportUnidentifiedFailure) return notAMatch
-    return { app: null, detectionFailed: true, detectionError: describeProbeFailure(error) }
+    return {
+      app: null,
+      detectionFailed: true,
+      detectionError: describeProbeFailure(error),
+      ...(matchesIdentity && isBundleRejection(error) ? { rejected: true } : {}),
+    }
   }
 }
 
@@ -435,6 +468,7 @@ export async function inspectMacosCodexApp(
   // found later still wins outright, while an inconclusive scan reports every
   // check that never produced an answer instead of only the last one.
   const failures = new Set<string>()
+  let rejected = false
 
   for (const candidate of standardCandidates) {
     if (!candidate) continue
@@ -447,6 +481,7 @@ export async function inspectMacosCodexApp(
       }
     }
     if (inspected.detectionError) failures.add(inspected.detectionError)
+    if (inspected.rejected) rejected = true
   }
 
   let spotlightOutput = ''
@@ -470,6 +505,7 @@ export async function inspectMacosCodexApp(
       }
     }
     if (inspected.detectionError) failures.add(inspected.detectionError)
+    if (inspected.rejected) rejected = true
   }
 
   // This fallback walks metadata only, without entering bundles or recursing.
@@ -493,6 +529,7 @@ export async function inspectMacosCodexApp(
           }
         }
         if (inspected.detectionError) failures.add(inspected.detectionError)
+        if (inspected.rejected) rejected = true
       }
     } catch (error) {
       failures.add(describeProbeFailure(error))
@@ -503,5 +540,6 @@ export async function inspectMacosCodexApp(
     app: null,
     detectionFailed: failures.size > 0,
     detectionError: failures.size > 0 ? [...failures].join('；') : null,
+    ...(rejected ? { rejected: true } : {}),
   }
 }
