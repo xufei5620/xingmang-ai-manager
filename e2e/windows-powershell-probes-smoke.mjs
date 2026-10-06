@@ -198,12 +198,12 @@ function Get-AppxPackage {
     assert.deepEqual(data.errors, {})
     assert.deepEqual(data.registryFailures, [])
   }],
-  ['external client inventory still cannot tell when a value it matches on is malformed as well', async () => {
+  ['external client inventory still cannot tell when one of the values it reads is malformed as well', async () => {
     const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' } elseif ($name -eq 'DisplayVersion') { [long]8 }") + windowsExternalClientInventoryScript())
     const data = JSON.parse(output.trim())
     assert.equal(data.clients.length, 1)
     assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
-    assert.deepEqual(data.registryFailures, Array(3).fill({ key: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
+    assert.deepEqual(data.registryFailures, Array(3).fill({ entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
   }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
@@ -516,20 +516,21 @@ checks.push(['external client inventory reads a real uninstall key that holds a 
   const contents = ['Windows Registry Editor Version 5.00', '', `[${key}]`, '"DisplayName"="Xingmang probe smoke"', '"NoModify"=hex(4):01,00,00,00,00,00,00,00', ''].join('\r\n')
   fs.writeFileSync(registryFile, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(contents, 'utf16le')]))
   const reg = path.join(machinePaths.system32, 'reg.exe')
-  await runFile(reg, ['import', registryFile])
   try {
+    // Inside the try: an import that fails halfway may still have created the key.
+    await runFile(reg, ['import', registryFile])
     const premise = (await runEncoded(String.raw`
 $ErrorActionPreference = 'Stop'
 try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catch { 'failed: ' + $_.Exception.Message }
 `)).trim()
     assert.match(premise, /^failed: /, `Get-ItemProperty read the malformed key, so this check no longer stands for the customer's case: ${premise}`)
     const script = windowsExternalClientInventoryScript()
-      + `\n'SMOKE:' + @($registry | Where-Object { [string]$_.PSChildName -eq '${name}' }).Count + ':' + @($registryFailures | Where-Object { $_.key -eq '${name}' }).Count`
+      + `\n'SMOKE:' + @($registry | Where-Object { [string]$_.PSChildName -eq '${name}' }).Count + ':' + @($registryFailures | Where-Object { $_.entry -eq '${name}' }).Count`
     const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
     assert.equal(output.split(/\r?\n/).find((line) => line.startsWith('SMOKE:')), 'SMOKE:1:0', output)
     console.log(`info malformed uninstall key: Get-ItemProperty ${premise}; the inventory read it`)
   } finally {
-    await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::the malformed uninstall key was left behind: ${error.message}`))
+    await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete the malformed uninstall key (left behind, unless the import never created it): ${error.message}`))
   }
 }])
 

@@ -120,7 +120,9 @@ export interface ExternalClientRuntimeOptions {
 
 /** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
 export interface ExternalClientRegistryFailure {
-  key: string
+  // 不叫 key：运行日志把名字正好是 key 的字段当凭据打码（runtime-log.ts 的 SENSITIVE_KEY），
+  // 叫了它，客服在日志里就只看得到 [REDACTED]。
+  entry: string
   reason: string
 }
 
@@ -228,7 +230,7 @@ function registryFailures(value: unknown): ExternalClientRegistryFailure[] {
   try {
     return value.slice(0, maximumRegistryFailures).map((raw) => {
       const item = record(raw)
-      return { key: registryFailureText(item.key, 260), reason: registryFailureText(item.reason, 500) }
+      return { entry: registryFailureText(item.entry, 260), reason: registryFailureText(item.reason, 500) }
     })
   } catch { return [] }
 }
@@ -343,14 +345,14 @@ foreach ($root in $roots) {
           try { $registry.Add((Read-UninstallValues $key)) }
           catch {
             $registryIncomplete = $true
-            if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ key=[string]$key.PSChildName; reason=[string]$failure.Exception.Message }) }
+            if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=[string]$key.PSChildName; reason=[string]$failure.Exception.Message }) }
           }
         }
       }
     }
   } catch {
     $registryIncomplete = $true
-    if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ key=$root; reason=[string]$_.Exception.Message }) }
+    if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=$root; reason=[string]$_.Exception.Message }) }
   }
 }
 $processes = @(Get-Process -Name WorkBuddy,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })

@@ -91,7 +91,7 @@ describe('external desktop client lifecycle', () => {
   // 第四十四批 A：首页只说「部分软件安装记录无法读取」，是哪几条、为什么只进运行日志。
   it('logs which uninstall keys could not be read, once for each distinct list', async () => {
     const registryIncomplete = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
-    const castFailure = { key: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }
+    const castFailure = { entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }
     const onRegistryIncomplete = vi.fn<NonNullable<ExternalClientRuntimeOptions['onRegistryIncomplete']>>()
     let failures: unknown = [castFailure]
     const f = fixture({ onRegistryIncomplete })
@@ -104,18 +104,23 @@ describe('external desktop client lifecycle', () => {
     expect(onRegistryIncomplete.mock.calls).toEqual([[[castFailure]]])
     // Another list is logged again, flattened to one line.
     const root = 'Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
-    failures = [{ key: root, reason: 'Requested registry\r\naccess is not allowed.' }]
+    const rootFailures = [{ entry: root, reason: 'Requested registry\r\naccess is not allowed.' }]
+    failures = rootFailures
     await f.runtime.scan({ force: true })
-    expect(onRegistryIncomplete).toHaveBeenLastCalledWith([{ key: root, reason: 'Requested registry access is not allowed.' }])
-    // A scan that read everything, or printed nothing about it, forgets the last list.
+    expect(onRegistryIncomplete).toHaveBeenLastCalledWith([{ entry: root, reason: 'Requested registry access is not allowed.' }])
+    // A scan that read everything, or printed nothing about it, forgets the last
+    // list: the very same list coming back afterwards is logged again.
     failures = []
     await f.runtime.scan({ force: true })
-    failures = undefined
-    await f.runtime.scan({ force: true })
     expect(onRegistryIncomplete).toHaveBeenCalledTimes(2)
-    failures = [castFailure]
+    failures = rootFailures
     await f.runtime.scan({ force: true })
     expect(onRegistryIncomplete).toHaveBeenCalledTimes(3)
+    failures = undefined
+    await f.runtime.scan({ force: true })
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(4)
   })
 
   it('passes at most ten unreadable keys on, each bounded, whatever the script printed', async () => {
@@ -123,12 +128,12 @@ describe('external desktop client lifecycle', () => {
     const f = fixture({ onRegistryIncomplete })
     f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify({
       clients: [candidate('workbuddy')], errors: {},
-      registryFailures: Array.from({ length: 12 }, (_, index) => ({ key: `key-${index}`, reason: 'x'.repeat(2_000) })),
+      registryFailures: Array.from({ length: 12 }, (_, index) => ({ entry: `entry-${index}`, reason: 'x'.repeat(2_000) })),
     })))
     expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, detectionError: null })
     const logged = onRegistryIncomplete.mock.calls[0][0]
     expect(logged).toHaveLength(10)
-    expect(logged[0]).toEqual({ key: 'key-0', reason: 'x'.repeat(500) })
+    expect(logged[0]).toEqual({ entry: 'entry-0', reason: 'x'.repeat(500) })
   })
 
   it('reads just the matched values again from an uninstall key Get-ItemProperty cannot convert', () => {
