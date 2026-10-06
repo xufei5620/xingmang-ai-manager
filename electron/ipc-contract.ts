@@ -323,10 +323,11 @@ export type RepositoryContext = CodexRepositoryContext
 export interface ChooseWorkspaceOptions {
   createStarter?: boolean
   /**
-   * 和 createStarter 一起用：建不成时说一句，接着弹目录选择器。首页第一次点「打开」走这条
-   * （已知40），不然再点「打开」还是去建、还是建不成。
+   * 首页第一次点「打开」（已知40），和 createStarter 一起用。主进程已经记着一个还在的文件夹时
+   * 直接用它：上一次已经建好、只是没打开成，再点「打开」或「重试」不再建第二个。没有才新建；
+   * 建不成说一句，接着弹目录选择器，不然再点「打开」还是去建、还是建不成。
    */
-  fallbackToPicker?: boolean
+  firstOpen?: boolean
 }
 
 /**
@@ -821,7 +822,7 @@ export interface XingmangInvokeContract {
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /**
    * options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹；
-   * 再带 fallbackToPicker = 建不成时接着弹选择器。
+   * 再带 firstOpen = 首页第一次点「打开」：记着的文件夹还在就用它，建不成时接着弹选择器。
    */
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>

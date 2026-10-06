@@ -1468,7 +1468,7 @@ describe('registerIpcHandlers', () => {
         homeDirectory: () => documents,
       })
 
-      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, fallbackToPicker: true }))
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, firstOpen: true }))
         .resolves.toBe(project)
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
         type: 'error',
@@ -1494,12 +1494,44 @@ describe('registerIpcHandlers', () => {
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
-      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, fallbackToPicker: true }))
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, firstOpen: true }))
         .resolves.toBe(expected)
       expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  // 已知40：上一次建好、记下了，只是没打开成（终端没起来）。渲染层那份快照还不知道，再点「打开」
+  // 或错误框里的「重试」还会带着 firstOpen 来，这时用回它，不再建 my-project-2。
+  it('reuses the folder a failed first open already remembered instead of making another', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const remembered = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-remembered-')))
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: remembered })
+      const handler = electronMocks.handlers.get('workspace:choose')!
+
+      await expect(handler(trustedEvent(), { createStarter: true, firstOpen: true })).resolves.toBe(remembered)
+      expect(fs.readdirSync(documents)).toEqual([])
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+
+      // 记着的文件夹被删掉了就当没有，照旧新建。
+      fs.rmSync(remembered, { recursive: true, force: true })
+      await expect(handler(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(path.join(documents, 'XingmangProjects', 'my-project'))
+      // 「新建项目文件夹并打开」本来就是要一个新的，不看记着的。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: path.join(documents, 'XingmangProjects', 'my-project') })
+      await expect(handler(trustedEvent(), { createStarter: true }))
+        .resolves.toBe(path.join(documents, 'XingmangProjects', 'my-project-2'))
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(remembered, { recursive: true, force: true })
     }
   })
 
@@ -1509,7 +1541,7 @@ describe('registerIpcHandlers', () => {
 
     await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择工作目录的参数无效')
-    await expect(handler(trustedEvent(), { createStarter: true, fallbackToPicker: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, firstOpen: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择工作目录的参数无效')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })

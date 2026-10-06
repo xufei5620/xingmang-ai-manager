@@ -93,9 +93,10 @@ const pageLoading = <div className="v2-business-loading" role="status" data-test
 type AccountTab = typeof accountTabs[number]['value']
 /**
  * 没有现成目录时怎么定：'choose' 弹选择器；'create' 替用户新建项目文件夹（下拉、引导里那一项）；
- * 'createOrChoose' 是首页第一次点「打开」：先替用户新建，建不成说一句再弹选择器（已知40）。
+ * 'firstOpen' 是首页第一次点「打开」（已知40）：主进程记着的文件夹还在就用它，没有才新建，
+ * 建不成说一句再弹选择器。
  */
-type LaunchFolder = 'choose' | 'create' | 'createOrChoose'
+type LaunchFolder = 'choose' | 'create' | 'firstOpen'
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
@@ -1197,9 +1198,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       let workspace = config.workspace
       if (id !== 'codexDesktop') {
         // 不弹选择器的两种：主进程在「文档」下替用户建一个空的项目文件夹；第一次点「打开」
-        // 时建不成再弹选择器（已知40）。
+        // 时先用主进程记着的（上次建好了却没打开成），建不成再弹选择器（已知40）。
         const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(folder === 'choose' ? undefined
-          : folder === 'create' ? { createStarter: true } : { createStarter: true, fallbackToPicker: true })
+          : folder === 'create' ? { createStarter: true } : { createStarter: true, firstOpen: true })
         if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
         workspace = selectedWorkspace
       }
@@ -1577,7 +1578,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
-              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, orChoose) => requestLaunch(id, undefined, 'new', orChoose ? 'createOrChoose' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}

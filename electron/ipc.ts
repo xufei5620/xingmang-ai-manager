@@ -9,11 +9,13 @@ import {
   type WebContents,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
   buildSensitiveWorkspacePrompt,
   classifyWorkspace,
+  resolveRememberedWorkspace,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
@@ -667,12 +669,12 @@ function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   if (value === undefined) return {}
   if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
   const keys = Object.keys(value)
-  if (keys.some((key) => key !== 'createStarter' && key !== 'fallbackToPicker')) throw new Error('选择工作目录的参数无效')
+  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择工作目录的参数无效')
   if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
-  if (value.fallbackToPicker !== undefined && typeof value.fallbackToPicker !== 'boolean') throw new Error('选择工作目录的参数无效')
+  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择工作目录的参数无效')
   return {
     ...(value.createStarter === undefined ? {} : { createStarter: value.createStarter }),
-    ...(value.fallbackToPicker === undefined ? {} : { fallbackToPicker: value.fallbackToPicker }),
+    ...(value.firstOpen === undefined ? {} : { firstOpen: value.firstOpen }),
   }
 }
 
@@ -2468,6 +2470,19 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.extensionService.setRepositoryContext(workspace)
     options.providerExtensionService.setRepositoryRoot(workspace)
   }
+  // 首页第一次点「打开」（已知40）时主进程已经记着的文件夹：上一次建好、记下了，只是没打开成
+  // （比如终端没起来）。渲染层那份快照要等打开成功才知道记下了哪个，再点「打开」或错误框里的
+  // 「重试」还会带着 firstOpen 来，这时用回它，不再建 my-project-2、-3。被删掉了就当没有。
+  function rememberedExistingWorkspace(): string | null {
+    const home = os.homedir()
+    const remembered = resolveRememberedWorkspace(service.readStoredConfig().workspace, { platform: process.platform, home, defaultWorkspace: home })
+    if (!remembered) return null
+    try {
+      return fs.statSync(remembered).isDirectory() ? remembered : null
+    } catch {
+      return null
+    }
+  }
   registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const chooseOptions = parseChooseWorkspaceOptions(rawOptions)
@@ -2476,8 +2491,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     // 首页第一次点「打开」（已知40）建不成时不让人再点一次：说完接着弹选择器。
     const workspace = !chooseOptions.createStarter
       ? await pickWorkspace(parentWindow)
-      : chooseOptions.fallbackToPicker
-        ? await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
+      : chooseOptions.firstOpen
+        ? rememberedExistingWorkspace()
+          ?? await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
           ?? await pickWorkspace(parentWindow)
         : await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
     if (workspace === null) return null

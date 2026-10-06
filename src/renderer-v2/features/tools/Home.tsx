@@ -70,9 +70,10 @@ export interface HomeProps {
   onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchChoice): void
   /**
    * 不选目录，替用户新建一个项目文件夹再打开；缺省 = 不给这个入口（旧行为）。
-   * orChoose：第一次点「打开」时走这条，建不成说一句再弹目录选择器（已知40）。
+   * firstOpen：第一次点「打开」时走这条（已知40）。主进程记着的文件夹还在就用它，没有才新建，
+   * 建不成说一句再弹目录选择器。
    */
-  onLaunchInNewFolder?(tool: ToolId, orChoose?: boolean): void
+  onLaunchInNewFolder?(tool: ToolId, firstOpen?: boolean): void
   onConfigure(tool: ToolId): void
   /** 配置被改动过时按当前账号重写这一个工具的 Key；缺省 = 不给这颗按钮（旧行为）。 */
   onRewriteKey?(tool: ToolId): void
@@ -444,8 +445,10 @@ export function Home(props: HomeProps) {
     const lastWorkspace = job ? null : workspaces[0] ?? null
     // 这个工具没聊过、也从没选过文件夹（已知40）：「打开」不弹选择框，直接替他建好
     // 「文档\XingmangProjects\my-project」在里面打开，新手不会再选到桌面被拦。记录还没读到时
-    // 说不准聊没聊过，照旧弹选择框。
-    const startsFresh = opensWorkspace && workspaces.length === 0 && recent !== null && Boolean(props.onLaunchInNewFolder)
+    // 说不准聊没聊过，照旧弹选择框。聊没聊过看整份记录里它有几条（stats），不只看首页取的那
+    // 60 条：用得少的工具挤不进最近 60 条，不等于没用过。
+    const startsFresh = opensWorkspace && workspaces.length === 0 && recent !== null
+      && recent.stats.byProvider[tool.provider] === 0 && Boolean(props.onLaunchInNewFolder)
     // 归客户自己装的（认不出芯片的 Mac 上的 Codex 桌面端）这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。

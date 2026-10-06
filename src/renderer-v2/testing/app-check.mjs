@@ -848,7 +848,7 @@ test('launch and config actions use the original typed desktop and CLI endpoints
     const choices = calls.filter((entry) => entry.method === 'chooseWorkspace')
     const launches = calls.filter((entry) => entry.method === 'launchCli')
     // 四个工具都没聊过、也没选过文件夹：「打开」替用户建项目文件夹，建不成才弹选择框（已知40）。
-    assert.deepEqual(choices.map((entry) => entry.args), providers.map(() => [{ createStarter: true, fallbackToPicker: true }]))
+    assert.deepEqual(choices.map((entry) => entry.args), providers.map(() => [{ createStarter: true, firstOpen: true }]))
     assert.deepEqual(launches.map((entry) => entry.args), providers.map((provider) => [provider, starterFolder]))
     for (let index = 0; index < launches.length; index += 1) {
       assert.ok(calls.indexOf(choices[index]) < calls.indexOf(launches[index]))
@@ -1482,7 +1482,7 @@ test('a new user opens a CLI in a folder the app creates and can still pick one 
     await page.getByTestId('tool-codex-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const calls = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, fallbackToPicker: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, firstOpen: true }]])
     assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['codex', starterFolder]])
     // 想用自己的文件夹：从「⋯」选，弹的是原来的选择框。
     await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
@@ -1490,13 +1490,35 @@ test('a new user opens a CLI in a folder the app creates and can still pick one 
     await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
     const picked = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(picked.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, fallbackToPicker: true }], []])
+    assert.deepEqual(picked.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, firstOpen: true }], []])
     assert.deepEqual(picked.filter((entry) => entry.method === 'launchCli').at(-1).args, ['claude', 'C:\\Selected Project'])
     // Codex 桌面端自己管工作区，这两个入口都不给。
     await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
     assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
     assert.equal(await page.getByTestId('tool-codexDesktop-choose-workspace').count(), 0)
     await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a CLI with chats older than the home list still asks for a folder on its first open (known 40)', async () => {
+  const page = await open('allInstalled=1&codexOlderSessions=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    // 首页只取最近 60 条，Codex 那两条挤不进来；整份记录里有它，就不是新手，照旧弹选择框。
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['codex', 'C:\\Selected Project']])
+    // 没聊过的 Claude Code 照样替人新建。
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const both = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(both.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[], [{ createStarter: true, firstOpen: true }]])
+    assert.deepEqual(both.filter((entry) => entry.method === 'launchCli').at(-1).args, ['claude', starterFolder])
     await clean(page)
   } finally { await page.close() }
 })
@@ -2453,10 +2475,12 @@ test('a connected tool opens while the last saved scan is still on screen, and i
     // 上次的结果里 Grok 还没装：装不装要等这一轮检测说了算。
     assert.equal(await page.getByTestId('tool-grok-primary').innerText(), '安装')
     assert.equal(await page.getByTestId('tool-grok-primary').isDisabled(), true)
+    // Claude Code 没聊过、也没选过文件夹：第一次点「打开」替人建项目文件夹（已知40）。
+    await recentRead(page)
     await page.getByTestId('tool-claude-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const calls = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\Selected Project']])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', starterFolder]])
     assert.equal(await page.getByTestId('home-cached-scan').count(), 1, '检测还没跑完就已经打开了')
     await page.evaluate(() => window.v2Test.releaseScan())
     await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })

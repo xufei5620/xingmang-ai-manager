@@ -7,8 +7,9 @@
 
 ## 开发
 
-- 已知40：`Home.tsx` 的 `startsFresh`（会打开目录的 CLI、最近记录已读到且这个工具一条都没有、也没记住的目录）时「打开」走
-  `onLaunchInNewFolder(tool, true)`，「⋯」里的新建入口换成 `chooseWorkspaceLabel`；记录还没读到时照旧弹选择框。
-  `ChooseWorkspaceOptions` 加 `fallbackToPicker`，`workspace:choose` 建不成时说完接着走 `pickWorkspace`；
-  `App.tsx` 的 `launch` / `requestLaunch` 把 `newFolder` 布尔换成 `LaunchFolder`（`choose` / `create` / `createOrChoose`）。
-  托盘、Ctrl+1～5、引导里的打开不变。
+- 已知40：`Home.tsx` 的 `startsFresh`（会打开目录的 CLI、最近记录已读到且整份记录里这个工具一条都没有
+  （`stats.byProvider`，不只看首页取的那 60 条）、也没记住的目录）时「打开」走 `onLaunchInNewFolder(tool, true)`，
+  「⋯」里的新建入口换成 `chooseWorkspaceLabel`；记录还没读到时照旧弹选择框。`ChooseWorkspaceOptions` 加 `firstOpen`：
+  `workspace:choose` 先用主进程记着、还在的文件夹（上次建好了却没打开成，再点「打开」或「重试」不建 my-project-2），
+  没有才新建，建不成说完接着走 `pickWorkspace`。`App.tsx` 的 `launch` / `requestLaunch` 把 `newFolder` 布尔换成
+  `LaunchFolder`（`choose` / `create` / `firstOpen`）。托盘、Ctrl+1～5、引导里的打开不变。
