@@ -53,6 +53,16 @@ export function updateOffersDownloadPage(update: Pick<UpdateSnapshot, 'error'> |
 }
 
 /**
+ * 首页右上角的更新提示该不该为这次失败弹出来。开机和每 3 小时自己跑的那次检查没查成
+ * （主进程在 error 上标了 automatic），客户什么都没点：断网时顶上已经挂着断网横幅，网络
+ * 抖一下也不该凭空冒出一条红色「失败」。更新页照常显示这次失败和「重试」，客户要看随时能看；
+ * 客户自己点「检查更新」没查成的照旧弹。下载、安装失败不受影响。
+ */
+export function updateFailureBubbleQuiet(update: Pick<UpdateSnapshot, 'error'> | null | undefined): boolean {
+  return update?.error?.automatic === true
+}
+
+/**
  * 开机那次检查超过时限只是放开了启动界面，真正的请求还在后台跑，算不上「失败」，
  * 气泡用提醒色，不用报错的红色。
  */
