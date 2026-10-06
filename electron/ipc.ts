@@ -3054,7 +3054,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       try {
         await service.adoptRestoredConfig(result.provider, (apiKey) => (
           stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
-        ))
+        ), { fromBackupsPage: true })
       } catch (error) {
         options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但没能登记这份配置的来源', {
           provider: result.provider,
