@@ -65,6 +65,18 @@ describe('external client lifecycle presentation', () => {
     expect(present({ installed: true, configured: true, launchSupported: false }).disabled).toBe(true)
     expect(present({ installed: true, running: true, version: 'v2.0', model: 'deepseek-test' }).detail).toBe('v2.0 · 运行中 · deepseek-test')
   })
+
+  it('tells a running client that its connection route has not moved yet instead of naming the model', () => {
+    // 第四十三批 A：换了线路、客户端开着，这次没换成。
+    for (const tool of ['claudeDesktop', 'workbuddy', 'opencode'] as const) {
+      expect(present({ tool, installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true }).detail)
+        .toBe('v2.0 · 运行中 · 连接线路暂未改动，完全退出后点「重新检测」')
+    }
+    expect(present({ tool: 'claudeDesktop', installed: true, running: true, version: 'v2.0', configurationSource: 'other', configurationReady: true, routePending: true }))
+      .toMatchObject({ configurationStatus: 'ready', action: 'launch', detail: 'v2.0 · 运行中 · 连接线路暂未改动，完全退出后点「重新检测」' })
+    expect(present({ installed: true, running: false, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true }).detail)
+      .toBe('v2.0 · gpt-5.4')
+  })
 })
 
 describe('visibleExternalClients', () => {
