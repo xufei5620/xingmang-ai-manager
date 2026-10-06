@@ -102,7 +102,7 @@ type ToolDef = {
 | Key | active / disabled / expired / exhausted / revoked | 有效 / 已停用 / 已过期 / 额度用完 / 已撤销 | ok / neutral / warn / warn / neutral | 启用 / 编辑 / 撤销 |
 | 余额 | ok / warn / bad / zero | — | ok / warn / bad / bad | 充值 / 马上充值 |
 | 订单 | pending / paid / failed / timeout / unknown | 等待支付 / 已到账 / 支付失败 / 已超时 / 待确认 | warn / ok / bad / neutral / neutral | 重新支付 / 查询 |
-| 订阅 | active / exhausted / expired | 生效中 / 额度已用完 / 已到期 | ok / warn / neutral | 购买 |
+| 订阅 | active / exhausted / expired / cancelled / revoked / suspended / 其他 | 生效中 / 额度已用完 / 已到期 / 已撤销 / 已撤销 / 已停用 / 待确认 | ok / warn / neutral / neutral / neutral / neutral / neutral | 购买 |
 | 异步任务 | queued / running / done / failed | 排队中 / 处理中 / 已完成 / 失败 | neutral / accent / ok / bad | 详情 / 查看结果 / 重试 |
 | 更新 | idle / checking / latest / available / downloading / downloaded / failed | 见 04 §15 | — | 检查 / 下载 / 重启安装 / 重试 |
 | 外接工具 | enabled / disabled / update / authExpired | （开关）/ 可更新 / 授权过期 | — / warn / bad | 更新 / 重新授权 |

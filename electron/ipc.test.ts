@@ -1690,9 +1690,18 @@ describe('registerIpcHandlers', () => {
       architecture: process.arch,
       isMac: process.platform === 'darwin',
     })
+    expect(handler(trustedEvent())).not.toHaveProperty('processElevated')
     expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow(
       '已拒绝来自非应用页面的操作请求',
     )
+  })
+
+  it('tells the renderer the app already runs with administrator rights, so it stops promising a consent window', () => {
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { windowsProcessElevated: true })
+    const handler = electronMocks.handlers.get('platform:get-capabilities')!
+
+    expect(handler(trustedEvent())).toMatchObject({ architecture: process.arch, processElevated: true })
+    expect(Object.isFrozen(handler(trustedEvent()))).toBe(true)
   })
 
   it('routes Python 3.12 installation through the trusted service and runtime log', async () => {

@@ -119,7 +119,7 @@ import {
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
 import { firstProblemAnchor, useRowFocus } from './features/app/row-focus'
-import { publishDiagnosticsCounts } from './features/app/environment-status'
+import { diagnosticsRevision, publishDiagnosticsCounts, useDiagnosticsRevision } from './features/app/environment-status'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
 import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
@@ -463,11 +463,17 @@ export function HealthPage({
   /** 外壳手上的登录状态：「星芒 AI 网络」给不给「去处理」看它（networkRouteSetting）；缺省 = 按访客算，不给（旧行为）。 */
   accountSession?: AccountSessionState
 } & BusinessActions) {
-  // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
-  const load = useCallback(() => api.runDiagnostics().then((report) => {
-    publishDiagnosticsCounts(report.counts)
-    return report
-  }), [api])
+  // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。开跑时记下环境改过几次：
+  // 跑到一半首页那边装完、改完了，这一轮的数就不交给状态栏（已知6）。
+  const checkedRevision = useRef(diagnosticsRevision())
+  const load = useCallback(() => {
+    const started = diagnosticsRevision()
+    checkedRevision.current = started
+    return api.runDiagnostics().then((report) => {
+      publishDiagnosticsCounts(report.counts, started)
+      return report
+    })
+  }, [api])
   const resource = useResource(load)
   const pageRef = useRef<HTMLElement>(null)
   const accountSiteId = accountSession ? signedInSiteId(accountSession) : null
@@ -514,6 +520,14 @@ export function HealthPage({
     if (!resource.loading) void resource.reload()
     setCodexProbe((value) => value + 1)
   })
+  // 这一页开着的时候环境变了（首页那边装完了；在这一页点「去处理」改好了设置、重新写了 Key），
+  // 状态栏已经退回「环境待检测」。这一页就是看检查结果的地方，跟着重查一次，两处说的才一样（已知6）。
+  // 还在查就等这一轮查完再查：它开跑时环境还没改。
+  const revision = useDiagnosticsRevision()
+  useEffect(() => {
+    if (active === false || resource.loading || checkedRevision.current === revision) return
+    void resource.reload()
+  }, [active, resource.loading, resource.reload, revision])
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
       responsesEpoch.current += 1
@@ -1405,6 +1419,8 @@ export function UpdatesPage({
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
   const [isWindows, setIsWindows] = useState(false)
+  // 星芒这次本身就带着管理员权限在跑（自带 Administrator 之类）：装更新不弹授权窗口，确认框不说会弹（已知19）。
+  const [processElevated, setProcessElevated] = useState(false)
   const [ownSettings, setOwnSettings] = useState<AppSettings | null>(null)
   const [settingsReadFailed, setSettingsReadFailed] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
@@ -1419,6 +1435,7 @@ export function UpdatesPage({
         if (!current) return
         setIsMac(capability.platform === 'macos')
         setIsWindows(capability.platform === 'windows')
+        setProcessElevated(capability.processElevated === true)
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -1760,7 +1777,7 @@ export function UpdatesPage({
           ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
           : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
-        {isWindows && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
+        {isWindows && !processElevated && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
@@ -1885,10 +1902,16 @@ export function MaintenancePage({
   installTool,
   cancelToolInstall,
   toolJobs,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
   const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
+  // 首页的任务跑完时下面那段会重读；别处的变化（比如在终端里自己装、卸了工具）这一页看不见，
+  // 再显示时也重读一次（已知5）。还在读就不再起一轮：那一轮本来就是刚起的。
+  useReloadWhenShown(active, () => {
+    if (!resource.loading) void resource.reload()
+  })
   const snapshot = resource.data?.snapshot ?? null
   const capability = resource.data?.capability ?? null
   const failures = resource.data?.failures ?? []
@@ -2181,7 +2204,7 @@ export function MaintenancePage({
             const lead = withElevationNotice(
               tool.vendor,
               externalHint ?? (id === 'codexDesktop' && !status?.installed && !statusUnknown && !detectionFailed
-                ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install, capability?.processElevated)
                 : null),
             )
             return (
@@ -2299,7 +2322,7 @@ export function MaintenancePage({
                   : '命令行工具需要的运行环境'
                 : '部分工具需要的可选运行环境',
               id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
-                ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
+                ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall, capability?.processElevated)
                 : null,
             )
             // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而

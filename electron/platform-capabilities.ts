@@ -22,6 +22,13 @@ export interface PlatformCapabilities {
     uninstall: boolean
     windowsStore: boolean
   }>
+  /**
+   * Windows 上这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、
+   * 右键「以管理员身份运行」，见 windows-elevation.ts 的 highIntegrity）：装 Node.js、Codex
+   * 桌面端、装更新时 Windows 不弹授权窗口，界面就不说会弹。这一项要启动时问过才知道，不在
+   * platformCapabilitiesFor 里，由 platform:get-capabilities 叠上去。缺省 = 不是或没问出来（旧行为）。
+   */
+  readonly processElevated?: boolean
 }
 
 function platformFamily(platform: string): PlatformFamily {

@@ -442,24 +442,68 @@ describe('external desktop client lifecycle', () => {
     expect((await f.runtime.scan())[0].installed).toBe(true)
   })
 
-  it('offers remembered signatures to display scans only, never to install or launch', async () => {
+  it('offers remembered signatures to display scans, only the verified passes to a launch, and none to install', async () => {
     const f = fixture()
-    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
+    f.setInventory([
+      candidate('opencode', { signatureStamp: '123:456:789' }),
+      candidate('workbuddy', { signatureStamp: '1:2:3', signatureStatus: 'HashMismatch' }),
+    ])
     await f.runtime.scan()
     await f.runtime.scan({ force: true })
     await f.runtime.launch('opencode')
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('未检测到客户端')
     const scripts = f.execute.mock.calls
       .filter(([spec]) => spec.executable === powershell)
       .map(([spec]) => Buffer.from(spec.argv.at(-1)!, 'base64').toString('utf16le'))
     const known = (script: string) => JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+    const opencode = { path: candidate('opencode').path, stamp: '123:456:789', status: 'Valid', subject: subjects.opencode, version: '1.2.3' }
+    const workbuddy = { path: candidate('workbuddy').path, stamp: '1:2:3', status: 'HashMismatch', subject: subjects.workbuddy, version: '1.2.3' }
     expect(known(scripts[0])).toEqual([])
-    expect(known(scripts[1])).toEqual([{ path: candidate('opencode').path, stamp: '123:456:789', status: 'Valid', subject: subjects.opencode }])
-    // launch() inspects before it opens anything; that inspection verifies the signature anew.
-    expect(known(scripts[2])).toEqual([])
+    expect(known(scripts[1])).toEqual([opencode, workbuddy])
+    // 已知68：打开之前那次只认验过并且通过的，不用再等一遍验签；上次没通过的照旧现验。
+    expect(known(scripts[2])).toEqual([opencode])
+    // Installing verifies what it finds anew, before and after.
+    expect(scripts.length).toBeGreaterThan(3)
+    expect(scripts.slice(3).map(known)).toEqual(scripts.slice(3).map(() => []))
+  })
+
+  it('lets a launch lean on a pass it or a scan made, never on a remembered failure', async () => {
+    const f = fixture()
+    const known = (index: number) => {
+      const script = Buffer.from(f.execute.mock.calls.filter(([spec]) => spec.executable === powershell)[index][0].argv.at(-1)!, 'base64').toString('utf16le')
+      return JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+    }
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789', signatureStatus: 'HashMismatch' })])
+    await f.runtime.scan()
+    // The failure is not offered, so this launch has the script check the file again (the stand-in passes now).
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
+    await f.runtime.launch('opencode')
+    expect(known(1)).toEqual([])
+    // The pass that launch made is what the next one leans on.
+    await f.runtime.launch('opencode')
+    expect(known(2)).toEqual([{ path: candidate('opencode').path, stamp: '123:456:789', status: 'Valid', subject: subjects.opencode, version: '1.2.3' }])
+    expect(f.launchProcess).toHaveBeenCalledTimes(2)
+  })
+
+  it('forgets a pass once the registered version is too long to compare exactly', async () => {
+    const f = fixture()
+    const known = (index: number) => {
+      const script = Buffer.from(f.execute.mock.calls.filter(([spec]) => spec.executable === powershell)[index][0].argv.at(-1)!, 'base64').toString('utf16le')
+      return JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+    }
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
+    await f.runtime.scan()
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789', version: 'x'.repeat(257) })])
+    await f.runtime.scan({ force: true })
+    expect(known(1)).toHaveLength(1)
+    // Cut short or left blank it would match another version, or none at all.
+    await f.runtime.launch('opencode')
+    expect(known(2)).toEqual([])
   })
 
   it('embeds remembered signatures as base64 so registry text never becomes PowerShell source', () => {
-    const hostile = { path: "C:\\Evil'; Start-Process calc; '\\WorkBuddy.exe", stamp: '1:2:3', status: "Valid'$(calc)", subject: '`"; calc' }
+    const hostile = { path: "C:\\Evil'; Start-Process calc; '\\WorkBuddy.exe", stamp: '1:2:3', status: "Valid'$(calc)", subject: '`"; calc', version: "1'; calc; '" }
     const script = windowsExternalClientInventoryScript([hostile])
     expect(script).not.toContain('Start-Process')
     expect(script).not.toContain('calc')
