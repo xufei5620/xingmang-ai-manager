@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolRow, toastDurationMs, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexConfigBroken, codexNeedsRepair, configBrokenDetail, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, brokenConfigDetails, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { accountKeyChangeInProgress, accountKeyChangePending, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
@@ -468,8 +468,8 @@ export function Home(props: HomeProps) {
     const hooksDetail = snapshot?.config.providers[tool.provider].cliHooksShellChanged ? cliHooksShellChangedDetail : cliHooksStaleDetail
     const hooksAutoRepaired = snapshot !== null && !ownershipPending && cliHooksWereAutoRepaired(snapshot.config.providers[tool.provider])
     const hooksMissing = snapshot !== null && !ownershipPending && cliHooksMissing(snapshot.config.providers[tool.provider])
-    // Codex 自己都读不了的文件，里面读出来的 Key、来源都不作数，排在那些判断前面先说。
-    const broken = snapshot !== null && !ownershipPending && codexConfigBroken(snapshot.config.providers[tool.provider], tool.provider)
+    // 工具自己都读不了的文件，里面读出来的 Key、来源都不作数，排在那些判断前面先说。
+    const broken = snapshot !== null && !ownershipPending ? brokenConfigOf(snapshot.config.providers[tool.provider], tool.provider) : null
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
       : broken ? 'configBroken'
@@ -523,15 +523,18 @@ export function Home(props: HomeProps) {
     const waitingForScan = loading && !launchReadyBeforeScan(tool)
     // 扫描结束后仍可能在写入和复核新线路，旧配置不能在这段时间被工具读走。
     const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
+    // 文件坏了时读出来的来源不作数（见 brokenConfigOf），不说成官方账号。
+    const officialLine = tool.source === 'official' && !broken && snapshot ? officialAccountSubtitle(snapshot.config.providers[tool.provider], Date.now()) : null
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
       disabled={waitingForScan || waitingForAccount || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configBroken' ? configBrokenDetail : status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configBroken' && broken ? brokenConfigDetails[broken] : status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
-      model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
+      model={tool.status.installed ? officialLine ? officialLine.text : tool.model || undefined : undefined}
+      modelHint={tool.status.installed ? officialLine?.renewal : undefined}
       progress={job?.percent}
       extraAction={installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>

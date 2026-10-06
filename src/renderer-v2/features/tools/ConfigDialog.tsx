@@ -4,7 +4,7 @@ import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, ProviderI
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
 import { officialAccountNames, officialAccountNotes, tools } from '../../registry/tools'
-import { foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
+import { brokenConfigOf, brokenConfigRepairTarget, foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
@@ -81,10 +81,14 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
   const sourceStorage = getSourceMarkerStorage()
   const switchLabel = switchAccountLabel(accountName)
   const currentSource = sourceFor(native, provider, sourceStorage)
+  // 工具自己读不了的文件，星芒读不出 Key 时会认成官方账号（已知44）。这时先选上首页「修好它」
+  // 会用的那边，展开「高级」点重置就和点「修好它」一样；读得出官方登录的照旧是官方账号。
+  const broken = brokenConfigOf(native, provider)
+  const initialSource = currentSource === 'official' && broken && brokenConfigRepairTarget(broken, native) === 'account' ? 'account' : currentSource
   const draft: ConfigDraft = drafts[provider] ?? {
     // 「被改过」在这个对话框里和「来源未确认」走同一条路：都要先让用户挑一个来源，
     // 挑完保存就把所有权重新写清楚。
-    source: currentSource === 'missing' ? 'account' : currentSource === 'changed' ? 'unknown' : currentSource,
+    source: initialSource === 'missing' ? 'account' : initialSource === 'changed' ? 'unknown' : initialSource,
     keyId: initialKeyChoice(native), secret: '', model: native.model || defaultCliModels[provider], validatedSecret: '', dirty: false,
   }
   const selectedKey = keys.find((key) => String(key.id) === draft.keyId && key.status === 1)

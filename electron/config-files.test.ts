@@ -265,20 +265,20 @@ describe('native CLI configuration files', () => {
     // A duplicate key written by another tool stops Codex Desktop at
     // 「无法加载组织设置」 before anything else loads.
     fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
-    expect(inspectProviderConfig('codex', roots).codexConfigBroken).toBe(true)
+    expect(inspectProviderConfig('codex', roots).configBroken).toBe(true)
     // A Chinese comment saved as GBK: this app still reads the file, Codex does not.
     fs.writeFileSync(configPath, Buffer.concat([Buffer.from('# '), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from('\nmodel = "a"\n')]))
     expect(inspectProviderConfig('codex', roots).model).toBe('a')
-    expect(inspectProviderConfig('codex', roots).codexConfigBroken).toBe(true)
+    expect(inspectProviderConfig('codex', roots).configBroken).toBe(true)
     // TOML 1.1 that Codex reads fine is not broken, although this app cannot parse it.
     fs.writeFileSync(configPath, 'model = "a"\nxm = {\n  b = 1,\n}\n', 'utf8')
-    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
     fs.writeFileSync(configPath, 'model = "a"\n', 'utf8')
-    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
     const grokPath = providerConfigPaths('grok', roots)[0]
     fs.mkdirSync(path.dirname(grokPath), { recursive: true })
     fs.writeFileSync(grokPath, 'model = "a"\nmodel = "b"\n', 'utf8')
-    expect(inspectProviderConfig('grok', roots)).not.toHaveProperty('codexConfigBroken')
+    expect(inspectProviderConfig('grok', roots)).not.toHaveProperty('configBroken')
   })
 
   it('resets an unreadable Codex config.toml for a ChatGPT login and keeps the login', () => {
@@ -299,7 +299,7 @@ describe('native CLI configuration files', () => {
     expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
     const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens: { access_token: string } }
     expect(auth.tokens.access_token).toBe('access-token')
-    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
     const backup = saved.backups.find((entry) => entry.startsWith(`${configPath}.bak.`))
     expect(backup).toBeDefined()
     expect(fs.readFileSync(String(backup), 'utf8')).toBe('model = "a"\nmodel = "b"\n')
@@ -320,18 +320,18 @@ describe('native CLI configuration files', () => {
       OPENAI_API_KEY: 'sk-exchanged-by-login',
       tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
     }), 'utf8')
-    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt', hasApiKey: true, matchesRelay: false, codexConfigBroken: true })
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt', hasApiKey: true, matchesRelay: false, configBroken: true })
 
-    // 只更新照旧不碰：分不清来源时宁可不动。
+    // 只更新照旧不碰，指去重置：分不清来源时宁可不动。
     expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
-      .toThrow('当前配置不是星芒中转')
+      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。/)
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
 
     expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
     const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens: { access_token: string } }
     expect(auth.tokens.access_token).toBe('access-token')
     expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt' })
-    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
   })
 
   it('still refuses to reset a readable third-party Codex setup behind a ChatGPT login', () => {
@@ -350,6 +350,156 @@ describe('native CLI configuration files', () => {
     expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset'))
       .toThrow('当前配置不是星芒中转')
     expect(fs.readFileSync(configPath, 'utf8')).toBe(thirdParty)
+  })
+
+  it('tells the home page when Claude Code, Gemini CLI or Codex cannot read their own JSON files', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const [geminiPath] = providerConfigPaths('gemini', roots)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    for (const filePath of [claudePath, geminiPath, authPath]) fs.mkdirSync(path.dirname(filePath), { recursive: true })
+
+    // Claude Code skips a settings.json with a trailing comma, so the key this app
+    // cannot read either is not the official account in disguise.
+    fs.writeFileSync(claudePath, '{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" }, }\n', 'utf8')
+    expect(inspectProviderConfig('claude', roots)).toMatchObject({ configBroken: true, hasApiKey: false })
+    // A byte order mark is fine for Claude Code, but stops Gemini CLI and Codex.
+    fs.writeFileSync(claudePath, '\uFEFF{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" } }\n', 'utf8')
+    expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('configBroken')
+    fs.writeFileSync(geminiPath, '\uFEFF{ "security": { "auth": { "selectedType": "gemini-api-key" } } }\n', 'utf8')
+    expect(inspectProviderConfig('gemini', roots)).toMatchObject({ configBroken: true, authType: 'gemini-api-key' })
+    fs.writeFileSync(geminiPath, '// 我的设置\n{ "security": { "auth": { "selectedType": "gemini-api-key" } } }\n', 'utf8')
+    expect(inspectProviderConfig('gemini', roots)).not.toHaveProperty('configBroken')
+    fs.writeFileSync(authPath, '\uFEFF{ "OPENAI_API_KEY": "sk-relay" }\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthBroken: true, hasApiKey: true })
+    fs.writeFileSync(authPath, '{ "OPENAI_API_KEY": "sk-relay" }\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexAuthBroken')
+    expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('codexAuthBroken')
+  })
+
+  it('resets the account config over an auth.json Codex cannot read, after backing it up', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(auth.active), { recursive: true })
+    const broken = '{"OPENAI_API_KEY": "sk-old-re'
+    fs.writeFileSync(auth.active, broken, 'utf8')
+    const savedLogin = JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'saved' } })
+    fs.writeFileSync(auth.chatgpt, savedLogin, 'utf8')
+
+    // Merge still refuses to rewrite what it cannot read, and says where the reset is.
+    expect(() => saveProviderConfig('codex', 'sk-new', testModels.codex, 'merge', roots, {}, providerBaseUrls))
+      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。.*「重置为初始状态」/)
+    expect(fs.readFileSync(auth.active, 'utf8')).toBe(broken)
+
+    const saved = saveProviderConfig('codex', 'sk-new', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-new' })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ hasApiKey: true, matchesRelay: true })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).not.toHaveProperty('codexAuthBroken')
+    const backup = saved.backups.find((entry) => entry.startsWith(`${auth.active}.bak.`))
+    expect(fs.readFileSync(String(backup), 'utf8')).toBe(broken)
+    // The ChatGPT login saved earlier is still there to switch back to.
+    expect(fs.readFileSync(auth.chatgpt, 'utf8')).toBe(savedLogin)
+  })
+
+  it('resets the official config over an auth.json Codex cannot read', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(auth.active), { recursive: true })
+    fs.writeFileSync(auth.active, Buffer.alloc(64))
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。/)
+    const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    // No ChatGPT login to put back: no auth.json at all is how Codex itself says
+    // "not logged in", and opening it asks for a login.
+    expect(fs.existsSync(auth.active)).toBe(false)
+    const backup = saved.backups.find((entry) => entry.startsWith(`${auth.active}.bak.`))
+    expect(fs.readFileSync(String(backup))).toEqual(Buffer.alloc(64))
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexAuthBroken')
+
+    // With a saved ChatGPT login, the reset puts that login back instead.
+    fs.writeFileSync(auth.active, '{"auth_mode": "chatgpt",', 'utf8')
+    fs.writeFileSync(auth.chatgpt, JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'saved' } }), 'utf8')
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toMatchObject({ auth_mode: 'chatgpt', tokens: { access_token: 'saved' } })
+  })
+
+  // Codex 0.159 reads an auth.json of `{}` as a ChatGPT login without tokens: every
+  // request fails with "plan type is required for chatgpt authentication" and it
+  // never asks for a login. Switching a relay that never had a ChatGPT login back
+  // to official used to leave exactly that behind.
+  it('leaves no empty auth.json behind when switching a relay without a ChatGPT login to official', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(fs.existsSync(auth.active)).toBe(false)
+    expect(JSON.parse(fs.readFileSync(auth.apikey, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay' })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ hasApiKey: false, codexAuthMode: null })
+    saveProviderConfig('codex', 'sk-relay-again', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay-again' })
+  })
+
+  it('keeps an auth.json that still holds something else when switching to official', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    fs.writeFileSync(auth.active, JSON.stringify({ OPENAI_API_KEY: 'sk-relay', personal_access_token: 'pat' }), 'utf8')
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ personal_access_token: 'pat' })
+  })
+
+  it('puts a removed auth.json back when a later file in the same switch cannot commit', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    const configs = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const before = directoryFileSnapshot(roots.codexHome)
+
+    expect(() => executeFilePlans([
+      { path: auth.active, remove: true },
+      { path: configs.active, content: 'model = "x"\n' },
+    ], {
+      beforeReplace(file) { if (file === configs.active) throw new Error('fixture failure') },
+    }, roots.codexHome)).toThrow('fixture failure')
+
+    const after = directoryFileSnapshot(roots.codexHome)
+    expect(after[path.basename(auth.active)]).toBe(before[path.basename(auth.active)])
+    expect(after[path.basename(configs.active)]).toBe(before[path.basename(configs.active)])
+    expect(Object.keys(after).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('points a Claude Code or Gemini CLI switch to official at the reset instead of calling it official already', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const [geminiPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(claudePath), { recursive: true })
+    fs.mkdirSync(path.dirname(geminiPath), { recursive: true })
+    fs.writeFileSync(claudePath, '{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" }, }\n', 'utf8')
+    fs.writeFileSync(geminiPath, '{ "security": ', 'utf8')
+
+    // 以前这里说「当前已经在使用你自己的官方订阅账号，无需切换」，方向全错（已知44 ①）。
+    expect(() => switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Claude Code 的配置文件里有写错的地方，星芒没有改动它。/)
+    expect(() => switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Gemini CLI 的配置文件里有写错的地方，星芒没有改动它。/)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
+    expect(JSON.parse(fs.readFileSync(claudePath, 'utf8'))).toMatchObject({ env: { DISABLE_AUTOUPDATER: '1' } })
+    expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('configBroken')
   })
 
   it('points the customer at the reset when a save cannot read the existing config', () => {
@@ -1007,6 +1157,25 @@ describe('native CLI configuration files', () => {
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(asRecord(merged.env)?.DISABLE_AUTOUPDATER).toBe('1')
     expect(asRecord(merged.env)?.CUSTOM_TOKEN).toBe('preserved')
+  })
+
+  it('skips command confirmation on merge only when the user wrote no permission mode', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ permissions: { allow: ['Bash(ls:*)'] } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const filled = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(filled.permissions)?.defaultMode).toBe('bypassPermissions')
+    expect(asRecord(filled.permissions)?.allow).toEqual(['Bash(ls:*)'])
+    expect(filled.skipDangerousModePermissionPrompt).toBe(true)
+
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }, null, 2)}\n`, 'utf8')
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const chosen = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(chosen.permissions)?.defaultMode).toBe('acceptEdits')
   })
 
   it('keeps the Claude self-updater off after switching back to the official account', () => {
@@ -3517,6 +3686,25 @@ describe('bringing an older account config up to the current template', () => {
     expect(parsed.language).toBe('English')
     expect(parsed.cleanupPeriodDays).toBe(365)
     expect(parsed.model).toBe('claude-opus-4-6')
+    expect(parsed.permissions.defaultMode).toBe('bypassPermissions')
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(true)
+  })
+
+  it('leaves a Claude permission mode the user chose when filling defaults', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const settingsPath = providerConfigPaths('claude', roots)[0]
+    writeFile(settingsPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+      permissions: { defaultMode: 'default' },
+      skipDangerousModePermissionPrompt: false,
+    }))
+
+    fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.permissions.defaultMode).toBe('default')
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(false)
   })
 
   it('fills Gemini defaults and adds the helper model mapping only when none is there', () => {
