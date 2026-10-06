@@ -37,7 +37,8 @@ const {
 const { parseWindowsProcessesJson } = compiled('codex-desktop')
 const { windowsExternalClientInventoryScript } = compiled('external-client-runtime')
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
-const { trustedCommandEnvironment } = compiled('command-runner')
+const { trustedCommandEnvironment, windowsSystemExecutable } = compiled('command-runner')
+const { applyWindowsRootHardening } = compiled('trusted-temp')
 const {
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAvailability,
@@ -494,6 +495,51 @@ for (const [name, limit, run] of trustedProbes) {
     assert.ok(elapsed < limit, `took ${elapsed}ms, the app gives it ${limit}ms`)
   }])
 }
+
+// The managed-root hardening, run for real once. The unit tests pin the icacls
+// ORDER; this proves the three commands actually run on this runner - the
+// contents reset uses a `\*` wildcard, which has to match real items - and that
+// the root is locked to SYSTEM/Administrators the instant the first step
+// returns. That is the point of hardening the root first: the window a standard
+// user could once write into (while the old whole-tree reset left the root
+// inheriting ProgramData) is closed before the reset and setowner run. Needs the
+// elevated runner, as /setowner Administrators does.
+checks.push(['the managed-root hardening locks the root before resetting its contents', async () => {
+  const root = path.join(scratch, 'root-hardening')
+  fs.mkdirSync(path.join(root, 'Cli', 'npm', 'node_modules'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'Cli', 'npm', 'node_modules', 'payload.js'), '// content')
+  const icacls = windowsSystemExecutable('icacls.exe', process.env, 'win32', machinePaths)
+  // The principals a standard user would write through; none may appear in the
+  // root's DACL once it is hardened.
+  const untrustedWrite = /\b(?:BUILTIN\\Users|Everyone|Authenticated Users|S-1-5-32-545|S-1-1-0|S-1-5-11)\b/i
+
+  let afterHarden = null
+  let step = 0
+  await applyWindowsRootHardening(root, async (args, timeoutMs) => {
+    await new Promise((resolve, reject) => {
+      const child = execFile(icacls, args, { env: trustedCommandEnvironment(), windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error) => error ? reject(error) : resolve())
+      child.stdin?.end()
+    })
+    step += 1
+    // Right after the harden step, before the reset and setowner touch anything:
+    // the root's own ACL must already exclude every standard-user principal.
+    if (step === 1) afterHarden = await runFile(icacls, [root])
+  })
+  assert.ok(afterHarden, 'the harden step did not run')
+  assert.doesNotMatch(afterHarden, untrustedWrite, `the root is still writable by a standard user right after hardening:\n${afterHarden}`)
+
+  const snapshot = inspectWindowsDirectoryTreeAcl(root, machinePaths)
+  const trusted = new Set(['S-1-5-18', 'S-1-5-32-544'])
+  assert.ok(snapshot.entries.length > 0)
+  for (const entry of snapshot.entries) {
+    assert.ok(trusted.has(String(entry.ownerSid).toUpperCase()), `${entry.ownerSid} owns a hardened item`)
+    assert.equal(entry.reparsePoint, false)
+    for (const sid of entry.allowWriteSids) {
+      assert.ok(trusted.has(String(sid).toUpperCase()), `${sid} can write a hardened item`)
+    }
+  }
+  return `${snapshot.entries.length} entr(ies), root locked after harden`
+}])
 
 function runFile(executable, argv) {
   return new Promise((resolve, reject) => {

@@ -3,13 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  applyWindowsRootHardening,
   createTrustedTemporaryDirectory,
   isExclusivelyOwnedDirectory,
   protectWindowsDirectory,
   trustedInstallerCacheRoot,
   validateWindowsAclSnapshot,
   windowsAclHardeningArguments,
-  windowsAclResetArguments,
+  windowsAclResetContentsArguments,
 } from './trusted-temp'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { clearTrustedManagedWindowsRootsForTests } from './managed-path-trust'
@@ -90,7 +91,7 @@ describe('trusted installer cache', () => {
   })
 
   it('grants on the root only and lets descendants inherit', () => {
-    const reset = windowsAclResetArguments('D:\\ProgramData\\XingMangAI')
+    const reset = windowsAclResetContentsArguments('D:\\ProgramData\\XingMangAI')
     const harden = windowsAclHardeningArguments('D:\\ProgramData\\XingMangAI')
 
     // 实测：(OI)(CI) 是容器继承标志，带着它的 /grant:r 在文件对象上会被丢弃，
@@ -103,6 +104,41 @@ describe('trusted installer cache', () => {
     // 子项改由 reset 恢复继承；这一步同时修复历史版本留下的空 DACL。
     expect(reset).toContain('/reset')
     expect(reset).toContain('/T')
+    // 重置只针对内容：目标带 \* 通配符，绝不是根本身，否则根会重新继承
+    // ProgramData 的可写 ACL，正是收紧要堵掉的那个窗口。
+    expect(reset[0]).toBe('D:\\ProgramData\\XingMangAI\\*')
+    expect(reset).not.toContain('D:\\ProgramData\\XingMangAI')
+  })
+
+  it('hardens the root before touching its contents, and never resets the root itself', async () => {
+    const root = 'D:\\ProgramData\\XingMangAI'
+    const calls: string[][] = []
+    const runIcacls = async (args: string[]) => { calls.push(args) }
+
+    await applyWindowsRootHardening(root, runIcacls, () => true)
+
+    // 加固根必须是第一条 icacls，重置内容在它之后——这正是关掉可写窗口的顺序。
+    expect(calls[0]).toEqual(windowsAclHardeningArguments(root))
+    expect(calls[1]).toEqual(windowsAclResetContentsArguments(root))
+    expect(calls[2]).toEqual([root, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q'])
+    // 任何一条 icacls 都不能把根本身 /reset，否则根会重新对 Users 开放。
+    for (const args of calls) {
+      expect(args.includes('/reset') && args[0] === root).toBe(false)
+    }
+  })
+
+  it('skips the contents reset when the root is empty so the wildcard never errors', async () => {
+    const root = 'D:\\ProgramData\\XingMangAI'
+    const calls: string[][] = []
+    const runIcacls = async (args: string[]) => { calls.push(args) }
+
+    await applyWindowsRootHardening(root, runIcacls, () => false)
+
+    // 空目录没有内容要重置，\* 通配符会被 icacls 当成错误，所以只有加固根与改属主。
+    expect(calls).toEqual([
+      windowsAclHardeningArguments(root),
+      [root, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q'],
+    ])
   })
 
   it('rejects a preexisting root owned by a non-administrator account', async () => {
