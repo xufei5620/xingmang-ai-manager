@@ -29,6 +29,8 @@ import {
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
   executeFilePlans,
+  forgetStaleGeminiUsageStatisticsRecord,
+  geminiUsageStatisticsRecordName,
   fillRelayTemplateDefaults,
   relayTemplateDefaultsPending,
   inspectManagedCliHookTargets,
@@ -2245,7 +2247,10 @@ describe('switching a provider back to the official subscription account', () =>
     if (provider === 'gemini') expect(fs.readFileSync(paths[1], 'utf8')).toBe('')
     expect(fs.readFileSync(credentialPath, 'utf8')).toBe('{"oauth":"keep"}\n')
     expect(fs.readFileSync(historyPath, 'utf8')).toBe('existing history\n')
-    expect(result.backups.length).toBe(paths.length)
+    // Gemini 另有一份「统计开关是星芒写的」记录，重置成官方模板后它没用了，跟着写空。
+    const recordPath = path.join(path.dirname(paths[0]), geminiUsageStatisticsRecordName)
+    if (provider === 'gemini') expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+    expect(result.backups.length).toBe(paths.length + (provider === 'gemini' ? 1 : 0))
     expect(result.files).not.toContain(credentialPath)
     expect(result.files).not.toContain(historyPath)
   })
@@ -2654,6 +2659,106 @@ describe('switching a provider back to the official subscription account', () =>
     const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(official).not.toHaveProperty('privacy')
     expect(official.theme).toBe('Dark')
+  })
+
+  it('keeps the Gemini usage statistics a user turned off before using the relay when switching back to Google', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, JSON.stringify({ privacy: { usageStatisticsEnabled: false }, theme: 'Dark' }), 'utf8')
+
+    const saved = saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(saved.files).not.toContain(recordPath)
+    expect(fs.existsSync(recordPath)).toBe(false)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(official.privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(official.theme).toBe('Dark')
+  })
+
+  it('forgets its own Gemini usage statistics switch once it is taken back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    const settings = () => JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    expect(settings().privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(JSON.parse(fs.readFileSync(recordPath, 'utf8'))).toEqual({ version: 1, usageStatisticsEnabled: false })
+
+    // A second save that writes the switch again does not rewrite the record (no extra backup).
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings(), privacy: {} }), 'utf8')
+    const again = saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(settings().privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(again.files).not.toContain(recordPath)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(settings()).not.toHaveProperty('privacy')
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+
+    // Turned off by the user on the Google account: a relay round trip must leave it alone.
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings(), privacy: { usageStatisticsEnabled: false } }), 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(settings().privacy).toEqual({ usageStatisticsEnabled: false })
+  })
+
+  it('does not take back a Gemini usage statistics switch when its record is unreadable', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    fs.writeFileSync(recordPath, '{not-json', 'utf8')
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+  })
+
+  it('forgets its Gemini usage statistics record once a restored settings.json no longer has that switch', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    const google = JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } }, theme: 'Dark' })
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, google, 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    // The switch is rolled back: the backup puts settings.json back, but not the record.
+    fs.writeFileSync(settingsPath, google, 'utf8')
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(true)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(false)
+
+    // Later the user turns statistics off on Google; a relay round trip leaves it alone.
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(google), privacy: { usageStatisticsEnabled: false } }), 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+  })
+
+  it('keeps its Gemini usage statistics record while the restored settings.json still has that switch', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(false)
+    expect(fs.existsSync(recordPath)).toBe(false)
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    const record = fs.readFileSync(recordPath, 'utf8')
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(false)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe(record)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).not.toHaveProperty('privacy')
   })
 
   it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {
@@ -3416,6 +3521,25 @@ describe('bringing an older account config up to the current template', () => {
     writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\n`)
     writeFile(settingsPath, JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }))
     expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)).toBeNull()
+  })
+
+  it('records the Gemini usage statistics switch it fills so switching back to Google takes back only that one', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    const relaySettings = { security: { auth: { selectedType: 'gemini-api-key' } } }
+    writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\nGEMINI_API_KEY=sk-fixture\nGEMINI_MODEL=gemini-3.5-flash\n`)
+    writeFile(settingsPath, JSON.stringify({ ...relaySettings, privacy: { usageStatisticsEnabled: false } }))
+    expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)?.files).not.toContain(recordPath)
+    expect(fs.existsSync(recordPath)).toBe(false)
+
+    writeFile(settingsPath, JSON.stringify(relaySettings))
+    expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)?.files).toContain(recordPath)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).not.toHaveProperty('privacy')
   })
 
   it('points Grok image tools at the current account only when the user never set them', () => {

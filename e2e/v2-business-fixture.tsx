@@ -97,6 +97,25 @@ const codexCatalogPlugin = {
   update: { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
   operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
 }
+// scopedExtensions：Claude 只在这个项目里用的插件（local）和 Gemini 扩展自带的技能（extension），
+// 验证「范围」筛选把它们放在详情写的那一档里。
+function scopedExtension(kind: 'skill' | 'plugin', id: string, name: string, scope: 'local' | 'extension') {
+  return {
+    provider: kind === 'plugin' ? 'claude' as const : 'gemini' as const,
+    kind,
+    id,
+    name,
+    description: '只在这一档里出现',
+    installed: true,
+    enabled: true,
+    scope,
+    currentVersion: '1.0.0',
+    latestVersion: '1.0.0',
+    source: { kind: 'native' as const, locator: null, reference: null },
+    update: { state: 'unsupported' as const, reason: '不支持检查更新', checkedAt: null },
+    operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
+  }
+}
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
 // 主进程按原因抛不同的错误（NewApiAuthenticationError 的中文、限流的英文原文……），
 // 夹具让用例自己指定原文，才能验证 R-G5 之后这些原因不再被抹成同一句。
@@ -350,6 +369,12 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       : {}),
     items: [
       ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
+      ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
+        ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
+        : []),
+      ...(query.has('scopedExtensions') && provider === 'gemini' && page === 'skills'
+        ? [scopedExtension('skill', 'extension-skill', '扩展自带技能', 'extension')]
+        : []),
       ...(empty
       ? []
       : [
