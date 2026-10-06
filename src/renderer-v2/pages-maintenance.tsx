@@ -118,7 +118,7 @@ import {
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
 import { firstProblemAnchor, useRowFocus } from './features/app/row-focus'
-import { publishDiagnosticsCounts } from './features/app/environment-status'
+import { diagnosticsRevision, publishDiagnosticsCounts, useDiagnosticsRevision } from './features/app/environment-status'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
 import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
@@ -462,11 +462,17 @@ export function HealthPage({
   /** 外壳手上的登录状态：「星芒 AI 网络」给不给「去处理」看它（networkRouteSetting）；缺省 = 按访客算，不给（旧行为）。 */
   accountSession?: AccountSessionState
 } & BusinessActions) {
-  // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
-  const load = useCallback(() => api.runDiagnostics().then((report) => {
-    publishDiagnosticsCounts(report.counts)
-    return report
-  }), [api])
+  // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。开跑时记下环境改过几次：
+  // 跑到一半首页那边装完、改完了，这一轮的数就不交给状态栏（已知6）。
+  const checkedRevision = useRef(diagnosticsRevision())
+  const load = useCallback(() => {
+    const started = diagnosticsRevision()
+    checkedRevision.current = started
+    return api.runDiagnostics().then((report) => {
+      publishDiagnosticsCounts(report.counts, started)
+      return report
+    })
+  }, [api])
   const resource = useResource(load)
   const pageRef = useRef<HTMLElement>(null)
   const accountSiteId = accountSession ? signedInSiteId(accountSession) : null
@@ -513,6 +519,14 @@ export function HealthPage({
     if (!resource.loading) void resource.reload()
     setCodexProbe((value) => value + 1)
   })
+  // 这一页开着的时候环境变了（首页那边装完了；在这一页点「去处理」改好了设置、重新写了 Key），
+  // 状态栏已经退回「环境待检测」。这一页就是看检查结果的地方，跟着重查一次，两处说的才一样（已知6）。
+  // 还在查就等这一轮查完再查：它开跑时环境还没改。
+  const revision = useDiagnosticsRevision()
+  useEffect(() => {
+    if (active === false || resource.loading || checkedRevision.current === revision) return
+    void resource.reload()
+  }, [active, resource.loading, resource.reload, revision])
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
       responsesEpoch.current += 1
@@ -1873,10 +1887,16 @@ export function MaintenancePage({
   installTool,
   cancelToolInstall,
   toolJobs,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
   const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
+  // 首页的任务跑完时下面那段会重读；别处的变化（比如在终端里自己装、卸了工具）这一页看不见，
+  // 再显示时也重读一次（已知5）。还在读就不再起一轮：那一轮本来就是刚起的。
+  useReloadWhenShown(active, () => {
+    if (!resource.loading) void resource.reload()
+  })
   const snapshot = resource.data?.snapshot ?? null
   const capability = resource.data?.capability ?? null
   const failures = resource.data?.failures ?? []
