@@ -413,6 +413,25 @@ describe('auto install wording', () => {
   })
 })
 
+describe('Windows account outside the administrators group', () => {
+  const record = { downloadedVersion: '0.2.12', attemptedVersion: null }
+
+  it('never installs at launch, so the first window open after a login launch does not install either', () => {
+    expect(decideLaunchInstall(input({ standardAccount: true }))).toBeNull()
+    // 管理员账号、没问出来的照旧装。
+    expect(decideLaunchInstall(input({ standardAccount: false }))).toBe('0.2.12')
+    expect(decideLaunchInstall(input())).toBe('0.2.12')
+  })
+
+  it('quits without installing or asking when auto-update is on, and asks as before when it is off', () => {
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, standardAccount: true })).toBe('leave')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: { ...record, quitAttemptedVersion: '0.2.12' }, standardAccount: true })).toBe('leave')
+    expect(decideQuitInstall({ autoUpdate: false, version: '0.2.12', record, standardAccount: true })).toBe('ask')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, standardAccount: true, systemShuttingDown: true })).toBe('later')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record, standardAccount: false })).toBe('install')
+  })
+})
+
 describe('system installer channel (Linux .deb)', () => {
   const record = { downloadedVersion: '0.2.12', attemptedVersion: null }
 

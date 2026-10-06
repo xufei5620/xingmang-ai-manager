@@ -98,7 +98,10 @@ export function RequiredUpdateGate({ update, windows, linux = false, actions }: 
         {update?.installMethod === 'system-installer'
           ? <p data-testid="required-update-system-installer">为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本下载好后星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后重新打开星芒就行，账号和设置都会保留。</p>
           : <p>为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本会自己下载并装好，中间会重启一次，账号和设置都会保留。</p>}
-        {windows && <p>装的时候如果弹出「是否允许更改」，点「是」。</p>}
+        {/* 账号不在管理员组时授权窗口要的是管理员密码，「点「是」」对他没用。 */}
+        {windows && (update?.installNeedsAdminPassword
+          ? <p data-testid="required-update-admin-password">要输入管理员密码；让有管理员账号的人来点，或联系客服。</p>
+          : <p>装的时候如果弹出「是否允许更改」，点「是」。</p>)}
         <p data-testid="required-update-versions">现在是 {gate.currentVersion}{gate.availableVersion ? `，将更新到 ${gate.availableVersion}` : ''}</p>
         {gate.percent !== null && <Progress value={gate.percent} label="下载进度" testId="required-update-progress" />}
         {gate.progressDetail && <p className="v2-update-progress-detail" data-testid="required-update-progress-detail">{gate.progressDetail}</p>}

@@ -145,6 +145,12 @@ export interface UpdateSnapshot {
   launchInstallNotice?: LaunchInstallNotice | null
   /** 见 UpdateInstallMethod。可选＝旧快照，界面照旧按「重启安装」说。 */
   installMethod?: UpdateInstallMethod | null
+  /**
+   * Windows 上这个账号不在管理员组：装更新时授权窗口要输一个管理员账号的密码，所以下好的
+   * 版本不自动装（auto-update-install.ts）。界面据此改说「要输入管理员密码」，不再说「点「是」」
+   * 「会自动装上」。主进程问出来是这样才有这一项；可选＝不是、没问出来或旧快照，界面照旧。
+   */
+  installNeedsAdminPassword?: boolean
 }
 
 export interface LaunchInstallNotice {
@@ -242,6 +248,8 @@ export interface UpdaterService {
   setServiceStatus(status: ServiceStatus | null): void
   /** 开机自动装前的预告摆出来（或收回，null）。 */
   setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
+  /** 主进程问出了这个 Windows 账号不在管理员组（见 UpdateSnapshot.installNeedsAdminPassword）。 */
+  setInstallNeedsAdminPassword(value: boolean): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -1835,6 +1843,10 @@ export function createUpdaterService(
       if (notice && (snapshot.phase !== 'downloaded' || notice.version !== snapshot.availableVersion)) return
       if (!notice && !snapshot.launchInstallNotice) return
       emit({ launchInstallNotice: notice ? { ...notice } : null })
+    },
+    setInstallNeedsAdminPassword(value) {
+      if (disposed || value === (snapshot.installNeedsAdminPassword === true)) return
+      emit({ installNeedsAdminPassword: value })
     },
     subscribe(listener) {
       listeners.add(listener)

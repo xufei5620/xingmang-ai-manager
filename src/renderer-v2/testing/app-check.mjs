@@ -3589,6 +3589,52 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
   }
 })
 
+// 账号不在管理员组的 Windows 电脑：下好的新版本不自动装（第二十四批 2）。首页气泡和更新页「重启安装」
+// 旁边说清要管理员密码、要谁来点，还没下好时也不说会自动装上，确认框不再只叫他点「是」，强制更新
+// 那道门同样改口；字都是 yoyo 2026-10-06 批的原话。管理员账号照旧。
+test('a Windows account outside the administrators group is told an administrator has to install updates', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const state = {
+      phase: 'downloading', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: { percent: 40, bytesPerSecond: 1, transferred: 40, total: 100 }, failedStep: null, error: null, development: true,
+      autoUpdateSupported: true, installNeedsAdminPassword: true,
+    }
+    const emit = (patch) => page.evaluate((value) => window.v2Test.emit('onUpdateState', value), { ...state, ...patch })
+    await emit({})
+    await page.locator('.xm-notice').getByText('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。', { exact: true }).waitFor()
+
+    await emit({ phase: 'downloaded', progress: null })
+    const bubble = page.locator('.xm-notice').filter({ hasText: '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。' })
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await updates.getByText('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。', { exact: true }).waitFor()
+    await updates.getByText('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装', { exact: true }).waitFor()
+    const notice = updates.getByTestId('updates-admin-password')
+    await notice.getByText('这台电脑的账号不是管理员，装更新时要输入管理员密码', { exact: true }).waitFor()
+    await notice.getByText('让有管理员账号的人点一次「重启安装」，或者找客服。', { exact: true }).waitFor()
+    // 原话叫他点的就是卡片头上这颗按钮：自己点照样能装，确认框说清要输管理员密码。
+    await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+    await dialog.getByTestId('updates-windows-consent-hint').getByText('Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
+
+    await emit({ phase: 'downloaded', progress: null, installNeedsAdminPassword: false })
+    await notice.waitFor({ state: 'detached' })
+    await updates.getByText('新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。', { exact: true }).waitFor()
+
+    // 强制更新那道门在开发环境不拦，这里按正式环境发。
+    await emit({ phase: 'available', progress: null, development: false, requiredVersion: '0.1.32' })
+    const gate = page.getByTestId('required-update-gate')
+    await gate.getByTestId('required-update-admin-password').getByText('要输入管理员密码；让有管理员账号的人来点，或联系客服。', { exact: true }).waitFor()
+    assert.equal(await gate.getByText('是否允许更改', { exact: false }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
 // 确认框要先说清楚会弹安装窗口、要输开机密码。不是 .deb 装的那种根本没法自动更新，
 // 更新页给一条去下载页的路，而不是一颗永远点不动的「检查更新」。
