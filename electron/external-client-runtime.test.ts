@@ -486,6 +486,22 @@ describe('external desktop client lifecycle', () => {
     expect(f.launchProcess).toHaveBeenCalledTimes(2)
   })
 
+  it('forgets a pass once the registered version is too long to compare exactly', async () => {
+    const f = fixture()
+    const known = (index: number) => {
+      const script = Buffer.from(f.execute.mock.calls.filter(([spec]) => spec.executable === powershell)[index][0].argv.at(-1)!, 'base64').toString('utf16le')
+      return JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+    }
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
+    await f.runtime.scan()
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789', version: 'x'.repeat(257) })])
+    await f.runtime.scan({ force: true })
+    expect(known(1)).toHaveLength(1)
+    // Cut short or left blank it would match another version, or none at all.
+    await f.runtime.launch('opencode')
+    expect(known(2)).toEqual([])
+  })
+
   it('embeds remembered signatures as base64 so registry text never becomes PowerShell source', () => {
     const hostile = { path: "C:\\Evil'; Start-Process calc; '\\WorkBuddy.exe", stamp: '1:2:3', status: "Valid'$(calc)", subject: '`"; calc', version: "1'; calc; '" }
     const script = windowsExternalClientInventoryScript([hostile])

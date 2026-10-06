@@ -250,8 +250,9 @@ function Get-AppxPackage { @() }
   // 已知68：打开之前那次认这份记住的结果，所以文件或卸载信息里的版本一变，就得真的再验一次。
   ['external client inventory reuses a remembered signature only while the file and its registered version are unchanged', async () => {
     const exe = 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe'
+    // 只让当前用户那一处卸载记录在：三处都给的话，同一个客户端会出来三行。
     const mocks = String.raw`
-function Test-Path { param([string]$LiteralPath) return $true }
+function Test-Path { param([string]$LiteralPath) return $LiteralPath -like 'Registry::HKEY_CURRENT_USER\*' }
 function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' } }
 function Get-ItemProperty { param([string]$LiteralPath) [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
 function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=7; LastWriteTimeUtc=[datetime]::new(638000000000000000, [System.DateTimeKind]::Utc); CreationTimeUtc=[datetime]::new(637000000000000000, [System.DateTimeKind]::Utc) } }

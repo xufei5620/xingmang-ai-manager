@@ -164,7 +164,7 @@ export interface ExternalClientScanOptions {
   fresh?: boolean
 }
 
-/** A signature verdict the inventory script may reuse while the file stamp is unchanged. */
+/** A signature verdict the inventory script may reuse while the file stamp and registered version are unchanged. */
 export interface KnownExternalClientSignature {
   path: string
   stamp: string
@@ -545,9 +545,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const file = textValue(item.path)
     const stamp = textValue(item.signatureStamp)
     if (!file || !stamp || !/^\d{1,20}:\d{1,20}:\d{1,20}$/.test(stamp)) return
-    if (knownSignatures.size >= maximumKnownSignatures) knownSignatures.clear()
     // 版本原样记（不 trim）：脚本拿它和卸载信息里的 DisplayVersion 逐字比，差一个空格也现验。
-    const version = typeof item.version === 'string' && item.version.length <= 256 ? item.version : ''
+    // 太长的不记，这个文件之前记的也忘掉：截短或记成空串，就和别的版本、没登记版本分不开了。
+    const version = item.version
+    if (typeof version !== 'string' || version.length > 256) {
+      knownSignatures.delete(file.toLowerCase())
+      return
+    }
+    if (knownSignatures.size >= maximumKnownSignatures) knownSignatures.clear()
     knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '', version })
   }
 
