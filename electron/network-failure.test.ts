@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyNetworkFailure,
+  isHtmlContentType,
   isJsonContentType,
   isServiceUnavailableResponse,
   matchNetworkFailureMessage,
@@ -247,5 +248,15 @@ describe('service unavailable responses', () => {
     expect(parsesAsJsonObject('{"error":{}}')).toBe(true)
     expect(parsesAsJsonObject('<html></html>')).toBe(false)
     expect(parsesAsJsonObject('')).toBe(false)
+  })
+
+  it('tells a web page from the answers the service gives', () => {
+    expect(isHtmlContentType('text/html; charset=utf-8')).toBe(true)
+    expect(isHtmlContentType(' TEXT/HTML')).toBe(true)
+    expect(isHtmlContentType('application/xhtml+xml')).toBe(true)
+    expect(isHtmlContentType('application/json')).toBe(false)
+    expect(isHtmlContentType('text/event-stream')).toBe(false)
+    expect(isHtmlContentType('text/plain')).toBe(false)
+    expect(isHtmlContentType(null)).toBe(false)
   })
 })
