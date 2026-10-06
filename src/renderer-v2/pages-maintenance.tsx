@@ -212,6 +212,13 @@ export type BusinessActions = {
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
   /**
+   * 「安装卸载」页卸掉工具、装好或换了运行环境以后叫一声，由 App 重新检测，首页跟着变；
+   * 不叫的话首页还摆着卸掉的工具、还写 Node.js「未安装」。装工具照旧走 onToolsChanged
+   * （还要写 Key）。页面先叫它、再读本页：本页那次读接上 App 刚起的那一轮检测，不另起一轮。
+   * 缺省 = 只刷新本页（旧行为）。
+   */
+  onSystemChanged?: () => void
+  /**
    * 首页那条完整的安装：缺 Node.js / Python 先装运行环境，装完写 Key、刷新检测。
    * 「安装卸载」页以前自己直接调主进程装工具，没装 Node.js 的人只看到「未检测到
    * npm」（全面检测 Q33）；有了它就只走这一条。
@@ -1761,6 +1768,22 @@ export function installJobRunning(job: ToolJob | undefined): boolean {
   return job !== undefined && job.kind !== 'uninstall'
 }
 
+/**
+ * 首页那份任务里本页有行的几个（四个命令行工具、Codex 桌面端、Node.js、Python）。
+ * Git、打开工具这些任务这一页不画，跑完也不用重读。
+ */
+export function maintenanceRowJobKeys(jobs: Readonly<Record<string, ToolJob>> | undefined): string[] {
+  return Object.keys(jobs ?? {}).filter((key) => isProvider(key) || key === 'codexDesktop' || key === 'node' || key === 'python')
+}
+
+/**
+ * 上次还在、这次没了的任务：在首页装好、更新完、卸掉（或没装上、取消了）。任务一没，
+ * 这一行就回到本页上次读的检测结果，写回做之前的样子，所以要重读。
+ */
+export function maintenanceJobsFinished(previous: readonly string[], current: readonly string[]): boolean {
+  return previous.some((key) => !current.includes(key))
+}
+
 /** 正在装的是哪个（工具或运行环境）；不是安装（检查更新、复制日志……）时为 null。 */
 function installingName(busy: string): string | null {
   if (busy === 'node') return 'Node.js'
@@ -1788,6 +1811,7 @@ export function MaintenancePage({
   api,
   navigate,
   onToolsChanged,
+  onSystemChanged,
   installTool,
   cancelToolInstall,
   toolJobs,
@@ -1855,6 +1879,16 @@ export function MaintenancePage({
     observer.observe(view)
     return () => observer.disconnect()
   }, [hasLogs])
+  // 首页那份任务一跑完（在首页装、更新、卸载工具，或者装运行环境），这一行就回到本页上次
+  // 读的结果：写回做之前的样子，又给「安装」或「卸载工具」。少了哪一行的任务就重读一次。
+  // 装好、卸掉、装好运行环境时首页自己也会重新检测，本页这次读接上那一轮，不另起一轮。
+  const rowJobs = useRef<string[]>([])
+  useEffect(() => {
+    const current = maintenanceRowJobKeys(toolJobs)
+    const finished = maintenanceJobsFinished(rowJobs.current, current)
+    rowJobs.current = current
+    if (finished) void resource.reload()
+  }, [toolJobs, resource.reload])
   function forgetProgress(id: string) {
     setProgress((previous) => {
       if (!(id in previous)) return previous
@@ -1919,6 +1953,7 @@ export function MaintenancePage({
         const result = id === 'node'
           ? await api.installNodeRuntime()
           : await api.installPythonRuntime()
+        onSystemChanged?.()
         await resource.reload()
         return describeRuntimeInstallOutcome(id, result)
       }),
@@ -2310,12 +2345,15 @@ export function MaintenancePage({
                           manualCommand: result.manualHelp.manualCommand,
                         })
                         setRemove(null)
+                        // 程序已经卸掉了一部分，首页那份也要重查。
+                        onSystemChanged?.()
                         await resource.reload()
                         // Still a failed uninstall: the page must not claim
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
                       setRemove(null)
+                      onSystemChanged?.()
                       await resource.reload()
                       return uninstallHandOffNotice(result)
                     },
@@ -2354,6 +2392,7 @@ export function MaintenancePage({
               'node',
               () => tracked('node', async () => {
                 const result = await api.installNodeRuntime({ reason: 'certificate' })
+                onSystemChanged?.()
                 await resource.reload()
                 return describeNodeReplaceOutcome(result)
               }),
