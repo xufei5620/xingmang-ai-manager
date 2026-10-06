@@ -852,7 +852,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
   // 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml，命令行和桌面端都打不开。
   // 原来首页把它当成没有配置，写的是「还没配 Key」。
-  describe('a Codex configuration Codex itself cannot read', () => {
+  describe('a configuration the tool itself cannot read', () => {
     const brokenDetail = 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留'
     function brokenSnapshot(codex: Record<string, unknown> = {}): ToolboxSnapshot {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
@@ -861,7 +861,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
         config: {
           ...base.config,
-          providers: { ...base.config.providers, codex: { ...providerConfig, configurationOwnership: 'account', codexConfigBroken: true, ...codex } },
+          providers: { ...base.config.providers, codex: { ...providerConfig, configurationOwnership: 'account', configBroken: true, ...codex } },
         },
       } as unknown as ToolboxSnapshot
     }
@@ -934,6 +934,50 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         expect(toolRow(markup, tool), tool).not.toContain('aria-haspopup="menu"')
       }
       expect(rowButton(markup, 'tool-claude-primary')).not.toContain('修复中')
+    })
+
+    // 已知44：星芒自己也读不出 Key 时，原来按「文件在、没 Key」把 Claude Code、Gemini CLI 写成「官方账号」。
+    const unreadable = { hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
+    function withConfig(providers: Record<string, Record<string, unknown>>): ToolboxSnapshot {
+      const base = brokenSnapshot({ configBroken: false })
+      const entries = Object.entries(providers).map(([id, value]) => [id, { ...providerConfig, ...value }])
+      return { ...base, config: { ...base.config, providers: { ...base.config.providers, ...Object.fromEntries(entries) } } } as unknown as ToolboxSnapshot
+    }
+
+    it('says a Claude Code or Gemini CLI settings file is broken instead of calling it the official account', () => {
+      const broken = withConfig({ claude: { ...unreadable, configBroken: true }, gemini: { ...unreadable, configBroken: true } })
+      const markup = render({}, undefined, { snapshot: broken, onRepairConfig: () => undefined })
+      for (const [tool, name] of [['claude', 'Claude Code'], ['gemini', 'Gemini CLI']]) {
+        const row = toolRow(markup, tool)
+        expect(row, tool).toContain('配置文件坏了')
+        expect(row, tool).toContain(`>${name} 读不了这份配置，打开会报错。修之前会先备份，历史会话保留<`)
+        expect(row, tool).not.toContain('官方账号')
+        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('修好它')
+      }
+      expect(toolRow(markup, 'codex')).toContain('已配好')
+    })
+
+    it('says Codex cannot read its login on both Codex rows', () => {
+      const markup = render({}, undefined, { snapshot: withConfig({ codex: { ...unreadable, codexAuthBroken: true } }), onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        const row = toolRow(markup, tool)
+        expect(row, tool).toContain('配置文件坏了')
+        expect(row, tool).toContain('>Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留<')
+        expect(row, tool).not.toContain('官方账号')
+        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('修好它')
+      }
+    })
+
+    it('says the config file first when Codex can read neither file', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot({ codexAuthBroken: true }), onRepairConfig: () => undefined })
+      expect(toolRow(markup, 'codex')).toContain(`>${brokenDetail}<`)
+      expect(markup).not.toContain('读不了登录信息')
+    })
+
+    it('still calls a readable setup without a key the official account', () => {
+      const markup = render({}, undefined, { snapshot: withConfig({ claude: unreadable }), onRepairConfig: () => undefined })
+      expect(toolRow(markup, 'claude')).toContain('官方账号')
+      expect(toolRow(markup, 'claude')).not.toContain('配置文件坏了')
     })
 
     // 开机先画的是上次的检测结果，文件可能已经被改好了，等这次的结果再说。

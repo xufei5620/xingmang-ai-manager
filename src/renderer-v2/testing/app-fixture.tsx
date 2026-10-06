@@ -129,8 +129,12 @@ const heldConfiguredModels = new Map<ProviderId, Array<() => void>>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
 if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
-// ?codexBroken：Codex 自己读不了 config.toml（主进程 codexConfigBroken），重置之后才好。
-if (query.has('codexBroken')) config.providers.codex.codexConfigBroken = true
+// ?codexBroken：Codex 自己读不了 config.toml（主进程 configBroken），重置之后才好。
+if (query.has('codexBroken')) config.providers.codex.configBroken = true
+// ?codexAuthBroken：Codex 读不了 auth.json（主进程 codexAuthBroken），星芒也读不出 Key。
+if (query.has('codexAuthBroken')) { config.providers.codex.codexAuthBroken = true; config.providers.codex.hasApiKey = false }
+// ?claudeBroken：Claude Code 读不了 settings.json，星芒也读不出 Key，来源会被认成官方账号（已知44）。
+if (query.has('claudeBroken')) config.providers.claude = { ...config.providers.claude, configBroken: true, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
   config.providers.claude = { ...configValue, configurationOwnership: 'manual' }
@@ -654,7 +658,7 @@ const methods = {
     // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
       ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}),
-      ...(provider === 'codex' && mode === 'reset' ? { codexConfigBroken: false } : {}) }
+      ...(mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
     return { backups: [], files: [] }
   },
   switchAccountSource: async (provider: ProviderId, target: 'account' | 'official') => {
@@ -664,8 +668,9 @@ const methods = {
       return { provider, target, backupId: 'fixture-backup', verified: false, loginRequired: false, message: '已切回官方账号，原来的配置已备份。',
         ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}) }
     }
+    // 真实的切换遇到工具读不了的文件改走重置，切完文件就好了。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl,
-      configurationOwnership: 'account', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
+      configurationOwnership: 'account', configBroken: false, codexAuthBroken: false, ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
     return { provider, target, backupId: 'fixture-backup', verified: true, loginRequired: false, message: '已改用当前账号，连接自检通过。',
       ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}) }
   },
@@ -724,7 +729,7 @@ const methods = {
         continue
       }
       keyRewritten.add(provider)
-      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(provider === 'codex' && input.mode === 'reset' ? { codexConfigBroken: false } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'

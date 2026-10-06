@@ -5753,6 +5753,26 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         )
       })
 
+      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走重置。
+      it('resets a config the tool cannot read when switching it to the current account', async () => {
+        for (const [current, mode] of [
+          [{ configBroken: true }, 'reset'],
+          [{ codexAuthBroken: true }, 'reset'],
+          [{ configBroken: false, codexAuthBroken: false }, 'merge'],
+        ] as const) {
+          electronMocks.handlers.clear()
+          const { service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+          vi.mocked(service.getConfig).mockReturnValue({ workspace: 'C:\\workspace', providers: { codex: current } } as never)
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account', verified: true })
+
+          expect(service.saveConfig).toHaveBeenCalledWith(
+            expect.objectContaining({ provider: 'codex', mode }), false, expect.any(Function),
+            { source: 'account', automatic: false },
+          )
+        }
+      })
+
       it('does not lift a used-up key cap through the account source switch', async () => {
         const { accountService, service } = setup(accountKey({ remainQuota: 0, status: 4 }), undefined, true, sourceSwitchOptions())
         await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
