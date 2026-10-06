@@ -168,6 +168,8 @@ export function createToolsApi(bridge: XingmangApi) {
       }
     },
     readExternal: (force = false) => bridge.scanExternalClients(force),
+    // 只要上次落盘的那份，主进程不起盘点；本次启动已经真检测过、或没有旧结果时是空列表（已知13）。
+    readCachedExternal: () => bridge.scanExternalClients(false, { cachedOnly: true }),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),

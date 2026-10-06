@@ -297,6 +297,10 @@ export function Home(props: HomeProps) {
   const yourTools = tools.filter((tool) => tool.status.installed || jobs[tool.id] || undetected(tool))
   const available = tools.filter((tool) => !tool.status.installed && !jobs[tool.id] && !undetected(tool))
   const external = presentExternalClients(props.externalClients)
+  // 开机先摆的是上次落盘的客户端检测结果（cachedAt），真的那轮排在首屏扫描之后才开始（已知13）。
+  // 这时同正在重新检测：那几行的按钮先等着，「正在检测」那一句照旧挂着。
+  const externalCached = external.some((tool) => Boolean(tool.status.cachedAt))
+  const externalBusy = props.externalLoading || externalCached
   const undetectedExternal = (tool: ExternalPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.status.detectionError)
   const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
   const yourExternal = external.filter((tool) => tool.status.installed || jobs[tool.id] || undetectedExternal(tool))
@@ -351,7 +355,7 @@ export function Home(props: HomeProps) {
   // Windows 上 Node.js 是机器级 MSI，准备它必然弹一次 UAC。说在点之前，
   // 不是弹窗跳出来之后（Python 按当前用户装，没有这句）。
   const nodeElevationNotice = nodeMissing
-    ? homeNodeElevationNotice(snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall, nodeOptional)
+    ? homeNodeElevationNotice(snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall, nodeOptional, snapshot?.platform.processElevated)
     : null
   const runtimeHintClass = nodeOptional ? 'v2-runtime-hint is-quiet' : 'v2-runtime-hint'
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
@@ -439,7 +443,7 @@ export function Home(props: HomeProps) {
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
-      ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
+      ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install, snapshot?.platform.processElevated)
       : null
     const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : repairJob ? '修复中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
@@ -565,13 +569,13 @@ export function Home(props: HomeProps) {
       extraAction={installJob?.cancellable && props.onCancelInstallExternal
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
         : undefined}
-      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={externalBusy || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
         icon={tool.action === 'launch' || downloadUrl ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，
         // 而四个 CLI 行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
-        ...(tool.action === 'configure' ? [] : [{ label: '配置', testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
-        ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy, onSelect: () => props.onLaunchExternal(tool.id) }]),
+        ...(tool.action === 'configure' ? [] : [{ label: '配置', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
+        ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, onSelect: () => props.onLaunchExternal(tool.id) }]),
       ] : undefined} menuLabel={toolMenuLabel} testId={`tool-row-${tool.id}`} />
   }
   return <section className="v2-page v2-home" data-testid="page-home">
@@ -631,7 +635,7 @@ export function Home(props: HomeProps) {
         {/* 「还可以装」排在最下面：老用户天天看的是上面三张，新用户要装的东西在「开始使用」里也能找到。 */}
         {!firstScan && availableCount > 0 && <Card title="还可以装" meta={`${availableCount} 个`} collapsible defaultOpen={readLocalPreference(availablePreference) !== 'collapsed'}
           onOpenChange={(open) => { writeLocalPreference(availablePreference, open ? 'expanded' : 'collapsed') }} padding="none" testId="home-available">{available.map(renderTool)}{availableExternal.map(renderExternal)}</Card>}
-        {!firstScan && props.externalLoading && !external.length && <div className="v2-loading-inline" role="status">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
+        {!firstScan && (externalCached || (props.externalLoading && !external.length)) && <div className="v2-loading-inline" role="status" data-testid="home-external-detecting">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
       </div>
       <aside className="v2-home-aside">
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>

@@ -74,6 +74,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const [externalLoading, setExternalLoading] = useState(false)
   const [externalError, setExternalError] = useState('')
   const externalRequest = useRef(0)
+  // 真的检测回来过一次以后，换账号重跑开机那段时不再要上次落盘的那份：主进程那时也只会回空列表。
+  const externalScanned = useRef(false)
   const [jobs, setJobs] = useState<Record<string, ToolJob>>({})
   const request = useRef(0)
   const active = useRef(true)
@@ -108,15 +110,28 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     if (!options.quiet) { setExternalLoading(true); setExternalError('') }
     try {
       const statuses = await createToolsApi(bridge).readExternal(force)
+      externalScanned.current = true
       if (active.current && currentScope.current === scope && id === externalRequest.current) {
         setExternalClients(statuses)
         if (options.quiet) setExternalError('')
       }
     } catch (cause) {
+      const current = active.current && currentScope.current === scope && id === externalRequest.current
+      // 手上只有开机先摆的上次结果（cachedAt）时没读到：撤下旧的，同以前开机没读到一样只留红条和「重新检测」。
+      if (current) setExternalClients((rows) => rows.some((entry) => entry.cachedAt) ? [] : rows)
       if (options.quiet) return
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
+      if (current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
+  }, [bridge, scope])
+  // 开机首屏那一次：先摆上次落盘的客户端检测结果（cachedAt），主进程只读文件、不起盘点（已知13）。
+  // 真的那轮照旧排在首屏扫描之后。读的这一下里真的那轮已经开始、或手上已经有结果，就不拿旧的盖它。
+  const showCachedExternal = useCallback(async () => {
+    if (!bridge || externalScanned.current || currentScope.current !== scope) return
+    const id = externalRequest.current
+    const statuses = await createToolsApi(bridge).readCachedExternal().catch((): ExternalClientStatus[] => [])
+    if (!statuses.length || !active.current || currentScope.current !== scope || id !== externalRequest.current) return
+    setExternalClients((current) => current.length ? current : statuses)
   }, [bridge, scope])
   // 打开客户端以后：先把那一行写成「运行中」，再在后台悄悄核一次（主进程打开后已作废缓存）。
   const noteExternalLaunched = useCallback((tool: ExternalToolId) => {
@@ -201,10 +216,13 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     active.current = true
     let current = true
     // 外部客户端那轮盘点（Windows 上是一整段 PowerShell）排在首屏扫描之后：
-    // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。
-    if (enabled) void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+    // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。等的这阵先摆上次的结果。
+    if (enabled) {
+      void showCachedExternal()
+      void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+    }
     return () => { current = false; active.current = false; request.current++; externalRequest.current++ }
-  }, [enabled, load, refreshExternal])
+  }, [enabled, load, refreshExternal, showCachedExternal])
   useEffect(() => {
     if (!bridge) return
     const update = (key: string, label: string, percent?: number, logLine = label) => setJobs((current) => {

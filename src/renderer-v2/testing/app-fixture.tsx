@@ -266,7 +266,8 @@ window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: 
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
-const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
+// ?elevated：星芒这次本身就带着管理员权限在跑（自带 Administrator 之类），装东西不弹授权窗口（已知19）。
+const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true }, ...(query.has('elevated') ? { processElevated: true } : {}) } as const
 const balance = { quota: 6_200_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 12.4 }
 /** ?runningTools：问到的工具都还开着，问到 Codex 时桌面端也开着，且能替用户重开。 */
 function fixtureRunningTools(providers: readonly ProviderId[]) {
@@ -459,7 +460,15 @@ const methods = {
     if (holdConfigRead) { holdConfigRead = false; await new Promise<void>((resolve) => { releaseConfigRead = resolve }) }
     return result
   },
-  scanExternalClients: async () => {
+  scanExternalClients: async (_force, options) => {
+    // 同主进程：开机那一读只要上次落盘的那份，没有就是空列表。?externalCached 时上次的结果是
+    // WorkBuddy 已装好、已配好（这次真检测回来的照夹具的默认值，没装）。
+    if (options?.cachedOnly) {
+      if (!query.has('externalCached')) return []
+      return structuredClone(externalStatuses).map((entry) => ({ ...entry,
+        ...(entry.tool === 'workbuddy' ? { installed: true, version: '0.9.0', configured: true, configurationSource: 'xingmang' as const, model: 'cached-model' } : {}),
+        cachedAt: '2026-10-05T10:00:00.000Z' }))
+    }
     const result = structuredClone(externalStatuses)
     if (query.has('externalAccountOwned') && (!session.authenticated || session.account?.userId !== account.userId || (session.siteId ?? 'solov') !== externalOwnerSite)) {
       const owned = result.find((entry) => entry.tool === query.get('externalAccountOwned'))

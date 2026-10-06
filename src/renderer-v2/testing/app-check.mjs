@@ -538,13 +538,50 @@ test('external client inventory waits for the first tool scan, and the home resc
   try {
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
     await page.waitForTimeout(300)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    // 开机只先要上次落盘的那份（已知13），主进程不起盘点；真的盘点照旧等首屏扫描。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients' && entry.args[1]?.cachedOnly === true)), true)
     await page.evaluate(() => window.v2Test.releaseScan())
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients'))
-    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').map((entry) => entry.args)), [[false]])
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).map((entry) => entry.args)), [[false]])
     await page.getByTestId('home-rescan').click()
-    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > 1)
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length > 1)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').at(-1).args), [true])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知13：开机先摆上次落盘的客户端检测结果，以前那几行要等首屏扫描和自己那轮都完了才出来。
+test('desktop client rows show the last saved result at startup and wait for the real scan before acting', async () => {
+  const page = await open('cachedScan=1&externalCached=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('v0.9.0 · cached-model', { exact: true }).waitFor()
+    await page.getByTestId('home-external-detecting').waitFor()
+    assert.equal(await page.getByTestId('tool-workbuddy-primary').isDisabled(), true)
+    await row.getByRole('button', { name: '配置和更多操作', exact: true }).click()
+    assert.equal(await page.getByRole('menu').getByRole('menuitem', { name: '配置', exact: true }).isDisabled(), true)
+    await page.keyboard.press('Escape')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    // 真的结果回来整份替换：这次 WorkBuddy 没装。
+    await row.getByRole('button', { name: '安装', exact: true }).waitFor()
+    assert.equal(await row.getByText('v0.9.0 · cached-model', { exact: true }).count(), 0)
+    await page.getByTestId('home-external-detecting').waitFor({ state: 'detached' })
+    assert.equal(await row.getByRole('button', { name: '安装', exact: true }).isEnabled(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed first desktop client scan takes the last saved rows down instead of leaving them waiting', async () => {
+  const page = await open('cachedScan=1&externalCached=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('v0.9.0 · cached-model', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'scanExternalClients'; window.v2Test.releaseScan() })
+    await page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' }).waitFor()
+    assert.equal(await row.count(), 0)
+    assert.equal(await page.getByTestId('home-external-detecting').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3694,6 +3731,42 @@ test('a Windows account outside the administrators group is told an administrato
   } finally { await page.close() }
 })
 
+// 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
+// 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、安装卸载页和重启安装确认框都不说
+// 会弹（已知19）。没带管理员权限的照旧说。
+test('an app already running with administrator rights does not promise a consent window', async () => {
+  for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
+    const page = await open(query)
+    try {
+      await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
+      await expect(page.getByTestId('home-runtime-node-elevation')).toHaveCount(elevated ? 0 : 1)
+
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-maintenance').click()
+      const node = page.getByTestId('maintenance-runtime-node')
+      // 这句只在读到平台以后才有，等它出来再看授权那句在不在。
+      await expect(node).toContainText('装工具时会自动准备')
+      if (elevated) assert.doesNotMatch(await node.innerText(), /管理员授权|授权窗口/, query)
+      else await expect(node).toContainText('这一步需要管理员授权：点「安装」后 Windows 会弹一次授权窗口')
+
+      // 「更多」进安装卸载页时已经展开，再点一下就收起来了。
+      await page.getByTestId('nav-updates').click()
+      const updates = page.getByTestId('page-updates')
+      await updates.waitFor()
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }))
+      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+      await dialog.waitFor()
+      if (!elevated) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), elevated ? 0 : 1, query)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
 // 确认框要先说清楚会弹安装窗口、要输开机密码。不是 .deb 装的那种根本没法自动更新，
 // 更新页给一条去下载页的路，而不是一颗永远点不动的「检查更新」。
@@ -6057,6 +6130,27 @@ test('a tool uninstalled from the home page reads as missing on a maintenance pa
     await page.getByRole('button', { name: 'Grok CLI 的更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '检查更新', exact: true }).waitFor()
     assert.equal(await page.getByRole('menuitem', { name: '卸载工具', exact: true }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知10：卸载时工具还开着，错误框说「先关掉……再重试」，框里就得真有「重试」可点。
+// 卸载已经确认过，点「重试」直接再卸一次，不再问；卸成了确认框一起关掉。
+test('an uninstall that hits a running tool offers 重试, which uninstalls again without asking twice', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'uninstallCli'; window.v2Test.failMessage = 'Grok CLI 卸载失败：文件被占用，检测到 Grok CLI 正在运行（1 个进程），请关掉它的窗口再试。' })
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    const failure = page.getByTestId('operation-error')
+    await failure.getByText('文件被占用。先关掉正在使用这个工具的窗口，再重试。', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await page.getByTestId('operation-error-retry').click()
+    await page.getByTestId('home-available').getByTestId('tool-row-grok').waitFor()
+    assert.equal(await failure.count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli').map((entry) => entry.args[0])), ['grok', 'grok'])
     await clean(page)
   } finally { await page.close() }
 })

@@ -74,7 +74,7 @@ import { AccountSourceServiceUnavailableError, switchAccountSource } from './acc
 import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
 import { isCodexSessionUuid } from './tool-installation'
-import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientStatus } from './external-client-contract'
+import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientScanOptions, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
 import type { CodexDesktopLocale } from './codex-desktop-locale'
@@ -253,6 +253,11 @@ export interface IpcRegistrationOptions {
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
   getWindowCapabilities?(): WindowCapabilities
+  /**
+   * Windows 上这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）。为真时
+   * platform:get-capabilities 叠上 processElevated，界面不再说会弹授权窗口。缺省 = 不是（旧行为）。
+   */
+  windowsProcessElevated?: boolean
   /** 见 electron/proxy-bypass.ts；不传 = 不绕（测试与旧调用方）。 */
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
@@ -385,6 +390,21 @@ export function parseSystemScanOptions(value: unknown): SystemScanOptions {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached')
     || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')) throw new Error('检测参数格式错误')
   return value.acceptCached === true ? { acceptCached: true } : {}
+}
+
+export function parseExternalClientScanOptions(value: unknown): ExternalClientScanOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'cachedOnly')
+    || (value.cachedOnly !== undefined && typeof value.cachedOnly !== 'boolean')) throw new Error('客户端检测参数格式错误')
+  return value.cachedOnly === true ? { cachedOnly: true } : {}
+}
+
+/**
+ * 开机先摆上次客户端检测结果的那一读（已知13）只读本机文件、跟谁登录着无关，不陪账号恢复等：
+ * 恢复要连服务器，网慢的时候首页那几行又要空着等。格式不对的照样进下面的 handler 报错。
+ */
+function readsCachedExternalClientsOnly(channel: string, args: readonly unknown[]): boolean {
+  return channel === 'external-clients:scan' && isRecord(args[1]) && args[1].cachedOnly === true
 }
 
 export function parseCliUninstallOptions(value: unknown): CliUninstallOptions {
@@ -1671,6 +1691,11 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   // 这个调用只是把安装交出去，真装没装上要等安装程序回话；写「完成」会让客服看反馈报告时
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
+  // 开机先摆的上次结果（已知13）只读了本机一个文件，没检测；写「检测完成」会让客服看反馈报告时
+  // 以为这次已经检测过了，真的那轮卡住或没跑完就分不出来。
+  if (readsCachedExternalClientsOnly(channel, args)) {
+    return count ? `已先显示上次的客户端检测结果，共 ${count} 项` : '没有可先显示的上次客户端检测结果'
+  }
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
   }
@@ -1865,7 +1890,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           'account:copy-reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
           || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
-          && !publicAccountChannels.has(channel)
+          && !publicAccountChannels.has(channel) && !readsCachedExternalClientsOnly(channel, args)
         const invoke = () => scoped && options.accountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
@@ -2014,7 +2039,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.runtimeLog.log('warn', 'system', line.event, `${line.name} 检测失败：${reason}`, line.detail)
     }
   }
-  registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
+  registerTrustedHandler('platform:get-capabilities', () => options.windowsProcessElevated
+    ? Object.freeze({ ...platformCapabilitiesFor(), processElevated: true })
+    : platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown, input: unknown) => {
     if (forceRefresh !== undefined && typeof forceRefresh !== 'boolean') {
       throw new Error('更新检查参数格式错误')
@@ -2163,8 +2190,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertCurrent()
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
   })
-  registerTrustedHandler('external-clients:scan', async (_event, force: unknown) => {
+  registerTrustedHandler('external-clients:scan', async (_event, force: unknown, input: unknown) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
+    // 上次的结果只用来先把首页那几行画出来：不起盘点、不记检测失败，真的结果回来再说。
+    if (parseExternalClientScanOptions(input).cachedOnly) return service.cachedExternalClients()
     const statuses = await service.scanExternalClients(force === true)
     logDetectionFailures(externalClientDetectionFailures(statuses))
     return statuses
