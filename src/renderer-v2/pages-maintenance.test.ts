@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialTopicsFor } from './registry/tutorials'
@@ -448,5 +448,28 @@ describe('installJobRunning', () => {
     expect(installJobRunning(undefined)).toBe(false)
     expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
     expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
+  })
+})
+
+describe('maintenanceRowJobKeys', () => {
+  // 第四十一批 B：首页那份任务里，只有这一页有行的几个跑完时才要重读本页。
+  it('keeps only the Home jobs this page draws a row for', () => {
+    const job = { label: '正在安装', log: [] }
+    expect(maintenanceRowJobKeys(undefined)).toEqual([])
+    expect(maintenanceRowJobKeys({
+      gemini: job, codexDesktop: job, node: job, python: job,
+      git: job, 'launch:codexDesktop': job, workbuddy: job,
+    })).toEqual(['gemini', 'codexDesktop', 'node', 'python'])
+  })
+})
+
+describe('maintenanceJobsFinished', () => {
+  it('reports a finish only when a job that was running is gone', () => {
+    expect(maintenanceJobsFinished([], [])).toBe(false)
+    expect(maintenanceJobsFinished([], ['gemini'])).toBe(false)
+    expect(maintenanceJobsFinished(['gemini'], ['gemini'])).toBe(false)
+    expect(maintenanceJobsFinished(['gemini'], ['gemini', 'node'])).toBe(false)
+    expect(maintenanceJobsFinished(['node', 'gemini'], ['gemini'])).toBe(true)
+    expect(maintenanceJobsFinished(['claude'], [])).toBe(true)
   })
 })
