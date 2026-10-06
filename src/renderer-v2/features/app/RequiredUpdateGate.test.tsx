@@ -54,6 +54,16 @@ describe('RequiredUpdateGate', () => {
     expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)).not.toContain('required-update-system-installer')
   })
 
+  it('asks for an administrator instead of a click on yes when the Windows account is not one', () => {
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installNeedsAdminPassword: true })} windows actions={actions} />)
+    // yoyo 2026-10-06 批的原话（句末补了句号）。
+    expect(html).toContain('data-testid="required-update-admin-password">要输入管理员密码；让有管理员账号的人来点，或联系客服。</p>')
+    expect(html).not.toContain('是否允许更改')
+    expect(html).toContain('data-testid="required-update-start"')
+    expect(html).toContain('data-testid="required-update-support"')
+    expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installNeedsAdminPassword: true })} windows={false} actions={actions} />)).not.toContain('管理员')
+  })
+
   it('shows how much has downloaded, how fast, and how long is left under the progress bar', () => {
     const progress = { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 150 }
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloading', progress })} windows actions={actions} />)

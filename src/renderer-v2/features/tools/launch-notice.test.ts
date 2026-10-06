@@ -70,6 +70,7 @@ describe('launchWaitLabel', () => {
   it('does not claim to wait for account switches or reminder repairs, which never join the install queue', () => {
     expect(launchWaitLabel({ 'switch:claude': { label: '正在改用当前账号' } }, nameOf)).toBe('正在打开工具')
     expect(launchWaitLabel({ 'repair-hooks:codex': { label: '正在修提醒设置' } }, nameOf, '正在打开客户端')).toBe('正在打开客户端')
+    expect(launchWaitLabel({ 'repair-config:codex': { label: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留' } }, nameOf)).toBe('正在打开工具')
     expect(launchWaitLabel({ 'switch:claude': { label: '正在切回官方账号' }, workbuddy: { label: '正在安装' } }, nameOf))
       .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
   })

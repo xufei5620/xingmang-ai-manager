@@ -65,6 +65,7 @@ import {
   billingOptions,
   keyStates,
   orderStates,
+  subscriptionStates,
   taskStates,
   taskFilterFields,
   usageFilterFields,
@@ -341,6 +342,11 @@ export function orderStateFor(value: string) {
     label: '待确认',
     tone: 'neutral' as const,
   }
+}
+export function subscriptionStateFor(status: string) {
+  return Object.hasOwn(subscriptionStates, status)
+    ? subscriptionStates[status]
+    : { label: '待确认', tone: 'neutral' as const }
 }
 function PaymentOptions({
   methods,
@@ -2928,12 +2934,8 @@ function AccountRecharge({
                     )?.title ?? `订阅 ${subscription.planId}`)
                   }
                   badge={
-                    <Pill
-                      tone={subscription.status === 'active' ? 'ok' : 'neutral'}
-                    >
-                      {subscription.status === 'active'
-                        ? '生效中'
-                        : subscription.status}
+                    <Pill tone={subscriptionStateFor(subscription.status).tone}>
+                      {subscriptionStateFor(subscription.status).label}
                     </Pill>
                   }
                   desc={subscription.quotaPeriods ? <>
@@ -3107,9 +3109,7 @@ function AccountInvite({
 }) {
   const operation = useOperation()
   const [transfer, setTransfer] = useState(false)
-  const [amount, setAmount] = useState(
-    String(profile.affQuota / balance.quotaPerUnit),
-  )
+  const [amount, setAmount] = useState('')
   const invite = buildAccountInviteLink(inviteBaseUrl, profile.affCode)
   return (
     <>
@@ -3149,7 +3149,12 @@ function AccountInvite({
             size="sm"
             icon={Zap}
             disabled={profile.affQuota <= 0}
-            onClick={() => setTransfer(true)}
+            onClick={() => {
+              // 默认金额按点开这一刻的可转余额算。转出一部分后资料会重读，但这张卡不会重新挂上，
+              // 只在挂上时算一次的话，再点开还是上一次的数，可能比现在剩下的还多。
+              setAmount(String(profile.affQuota / balance.quotaPerUnit))
+              setTransfer(true)
+            }}
             testId="account-invite-transfer"
           >
             转入余额

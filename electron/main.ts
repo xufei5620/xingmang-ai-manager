@@ -195,14 +195,14 @@ import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdateRequestGuard } from './update-request-guard'
 import { locateDirectUpdateFeed } from './update-feed-route'
-import { createUpdaterService } from './updater'
+import { createUpdaterService, type UpdateSnapshot } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
-import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
+import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
 import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
@@ -1626,6 +1626,14 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('updater', 'pending.record-failed', cause)
       })
     }
+    // Windows 上这个账号在不在管理员组（第二十四批 2）。不在的话装更新时授权窗口要输一个管理员
+    // 账号的密码，自动装只会把软件关掉、再弹一个他填不了的窗口，所以打开时、退出时都不自动装。
+    // whoami 几十毫秒就答，启动就问，下好的版本摆出来之前一般早问完了；没问出来（'unknown'）
+    // 照旧自动装，不把管理员也拦住。问出来之前是 null：打开时装、退出时装都等它。
+    const updateAccountProbe: Promise<WindowsElevationCapability> = process.platform === 'win32'
+      ? inspectWindowsElevationCapability({ timeoutMs: 3_000 })
+      : Promise.resolve('unknown')
+    let updateAccount: WindowsElevationCapability | null = null
     // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
     let quitInstallAttempt: QuitInstallAttempt | null = null
     let previousAutoInstallFailureReported = false
@@ -1989,27 +1997,18 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('updater', 'install.on-launch.failed', cause)
       })
     }
-    const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
-      const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
-      if (downloaded) {
-        pendingUpdateRecord = { ...pendingUpdateRecord, downloadedVersion: downloaded }
-        void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
-          runtimeLog.exception('updater', 'pending.record-failed', cause)
-        })
-      }
-      if (isBackgroundInstallFailed(pendingUpdateRecord, state)) {
-        runtimeLog.log('info', 'updater', 'install.background.failed', '后台安装没装成，留到退出时再装')
-        dropBackgroundInstall()
-      }
+    const considerLaunchInstall = (state: UpdateSnapshot) => {
       // 退出交接还没接上时（主窗口没建好）不装：那时安装器发起的退出会被当成用户关窗。
-      // 开机拉起的安静期还没过时，两分钟也还没开始算。
-      if (launchInstallTried || !updateQuitHandoff || launchInstallClockFrom === null) return
+      // 开机拉起的安静期还没过时，两分钟也还没开始算。账号是不是管理员还没问出来时也先不定，
+      // 问出来以后再看一遍（见下面 updateAccountProbe）。
+      if (launchInstallTried || !updateQuitHandoff || launchInstallClockFrom === null || updateAccount === null) return
       const version = decideLaunchInstall({
         autoUpdate: updaterService.autoUpdateEnabled(),
         snapshot: state,
         recordAtLaunch: pendingUpdateAtLaunch,
         elapsedSinceLaunchMs: Date.now() - launchInstallClockFrom,
         busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+        standardAccount: updateAccount === 'standard',
       })
       if (!version) return
       launchInstallTried = true
@@ -2028,6 +2027,34 @@ if (!hasSingleInstanceLock) {
         return
       }
       startLaunchInstall(version, mode)
+    }
+    const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
+      const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
+      if (downloaded) {
+        pendingUpdateRecord = { ...pendingUpdateRecord, downloadedVersion: downloaded }
+        void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+          runtimeLog.exception('updater', 'pending.record-failed', cause)
+        })
+      }
+      if (isBackgroundInstallFailed(pendingUpdateRecord, state)) {
+        runtimeLog.log('info', 'updater', 'install.background.failed', '后台安装没装成，留到退出时再装')
+        dropBackgroundInstall()
+      }
+      considerLaunchInstall(state)
+    })
+    void updateAccountProbe.then((account) => {
+      updateAccount = account
+      if (account === 'standard') {
+        runtimeLog.log('info', 'updater', 'install.standard-account', '这台电脑的账号不是管理员：下好的新版本不自动装，等有管理员账号的人在更新页点「重启安装」')
+        // 界面据此改说要管理员密码。
+        updaterService.setInstallNeedsAdminPassword(true)
+      } else if (account === 'unknown' && process.platform === 'win32') {
+        runtimeLog.log('warn', 'updater', 'install.account-unknown', '没问出这台电脑的账号是不是管理员，照旧自动装更新')
+      }
+      // 下好的版本可能在问出来之前就摆出来了，那一下没定下来，问出来以后再看一遍。
+      considerLaunchInstall(updaterService.getState())
+    }).catch((cause: unknown) => {
+      runtimeLog.exception('updater', 'install.account-check-failed', cause)
     })
     const urlPolicy = applicationUrlPolicy()
     registerApplicationProtocol(urlPolicy)
@@ -3240,7 +3267,10 @@ if (!hasSingleInstanceLock) {
         }
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
-        if (updaterService.autoUpdateEnabled()) {
+        // 账号不是管理员时退出不装也不问（decideQuitInstall），下面的撤回名单也就不用等。账号是不是
+        // 管理员一般早问出来了，刚打开就退出时最多再等几秒。
+        const standardAccount = updaterService.autoUpdateEnabled() && (updateAccount ?? await updateAccountProbe) === 'standard'
+        if (updaterService.autoUpdateEnabled() && !standardAccount) {
           // 自动更新开着、这一版还没在退出时自动试过，就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
           // 的版本会在这里被收回，最多等几秒，读不到就按上次读到的算。
           await Promise.race([
@@ -3252,10 +3282,14 @@ if (!hasSingleInstanceLock) {
         }
         const version = update.version
         const installMethod = updaterService.getState().installMethod
-        // 上面等撤回名单的那几秒里系统可能已经开始关机：不装、不问，也不记「退出时试过了」。
-        const decision = decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod, systemShuttingDown: lifecycle.isSystemShuttingDown })
+        // 上面等的那几秒里系统可能已经开始关机：不装、不问，也不记「退出时试过了」。
+        const decision = decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod, systemShuttingDown: lifecycle.isSystemShuttingDown, standardAccount })
         if (decision === 'later') {
           runtimeLog.log('info', 'window', 'quit.update-later', `系统正在关机、重启或注销，这次不装 ${version ?? '新版本'}，下次打开再装`)
+          return 'quit'
+        }
+        if (decision === 'leave') {
+          runtimeLog.log('info', 'window', 'quit.update-left', `这台电脑的账号不是管理员，退出时不装 ${version ?? '新版本'}，等有管理员账号的人在更新页点「重启安装」`)
           return 'quit'
         }
         if (version && decision === 'install') {

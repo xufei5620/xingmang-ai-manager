@@ -119,15 +119,27 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
   return '这个版本有已知问题'
 }
+/**
+ * Windows 上账号不在管理员组（update.installNeedsAdminPassword）：下好的新版本不自动装，首页气泡
+ * 说整句，更新页拆成标题和正文。主进程 desktop-notifications.ts 的系统通知是同一句，两边字面量
+ * 要一致。
+ */
+export const standardAccountUpdateNotice = {
+  title: '这台电脑的账号不是管理员，装更新时要输入管理员密码',
+  body: '让有管理员账号的人点一次「重启安装」，或者找客服。',
+} as const;
+export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
 // 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进更新页。
 // 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
-export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod']): string {
+export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
   if (installMethod === 'system-installer') {
     if (phase === 'downloaded') return '已经下好了，到更新页点「安装新版本」就能装上。';
     return autoUpdate ? '正在后台下载，下好后到更新页点「安装新版本」。' : '查看更新内容和安装状态。';
   }
+  if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
   if (!autoUpdate) return '查看更新内容和安装状态。';
   if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
+  if (installNeedsAdminPassword) return '正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。';
   return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
 }
 /**
@@ -183,19 +195,21 @@ export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null
   return parts.join(' · ');
 }
 // 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
-// 重启」就是在说反话。
-export function updatesPageLead(autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod']): string {
+// 重启」就是在说反话。账号不是管理员的 Windows 电脑只在后台下、不自己装，也不能说会装上。
+export function updatesPageLead(autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
   if (autoUpdate && installMethod === 'system-installer') {
     return '新版本会在后台下好，下好后点「安装新版本」，在弹出的安装窗口里输入开机密码就装上了。';
   }
+  if (autoUpdate && installNeedsAdminPassword) return '新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。';
   return autoUpdate
     ? '新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。'
     : '新版本什么时候安装由你决定，不会自己重启。';
 }
 /** 「自动更新」开关下面那句。设置「更新与关于」和「更新」页各有一个这个开关，说的是同一句。 */
-export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod']): string {
-  return installMethod === 'system-installer'
-    ? '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载'
+export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
+  if (installMethod === 'system-installer') return '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载';
+  return installNeedsAdminPassword
+    ? '新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装'
     : '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装';
 }
 /** 更新页上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启安装」。*/
@@ -222,6 +236,19 @@ export const orderStates = {
   expired: { label: '已超时', tone: 'neutral' },
   unknown: { label: '待确认', tone: 'neutral' },
 } as const
+/**
+ * 订阅卡上的状态。两个账号后台报的都是英文原值：星芒账号有 active / expired / cancelled（后台作废），
+ * 历史账号有 active / expired / suspended（暂停）/ revoked（删掉）。这里没有的值界面写「待确认」，
+ * 不把英文原样放上去。
+ */
+export const subscriptionStates: Record<string, { label: string; tone: 'ok' | 'warn' | 'neutral' }> = {
+  active: { label: '生效中', tone: 'ok' },
+  exhausted: { label: '额度已用完', tone: 'warn' },
+  expired: { label: '已到期', tone: 'neutral' },
+  cancelled: { label: '已撤销', tone: 'neutral' },
+  revoked: { label: '已撤销', tone: 'neutral' },
+  suspended: { label: '已停用', tone: 'neutral' },
+}
 export const billingOptions = [
   { value: 'subscription_first', label: '优先用订阅' },
   { value: 'wallet_first', label: '优先用余额' },

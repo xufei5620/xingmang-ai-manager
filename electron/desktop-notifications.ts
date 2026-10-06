@@ -58,6 +58,12 @@ export interface DesktopNotificationController {
   dispose(): void
 }
 
+/**
+ * 账号不在管理员组的 Windows 电脑上，下好的新版本不自动装（auto-update-install.ts），下好时说这一句。
+ * 渲染层 registry/business.ts 的 standardAccountUpdateNotice 是同一句，两边字面量要一致。
+ */
+export const standardAccountUpdateNotice = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。'
+
 export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate = false): { key: string; version: string; stage: 'available' | 'downloaded' | 'disk'; title: string; body: string } | null {
   if ((snapshot.phase !== 'available' && snapshot.phase !== 'downloaded') || snapshot.error) return null
   const version = snapshot.availableVersion?.trim()
@@ -87,6 +93,17 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
           : `版本 ${version} 已可下载。`,
     }
   }
+  // 账号是不是管理员是另问的，问出来之前那条「下好了」可能已经弹了：换一个键，好让说对了的
+  // 这条照样弹出来、替掉那条。
+  if (snapshot.phase === 'downloaded' && snapshot.installNeedsAdminPassword) {
+    return {
+      key: `${version}:downloaded:admin-password`,
+      version,
+      stage: 'downloaded',
+      title,
+      body: standardAccountUpdateNotice,
+    }
+  }
   return {
     key: `${version}:${snapshot.phase}`,
     version,
@@ -97,7 +114,9 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
     body: autoUpdate
       ? snapshot.phase === 'downloaded'
         ? `新版 ${version} 已经下好，关掉软件或下次打开时自动装上，不打断你现在用。`
-        : `新版 ${version} 正在后台下载，下好后关掉软件时自动装上。`
+        : snapshot.installNeedsAdminPassword
+          ? `新版 ${version} 正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。`
+          : `新版 ${version} 正在后台下载，下好后关掉软件时自动装上。`
       : snapshot.phase === 'downloaded' ? `版本 ${version} 已下载，可在更新页面重启安装。` : `版本 ${version} 已可下载。`,
   }
 }
@@ -142,6 +161,8 @@ export function createDesktopNotificationController(
       if (seen.has(update.key)) return 'duplicate'
       // 前一条「正在后台下载」在量完盘之前就弹了，这时它已经不对，收掉。
       if (update.stage === 'downloaded' || update.stage === 'disk') close(`${update.version}:available`)
+      // 说「关掉软件就自动装上」的那条，在问出账号不是管理员之后也不对了。
+      if (update.key !== `${update.version}:downloaded` && update.stage === 'downloaded') close(`${update.version}:downloaded`)
       while (active.size >= 4) close(active.keys().next().value!)
       const notification = runtime.create({ title: update.title, body: update.body, silent: true, urgency: 'normal', ...(options.iconPath ? { icon: options.iconPath } : {}) })
       // 空间不够那条之后，每 3 小时重新检查都会先回到「有新版本」再量盘，别让那句
