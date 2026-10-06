@@ -17,11 +17,13 @@ import {
   parseClashTunConfig,
   redactDiagnosticText,
   operatingSystemSummary,
+  reconcileNodeRuntimeWithClis,
   relayStatusProbeUrl,
   runDiagnostics,
   windowsProxySettingsOutcome,
   withAppProxyRoute,
   inspectAppProxyRoute,
+  type DiagnosticItem,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
@@ -995,6 +997,59 @@ describe('diagnostics', () => {
     expect(node).toMatchObject({ state: 'error', summary: '检查超时' })
     expect(npm).toMatchObject({ state: 'pass' })
     expect(report.durationMs).toBeLessThan(500)
+  })
+
+  // 已知7：只用 Codex 桌面端的客户，首页运行环境卡说 Node.js「可选 · 未装」，检查页却是两行红色。
+  it('lowers a missing Node.js and npm to a reminder when no command-line tool is installed', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    const installed = new Set<DiagnosticToolId>(['python', 'git'])
+    input.inspectTool = async (tool) => installed.has(tool)
+      ? { installed: true, version: `${tool} 1.0.0`, path: path.join(home, 'bin', `${tool}.exe`) }
+      : { installed: false, version: null, path: null }
+
+    const report = await runDiagnostics(input)
+
+    for (const code of ['RUNTIME_NODE', 'RUNTIME_NPM']) {
+      expect(report.items.find((item) => item.code === code)).toMatchObject({ state: 'warn', summary: '未安装', details: { installed: false } })
+    }
+    expect(report.counts.warn).toBe(report.items.filter((item) => item.state === 'warn').length)
+    expect(report.counts.fail).toBe(report.items.filter((item) => item.state === 'fail').length)
+  })
+
+  it('keeps a missing Node.js and npm as failures while a command-line tool is installed', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    const installed = new Set<DiagnosticToolId>(['python', 'git', 'codex'])
+    input.inspectTool = async (tool) => installed.has(tool)
+      ? { installed: true, version: `${tool} 1.0.0`, path: path.join(home, 'bin', `${tool}.exe`) }
+      : { installed: false, version: null, path: null }
+
+    const report = await runDiagnostics(input)
+
+    for (const code of ['RUNTIME_NODE', 'RUNTIME_NPM']) {
+      expect(report.items.find((item) => item.code === code)).toMatchObject({ state: 'fail', details: { installed: false } })
+    }
+  })
+
+  describe('reconcileNodeRuntimeWithClis', () => {
+    function item(code: string, state: DiagnosticItem['state'], details?: DiagnosticItem['details']): DiagnosticItem {
+      return { code, title: code, state, summary: state === 'error' ? '检查超时' : '未安装', details, durationMs: 1 }
+    }
+    const missingClis = ['CLI_CLAUDE', 'CLI_CODEX', 'CLI_GEMINI', 'CLI_GROK'].map((code) => item(code, 'warn', { installed: false }))
+
+    // 查不出来装没装，就不能说用不到（同首页：没检测出来的工具算在用）。
+    it('keeps Node.js red when a command-line tool could not be detected', () => {
+      const items = [...missingClis.slice(1), item('CLI_CLAUDE', 'error', { reason: '单项检查超过 8000ms' }), item('RUNTIME_NODE', 'fail', { installed: false })]
+
+      expect(reconcileNodeRuntimeWithClis(items).find((entry) => entry.code === 'RUNTIME_NODE')?.state).toBe('fail')
+    })
+
+    it('leaves a timed out Node.js check and the other runtimes alone', () => {
+      const items = [...missingClis, item('RUNTIME_NODE', 'error', { reason: '单项检查超过 8000ms' }), item('RUNTIME_PYTHON', 'warn', { installed: false }), item('RUNTIME_GIT', 'warn', { installed: false })]
+
+      expect(reconcileNodeRuntimeWithClis(items)).toEqual(items)
+    })
   })
 
   it('turns a slow permission check into a reminder instead of a red timeout', async () => {

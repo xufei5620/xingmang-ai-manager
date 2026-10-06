@@ -1323,6 +1323,7 @@ if (!hasSingleInstanceLock) {
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
       relayEndpointRouting: relayRouting,

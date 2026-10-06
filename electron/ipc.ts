@@ -74,7 +74,7 @@ import { AccountSourceServiceUnavailableError, switchAccountSource } from './acc
 import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
 import { isCodexSessionUuid } from './tool-installation'
-import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientStatus } from './external-client-contract'
+import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientScanOptions, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
 import type { CodexDesktopLocale } from './codex-desktop-locale'
@@ -385,6 +385,21 @@ export function parseSystemScanOptions(value: unknown): SystemScanOptions {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached')
     || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')) throw new Error('检测参数格式错误')
   return value.acceptCached === true ? { acceptCached: true } : {}
+}
+
+export function parseExternalClientScanOptions(value: unknown): ExternalClientScanOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'cachedOnly')
+    || (value.cachedOnly !== undefined && typeof value.cachedOnly !== 'boolean')) throw new Error('客户端检测参数格式错误')
+  return value.cachedOnly === true ? { cachedOnly: true } : {}
+}
+
+/**
+ * 开机先摆上次客户端检测结果的那一读（已知13）只读本机文件、跟谁登录着无关，不陪账号恢复等：
+ * 恢复要连服务器，网慢的时候首页那几行又要空着等。格式不对的照样进下面的 handler 报错。
+ */
+function readsCachedExternalClientsOnly(channel: string, args: readonly unknown[]): boolean {
+  return channel === 'external-clients:scan' && isRecord(args[1]) && args[1].cachedOnly === true
 }
 
 export function parseCliUninstallOptions(value: unknown): CliUninstallOptions {
@@ -1671,6 +1686,11 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   // 这个调用只是把安装交出去，真装没装上要等安装程序回话；写「完成」会让客服看反馈报告时
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
+  // 开机先摆的上次结果（已知13）只读了本机一个文件，没检测；写「检测完成」会让客服看反馈报告时
+  // 以为这次已经检测过了，真的那轮卡住或没跑完就分不出来。
+  if (readsCachedExternalClientsOnly(channel, args)) {
+    return count ? `已先显示上次的客户端检测结果，共 ${count} 项` : '没有可先显示的上次客户端检测结果'
+  }
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
   }
@@ -1865,7 +1885,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           'account:copy-reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
           || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
-          && !publicAccountChannels.has(channel)
+          && !publicAccountChannels.has(channel) && !readsCachedExternalClientsOnly(channel, args)
         const invoke = () => scoped && options.accountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
@@ -2130,18 +2150,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const save = () => options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
     if (parsed.mode !== 'reset') return save()
-    // 「备份并重置」答应过先备份。配置旁的 *.bak.<时间> 每个文件只留 5 份，每次在新
-    // 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以
-    // 重置前在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。
-    return (async () => {
-      try {
-        options.backupStore.create(parsed.provider, 'pre-save', undefined, await readBackupAccountContext())
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
-      }
-      return save()
-    })()
+    return backupBeforeReset(parsed.provider).then(save)
   })
   registerTrustedHandler('config:open-directory', async (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
@@ -2174,8 +2183,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertCurrent()
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
   })
-  registerTrustedHandler('external-clients:scan', async (_event, force: unknown) => {
+  registerTrustedHandler('external-clients:scan', async (_event, force: unknown, input: unknown) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
+    // 上次的结果只用来先把首页那几行画出来：不起盘点、不记检测失败，真的结果回来再说。
+    if (parseExternalClientScanOptions(input).cachedOnly) return service.cachedExternalClients()
     const statuses = await service.scanExternalClients(force === true)
     logDetectionFailures(externalClientDetectionFailures(statuses))
     return statuses
@@ -2201,6 +2212,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
+    if (mode === 'reset') return backupBeforeReset(provider).then(() => service.switchToOfficialAccount(provider, 'reset'))
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
   // 同一个工具的一键切换一次只跑一个（全面检测 Q35）。切换要备份、写入、自检，
@@ -2997,6 +3009,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       keyDigests: new Set(keys.map((entry) => apiKeyDigest(entry.key))),
     }
   }
+  /**
+   * 「重置为初始状态」答应过先备份。配置旁的 *.bak.<时间> 每个文件只留 5 份，每次在新
+   * 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以重置前
+   * 在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。四个重置入口都
+   * 走这里：config:save、选的账号 Key、自动准备的 Key、官方账号（以前只有第一个留）；
+   * 首页「配置文件坏了」的「修好它」走后两个。
+   */
+  async function backupBeforeReset(provider: ProviderId): Promise<void> {
+    try {
+      options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
+    }
+  }
   registerTrustedHandler('backups:list', async () => options.backupStore.list(await readBackupAccountContext()))
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的配置类型')
@@ -3422,7 +3449,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
-    return configureManagedClis(
+    const configure = () => configureManagedClis(
       parsed.intent === 'explicit' ? explicitProvisioning : automaticProvisioning,
       service,
       parsed.providers,
@@ -3432,6 +3459,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       parsed.mode,
       parsed.intent,
     )
+    if (parsed.mode !== 'reset') return configure()
+    return (async () => {
+      for (const provider of parsed.providers) await backupBeforeReset(provider)
+      return configure()
+    })()
   })
   registerTrustedHandler('account:register', (_event, input: unknown) => (
     accountService.register(parseAccountRegisterInput(input))
@@ -3642,6 +3674,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const models = await service.fetchAvailableModels(apiKey)
     assertAccountSessionUser(userId)
     if (!models.includes(parsed.model)) throw new Error('所选 Key 当前不支持该模型，请重新检测')
+    if (parsed.mode === 'reset') await backupBeforeReset(parsed.provider)
     const result = await service.saveConfig({
       provider: parsed.provider,
       apiKey,

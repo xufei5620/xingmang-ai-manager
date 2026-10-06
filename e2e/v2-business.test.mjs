@@ -503,6 +503,47 @@ test('the invite page leads with the link and puts the transfer in the transfera
   }
 })
 
+test('the transfer dialog starts from what is transferable now, also after part of it was moved', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const transferable = panel.locator('.v2-business-stat-grid.is-four > .xm-card').filter({ hasText: '可转余额' })
+    const dialog = page.getByRole('dialog', { name: '转入账户余额', exact: true })
+    const amount = dialog.getByLabel('转入金额（USD）', { exact: true })
+    await transferable.getByRole('button', { name: '转入余额', exact: true }).click()
+    await dialog.waitFor()
+    assert.equal(await amount.inputValue(), '1')
+    await amount.fill('0.4')
+    await dialog.getByRole('button', { name: '确认转入', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await transferable.getByText('$0.60', { exact: true }).waitFor()
+    await transferable.getByRole('button', { name: '转入余额', exact: true }).click()
+    await dialog.waitFor()
+    assert.equal(await amount.inputValue(), '0.6')
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 40 }])
+  } finally {
+    await page.close()
+  }
+})
+
+test('subscription rows name each state in Chinese instead of the value the server sent', async () => {
+  const page = await fixture('page=account&subscriptionStates=1')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const state = (title) => panel.locator('.xm-row-title').filter({ hasText: title }).locator('.xm-pill')
+    await state('月卡一号').waitFor()
+    assert.equal(await state('月卡一号').innerText(), '生效中')
+    assert.equal(await state('月卡二号').innerText(), '已到期')
+    assert.equal(await state('月卡三号').innerText(), '已撤销')
+    assert.equal(await state('月卡四号').innerText(), '已停用')
+    assert.equal(await state('月卡五号').innerText(), '待确认')
+  } finally {
+    await page.close()
+  }
+})
+
 test('tool key limits list only the tools that have a key and name the ones still missing', async () => {
   const page = await fixture('page=account&managedKeys=1')
   try {

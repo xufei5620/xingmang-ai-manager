@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
-import { accountSwitchTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, codexConfigBroken, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -56,6 +56,18 @@ describe('renderer tool source', () => {
     expect(codexNeedsRepair(shadowed, 'claude')).toBe(false)
     expect(readyOnceRepaired({ ...shadowed, model: '' }, 'codex', storage)).toBe(false)
     expect(readyOnceRepaired({ ...shadowed, codexProviderShadowed: false }, 'codex', storage)).toBe(false)
+  })
+
+  // 2026-10-02 客户的「无法加载组织设置」：Codex 自己读不了 config.toml。修的时候不换账号来源。
+  it('flags a Codex config Codex cannot read and repairs it on the account it already uses', () => {
+    const broken = { ...relayConfig(), configurationOwnership: 'account' as const, codexConfigBroken: true }
+    expect(codexConfigBroken(broken, 'codex')).toBe(true)
+    expect(codexConfigBroken(broken, 'grok')).toBe(false)
+    expect(codexConfigBroken(relayConfig(), 'codex')).toBe(false)
+    expect(brokenConfigRepairTarget({ codexAuthMode: 'chatgpt' })).toBe('official')
+    expect(brokenConfigRepairTarget({ codexAuthMode: 'apikey' })).toBe('account')
+    expect(brokenConfigRepairTarget({ codexAuthMode: null })).toBe('account')
+    expect(brokenConfigRepairTarget({})).toBe('account')
   })
 
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {
