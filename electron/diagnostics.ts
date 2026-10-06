@@ -329,7 +329,10 @@ interface CheckDefinition {
   code: string
   title: string
   run: (signal: AbortSignal) => Promise<CheckOutcome> | CheckOutcome
-  /** 只说明情况、不决定软件行为的项，超时给这句提醒，不亮红色的「检查超时」。 */
+  /**
+   * 超时就给这个结论，不给笼统的「检查超时」。只说明情况、不决定软件行为的项给一句不亮红的
+   * 提醒；「星芒 AI 网络」等不到回话本身就是结论（连不上），照实亮红。
+   */
   timeoutOutcome?: CheckOutcome
 }
 
@@ -2034,6 +2037,13 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // （登录页用的是同一份文案），判断只用这里本来就要发的这一次请求。
       code: 'XINGMANG_NETWORK',
       title: '星芒 AI 网络',
+      // 一直等不到回话的，以前算成检查自己出错（「检查超时」）。可当地网络切断一条线路时
+      // 常常就是这样：请求发出去，没人回。所以按连不上算，结论用登录页同一句超时的话。
+      timeoutOutcome: {
+        state: 'fail',
+        summary: networkFailureMessages.timeout,
+        details: { reason: 'timeout', siteId: relaySite.id },
+      },
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
         const endpoint = relayStatusProbeUrl(relaySite)
@@ -2060,7 +2070,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             reason,
             raw: sanitize(errorChainText(error)),
           })
-          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason } }
+          // 带上查的是哪个站：检查页据此认出「换一条线路」救不救得回来（第四十三批 B）。
+          // 「查看详情」不摆这个键（diagnostic-details.ts），界面上不出现站点。
+          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id } }
         }
         // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
         // 这时没有异常可归类，只能从内容认出来：这个接口正常时一定回 JSON，
