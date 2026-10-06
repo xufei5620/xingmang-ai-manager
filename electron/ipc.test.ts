@@ -93,6 +93,7 @@ function serviceStub(): SystemService {
     installCli: vi.fn() as never,
     cancelCliInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCli: vi.fn() as never,
+    cleanUninstallLeftovers: vi.fn() as never,
     inspectCliUpdate: vi.fn() as never,
     installCodexDesktop: vi.fn() as never,
     cancelCodexDesktopInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
@@ -3208,6 +3209,25 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'claude', { reinstall: true, path: '/tmp' })).rejects.toThrow('卸载参数格式错误')
     await expect(handler(trustedEvent(), 'claude', 'reinstall')).rejects.toThrow('卸载参数格式错误')
     expect(service.uninstallCli).toHaveBeenCalledTimes(2)
+  })
+
+  it('cleans uninstall leftovers by tool name only, ignoring any path the renderer adds', async () => {
+    const service = serviceStub()
+    vi.mocked(service.cleanUninstallLeftovers).mockResolvedValueOnce({ remaining: 1 }).mockResolvedValueOnce({ remaining: 0 })
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('cli:clean-uninstall-leftovers')!
+
+    await expect(handler(trustedEvent(), 'claude', 'C:\\Windows\\System32\\drivers\\etc\\hosts')).resolves.toEqual({ remaining: 1 })
+    expect(service.cleanUninstallLeftovers).toHaveBeenLastCalledWith('claude')
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', 'cli:clean-uninstall-leftovers',
+      'Claude Code 卸载残留还剩 1 个文件没删掉', expect.objectContaining({ provider: 'Claude Code' }))
+    await expect(handler(trustedEvent(), 'grok')).resolves.toEqual({ remaining: 0 })
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', 'cli:clean-uninstall-leftovers',
+      'Grok CLI 卸载残留已清理', expect.anything())
+
+    expect(() => handler(trustedEvent(), '/Users/alex/.grok/bin/grok-1.0.46')).toThrow('未知的 CLI 类型')
+    expect(() => handler(trustedEvent(), { provider: 'claude' })).toThrow('未知的 CLI 类型')
+    expect(service.cleanUninstallLeftovers).toHaveBeenCalledTimes(2)
   })
 
   it('exposes sanitized runtime logs and copies the feedback report', async () => {

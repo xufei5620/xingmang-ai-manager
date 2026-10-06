@@ -272,10 +272,18 @@ import {
 } from './macos-git-install'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
 import {
+  buildClaudeNativeLayout,
   buildClaudeRetainedVersionFilesCommand,
   buildClaudeRetainedVersionFilesReason,
   uninstallVerifiedClaudeNativeInstallation,
 } from './claude-native-uninstall'
+import { isDarwinForeignWritablePath } from './darwin-path-trust'
+import {
+  captureUninstallLeftovers,
+  removeUninstallLeftovers,
+  type UninstallLeftover,
+  type UninstallLeftoverOptions,
+} from './uninstall-leftovers'
 import { sameLocalPathIdentity } from './path-identity'
 import { adoptRestoredXingmangAiSkillOff, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
@@ -589,8 +597,19 @@ export type ToolUninstallResult =
          * files left behind by uninstallVerifiedClaudeNativeInstallation.
          */
         manualCommand: string | null
+        /**
+         * true = the main process pinned exactly the files manualCommand names
+         * and `cli:clean-uninstall-leftovers` may delete them after checking
+         * them again (已知48「帮我清理」). Omitted = the command is all there is.
+         */
+        cleanUpAvailable?: boolean
       }
     }
+
+/** 「帮我清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
+export interface CliLeftoverCleanupResult {
+  remaining: number
+}
 
 export interface CodexSetupStatus {
   checkedAt: string
@@ -815,11 +834,14 @@ function buildDarwinGrokCleanupCommand(paths: readonly string[]): string {
  */
 export class DarwinGrokRetainedPathsError extends Error {
   readonly manualCommand: string
+  /** Exactly the paths manualCommand names, for the 「帮我清理」 record. */
+  readonly retainedPaths: readonly string[]
 
-  constructor(message: string, manualCommand: string) {
+  constructor(message: string, manualCommand: string, retainedPaths: readonly string[]) {
     super(message)
     this.name = 'DarwinGrokRetainedPathsError'
     this.manualCommand = manualCommand
+    this.retainedPaths = retainedPaths
   }
 }
 
@@ -917,7 +939,7 @@ export async function uninstallVerifiedDarwinGrokInstallation(
           + `（共约 ${formatMebibytes(orphanBytes)}：${orphanNamesText}），如确认不再需要可一并手动清理，本工具不会自动删除它们。`,
       )
     }
-    throw new DarwinGrokRetainedPathsError(messageParts.join(''), buildDarwinGrokCleanupCommand(retainedPaths))
+    throw new DarwinGrokRetainedPathsError(messageParts.join(''), buildDarwinGrokCleanupCommand(retainedPaths), retainedPaths)
   }
   return result
 }
@@ -1016,6 +1038,8 @@ export interface SystemService {
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
+  /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
+  cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
   cancelCodexDesktopInstall(): InstallCancellationOutcome
@@ -5383,9 +5407,88 @@ export function createSystemService(
     ),
   })
 
+  // 「帮我清理」只删卸载那一刻记下的文件（已知48）：界面只说是哪个工具，路径永远由这里给，
+  // 不收界面传来的。下一次卸这个工具时清掉，清干净了也清掉。
+  const uninstallLeftovers = new Map<ProviderId, UninstallLeftover[]>()
+
+  function uninstallLeftoverOptions(): UninstallLeftoverOptions {
+    return {
+      platform: process.platform,
+      ownerUid: process.platform === 'win32' ? undefined : process.getuid?.(),
+      // Mac 上卸载本来不按路径删改名后的链接，「帮我清理」要删（yoyo 2026-10-06「Mac 也帮我清理」）：
+      // 只在别的账户改不了的目录里删，核对和删除之间就只剩客户自己能动它。
+      isForeignWritableDirectory: process.platform === 'darwin'
+        ? (directory) => isDarwinForeignWritablePath(directory)
+        : undefined,
+    }
+  }
+
+  /** 记下这次卸载留下的文件；一个都核对不了就不记，界面也就不给「帮我清理」。 */
+  function rememberUninstallLeftovers(provider: ProviderId, filePaths: readonly string[]): boolean {
+    const leftovers = captureUninstallLeftovers(filePaths, uninstallLeftoverOptions())
+    if (!leftovers.some((leftover) => leftover.kind === 'pinned')) {
+      uninstallLeftovers.delete(provider)
+      return false
+    }
+    uninstallLeftovers.set(provider, leftovers)
+    return true
+  }
+
+  /**
+   * 这个工具重新装上后会运行的那个文件。Grok 的 npm 安装脚本见到同版本的 grok-<版本> 已经在
+   * ~/.grok/bin 里就直接沿用、只把链接指回去，卸载时记下的程序文件就又成了正在用的那一份。
+   */
+  function liveCommandLinks(provider: ProviderId): string[] {
+    // 卸载 Grok 时按 HOME 找、Linux 上还先解开主目录的链接（同 npm 安装脚本），这里几种写法都看。
+    const homes = new Set<string>()
+    for (const home of [commandEnvironment().HOME?.trim() || os.homedir(), os.homedir()]) {
+      homes.add(home)
+      try {
+        homes.add(fs.realpathSync(home))
+      } catch {
+        // 主目录读不了就只按原样找。
+      }
+    }
+    return [...homes].flatMap((home) => {
+      if (provider === 'claude') return [buildClaudeNativeLayout(home, process.platform).commandPath]
+      if (provider === 'grok') return ['grok', 'agent'].map((name) => path.join(home, '.grok', 'bin', name))
+      return []
+    })
+  }
+
+  function cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult> {
+    // 和卸载、安装排同一个队：删的是工具目录里的文件，不能和正在装的那一份同时动。
+    return installationQueue.enqueue(`cli:clean-leftovers:${provider}`, async () => {
+      const leftovers = uninstallLeftovers.get(provider)
+      // 界面只在卸载记下了文件时给「帮我清理」，清干净以后框就关了；走到这里只会是连点。
+      if (!leftovers) return { remaining: 0 }
+      const cleanup = await removeUninstallLeftovers(leftovers, {
+        ...uninstallLeftoverOptions(),
+        liveCommandLinks: liveCommandLinks(provider),
+      })
+      if (cleanup.kept.length > 0) uninstallLeftovers.set(provider, cleanup.kept.map((entry) => entry.leftover))
+      else uninstallLeftovers.delete(provider)
+      if (cleanup.kept.length > 0 || cleanup.reused > 0) {
+        runtimeLog?.log(cleanup.kept.length > 0 ? 'warn' : 'info', 'install', 'cli.uninstall-leftovers.cleaned',
+          `${cliCatalog[provider].name} 卸载残留删掉 ${cleanup.removed} 个，还剩 ${cleanup.kept.length} 个`, {
+            provider,
+            removed: cleanup.removed,
+            reused: cleanup.reused,
+            kept: cleanup.kept.map((entry) => ({
+              file: redactHomeDirectory(entry.leftover.path, providerRoots.userHome),
+              reason: entry.reason,
+              ...(entry.code ? { code: entry.code } : {}),
+            })),
+          })
+      }
+      return { remaining: cleanup.kept.length }
+    })
+  }
+
   async function uninstallCliOperation(provider: ProviderId, options: CliUninstallOptions = {}): Promise<ToolUninstallResult> {
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装、更新或卸载中`)
     installing.add(provider)
+    uninstallLeftovers.delete(provider)
     try {
       // 同 inspectCliUpdate：卸载只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
       const npmPath = await findInstalledExecutable('npm')
@@ -5497,7 +5600,12 @@ export function createSystemService(
           } catch (error) {
             // Linux 和 macOS 一样：安全核对没过就交给客户手动卸，并说清为什么。
             if (platform === 'darwin' || platform === 'linux') {
-              return grokManualUninstallResult(initial.status.version, error)
+              const manual = grokManualUninstallResult(initial.status.version, error)
+              // Mac 上每次都走到这里：命令入口删了，改名后的链接和程序文件按规矩留着。
+              if (!(error instanceof DarwinGrokRetainedPathsError) || !rememberUninstallLeftovers(provider, error.retainedPaths)) {
+                return manual
+              }
+              return { ...manual, manualHelp: { ...manual.manualHelp, cleanUpAvailable: true } }
             }
             throw error
           }
@@ -5519,6 +5627,7 @@ export function createSystemService(
       void cliTerminalAccess.release(provider)
       const retainedReason = buildClaudeRetainedVersionFilesReason(retainedClaudeVersionFiles, process.platform)
       if (retainedReason) {
+        const cleanUpAvailable = rememberUninstallLeftovers(provider, retainedClaudeVersionFiles)
         return {
           outcome: 'manual-required',
           previousVersion: initial.status.version,
@@ -5526,11 +5635,13 @@ export function createSystemService(
           manualHelp: {
             reason: retainedReason,
             manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeVersionFiles, process.platform),
+            ...(cleanUpAvailable ? { cleanUpAvailable } : {}),
           },
         }
       }
       const retainedGrokReason = buildLinuxGrokRetainedFilesReason(retainedGrokFiles)
       if (retainedGrokReason) {
+        const cleanUpAvailable = rememberUninstallLeftovers(provider, retainedGrokFiles)
         return {
           outcome: 'manual-required',
           previousVersion: initial.status.version,
@@ -5538,6 +5649,7 @@ export function createSystemService(
           manualHelp: {
             reason: retainedGrokReason,
             manualCommand: buildLinuxGrokRetainedFilesCommand(retainedGrokFiles),
+            ...(cleanUpAvailable ? { cleanUpAvailable } : {}),
           },
         }
       }
@@ -7521,6 +7633,7 @@ export function createSystemService(
     installCli,
     cancelCliInstall,
     uninstallCli,
+    cleanUninstallLeftovers,
     inspectCliUpdate,
     installCodexDesktop,
     cancelCodexDesktopInstall,

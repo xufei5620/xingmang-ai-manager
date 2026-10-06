@@ -2312,6 +2312,45 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(fs.readFileSync(fixture.backupFile, 'utf8')).toBe('backup')
   })
 
+  it('deletes exactly the renamed links and program files it kept once the user asks it to clean up', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    const store = new AppSettingsStore(
+      path.join(fixture.home, 'settings.json'),
+      fixture.home,
+    )
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        const result = officialDarwinGrokUninstallResult(fixture, spec)
+        return {
+          ...result,
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          outputBytes: Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+          durationMs: 1,
+        }
+      },
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'manual-required',
+      manualHelp: { manualCommand: expect.stringContaining('rm -f'), cleanUpAvailable: true },
+    })
+    await expect(service.cleanUninstallLeftovers('grok')).resolves.toEqual({ remaining: 0 })
+
+    expect(fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))).toEqual([])
+    expect(fs.existsSync(fixture.grokBinary)).toBe(false)
+    expect(fs.existsSync(fixture.agentBinary)).toBe(false)
+    expect(fs.readFileSync(path.join(fixture.bin, 'keep.txt'), 'utf8')).toBe('keep')
+    expect(fs.readFileSync(fixture.configFile, 'utf8')).toBe('config')
+    expect(fs.readFileSync(fixture.sessionFile, 'utf8')).toBe('session')
+    expect(fs.readFileSync(fixture.backupFile, 'utf8')).toBe('backup')
+  })
+
   it('uninstalls grok alone when the agent link is absent instead of blocking on it (internal #16)', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
@@ -3692,6 +3731,75 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
     })
     expect(fs.readdirSync(path.join(grokRoot, 'bin'))).toEqual([])
     expect(fs.readFileSync(path.join(grokRoot, 'config.toml'), 'utf8')).toBe('model = "grok"\n')
+  })
+
+  /** Installs, then uninstalls while the program file refuses to move, the way a busy file would. */
+  async function uninstallLeavingProgram() {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+    await service.installCli('grok', target)
+    const grokRoot = path.join(fixture.homeDirectory, '.grok')
+    const program = path.join(grokRoot, 'bin', `grok-${fixture.version}`)
+    fs.writeFileSync(path.join(grokRoot, 'config.toml'), 'model = "grok"\n')
+    const rename = fs.promises.rename.bind(fs.promises)
+    const busy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
+      if (String(oldPath) === program) throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
+      return rename(oldPath, newPath)
+    })
+    const result = await service.uninstallCli('grok')
+    busy.mockRestore()
+    return { fixture, service, grokRoot, program, result }
+  }
+
+  it('offers to clean the program file an uninstall had to leave and then deletes only that file', async () => {
+    const { service, grokRoot, program, result } = await uninstallLeavingProgram()
+
+    expect(result).toMatchObject({
+      outcome: 'manual-required',
+      manualHelp: { manualCommand: `rm -f '${program}'`, cleanUpAvailable: true },
+    })
+    expect(fs.existsSync(program)).toBe(true)
+
+    await expect(service.cleanUninstallLeftovers('grok')).resolves.toEqual({ remaining: 0 })
+    expect(fs.readdirSync(path.join(grokRoot, 'bin'))).toEqual([])
+    expect(fs.readFileSync(path.join(grokRoot, 'config.toml'), 'utf8')).toBe('model = "grok"\n')
+    // Nothing is recorded any more, so a second click has nothing left to do.
+    await expect(service.cleanUninstallLeftovers('grok')).resolves.toEqual({ remaining: 0 })
+  })
+
+  it('keeps a leftover program file that a reinstalled Grok runs again', async () => {
+    const { fixture, service, grokRoot, program } = await uninstallLeavingProgram()
+    // xAI's postinstall keeps an existing grok-<version> and only points the link back at it.
+    fs.symlinkSync(`grok-${fixture.version}`, path.join(grokRoot, 'bin', 'grok'))
+
+    await expect(service.cleanUninstallLeftovers('grok')).resolves.toEqual({ remaining: 0 })
+    expect(fs.readFileSync(program)).toEqual(fixture.binary)
+  })
+
+  it('only offers to clean files it can verify', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+    await service.installCli('grok', target)
+    const older = path.join(fixture.homeDirectory, '.grok', 'bin', 'grok-1.0.1')
+    fs.writeFileSync(older, 'older grok')
+    fs.linkSync(older, path.join(fixture.root, 'older-grok-copy'))
+
+    const result = await service.uninstallCli('grok')
+
+    expect(result).toMatchObject({ outcome: 'manual-required', manualHelp: { manualCommand: `rm -f '${older}'` } })
+    expect(result).not.toHaveProperty(['manualHelp', 'cleanUpAvailable'])
+    await service.cleanUninstallLeftovers('grok')
+    expect(fs.readFileSync(older, 'utf8')).toBe('older grok')
   })
 
   it('rolls the command back and reports failure when the installed program is not the verified one', async () => {

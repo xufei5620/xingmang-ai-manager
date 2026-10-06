@@ -1930,6 +1930,46 @@ test('a switch goes on to install when the uninstall leaves old version files be
     await clean(page)
   } finally { await page.close() }
 })
+// 已知48「帮我清理」：主进程按卸载时记下的文件去删，删不掉就留着框说还剩几个。
+test('the leftover dialog cleans up through the main process and says what is still left', async () => {
+  const page = await open('cliUpdate=1&nativeInstall=1&uninstallLeftovers=1')
+  try {
+    await startManagedSwitch(page)
+    const dialog = page.getByRole('dialog', { name: 'Claude Code 还有文件没删干净', exact: true })
+    await dialog.getByText('点「帮我清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在普通 PowerShell里自己执行。', { exact: true }).waitFor()
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    // 第一次那个文件还被占着：框留着，红字说还剩几个、接下来怎么办。
+    await expect(dialog.getByTestId('manual-uninstall-cleanup-problem'))
+      .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「帮我清理」；还是不行，请联系客服。')
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    await waitForToast(page, '清理好了。')
+    await dialog.waitFor({ state: 'detached' })
+    // 界面只说是哪个工具，删哪几个文件由主进程自己定。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cleanUninstallLeftovers')), [
+      { method: 'cleanUninstallLeftovers', args: ['claude'] },
+      { method: 'cleanUninstallLeftovers', args: ['claude'] },
+    ])
+    await clean(page)
+  } finally { await page.close() }
+})
+test('the leftover dialog of the maintenance page cleans up the same way', async () => {
+  const page = await open('allInstalled=1&uninstallLeftovers=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('已安装')
+    await page.getByRole('button', { name: 'Claude Code 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '卸载工具', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载工具？', exact: true }).getByRole('button', { name: '确认卸载', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Claude Code 还有文件没删干净', exact: true })
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    await expect(dialog.getByTestId('manual-uninstall-cleanup-problem')).toContainText('还有 1 个文件没删掉。')
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    await waitForToast(page, '清理好了。')
+    await dialog.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
 test('a switch stops before uninstalling when the uninstall is handed to another window or the network drops', async () => {
   const handOff = await open('cliUpdate=1&nativeInstall=1&uninstallHandOff=1')
   try {
