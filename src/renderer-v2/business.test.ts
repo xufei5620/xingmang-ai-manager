@@ -10,12 +10,14 @@ import {
   paymentTerminalPresentation,
   buildTopupBonus,
   resetTopupQuoteForMethod,
+  subscriptionStateFor,
   subscriptionToolsNotice,
   validateTopupAmount,
   subscriptionPaymentMethods,
 } from './pages-account'
 import {
   extensionItemsForView,
+  extensionScopeLabel,
   filterExtensionMarkets,
   parseCommandArguments,
   parseEnvironmentVariables,
@@ -118,6 +120,19 @@ describe('v2 business boundaries', () => {
     expect(subscriptionToolsNotice({ followsPreference: true }).action).toBeUndefined()
   })
 
+  it('names every subscription state in Chinese and never shows the raw server value', () => {
+    expect(subscriptionStateFor('active')).toEqual({ label: '生效中', tone: 'ok' })
+    expect(subscriptionStateFor('exhausted')).toEqual({ label: '额度已用完', tone: 'warn' })
+    expect(subscriptionStateFor('expired')).toEqual({ label: '已到期', tone: 'neutral' })
+    // 星芒账号后台作废的、历史账号删掉的和暂停的。
+    expect(subscriptionStateFor('cancelled')).toEqual({ label: '已撤销', tone: 'neutral' })
+    expect(subscriptionStateFor('revoked')).toEqual({ label: '已撤销', tone: 'neutral' })
+    expect(subscriptionStateFor('suspended')).toEqual({ label: '已停用', tone: 'neutral' })
+    for (const status of ['paused', '', 'ACTIVE', 'constructor', 'toString', '__proto__']) {
+      expect(subscriptionStateFor(status)).toEqual({ label: '待确认', tone: 'neutral' })
+    }
+  })
+
   it('lets each account page wait only for the reads it actually shows', () => {
     expect(accountTabNeeds('overview')).toEqual({ profile: true, balance: true })
     expect(accountTabNeeds('invite')).toEqual({ profile: true, balance: true })
@@ -214,6 +229,18 @@ describe('v2 business boundaries', () => {
     ).toEqual(['installed', 'available'])
     expect(extensionItemsForView(items, 'mcp', 'installed').map((entry) => entry.id))
       .toEqual(['mcp'])
+  })
+
+  it('names the detail scope in Chinese instead of the CLI scope keyword', () => {
+    expect(extensionScopeLabel('user')).toBe('我的（全局）')
+    expect(extensionScopeLabel('project')).toBe('当前项目')
+    expect(extensionScopeLabel('workspace')).toBe('当前工作区')
+    expect(extensionScopeLabel('builtin')).toBe('系统内置')
+    // Claude 的 local 只在这个项目里用；Gemini 扩展自带的技能装在用户目录里。
+    expect(extensionScopeLabel('local')).toBe('当前项目')
+    expect(extensionScopeLabel('extension')).toBe('我的（全局）')
+    expect(extensionScopeLabel(null)).toBe('未提供')
+    expect(extensionScopeLabel(undefined)).toBe('未提供')
   })
 
   it('filters plugin markets by both display name and root path', () => {

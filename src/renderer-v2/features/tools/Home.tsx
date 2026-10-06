@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexConfigBroken, codexNeedsRepair, configBrokenDetail, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { accountKeyChangeInProgress, accountKeyChangePending, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
@@ -82,6 +82,8 @@ export interface HomeProps {
   onSwitchAccount?(tool: ToolId, target: AccountSourceTarget): void
   /** 提醒设置指向旧位置时改成这次的路径（先备份再改再自检）；缺省 = 不给这颗按钮（旧行为）。 */
   onRepairHooks?(tool: ToolId): void
+  /** Codex 读不了 config.toml 时先备份、再按现在用的账号重新生成；缺省 = 不给这颗按钮（旧行为）。 */
+  onRepairConfig?(tool: ToolId): void
   /** 在资源管理器 / 访达里打开这个工具的配置文件夹；缺省 = 不给这个菜单项（旧行为）。 */
   onOpenConfigDirectory?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
@@ -295,6 +297,10 @@ export function Home(props: HomeProps) {
   const yourTools = tools.filter((tool) => tool.status.installed || jobs[tool.id] || undetected(tool))
   const available = tools.filter((tool) => !tool.status.installed && !jobs[tool.id] && !undetected(tool))
   const external = presentExternalClients(props.externalClients)
+  // 开机先摆的是上次落盘的客户端检测结果（cachedAt），真的那轮排在首屏扫描之后才开始（已知13）。
+  // 这时同正在重新检测：那几行的按钮先等着，「正在检测」那一句照旧挂着。
+  const externalCached = external.some((tool) => Boolean(tool.status.cachedAt))
+  const externalBusy = props.externalLoading || externalCached
   const undetectedExternal = (tool: ExternalPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.status.detectionError)
   const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
   const yourExternal = external.filter((tool) => tool.status.installed || jobs[tool.id] || undetectedExternal(tool))
@@ -365,7 +371,7 @@ export function Home(props: HomeProps) {
   const cachedPhase = loading && Boolean(snapshot?.system.cachedAt)
   function launchReadyBeforeScan(tool: ToolPresentation): boolean {
     if (!cachedPhase || !tool.status.installed || tool.error || !tool.configured || configFailure) return false
-    if ([tool.id, `launch:${tool.id}`, `switch:${tool.id}`, `repair-hooks:${tool.id}`].some((key) => jobs[key])) return false
+    if ([tool.id, `launch:${tool.id}`, `switch:${tool.id}`, `repair-hooks:${tool.id}`, `repair-config:${tool.provider}`].some((key) => jobs[key])) return false
     return !accountKeyChangePending({ signedIn: account !== null, restoring: props.accountRestoring === true, bootstrap: props.bootstrap ?? null }, tool.provider)
   }
   // 「接着聊」点下去走的是同一个「打开」，跟着它那一行走。
@@ -388,7 +394,7 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
     const switchJob = jobs[`switch:${tool.id}`]
-    const repairJob = jobs[`repair-hooks:${tool.id}`]
+    const repairJob = jobs[`repair-hooks:${tool.id}`] ?? jobs[`repair-config:${tool.provider}`]
     const job = launchJob ?? switchJob ?? repairJob ?? installJob
     // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
@@ -410,8 +416,11 @@ export function Home(props: HomeProps) {
     const hooksDetail = snapshot?.config.providers[tool.provider].cliHooksShellChanged ? cliHooksShellChangedDetail : cliHooksStaleDetail
     const hooksAutoRepaired = snapshot !== null && !ownershipPending && cliHooksWereAutoRepaired(snapshot.config.providers[tool.provider])
     const hooksMissing = snapshot !== null && !ownershipPending && cliHooksMissing(snapshot.config.providers[tool.provider])
+    // Codex 自己都读不了的文件，里面读出来的 Key、来源都不作数，排在那些判断前面先说。
+    const broken = snapshot !== null && !ownershipPending && codexConfigBroken(snapshot.config.providers[tool.provider], tool.provider)
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
+      : broken ? 'configBroken'
       : ccSwitch ? 'ccSwitch'
       : shadowed ? 'codexShadowed'
       : tool.source === 'changed' && !ownershipPending ? 'configChanged'
@@ -446,7 +455,8 @@ export function Home(props: HomeProps) {
     const update = job ? null : toolUpdateOffer(tool)
     // 配置那一块没读到时来源是未知的，不给切换，免得在一份没读到的配置上做决定。
     // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
-    const switchTarget = configUnavailable || tool.error || ownershipPending ? null : accountSwitchTarget(tool)
+    // Codex 读不了的文件，切换只会在合并那一步报错，出路是行上的「修好它」。
+    const switchTarget = configUnavailable || broken || tool.error || ownershipPending ? null : accountSwitchTarget(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
     // 桌面端没有推荐版本可换，已知打不开的那一版只能靠这行小字说清楚（第十九批 7）。
     const desktopKnownIssue = tool.id === 'codexDesktop' ? blocked : null
@@ -467,12 +477,14 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configBroken' ? configBrokenDetail : status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
       extraAction={installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
+        : status === 'configBroken' && props.onRepairConfig
+          ? <Button variant="ghost" size="sm" icon={KeyRound} title="改之前会先备份原来的设置" onClick={() => props.onRepairConfig?.(tool.id)} testId={`tool-${tool.id}-repair-config`}>修好它</Button>
         : status === 'ccSwitch' && props.onSwitchAccount
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>{switchAccountLabel(account?.username)}</Button>
         : status === 'codexShadowed' && props.onSwitchAccount
@@ -557,13 +569,13 @@ export function Home(props: HomeProps) {
       extraAction={installJob?.cancellable && props.onCancelInstallExternal
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
         : undefined}
-      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={externalBusy || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
         icon={tool.action === 'launch' || downloadUrl ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，
         // 而四个 CLI 行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
-        ...(tool.action === 'configure' ? [] : [{ label: '配置', testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
-        ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy, onSelect: () => props.onLaunchExternal(tool.id) }]),
+        ...(tool.action === 'configure' ? [] : [{ label: '配置', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
+        ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, onSelect: () => props.onLaunchExternal(tool.id) }]),
       ] : undefined} menuLabel={toolMenuLabel} testId={`tool-row-${tool.id}`} />
   }
   return <section className="v2-page v2-home" data-testid="page-home">
@@ -623,7 +635,7 @@ export function Home(props: HomeProps) {
         {/* 「还可以装」排在最下面：老用户天天看的是上面三张，新用户要装的东西在「开始使用」里也能找到。 */}
         {!firstScan && availableCount > 0 && <Card title="还可以装" meta={`${availableCount} 个`} collapsible defaultOpen={readLocalPreference(availablePreference) !== 'collapsed'}
           onOpenChange={(open) => { writeLocalPreference(availablePreference, open ? 'expanded' : 'collapsed') }} padding="none" testId="home-available">{available.map(renderTool)}{availableExternal.map(renderExternal)}</Card>}
-        {!firstScan && props.externalLoading && !external.length && <div className="v2-loading-inline" role="status">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
+        {!firstScan && (externalCached || (props.externalLoading && !external.length)) && <div className="v2-loading-inline" role="status" data-testid="home-external-detecting">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
       </div>
       <aside className="v2-home-aside">
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>
