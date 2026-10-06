@@ -1195,6 +1195,7 @@ if (!hasSingleInstanceLock) {
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
       elapsedMs: windowsCliExecution.elapsedMs,
+      ...(windowsCliExecution.highIntegrity === undefined ? {} : { highIntegrity: windowsCliExecution.highIntegrity }),
       ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
     if (windowsCliExecution.probeFailure) {
@@ -1982,7 +1983,7 @@ if (!hasSingleInstanceLock) {
       // 后台装的没人在看，不预告也不等。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
         if (!background) {
-          const notice = buildAutoInstallNotice(version, 'launch', process.platform)
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true)
           desktopNotifications.announce(notice)
           // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
           updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
@@ -3026,6 +3027,8 @@ if (!hasSingleInstanceLock) {
         }
         applicationTray?.updateSnapshot()
       },
+      // 自带 Administrator、关了 UAC、右键以管理员身份运行：装东西不弹授权窗口，界面别说会弹（已知19）。
+      windowsProcessElevated: windowsCliExecution.highIntegrity === true,
       getWindowCapabilities: () => ({
         tray: applicationTray?.available ?? false,
         notifications: desktopNotifications.getCapability().supported,
@@ -3298,7 +3301,7 @@ if (!hasSingleInstanceLock) {
         }
         if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform))
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true))
           // 给系统一点时间把通知摆出来，再让安装器接手退出。
           await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           if (lifecycle.isSystemShuttingDown) {

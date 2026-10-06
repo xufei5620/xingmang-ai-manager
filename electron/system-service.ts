@@ -60,6 +60,7 @@ import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
+import { activateCodexDesktopWithCdp, withCodexDesktopCdpFailureReport } from './codex-desktop-cdp'
 import {
   createCodexDesktopService,
   desktopUpdateFields,
@@ -103,6 +104,7 @@ import {
   rewriteManagedCliHooks,
   saveProviderConfig,
   fillRelayTemplateDefaults,
+  forgetStaleGeminiUsageStatisticsRecord,
   relayTemplateDefaultsPending,
   relayTemplateRevision,
   switchProviderToOfficialAccount,
@@ -2737,6 +2739,15 @@ export function permitsShadowedCodexRepair(
   const key = apiKey.trim()
   return provider === 'codex' && previousOwnership === 'unknown' && before.codexProviderShadowed === true
     && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
+}
+
+/**
+ * 「保存前读到的那份配置一点没动」只有这一个口径：检测模型期间被人改了就不写；写失败以后，
+ * 也只有这样才把来源原样放回。修改时间也要一样：回滚会把内容照原样写回去，身份和型号都对得上，
+ * 可那几个文件毕竟被这次保存动过，按「写到一半」处理，照旧留着保护。
+ */
+export function sameNativeConfigSnapshot(before: NativeConfigInspection, current: NativeConfigInspection): boolean {
+  return toolConfigIdentity(current) === toolConfigIdentity(before) && current.updatedAt === before.updatedAt && current.model === before.model
 }
 
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
@@ -5522,6 +5533,10 @@ export function createSystemService(
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     userHome: providerRoots.userHome,
+    // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
+    activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
+      'warn', 'system', 'codex-desktop.chinese-launch.failed', 'Codex 桌面端中文增强启动没成，改走普通启动', { error },
+    )),
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
@@ -6944,6 +6959,15 @@ export function createSystemService(
     return repaired
   }
 
+  // 读不出来（比如路径里冒出了联接）就当动过：宁可留着「手动」保护，也不能让读配置的错误顶掉保存本来的错误。
+  function untouchedSince(provider: ProviderId, before: NativeConfigInspection): boolean {
+    try {
+      return sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))
+    } catch {
+      return false
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -6977,8 +7001,7 @@ export function createSystemService(
         && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
       const assertUnchanged = () => {
         assertOwner()
-        const current = inspectNativeProviderConfig(payload.provider)
-        if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
+        if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(payload.provider))) {
           throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
         }
         if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
@@ -7015,16 +7038,35 @@ export function createSystemService(
       // saves. A crash or persistence failure then leaves a protected source.
       const source = ownership?.source ?? (payload.apiKey.trim() ? 'manual'
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
+      const restoreOwnership = configOwnership.remember(payload.provider, before)
       await configOwnership.write(payload.provider, before, 'manual', owner)
-      assertUnchanged()
-      // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
-      // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
-      const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
       let result: ReturnType<typeof saveProviderConfig>
       try {
-        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+        assertUnchanged()
+        // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
+        // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
+        const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
+        try {
+          result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+        } catch (error) {
+          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+          throw error
+        }
       } catch (error) {
-        if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+        // 上面那条「手动」防的是写到一半崩掉。没写成、配置也一点没动时（最常见的是工具开着、
+        // 文件被占用）要原样放回：不然客户关掉工具再保存一次就成功了，可这一次把「手动」当成了
+        // 原来的来源，「当前账号」从此变成「手动」，开机同步 Key、换账号、换连接线路都不再改它
+        // （10-06 写 #899 真机清单时看到）。账号中途换了就照旧留着「手动」：那一刻是谁在操作已经
+        // 说不清，宁可多挡一次自动写入。
+        const sameOwner = (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
+        if (restoreOwnership && sameOwner && untouchedSince(payload.provider, before)) {
+          await restoreOwnership().catch((restoreError: unknown) => {
+            runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '保存没成功，工具配置的来源记录也没能原样放回', {
+              provider: payload.provider,
+              reason: credentialFailureReason(restoreError),
+            })
+          })
+        }
         throw error
       }
       // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
@@ -7287,6 +7329,17 @@ export function createSystemService(
 
   async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
     await serializeConfigWrite(async () => {
+      // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
+      // 放在登记来源前面：那一步失败时这里也要做完。
+      if (provider === 'gemini') {
+        try {
+          forgetStaleGeminiUsageStatisticsRecord(providerRoots)
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const restored = inspectNativeProviderConfig(provider)
       const source = planRestoredConfigOwnership({

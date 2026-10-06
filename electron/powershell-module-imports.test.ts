@@ -72,7 +72,7 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['Codex desktop activation', codexDesktopActivationScript, codexDesktopActivationModules, 'by-name'],
   ['external client inventory', windowsExternalClientInventoryScript(), windowsExternalClientInventoryModules, 'by-name'],
   ['external client inventory with remembered signatures', windowsExternalClientInventoryScript([
-    { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: 'CN=Tencent' },
+    { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: 'CN=Tencent', version: '1.2.3' },
   ]), windowsExternalClientInventoryModules, 'by-name'],
   ['uninstall desktop account probe', uninstallAccountProbeScript, uninstallAccountProbeModules, 'by-name'],
   ['Claude desktop manifest reader', buildClaudeDesktopManifestInspectionScript(

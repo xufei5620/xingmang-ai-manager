@@ -25,12 +25,29 @@ describe('removeCodexContextLimits', () => {
   })
 
   it.each([
-    'model_context_window = 256000',
-    '"model_auto_compact_token_limit" = 200000',
+    'model_context_window = 1000000',
+    '"model_auto_compact_token_limit" = 900000',
     "'model_context_window' = 1_000_000",
-  ])('removes a single root setting: %s', (line) => {
+  ])('removes a single root setting holding the old template value: %s', (line) => {
     expect(removeCodexContextLimits(`${line}\nmodel = "custom"`)).toEqual({
       content: 'model = "custom"', changed: true,
+    })
+  })
+
+  it.each([
+    'model_context_window = 256000',
+    '"model_auto_compact_token_limit" = 200000',
+    "'model_context_window' = 1_000_001",
+    'model_auto_compact_token_limit = 1000000',
+  ])('keeps a root setting the user chose themselves: %s', (line) => {
+    const source = `${line}\nmodel = "custom"\n`
+    expect(removeCodexContextLimits(source)).toEqual({ content: source, changed: false })
+  })
+
+  it('removes only the old template value when the user changed the other setting', () => {
+    const source = 'model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\nmodel = "custom"\n'
+    expect(removeCodexContextLimits(source)).toEqual({
+      content: 'model_auto_compact_token_limit = 200000\nmodel = "custom"\n', changed: true,
     })
   })
 
