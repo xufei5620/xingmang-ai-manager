@@ -1533,7 +1533,7 @@ export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: numbe
 
 /**
  * npm 下载时也一声不出，网慢时这一步能下到 30 分钟（第三十七批 A），进度停在一句话上像卡死了。
- * 写法照解析那句，只报已用时：总量不知道，不猜百分比。两句是他点过头的原话（第三十七批 D），
+ * 写法照解析那句，只报已用时：总量不知道，不猜百分比。两句是 2026-10-06 拍板的原话（第三十七批 D），
  * 「从」后面接 npm 时空一格，所以不拼 npmRegistryLabel。
  */
 export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number): string {
