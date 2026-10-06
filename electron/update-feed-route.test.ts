@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { locateDirectUpdateFeed, resolveDirectUpdateFeed, type UpdateFeedRouteOptions } from './update-feed-route'
+import {
+  classifyDirectFeedFailure,
+  locateDirectUpdateFeed,
+  packagedUpdateFeed,
+  resolveDirectUpdateFeed,
+  type UpdateFeedRouteOptions,
+} from './update-feed-route'
 
 const primaryUrl = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
 const directUrl = 'https://xm-direct.solov.cc/xingmang-manager/'
@@ -106,5 +112,47 @@ describe('locateDirectUpdateFeed', () => {
     const oversized = path.join(directory, 'oversized.yml')
     fs.writeFileSync(oversized, `${productionConfig}${'#'.repeat(16 * 1024)}`)
     expect(locateDirectUpdateFeed(oversized, directWindows)).toBeNull()
+  })
+})
+
+describe('packagedUpdateFeed', () => {
+  it('points back at the packaged production feed and its status file', () => {
+    expect(packagedUpdateFeed()).toEqual({
+      feed: { provider: 'generic', url: primaryUrl },
+      serviceStatusUrl: `${primaryUrl}service-status.json`,
+    })
+  })
+})
+
+// 直连那份更新地址没查通时，哪些失败值得换回包里那份再查一次、哪些要报给线路那边。
+describe('classifyDirectFeedFailure', () => {
+  function httpError(statusCode: number): Error {
+    return Object.assign(new Error(`HttpError: ${statusCode}`), { statusCode })
+  }
+
+  it('retries a gateway error and an allowlist 404 on the packaged feed, but only reports the gateway errors', () => {
+    expect(classifyDirectFeedFailure(httpError(502))).toEqual({ reason: 'http-502', lineFailure: true })
+    expect(classifyDirectFeedFailure(httpError(503))).toEqual({ reason: 'http-503', lineFailure: true })
+    expect(classifyDirectFeedFailure(new Error('download failed', { cause: httpError(504) }))).toEqual({ reason: 'http-504', lineFailure: true })
+    expect(classifyDirectFeedFailure(httpError(404))).toEqual({ reason: 'http-404', lineFailure: false })
+  })
+
+  it('leaves other HTTP answers to the normal update error handling', () => {
+    for (const status of [401, 403, 429, 500]) expect(classifyDirectFeedFailure(httpError(status))).toBeNull()
+  })
+
+  it('reports a connection failure by its code and a timeout by name', () => {
+    expect(classifyDirectFeedFailure(new Error('net::ERR_CONNECTION_REFUSED'))).toEqual({ reason: 'ERR_CONNECTION_REFUSED', lineFailure: true })
+    expect(classifyDirectFeedFailure(new Error('net::ERR_NAME_NOT_RESOLVED'))).toEqual({ reason: 'ERR_NAME_NOT_RESOLVED', lineFailure: true })
+    expect(classifyDirectFeedFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))).toEqual({ reason: 'timeout', lineFailure: true })
+    // 只放行老地址的公司网关回绝了直连这个地址：包里那份有可能放行。
+    expect(classifyDirectFeedFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))).toEqual({ reason: 'ERR_TUNNEL_CONNECTION_FAILED', lineFailure: true })
+  })
+
+  it('does not blame the line for a failure that switching lines cannot fix', () => {
+    expect(classifyDirectFeedFailure(new Error('sha512 checksum mismatch'))).toBeNull()
+    expect(classifyDirectFeedFailure(new Error('net::ERR_ABORTED'))).toBeNull()
+    expect(classifyDirectFeedFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
+    expect(classifyDirectFeedFailure(null)).toBeNull()
   })
 })

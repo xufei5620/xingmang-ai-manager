@@ -103,6 +103,11 @@ export interface HomeProps {
   /** finishedAt 是 result 落下来的时刻（Date.now()），「已完成…」那句据此到点收起；缺省 = 一直摆着（旧行为）。 */
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string }) | null
   onBootstrapRetry?(): void
+  /**
+   * 「自动」退回了默认线路，还有工具开着、停在直连上（account-bootstrap.ts 的 relayFallbackActive
+   * 加上这一轮先没迁的）：上方说一句总的，横幅里不再逐个工具说。缺省 = 不提示（旧行为）。
+   */
+  relayFallback?: boolean
 }
 
 type ExternalPresentation = ReturnType<typeof presentExternalClients>[number]
@@ -142,6 +147,9 @@ export function recentResumeOffered(tools: readonly ToolPresentation[], provider
  * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
  */
 const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写 Key。'
+
+/** 直连适配方案第六节第 4 条的原话（yoyo 10-6 回「改」）。 */
+const relayFallbackNotice = '直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换'
 
 /**
  * 「配置被改过」这一档必须自己解释一句：角标只说了发生什么，没说会怎样。
@@ -355,6 +363,9 @@ export function Home(props: HomeProps) {
   // 有订阅时请求先扣订阅，钱包是 0 也照常能用，余额卡不再标红。
   const tier = dollars === null || subscription ? 'neutral' : balanceTier(dollars)
   const subscriptionNotice = subscription ? subscriptionWarning(subscription, dollars) : null
+  const bootstrapResult = props.bootstrap?.result
+  // 上方那句总的提示已经说了开着的工具要退出后再换线路，横幅里就不再逐个工具说一遍。
+  const bootstrapFailed = bootstrapResult?.failed.filter((entry) => !(props.relayFallback && bootstrapResult.routeDeferred?.includes(entry.provider))) ?? []
   const subscriptionLine = subscription ? `订阅：${subscription.name ? `${subscription.name} · ` : ''}${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : null
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
   const remainingDays = usage && balance && usage.weekQuota > 0 ? Math.max(0, Math.floor(balance.quota / (usage.weekQuota / 7))) : null
@@ -400,8 +411,11 @@ export function Home(props: HomeProps) {
   const runtimeHintClass = nodeOptional ? 'v2-runtime-hint is-quiet' : 'v2-runtime-hint'
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   // 「已完成…」那句到点收起（见 bootstrapNoticeExpiresAt）。首页每次进来都重新挂上，「现在」从挂上那一刻算，
-  // 回到首页时已经过了点的就不再冒出来；挂着的时候到点叫一次重画。
-  const bootstrapNoticeUntil = bootstrapNoticeExpiresAt(props.bootstrap)
+  // 回到首页时已经过了点的就不再冒出来；挂着的时候到点叫一次重画。开着的工具等着换线路的那几条已经由上方
+  // 那句总的说了，不算横幅里还要客户动手的。
+  const bootstrapNoticeUntil = bootstrapNoticeExpiresAt(props.bootstrap?.result
+    ? { ...props.bootstrap, result: { ...props.bootstrap.result, failed: bootstrapFailed } }
+    : props.bootstrap)
   const [bootstrapNoticeClock, setBootstrapNoticeClock] = useState(() => Date.now())
   useEffect(() => {
     if (bootstrapNoticeUntil === null) return
@@ -644,10 +658,11 @@ export function Home(props: HomeProps) {
       <span>{props.bootstrap.error ? bootstrapErrorText(props.bootstrap.error) : `${props.bootstrap.label}（${props.bootstrap.percent}%）`}</span>
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
-    {props.bootstrap?.result && bootstrapNoticeShown && (props.bootstrap.result.configured.length || props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : ''}`} role="status">
-      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? configuredKeysText(props.bootstrap.result.configured.length) : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
+    {props.relayFallback && <div role="status" className="v2-callout is-warn" data-testid="home-relay-fallback"><span>{relayFallbackNotice}</span></div>}
+    {bootstrapResult && bootstrapNoticeShown && (bootstrapResult.configured.length || bootstrapFailed.length || bootstrapResult.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${bootstrapFailed.length || bootstrapResult.warnings.length ? 'is-warn' : ''}`} role="status">
+      <span className={`v2-dot ${bootstrapFailed.length || bootstrapResult.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? offlineBootstrapNotice : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapResult.warnings.length ? ` ${bootstrapResult.warnings.join('；')}` : ''}`}</span>
       {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
-      {(props.bootstrap.result.failed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
+      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapResult.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}

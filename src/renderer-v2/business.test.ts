@@ -373,13 +373,18 @@ describe('v2 business boundaries', () => {
     }
   })
   // 第四十三批 B：#872 以后「设置 → 网络」最上面就是「星芒账号线路」，被当地网络切断的
-  // 那几种连不上，「去处理」翻到那一行，选「备用直连」再重开就换过去了。
+  // 那几种连不上，「去处理」翻到那一行，选「备用直连」再重开就换过去了。直连适配第二步起
+  // 历史账号也能选直连，它那一行也给。
   it('sends a cut-off line of the signed-in account to its route setting', () => {
     for (const reason of ['dns', 'refused', 'timeout']) {
       const details = { endpoint: 'https://xm.solov.cc/api/status', reason, siteId: 'solov' }
       expect(diagnosticTarget('XINGMANG_NETWORK', details, 'solov')).toBe('settings')
       expect(diagnosticHasFix('XINGMANG_NETWORK', details, 'solov')).toBe(true)
       expect(diagnosticSection('XINGMANG_NETWORK', details, 'solov')).toBe('relay-route-solov')
+      const historical = { endpoint: 'https://api.solov.cc/api/v1/settings/public', reason, siteId: 'solov-api' }
+      expect(diagnosticTarget('XINGMANG_NETWORK', historical, 'solov-api')).toBe('settings')
+      expect(diagnosticHasFix('XINGMANG_NETWORK', historical, 'solov-api')).toBe(true)
+      expect(diagnosticSection('XINGMANG_NETWORK', historical, 'solov-api')).toBe('relay-route-solov-api')
     }
   })
   it('keeps the network row without a fix where switching lines cannot help', () => {
@@ -388,8 +393,6 @@ describe('v2 business boundaries', () => {
       ...['offline', 'proxy', 'tls', 'certDate', 'intercepted', 'serviceUnavailable'].map((reason): [string, Record<string, string>, string] => [reason, { reason, siteId: 'solov' }, 'solov']),
       // 网络通了、服务回了错误码：不带原因。
       ['http status', { status: 503, siteId: 'solov' }, 'solov'],
-      // 历史账号只有默认线路，那一行是灰的。
-      ['historical account', { reason: 'refused', siteId: 'solov-api' }, 'solov-api'],
       // 访客。
       ['guest', { reason: 'refused', siteId: 'solov' }, null],
       // 开机恢复历史账号时查的是默认那个站；换过账号以后看的旧结果也一样，查的不是登着的这个。

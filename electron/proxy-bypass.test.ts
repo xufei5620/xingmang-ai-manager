@@ -1339,6 +1339,101 @@ describe('proxy bypass after the whole app went direct', () => {
   })
 })
 
+describe('proxy bypass for a service reached at more than one entrance', () => {
+  // The service's default entrance and its direct one; automatic routing moves between them while the app runs.
+  const primaryProbe = 'https://relay.example/api/status'
+  const directProbe = 'https://relay-direct.example/api/status'
+
+  function entrances() {
+    const line = { current: directProbe }
+    function siteProbeUrls(url: string): string[] {
+      const origin = new URL(url).origin
+      if (![primaryProbe, directProbe].some((entrance) => new URL(entrance).origin === origin)) return []
+      return [line.current, line.current === primaryProbe ? directProbe : primaryProbe]
+    }
+    return { line, siteProbeUrls }
+  }
+
+  it('keeps requests to every entrance of a moved service on the direct session, so a change of entrance does not send them back to the proxy', async () => {
+    const { siteProbeUrls } = entrances()
+    const probeSiteDirect = vi.fn(async (_url: string) => true)
+    const { deps } = dependencies({ siteProbeUrls, probeSiteDirect })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(900, 'timeout', directProbe)).toBe(true)
+    // Only the entrance in use is probed before moving.
+    expect(probeSiteDirect.mock.calls).toEqual([[directProbe]])
+    const route = bypass.routeSiteRequest('https://relay-direct.example/v1/chat/completions')
+    expect(route).toEqual(expect.any(Number))
+    expect(bypass.routeSiteRequest('https://relay.example/api/user/self')).toBe(route)
+    expect(bypass.routeSiteRequest('https://github.com/anthropics/claude-plugins-official')).toBeNull()
+  })
+
+  it('looks at the entrance the service uses now after a failure on the direct session, not the one it was moved at', async () => {
+    const { line, siteProbeUrls } = entrances()
+    const probe = vi.fn<(url: string) => Promise<boolean>>(proxyDoesNotForward)
+    const probeSiteDirect = vi.fn(async (_url: string) => true)
+    const { deps } = dependencies({ siteProbeUrls, probe, probeSiteDirect })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(900, 'timeout', directProbe)).toBe(true)
+    // Automatic routing went back to the default entrance; a request there fails on the direct session.
+    line.current = primaryProbe
+    bypass.siteRouteFailed(bypass.routeSiteRequest('https://relay.example/api/user/self')!)
+    await vi.waitFor(() => expect(probeSiteDirect).toHaveBeenCalledTimes(2))
+    expect(probeSiteDirect).toHaveBeenLastCalledWith(primaryProbe)
+    expect(probe).toHaveBeenCalledWith(primaryProbe)
+  })
+
+  it('checks on the proxy app at the entrance the service uses now', async () => {
+    const { line, siteProbeUrls } = entrances()
+    let clock = 1_000
+    const probe = vi.fn(async (_url: string) => true)
+    const { deps } = dependencies({ siteProbeUrls, probe, now: () => clock })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(900, 'timeout', directProbe)).toBe(true)
+    line.current = primaryProbe
+    clock += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest('https://relay.example/api/user/self')
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledWith(primaryProbe))
+  })
+
+  it('sends a request to the other entrance that went out before the hand-back again through the proxy, without moving the service again', async () => {
+    const { siteProbeUrls } = entrances()
+    let clock = 1_000
+    const probeSiteDirect = vi.fn(async (_url: string) => true)
+    const { deps } = dependencies({ siteProbeUrls, probeSiteDirect, now: () => clock })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(900, 'timeout', directProbe)).toBe(true)
+    // The proxy reaches the service again and answers the look first.
+    probeSiteDirect.mockImplementationOnce(() => new Promise<boolean>(() => undefined))
+    clock = 2_000
+    bypass.siteRouteFailed(bypass.routeSiteRequest('https://relay-direct.example/v1/chat/completions')!)
+    await vi.waitFor(() => expect(bypass.siteDirect()).toBe(false))
+    expect(await bypass.recoverFailedRequest(1_500, 'timeout', primaryProbe)).toBe(true)
+    expect(bypass.siteDirect()).toBe(false)
+    expect(probeSiteDirect).toHaveBeenCalledTimes(2)
+  })
+
+  it('moves every entrance when the proxy app comes back without forwarding the service after the whole app went direct', async () => {
+    const { siteProbeUrls } = entrances()
+    let clock = 1_000
+    const { deps, modes } = dependencies({
+      siteProbeUrls,
+      now: () => clock,
+      probeUrl: () => directProbe,
+      probeSystemProxy: proxyDoesNotForward,
+    })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.tryBypass()).toBe('direct')
+    clock += systemProxyCheckIntervalMs
+    expect(bypass.routeSiteRequest('https://relay-direct.example/v1/chat/completions')).toBeNull()
+    await vi.waitFor(() => expect(bypass.active()).toBe(false))
+    expect(modes).toEqual(['direct', 'system'])
+    const route = bypass.routeSiteRequest('https://relay-direct.example/v1/chat/completions')
+    expect(route).toEqual(expect.any(Number))
+    expect(bypass.routeSiteRequest('https://relay.example/api/user/self')).toBe(route)
+  })
+})
+
 describe('site fetch', () => {
   function routes(route: number | null) {
     const state = { route }

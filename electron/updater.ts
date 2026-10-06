@@ -263,6 +263,11 @@ export interface MacInstallHandoff {
   retryNativeCheck(): void
 }
 
+export interface UpdateFeedRouting {
+  prepare(): void
+  fallBack(error: unknown): boolean
+}
+
 export interface UpdaterRuntime {
   currentVersion: string
   isPackaged: boolean
@@ -279,6 +284,12 @@ export interface UpdaterRuntime {
    * keeps the old behaviour of leaving the session in direct mode.
    */
   restoreProxy?: () => Promise<void>
+  /**
+   * 星芒更新目录走哪条线路（直连适配第二步）。每次检查前调 prepare()，宿主按星芒账号这会儿的
+   * 线路换更新地址；检查没走通时问 fallBack(error)：宿主认得出是直连那条路的事、已经换回默认
+   * 更新地址时返回 true，这里当场再查一次。不传＝更新地址开机时定下、不再换（旧行为）。
+   */
+  feedRoute?: UpdateFeedRouting
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
   /**
@@ -1387,6 +1398,14 @@ export function createUpdaterService(
     if (!enabled) throw new Error('开发环境未启用主程序更新')
   }
 
+  function feedFallBack(error: unknown): boolean {
+    try {
+      return runtime.feedRoute?.fallBack(error) === true
+    } catch {
+      return false
+    }
+  }
+
   // Direct mode is scoped to the one request that needed it. Leaving the
   // updater session pinned to 'direct' for the rest of the process would mean
   // a single proxy hiccup silently keeps every later update request off the
@@ -1503,6 +1522,9 @@ export function createUpdaterService(
     ) return cloneSnapshot(snapshot)
     const thisCheck = ++latestCheck
     emit({ phase: 'checking', error: null, progress: null })
+    // 先定这次走哪个更新地址，下面读的状态文件也在同一个目录里。换不了就照旧用上次那个地址，
+    // 不能让选线路这一步变成查不了更新的原因。
+    try { runtime.feedRoute?.prepare() } catch { /* keep the current feed */ }
     await syncServiceStatus()
     if (disposed) return cloneSnapshot(snapshot)
     // 只有本机版本被撤回时才放开降级：平时 latest.yml 哪怕被误退回旧版本，也不能
@@ -1519,6 +1541,13 @@ export function createUpdaterService(
             emit({ phase: 'checking', error: null, progress: null })
             result = await checkWatched()
           })
+        } catch (retryError) {
+          reportCheckFailure(retryError, thisCheck, options.manual === true)
+        }
+      } else if (feedFallBack(error)) {
+        try {
+          emit({ phase: 'checking', error: null, progress: null })
+          result = await checkWatched()
         } catch (retryError) {
           reportCheckFailure(retryError, thisCheck, options.manual === true)
         }

@@ -14,10 +14,33 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 
 export type RelayEndpointId = 'primary' | 'direct'
 
-export interface RelayEndpointSelections {
-  solov?: RelayEndpointId
-  'solov-api'?: 'primary'
+/**
+ * 设置里存的线路偏好：「自动」由星芒自己在直连和默认线路之间挑，另外两个写死一条。
+ * 没存过的算「自动」；#872 起存下的 primary / direct 原样当「只用默认线路」「只用直连」。
+ */
+export type RelayRoutePreference = 'auto' | RelayEndpointId
+
+/** 能选线路的两个站，同时是设置里 relayEndpointIds 的键。 */
+export type RelayRouteSiteId = 'solov' | 'solov-api'
+
+export const relayRouteSiteIds: readonly RelayRouteSiteId[] = Object.freeze(['solov', 'solov-api'] as const)
+
+export interface RelayRoutePreferences {
+  solov?: RelayRoutePreference
+  'solov-api'?: RelayRoutePreference
 }
+
+/** 一个站这会儿走的线路。 */
+export interface RelayRouteLine {
+  line: RelayEndpointId
+  /**
+   * 是不是定下来的：写死的偏好、上次存下的结论、这次探出来的都算。「自动」第一次开机还没探出
+   * 结论时先走默认线路，这时为 false，工具配置不跟着它迁。
+   */
+  settled: boolean
+}
+
+export type RelayRouteLines = Readonly<Record<RelayRouteSiteId, Readonly<RelayRouteLine>>>
 
 export interface RelayEndpoint {
   id: RelayEndpointId
@@ -28,10 +51,16 @@ export interface RelayEndpoint {
 }
 
 export interface RelayEndpointRoutingSnapshot {
-  readonly selections: Readonly<RelayEndpointSelections>
-  readonly activeEndpointIds: Readonly<Required<RelayEndpointSelections>>
+  /** 开机时生效的偏好，这次运行里不变：设置里改了要重启才生效。 */
+  readonly preferences: Readonly<Required<RelayRoutePreferences>>
+  /** 每个站这会儿走的线路。「自动」会在运行中改线路，所以每次现读。 */
+  lines(): RelayRouteLines
   resolve(siteId: string | null | undefined): RelaySite
   require(siteId: unknown): RelaySite
+  /**
+   * 工具配置可以迁到的那条线路：写死的偏好，或者「自动」已经定下的那条。「自动」还没定下来时
+   * 是 undefined，认得出的旧地址照旧原样留着。
+   */
   selection(siteId: unknown): RelayEndpointId | undefined
 }
 
@@ -150,6 +179,9 @@ const siteEndpoints = new Map<string, readonly RelayEndpoint[]>([
   ])],
   ['solov-api', Object.freeze([
     Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://api.solov.cc' }),
+    // 历史账号的直连：服务端给的域名，白名单里放着星芒用到的历史账号接口（sub2api-relay-backend.ts
+    // 写死的是默认线路的地址，改走直连靠 relay-line-fetch.ts 换请求地址，那个文件不动）。
+    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://api-direct.solov.cc' }),
   ])],
 ])
 
@@ -177,18 +209,6 @@ function providerUrlsForOrigin(origin: string): Record<ProviderId, string> {
 
 function knownEndpointOrigins(endpoint: RelayEndpoint): readonly string[] {
   return [endpoint.origin, ...endpoint.aliases ?? []]
-}
-
-/**
- * The retired addresses of the line reached at exactly this origin. Recognition only, like
- * knownEndpointOrigins: lets a record kept under an old address be found and moved.
- */
-export function relayEndpointAliasOrigins(origin: string): readonly string[] {
-  for (const endpoints of siteEndpoints.values()) {
-    const endpoint = endpoints.find((candidate) => candidate.origin === origin)
-    if (endpoint) return endpoint.aliases ?? []
-  }
-  return []
 }
 
 /**
@@ -254,36 +274,103 @@ export function relayProviderBaseUrlMatches(provider: ProviderId, actual: string
   return false
 }
 
-/** Freeze transport at process startup; saving a preference cannot mutate live clients. */
-export function createRelayEndpointRoutingSnapshot(value: RelayEndpointSelections = {}): RelayEndpointRoutingSnapshot {
-  const selections: RelayEndpointSelections = {}
-  if (value.solov !== undefined) selections.solov = requireRelayEndpoint('solov', value.solov).id
-  if (value['solov-api'] !== undefined) {
-    requireRelayEndpoint('solov-api', value['solov-api'])
-    selections['solov-api'] = 'primary'
+/** A preference names 'auto' or a line of that site; no setting can borrow another site's line or name a site without lines. */
+export function relayRoutePreferenceAllowed(siteId: unknown, value: unknown): value is RelayRoutePreference {
+  const endpoints = relaySiteEndpointChoices(siteId)
+  return endpoints.length > 0 && (value === 'auto' || endpoints.some((endpoint) => endpoint.id === value))
+}
+
+/**
+ * The site and line a request URL is addressed to, by exact origin. Only each line's own origin
+ * counts: an alias is a retired entry kept for recognizing old configurations, never a target.
+ */
+export function relayEndpointForUrl(value: string): { siteId: RelayRouteSiteId; endpointId: RelayEndpointId } | null {
+  let origin: string
+  try { origin = new URL(value).origin } catch { return null }
+  for (const siteId of relayRouteSiteIds) {
+    const endpoint = relaySiteEndpointChoices(siteId).find((candidate) => candidate.origin === origin)
+    if (endpoint) return { siteId, endpointId: endpoint.id }
   }
-  const activeEndpointIds = Object.freeze({ solov: selections.solov ?? 'primary', 'solov-api': 'primary' as const })
-  const frozen = Object.freeze(selections)
-  const sites = new Map(relaySites.map((identity) => {
-    const selected = withRelayEndpoint(identity, identity.id === 'solov' ? activeEndpointIds.solov : 'primary')
-    return [identity.id, Object.freeze({ ...selected, providerBaseUrls: Object.freeze({ ...selected.providerBaseUrls }) })] as const
-  }))
+  return null
+}
+
+/** The origin a site's line is reached at; null when the site has no such line. */
+export function relayEndpointOrigin(siteId: unknown, endpointId: RelayEndpointId): string | null {
+  return relaySiteEndpointChoices(siteId).find((endpoint) => endpoint.id === endpointId)?.origin ?? null
+}
+
+/**
+ * Every address a site has been reached at: each line's own origin and its retired aliases.
+ * Recognition only, like knownEndpointOrigins: lets a record kept per address be found again.
+ */
+export function relaySiteKnownOrigins(siteId: unknown): readonly string[] {
+  return relaySiteEndpointChoices(siteId).flatMap(knownEndpointOrigins)
+}
+
+function requireRelayRoutePreference(siteId: RelayRouteSiteId, value: unknown): RelayRoutePreference {
+  if (value === undefined) return 'auto'
+  if (!relayRoutePreferenceAllowed(siteId, value)) throw new Error('所选站点的连接线路无效')
+  return value
+}
+
+/** Every site gets a preference: one not stored is 'auto'; a stored one must be that site's own choice. */
+export function resolveRelayRoutePreferences(value: RelayRoutePreferences = {}): Readonly<Required<RelayRoutePreferences>> {
   return Object.freeze({
-    selections: frozen,
-    activeEndpointIds,
+    solov: requireRelayRoutePreference('solov', value.solov),
+    'solov-api': requireRelayRoutePreference('solov-api', value['solov-api']),
+  })
+}
+
+function resolveRouteLine(siteId: RelayRouteSiteId, preference: RelayRoutePreference, reported: RelayRouteLine | undefined): RelayRouteLine {
+  if (preference !== 'auto') return { line: preference, settled: true }
+  if (reported && relaySiteEndpointChoices(siteId).some((endpoint) => endpoint.id === reported.line)) {
+    return { line: reported.line, settled: reported.settled === true }
+  }
+  // 「自动」还没有结论：照旧走默认线路，也不拿它去迁工具配置。
+  return { line: 'primary', settled: false }
+}
+
+/**
+ * Preferences freeze at process startup; saving one cannot mutate live clients. Under 'auto' the line
+ * itself may move during the run, so every read asks `currentLines` (relay-route-controller.ts).
+ * Without it, 'auto' stays on the primary line, unsettled: nothing migrates, as before #872.
+ */
+export function createRelayEndpointRoutingSnapshot(
+  value: RelayRoutePreferences = {},
+  currentLines?: () => Partial<Record<RelayRouteSiteId, RelayRouteLine>>,
+): RelayEndpointRoutingSnapshot {
+  const preferences = resolveRelayRoutePreferences(value)
+  const sites = new Map(relaySites.flatMap((identity) => relaySiteEndpointChoices(identity.id).map((endpoint) => {
+    const selected = withRelayEndpoint(identity, endpoint.id)
+    return [`${identity.id}:${endpoint.id}`, Object.freeze({ ...selected, providerBaseUrls: Object.freeze({ ...selected.providerBaseUrls }) })] as const
+  })))
+  function lines(): RelayRouteLines {
+    const reported = currentLines?.() ?? {}
+    return Object.freeze({
+      solov: Object.freeze(resolveRouteLine('solov', preferences.solov, reported.solov)),
+      'solov-api': Object.freeze(resolveRouteLine('solov-api', preferences['solov-api'], reported['solov-api'])),
+    })
+  }
+  function lineOf(siteId: string): RelayRouteLine | undefined {
+    return siteId === 'solov' || siteId === 'solov-api' ? lines()[siteId] : undefined
+  }
+  function siteOn(identity: RelaySite): RelaySite | undefined {
+    return sites.get(`${identity.id}:${lineOf(identity.id)?.line ?? 'primary'}`)
+  }
+  return Object.freeze({
+    preferences,
+    lines,
     resolve(siteId: string | null | undefined) {
-      const identity = resolveRelaySite(siteId)
-      return sites.get(identity.id) ?? sites.get(defaultRelaySiteId)!
+      return siteOn(resolveRelaySite(siteId)) ?? sites.get(`${defaultRelaySiteId}:primary`)!
     },
     require(siteId: unknown) {
-      const identity = requireRelaySiteIdentity(siteId)
-      const selected = sites.get(identity.id)
+      const selected = siteOn(requireRelaySiteIdentity(siteId))
       if (!selected) throw new Error('未知中转站点')
       return selected
     },
     selection(siteId: unknown) {
-      const identity = requireRelaySiteIdentity(siteId)
-      return identity.id === 'solov' ? frozen.solov : frozen['solov-api']
+      const current = lineOf(requireRelaySiteIdentity(siteId).id)
+      return current?.settled ? current.line : undefined
     },
   })
 }

@@ -4,6 +4,7 @@ import {
   type AppConfigSummary,
   type AppSettingsV2,
   type ProviderId,
+  type RelayEndpointId,
   type RendererLogLevel,
   type RunningToolsReport,
   type SystemSnapshot,
@@ -123,6 +124,12 @@ export interface AccountBootstrapResult {
   repairedShadowed?: ProviderId[]
   /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
   regrouped?: ProviderId[]
+  /**
+   * 这一轮因为工具开着、连接线路先没改的工具（failed 里各有一句说明）；缺省 = 没有。
+   * 「自动」退回默认线路时首页改说一句总的（直连适配第六节第 4 条），不再逐个工具说一遍；
+   * 首页「重新检测」也据此再迁一次。
+   */
+  routeDeferred?: ProviderId[]
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -179,7 +186,30 @@ function sameNativeRelayUrl(left: string, right: string): boolean {
   catch { return false }
 }
 
-/** Alias recognition restores identity; only an explicit, applied choice permits migration. */
+/**
+ * 工具配置可以迁到的线路：设置里的选项已经重启生效，而且线路定下来了（写死一条，或者「自动」
+ * 已经查出结论）。「自动」第一次开机还没查出来时不迁，认得出的旧地址原样留着。
+ */
+function settledRouteLine(settings: AppSettingsV2, siteId: 'solov' | 'solov-api'): RelayEndpointId | null {
+  const preference = settings.relayEndpointIds?.[siteId] ?? 'auto'
+  if (preference !== settings.activeRelayEndpointIds?.[siteId]) return null
+  if (preference !== 'auto') return preference
+  const route = settings.relayRouteLines?.[siteId]
+  return route?.settled ? route.line : null
+}
+
+/**
+ * 「自动」查出直连连不上、星芒已经改走默认线路（直连适配第六节第 4 条）。看的是这次运行生效的
+ * 那一档：存了别的选项、还没重启时，跑的照旧是「自动」。
+ */
+export function relayFallbackActive(settings: AppSettingsV2 | null | undefined): boolean {
+  const siteId = settings?.relaySiteId ?? 'solov'
+  if (!settings || (siteId !== 'solov' && siteId !== 'solov-api')) return false
+  const route = settings.relayRouteLines?.[siteId]
+  return settings.activeRelayEndpointIds?.[siteId] === 'auto' && route?.settled === true && route.line === 'primary'
+}
+
+/** Alias recognition restores identity; only an applied, settled line permits migration. */
 function accountRouteMigrationNeeded(
   current: AppConfigSummary['providers'][ProviderId],
   provider: ProviderId,
@@ -190,13 +220,25 @@ function accountRouteMigrationNeeded(
     || settings.officialProviders?.includes(provider)) return false
   const siteId = settings.relaySiteId ?? 'solov'
   if (siteId !== 'solov' && siteId !== 'solov-api') return false
-  const selected = settings.relayEndpointIds?.[siteId]
-  if (!selected || selected !== settings.activeRelayEndpointIds?.[siteId]) return false
+  const selected = settledRouteLine(settings, siteId)
+  if (!selected) return false
   const expected = relayProviderBaseUrls(siteId, selected)[provider]
   if (!sameNativeRelayUrl(current.baseUrl, expected)
     || relaySiteEndpointIdForBaseUrl(siteId, provider, current.actualBaseUrl) === null) return false
   // The retired IP test entry shares the direct id with the domain; the actual address must still migrate.
   return !sameNativeRelayUrl(current.actualBaseUrl, expected)
+}
+
+/**
+ * 有没有星芒替当前账号写的工具配置还停在这个站另一条线路上、该迁过去（规矩同上）。「自动」
+ * 换了线路时用它挑要不要跑一轮迁移：没有要迁的就不去同步 Key。没装的工具也算，多跑一轮不改什么。
+ */
+export function accountRoutesPending(
+  config: AppConfigSummary,
+  settings: AppSettingsV2,
+  storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+): boolean {
+  return providerIds.some((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
 }
 
 export function accountBootstrapPlan(
@@ -524,6 +566,7 @@ export async function bootstrapAccountTools(
     ...(synchronized?.regrouped?.length
       ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
       : {}),
+    ...(deferred.length ? { routeDeferred: deferred.map((entry) => entry.provider) } : {}),
   }
 }
 

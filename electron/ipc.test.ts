@@ -3441,7 +3441,10 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it.each([
       { solov: 'primary' as const },
       { solov: 'direct' as const },
+      { solov: 'auto' as const },
       { 'solov-api': 'primary' as const },
+      { 'solov-api': 'direct' as const },
+      { solov: 'auto' as const, 'solov-api': 'auto' as const },
     ])('accepts a registered endpoint selection: %j', async (relayEndpointIds) => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
@@ -3458,7 +3461,9 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       { unknown: 'primary' },
       { solov: 'https://other.example/v1' },
       { solov: 'DIRECT' },
-      { 'solov-api': 'direct' },
+      { solov: 'Auto' },
+      { 'solov-api': 'backup' },
+      { sub2api: 'auto' },
     ])('rejects unsupported endpoint settings before persistence: %j', async (relayEndpointIds) => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
@@ -3483,6 +3488,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
           relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' }, activeRelayEndpointIds: active,
         })
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds: { solov: 'direct' } })
+    })
+
+    it('drops the live route lines a renderer echoes back instead of persisting them', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2, theme: 'light',
+        relayRouteLines: { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: false } },
+      })).resolves.toBeDefined()
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'light' })
     })
 
     it('accepts an unchanged legacy runtime snapshot echo without persisting it', async () => {
