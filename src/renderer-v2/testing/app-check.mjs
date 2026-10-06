@@ -2200,6 +2200,49 @@ test('an updated tool row stays on the running install until the rescan lands', 
   } finally { await page.close() }
 })
 
+// 第四十批 C：装完以后同步 Key、重新检测那几秒，那一行的「取消」还亮着。主进程这时已经不登记这次安装了，
+// 再去问它只会回「这个工具当前没有正在进行的安装。」，可这一行明明还在走：直接说这一步停不下来。
+test('cancelling during the key sync after an install says the step can no longer be cancelled', async () => {
+  const page = await open('cliUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    const update = row.getByRole('button', { name: '更新', exact: true })
+    await update.waitFor()
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await update.click()
+    await row.getByText('安装完成，正在同步账号 Key 并刷新状态', { exact: true }).waitFor()
+    await row.getByTestId('tool-claude-cancel').click()
+    await waitForToast(page, '这一步已经不能取消了。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
+    await expect(row.getByTestId('tool-claude-cancel')).toHaveText('取消')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await row.getByText('v2.0.0', { exact: false }).waitFor()
+    assert.equal(await row.getByTestId('tool-claude-cancel').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+test('cancelling on the maintenance page during the key sync after an install says the step can no longer be cancelled', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const maintenance = page.getByTestId('page-maintenance')
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
+    await page.getByTestId('maintenance-cancel-gemini').click()
+    await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
+    await expect(page.getByTestId('maintenance-cancel-gemini')).toHaveText('取消')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    assert.equal(await page.getByTestId('maintenance-cancel-gemini').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('saved-account switching leaves tools without an account key untouched', async () => {
   const page = await open('savedAccount=1')
   try {
