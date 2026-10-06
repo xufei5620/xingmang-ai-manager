@@ -1254,9 +1254,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           </p>
           <RunningElapsed startedAt={data.runStartedAt} />
           {data.runHealth === 'delayed' && <small>服务端仍在线，但本次生成已明显超过同规格历史耗时。</small>}
-          {videoOperation && <small>{selectedVideoPreset.provider === 'minimax-h3'
-            ? '停止时会向服务端请求取消；生成中的任务可能需要短暂等待才进入已取消状态。'
-            : '停止等待不等于取消已到达服务端的生成任务，可稍后从运行记录续查。'}</small>}
+          {videoOperation && <small>停止等待不等于取消已到达服务端的生成任务，可稍后从运行记录续查。</small>}
         </div>
       )}
       {data.status === 'failed' && data.errorMessage && kind !== 'unknown' && <p className="wf-error" role="alert"><AlertCircle size={13} aria-hidden="true" />{data.errorMessage}</p>}
