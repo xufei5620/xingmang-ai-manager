@@ -57,7 +57,9 @@ describe('Sub2API announcements parser', () => {
     ])
     expect(parsed.map(({ publishedAt }) => publishedAt))
       .toEqual(['2026-09-05T00:00:00.000Z', '2026-09-10T00:00:00.000Z', '2026-09-08T00:00:00.000Z'])
-    expect(sub2ApiAnnouncementNotice(parsed)?.entries?.map(({ title }) => title)).toEqual(['定时', '补填开始时间', '普通'])
+    expect(sub2ApiAnnouncementNotice(parsed)?.entries?.map(({ title, publishedAt }) => [title, publishedAt])).toEqual([
+      ['定时', '2026-09-10T00:00:00.000Z'], ['补填开始时间', '2026-09-08T00:00:00.000Z'], ['普通', '2026-09-05T00:00:00.000Z'],
+    ])
   })
 
   it('falls back to newest id when publish times are missing or equal', () => {
@@ -66,6 +68,8 @@ describe('Sub2API announcements parser', () => {
       announcement({ id: 9 }), announcement({ id: 5, created_at: '2026-09-01T00:00:00Z' }),
     ]))
     expect(notice?.entries?.map(({ id }) => id)).toEqual(['5', '2', '9', '3'])
+    // No time means no date on the row, not an empty or epoch date.
+    expect(notice?.entries?.find(({ id }) => id === '9')).not.toHaveProperty('publishedAt')
   })
 
   it('returns no notice only for a valid empty array', () => {
