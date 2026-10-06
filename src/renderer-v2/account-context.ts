@@ -37,6 +37,14 @@ export function sessionScope(session: Pick<AccountSessionState, 'authenticated' 
   const restoring = session.authenticated ? null : session.restoring?.account
   return restoring ? scopeFor(restoring.siteId, restoring.userId) : accountScope(session)
 }
+/**
+ * 这台电脑上登着的那个账号在哪个站。开机恢复还没结束、或者联不上而搁着的，登录还在，
+ * 按正在恢复的那个账号算：这时会话自己的 siteId 还是默认那个站，不是它。访客没有。
+ */
+export function signedInSiteId(session: Pick<AccountSessionState, 'authenticated' | 'restoring'> & Pick<AccountContext, 'siteId' | 'realmId'>): AccountSiteId | null {
+  if (session.authenticated) return accountSiteId(session)
+  return session.restoring?.account?.siteId ?? null
+}
 /** 开机账号恢复还没结束（启动画面已经先放行了）。 */
 export function sessionRestoring(session: Pick<AccountSessionState, 'authenticated' | 'restoring'>): boolean {
   return !session.authenticated && session.restoring !== undefined
