@@ -102,6 +102,13 @@ describe('updateOffersDownloadPage', () => {
     expect(updateOffersDownloadPage(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
   })
 
+  it('offers the download page when the update check itself stalls', () => {
+    // 主进程 updater.test.ts 钉住检查被看门狗掐断时报的这个代码。
+    const stalled = snapshot({ phase: 'error', failedStep: 'check', error: { code: 'UPDATE_CHECK_STALLED', message: '连接更新服务器超时，请检查网络后再试。' } })
+    expect(updateOffersDownloadPage(stalled)).toBe(true)
+    expect(updateNeedsManualReinstall(stalled)).toBe(false)
+  })
+
   it('keeps other failures to the retry button alone', () => {
     // 同一句「超时」，没经过看门狗的不算停住。
     expect(updateOffersDownloadPage(snapshot({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } }))).toBe(false)
