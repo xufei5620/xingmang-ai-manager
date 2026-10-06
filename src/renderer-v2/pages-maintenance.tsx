@@ -1947,6 +1947,10 @@ export function MaintenancePage({
           } finally {
             cancelRequested.current.delete(id)
             setCancelling('')
+            // 取消被拒时页顶那句只说这次安装还会跑完。跑完了（装好、没装上都算）就收起：
+            // 装好照常提示「安装完成，工具状态已更新」，没装上红条换成没装上的原因。不收的话
+            // 红条一直挂着，下一次别的操作清掉那条原因后它还会再冒出来。
+            setCancelNotice('')
           }
         }
         try {
@@ -1959,6 +1963,7 @@ export function MaintenancePage({
         } finally {
           cancelRequested.current.delete(id)
           setCancelling('')
+          setCancelNotice('')
         }
         // 先让 App 写 Key 并刷新全局检测，再读本页数据：顺序反过来这一页会先
         // 拿到一份还没配置 Key 的快照，而提示语已经说「工具状态已更新」。

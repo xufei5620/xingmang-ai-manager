@@ -2418,6 +2418,29 @@ test('cancelling on the maintenance page during the key sync after an install sa
   } finally { await page.close() }
 })
 
+// 取消被拒那句红条只说这次安装还会跑完：跑完了就收起，照常提示装好了，不再挂着「未完成」。
+test('a refused cancel on the maintenance page stops showing once the install finishes', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const maintenance = page.getByTestId('page-maintenance')
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
+    await page.getByTestId('maintenance-cancel-gemini').click()
+    await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await waitForToast(page, '安装完成，工具状态已更新')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    await expect(maintenance.getByRole('alert')).toHaveCount(0)
+    assert.doesNotMatch(await maintenance.innerText(), /这一步已经不能取消了。/)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('saved-account switching leaves tools without an account key untouched', async () => {
   const page = await open('savedAccount=1')
   try {
