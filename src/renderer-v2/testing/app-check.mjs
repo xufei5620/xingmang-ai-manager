@@ -4664,6 +4664,117 @@ test('switching accounts while the model question is open drops it without openi
   } finally { await page.close() }
 })
 
+// 第四十批 B：记录页的「接着聊」以前直接叫主进程打开，首页打开前那几道关（核对默认模型、
+// 没连好账号先去连、Codex 老配置先修）一道都没过。
+const recordsResumedNotice = '已打开Claude Code，接着 C:\\work\\my-app 里最近的一条对话'
+async function resumeFromRecords(page) {
+  await page.getByTestId('nav-sessions').click()
+  await page.getByTestId('sessions-resume-claude:1').click()
+}
+async function waitForRecordsIdle(page) {
+  await page.waitForFunction(() => document.querySelector('[data-testid="sessions-resume-claude:1"]')?.disabled === false)
+}
+function launchCliCalls(page) {
+  return page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args))
+}
+
+test('resuming from the records page checks the tool first and opens right away when every check passes', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await resumeFromRecords(page)
+    await waitForToast(page, recordsResumedNotice)
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    const methods = await page.evaluate(() => window.v2Test.calls.map((call) => call.method))
+    assert.ok(methods.includes('checkToolModels') && methods.indexOf('checkToolModels') < methods.indexOf('launchCli'), '打开之前和首页一样核过默认模型')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('resuming from the records page asks about a gone default model first and only swaps it when told to', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    const question = page.getByTestId('model-swap-question')
+    await question.waitFor()
+    assert.match(await question.innerText(), /当前账号用不了了/)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli' || call.method === 'saveConfig')), false, '回答之前既不打开也不改配置')
+    await page.getByTestId('model-swap-confirm').click()
+    await waitForToast(page, recordsResumedNotice)
+    // 先把模型换好，再接着聊。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls
+      .filter((call) => call.method === 'saveConfig' || call.method === 'launchCli')
+      .map((call) => call.method === 'saveConfig' ? [call.method, call.args[0]] : [call.method, ...call.args])), [
+      ['saveConfig', { provider: 'claude', apiKey: '', model: 'claude-opus-5-5', mode: 'merge' }],
+      ['launchCli', 'claude', 'C:\\work\\my-app', 'resumeLast'],
+    ])
+    await question.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('closing the records page question opens nothing, and keeping the old model resumes without touching the config', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    await waitForRecordsIdle(page)
+    // 和问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
+    assert.deepEqual(await launchCliCalls(page), [])
+    await assertNoToast(page, recordsResumedNotice)
+    assert.equal(await page.locator('.v2-business-notice.is-error').count(), 0)
+    await page.getByTestId('sessions-resume-claude:1').click()
+    await page.getByTestId('model-swap-keep').click()
+    await waitForToast(page, recordsResumedNotice)
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'saveConfig')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('resuming a tool that is not connected to the current account opens its settings instead of the tool', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&unknownClaude=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByRole('dialog', { name: 'Claude Code 配置' }).waitFor()
+    await page.locator('.v2-business-notice.is-error').filter({ hasText: '请先确认账号连接，再打开工具。' }).waitFor()
+    assert.deepEqual(await launchCliCalls(page), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('switching accounts while the records page question is open drops it without resuming or saving', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli' || call.method === 'saveConfig')), false)
+    await assertNoToast(page, recordsResumedNotice)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 首页、托盘的「打开」一次只放一个，记录页「接着聊」不走那里：记录页那一问还开着时从托盘打开工具，
+// 后来的一问顶掉它。记录页这次不打开，也不能一直转圈等一个再也没人回答的问题。
+test('a tool opened from the tray while the records page question is open takes the question over', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForRecordsIdle(page)
+    await page.getByTestId('model-swap-keep').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCli'))
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\Selected Project']])
+    await assertNoToast(page, recordsResumedNotice)
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
   const page = await open('localeLaunchWarning=1')
   try {

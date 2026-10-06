@@ -705,6 +705,7 @@ export function SessionsPage({
   api,
   onSessionsChanged,
   onOpenTools,
+  beforeResume,
 }: {
   api: V2Bridge
   /**
@@ -714,6 +715,12 @@ export function SessionsPage({
   onSessionsChanged?: () => void
   /** 一条记录都没有时「去打开工具」：回首页「你的工具」。省略 = 不放这颗按钮。 */
   onOpenTools?: () => void
+  /**
+   * 「接着聊」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
+   * Codex 老配置先修。过不了的原因照常抛出来，挂在页顶；返回 false = 不往下走（问话框里
+   * 关掉了，或者中途换了账号）。省略 = 不检查（旧行为）。
+   */
+  beforeResume?: (provider: Session['provider']) => Promise<boolean>
 }) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -811,6 +818,9 @@ export function SessionsPage({
     void operation.execute(
       'resume',
       async () => {
+        // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
+        // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
+        if (beforeResume && !(await beforeResume(session.provider))) return null
         try {
           const choice = resumeLaunchChoice(session)
           const result = await (typeof choice === 'object'
@@ -830,7 +840,10 @@ export function SessionsPage({
         }
       },
       // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
-      (result) => resumeSessionNotice(result, providerName(session.provider), session.cwd),
+      (result) =>
+        result === null
+          ? null
+          : resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
   /**

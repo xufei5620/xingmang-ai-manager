@@ -1053,20 +1053,22 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (mounted.current && epoch === accountEpoch.current) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
     })
   }
-  /**
-   * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
-   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
-   */
   function launchIsCurrent(epoch: number): boolean {
     return mounted.current && accountEpoch.current === epoch
   }
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+  /**
+   * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
+   * 首页「打开」「接着聊」走 launch()，记录页「接着聊」自己叫主进程打开，两边都先过这里
+   * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照和配置；null = 不往下走
+   * （问话框里关掉了，或者中途换了账号），什么都不打开，也不报错。
+   */
+  async function prepareToolLaunch(id: ToolId, epoch: number) {
     try {
-      if (!launchIsCurrent(epoch)) return false
+      if (!launchIsCurrent(epoch)) return null
       const current = toolbox.snapshot
       if (!current) throw new Error('请先完成工具检测')
       const config = await toolsApi.readConfig()
-      if (!launchIsCurrent(epoch)) return false
+      if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
       if (tool.error) throw new Error(tool.error)
@@ -1075,9 +1077,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
         const repaired = await switchToolAccount(id, 'account')
-        if (!repaired || !launchIsCurrent(epoch)) return false
+        if (!repaired || !launchIsCurrent(epoch)) return null
         const fresh = await toolsApi.readConfig()
-        if (!launchIsCurrent(epoch)) return false
+        if (!launchIsCurrent(epoch)) return null
         tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
         if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
       }
@@ -1085,11 +1087,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       // Every awaited step belongs to the account that requested this launch. A
       // later session event must not resume the old request against a new owner.
       const offer = modelSwapOffer(tool.name, await toolsApi.checkModels(id))
-      if (!launchIsCurrent(epoch)) return false
+      if (!launchIsCurrent(epoch)) return null
       if (offer) {
         let answerCurrent: (choice: ModelSwapChoice) => void = () => undefined
         const choice = await new Promise<ModelSwapChoice>((answer) => {
           answerCurrent = answer
+          // 首页、托盘的「打开」一次只放一个（launchRequest），记录页「接着聊」不走那里：记录页这一问
+          // 还开着时从托盘打开工具，新的一问会顶掉它。旧的那一问替用户关掉（等于这次先不打开），
+          // 不然它永远等不到回答，记录页一直转圈。
+          pendingModelSwap.current?.('cancel')
           pendingModelSwap.current = answer
           setModelSwap({ offer, answer })
         })
@@ -1097,7 +1103,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           pendingModelSwap.current = null
           setModelSwap(null)
         }
-        if (choice === 'cancel' || !launchIsCurrent(epoch)) return false
+        if (choice === 'cancel' || !launchIsCurrent(epoch)) return null
         if (choice === 'swap') {
           // Empty key keeps the existing source; an ordinary save failure still
           // opens with the old model, while an account change stops the launch.
@@ -1107,17 +1113,32 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             saved = true
           }
           catch (cause) {
-            if (!launchIsCurrent(epoch)) return false
+            if (!launchIsCurrent(epoch)) return null
             toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn')
           }
-          if (!launchIsCurrent(epoch)) return false
+          if (!launchIsCurrent(epoch)) return null
           if (saved) {
             const refreshed = await toolbox.refreshSavedConfig(() => launchIsCurrent(epoch))
-            if (!launchIsCurrent(epoch)) return false
+            if (!launchIsCurrent(epoch)) return null
             if (!refreshed) toast.show('模型已保存，但最新配置没有读到；工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
           }
         }
       }
+      return { current, config }
+    } catch (cause) {
+      if (!launchIsCurrent(epoch)) return null
+      throw cause
+    }
+  }
+  /**
+   * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
+   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
+   */
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+    try {
+      const prepared = await prepareToolLaunch(id, epoch)
+      if (!prepared) return false
+      const { current, config } = prepared
       let workspace = config.workspace
       if (id !== 'codexDesktop') {
         // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
@@ -1489,6 +1510,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                 <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   onSessionsChanged={refreshRecent}
+                  beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}
