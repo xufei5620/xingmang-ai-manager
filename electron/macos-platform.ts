@@ -4,6 +4,7 @@ import path from 'node:path'
 import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
 import { managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import type { CommandSpec, RunCommandOptions } from './command-runner'
+import type { StaleProxyVariableName } from './stale-proxy-environment'
 import {
   captureLauncherIdentity,
   cleanupStaleTerminalDirectoriesOnce,
@@ -123,6 +124,80 @@ export function darwinCommandPathCandidates(
   ]
 }
 
+// 键和 stale-proxy-environment.ts 的 staleProxyVariableNames 一一对应：那边加减一个名字，这里不跟着改就编译不过。
+const shellProxyVariables: Record<StaleProxyVariableName, true> = {
+  HTTP_PROXY: true,
+  HTTPS_PROXY: true,
+  ALL_PROXY: true,
+}
+
+// 认的写法和 parseLoopbackProxyTarget 一样：可带协议、用户名密码和后面的路径，主机只认
+// localhost、127.x.x.x、[::1]，端口必须写出来。拿转成小写的值来比。那边的 URL 解析还会把
+// 127.1、[0:0:0:0:0:0:0:1] 这类简写还原成本机地址，这里不认，照旧带上。
+const loopbackProxyPattern = '^[[:space:]]*([a-z][a-z0-9+.-]*://)?([^/?#]*@)?'
+  + '(localhost|127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|\\[::1])'
+  + ':0*([0-9]{1,5})([/?#].*)?[[:space:]]*$'
+
+/**
+ * 「终端」开新窗口时先起客户自己的登录 shell，读过 ~/.zprofile、~/.zshrc 才跑这份启动脚本，
+ * 那里 export 的代理会一路带给工具；本软件是从访达、程序坞打开的，自己的环境里看不到它们。
+ * 照教程写进 ~/.zshrc 的 `export https_proxy=http://127.0.0.1:7890` 还在、代理软件却没开时，
+ * 从这里打开的工具就全连不上（第三十四批 B）。
+ *
+ * 所以在脚本里现判，规则照 Windows、Linux 那边（stale-proxy-environment.ts，第十六批 5）：
+ * 只看这三个名字，只管指向本机、写了端口的，连不上的这一次 unset；连得上的、指向别的机器的、
+ * 写法认不出的一律不动。客户的 ~/.zshrc 一个字不改，他自己开的终端照旧。
+ *
+ * 和那边不同的地方：大写小写各算一个变量、各判各的，macOS 上它们本来就是两个变量，去掉没开的
+ * 那个，开着的那个照旧给工具用。探测用系统自带的 nc，最多等 1 秒（-G 以秒为单位；127.0.0.1、::1
+ * 上的端口不是当场连上就是当场被拒，用不了这么久）。
+ *
+ * 探不了的时候宁可不动：nc 不在、正则模块载不进来时整段跳过；nc 连不上时本来一声不吭，它要是
+ * 自己报了错（不认这几个参数、认不出地址），说明是探测本身出了问题，这个目标这次照旧带上。中途
+ * 出任何错都只当没探，所以在函数里关掉 errexit、允许取没设的变量，返回时 zsh 自己把选项换回来；
+ * 整段的错误输出也丢掉，不往客户的终端里打英文。
+ */
+export function buildMacosClosedProxyGuard(probeExecutable = '/usr/bin/nc'): string[] {
+  const names = Object.keys(shellProxyVariables).flatMap((name) => [name, name.toLowerCase()])
+  const probe = quotePosixArgument(probeExecutable)
+  return [
+    '() {',
+    '  setopt localoptions noerrexit unset',
+    `  [[ -x ${probe} ]] && zmodload zsh/regex 2>/dev/null || return 0`,
+    '  local name value host port target address failure MATCH MBEGIN MEND',
+    '  local -a match mbegin mend addresses',
+    '  local -A reach',
+    `  local pattern=${quotePosixArgument(loopbackProxyPattern)}`,
+    `  for name in ${names.join(' ')}; do`,
+    '    value=${(P)name}',
+    '    [[ ${#value} -le 2048 && ${(L)value} =~ $pattern ]] || continue',
+    '    host=${match[3]} port=$(( 10#${match[4]} ))',
+    '    (( port >= 1 && port <= 65535 )) || continue',
+    '    target=$host:$port',
+    '    if [[ -z ${reach[$target]} ]]; then',
+    // localhost 两个地址都试，一个连得上就算开着：代理多半只听 127.0.0.1（同 probeLoopbackProxy）。
+    '      case $host in',
+    '        localhost) addresses=(127.0.0.1 ::1) ;;',
+    "        '[::1]') addresses=(::1) ;;",
+    '        *) addresses=($host) ;;',
+    '      esac',
+    '      reach[$target]=closed',
+    '      for address in $addresses; do',
+    // 只留 nc 的错误输出：连不上时它不出声，出了声就是探测本身的问题。
+    `        if failure=$(${probe} -z -n -G 1 $address $port 2>&1 </dev/null >/dev/null); then`,
+    '          reach[$target]=open',
+    '          break',
+    '        fi',
+    '        [[ -n $failure ]] && reach[$target]=unknown',
+    '      done',
+    '    fi',
+    '    [[ ${reach[$target]} == closed ]] && unset $name',
+    '  done',
+    '  return 0',
+    '} 2>/dev/null',
+  ]
+}
+
 /** Builds the short-lived zsh launcher that Terminal executes. */
 export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string {
   if (!isAbsolutePath(plan.executable)) throw new TypeError('executable must be an absolute path')
@@ -170,6 +245,8 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     '  exit 1',
     'fi',
     ...environmentExports,
+    // ~/.zshrc 里留着、却已经没开的本机代理，这一次不带给工具（第三十四批 B）。
+    ...buildMacosClosedProxyGuard(),
     // 不再 exec：工具退出后还要留在这个脚本里补一句中文，告诉用户下一步。
     // set -e 下工具非零退出会直接结束脚本，所以用 || 接住退出码。trap 让 zsh
     // 在用户按 Ctrl+C 时不跟着工具一起被打断；它是 shell 函数处理器不是忽略，

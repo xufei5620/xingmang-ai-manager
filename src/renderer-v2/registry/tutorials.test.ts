@@ -101,6 +101,15 @@ describe('tutorial wording that follows the current app', () => {
     const homebrew = tutorialTopics.find((topic) => topic.id === macRuntimeTutorialTopic)?.steps.find((entry) => entry.where === 'Mac 终端 → 安装命令');
     expect(homebrew?.bullets?.[0]).toContain('Command + 空格');
   });
+
+  // Codex 的中文开关每次启动时才拿，只有从星芒打开的那一下拿得到；先问从哪打开，再教「检查中文界面」。
+  it('asks where Codex was opened from before sending an English desktop app to the locale check', () => {
+    const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
+    expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
+    expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
+    expect(entry?.detail).toContain('的星芒图标 →「已安装的工具」→「Codex 桌面端」');
+    expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「检查中文界面」') ?? -1);
+  });
 });
 
 describe('linux tutorials', () => {

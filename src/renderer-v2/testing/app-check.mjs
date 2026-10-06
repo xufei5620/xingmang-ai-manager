@@ -925,6 +925,41 @@ test('the home recent card greys out a row whose folder is gone', async () => {
   } finally { await page.close() }
 })
 
+// 只装了 Codex 桌面端、或卸掉过某个工具时，「最近」里照样有那家的对话。「接着聊」走的是同一个「打开」，
+// 那家没装，点了只会报「工具尚未安装，请先完成准备。」，所以不给这颗按钮；装上以后再给（第四十一批 A）。
+test('the home recent card offers no resume for a tool that is not installed (第四十一批 A)', async () => {
+  const page = await open('desktopOnly=1&recentWorkspaces=1')
+  try {
+    // 等检测回来再看：那之前还不知道装没装，按钮照旧摆着、灰着等。
+    await expect(page.getByTestId('home-available').getByTestId('tool-claude-primary')).toHaveText('安装')
+    // 在桌面端里聊过的一条也记在 Codex 名下，排在最前面；接着聊开的却是 Codex CLI，它没装。
+    await page.evaluate(() => window.v2Test.addRecentSession('9', 'codex', 'C:\\work\\desk-app', 500))
+    await page.getByTestId('home-rescan').click()
+    const codex = page.getByTestId('home-recent-row-codex:9')
+    await codex.waitFor()
+    const card = page.getByTestId('home-recent-card')
+    assert.equal(await card.locator('[data-testid^="home-recent-resume-"]').count(), 0)
+    // 这一行的字、「打开文件夹」「查看」都照旧。
+    assert.equal(await codex.locator('.xm-row-desc').innerText(), 'Codex CLI · desk-app')
+    assert.equal(await page.getByTestId('home-recent-open-directory-codex:9').count(), 1)
+    assert.equal(await card.getByRole('button', { name: '查看', exact: true }).count(), 3)
+
+    // 装上 Claude Code（星芒先替客户准备好 Node.js）：它那条的按钮回来，Codex 那条照旧没有。
+    await page.getByTestId('tool-claude-primary').click()
+    const resume = page.getByTestId('home-recent-resume-claude:1')
+    await resume.waitFor()
+    assert.equal(await page.getByTestId('home-recent-resume-codex:9').count(), 0)
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:1"]')?.disabled === false)
+    await resume.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the records page opens the folder a record was made in (第七批 8)', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
@@ -5097,6 +5132,8 @@ test('Chinese locale can be retried after a runtime failure without mistaking th
     await openToolConfiguration(page)
     await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
     await page.getByText('界面语言与文件夹权限', { exact: true }).click()
+    // Codex 的中文开关只在从星芒打开时拿得到：这段先说清从哪打开，再说重试。
+    await page.getByText('中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。', { exact: true }).waitFor()
     await page.getByRole('button', { name: '检查中文界面', exact: true }).click()
     await page.getByText('已保存的语言设置：简体中文。如果仍显示英文，可再次启用中文界面。', { exact: true }).waitFor()
     await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
@@ -5124,7 +5161,9 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     for (const button of [decline, page.getByTestId('codex-chinese-enable')]) {
       assert.equal(await button.evaluate((element) => element.classList.contains('xm-btn-primary')), false)
     }
-    assert.doesNotMatch(await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText(), /调试端口/)
+    const question = await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText()
+    assert.doesNotMatch(question, /调试端口/)
+    assert.match(question, /关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
 
     await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
