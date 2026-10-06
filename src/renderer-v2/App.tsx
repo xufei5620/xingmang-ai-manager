@@ -860,9 +860,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     const total = plan.prepare.length + 1
     // 运行环境那一段主进程没有取消通道；这时按「取消」要说清楚，而不是回一句
-    //「没有正在进行的安装」。换装时卸载那一步同样没有。
+    //「没有正在进行的安装」。换装时卸载那一步同样没有；装完以后同步 Key、重新检测
+    // 那几秒也没有，主进程装完就不再登记这次安装（第四十批 C）。
     let preparing = plan.prepare.length > 0
     let uninstalling = false
+    let finishing = false
     let outcome: ToolInstallOutcome = 'installed'
     const updating = Boolean(current?.status.installed)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
@@ -914,9 +916,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if (plan.prepare.length > 0 || switchVersion) void toolbox.refresh(true).catch(() => undefined)
         throw cause
       }
+      finishing = true
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
-    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
+    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling || finishing ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
   }
