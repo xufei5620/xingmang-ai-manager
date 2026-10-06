@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { managedCliKeyProfiles, providerBaseUrls } from './catalog'
-import { codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
+import { classifyCodexConfigProfile, codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
 import type { RelayBackendClient } from './relay-backend'
 import {
   XINGMANG_AI_CODEX_SKILL_STATE_FILE,
@@ -17,6 +17,7 @@ import {
   XINGMANG_AI_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_KEY_NAME,
   XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
+  adoptRestoredXingmangAiSkillOff,
   applyXingmangAiSkillEnabledFlag,
   assertBundledXingmangAiSkill,
   buildXingmangAiSkillConfig,
@@ -648,6 +649,22 @@ describe('xingmang-ai-skill across Codex account switches', () => {
         applyXingmangAiSkillEnabledFlag(parsed, skillPath, false)
         await writeFile(paths.active, TOML.stringify(parsed), 'utf8')
       },
+      async userTurnsSkillOn() {
+        const parsed = TOML.parse(await readFile(paths.active, 'utf8'))
+        applyXingmangAiSkillEnabledFlag(parsed, skillPath, true)
+        await writeFile(paths.active, TOML.stringify(parsed), 'utf8')
+      },
+      // The backups page puts back config.toml (and auth.json) only, then
+      // system-service lines the skill record up with it.
+      async restoreOnBackupsPage(content: string, officialCodex: boolean) {
+        await writeFile(paths.active, content, 'utf8')
+        return adoptRestoredXingmangAiSkillOff({
+          userHome,
+          officialCodex,
+          configPath: paths.active,
+          isXingmangConfig: (config) => classifyCodexConfigProfile(config, providerBaseUrls.codex) === 'relay',
+        })
+      },
     }
   }
 
@@ -765,6 +782,43 @@ describe('xingmang-ai-skill across Codex account switches', () => {
     expect(await accounts.skillOff(accounts.paths.relay)).toBe(true)
     await expect(accounts.toXingmang()).resolves.toEqual({ changed: true, enabled: true })
     expect(await accounts.skillOff()).toBe(false)
+  })
+
+  it('keeps the user\'s off in a Xingmang config restored on the backups page while on the ChatGPT account', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.toXingmang()
+    await accounts.userTurnsSkillOff()
+    const userOffBackup = await readFile(accounts.paths.active, 'utf8')
+    await accounts.userTurnsSkillOn()
+    await expect(accounts.toChatGpt()).resolves.toEqual({ changed: true, enabled: false })
+    expect(JSON.parse(await readFile(accounts.statePath, 'utf8'))).toEqual({ version: 1, offByXingmang: true })
+
+    await expect(accounts.restoreOnBackupsPage(userOffBackup, true)).resolves.toBe(true)
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+    expect(await accounts.skillOff()).toBe(true)
+    expect(await accounts.skillOff(accounts.paths.relay)).toBe(true)
+  })
+
+  it('still turns its own off back on when a Xingmang config holding it is restored before it could be', async () => {
+    const accounts = await codexAccounts()
+    await failToTurnOnConfigToml(accounts)
+    const pendingBackup = await readFile(accounts.paths.active, 'utf8')
+
+    await expect(accounts.restoreOnBackupsPage(pendingBackup, false)).resolves.toBe(false)
+    await expect(accounts.sync(false)).resolves.toEqual({ changed: true, enabled: true })
+    expect(await accounts.skillOff()).toBe(false)
+  })
+
+  it('keeps its own off for the next switch when a ChatGPT config is restored on the backups page', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.sync(true)
+    const chatGptBackup = await readFile(accounts.paths.active, 'utf8')
+
+    await expect(accounts.restoreOnBackupsPage(chatGptBackup, true)).resolves.toBe(false)
+    expect(JSON.parse(await readFile(accounts.statePath, 'utf8'))).toEqual({ version: 1, offByXingmang: true })
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: true, enabled: true })
   })
 
   it('treats an unreadable stored Xingmang config as holding the user\'s off', async () => {
