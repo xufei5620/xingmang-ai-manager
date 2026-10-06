@@ -4,7 +4,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -20,71 +19,83 @@ const { resolveWindowsMachinePaths, inspectWindowsDirectoryTreeAcl } = compiled(
 
 const machinePaths = resolveWindowsMachinePaths()
 const icacls = windowsSystemExecutable('icacls.exe', process.env, 'win32', machinePaths)
-const untrustedWrite = /\b(?:BUILTIN\\Users|Everyone|Authenticated Users|S-1-5-32-545|S-1-1-0|S-1-5-11)\b/i
+const trusted = new Set(['S-1-5-18', 'S-1-5-32-544'])
+const usersWrite = new Set(['S-1-5-32-545', 'S-1-1-0', 'S-1-5-11'])
 
-function run(file, args) {
+function run(args) {
   return new Promise((resolve) => {
-    const child = execFile(file, args, { env: trustedCommandEnvironment(), windowsHide: true, timeout: 120_000, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => resolve({ error, stdout: stdout ?? '', stderr: stderr ?? '' }))
+    const child = execFile(icacls, args, { env: trustedCommandEnvironment(), windowsHide: true, timeout: 120_000, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => resolve({ error, stdout: stdout ?? '', stderr: stderr ?? '' }))
     child.stdin?.end()
   })
 }
 
+function rootWriters(dir) {
+  return inspectWindowsDirectoryTreeAcl(dir, machinePaths).entries[0].allowWriteSids.map((sid) => String(sid).toUpperCase())
+}
+
+// Seed under ProgramData: a fresh folder there inherits ProgramData's Users
+// create/write ACE, which is the whole premise of the window. os.tmpdir() lives
+// under the user profile and would never reproduce it.
 function seedTree(label) {
-  const root = path.join(os.tmpdir(), `xingmang-verify-acl-${label}-${process.pid}`)
+  const root = path.join(machinePaths.programData, `xingmang-verify-acl-${label}-${process.pid}`)
   fs.rmSync(root, { recursive: true, force: true })
   fs.mkdirSync(path.join(root, 'Cli', 'npm', 'node_modules', 'pkg'), { recursive: true })
   fs.writeFileSync(path.join(root, 'Cli', 'npm', 'node_modules', 'pkg', 'index.js'), '// content')
   return root
 }
 
-// 1) Demonstrate the OLD order's window: `/reset /T` first leaves the root
-//    inheriting ProgramData (Users-writable) until the root is hardened.
-const oldRoot = seedTree('old')
-const reset = await run(icacls, [oldRoot, '/reset', '/T', '/C', '/Q'])
-assert.equal(reset.error, null, `old-order reset failed: ${reset.stderr}`)
-const afterReset = (await run(icacls, [oldRoot])).stdout
-console.log(`VERIFY old-order root ACL right after /reset /T:\n${afterReset}`)
-console.log(`VERIFY old-order window present (standard user can write): ${untrustedWrite.test(afterReset)}`)
-fs.rmSync(oldRoot, { recursive: true, force: true })
+const created = []
+try {
+  // 1) Demonstrate the OLD order's window: `/reset /T` first makes the root
+  //    re-inherit ProgramData (Users-writable) until the root is hardened.
+  const oldRoot = seedTree('old'); created.push(oldRoot)
+  const reset = await run([oldRoot, '/reset', '/T', '/C', '/Q'])
+  assert.equal(reset.error, null, `old-order reset failed: ${reset.stderr}`)
+  const oldWriters = rootWriters(oldRoot)
+  const windowPresent = oldWriters.some((sid) => usersWrite.has(sid))
+  console.log(`VERIFY old-order root writers right after /reset /T: ${oldWriters.join(', ') || '(none)'}`)
+  console.log(`VERIFY old-order window reproduced on this runner (standard user can write the root): ${windowPresent}`)
 
-// 2) The NEW order: harden the root first; prove it is locked the instant the
-//    first step returns, then that the whole sequence succeeds and verifies.
-const newRoot = seedTree('new')
-let afterHarden = null
-let step = 0
-await applyWindowsRootHardening(newRoot, async (args) => {
-  const outcome = await run(icacls, args)
-  assert.equal(outcome.error, null, `new-order step ${step} failed (${args.join(' ')}): ${outcome.stderr}`)
-  step += 1
-  if (step === 1) afterHarden = (await run(icacls, [newRoot])).stdout
-})
-console.log(`VERIFY new-order root ACL right after hardening the root:\n${afterHarden}`)
-assert.ok(afterHarden, 'harden step did not run')
-assert.doesNotMatch(afterHarden, untrustedWrite, 'new order: root still writable by a standard user right after hardening')
-console.log(`VERIFY new-order contents reset ran as ${windowsAclResetContentsArguments(newRoot)[0]}`)
+  // 2) The NEW order: harden the root first; prove it is locked the instant the
+  //    first step returns, then that the whole sequence succeeds and verifies.
+  const newRoot = seedTree('new'); created.push(newRoot)
+  let afterHarden = null
+  let step = 0
+  await applyWindowsRootHardening(newRoot, async (args) => {
+    const outcome = await run(args)
+    assert.equal(outcome.error, null, `new-order step ${step} failed (${args.join(' ')}): ${outcome.stderr}`)
+    step += 1
+    if (step === 1) afterHarden = rootWriters(newRoot)
+  })
+  assert.ok(afterHarden, 'harden step did not run')
+  console.log(`VERIFY new-order root writers right after hardening the root: ${afterHarden.join(', ') || '(none)'}`)
+  for (const sid of afterHarden) assert.ok(trusted.has(sid), `new order: ${sid} can still write the root right after hardening`)
+  if (windowPresent) console.log('VERIFY the window reproduced above is closed the instant the root is hardened')
+  console.log(`VERIFY new-order contents reset targeted ${windowsAclResetContentsArguments(newRoot)[0]}`)
 
-const snapshot = inspectWindowsDirectoryTreeAcl(newRoot, machinePaths)
-const trusted = new Set(['S-1-5-18', 'S-1-5-32-544'])
-assert.ok(snapshot.entries.length > 0)
-for (const entry of snapshot.entries) {
-  assert.ok(trusted.has(String(entry.ownerSid).toUpperCase()), `owner ${entry.ownerSid} not trusted`)
-  assert.equal(entry.reparsePoint, false)
-  for (const sid of entry.allowWriteSids) assert.ok(trusted.has(String(sid).toUpperCase()), `writer ${sid} not trusted`)
+  const snapshot = inspectWindowsDirectoryTreeAcl(newRoot, machinePaths)
+  assert.ok(snapshot.entries.length > 0)
+  for (const entry of snapshot.entries) {
+    assert.ok(trusted.has(String(entry.ownerSid).toUpperCase()), `owner ${entry.ownerSid} not trusted`)
+    assert.equal(entry.reparsePoint, false)
+    for (const sid of entry.allowWriteSids) assert.ok(trusted.has(String(sid).toUpperCase()), `writer ${sid} not trusted`)
+  }
+  console.log(`VERIFY new-order final tree hardened: ${snapshot.entries.length} entr(ies), owner+writers all SYSTEM/Administrators`)
+
+  // 3) Empty root: the contents reset is skipped so the `\*` wildcard never errors.
+  const emptyRoot = path.join(machinePaths.programData, `xingmang-verify-acl-empty-${process.pid}`)
+  fs.rmSync(emptyRoot, { recursive: true, force: true })
+  fs.mkdirSync(emptyRoot, { recursive: true }); created.push(emptyRoot)
+  const emptyCalls = []
+  await applyWindowsRootHardening(emptyRoot, async (args) => {
+    emptyCalls.push(args[0])
+    const outcome = await run(args)
+    assert.equal(outcome.error, null, `empty-root step failed (${args.join(' ')}): ${outcome.stderr}`)
+  })
+  assert.deepEqual(emptyCalls, [emptyRoot, emptyRoot], `empty root should run harden+setowner on the root only, got ${JSON.stringify(emptyCalls)}`)
+  console.log('VERIFY empty root: contents reset skipped, no wildcard call')
+
+  console.log('VERIFY all checks passed')
+} finally {
+  for (const dir of created) fs.rmSync(dir, { recursive: true, force: true })
 }
-console.log(`VERIFY new-order final tree hardened: ${snapshot.entries.length} entr(ies), owner+writers all SYSTEM/Administrators`)
-
-// 3) Empty root: the contents reset is skipped so the `\*` wildcard never errors.
-const emptyRoot = path.join(os.tmpdir(), `xingmang-verify-acl-empty-${process.pid}`)
-fs.rmSync(emptyRoot, { recursive: true, force: true })
-fs.mkdirSync(emptyRoot, { recursive: true })
-const emptyCalls = []
-await applyWindowsRootHardening(emptyRoot, async (args) => {
-  emptyCalls.push(args[0])
-  const outcome = await run(icacls, args)
-  assert.equal(outcome.error, null, `empty-root step failed (${args.join(' ')}): ${outcome.stderr}`)
-})
-assert.deepEqual(emptyCalls, [emptyRoot, emptyRoot], `empty root should run harden+setowner on the root only, got ${JSON.stringify(emptyCalls)}`)
-console.log('VERIFY empty root: contents reset skipped, no wildcard call')
-fs.rmSync(newRoot, { recursive: true, force: true })
-fs.rmSync(emptyRoot, { recursive: true, force: true })
-console.log('VERIFY all checks passed')
