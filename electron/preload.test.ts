@@ -137,6 +137,27 @@ describe('main-window sandbox preload', () => {
     ])
   })
 
+  // 磁盘不够时更新页和「必须更新」那层提示上的「仍要下载」带 ignoreDiskSpace。少转这个
+  // 参数，主进程照旧先查磁盘、照旧拦下，那颗按钮就永远没有效果。
+  it('forwards the update download options and adds no empty trailing argument', async () => {
+    const invoke = vi.fn(async () => ({ phase: 'downloading' }))
+    let bridge: XingmangApi | undefined
+    const compiled = ts.transpileModule(preloadSource().sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+    vm.runInNewContext(compiled, {
+      exports: {},
+      require: (name: string) => {
+        if (name !== 'electron') throw new Error('Sandbox cannot load runtime modules')
+        return { ipcRenderer: { invoke }, contextBridge: { exposeInMainWorld: (_name: string, api: XingmangApi) => { bridge = api } } }
+      },
+    })
+    await bridge!.downloadUpdate()
+    await bridge!.downloadUpdate({ ignoreDiskSpace: true })
+    expect(invoke.mock.calls).toEqual([
+      ['update:download'],
+      ['update:download', { ignoreDiskSpace: true }],
+    ])
+  })
+
   // 第四个参数是用户看过冲突提示后按下的「仍然连接」。少转一个，主进程只会
   // 再拒一次同一个冲突，那颗按钮就永远没有效果。
   it('carries the conflict override across the sandbox and adds no empty trailing arguments', async () => {
