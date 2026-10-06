@@ -160,6 +160,8 @@ const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
 /** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
 const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。'
+/** Mac 上检测没做完，说不准装没装：点「打开」和点「安装」时都照这句说。 */
+const codexDesktopDetectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
 // 之后既打不开也更新不了。这是拒绝取消时给用户看的原因。
 const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。'
@@ -3051,6 +3053,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (getuid() === 0) {
       throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
     }
+    // 两次都没做完时，安装那一步看到「应用程序」里占着名字、又自称是正版的那份，就说「检测未完成」：
+    // 它多半是客户装好的正版，只是没来得及核对，说「不是官方原版」、叫客户移到废纸篓就错了。
+    // 检测核对过、确定不过关的那份（签名不对、架构不兼容、可执行文件坏了）不算：再测几次都一样，
+    // 照旧说不是官方原版，客户才知道要把它挪走。别处另一份不过关的不连累它（rejectedPaths 按路径记）。
+    const detectionUnfinished = !current || current.detectionFailed
     const architecture = await resolveMacosInstallArchitecture()
     cancellation?.throwIfCancelled()
     const signal = cancellation?.signal
@@ -3070,6 +3077,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         message: event.message,
       }),
       ...(signal ? { signal } : {}),
+      ...(detectionUnfinished
+        ? { detectionUnfinished: { message: codexDesktopDetectionUnfinishedMessage, rejectedPaths: current?.rejectedPaths ?? [] } }
+        : {}),
     })
     const installed = await withDownloadRoute(install)
     sendCodexDesktopInstallProgress(target, {
@@ -3559,7 +3569,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // Reuse the bundle/architecture/OpenAI-signature verifier and bind
       // LaunchServices to that exact app, rather than a PATH or bundle alias.
       const desktopApp = await inspectCodexDesktop()
-      if (desktopApp.detectionFailed) throw new Error('Codex 桌面端检测未完成，请重新检测后再试')
+      if (desktopApp.detectionFailed) throw new Error(codexDesktopDetectionUnfinishedMessage)
       if (!desktopApp.installed || !desktopApp.path) {
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }

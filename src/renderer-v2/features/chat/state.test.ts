@@ -351,4 +351,18 @@ describe('v2 chat attached images', () => {
     expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: 图片太大了，请截小一点再试"))).toBe('图片太大了，请截小一点再试')
     expect(attachmentErrorMessage(new Error('boom'))).toBe('图片没有加上，请再试一次')
   })
+
+  // 已知21：英文的写入失败里汉字只出现在路径上（Windows 的中文用户名、Mac 上的中文文件夹），
+  // 以前从第一个汉字截起，把半截路径端上了屏。
+  it('falls back to the plain line when an English failure has Chinese only inside a path', () => {
+    const fallback = '图片没有加上，请再试一次'
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Roaming\\xingmang-ai-manager\\ai-assets\\user-7\\.a.png.tmp'"))).toBe(fallback)
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:paste-image': Error: ENOSPC: no space left on device, write 'C:\\Users\\张 三\\AppData\\Roaming\\xingmang-ai-manager\\ai-assets\\a.png'"))).toBe(fallback)
+    expect(attachmentErrorMessage(new Error("EACCES: permission denied, mkdir '/Users/张三/Pictures/星芒 AI 作品/user-7'"))).toBe(fallback)
+  })
+
+  it('keeps a Chinese reason whole instead of cutting it at the first Chinese character', () => {
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: AI 图片资产不能经过符号链接或目录联接"))).toBe('AI 图片资产不能经过符号链接或目录联接')
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:paste-image': Error: 请先登录星芒账号"))).toBe('请先登录，再加图片')
+  })
 })

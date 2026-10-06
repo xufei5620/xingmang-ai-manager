@@ -56,6 +56,8 @@ const remaining = page => page.getByTestId('acceleration-quota-remaining')
 test('lists selectable acceleration lines, checks ping and switches back to smart allocation before connecting', async () => {
   const page = await open()
   try {
+    // 舞台左上角那行小字以前是英文 GAME CONNECT。
+    assert.equal((await page.locator('.acceleration-eyebrow').innerText()).trim(), '游戏加速')
     await page.getByTestId('acceleration-line-picker-toggle').click()
     const list = page.getByRole('listbox', { name: '加速线路选择' })
     const auto = page.getByTestId('acceleration-line-auto')

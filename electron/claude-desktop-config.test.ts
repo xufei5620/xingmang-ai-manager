@@ -324,6 +324,67 @@ describe('Claude Desktop in-app third-party configuration', () => {
     expect(fs.readFileSync(result.path, 'utf8')).toBe(gatewayBefore)
   })
 
+  // 已知20：每次保存都给改到的文件留一份带旧 Key 的 .bak，以前从来不清。
+  it('keeps the five newest backups of each saved file and leaves backups it did not name alone', async () => {
+    const f = fixture()
+    const first = await f.service.saveGateway(input)
+    const directory = path.dirname(first.path)
+    const name = path.basename(first.path)
+    const seeded = Array.from({ length: 6 }, (_, index) => {
+      const file = path.join(directory, `${name}.bak.00000000-0000-4000-8000-00000000000${index}`)
+      fs.writeFileSync(file, `old ${index}`)
+      // Oldest first: index 0 is the backup from long ago.
+      fs.utimesSync(file, new Date(2026, 0, index + 1), new Date(2026, 0, index + 1))
+      return file
+    })
+    // Someone's own copy, another file's backup and a directory that only looks like one.
+    const manual = path.join(directory, `${name}.bak.manual`)
+    const otherFile = path.join(directory, `${otherId}.json.bak.00000000-0000-4000-8000-000000000009`)
+    const lookalike = path.join(directory, `${name}.bak.00000000-0000-4000-8000-000000000008`)
+    fs.writeFileSync(manual, 'manual')
+    fs.writeFileSync(otherFile, 'other')
+    fs.mkdirSync(lookalike)
+    fs.utimesSync(lookalike, new Date(2025, 0, 1), new Date(2025, 0, 1))
+    const before = fs.readFileSync(first.path, 'utf8')
+
+    const next = await f.service.saveGateway({ ...input, apiKey: 'sk-replacement' })
+    expect(next.backups).toHaveLength(1)
+    expect(fs.readFileSync(next.backups[0], 'utf8')).toBe(before)
+    expect(seeded.map((file) => fs.existsSync(file))).toEqual([false, false, true, true, true, true])
+    for (const kept of [manual, otherFile, lookalike]) expect(fs.existsSync(kept), kept).toBe(true)
+
+    // Saves keep coming: five backups of the profile stay, the newest five.
+    const backups = [next.backups[0]]
+    for (const apiKey of ['sk-third', 'sk-fourth', 'sk-fifth', 'sk-sixth', 'sk-seventh']) {
+      backups.push(...(await f.service.saveGateway({ ...input, apiKey })).backups)
+    }
+    const remaining = fs.readdirSync(directory).filter((file) => file.startsWith(`${name}.bak.`) && file !== path.basename(manual) && fs.lstatSync(path.join(directory, file)).isFile())
+    expect(remaining.sort()).toEqual(backups.slice(-5).map((file) => path.basename(file)).sort())
+    expect(fs.readFileSync(backups.at(-1)!, 'utf8')).toContain('sk-sixth')
+  })
+
+  it('removes no backup when the save does not complete', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    const directory = path.dirname(result.path)
+    const seeded = Array.from({ length: 6 }, (_, index) => {
+      const file = path.join(directory, `${path.basename(result.path)}.bak.00000000-0000-4000-8000-00000000000${index}`)
+      fs.writeFileSync(file, `old ${index}`)
+      fs.utimesSync(file, new Date(2026, 0, index + 1), new Date(2026, 0, index + 1))
+      return file
+    })
+    // Two files change, and the second one cannot be put in place.
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const rename = fs.renameSync.bind(fs)
+    let writes = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (++writes === 2) throw new Error('blocked')
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    for (const file of seeded) expect(fs.existsSync(file), file).toBe(true)
+  })
+
   it('rolls back all committed files when a later rename fails, retaining backups', async () => {
     const f = fixture()
     const result = await f.service.saveGateway(input)

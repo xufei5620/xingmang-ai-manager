@@ -59,6 +59,19 @@ export function readBoundedUtf8FileSync(
   maximumBytes: number,
   label: string,
 ): string {
+  return readBoundedFileSync(requestedPath, maximumBytes, label).toString('utf8')
+}
+
+/**
+ * The raw bytes behind readBoundedUtf8FileSync, for callers that must tell an
+ * invalid UTF-8 file apart from one that merely contains U+FFFD: decoding
+ * replaces bad sequences silently, and Codex refuses such a config outright.
+ */
+export function readBoundedFileSync(
+  requestedPath: string,
+  maximumBytes: number,
+  label: string,
+): Buffer {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
     throw new Error(`${label}读取上限无效`)
   }
@@ -88,7 +101,7 @@ export function readBoundedUtf8FileSync(
     ) {
       throw new Error(`${label}在读取过程中发生变化`)
     }
-    return buffer.toString('utf8')
+    return buffer
   } finally {
     fs.closeSync(descriptor)
   }

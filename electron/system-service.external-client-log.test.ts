@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RuntimeLogStore } from './runtime-log'
-import { buildExternalClientMacVerificationLogDetail, buildExternalClientRegistryLogDetail } from './system-service'
+import { buildExternalClientDetectionErrorLogDetail, buildExternalClientMacVerificationLogDetail, buildExternalClientRegistryLogDetail } from './system-service'
 
 const temporaryDirectories: string[] = []
 
@@ -51,5 +51,18 @@ describe('external client log details', () => {
     expect(JSON.stringify(detail)).not.toContain('[REDACTED]')
     expect(JSON.stringify(detail)).not.toContain(home)
     expect(detail).toMatchObject({ path: expect.stringMatching(/\/Applications\/Claude\.app$/), output: expect.stringMatching(/\/Applications\/Claude\.app: rejected$/) })
+  })
+
+  it('keeps what PowerShell said about a failed Windows detection once the runtime log has sanitized it, without the home directory', async () => {
+    const windowsHome = 'C:\\Users\\Tester'
+    const detail = await storedDetail(buildExternalClientDetectionErrorLogDetail({
+      tool: 'workbuddy', reason: '无法读取客户端数字签名',
+      message: `Access to the path ${windowsHome}\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe is denied.`,
+    }, windowsHome))
+
+    expect(detail).toEqual({
+      tool: 'workbuddy', reason: '无法读取客户端数字签名',
+      message: 'Access to the path %USERPROFILE%\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe is denied.',
+    })
   })
 })

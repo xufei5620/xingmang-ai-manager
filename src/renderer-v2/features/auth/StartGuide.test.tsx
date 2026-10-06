@@ -189,18 +189,24 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toContain('在应用外安装')
   })
 
-  it('offers the one-click runtime button on Linux when the installed tool needs a newer Node.js', () => {
-    stubResumedGuide('claude', 'prepare')
-    const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: true })], { platform: 'linux', onInstallRuntime: async () => undefined })
-    expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*一键安装/)
-    expect(markup).toContain('命令行工具需要运行环境')
-    expect(markup).not.toContain('安装指南')
+  // Mac 上 Node.js 也是本软件准备的（第十六批 2）：这一行以前照旧叫人去应用外装，点下去其实是
+  // 星芒自己去下（已知9）。现在和 Linux 一样按能力判断。
+  it('offers the one-click runtime button on Linux and Mac when the installed tool needs a newer Node.js', () => {
+    for (const platform of ['linux', 'mac'] as const) {
+      stubResumedGuide('claude', 'prepare')
+      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: true })], { platform, onInstallRuntime: async () => undefined })
+      expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*一键安装/)
+      expect(markup).toContain('命令行工具需要运行环境')
+      expect(markup).not.toContain('安装指南')
+      expect(markup).not.toContain('在应用外安装')
+      vi.unstubAllGlobals()
+    }
   })
 
-  it('keeps the by-hand wording on Linux when the app cannot prepare Node.js, and on a Mac as before', () => {
-    for (const [platform, runtimeAutoPrepare] of [['linux', false], ['mac', true], ['mac', false]] as const) {
+  it('keeps the by-hand wording on Linux and Mac when the app cannot prepare Node.js', () => {
+    for (const platform of ['linux', 'mac'] as const) {
       stubResumedGuide('claude', 'prepare')
-      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare })], { platform, onInstallRuntime: async () => undefined })
+      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: false })], { platform, onInstallRuntime: async () => undefined })
       expect(markup).toContain('在应用外安装完成后回来重新检测')
       expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*安装指南/)
       vi.unstubAllGlobals()
@@ -416,18 +422,20 @@ describe('guide default route', () => {
 })
 
 describe('guide choose step runtime wording', () => {
-  it('says the app prepares the runtime on Linux only when it really does', () => {
-    const managed = render([guideTool({ runtimeAutoPrepare: true })], { platform: 'linux' })
-    expect(managed).toContain('命令行，会自动帮你准备运行环境')
-    expect(managed).not.toContain('要先按提示准备运行环境')
-    const external = render([guideTool({ runtimeAutoPrepare: false })], { platform: 'linux' })
-    expect(external).toContain('命令行，要先按提示准备运行环境')
+  // Mac 跟 Linux 一样按能力判断（已知9）：Node.js 由本软件准备时，不再说「要先按提示准备」。
+  it('says the app prepares the runtime on Linux and Mac only when it really does', () => {
+    for (const platform of ['linux', 'mac'] as const) {
+      const managed = render([guideTool({ runtimeAutoPrepare: true })], { platform })
+      expect(managed).toContain('命令行，会自动帮你准备运行环境')
+      expect(managed).not.toContain('要先按提示准备运行环境')
+      const external = render([guideTool({ runtimeAutoPrepare: false })], { platform })
+      expect(external).toContain('命令行，要先按提示准备运行环境')
+    }
   })
 
-  it('keeps the Windows and Mac wording unchanged', () => {
+  it('keeps the Windows wording unchanged', () => {
     expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
     expect(render([guideTool({ runtimeAutoPrepare: false })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
-    expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'mac' })).toContain('命令行，要先按提示准备运行环境')
   })
 })
 

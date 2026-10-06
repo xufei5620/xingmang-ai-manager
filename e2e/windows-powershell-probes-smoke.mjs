@@ -37,7 +37,8 @@ const {
 const { parseWindowsProcessesJson } = compiled('codex-desktop')
 const { windowsExternalClientInventoryScript } = compiled('external-client-runtime')
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
-const { trustedCommandEnvironment } = compiled('command-runner')
+const { trustedCommandEnvironment, windowsSystemExecutable } = compiled('command-runner')
+const { applyWindowsRootHardening } = compiled('trusted-temp')
 const {
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAvailability,
@@ -204,6 +205,34 @@ function Get-AppxPackage {
     assert.equal(data.clients.length, 1)
     assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
     assert.deepEqual(data.registryFailures, Array(3).fill({ entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
+  }],
+  // The row on the home page says only the Chinese sentence; what PowerShell said
+  // comes back beside it for the runtime log (external-client-runtime.test.ts reads it).
+  ['external client inventory keeps what PowerShell said out of the sentence when AppX cannot be read', async () => {
+    const output = await runEncoded(String.raw`
+function Test-Path { param([string]$LiteralPath) return $false }
+function Get-Process { @() }
+function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }
+` + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.deepEqual(data.clients, [])
+    assert.deepEqual(data.errors, { claudeDesktop: '无法读取当前用户 Claude 桌面端的 AppX 注册信息' })
+    assert.deepEqual(data.errorDetails, { claudeDesktop: 'The AppX Deployment Service is not running.' })
+  }],
+  ['external client inventory keeps what PowerShell said out of the sentence when a signature cannot be read', async () => {
+    const output = await runEncoded(String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' } }
+function Get-ItemProperty { param([string]$LiteralPath) [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
+function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=1; LastWriteTimeUtc=[datetime]::UtcNow; CreationTimeUtc=[datetime]::UtcNow } }
+function Get-AuthenticodeSignature { param([string]$LiteralPath) throw 'The signature service is not available.' }
+function Get-Process { @() }
+function Get-AppxPackage { @() }
+` + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.deepEqual(data.clients, [])
+    assert.deepEqual(data.errors, { workbuddy: '无法读取客户端数字签名' })
+    assert.deepEqual(data.errorDetails, { workbuddy: 'The signature service is not available.' })
   }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
@@ -494,6 +523,62 @@ for (const [name, limit, run] of trustedProbes) {
     assert.ok(elapsed < limit, `took ${elapsed}ms, the app gives it ${limit}ms`)
   }])
 }
+
+// The managed-root hardening, run for real once, under ProgramData where the
+// real root lives. A fresh folder there inherits ProgramData's Users
+// create/write ACE, so this reproduces the standard-user write window; the unit
+// tests pin the icacls ORDER, and this proves that on a real runner the window
+// is gone the instant the first step (harden the root) returns, before the
+// contents reset and setowner run, and that the contents reset's `\*` wildcard
+// and the whole sequence produce a tree only SYSTEM/Administrators can write.
+// Needs the elevated runner, as /setowner Administrators does.
+checks.push(['the managed-root hardening closes the standard-user write window under ProgramData', async () => {
+  const icacls = windowsSystemExecutable('icacls.exe', process.env, 'win32', machinePaths)
+  const trusted = new Set(['S-1-5-18', 'S-1-5-32-544'])
+  const usersWrite = new Set(['S-1-5-32-545', 'S-1-1-0', 'S-1-5-11'])
+  const rootWriters = (dir) => inspectWindowsDirectoryTreeAcl(dir, machinePaths)
+    .entries[0].allowWriteSids.map((sid) => String(sid).toUpperCase())
+  const root = path.join(machinePaths.programData, `xingmang-probe-smoke-harden-${process.pid}`)
+  fs.rmSync(root, { recursive: true, force: true })
+  try {
+    fs.mkdirSync(path.join(root, 'Cli', 'npm', 'node_modules'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'Cli', 'npm', 'node_modules', 'payload.js'), '// content')
+
+    // The window's premise: before hardening, a standard user can write the
+    // root. Asserted closed below only when this runner's ProgramData actually
+    // grants it (a locked-down ProgramData would not, and is not a failure).
+    const writableBefore = rootWriters(root).some((sid) => usersWrite.has(sid))
+    console.log(`info managed-root hardening: fresh ProgramData child writable by a standard user before = ${writableBefore}`)
+
+    let afterHarden = null
+    let step = 0
+    await applyWindowsRootHardening(root, async (args, timeoutMs) => {
+      await new Promise((resolve, reject) => {
+        const child = execFile(icacls, args, { env: trustedCommandEnvironment(), windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error) => error ? reject(error) : resolve())
+        child.stdin?.end()
+      })
+      step += 1
+      // Right after the harden step, before the reset and setowner run.
+      if (step === 1) afterHarden = rootWriters(root)
+    })
+    assert.ok(afterHarden, 'the harden step did not run')
+    for (const sid of afterHarden) assert.ok(trusted.has(sid), `${sid} can still write the root right after hardening`)
+    if (writableBefore) console.log('info managed-root hardening: the pre-harden write window is closed the instant the root is hardened')
+
+    const snapshot = inspectWindowsDirectoryTreeAcl(root, machinePaths)
+    assert.ok(snapshot.entries.length > 0)
+    for (const entry of snapshot.entries) {
+      assert.ok(trusted.has(String(entry.ownerSid).toUpperCase()), `${entry.ownerSid} owns a hardened item`)
+      assert.equal(entry.reparsePoint, false)
+      for (const sid of entry.allowWriteSids) {
+        assert.ok(trusted.has(String(sid).toUpperCase()), `${sid} can write a hardened item`)
+      }
+    }
+    return `${snapshot.entries.length} entr(ies), window reproduced=${writableBefore}, root locked after harden`
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}])
 
 function runFile(executable, argv) {
   return new Promise((resolve, reject) => {
