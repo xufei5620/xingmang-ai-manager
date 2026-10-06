@@ -33,6 +33,12 @@ describe('key sync failure wording', () => {
     expect(keySyncFailureText('grok', 'Grok CLI 没有收到配置完成结果，请重新检测')).toBe('Grok CLI 没有收到配置完成结果，请重新检测')
   })
 
+  it('lets a Codex failure that names the desktop app stand on its own', () => {
+    expect(keySyncFailureText('codex', 'Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'))
+      .toBe('Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步')
+    expect(keySyncFailureText('claude', 'Codex 桌面端可能仍在运行')).toBe('Claude Code：Codex 桌面端可能仍在运行')
+  })
+
   it('turns an unavailable account group into advice the customer can act on', () => {
     expect(keySyncFailureText('claude', '分组不存在、不可用或名称重复，请确认账号可用分组'))
       .toBe('Claude Code：当前账号还不能用，需要的话请联系客服开通')
