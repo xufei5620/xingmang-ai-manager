@@ -3415,6 +3415,33 @@ test('the update failure bubble retries the failed step without a detour', async
   } finally { await page.close() }
 })
 
+// 开机和每 3 小时自己跑的检查没查成，客户什么都没点：首页不弹红框，更新页照常能看到
+// 这次失败和「重试」。客户自己点的检查没查成，照旧弹。
+test('an automatic update check that fails stays off the home bubble but shows on the updates page', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const emit = (automatic) => page.evaluate((flag) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
+      error: { code: 'ERR_INTERNET_DISCONNECTED', message: '设备当前没有连上网络，请先连接网络再试。', ...(flag ? { automatic: true } : {}) }, development: true,
+    }), automatic)
+
+    await emit(true)
+    const notice = updates.getByTestId('updates-failure-check')
+    await notice.waitFor()
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    assert.equal(await page.getByRole('alert').filter({ hasText: '检查更新失败' }).count(), 0)
+
+    await emit(false)
+    await page.getByRole('alert').filter({ hasText: '检查更新失败' }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 校验新版本签名没通过时，同一个包装多少遍都一样：更新页和首页气泡都不再给
 //「重新安装」，改给「打开下载页」，让客户手动装一次。
 test('a Mac signature rejection offers the download page instead of reinstalling', async () => {
