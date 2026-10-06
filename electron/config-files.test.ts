@@ -490,6 +490,7 @@ describe('native CLI configuration files', () => {
             ANTHROPIC_AUTH_TOKEN: 'sk-user-key',
             ANTHROPIC_BASE_URL: 'https://xm.solov.cc',
             DISABLE_AUTOUPDATER: '1',
+            CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
           },
           permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact', 'DesignSync'] },
           model,
@@ -909,6 +910,35 @@ describe('native CLI configuration files', () => {
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(asRecord(merged.env)?.DISABLE_AUTOUPDATER).toBe('1')
     expect(asRecord(merged.env)?.CUSTOM_TOKEN).toBe('preserved')
+  })
+
+  it('caps the Claude context at 200K on merge but keeps a value the user wrote', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ env: { CUSTOM_TOKEN: 'preserved' } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const capped = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(capped.env)?.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBe('1')
+
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: '0' } }, null, 2)}\n`, 'utf8')
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const chosen = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(chosen.env)?.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBe('0')
+  })
+
+  it('lifts the relay context cap after switching back to the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(after.env)?.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBeUndefined()
   })
 
   it('keeps the Claude self-updater off after switching back to the official account', () => {
@@ -3298,7 +3328,12 @@ describe('bringing an older account config up to the current template', () => {
     fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
 
     const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-    expect(parsed.env).toEqual({ ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude, DISABLE_AUTOUPDATER: '1' })
+    expect(parsed.env).toEqual({
+      ANTHROPIC_AUTH_TOKEN: 'sk-fixture',
+      ANTHROPIC_BASE_URL: providerBaseUrls.claude,
+      DISABLE_AUTOUPDATER: '1',
+      CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+    })
     expect(parsed.permissions.deny).toEqual(['Bash(rm:*)', 'Artifact', 'DesignSync'])
     expect(parsed.skipWebFetchPreflight).toBe(false)
     expect(parsed.language).toBe('English')

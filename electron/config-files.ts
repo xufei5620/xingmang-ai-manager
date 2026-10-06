@@ -495,6 +495,16 @@ function disableClaudeSelfUpdate(env: Record<string, unknown>): void {
 }
 
 /**
+ * Claude Code 2.1.285 起接自定义 ANTHROPIC_BASE_URL 时上下文按 1M 算（以前 200K），长对话
+ * 要攒到 1M 才压缩。中转的 Opus / Sonnet 没确认收得下超过 200K 的请求，超了整轮失败，所以
+ * 接当前账号时压回 200K（2.1.289 实测：/context 由 1m 回到 200k；2026-10-06 定）。
+ * 用户自己写过的值不动，想用 1M 的人写 '0' 就行。
+ */
+function capClaudeRelayContext(env: Record<string, unknown>): void {
+  if (env.CLAUDE_CODE_DISABLE_1M_CONTEXT === undefined) env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1'
+}
+
+/**
  * Gemini CLI 两个开关各管一半：enableAutoUpdate 关掉「启动即静默升级」，
  * enableAutoUpdateNotification 关掉那条英文催更提示。两个默认都是 true。
  */
@@ -2206,6 +2216,7 @@ function createPlans(
         ANTHROPIC_AUTH_TOKEN: apiKey,
         ANTHROPIC_BASE_URL: siteBaseUrls.claude,
         DISABLE_AUTOUPDATER: '1',
+        CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
       }
       const settings: Record<string, unknown> = {
         env,
@@ -2327,6 +2338,7 @@ function createMergePlans(
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
+      capClaudeRelayContext(env)
       denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
       skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
@@ -2787,6 +2799,7 @@ function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, platfor
 function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
   const env = fillableRecord(parsed, 'env')
   if (env && env.DISABLE_AUTOUPDATER === undefined) disableClaudeSelfUpdate(env)
+  if (env) capClaudeRelayContext(env)
   const permissions = fillableRecord(parsed, 'permissions')
   if (permissions && (permissions.deny === undefined || Array.isArray(permissions.deny))) denyClaudeRelayTool(permissions)
   if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
@@ -3216,6 +3229,8 @@ function createOfficialAccountPlans(
         const envRecord = env as Record<string, unknown>
         delete envRecord.ANTHROPIC_AUTH_TOKEN
         delete envRecord.ANTHROPIC_BASE_URL
+        // 200K 是给中转压的，官方账号的 1M 照官方的来。
+        delete envRecord.CLAUDE_CODE_DISABLE_1M_CONTEXT
         removeClaudeRelayModelPicker(parsed, envRecord)
         if (Object.keys(envRecord).length === 0) delete parsed.env
       } else {
