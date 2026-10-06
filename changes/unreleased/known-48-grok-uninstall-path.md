@@ -1,12 +1,12 @@
 ## 用户
 
-- Windows 上卸载 Grok CLI 时，不会再因为最后清理 PATH 那一步慢了几秒，就把已经卸完的说成卸载失败、框下面还折着一段英文；
-  PATH 里 `%USERPROFILE%` 这类写法也不再被改成写死的路径。
+- Windows 上卸载 Grok CLI 时，不会再因为最后清理环境变量那一步慢了几秒，就把已经卸完的说成卸载失败、框下面还折着一段英文；
+  也不会再顺手改动环境变量里其他条目的写法。
 - Mac 上 Grok CLI 没法自动卸载时，弹出的框里不再是整句英文，改说「Grok CLI 自动卸载安全验证失败」。
 
 ## 开发
 
-- 已知48（第二十五批⑤、第三十六批、第三十九批、第四十四批 10 的「不收」项）：`system-service.ts` 卸掉 ~/.grok/bin 里的 Grok 后，
+- 已知48 里不等新字的几处（第三十六批、第三十九批「查过、不收」的两条，第四十四批 10）：`system-service.ts` 卸掉 ~/.grok/bin 里的 Grok 后，
   从当前用户 PATH 删目录那一步原来等着、只给 8 秒，用 `[Environment]` 读写，会把 `%VAR%` 写死、把 REG_EXPAND_SZ 改成 REG_SZ，
   超时就把已经卸完的报成失败。改成 `windows-cli-shell-access.ts` 的 `buildRemoveUserPathScript`（照 `buildEnsureUserPathScript`
   读写注册表原值、保留值类型，只为比较展开、没有命中就不写）+ `removeDirectoryFromWindowsUserPath`（60 秒）；经新的
