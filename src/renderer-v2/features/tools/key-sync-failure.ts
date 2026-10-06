@@ -31,9 +31,14 @@ export function isAccountNotEnabledFailure(message: string): boolean {
   return unavailableGroupPatterns.some((pattern) => pattern.test(message))
 }
 
-/** 一条失败带上是哪个工具的；原话已经以工具名开头的不再重复。 */
+/**
+ * 一条失败带上是哪个工具的；原话已经以工具名开头的不再重复。Codex 桌面端和
+ * Codex CLI 共用一份配置，失败记在 codex 名下，原话点的是桌面端也算点过名，
+ * 不然会念成「Codex CLI：Codex 桌面端还开着……」（第四十三批 C）。
+ */
 export function keySyncFailureText(provider: string, message: string): string {
   const name = tools.find((tool) => tool.id === provider)?.name ?? provider
   const reason = keySyncFailureReason(message)
-  return reason.startsWith(name) ? reason : `${name}：${reason}`
+  const names = provider === 'codex' ? [name, ...tools.filter((tool) => tool.id === 'codexDesktop').map((tool) => tool.name)] : [name]
+  return names.some((named) => reason.startsWith(named)) ? reason : `${name}：${reason}`
 }

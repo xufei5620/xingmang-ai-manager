@@ -64,6 +64,8 @@ export function sub2ApiAnnouncementNotice(announcements: Sub2ApiAnnouncement[]):
   return {
     id: `sub2api-${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
     text: ordered.map(({ title, content }) => `${title}\n\n${content}`).join('\n\n---\n\n'),
-    entries: ordered.map(({ id, title, content, readAt }) => ({ id, title, text: content, read: readAt !== null })),
+    entries: ordered.map(({ id, title, content, readAt, publishedAt }) => ({
+      id, title, text: content, read: readAt !== null, ...(publishedAt === null ? {} : { publishedAt }),
+    })),
   }
 }

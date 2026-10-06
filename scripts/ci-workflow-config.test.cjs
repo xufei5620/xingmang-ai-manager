@@ -848,8 +848,8 @@ test('the change-scope job also gates the unreleased changelog fragments', () =>
   // The guard diffs both unreleased sections against the pull request base, so
   // the base commit has to be reachable...
   assert.equal(checkout.with['fetch-depth'], 0)
-  // ...and this is the only job without a documentation-only skip, which is
-  // exactly the shape a bare CHANGELOG.md edit has.
+  // ...and the job has no documentation-only skip, because that is exactly
+  // the shape a bare CHANGELOG.md edit has.
   assert.equal(job.if, undefined, 'the fragment gate must run for every change')
   // No npm ci here: the gate has to keep running on node builtins alone.
   assert.equal(commands.some((command) => command.startsWith('npm ci')), false)
@@ -867,7 +867,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -884,6 +884,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     // The probe has its own trigger, so "skipped" is its normal state on a
     // pull request that leaves the verified-version list alone.
     jobs['cli-relay-probe'] = { result: results['cli-relay-probe'] || 'skipped' }
+    jobs['secret-scan'] = { result: results['secret-scan'] || 'success' }
     return run(source, jobs)
   }
   assert.equal(verify('true', 'success', {}), true)
@@ -903,14 +904,23 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   // they still block exactly as they did when linux-test ran them.
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'skipped' }), false)
-  assert.equal(verify('false', 'success', Object.fromEntries(
+  const documentationOnly = Object.fromEntries(
     ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
-  )), true)
+  )
+  assert.equal(verify('false', 'success', documentationOnly), true)
   // The relay probe runs only when the verified-version list moves, so its
   // skip is a pass; a red one is the whole reason it exists and must block.
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'success' }), true)
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'cancelled' }), false)
+  // A key pasted into Markdown leaks as surely as one in code: the secret scan
+  // has no documentation-only skip, so only its success passes, whatever the
+  // change touched.
+  assert.equal(verify('true', 'success', { 'secret-scan': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'secret-scan': 'skipped' }), false)
+  assert.equal(verify('true', 'success', { 'secret-scan': 'cancelled' }), false)
+  assert.equal(verify('false', 'success', { ...documentationOnly, 'secret-scan': 'failure' }), false)
+  assert.equal(verify('false', 'success', { ...documentationOnly, 'secret-scan': 'skipped' }), false)
 
   // The fold-in job itself: it is what keeps a single `test` check meaning
   // "Windows is green" after the matrix replaced the job that used to be it.
@@ -976,6 +986,27 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY, '${{ secrets.XINGMANG_CLI_PATROL_KEY }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
+})
+
+test('every change, documentation included, is scanned for leaked keys before it can merge', () => {
+  const job = workflow.jobs['secret-scan']
+  assert.equal(job.needs, 'changes')
+  // Unlike the build jobs it has no documentation-only skip: a key pasted into
+  // Markdown is as public as one in code once the branch is pushed.
+  assert.equal(job.if, undefined)
+  assert.equal(job['runs-on'], 'ubuntu-latest')
+  assert.ok(job['timeout-minutes'] > 0, 'a job that pulls an image and calls out to verify keys needs a bound')
+  const checkout = job.steps.find((step) => String(step.uses || '').includes('actions/checkout'))
+  // TruffleHog walks the change's own commits, so they and the base have to be
+  // in the checkout, not only the merge result.
+  assert.equal(checkout.with['fetch-depth'], 0)
+  assert.equal(checkout.with['persist-credentials'], false)
+  assert.deepEqual(runSteps('secret-scan'), ['node scripts/scan-new-commits-for-secrets.cjs'])
+  // No secret goes in, so the job runs the same on a fork's pull request. (The
+  // pattern wants the expression syntax: the script's own name ends in
+  // "secrets.cjs".)
+  assert.equal(/\$\{\{[^}]*secrets\./.test(JSON.stringify(job)), false)
+  assert.ok(packageJson.scripts['test:scripts'].includes('scripts/scan-new-commits-for-secrets.test.cjs'))
 })
 
 test('packaged Markdown and validation data always require code checks', () => {
