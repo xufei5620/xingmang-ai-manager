@@ -6,7 +6,10 @@ import * as TOML from '@iarna/toml'
 import {
   buildCodexApiKeyAuth,
   canLaunchManagedProvider,
+  claudeRootConfigTrustsFolder,
+  codexConfigTrustsFolder,
   geminiCliCompatibleModel,
+  geminiTrustedFoldersTrustFolder,
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
   claudeConsoleKeySnapshotName,
@@ -35,6 +38,7 @@ import {
   inspectOfficialLogin,
   inspectProviderConfig,
   inspectCodexWorkspacePermissionsText,
+  inspectHomeFolderTrust,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
   moveClaudeConsoleKeyAsideTexts,
@@ -2988,6 +2992,54 @@ describe('workspace trust for the directory the user picked', () => {
         .toEqual({ backups: [], files: [], changed: false })
     }
     expect(fs.readdirSync(home)).toEqual([])
+  })
+})
+
+describe('telling which tools trust the whole home folder', () => {
+  it('reads a Claude trust answer for the home folder under either slash style', () => {
+    const trusted = JSON.stringify({ projects: { 'C:/Users/peaker': { hasTrustDialogAccepted: true } } })
+    expect(claudeRootConfigTrustsFolder(trusted, 'C:\\Users\\peaker')).toBe(true)
+    expect(claudeRootConfigTrustsFolder(trusted, 'C:\\Users\\peaker\\project')).toBe(false)
+    // 只有答过「信任」才算；答过「不信任」、只是记着别的设置的都不算。
+    const other = JSON.stringify({ projects: { 'C:\\Users\\peaker': { hasTrustDialogAccepted: false }, 'C:\\Users\\peaker\\app': { hasTrustDialogAccepted: true } } })
+    expect(claudeRootConfigTrustsFolder(other, 'C:\\Users\\peaker')).toBe(false)
+    expect(claudeRootConfigTrustsFolder(JSON.stringify({ projects: { '/home/me': { allowedTools: [] } } }), '/home/me')).toBe(false)
+  })
+
+  it('reads a Codex trust level for the home folder, including its verbatim Windows form', () => {
+    expect(codexConfigTrustsFolder('[projects."/Users/alex"]\ntrust_level = "trusted"\n', '/Users/alex/')).toBe(true)
+    expect(codexConfigTrustsFolder('[projects."\\\\\\\\?\\\\C:\\\\Users\\\\peaker"]\ntrust_level = "trusted"\n', 'C:\\Users\\peaker')).toBe(true)
+    expect(codexConfigTrustsFolder('[projects."/Users/alex"]\ntrust_level = "untrusted"\n', '/Users/alex')).toBe(false)
+    expect(codexConfigTrustsFolder('[projects."/Users/alex/app"]\ntrust_level = "trusted"\n', '/Users/alex')).toBe(false)
+  })
+
+  it('reads a Gemini trusted home folder, also through a project directly under it that trusts its parent', () => {
+    expect(geminiTrustedFoldersTrustFolder('{\n  // 自己加的\n  "/home/me": "TRUST_FOLDER"\n}\n', '/home/me')).toBe(true)
+    expect(geminiTrustedFoldersTrustFolder(JSON.stringify({ 'C:\\Users\\peaker\\app': 'TRUST_PARENT' }), 'C:\\Users\\peaker')).toBe(true)
+    expect(geminiTrustedFoldersTrustFolder(JSON.stringify({ '/home/me/work/app': 'TRUST_PARENT' }), '/home/me')).toBe(false)
+    expect(geminiTrustedFoldersTrustFolder(JSON.stringify({ '/home/me': 'DO_NOT_TRUST', '/home/me/app': 'TRUST_FOLDER' }), '/home/me')).toBe(false)
+  })
+
+  it('treats a file it cannot read as no answer instead of an error', () => {
+    expect(claudeRootConfigTrustsFolder('{"projects":', '/home/me')).toBe(false)
+    expect(claudeRootConfigTrustsFolder(null, '/home/me')).toBe(false)
+    expect(codexConfigTrustsFolder('[projects', '/home/me')).toBe(false)
+    expect(geminiTrustedFoldersTrustFolder('["/home/me"]', '/home/me')).toBe(false)
+  })
+
+  it('lists the tools that remember trusting the home folder on disk, in a fixed order', () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const roots = providerRoots(home)
+    expect(inspectHomeFolderTrust(roots)).toEqual([])
+    fs.mkdirSync(path.join(home, '.gemini'))
+    fs.writeFileSync(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [home]: 'TRUST_FOLDER' }), 'utf8')
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
+    fs.mkdirSync(path.join(home, '.codex'))
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[projects', 'utf8')
+    expect(inspectHomeFolderTrust(roots)).toEqual(['claude', 'gemini'])
+    // 只读：哪个文件都没被改动。
+    expect(fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf8')).toBe('[projects')
   })
 })
 

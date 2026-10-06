@@ -2,18 +2,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { trustedCommandEnvironment } from './command-runner'
 import { environmentOverrideNames } from './diagnostics'
+import { GENERATED_PROJECT_INSTRUCTION_FILENAME, hasUntouchedHomeProjectInstructions } from './project-instructions'
 import { assertNoReparseComponents, assertSafeDataFile } from './safe-local-data'
 import { runPowerShell, type PowerShellRunner } from './stale-proxy-environment'
 
 /**
- * 检查页里两颗「点这里就好」的按钮（新手引导梳理 2026-09-25 第 2 条）。以前这两项
+ * 检查页里「点这里就好」的按钮（新手引导梳理 2026-09-25 第 2 条）。以前这几项
  * 只有一句「删掉它」或一颗把人带回首页的「去处理」，首页上并没有能处理它们的地方。
  */
 
-export type DiagnosticFixKind = 'set-aside-codex-dotenv' | 'clear-user-overrides'
+export type DiagnosticFixKind = 'set-aside-codex-dotenv' | 'clear-user-overrides' | 'set-aside-home-agents-md'
 
 export function isDiagnosticFixKind(value: unknown): value is DiagnosticFixKind {
-  return value === 'set-aside-codex-dotenv' || value === 'clear-user-overrides'
+  return value === 'set-aside-codex-dotenv' || value === 'clear-user-overrides' || value === 'set-aside-home-agents-md'
 }
 
 export interface DiagnosticFixResult {
@@ -47,6 +48,26 @@ export function setAsideCodexDotenv(codexHome: string, now: Date = new Date()): 
   assertNoReparseComponents(path.dirname(target), label)
   fs.renameSync(source, target)
   return { kind: 'set-aside-codex-dotenv', fixed: 1, machineRemaining: false }
+}
+
+/**
+ * 「挪开这份说明」（已知36）：个人文件夹里星芒早先放的那份 AGENTS.md 改个名留在原处，
+ * 不删，想用回来把名字改回去就行。点下去那一刻再认一遍内容：检查之后客户改过的就算
+ * 他的了，不挪，答「已经不在了」（星芒放的那份确实不在了）。改名前的 I8 检查同上。
+ */
+export function setAsideHomeProjectInstructions(home: string, now: Date = new Date()): DiagnosticFixResult {
+  const source = path.join(home, GENERATED_PROJECT_INSTRUCTION_FILENAME)
+  const label = '个人文件夹里的项目说明'
+  if (!hasUntouchedHomeProjectInstructions(home) || !assertSafeDataFile(source, label)) {
+    return { kind: 'set-aside-home-agents-md', fixed: 0, machineRemaining: false }
+  }
+  const base = `${GENERATED_PROJECT_INSTRUCTION_FILENAME}.xingmang-${timestamp(now)}.bak`
+  let target = path.join(home, base)
+  // 不设上限也一定停得下：每一轮换一个没用过的名字，文件夹里的文件总是有限的。
+  for (let attempt = 2; fs.existsSync(target); attempt++) target = path.join(home, `${base}.${attempt}`)
+  assertNoReparseComponents(path.dirname(target), label)
+  fs.renameSync(source, target)
+  return { kind: 'set-aside-home-agents-md', fixed: 1, machineRemaining: false }
 }
 
 /**

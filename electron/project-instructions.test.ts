@@ -5,9 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   GENERATED_PROJECT_INSTRUCTION_FILENAME,
   PROJECT_INSTRUCTION_FILENAMES,
+  PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS,
   ProjectInstructionsStateStore,
   ensureProjectInstructions,
   hasExistingProjectInstructions,
+  hasUntouchedHomeProjectInstructions,
+  projectInstructionsDigest,
   readProjectInstructionsTemplate,
   resolveProjectInstructionsTemplatePath,
 } from './project-instructions'
@@ -145,5 +148,43 @@ describe('resolveProjectInstructionsTemplatePath', () => {
     const resolved = resolveProjectInstructionsTemplatePath(path.join(__dirname, '..'))
     expect(fs.existsSync(resolved)).toBe(true)
     expect(readProjectInstructionsTemplate(resolved)).toBe(BUNDLED_TEMPLATE)
+  })
+})
+
+describe('hasUntouchedHomeProjectInstructions', () => {
+  // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+  function home(): string {
+    return fs.realpathSync.native(temporaryWorkspace())
+  }
+
+  it('keeps every template version ever shipped, including the bundled one', () => {
+    expect(PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS).toContain(projectInstructionsDigest(BUNDLED_TEMPLATE))
+  })
+
+  it('recognises the template this app left in the home folder, whatever its line endings', () => {
+    const lf = home()
+    fs.writeFileSync(path.join(lf, 'AGENTS.md'), BUNDLED_TEMPLATE, 'utf8')
+    expect(hasUntouchedHomeProjectInstructions(lf)).toBe(true)
+    const crlf = home()
+    fs.writeFileSync(path.join(crlf, 'AGENTS.md'), BUNDLED_TEMPLATE.replace(/\n/g, '\r\n'), 'utf8')
+    expect(hasUntouchedHomeProjectInstructions(crlf)).toBe(true)
+  })
+
+  it('leaves out a copy the customer edited, a missing one and one that is not a plain file', () => {
+    const edited = home()
+    fs.writeFileSync(path.join(edited, 'AGENTS.md'), `${BUNDLED_TEMPLATE}\n- 我自己加的一条\n`, 'utf8')
+    expect(hasUntouchedHomeProjectInstructions(edited)).toBe(false)
+    expect(hasUntouchedHomeProjectInstructions(home())).toBe(false)
+    const folder = home()
+    fs.mkdirSync(path.join(folder, 'AGENTS.md'))
+    expect(hasUntouchedHomeProjectInstructions(folder)).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('does not follow a link to a template copy elsewhere', () => {
+    const elsewhere = home()
+    fs.writeFileSync(path.join(elsewhere, 'template.md'), BUNDLED_TEMPLATE, 'utf8')
+    const linked = home()
+    fs.symlinkSync(path.join(elsewhere, 'template.md'), path.join(linked, 'AGENTS.md'))
+    expect(hasUntouchedHomeProjectInstructions(linked)).toBe(false)
   })
 })

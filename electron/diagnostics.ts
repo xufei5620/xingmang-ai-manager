@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
+import { inspectHomeFolderTrust, inspectProviderConfig, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -34,6 +34,7 @@ import {
 import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
 import { resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { managedCliRoot } from './managed-cli-paths'
+import { hasUntouchedHomeProjectInstructions } from './project-instructions'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import {
   buildNodeTlsProbeScript,
@@ -1685,6 +1686,46 @@ export function documentsWritabilityOutcome(
   }
 }
 
+// 「工具名照实写」：Codex 那一份 config.toml 命令行和桌面端共用，所以只写 Codex。
+const homeFolderTrustNames: Readonly<Record<HomeFolderTrustProvider, string>> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini CLI',
+}
+
+/**
+ * 「个人文件夹里早先留下的设置」（已知36）。#321 以前客户选个人文件夹打开工具时，星芒往
+ * 那里放过一份 AGENTS.md、替工具记过「信任整个个人文件夹」，之后不再放也不再记，已经留下
+ * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「挪开这份说明」；信任只
+ * 说一声、不给按钮，同「Claude 跑命令前要不要先问你」那项的口径。两样都有时两段连着说。
+ * 「有的工具会连它一起读」「可能不会先问」是推测（只有 Gemini CLI 在不是 git 仓库的项目里
+ * 一路往上读到个人文件夹这一点有把握），所以字里留着「有的」「可能」。
+ */
+export function homeFolderLeftoversOutcome(input: {
+  untouchedInstructions: boolean
+  trustedBy: readonly HomeFolderTrustProvider[]
+}): CheckOutcome {
+  const parts: string[] = []
+  if (input.untouchedInstructions) {
+    parts.push('个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+      + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。')
+  }
+  if (input.trustedBy.length) {
+    const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
+    const pronoun = input.trustedBy.length > 1 ? '它们' : '它'
+    parts.push(`${names} 记着“信任整个个人文件夹”：个人文件夹下的项目，${pronoun}打开时可能不会先问一句信不信得过。`)
+  }
+  const details: Record<string, boolean | number | string | null> = {
+    untouchedInstructions: input.untouchedInstructions,
+    trustedBy: input.trustedBy.join(',') || null,
+  }
+  // 「挪开这份说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
+  if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
+  return parts.length
+    ? { state: 'warn', summary: parts.join(''), details }
+    : { state: 'pass', summary: '没有早先留下的项目说明和信任设置', details }
+}
+
 /**
  * 「电脑芯片」一项的结论。面向小白：只说「ARM 芯片」「ARM 版」「普通电脑用的版本」，
  * 不出现 arm64 / x64 / 模拟层这些词。
@@ -2452,6 +2493,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'CLAUDE_BYPASS_PERMISSIONS',
       title: 'Claude Code 跑命令前要不要先问你',
       run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
+    },
+    {
+      code: 'HOME_FOLDER_LEFTOVERS',
+      title: '个人文件夹里早先留下的设置',
+      run: () => homeFolderLeftoversOutcome({
+        untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
+        trustedBy: inspectHomeFolderTrust(providerRoots),
+      }),
     },
   ]
 

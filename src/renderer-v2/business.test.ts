@@ -341,6 +341,8 @@ describe('v2 business boundaries', () => {
       'CLASH_VERGE_TUN',
       'CODEX_DOTENV',
       'CLAUDE_BYPASS_PERMISSIONS',
+      // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
+      'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
       'ADMINISTRATOR',
       'OPERATING_SYSTEM',

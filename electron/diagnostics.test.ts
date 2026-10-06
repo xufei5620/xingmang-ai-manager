@@ -14,6 +14,7 @@ import {
   createDiagnosticsExport,
   describeRelocationTarget,
   findRelocatedFolders,
+  homeFolderLeftoversOutcome,
   parseClashTunConfig,
   redactDiagnosticText,
   operatingSystemSummary,
@@ -28,6 +29,7 @@ import {
   type NodeTlsProbeInput,
 } from './diagnostics'
 import type { NodeTlsOutcome } from './certificate-trust-probe'
+import { readProjectInstructionsTemplate } from './project-instructions'
 
 const temporaryDirectories: string[] = []
 
@@ -1676,6 +1678,63 @@ describe('diagnostics', () => {
       state: 'error',
       details: { reason: expect.stringContaining('安全上限') },
     })
+  })
+})
+
+describe('the home folder leftovers check', () => {
+  const instructions = '个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+    + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。'
+
+  it('passes when nothing was left behind', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: [] })).toEqual({
+      state: 'pass',
+      summary: '没有早先留下的项目说明和信任设置',
+      details: { untouchedInstructions: false, trustedBy: null },
+    })
+  })
+
+  it('offers to move the instructions this app left and only mentions trust', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: [] })).toEqual({
+      state: 'warn',
+      summary: instructions,
+      details: { untouchedInstructions: true, trustedBy: null, fix: 'set-aside-home-agents-md' },
+    })
+    const trust = homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude'] })
+    expect(trust.summary).toBe('Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。')
+    expect(trust.details).not.toHaveProperty('fix')
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude', 'codex', 'gemini'] }).summary)
+      .toBe('Claude Code、Codex、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。')
+  })
+
+  it('runs both paragraphs together when both were left behind', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: ['claude', 'gemini'] })).toMatchObject({
+      state: 'warn',
+      summary: `${instructions}Claude Code、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。`,
+      details: { trustedBy: 'claude,gemini', fix: 'set-aside-home-agents-md' },
+    })
+  })
+
+  it('reads what is actually in the home folder and leaves an edited copy out', async () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const template = readProjectInstructionsTemplate(
+      path.join(__dirname, '..', 'bundled-catalog', 'project-instructions', 'AGENTS.zh-CN.md'),
+    )
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), template, 'utf8')
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
+    const input = dependencies(home)
+
+    const found = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(found).toMatchObject({
+      title: '个人文件夹里早先留下的设置',
+      state: 'warn',
+      details: { untouchedInstructions: true, trustedBy: 'claude', fix: 'set-aside-home-agents-md' },
+    })
+
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), `${template}- 我自己的规矩\n`, 'utf8')
+    fs.rmSync(path.join(home, '.claude.json'))
+    const edited = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(edited).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置' })
   })
 })
 

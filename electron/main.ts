@@ -148,7 +148,7 @@ import {
   type DiagnosticsRunOptions,
 } from './diagnostics'
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
-import { clearUserProviderOverrides, setAsideCodexDotenv, type DiagnosticFixKind } from './diagnostic-fixes'
+import { clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions, type DiagnosticFixKind } from './diagnostic-fixes'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
@@ -1498,10 +1498,11 @@ if (!hasSingleInstanceLock) {
         })
         return latestDiagnostics
       },
-      // 检查页两颗一键处理。要删哪几项在点的那一刻按当前环境和当前站点重算，
+      // 检查页的一键处理。要删哪几项、挪哪个文件在点的那一刻按当前环境和当前站点重算，
       // 不信渲染层给的任何名字或路径（I5）。
       fix: async (kind: DiagnosticFixKind) => {
         if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
+        if (kind === 'set-aside-home-agents-md') return setAsideHomeProjectInstructions(codexContext.userHome)
         const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
         return clearUserProviderOverrides({
           names: clearableEnvironmentOverrides(process.env, site.providerBaseUrls, codexContext.userHome),
