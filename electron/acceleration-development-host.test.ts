@@ -877,7 +877,7 @@ const fs = require('node:fs')
 const report = process.argv[2]
 const write = value => fs.appendFileSync(report, value + '\\n')
 const keepalive = setInterval(() => {}, 100)
-setTimeout(() => process.exit(2), 5000).unref()
+setTimeout(() => process.exit(2), 20000).unref()
 process.on('disconnect', () => {
   write('disconnected')
   setTimeout(() => { write('restored'); clearInterval(keepalive); process.exit(0) }, 100)
@@ -892,19 +892,24 @@ const worker = fork(process.argv[2], [process.argv[3]], {
 })
 worker.on('message', () => process.exit(0))
 `, 'utf8')
-      const parentExit = await new Promise<number | null>((resolve, reject) => {
-        const parent = spawn(process.execPath, [parentPath, workerPath, reportPath], { windowsHide: true, stdio: 'ignore' })
-        const timeout = setTimeout(() => { parent.kill(); reject(new Error('Fake parent did not exit')) }, 4000)
-        parent.once('error', (error) => { clearTimeout(timeout); reject(error) })
-        parent.once('exit', (code) => { clearTimeout(timeout); resolve(code) })
-      })
-      expect(parentExit).toBe(0)
+      // Two cold Node starts and a file write each, on whatever else the machine
+      // is running: none of it gets a deadline of its own. The parent's exit and
+      // the worker's report are waited for as events, so the test's own timeout
+      // is the one bound and a hang still fails there. The worker's exit guard
+      // above outlasts that timeout on purpose; it only keeps a stuck worker
+      // from lingering after the run, and can never decide the outcome.
+      const parent = spawn(process.execPath, [parentPath, workerPath, reportPath], { windowsHide: true, stdio: 'ignore' })
+      try {
+        const parentExit = await new Promise<number | null>((resolve, reject) => {
+          parent.once('error', reject)
+          parent.once('exit', (code) => resolve(code))
+        })
+        expect(parentExit).toBe(0)
+      } finally { if (parent.exitCode === null && parent.signalCode === null) parent.kill() }
       let events = ''
-      const deadline = Date.now() + 3000
-      while (Date.now() < deadline) {
-        events = await fs.readFile(reportPath, 'utf8').catch(() => '')
-        if (events.includes('restored')) break
+      while (!events.includes('restored')) {
         await delay(25)
+        events = await fs.readFile(reportPath, 'utf8').catch(() => '')
       }
       expect(events).toBe('disconnected\nrestored\n')
     } finally {

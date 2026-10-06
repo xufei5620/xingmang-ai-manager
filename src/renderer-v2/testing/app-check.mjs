@@ -8,6 +8,7 @@ import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
 import { createFixtureServer } from '../../../e2e/harness.mjs'
 import { fixtureMountSliceMs, openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
+import { assertNoToast, recordToasts, waitForToast } from '../../../e2e/toast-recording.mjs'
 import { enterWorkspaceWithoutAccount } from './guest-workspace.mjs'
 
 let server, browser, origin
@@ -29,46 +30,6 @@ async function waitForFixtureReady(page, timeout = fixtureMountSliceMs()) {
       && Boolean(window.v2Test) && Boolean(window.xingmang)
       && (document.getElementById('root')?.childElementCount ?? 0) > 0,
   })
-}
-
-// Short toasts delete themselves 2400ms after they appear (toastDurationMs in
-// src/renderer-v2/ui/feedback.tsx), so a locator that only starts looking after that deadline waits
-// out its whole budget on an element that is never coming back. A slow Windows
-// runner hit exactly that between the save click and the toast assertion: the
-// grok configuration cases timed out at 30s while their faster siblings passed
-// in a couple of seconds. Record every toast as it is inserted and assert
-// against the recording, which cannot expire. A toast is only ever removed a
-// whole task later, so the observer callback always runs while the node is
-// still in the document.
-function recordToasts() {
-  const log = { entries: [], consumed: 0 }
-  const seen = new WeakSet()
-  window.__v2Toasts = log
-  function collect() {
-    for (const toast of document.querySelectorAll('.xm-toasts .xm-toast')) {
-      if (seen.has(toast)) continue
-      seen.add(toast)
-      log.entries.push({ text: toast.textContent ?? '', role: toast.getAttribute('role') ?? '' })
-    }
-  }
-  new MutationObserver(collect).observe(document, { childList: true, subtree: true })
-}
-
-// `consumed` marks how far the recording has been read, so a second save cannot
-// be satisfied by the toast the first save left behind.
-async function waitForToast(page, text) {
-  await page.waitForFunction((expected) => {
-    const log = window.__v2Toasts
-    const index = log.entries.findIndex((entry, position) => position >= log.consumed && entry.role === 'status' && entry.text === expected)
-    if (index < 0) return false
-    log.consumed = index + 1
-    return true
-  }, text)
-}
-
-async function assertNoToast(page, text) {
-  const shown = await page.evaluate((expected) => window.__v2Toasts.entries.slice(window.__v2Toasts.consumed).filter((entry) => entry.text === expected).length, text)
-  assert.equal(shown, 0, `不应出现「${text}」提示`)
 }
 
 before(async () => {
@@ -1659,7 +1620,7 @@ test('the maintenance page does not reinstall over a CLI from an official instal
     // 这一页的「重新安装」不点名版本：框里写的 1.2.3 必须原样交给主进程，而不是由主进程另挑一版。
     await page.getByTestId('maintenance-install-claude').click()
     await dialog.getByRole('button', { name: '换成星芒装的', exact: true }).click()
-    await page.getByText('安装完成，工具状态已更新', { exact: true }).waitFor()
+    await waitForToast(page, '安装完成，工具状态已更新')
     assert.deepEqual(await switched(), [
       { method: 'uninstallCli', args: ['claude', { reinstall: true }] },
       { method: 'installCli', args: ['claude', '1.2.3'] },
@@ -2365,7 +2326,7 @@ test('an unreachable startup restore keeps the login on the home page and waits 
     assert.equal(await page.getByText('当前登录已结束').count(), 0)
     assert.equal(await page.getByText('配置被改过').count(), 0)
     await page.getByTestId('nav-chat').click()
-    await page.getByText('暂时连不上服务，登录还在').waitFor()
+    await waitForToast(page, '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。')
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
     await row.getByText('配置被改过').waitFor()
     assert.equal(await page.getByText('暂时连不上，登录还在').count(), 0)
@@ -3731,6 +3692,42 @@ test('a Windows account outside the administrators group is told an administrato
   } finally { await page.close() }
 })
 
+// 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
+// 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、安装卸载页和重启安装确认框都不说
+// 会弹（已知19）。没带管理员权限的照旧说。
+test('an app already running with administrator rights does not promise a consent window', async () => {
+  for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
+    const page = await open(query)
+    try {
+      await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
+      await expect(page.getByTestId('home-runtime-node-elevation')).toHaveCount(elevated ? 0 : 1)
+
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-maintenance').click()
+      const node = page.getByTestId('maintenance-runtime-node')
+      // 这句只在读到平台以后才有，等它出来再看授权那句在不在。
+      await expect(node).toContainText('装工具时会自动准备')
+      if (elevated) assert.doesNotMatch(await node.innerText(), /管理员授权|授权窗口/, query)
+      else await expect(node).toContainText('这一步需要管理员授权：点「安装」后 Windows 会弹一次授权窗口')
+
+      // 「更多」进安装卸载页时已经展开，再点一下就收起来了。
+      await page.getByTestId('nav-updates').click()
+      const updates = page.getByTestId('page-updates')
+      await updates.waitFor()
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }))
+      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+      await dialog.waitFor()
+      if (!elevated) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), elevated ? 0 : 1, query)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
 // 确认框要先说清楚会弹安装窗口、要输开机密码。不是 .deb 装的那种根本没法自动更新，
 // 更新页给一条去下载页的路，而不是一颗永远点不动的「检查更新」。
@@ -4991,7 +4988,7 @@ test('configuring a tool from the key page makes the home page re-read tool conf
     const reads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length)
     const before = await reads()
     await dialog.getByRole('button', { name: '保存配置', exact: true }).click()
-    await page.getByText('密钥已写入工具配置', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已写入工具配置')
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length > count, before)
     const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.ok(calls.lastIndexOf('getConfig') > calls.indexOf('saveConfigWithAccountKey'))

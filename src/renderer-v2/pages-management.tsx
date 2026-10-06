@@ -286,12 +286,25 @@ export function extensionRowState(
 }
 
 /**
- * 详情里的「范围」。scope 是 CLI 自己的英文叫法，界面上只放中文：local 是只在这个项目里用的那一份；
- * 扩展自带的技能装在用户目录里，哪个文件夹打开都能用。没带 scope 的写「未提供」。
+ * scope 是 CLI 自己的英文叫法，「范围」筛选和详情按同一套归类：local 是只在这个项目里用的那一份，
+ * 归「当前项目」；扩展自带的技能装在用户目录里，哪个文件夹打开都能用，归「我的（全局）」。
  */
+function extensionShownScope(scope: ExtensionItem['scope'] | undefined) {
+  return scope === 'local' ? 'project' : scope === 'extension' ? 'user' : scope
+}
+
+/** 详情里的「范围」，界面上只放中文；没带 scope 的写「未提供」。 */
 export function extensionScopeLabel(scope: ExtensionItem['scope'] | undefined): string {
-  const shown = scope === 'local' ? 'project' : scope === 'extension' ? 'user' : scope
+  const shown = extensionShownScope(scope)
   return scopeOptions.find((option) => option.value === shown)?.label ?? '未提供'
+}
+
+/**
+ * 「范围」筛选。只比原样的 scope 的话，详情写「当前项目」的 local 插件在「当前项目」下看不到，
+ * 写「我的（全局）」的扩展自带技能在「我的（全局）」下也看不到，只有「全部范围」里才有。
+ */
+export function extensionInScope(scope: ExtensionItem['scope'] | undefined, filter: string): boolean {
+  return filter === 'all' || extensionShownScope(scope) === filter
 }
 
 /** 列表里带回来的 scope 原样交回去；内置、扩展自带或不知道的不带，由主进程按缺省处理。 */
@@ -1369,7 +1382,7 @@ export function ExtensionsPage({
   )
   const list = all.filter(
     (item) =>
-      (scope === 'all' || item.scope === scope) &&
+      extensionInScope(item.scope, scope) &&
       `${item.name} ${item.description} ${item.source.locator ?? ''}`
         .toLowerCase()
         .includes(query.trim().toLowerCase()),

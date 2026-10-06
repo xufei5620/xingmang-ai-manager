@@ -59,6 +59,7 @@ import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
+import { activateCodexDesktopWithCdp, withCodexDesktopCdpFailureReport } from './codex-desktop-cdp'
 import {
   createCodexDesktopService,
   desktopUpdateFields,
@@ -104,6 +105,7 @@ import {
   rewriteManagedCliHooks,
   saveProviderConfig,
   fillRelayTemplateDefaults,
+  forgetStaleGeminiUsageStatisticsRecord,
   relayTemplateDefaultsPending,
   relayTemplateRevision,
   switchProviderToOfficialAccount,
@@ -5602,6 +5604,10 @@ export function createSystemService(
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     userHome: providerRoots.userHome,
+    // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
+    activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
+      'warn', 'system', 'codex-desktop.chinese-launch.failed', 'Codex 桌面端中文增强启动没成，改走普通启动', { error },
+    )),
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
@@ -7402,6 +7408,17 @@ export function createSystemService(
 
   async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
     await serializeConfigWrite(async () => {
+      // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
+      // 放在登记来源前面：那一步失败时这里也要做完。
+      if (provider === 'gemini') {
+        try {
+          forgetStaleGeminiUsageStatisticsRecord(providerRoots)
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const restored = inspectNativeProviderConfig(provider)
       const source = planRestoredConfigOwnership({
