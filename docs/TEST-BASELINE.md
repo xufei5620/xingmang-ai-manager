@@ -14,8 +14,9 @@
 
 ## CI 的 Windows 分片：丢导航，不是慢
 
-本机基线之外还有一条只在 CI 上出现的：`quality` 工作流的 `windows-test (renderer-v2-browser)`
-分片偶发单条用例红。**判定方法是看形状，不是看名字**——挂的用例每轮都不一样，但形状固定：
+本机基线之外还有一条只在 CI 上出现的：`quality` 工作流的 `windows-test (renderer-v2-browser-1)`、
+`(renderer-v2-browser-2)` 两片（2026-10-06 之前是一片 `renderer-v2-browser`）偶发单条用例红。
+**判定方法是看形状，不是看名字**——挂的用例每轮都不一样，但形状固定：
 
 | 指纹 | 含义 |
 |---|---|
@@ -32,6 +33,11 @@
 
 还没接 `openFixturePage` 的套件（`features/acceleration`、`features/shell` 等，它们接了挂载
 预算但没接重试）遇到上表第二行的形状，仍然按原样重跑一次；连着两轮同一处才当真。
+
+整步超时是另一回事：日志末尾是 `The action 'Run the renderer-v2-browser-N shard' has timed out
+after 18 minutes.`，前面的用例全过。那是机器慢（#873 那三次，每条用例都按差不多同一个倍数变慢）
+加上用例越写越多。处置是在 `package.json` 里多加一份 `test:v2:browser:fixture:N`、各份
+`XINGMANG_TEST_SHARD` 的分母跟着改、`quality.yml` 的矩阵多派发一片，不是调大上限，也不是重跑了事。
 
 ### 顺带纠正一条流传已久的说法：CI 上的 Defender 与此无关
 
