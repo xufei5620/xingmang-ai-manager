@@ -232,7 +232,8 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteForProviderBaseUrl,
+  type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -2492,6 +2493,8 @@ export interface SystemServiceOptions {
   externalClientRuntime?: ReturnType<typeof createExternalClientRuntime>
   /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
   getRelaySiteId?: () => string
+  /** Frozen at startup: pending settings must not repoint live account or tool work. */
+  relayEndpointRouting?: RelayEndpointRoutingSnapshot
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
   /** 开机补模板缺省项前问「哪些工具开着」的那一步；缺省 = 真去查进程，测试里替换掉。 */
@@ -2891,15 +2894,22 @@ export function createSystemService(
   }
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
-  // Read fresh at call time (not captured once at service construction) so a
-  // settings change takes effect on the very next inspection without
-  // requiring a service restart -- same reasoning as saveConfig's activeSite
-  // read below.
+  const relayRouting = serviceOptions.relayEndpointRouting ?? createRelayEndpointRoutingSnapshot(store.read().relayEndpointIds)
+  function activeRelaySite(): RelaySite {
+    return relayRouting.resolve(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+  }
+  function providerRelaySite(provider: ProviderId, current: NativeConfigInspection, removal = false): RelaySite {
+    const selected = activeRelaySite()
+    if (!removal && relayRouting.selection(selected.id) !== undefined) return selected
+    return relaySiteForProviderBaseUrl(selected.id, provider, current.actualBaseUrl) ?? selected
+  }
+  // The account's site remains live; its selected transport is frozen until
+  // restart so account clients, native writes and probes cannot use mixed lines.
   const inspectNativeProviderConfig = (provider: ProviderId) =>
     (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
       provider,
       providerRoots,
-      resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).providerBaseUrls,
+      activeRelaySite().providerBaseUrls,
     )
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
@@ -5901,7 +5911,7 @@ export function createSystemService(
 
   async function fetchAvailableModels(
     apiKeyInput: string,
-    options: { bypassCache?: boolean } = {},
+    options: { bypassCache?: boolean; site?: RelaySite } = {},
   ): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
     if (!apiKey) throw new Error('请先填写 API Key')
@@ -5923,8 +5933,8 @@ export function createSystemService(
     // different relay site within the 2-minute TTL (site switcher), and a
     // model list fetched from the previous site must not validate a model
     // that then gets written into a config aimed at the new site.
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-    const cacheKey = `${activeSite.id}:${modelAccessCacheKey(apiKey)}`
+    const activeSite = options.site ?? activeRelaySite()
+    const cacheKey = `${activeSite.id}:${relayApiProbeBaseUrl(activeSite)}:${modelAccessCacheKey(apiKey)}`
     const cached = options.bypassCache ? undefined : modelAccessCache.get(cacheKey)
     if (cached) {
       modelAccessCache.delete(cacheKey)
@@ -6012,12 +6022,12 @@ export function createSystemService(
    * 说法。
    */
   function externalClientContext(tool: ExternalToolId) {
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    const activeSite = activeRelaySite()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
     const belongsToCurrentAccount = (apiKey: string) => owner !== null
       && serviceOptions.getExternalClientAccountId?.() === owner
-      && resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id === activeSite.id
+      && activeRelaySite().id === activeSite.id
       && externalOwnership.matches(tool, owner, baseUrl, apiKey)
     return { activeSite, baseUrl, belongsToCurrentAccount }
   }
@@ -6143,7 +6153,7 @@ export function createSystemService(
   ): Promise<ExternalClientConfigResult> {
     const work = async (): Promise<ExternalClientConfigResult> => {
       assertBeforeWrite?.()
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = activeRelaySite()
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const apiKey = requested.apiKey?.trim() ?? ''
       const model = requested.model?.trim() ?? ''
@@ -6151,7 +6161,7 @@ export function createSystemService(
       const models = await fetchAvailableModels(apiKey, { bypassCache: true })
       const assertContext = () => {
         assertBeforeWrite?.()
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
+        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
         if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
       }
       assertContext()
@@ -6663,21 +6673,25 @@ export function createSystemService(
         throw new Error('工具已选择官方账号，已保留原配置')
       }
       const model = payload.model.trim()
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = providerRelaySite(payload.provider, before)
+      const previousRoute = relaySiteForProviderBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl)
+      const automaticRouteMigration = ownership?.automatic === true
+        && relayRouting.selection(activeSite.id) !== undefined && previousRoute !== null
+        && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
       const assertUnchanged = () => {
         assertOwner()
         const current = inspectNativeProviderConfig(payload.provider)
         if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
           throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
         }
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
+        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
       if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
       if (!apiKey) throw new Error('请先填写 API Key')
-      const availableModels = await fetchAvailableModels(apiKey)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
       if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
@@ -6685,6 +6699,20 @@ export function createSystemService(
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       // 同上：要问一遍 Codex 命令行是哪一版，也放在「校验没变」之前。
       const codexModelCatalog = payload.provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
+      if (automaticRouteMigration) {
+        // A Start Menu launch can happen while the models request is in flight.
+        // Probe after asynchronous preparation, before invalidating ownership or
+        // changing any native file. This is a process snapshot, not an OS lock.
+        let stopped = false
+        try {
+          const report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([payload.provider])
+          stopped = !report.running.includes(payload.provider) && !report.unknown.includes(payload.provider)
+            && (payload.provider !== 'codex' || report.codexDesktopRunning === false)
+        } catch {
+          // A failed probe must preserve the account's working configuration.
+        }
+        if (!stopped) throw new Error('工具可能还开着，已保留原配置；请完全退出工具后重新同步连接线路')
+      }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.
@@ -6724,7 +6752,7 @@ export function createSystemService(
     const model = config.model.trim()
     if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
     if (accountOwnedOnly && configOwnership.read(provider, config, owner) !== 'account') return null
-    const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    const site = activeRelaySite()
     return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
   }
 
@@ -6820,7 +6848,7 @@ export function createSystemService(
         const wrote = await serializeConfigWrite(async () => {
           // 排队期间账号、配置都可能变了：进锁以后按同一套条件再判一次。
           if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner || !outdated(provider)) return false
-          const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+          const site = providerRelaySite(provider, inspectNativeProviderConfig(provider))
           // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
           // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；
           // 备份不成就不补。
@@ -6977,7 +7005,7 @@ export function createSystemService(
 
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = providerRelaySite(provider, inspectNativeProviderConfig(provider), true)
       // 与 saveConfig 对称：先放回官方 Key，放不回就不切；切换失败再把 Key 挪开。
       const restoredConsoleKey = provider === 'claude' && restoreOfficialCredentialsNow()
       let result: ReturnType<typeof switchProviderToOfficialAccount>
@@ -7007,8 +7035,9 @@ export function createSystemService(
   }
 
   return {
-    readStoredConfig: () => ({ ...store.read(), ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
-    updateStoredConfig: (update) => store.update(update),
+    readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.activeEndpointIds },
+      ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
+    updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.activeEndpointIds } }),
     inspectCodexReadiness,
     getConfig: buildConfigSummary,
     revealApiKey,

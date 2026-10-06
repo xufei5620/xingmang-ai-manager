@@ -2,6 +2,7 @@ import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice
 import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
+import { relayProviderBaseUrlMatches } from '../../../../electron/relay-sites'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -206,7 +207,7 @@ export function sourceFor(
   // 当前账号服务的 config.toml：令牌被发给服务，每次请求都 401。这不是官方账号，
   // 是一份被改成半截的配置，按「被改过」提示，首页给出修复与切回官方两条路。
   if (provider === 'codex' && config.codexAuthMode === 'chatgpt') {
-    return config.actualBaseUrl && sameServiceUrl(config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
+    return config.actualBaseUrl && relayProviderBaseUrlMatches(provider, config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
   }
   if (provider === 'gemini' && config.authType === 'oauth-personal') return 'official'
   if (config.hasApiKey && config.matchesRelay) {
@@ -224,10 +225,6 @@ export function sourceFor(
   // 只有 ~/.grok/auth.json 里真有一份登录，才算在用 Grok 账号。
   if (provider === 'grok' && config.exists && !config.hasApiKey && config.grokLoginMode) return 'official'
   return 'missing'
-}
-
-function sameServiceUrl(left: string, right: string): boolean {
-  return left.trim().replace(/\/+$/, '').toLowerCase() === right.trim().replace(/\/+$/, '').toLowerCase()
 }
 
 /**

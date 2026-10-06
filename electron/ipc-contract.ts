@@ -197,11 +197,16 @@ export {
   defaultRelaySiteId,
   privacyPolicyUrl,
   relaySites,
+  relaySiteEndpointChoices,
+  relaySiteEndpointIdForBaseUrl,
+  relayProviderBaseUrls,
+  relayProviderBaseUrlMatches,
   resolveRelaySite,
   resolveSupportServiceUrl,
   supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
+export type { RelayEndpoint, RelayEndpointId, RelayEndpointSelections } from './relay-sites'
 
 export type ProviderId = CatalogProviderId
 export type { RelaySite } from './relay-sites'

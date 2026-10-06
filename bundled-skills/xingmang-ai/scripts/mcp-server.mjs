@@ -21,7 +21,15 @@ const ALLOWED_MODELS = new Set([
   'gpt-image-2.5-flare',
   'gpt-image-2.5-sunburst',
 ])
-const ALLOWED_RELAY_HOSTS = new Set(['xm.solov.cc', 'api.solov.cc'])
+// This standalone script cannot import the desktop registry. Trust exact TLS
+// origins, including the fixed backup port, instead of permitting other services
+// on the same host to receive the account's keys.
+const ALLOWED_RELAY_ORIGINS = new Set([
+  'https://xm.solov.cc',
+  'https://api.solov.cc',
+  'https://xm-direct.solov.cc',
+  'https://38.147.105.28:8443',
+])
 // 这几种状态换一把 Key 可能就过了（没这个分组、额度、限流、上游忙），与生图技能一致。
 const RETRYABLE_STATUSES = new Set([401, 403, 429, 503])
 
@@ -77,9 +85,9 @@ async function readConfig() {
     const url = new URL(baseUrl)
     const localTest = process.env.XINGMANG_IMAGE_MCP_ALLOW_INSECURE_LOCAL === '1'
       && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
-    if ((!ALLOWED_RELAY_HOSTS.has(url.hostname) && !localTest)
-      || (url.protocol !== 'https:' && !localTest)
-      || url.username || url.password) throw new Error('unsafe')
+      && (url.protocol === 'http:' || url.protocol === 'https:')
+    if ((!ALLOWED_RELAY_ORIGINS.has(url.origin) && !localTest)
+      || url.username || url.password || url.search || url.hash) throw new Error('unsafe')
     origin = url.origin
   } catch {
     throw new ImageError('星芒画图工具的服务地址无效，请打开星芒AI管理工具重新登录')
