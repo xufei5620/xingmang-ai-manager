@@ -73,8 +73,8 @@ describe('renderer tool source', () => {
     const primaryBaseUrl = relayProviderBaseUrls('solov', 'primary').codex
     const directBaseUrl = relayProviderBaseUrls('solov', 'direct').codex
     const routes = [
-      { baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm-direct.solov.cc/v1' },
-      { baseUrl: 'https://xm-direct.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1' },
+      { baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://38.147.105.28:8443/v1' },
+      { baseUrl: 'https://38.147.105.28:8443/v1', actualBaseUrl: 'https://xm.solov.cc/v1' },
       { baseUrl: primaryBaseUrl, actualBaseUrl: directBaseUrl },
       { baseUrl: directBaseUrl, actualBaseUrl: primaryBaseUrl },
     ]

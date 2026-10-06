@@ -453,8 +453,8 @@ describe('native CLI configuration files', () => {
     'recognizes both fixed and historical backup URLs for %s only within their account site', (provider) => {
       const roots = providerRoots(temporaryHome())
       const direct = relayProviderBaseUrls('solov', 'direct')
-      const historical = { claude: 'https://xm-direct.solov.cc', codex: 'https://xm-direct.solov.cc/v1',
-        gemini: 'https://xm-direct.solov.cc', grok: 'https://xm-direct.solov.cc/v1' }
+      const historical = { claude: 'https://38.147.105.28:8443', codex: 'https://38.147.105.28:8443/v1',
+        gemini: 'https://38.147.105.28:8443', grok: 'https://38.147.105.28:8443/v1' }
       for (const urls of [direct, historical]) {
         saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, urls)
         const inspection = inspectProviderConfig(provider, roots, providerBaseUrls)

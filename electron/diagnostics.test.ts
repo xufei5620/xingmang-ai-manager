@@ -412,7 +412,7 @@ describe('diagnostics', () => {
       const historical = relaySites.find((site) => site.accountBackend === 'sub2api')
       const cases = [
         { site: undefined, endpoint: 'https://xm.solov.cc/api/status', siteId: 'solov' },
-        { site: createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov'), endpoint: 'https://38.147.105.28:8443/api/status', siteId: 'solov' },
+        { site: createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov'), endpoint: 'https://xm-direct.solov.cc/api/status', siteId: 'solov' },
         { site: historical, endpoint: 'https://api.solov.cc/api/v1/settings/public', siteId: 'solov-api' },
       ]
       for (const { site, endpoint, siteId } of cases) {

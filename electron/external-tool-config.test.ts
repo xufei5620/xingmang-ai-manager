@@ -389,7 +389,7 @@ describe('external tool configuration', () => {
 
 describe('followExternalToolRoute (batch 43 A)', () => {
   const from = 'https://xm.solov.cc/v1'
-  const to = 'https://38.147.105.28:8443/v1'
+  const to = 'https://xm-direct.solov.cc/v1'
 
   function backups(target: string): string[] {
     return fs.readdirSync(path.dirname(target)).filter((name) => name.includes('.bak.'))

@@ -623,7 +623,7 @@ describe('getStatus', () => {
 })
 
 describe('login', () => {
-  it('keeps account credentials on the selected fixed TLS endpoint including its port', async () => {
+  it('keeps account credentials on the selected direct line', async () => {
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValueOnce(loginResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, data: userDetailData() }))
@@ -631,7 +631,7 @@ describe('login', () => {
     await client.login({ username: 'tester', password: 'fixture-password' })
     await client.getProfile()
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
-      'https://38.147.105.28:8443/api/user/login', 'https://38.147.105.28:8443/api/user/self',
+      'https://xm-direct.solov.cc/api/user/login', 'https://xm-direct.solov.cc/api/user/self',
     ])
     expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc', 'New-Api-User': '42' })
     expect(fetchImpl.mock.calls.every(([, init]) => init?.redirect === 'manual' && init.credentials === 'omit')).toBe(true)

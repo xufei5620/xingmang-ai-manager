@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { locateDirectUpdateFeed, resolveDirectUpdateFeed, type UpdateFeedRouteOptions } from './update-feed-route'
 
 const primaryUrl = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
-const directUrl = 'https://38.147.105.28:8443/xingmang-manager/'
+const directUrl = 'https://xm-direct.solov.cc/xingmang-manager/'
 const productionConfig = `provider: generic\nurl: ${primaryUrl}\nupdaterCacheDirName: xingmang-ai-manager-updater\n`
 const directWindows: UpdateFeedRouteOptions = {
   activeSolovEndpointId: 'direct',
