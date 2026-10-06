@@ -92,6 +92,7 @@ import {
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
   claudeModelPickerNeedsRefresh,
+  classifyCodexConfigProfile,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogTargetUsable,
   inspectCodexModelCatalogOnDisk,
@@ -276,7 +277,7 @@ import {
   uninstallVerifiedClaudeNativeInstallation,
 } from './claude-native-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
-import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
+import { adoptRestoredXingmangAiSkillOff, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -989,8 +990,11 @@ export interface SystemService {
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
    */
   autoRepairStaleCliHooks?(): Promise<ProviderId[]>
-  /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
-  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
+  /**
+   * 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。
+   * `fromBackupsPage`：客户在备份页挑的那一份；缺省 = 切换失败的回滚（恢复切换前那一刻）。
+   */
+  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean, options?: { fromBackupsPage?: boolean }): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
@@ -7392,7 +7396,11 @@ export function createSystemService(
     })
   }
 
-  async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
+  async function adoptRestoredConfig(
+    provider: ProviderId,
+    isAccountKey: (apiKey: string) => boolean,
+    options: { fromBackupsPage?: boolean } = {},
+  ): Promise<void> {
     await serializeConfigWrite(async () => {
       // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
       // 放在登记来源前面：那一步失败时这里也要做完。
@@ -7401,6 +7409,24 @@ export function createSystemService(
           forgetStaleGeminiUsageStatisticsRecord(providerRoots)
         } catch (error) {
           runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
+      // 星芒AI技能的记录也不跟着备份恢复：备份页恢复出来的星芒配置里技能关着，是客户自己关的
+      // （#834 F07），改用当前账号时不能打开。同样放在登记来源前面。
+      if (provider === 'codex' && options.fromBackupsPage) {
+        try {
+          const current = inspectNativeProviderConfig('codex')
+          const siteBaseUrl = providerRelaySite('codex', current).providerBaseUrls.codex
+          await adoptRestoredXingmangAiSkillOff({
+            userHome: providerRoots.userHome,
+            officialCodex: (store.read().officialProviders ?? []).includes('codex'),
+            configPath: path.join(providerRoots.codexHome, 'config.toml'),
+            isXingmangConfig: (config) => classifyCodexConfigProfile(config, siteBaseUrl) === 'relay',
+          })
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'codex.skill-record.adopt-failed', 'Codex 恢复备份后没能记下星芒AI技能是客户自己关的', {
             reason: credentialFailureReason(error),
           })
         }
