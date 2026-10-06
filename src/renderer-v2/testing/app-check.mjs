@@ -6339,7 +6339,8 @@ test('the cut-off network row offers the route setting while the startup restore
   } finally { await page.close() }
 })
 
-// 历史账号只有默认线路，访客没有账号：都不给，这一行照旧只有结论。
+// 历史账号只有默认线路，访客没有账号：都不给，这一行照旧只有结论。开机恢复历史账号时，
+// 主进程查的还是默认那个站，那条线路不是这个账号的，也不给。
 test('a historical account or a guest gets no route fix on the cut-off network row', async () => {
   const historical = await open('sub2api=1')
   try {
@@ -6349,6 +6350,14 @@ test('a historical account or a guest gets no route fix on the cut-off network r
     await expect(historical.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await historical.evaluate(() => window.v2Test.errors), [])
   } finally { await historical.close() }
+  const restoring = await open('restoring=solov-api')
+  try {
+    await stubCutOffNetwork(restoring, 'solov')
+    await restoring.getByTestId('nav-health').click()
+    await expect(restoring.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(restoring.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await restoring.evaluate(() => window.v2Test.errors), [])
+  } finally { await restoring.close() }
   const guest = await open('guest=1&existing=1')
   try {
     await enterWorkspaceWithoutAccount(guest)

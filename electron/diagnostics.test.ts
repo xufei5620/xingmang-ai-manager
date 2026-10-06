@@ -443,9 +443,23 @@ describe('diagnostics', () => {
       expect(network).toMatchObject({
         state: 'fail',
         summary: networkFailureMessages.timeout,
-        details: { reason: 'timeout', siteId: 'solov' },
+        details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'timeout', siteId: 'solov' },
       })
       expect(network?.summary).not.toBe('检查超时')
+    })
+
+    // 回完了话、卡在问加速开没开（要排在正开关加速的后面）：网络是通的，不能说成连接超时、
+    // 把人带去换线路，照旧是检查自己超时。
+    it('keeps a plain check timeout when the probe answered but the acceleration lookup stalls', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => await new Promise<boolean>(() => undefined)
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'error', summary: '检查超时' })
+      expect(network?.details).not.toHaveProperty('siteId')
     })
 
     // #302 的误报：站点根路径本来就是网页前端，正常时也回 text/html。探测改打

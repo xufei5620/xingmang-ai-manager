@@ -15,11 +15,13 @@
 - 「登着」用新的 `signedInSiteId`（`account-context.ts`）：已登录的看会话；开机恢复没结束或联不上搁着的（登录还在）看正在恢复的
   那个账号，线路被切断时开机恢复多半也联不上；访客不给。开机恢复历史账号时会话的 `siteId` 和主进程查的站都还是默认那个，靠这一条
   才不会把历史账号带去星芒账号的线路。`HealthPage` 从 `BusinessPage` 收 `accountSession`，缺省按访客算（旧行为）。
-- `diagnostics.ts`：这一项归类出网络原因时 details 多带 `siteId`（「查看详情」不摆这个键，导出报告里本来就有地址）；加
-  `timeoutOutcome`，8 秒等不到回话从 `error`「检查超时」改成 `fail` + `networkFailureMessages.timeout`，带 `reason: 'timeout'`
-  和 `siteId`。连带一处现成行为：同一次检查里「安全证书」判成「电脑自己也不认」时，超时这种也改说「先看上面「星芒 AI 网络」那一项」
-  （`reconcileCertificateTrustWithNetwork` 认的是 `fail`），和别的连不上一样。
-- 测试：`diagnostics.test.ts` 两条（默认线路、备用直连、历史账号三种站失败时都带对 `siteId`；探测一直不回是 `fail` 加超时那句）；
-  `business.test.ts` 两条（三种原因翻到 `relay-route-solov`；别的原因、HTTP 状态、历史账号、访客、查的不是登着的这个站、不带站点
-  都不给）；`account-context.test.ts` 一条；`testing/app-check.mjs` 三条浏览器回归（登着星芒账号点「去处理」到设置「网络」、
-  那一行亮且选择框拿到焦点、选「备用直连」出「现在重开」；开机恢复中照样给；历史账号和没登录进首页的都不给）。
+- `diagnostics.ts`：这一项归类出网络原因时 details 多带 `siteId`（新界面的「查看详情」不摆这个键；旧回滚版照原样摆出详情里的
+  每个键，本来就摆着地址）。`timeoutOutcome` 可以是函数，超时那一刻再定结论：这一次请求 8 秒还没回完话，从 `error`「检查超时」
+  改成 `fail` + `networkFailureMessages.timeout`，带 `endpoint`、`reason: 'timeout'` 和 `siteId`；回完了话、卡在问加速开没开
+  （要排在正开关加速的后面）的，网络是通的，照旧「检查超时」。连带一处现成行为：同一次检查里「安全证书」判成「电脑自己也不认」时，
+  超时这种也改说「先看上面「星芒 AI 网络」那一项」（`reconcileCertificateTrustWithNetwork` 认的是 `fail`），和别的连不上一样。
+- 测试：`diagnostics.test.ts` 三条（默认线路、备用直连、历史账号三种站失败时都带对 `siteId`；探测一直不回是 `fail` 加超时那句；
+  回完了话、问加速状态卡住照旧「检查超时」）；`business.test.ts` 两条（三种原因翻到 `relay-route-solov`；别的原因、HTTP 状态、
+  历史账号、访客、查的不是登着的这个站、不带站点都不给）；`account-context.test.ts` 一条；`testing/app-check.mjs` 三条浏览器回归
+  （登着星芒账号点「去处理」到设置「网络」、那一行亮且选择框拿到焦点、选「备用直连」出「现在重开」；开机恢复中照样给；历史账号、
+  开机恢复历史账号、没登录进首页的都不给），夹具 `restoring=solov-api` 恢复的是历史账号。
