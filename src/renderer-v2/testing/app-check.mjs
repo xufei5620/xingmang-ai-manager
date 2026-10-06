@@ -2394,6 +2394,27 @@ test('read-only account matches switch only explicitly selected CLI providers on
   } finally { await page.close() }
 })
 
+test('tools switched to a saved account open right away instead of waiting for a key sync that never runs', async () => {
+  const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    await page.getByTestId('account-sync-grok').waitFor()
+    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
+    await expect(page.locator('dialog[open]')).toHaveCount(0)
+    // 切换账号时 Key 已经在切换框里换好，开机那一轮同步不会再跑：「打开」不能一直灰着等它。
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codex'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.getByTestId('tool-claude-primary').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)).toBe(2)
+    assert.equal(await page.getByText('正在同步这个工具的账号连接，请稍后再打开。').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('saved-account switching names the rewritten tools that are still open and restarts Codex desktop only when asked', async () => {
   const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1&runningTools=1')
   try {

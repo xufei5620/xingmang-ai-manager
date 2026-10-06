@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangePending, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -1061,8 +1061,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   function accountConnectionPending(provider: ProviderId): boolean {
     const latest = accountBootstrapRef.current
-    return accountKeyChangePending({ signedIn: session.authenticated, restoring,
-      bootstrap: latest?.scope === scope ? latest : null }, provider)
+    return accountKeyChangeInProgress(latest?.scope === scope ? latest : null, provider)
   }
   function waitForAccountConnection(tool: { source: ToolSource; provider: ProviderId }): boolean {
     if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return false

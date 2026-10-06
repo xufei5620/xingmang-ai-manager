@@ -8,6 +8,7 @@ import type {
 import {
   KeyRewriteSkippedError,
   accountBootstrapPlan,
+  accountKeyChangeInProgress,
   accountKeyChangePending,
   bootstrapAccountTools,
   configurationFailure,
@@ -702,6 +703,18 @@ describe('account key changes before the startup scan finishes', () => {
     const finished = { ...syncing, result: { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false } }
     expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: finished }, 'claude')).toBe(false)
     expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: { ...syncing, error: '账号 Key 初始化没有完成' } }, 'claude')).toBe(false)
+  })
+
+  it('after the scan waits only while a key sync round is actually running', () => {
+    // Switching saved accounts skips the round, and a restore that cannot reach the
+    // account service keeps retrying without one: neither may lock tools until a relaunch.
+    expect(accountKeyChangeInProgress(null, 'claude')).toBe(false)
+    expect(accountKeyChangeInProgress(syncing, 'claude')).toBe(true)
+    const bootstrap = { phase: 'configuring' as const, label: '正在为 1 个已安装工具写入 Key', percent: 65, connectedKeyChanges: ['claude' as ProviderId] }
+    expect(accountKeyChangeInProgress(bootstrap, 'claude')).toBe(true)
+    expect(accountKeyChangeInProgress(bootstrap, 'codex')).toBe(false)
+    expect(accountKeyChangeInProgress({ ...bootstrap, result: { readyKeys: [], configured: ['claude'], failed: [], skipped: [], warnings: [], networkBlocked: false } }, 'claude')).toBe(false)
+    expect(accountKeyChangeInProgress({ ...bootstrap, error: '账号 Key 初始化没有完成' }, 'claude')).toBe(false)
   })
 
   it('names the regrouped connected tools before it waits for the scan on a restore', async () => {

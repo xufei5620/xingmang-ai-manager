@@ -58,7 +58,19 @@ export function accountKeyChangePending(
 ): boolean {
   const { bootstrap } = account
   if (!bootstrap) return account.signedIn || account.restoring
-  if (bootstrap.result || bootstrap.error) return false
+  return accountKeyChangeInProgress(bootstrap, provider)
+}
+
+/**
+ * 检测跑完以后：这一轮账号同步正在给这个工具换 Key、改线路，这时打开工具会读走旧配置。
+ * 和上面不同，同步还没开始的不算——切完账号不再跑这一轮，开机恢复联不上时登录会一直搁着，
+ * 照上面那样算「说不准」，这几种情况下工具就一直打不开，得重开星芒。
+ */
+export function accountKeyChangeInProgress(
+  bootstrap: (AccountBootstrapProgress & { result?: unknown; error?: string }) | null,
+  provider: ProviderId,
+): boolean {
+  if (!bootstrap || bootstrap.result || bootstrap.error) return false
   return bootstrap.connectedKeyChanges?.includes(provider) ?? true
 }
 

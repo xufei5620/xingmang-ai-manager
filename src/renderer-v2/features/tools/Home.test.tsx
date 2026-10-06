@@ -379,6 +379,17 @@ describe('renderer-v2 home before the startup scan finishes', () => {
     expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
   })
 
+  it.each([
+    ['after switching saved accounts', { account }],
+    ['while a startup restore keeps retrying', { accountRestoring: true }],
+  ] as const)('keeps account tools openable after the scan with no key sync running %s', (_case, state) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const markup = render({}, undefined, { snapshot: current, loading: false, bootstrap: null, ...state })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
   it('releases the migrated tool and its workspace menu after verification finishes', () => {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
