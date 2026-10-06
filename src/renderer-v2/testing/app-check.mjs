@@ -4294,8 +4294,8 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await button.click()
     const dialog = page.getByRole('dialog', { name: '公告', exact: true })
     const list = dialog.getByTestId('announcement-list')
-    await list.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
-    await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('announcement-detail').count(), 0)
     assert.equal(await dialog.getByText('系统升级完成', { exact: true }).count(), 0)
     assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
@@ -4305,12 +4305,14 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await list.getByTestId('announcement-item-12').click()
     const detail = dialog.getByTestId('announcement-detail')
     await detail.getByRole('heading', { name: '服务通知', level: 2, exact: true }).waitFor()
+    // 历史账号的公告没有类型标签，详情里只写发布时间。
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^2026-09-28 \d{2}:\d{2} · \d+ (天|个月|年)前$/)
     assert.equal(await detail.locator('strong').innerText(), '系统升级完成')
     assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead'))
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
 
     await list.getByTestId('announcement-item-12').click()
@@ -4327,8 +4329,8 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await page.screenshot({ path: path.join(artifacts, 'sub2api-announcement-detail.png') })
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await button.click()
-    await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await list.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 09-20 已读', exact: true }).waitFor()
     assert.equal(await detail.count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -4346,7 +4348,7 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await dialog.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     await dialog.getByTestId('announcement-item-12').click()
     await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
     await page.evaluate(() => { window.v2Test.fail = '' })
@@ -4354,8 +4356,8 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     await dialog.getByRole('alert').waitFor({ state: 'hidden' })
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     const writes = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead'))
     assert.deepEqual(writes.map((call) => call.args), Array.from({ length: 3 }, () => ['sub2api-notices', '12']))
@@ -4381,10 +4383,10 @@ test('Sub2API pending read updates stay attached to their own announcement after
     assert.equal(await detail.getByRole('heading', { name: '套餐更新', exact: true }).isVisible(), true)
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
-    await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
-    await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     await page.evaluate(() => window.v2Test.releaseNoticeMark('8'))
-    await dialog.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 09-20 已读', exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead').map((call) => call.args)), [['sub2api-notices', '12'], ['sub2api-notices', '8']])
     await clean(page)
@@ -4519,7 +4521,7 @@ test('Sub2API announcements keep server-read and empty states and recover from r
       await dialog.getByText(query.includes('noticeEmpty') ? '暂无公告' : '服务通知', { exact: true }).waitFor()
       assert.equal(await page.locator('.v2-unread').count(), 0)
       if (query.includes('noticesRead')) {
-        await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).click()
+        await dialog.getByRole('button', { name: '服务通知 09-28 已读', exact: true }).click()
         await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
         await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
       }
@@ -4763,7 +4765,7 @@ test('a saved account with the same id switches platform without reusing NewAPI 
     assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
     await page.getByTestId('announcement-open').click()
     const notice = page.getByRole('dialog', { name: '公告', exact: true })
-    await notice.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    await notice.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     assert.equal(await notice.getByText('本地测试公告', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -5005,6 +5007,88 @@ test('configuration keeps the current local key by default and saves through the
   } finally { await page.close() }
 })
 
+// 「为什么没有 6.1 Sol」：下拉框里只有已选的那一个，客户以为只能用它。工具里已经是当前
+// 账号的 Key 时，打开窗口就读一次：只填下拉框，选中的型号不动，也不算改动。
+test('configuration lists the current key models on open without changing the selected model', async () => {
+  const page = await open('keyOptions=1&cliDefaultModels=1')
+  try {
+    const start = await page.evaluate(() => window.v2Test.calls.length)
+    await openToolConfiguration(page)
+    const model = page.getByTestId('tool-default-model')
+    await model.locator('option[value="gpt-6-astra"]').waitFor({ state: 'attached' })
+    await expect(page.getByTestId('tool-detect-models')).toBeEnabled()
+    assert.equal(await model.inputValue(), 'fixture-model')
+    assert.deepEqual(await model.locator('option').evaluateAll((options) => options.map((option) => option.value)), ['codex-auto-review', 'gpt-6-astra', 'fixture-model'])
+    const calls = await page.evaluate((from) => window.v2Test.calls.slice(from), start)
+    const reads = calls.filter((entry) => entry.method === 'listConfiguredModels').map((entry) => entry.args)
+    assert.ok(reads.length >= 1)
+    assert.ok(reads.every((args) => args.length === 1 && args[0] === 'codex'))
+    assert.equal(calls.some((entry) => ['revealApiKey', 'revealAccountKey', 'listModels', 'listAccountKeyModels', 'saveConfig', 'saveConfigWithAccountKey'].includes(entry.method)), false)
+    const dialog = page.getByTestId('config-dialog')
+    assert.equal(await dialog.getByRole('alert').count(), 0)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByRole('dialog', { name: '要放弃未保存的修改吗？' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('configuration stays quiet when the model read on open fails and the detect button still explains why', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'listConfiguredModels'; window.v2Test.failMessage = '模型接口暂时不可用' })
+    await openToolConfiguration(page)
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels'))
+    const detect = page.getByTestId('tool-detect-models')
+    await expect(detect).toBeEnabled()
+    const dialog = page.getByTestId('config-dialog')
+    assert.equal(await dialog.getByRole('alert').count(), 0)
+    assert.equal(await page.getByTestId('tool-default-model').inputValue(), 'fixture-model')
+    await detect.click()
+    await dialog.getByRole('alert').filter({ hasText: '模型接口暂时不可用' }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('configuration stays usable while the model read on open is pending and drops a late answer for the previous tool', async () => {
+  const page = await open('keyOptions=1&cliDefaultModels=1')
+  try {
+    await page.evaluate(() => window.v2Test.holdConfiguredModels('codex'))
+    await openToolConfiguration(page)
+    const detect = page.getByTestId('tool-detect-models')
+    await expect(detect).toHaveAttribute('aria-busy', 'true')
+    assert.equal(await page.locator('.v2-config-controls').evaluate((element) => element.disabled), false)
+    assert.equal(await page.getByTestId('tool-key-select').isDisabled(), false)
+    await page.getByTestId('config-dialog').getByRole('tab', { name: 'Claude Code', exact: true }).click()
+    const model = page.getByTestId('tool-default-model')
+    await model.locator('option[value="claude-opus-5"]').waitFor({ state: 'attached' })
+    await expect(detect).toBeEnabled()
+    await page.evaluate(async () => {
+      window.v2Test.releaseConfiguredModels('codex')
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await model.locator('option[value="gpt-6-astra"]').count(), 0)
+    assert.equal(await model.inputValue(), 'fixture-model')
+    await expect(detect).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const { name, query, tool } of [
+  { name: 'signed out', query: 'guest=1&existing=1&allInstalled=1', tool: 'codex' },
+  { name: 'manually entered key', query: 'manualClaude=1', tool: 'claude' },
+  { name: 'key from another site', query: 'unknown=1', tool: 'codex' },
+]) test(`configuration does not read models on open for a ${name}`, async () => {
+  const page = await open(query)
+  try {
+    await openGuestToolConfiguration(page, tool, true)
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 for (const tool of matchedToolIds) test(`read-only account matches retain account display after keeping the current key and changing the ${tool} model`, async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&keyOptions=1&cliDefaultModels=1')
   const provider = tool === 'codexDesktop' ? 'codex' : tool
@@ -5079,11 +5163,13 @@ test('explicit automatic key configuration shows the right group and adopts the 
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.disabled === false)
     assert.equal(await select.inputValue(), 'current')
     assert.equal(await select.locator('option[value="automatic"]').innerText(), '自动准备（推荐）')
+    // 打开时那把「当前」的 Key 会先读一次模型；改选自动准备以后，保存前不该再读、也不该写。
+    const opened = await page.evaluate(() => window.v2Test.calls.length)
     await select.selectOption('automatic')
     assert.equal(await page.getByTestId('tool-detect-models').count(), 0)
     assert.equal(await page.getByTestId('tool-key-summary').innerText(), '保存时自动准备好密钥，不用自己创建')
     const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
-    assert.equal(before.includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
+    assert.equal(before.slice(opened).includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
     await openConfigAdvanced(page)
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
     await page.getByTestId('tool-save-config').click()
@@ -5092,7 +5178,7 @@ test('explicit automatic key configuration shows the right group and adopts the 
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"]')?.value === 'current' && document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('coding-key'))
     assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
     assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key · sk-se••••9012/)
-    assert.equal(await page.getByTestId('tool-detect-models').isDisabled(), false)
+    await expect(page.getByTestId('tool-detect-models')).toBeEnabled()
     await clean(page)
   } finally { await page.close() }
 })
