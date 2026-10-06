@@ -761,6 +761,21 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('这一步需要管理员授权')
   })
 
+  it('keeps the elevation notices off a Windows app that already runs with administrator rights', () => {
+    // 已知19：自带 Administrator 之类，装 Node.js 和 Codex 桌面端都不弹授权窗口。
+    const base = runtimeSnapshot('windows', { node: true })
+    const elevated = {
+      ...base,
+      platform: { ...base.platform, processElevated: true, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: { ...base.system, desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null } } },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: elevated })
+    expect(markup).toContain('准备 Node.js')
+    expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
+    expect(markup).not.toContain('管理员授权')
+    expect(markup).not.toContain('授权窗口')
+  })
+
   it('stays quiet when the probe failed, because then nobody knows whether it is installed', () => {
     const base = runtimeSnapshot('macos', { node: true })
     const failed = {

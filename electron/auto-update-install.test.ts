@@ -397,6 +397,14 @@ describe('auto install wording', () => {
     expect(previousAutoInstallFailureMessage('darwin')).not.toContain('授权')
   })
 
+  it('leaves the consent window out when the app already runs with administrator rights on Windows', () => {
+    // 已知19：自带 Administrator 之类不弹授权窗口，说法和 Mac 那份一样。
+    for (const moment of ['quit', 'launch'] as const) {
+      expect(buildAutoInstallNotice('0.2.12', moment, 'win32', true)).toEqual(buildAutoInstallNotice('0.2.12', moment, 'darwin'))
+      expect(buildAutoInstallNotice('0.2.12', moment, 'win32', false).body).toContain('授权窗口')
+    }
+  })
+
   it('names the retry button and the likely cause after a failed auto install', () => {
     const message = previousAutoInstallFailureMessage('win32')
     expect(message).toContain('授权窗口')
