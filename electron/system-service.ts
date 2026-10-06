@@ -5712,7 +5712,9 @@ export function createSystemService(
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
+        // 随这次失败一起进运行日志。
+        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`, { cause: error })
       }
       return launchResult
     }

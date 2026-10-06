@@ -2,6 +2,7 @@ import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
+import { relaySiteEndpointChoices, type RelayEndpointRoutingSnapshot } from './relay-sites'
 import type { CliStatus, DesktopAppStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
 import {
   describeWindowsExecutionProbeFailure,
@@ -182,6 +183,11 @@ export interface FeedbackRuntimeInput {
    * 没出这一项时缺省）。只读已有结果，生成报告不为它起进程。
    */
   certificateTrust?: string | null
+  /**
+   * 当前账号那个站这次运行生效的线路，写设置里线路选择框现成的选项名（默认线路、备用直连），
+   * 由 resolveFeedbackRelayRoute 给出；不写地址。缺省时这一行不出。
+   */
+  relayRoute?: string | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -255,6 +261,16 @@ export function pickFeedbackRuntimeSnapshot(snapshot: SystemSnapshot | null): Fe
 }
 
 /**
+ * 「连接线路」那一行写什么：当前账号那个站这次运行实际走的线路。线路开机时按设置定下
+ * （routing 就是那一份），设置里刚改、还没重启的不算，所以不读设置里的选择。
+ */
+export function resolveFeedbackRelayRoute(routing: RelayEndpointRoutingSnapshot, siteId: string | null | undefined): string | null {
+  const site = routing.resolve(siteId)
+  const active = routing.selection(site.id) ?? 'primary'
+  return relaySiteEndpointChoices(site.id).find((endpoint) => endpoint.id === active)?.label ?? null
+}
+
+/**
  * 客服排障最先问的是「你 Node 几、装在哪」「是不是管理员模式」「国内还是海外
  * 网络」。这些主进程早就知道，这里只把上一次扫描的快照排成几行，不为生成报告
  * 再发任何探测。路径原样给出，家目录由 runtime-log 统一换成占位符（I13）。
@@ -268,6 +284,7 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   }
   lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
+  if (input.relayRoute?.trim()) lines.push(`连接线路: ${input.relayRoute.trim()}`)
   if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)
