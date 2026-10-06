@@ -31,9 +31,11 @@ function fishProfilePath(home: string): string {
   return path.join(home, '.config', 'fish', 'conf.d', 'xingmang-ai-manager.fish')
 }
 
-/** Where the shell lives on macOS and most Linux systems, or null when it is not installed. */
+/** The system copy of the shell, else one from Homebrew (where fish usually comes from), or null. */
 function findShell(name: string): string | null {
-  return ['/bin', '/usr/bin'].map((directory) => path.join(directory, name)).find((candidate) => fs.existsSync(candidate)) ?? null
+  return ['/bin', '/usr/bin', '/opt/homebrew/bin', '/usr/local/bin']
+    .map((directory) => path.join(directory, name))
+    .find((candidate) => fs.existsSync(candidate)) ?? null
 }
 
 afterEach(() => {
@@ -252,6 +254,18 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
       expect(fs.readFileSync(path.join(home, '.profile'), 'utf8')).toBe(buildMacosShellProfileBlock())
     })
 
+    it('passes over a ~/.bash_profile that links to nothing, as bash does', async () => {
+      const home = homeDirectory()
+      fs.symlinkSync(path.join(home, 'gone'), path.join(home, '.bash_profile'))
+      fs.writeFileSync(path.join(home, '.profile'), 'export B=1\n')
+
+      await expect(ensure(home)).resolves.toBe('added')
+
+      expect(fs.readFileSync(path.join(home, '.profile'), 'utf8')).toBe(`export B=1\n\n${buildMacosShellProfileBlock()}`)
+      expect(fs.readlinkSync(path.join(home, '.bash_profile'))).toBe(path.join(home, 'gone'))
+      expect(fs.existsSync(path.join(home, 'gone'))).toBe(false)
+    })
+
     it('refuses a symlinked ~/.bash_profile instead of falling back to a ~/.profile bash would not read', async () => {
       const home = homeDirectory()
       const dotfile = path.join(home, 'dotfiles-bash_profile')
@@ -334,9 +348,15 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
     return target
   }
 
-  function loginShellOutput(shell: string, home: string, command: string): string {
-    const result = spawnSync(shell, ['-l', '-c', command], { env: { HOME: home, PATH: '/usr/bin:/bin', TERM: 'dumb' }, cwd: home })
-    return result.stdout.toString()
+  function runLoginShell(shell: string, home: string, command: string): { stdout: string; stderr: string } {
+    // A login shell that hangs must fail the test, not stall the run: spawnSync blocks vitest's own timeout.
+    const result = spawnSync(shell, ['-l', '-c', command], {
+      env: { HOME: home, PATH: '/usr/bin:/bin', TERM: 'dumb' },
+      cwd: home,
+      timeout: 10_000,
+    })
+    if (result.error) throw result.error
+    return { stdout: result.stdout.toString(), stderr: result.stderr.toString() }
   }
 
   it.runIf(zsh !== null)('zsh finds it by name', async () => {
@@ -345,7 +365,8 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
 
     await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })
 
-    expect(loginShellOutput(zsh ?? '', home, 'command -v xingmang-probe')).toBe(`${probe}\n`)
+    const { stdout, stderr } = runLoginShell(zsh ?? '', home, 'command -v xingmang-probe')
+    expect(stdout, stderr).toBe(`${probe}\n`)
   })
 
   it.runIf(bash !== null)('bash finds it by name, whichever of its login files it reads', async () => {
@@ -361,8 +382,21 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
 
       await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/bash' })
 
-      expect(loginShellOutput(bash ?? '', home, 'command -v xingmang-probe')).toBe(`${probe}\n`)
+      const { stdout, stderr } = runLoginShell(bash ?? '', home, 'command -v xingmang-probe')
+      expect(stdout, stderr).toBe(`${probe}\n`)
     }
+  })
+
+  it.runIf(bash !== null)('bash, like the check, reads ~/.profile past a ~/.bash_profile that links to nothing', async () => {
+    const home = homeDirectory()
+    const probe = installProbe(home)
+    fs.symlinkSync(path.join(home, 'gone'), path.join(home, '.bash_profile'))
+    fs.writeFileSync(path.join(home, '.profile'), 'export B=1\n')
+
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/bash' })).resolves.toBe('added')
+
+    const { stdout, stderr } = runLoginShell(bash ?? '', home, 'command -v xingmang-probe')
+    expect(stdout, stderr).toBe(`${probe}\n`)
   })
 
   it.runIf(fish !== null)('fish finds it by name and lists each folder once, even when the file is read again', async () => {
@@ -371,8 +405,9 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
 
     await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/opt/homebrew/bin/fish', env: {} })
 
-    expect(loginShellOutput(fish ?? '', home, 'command -v xingmang-probe')).toBe(`${probe}\n`)
-    const entries = loginShellOutput(fish ?? '', home, `source '${fishProfilePath(home)}'; printf '%s\\n' $PATH`).split('\n')
+    const found = runLoginShell(fish ?? '', home, 'command -v xingmang-probe')
+    expect(found.stdout, found.stderr).toBe(`${probe}\n`)
+    const entries = runLoginShell(fish ?? '', home, `source '${fishProfilePath(home)}'; printf '%s\\n' $PATH`).stdout.split('\n')
     expect(entries.filter((entry) => entry === path.dirname(probe))).toHaveLength(1)
     expect(entries.filter((entry) => entry === path.join(home, '.grok', 'bin'))).toHaveLength(1)
   })

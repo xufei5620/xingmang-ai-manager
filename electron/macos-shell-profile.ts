@@ -109,7 +109,7 @@ export interface MacosShellProfileTargetInput {
   homeDirectory: string
   /** The fish config folder: `$XDG_CONFIG_HOME/fish` or `~/.config/fish`. */
   fishConfigDirectory: string
-  /** Whether something (a file, a link, a folder) is already at this path. */
+  /** Whether bash would stop at this path: something is there, a dangling link aside. */
   exists: (filePath: string) => boolean
 }
 
@@ -119,9 +119,9 @@ export interface MacosShellProfileTargetInput {
  * ~/.bash_login and ~/.profile that exists, or a new ~/.profile when there is
  * none. Never a new ~/.bash_profile: once it exists bash stops reading
  * ~/.profile, so whatever another installer adds there later would silently
- * stop working. Whatever sits at one of those names counts, a link included,
- * so a dotfiles-managed ~/.bash_profile is picked and then refused (I8) rather
- * than passed over for a ~/.profile bash never reads.
+ * stop working. Whatever bash stops at counts, a live link included, so a
+ * dotfiles-managed ~/.bash_profile is picked and then refused (I8) rather than
+ * passed over for a ~/.profile bash never reads.
  */
 export function planMacosShellProfileTarget(input: MacosShellProfileTargetInput): MacosShellProfileTarget {
   if (input.shell === 'fish') {
@@ -154,9 +154,15 @@ function defaultLoginShell(): string | null {
   }
 }
 
-function pathExists(filePath: string): boolean {
+/**
+ * Answers the way bash itself decides whether to stop at a login file: it
+ * skips only what is not there, and a dangling link is not there. Anything
+ * else, a live link, a folder or a file it cannot read included, ends the
+ * search for bash, so it ends it here too.
+ */
+function loginFileExists(filePath: string): boolean {
   try {
-    fs.lstatSync(filePath)
+    fs.statSync(filePath)
     return true
   } catch (error) {
     // 看不清的当作有：宁可这次不改，也别另建一个 bash 根本不读的 ~/.profile。
@@ -217,7 +223,7 @@ export async function ensureMacosShellProfile(options: EnsureMacosShellProfileOp
     shell,
     homeDirectory,
     fishConfigDirectory: fishConfigDirectory(options.env ?? process.env, homeDirectory),
-    exists: pathExists,
+    exists: loginFileExists,
   })
   // bash 可能落在三个文件里的任何一个，出错时日志得说清是哪一个。
   const label = `终端启动设置（${target.displayPath}）`
