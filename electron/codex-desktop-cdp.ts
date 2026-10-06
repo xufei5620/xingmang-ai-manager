@@ -537,7 +537,28 @@ export async function activateCodexDesktopWithCdp(
     return await activateCodexDesktop(appUserModelId, buildCodexDesktopCdpArguments(port), baseEnv)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Codex Desktop 中文增强启动失败：${message.slice(0, 500)}`)
+    throw new Error(`Codex Desktop 中文增强启动失败：${message.slice(0, 500)}`, { cause: error })
+  }
+}
+
+/**
+ * The launch service answers a failed CDP activation by falling back to an
+ * ordinary launch and leaves only a console line, which a packaged build does
+ * not keep. Production wraps the seam with this so the failure, with the
+ * PowerShell error on its cause chain, reaches the runtime log and the
+ * feedback report; the launch itself sees the same rejection as before.
+ */
+export function withCodexDesktopCdpFailureReport(
+  activate: typeof activateCodexDesktopWithCdp,
+  report: (error: unknown) => void,
+): typeof activateCodexDesktopWithCdp {
+  return async (appUserModelId, port, baseEnv) => {
+    try {
+      return await activate(appUserModelId, port, baseEnv)
+    } catch (error) {
+      report(error)
+      throw error
+    }
   }
 }
 
@@ -580,7 +601,7 @@ export async function activateCodexDesktop(
     const failure = error as { stderr?: unknown; message?: unknown }
     const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : ''
     const message = stderr || (typeof failure.message === 'string' ? failure.message.trim() : '')
-    throw new Error(`Codex Desktop AppX 激活失败：${(message || 'Windows AppX 激活失败').slice(0, 500)}`)
+    throw new Error(`Codex Desktop AppX 激活失败：${(message || 'Windows AppX 激活失败').slice(0, 500)}`, { cause: error })
   }
 }
 

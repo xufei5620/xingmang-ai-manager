@@ -59,6 +59,7 @@ import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
+import { activateCodexDesktopWithCdp, withCodexDesktopCdpFailureReport } from './codex-desktop-cdp'
 import {
   createCodexDesktopService,
   desktopUpdateFields,
@@ -5545,6 +5546,10 @@ export function createSystemService(
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     userHome: providerRoots.userHome,
+    // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
+    activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
+      'warn', 'system', 'codex-desktop.chinese-launch.failed', 'Codex 桌面端中文增强启动没成，改走普通启动', { error },
+    )),
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
