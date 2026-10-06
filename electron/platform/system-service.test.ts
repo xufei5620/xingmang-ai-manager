@@ -330,6 +330,19 @@ describe('platform system preferences', () => {
       'proxy',
     )
   })
+  it('says the account and AI chat already go direct while the window still follows the proxy', () => {
+    // 已知30：代理开着、只是不转发星芒时，只有连星芒的请求改了直连。
+    expect(describeSessionProxy('PROXY 127.0.0.1:7890', false, true)).toEqual({
+      route: 'proxy',
+      summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动改成直接连接）',
+    })
+    expect(describeSessionProxy('PROXY 127.0.0.1:7890', false, false).summary).toBe(
+      '应用窗口当前通过转发连接',
+    )
+    expect(describeSessionProxy('DIRECT', false, true).summary).toBe(
+      '应用窗口当前直接连接',
+    )
+  })
   it('persists granular notification and privacy preferences without any network or startup mutation', async () => {
     const h = setup()
     await h.service.setNotificationPreference('balance', false)

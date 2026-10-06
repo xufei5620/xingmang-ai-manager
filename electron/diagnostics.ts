@@ -197,6 +197,12 @@ export interface DiagnosticsDependencies {
    */
   resolveAppProxy?: (url: string) => Promise<string>
   /**
+   * 代理开着、只是不转发星芒时，连星芒的请求（账号、AI 对话）是不是已经改走直连会话
+   * （proxy-bypass.ts 的 siteDirect）。那时默认会话照旧跟着系统代理，resolveAppProxy 还是
+   * 答「走代理」，结论得照实说已经改了直连。缺省 = 没改（旧行为）。
+   */
+  siteDirectActive?: () => boolean
+  /**
    * 「安全证书」一项用电脑上的 Node.js 做一次 TLS 握手（certificate-trust-probe.ts）。
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
    */
@@ -965,18 +971,25 @@ export async function inspectAppProxyRoute(
 export function withAppProxyRoute(
   outcome: Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>,
   route: AppProxyRoute | null,
+  siteDirect = false,
 ): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
   if (!route) return outcome
-  const sentence = route.reach === 'remote'
-    ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
-    : route.reach === 'closed'
-      ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
-      : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
+  // 代理开着、只是不转发星芒时，账号和 AI 对话已经自己改走直连：再叫客户退出代理软件
+  // 是白折腾，这半也不再标黄；另外设过代理的那半照旧（已知30）。代理没开的那种照旧说，
+  // 装工具这些还跟着系统代理走。
+  const bypassed = siteDirect && route.reach !== 'closed'
+  const sentence = bypassed
+    ? `电脑里开着代理（${route.reach === 'remote' ? '用的是别的机器上的代理' : `本机 ${route.port} 端口`}）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。`
+    : route.reach === 'remote'
+      ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
+      : route.reach === 'closed'
+        ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
+        : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
   const details = outcome.details ?? {}
   const variablesFound = Object.keys(details).length > 0
   return {
     ...outcome,
-    state: outcome.state === 'pass' ? 'warn' : outcome.state,
+    state: outcome.state === 'pass' && !bypassed ? 'warn' : outcome.state,
     summary: variablesFound ? `${sentence}另外，${outcome.summary}` : sentence,
     details: {
       ...details,
@@ -2400,7 +2413,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             : otherProxySettingsOutcome(await inspectProxy(signal)),
           inspectAppProxyRouteUnlessAccelerating(),
         ])
-        return withAppProxyRoute(variables, route)
+        return withAppProxyRoute(variables, route, dependencies.siteDirectActive?.() ?? false)
       },
     },
     {

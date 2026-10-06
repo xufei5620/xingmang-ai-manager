@@ -2253,6 +2253,30 @@ describe('withAppProxyRoute', () => {
       details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy', systemProxy: '别的机器' },
     })
   })
+
+  it('says the account already goes direct instead of telling the user to quit the proxy', () => {
+    // 已知30：代理开着、只是不转发星芒时，账号和 AI 对话已经自己改了直连，这半不再标黄。
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 }, true)).toEqual({
+      state: 'pass',
+      summary: '电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
+      details: { systemProxy: '本机 7890 端口（开着）' },
+    })
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'remote' }, true).summary)
+      .toBe('电脑里开着代理（用的是别的机器上的代理）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。')
+    // 另外设过代理的那半照旧标黄、照旧接在后面。
+    const withVariables = withAppProxyRoute({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器' },
+    }, { reach: 'open', port: 7890 }, true)
+    expect(withVariables.state).toBe('warn')
+    expect(withVariables.summary).toBe('电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。'
+      + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。')
+    // 代理没开的那种照旧：装工具这些还跟着系统代理走。
+    const closed = withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'closed', port: 7890 }, true)
+    expect(closed.state).toBe('warn')
+    expect(closed.summary).toContain('但它现在没开')
+  })
 })
 
 describe('diagnostics system proxy', () => {
@@ -2270,6 +2294,18 @@ describe('diagnostics system proxy', () => {
       state: 'warn',
       summary: '电脑里开着代理（本机 7897 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
       details: { systemProxy: '本机 7897 端口（开着）' },
+    })
+  })
+
+  it('reports the direct account route the proxy bypass already took', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
+    input.probeLoopbackProxy = async () => true
+    input.siteDirectActive = () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      state: 'pass',
+      summary: '电脑里开着代理（本机 7897 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
     })
   })
 

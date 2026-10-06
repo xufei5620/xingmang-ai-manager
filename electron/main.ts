@@ -1487,6 +1487,8 @@ if (!hasSingleInstanceLock) {
           // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
           // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
           resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
+          // 代理不转发星芒、账号和 AI 对话已经自己改了直连时，这一项照实说，不叫人去退代理软件。
+          siteDirectActive: () => proxyBypass.siteDirect(),
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
@@ -2971,7 +2973,7 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
-    attachProxyBypassState(() => proxyBypass.active())
+    attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。

@@ -35,6 +35,8 @@ export interface PlatformSystemDependencies {
   relaySiteId?: () => string | undefined
   /** 现在是否因为系统代理连不上而改成了直连；代理又连得上以后会改回去（见 electron/proxy-bypass.ts）。 */
   proxyBypassed?: () => boolean
+  /** 代理开着、只是不转发星芒时，账号和 AI 对话是不是已经改走直连（应用窗口照旧跟着代理）。 */
+  proxySiteDirect?: () => boolean
   onError?: (error: unknown) => void
   notify?: (
     kind: PlatformActivityKind | 'test',
@@ -62,14 +64,21 @@ export function summarizeSessionProxy(
   return { route: 'unknown', summary: '暂时无法确认应用窗口的连接路径' }
 }
 
-/** 直连是星芒替用户绕开坏代理的结果时写明原因，否则用户会以为自己的代理没生效。 */
+/**
+ * 直连是星芒替用户绕开坏代理的结果时写明原因，否则用户会以为自己的代理没生效。
+ * 代理开着、只是不转发星芒时，应用窗口照旧跟着代理，账号和 AI 对话却已经改了直连，
+ * 也写明，免得用户以为要去关代理（已知30）。
+ */
 export function describeSessionProxy(
   value: string,
   bypassed: boolean,
+  siteDirect = false,
 ): Pick<PlatformProxyStatus, 'route' | 'summary'> {
   const status = summarizeSessionProxy(value)
   if (bypassed && status.route === 'direct')
     return { route: 'direct', summary: '应用窗口当前直接连接（电脑里的代理连不上，本次已自动绕开）' }
+  if (siteDirect && status.route === 'proxy')
+    return { route: 'proxy', summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动改成直接连接）' }
   return status
 }
 
@@ -356,6 +365,7 @@ export class PlatformSystemService {
       ...describeSessionProxy(
         await this.dependencies.resolveProxy(targetOrigin),
         this.dependencies.proxyBypassed?.() ?? false,
+        this.dependencies.proxySiteDirect?.() ?? false,
       ),
       note: proxyScopeNote,
     }
