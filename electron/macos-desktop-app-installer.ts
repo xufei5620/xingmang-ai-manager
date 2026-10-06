@@ -123,6 +123,13 @@ export interface InstallMacosDesktopAppOptions {
    * 认出这是取消、不是装失败。runProcess 自己也要接上同一个信号。
    */
   signal?: AbortSignal
+  /**
+   * 调用方装之前的检测没做完、没核对出「应用程序」里有没有装好的那份。名字被占着、那份又自称就是
+   * 这个应用（bundle id 对得上）时说 message，不说「不是官方原版……移到废纸篓」：它多半是客户装好的
+   * 正版，只是没来得及核对。检测核对过、确定不过关的那几份（rejectedPaths，realpath）照旧说不是
+   * 官方原版。只换说法，照样不装、不动它。
+   */
+  detectionUnfinished?: { message: string, rejectedPaths: readonly string[] }
 }
 
 export interface MacosDesktopAppInstallResult {
@@ -582,15 +589,19 @@ async function placeBundle(
   }
 }
 
-/** 名字被同名应用占着时的那句话：认得出是旧版官方应用就照实说，其余一律当认不出来的那份。 */
+/**
+ * 名字被同名应用占着时的那句话：认得出是旧版官方应用就照实说；调用方的检测没做完、那份又自称
+ * 就是这个应用、也不是检测确定不过关的那几份，说检测没做完；其余一律当认不出来的那份。
+ */
 async function nameTakenError(
   source: MacosDesktopAppSource,
   destination: string,
   runProcess: InstallMacosDesktopAppOptions['runProcess'],
+  detectionUnfinished: InstallMacosDesktopAppOptions['detectionUnfinished'],
 ): Promise<MacosDesktopInstallError> {
   const detail = `${destination} 已存在，但不是能核对的官方原版`
   const legacy = source.legacyApplication
-  if (legacy) {
+  if (legacy || detectionUnfinished) {
     try {
       // Only the wording depends on this self-declared identifier; nothing is trusted or
       // removed because of it, so reading it without a signature check is fine.
@@ -599,7 +610,11 @@ async function nameTakenError(
         argv: ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.posix.join(destination, 'Contents', 'Info.plist')],
         timeoutMs: probeTimeoutMs,
       })).stdout.trim()
-      if (legacy.bundleIdentifiers.includes(identifier)) return new MacosDesktopInstallError(legacy.message, `${destination} 是旧版应用 ${identifier}`)
+      if (legacy?.bundleIdentifiers.includes(identifier)) return new MacosDesktopInstallError(legacy.message, `${destination} 是旧版应用 ${identifier}`)
+      if (detectionUnfinished && identifier === source.bundleIdentifier
+        && !detectionUnfinished.rejectedPaths.includes(await fs.promises.realpath(destination))) {
+        return new MacosDesktopInstallError(detectionUnfinished.message, `${destination} 自称是 ${identifier}，装之前的检测没做完，没核对它是不是官方原版`)
+      }
     } catch {
       // Unreadable: fall back to the general wording.
     }
@@ -626,8 +641,8 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
   try {
     const applications = await resolveApplicationsDirectory(options.userHome, options.systemApplicationsDirectory ?? '/Applications')
     const destination = path.posix.join(applications, bundleName)
-    // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来的那份。
-    if (await lstatOrNull(destination)) throw await nameTakenError(source, destination, options.runProcess)
+    // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来、或者没来得及核对的那份。
+    if (await lstatOrNull(destination)) throw await nameTakenError(source, destination, options.runProcess, options.detectionUnfinished)
     await removeInterruptedCopies(destination)
     staging = await createStagingDirectory(options.environment)
 

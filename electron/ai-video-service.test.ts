@@ -400,14 +400,14 @@ describe('createAiVideoService', () => {
     expect(tasks.remove).toHaveBeenCalledWith(7, 'task_minimax_cancelled')
   })
 
-  it('sends a best-effort remote MiniMax cancel only for an explicit user cancellation', async () => {
+  it('stops only the local wait for a MiniMax video because the relay has no cancel endpoint', async () => {
     const fetchImpl = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
       const url = String(input)
       if (init?.method === 'POST' && url.endsWith('/v1/videos')) {
-        return Promise.resolve(jsonResponse({ id: 'task_minimax_remote_cancel', status: 'queued' }))
+        return Promise.resolve(jsonResponse({ id: 'task_minimax_local_stop', status: 'queued' }))
       }
-      if (init?.method === 'POST' && url.endsWith('/task_minimax_remote_cancel/cancel')) {
-        return Promise.resolve(jsonResponse({ id: 'task_minimax_remote_cancel', cancellation_requested: true }))
+      if (url.endsWith('/cancel')) {
+        return Promise.resolve(jsonResponse({ error: { message: 'Invalid URL (POST /v1/videos/task_minimax_local_stop/cancel)' } }, 404))
       }
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
@@ -415,22 +415,15 @@ describe('createAiVideoService', () => {
     }) as unknown as typeof fetch
     const { service, tasks } = setup(fetchImpl)
     const pending = service.generate(41, {
-      requestId: 'minimax-explicit-cancel', group: '生图分组', model: 'minimax-h3-fast', prompt: '海浪',
+      requestId: 'minimax-local-stop', group: '生图分组', model: 'minimax-h3-fast', prompt: '海浪',
       seconds: '5', mode: 't2va',
     })
     await vi.waitFor(() => expect(tasks.upsert).toHaveBeenCalled())
 
-    expect(service.cancel(41, 'minimax-explicit-cancel')).toEqual({ canceled: true, mayStillComplete: true })
+    expect(service.cancel(41, 'minimax-local-stop')).toEqual({ canceled: true, mayStillComplete: true })
     await expect(pending).rejects.toThrow('服务端可能仍在生成视频')
-    await vi.waitFor(() => {
-      const cancelCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => (
-        String(input).endsWith('/task_minimax_remote_cancel/cancel')
-      ))
-      expect(cancelCall?.[1]).toMatchObject({
-        method: 'POST',
-        headers: expect.objectContaining({ Authorization: 'Bearer sk-secret-never-return' }),
-      })
-    })
+    await service.whenIdle()
+    expect(vi.mocked(fetchImpl).mock.calls.some(([input]) => String(input).endsWith('/cancel'))).toBe(false)
     expect(tasks.remove).not.toHaveBeenCalled()
   })
 
