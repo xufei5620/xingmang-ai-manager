@@ -48,10 +48,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      # This is the only job that checks out full history — so the guard can
-      # diff the unreleased sections against the base — and the only one that
-      # also runs for a documentation-only change, which is exactly when a
-      # direct CHANGELOG.md edit needs catching.
+      # The guard diffs the unreleased sections against the base, hence the
+      # full history above, and it runs for a documentation-only change too:
+      # that is exactly when a direct CHANGELOG.md edit needs catching.
       - name: Validate unreleased change fragments
         run: npm run changelog:check
       - id: scope
@@ -804,9 +803,34 @@ jobs:
       - name: Report development dependency advisories
         run: npm run audit:ci
 
+  # 仓库是公开的，一把 Key 推上来就等于公开了，没有哪道检查能把它收回来。这个作业
+  # 只扫这次改动新加的提交，挡两类：对方平台核实过、现在还能用的密钥，和星芒 Key
+  # 样子的字符串（星芒 Key 没有平台能帮着核实，只能按样子认）。挡什么、为什么不挡
+  # 别的，写在脚本开头。
+  #
+  # 和构建类检查不同，只改文档的改动也要扫：Key 贴进 Markdown 一样是泄露。它不读
+  # 任何 secret，fork 来的 PR 也照常跑。
+  secret-scan:
+    needs: changes
+    runs-on: ubuntu-latest
+    # One image pull and one scan of a handful of commits; a few minutes at most.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          # TruffleHog walks the change's own commits one by one, not the merge
+          # result, so they and the base have to be in the checkout.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Scan the commits this change adds for leaked keys
+        run: node scripts/scan-new-commits-for-secrets.cjs
+
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe]
+    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe, secret-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -829,4 +853,8 @@ jobs:
           // block: catching a bad pin before it reaches a customer is the only
           // reason the job exists.
           if (!['success', 'skipped'].includes(jobs['cli-relay-probe'].result)) process.exit(1)
+          // A key pasted into Markdown leaks as surely as one in code, so the
+          // secret scan runs on documentation-only changes too and has to pass
+          // on every change.
+          if (jobs['secret-scan'].result !== 'success') process.exit(1)
           NODE
