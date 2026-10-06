@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Archive,
   ChevronLeft,
@@ -252,6 +252,24 @@ export function useResource<T>(load: () => Promise<T>) {
     }
   }, [reload])
   return { data, setData, loading, error, detail, reload }
+}
+/**
+ * 去过的页面换走时只藏起来、不卸载（App.tsx 的 visitedPages，切页不丢筛选和滚动），useResource 也就
+ * 只在第一次进来时读。active 是外壳说的「现在显示的是不是这一页」：从藏着变回显示时叫一次 reload，
+ * 和点页头那颗「重新加载」一样，先摆着上次的内容、读回来再换。第一次挂上不叫（useResource 自己在读）；
+ * active 缺省（外层没传）= 什么都不做（旧行为）。
+ * 用 layout effect：再显示的头一帧就已经在读（loading 为真），检查页点名要翻到的那一项等新结果出来
+ * 再翻，不会先在旧结果上亮一下。
+ */
+export function useReloadWhenShown(active: boolean | undefined, reload: () => void) {
+  const shown = useRef(active)
+  const latest = useRef(reload)
+  useLayoutEffect(() => { latest.current = reload })
+  useLayoutEffect(() => {
+    const wasHidden = shown.current === false
+    shown.current = active
+    if (active && wasHidden) latest.current()
+  }, [active])
 }
 /**
  * 页头只留一颗「刷新」（个人中心）：点名到这一块时重读它自己的数据。request 每点一次加一，
