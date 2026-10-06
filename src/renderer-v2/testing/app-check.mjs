@@ -3948,13 +3948,16 @@ test('a Windows account outside the administrators group is told an administrato
 
 // 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
 // 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、安装卸载页和重启安装确认框都不说
-// 会弹（已知19）。没带管理员权限的照旧说。
+// 会弹（已知19）。首页那段在只用 Codex 桌面端时只去掉弹窗半句，「一般不用单独点」照旧。没带管理员权限的照旧说。
 test('an app already running with administrator rights does not promise a consent window', async () => {
   for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
     const page = await open(query)
     try {
       await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
-      await expect(page.getByTestId('home-runtime-node-elevation')).toHaveCount(elevated ? 0 : 1)
+      const nodeNotice = page.getByTestId('home-runtime-node-elevation')
+      await expect(nodeNotice).toContainText('装工具时会自动准备，一般不用单独点。')
+      if (elevated) assert.doesNotMatch(await nodeNotice.innerText(), /管理员授权|授权窗口/, query)
+      else await expect(nodeNotice).toContainText('准备时 Windows 会弹一次授权窗口')
 
       await page.getByTestId('nav-more').click()
       await page.getByTestId('nav-maintenance').click()

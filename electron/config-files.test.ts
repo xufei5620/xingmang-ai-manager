@@ -13,6 +13,7 @@ import {
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
   claudeConsoleKeySnapshotName,
+  claudeForeignModelEnvKeys,
   claudeForeignSettingsSnapshotName,
   moveClaudeForeignSettingsAside,
   restoreClaudeForeignSettings,
@@ -554,8 +555,8 @@ describe('native CLI configuration files', () => {
     'recognizes both fixed and historical backup URLs for %s only within their account site', (provider) => {
       const roots = providerRoots(temporaryHome())
       const direct = relayProviderBaseUrls('solov', 'direct')
-      const historical = { claude: 'https://xm-direct.solov.cc', codex: 'https://xm-direct.solov.cc/v1',
-        gemini: 'https://xm-direct.solov.cc', grok: 'https://xm-direct.solov.cc/v1' }
+      const historical = { claude: 'https://38.147.105.28:8443', codex: 'https://38.147.105.28:8443/v1',
+        gemini: 'https://38.147.105.28:8443', grok: 'https://38.147.105.28:8443/v1' }
       for (const urls of [direct, historical]) {
         saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, urls)
         const inspection = inspectProviderConfig(provider, roots, providerBaseUrls)
@@ -2498,6 +2499,18 @@ describe('switching a provider back to the official subscription account', () =>
     // 本软件自己的选模型菜单写的 ANTHROPIC_DEFAULT_MODEL 不归这张表管。
     const own: Record<string, unknown> = { env: { ANTHROPIC_DEFAULT_MODEL: 'claude-sonnet-5' } }
     expect(moveClaudeForeignSettingsAside(own, null, 'sk-relay')).toBeNull()
+  })
+
+  // 从星芒打开 Claude Code 时不交给它的选型号变量（system-service.ts，已知45 跟进），得和接账号时
+  // 从 settings.json 挪开的是同一批，只差那把 Key。
+  it('names as model choices exactly what connecting the account moves aside, less the key', () => {
+    const env = Object.fromEntries([...claudeForeignModelEnvKeys, 'ANTHROPIC_API_KEY', 'MY_OWN_VARIABLE'].map((key) => [key, 'x']))
+    const settings: Record<string, unknown> = { env: { ...env } }
+
+    moveClaudeForeignSettingsAside(settings, null, 'sk-relay')
+
+    const left = settings.env as Record<string, unknown>
+    expect(Object.keys(env).filter((key) => !(key in left)).sort()).toEqual([...claudeForeignModelEnvKeys, 'ANTHROPIC_API_KEY'].sort())
   })
 
   it('skips the WebFetch domain preflight on the relay and restores it for the official account', () => {

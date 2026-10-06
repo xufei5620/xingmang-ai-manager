@@ -4,7 +4,7 @@ import { readBoundedUtf8FileSync } from './bounded-file'
 import type { RelayEndpointId } from './relay-sites'
 
 const primaryUpdateUrl = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
-const directUpdateUrl = 'https://38.147.105.28:8443/xingmang-manager/'
+const directUpdateUrl = 'https://xm-direct.solov.cc/xingmang-manager/'
 const maxUpdateConfigBytes = 16 * 1024
 const defaultConfigKeys = new Set(['provider', 'url', 'publisherName', 'updaterCacheDirName'])
 

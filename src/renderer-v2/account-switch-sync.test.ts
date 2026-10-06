@@ -166,7 +166,7 @@ describe('saved account explicit CLI key sync', () => {
       // 换线路那次工具还开着、没迁过去的，以及按别名写着的，都还是星芒账号这个站的地址。
       const { result } = await switchAcross('solov', 'solov-api', {
         before: routeUrls('solov', 'direct'),
-        actual: { claude: routeUrls('solov', 'primary').claude, codex: 'https://xm-direct.solov.cc/v1' },
+        actual: { claude: routeUrls('solov', 'primary').claude, codex: 'https://38.147.105.28:8443/v1' },
         after: routeUrls('solov-api', 'primary'),
       })
       expect(result.configured).toEqual(['claude', 'codex'])

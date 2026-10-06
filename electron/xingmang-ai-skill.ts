@@ -351,6 +351,39 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
   return { changed: false, enabled: !turnedOff }
 }
 
+/**
+ * 选着 ChatGPT 账号时在备份页恢复了一份星芒配置，里面技能关着：这个关是客户自己的（#834 F07）。
+ * 记录里的「切回星芒时打开」说的是 ChatGPT 配置里星芒关的那一个，可 config.toml 已经换成恢复
+ * 出来的这份，改用当前账号时会原样拿它当星芒配置；记录不跟着备份恢复，不在这里改掉，就会把
+ * 客户的关打开一次。切换失败的回滚不走这里：它恢复的是切换前那一刻，记录本来就对得上。
+ * 返回是否改了记录。
+ */
+export async function adoptRestoredXingmangAiSkillOff(options: {
+  userHome: string
+  officialCodex: boolean
+  configPath: string
+  isXingmangConfig: (config: Record<string, unknown>) => boolean
+}): Promise<boolean> {
+  // 在星芒下记着要打开，说明上次没打开成：那个关多半就在恢复出来的这份里，照旧打开。
+  if (!options.officialCodex) return false
+  const configPath = path.resolve(options.configPath)
+  const statePath = path.join(path.dirname(configPath), XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+  if (await readXingmangAiSkillOffRecord(statePath) !== true) return false
+  const text = await readSafeUtf8File(configPath, 'Codex config.toml', MAX_CODEX_CONFIG_BYTES)
+  if (!text?.trim()) return false
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(text)
+  } catch {
+    // 读不懂的这份改用当前账号时不会原样用（只能重置成不带这个关的模板），记录留着也打不开谁的关。
+    return false
+  }
+  if (!options.isXingmangConfig(parsed)) return false
+  if (!isXingmangAiSkillTurnedOff(parsed, resolveXingmangAiCodexSkillPath(options.userHome))) return false
+  await writeXingmangAiSkillOffRecord(statePath, false)
+  return true
+}
+
 async function applyXingmangAiSkillCodexAvailabilitySafely(
   userHome: string,
   options: XingmangAiSkillInstallOptions,

@@ -1047,6 +1047,12 @@ interface EnvironmentOverrideMatch {
  * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
  *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
  *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
+ *
+ * Mac 上这些多半写在 ~/.zshrc 里，本程序看不到。从星芒打开工具时由启动脚本去掉（system-service.ts 的
+ * macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里（diagnostics.test.ts 钉着），
+ * 其中 Claude 的两个只在用星芒账号时去掉；Gemini 照 providerCommandEnvironment 去掉五个，breaksAccount 为
+ * false 的三个也在内。
+ * 改这里的取值时那边一起看。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
   { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl', breaksAccount: false },

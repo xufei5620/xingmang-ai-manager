@@ -15,6 +15,7 @@ import {
 import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership, sameNativeConfigSnapshot } from './system-service'
 import type { RunningToolsReport } from './running-tools'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
+import { XINGMANG_AI_CODEX_SKILL_STATE_FILE, resolveXingmangAiCodexSkillPath } from './xingmang-ai-skill'
 
 const directories: string[] = []
 function fixture() {
@@ -441,6 +442,41 @@ describe('durable tool configuration ownership', () => {
 
     await expect(f.makeService().adoptRestoredConfig('gemini', () => false)).rejects.toThrow()
     expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+  })
+
+  // On the ChatGPT account, with the record still saying the skill comes back
+  // on, a Xingmang config with the user's own off is put back.
+  async function restoredXingmangConfigWithSkillOff(f: ReturnType<typeof fixture>) {
+    saveProviderConfig('codex', 'sk-fixture-user-secret', 'fixture-model', 'reset', f.roots, {}, providerBaseUrls)
+    const skillPath = resolveXingmangAiCodexSkillPath(f.roots.userHome)
+    fs.appendFileSync(path.join(f.roots.codexHome, 'config.toml'), `\n[[skills.config]]\npath = ${JSON.stringify(skillPath)}\nenabled = false\n`, 'utf8')
+    const statePath = path.join(f.roots.codexHome, XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+    fs.writeFileSync(statePath, `${JSON.stringify({ version: 1, offByXingmang: true })}\n`, 'utf8')
+    await new AppSettingsStore(path.join(f.data, 'settings.json'), f.root).setOfficialProvider('codex', true)
+    return () => JSON.parse(fs.readFileSync(statePath, 'utf8')) as unknown
+  }
+
+  it('records the skill off in a Xingmang config restored on the backups page as the user\'s', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    await f.makeService().adoptRestoredConfig('codex', () => false, { fromBackupsPage: true })
+    expect(record()).toEqual({ version: 1, offByXingmang: false })
+  })
+
+  it('leaves the skill record alone when a failed switch is rolled back', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    await f.makeService().adoptRestoredConfig('codex', () => false)
+    expect(record()).toEqual({ version: 1, offByXingmang: true })
+  })
+
+  it('records that skill off even when the restored config cannot be registered', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    fs.writeFileSync(path.join(f.data, 'tool-config-ownership'), 'blocked', 'utf8')
+
+    await expect(f.makeService().adoptRestoredConfig('codex', () => false, { fromBackupsPage: true })).rejects.toThrow()
+    expect(record()).toEqual({ version: 1, offByXingmang: false })
   })
 })
 

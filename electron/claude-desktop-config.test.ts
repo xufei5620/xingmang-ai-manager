@@ -667,7 +667,7 @@ describe('Claude Desktop legacy model list repair', () => {
 
 describe('Claude Desktop connection route follow (batch 43 A)', () => {
   const from = 'https://xm.solov.cc'
-  const to = 'https://38.147.105.28:8443'
+  const to = 'https://xm-direct.solov.cc'
   const belongs = (key: string) => key === input.apiKey
 
   it('changes only the gateway address of the toolbox profile and keeps the models and authentication the customer set', async () => {

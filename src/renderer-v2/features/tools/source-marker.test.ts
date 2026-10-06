@@ -66,6 +66,22 @@ describe('renderer provider source marker', () => {
     ).toBe(true)
   })
 
+  // 直连从 IP 换成域名以后，选过直连的客户以前点过的「就用现在这份」不能就这么没了。
+  it('still honors a marker stored under the retired IP entry of the direct line and moves it on the next write', () => {
+    const { storage, values } = memoryStorage()
+    const ipKey = `xingmang-v2:provider-source:v1:${encodeURIComponent('https://38.147.105.28:8443')}:claude`
+    values.set(ipKey, 'manual')
+    expect(readManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'claude')).toBe(true)
+    expect(readManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'codex')).toBe(false)
+    expect(readManualSourceMarker(storage, 'https://xm.solov.cc', 'claude')).toBe(false)
+
+    expect(writeManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'claude', true)).toBe(true)
+    expect([...values.keys()]).toEqual([manualSourceMarkerKey('https://xm-direct.solov.cc', 'claude')])
+    values.set(ipKey, 'manual')
+    expect(writeManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'claude', false)).toBe(true)
+    expect(values.size).toBe(0)
+  })
+
   it('ignores invalid data and degrades safely when storage is unavailable', () => {
     const invalid = memoryStorage()
     invalid.values.set(

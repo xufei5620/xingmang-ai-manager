@@ -195,7 +195,7 @@ function accountRouteMigrationNeeded(
   const expected = relayProviderBaseUrls(siteId, selected)[provider]
   if (!sameNativeRelayUrl(current.baseUrl, expected)
     || relaySiteEndpointIdForBaseUrl(siteId, provider, current.actualBaseUrl) === null) return false
-  // Old DNS and current IP endpoints may share an id; the actual address must still migrate.
+  // The retired IP test entry shares the direct id with the domain; the actual address must still migrate.
   return !sameNativeRelayUrl(current.actualBaseUrl, expected)
 }
 

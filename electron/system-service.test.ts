@@ -10,7 +10,7 @@ import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
-import { providerBaseUrls, type ProviderId } from './catalog'
+import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
 import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls } from './relay-sites'
 import type { RunningToolsReport } from './running-tools'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
@@ -23,7 +23,15 @@ import {
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import type { NodeRuntimeInstallResult } from './node-runtime'
-import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
+import {
+  claudeForeignModelEnvKeys,
+  codexAuthSnapshotPaths,
+  codexConfigSnapshotPaths,
+  inspectProviderConfig,
+  providerConfigPaths,
+  saveProviderConfig,
+  type NativeConfigInspection,
+} from './config-files'
 import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } from './codex-model-catalog'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
@@ -106,7 +114,10 @@ import {
   parseCloudflareNetworkLocation,
   parseGrokLocalVersion,
   parseLatestNpmVersion,
+  launchExcludedEnvironmentVariables,
+  macosShellOverrideVariables,
   providerCommandEnvironment,
+  withoutEnvironmentVariables,
   createScanCoalescer,
   scanProbeConcurrency,
   readGrokLocalVersionForExecutable,
@@ -584,8 +595,8 @@ describe('createSystemService', () => {
     const provider = options.provider ?? 'codex'
     const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
     const sourceUrls = options.source === 'historical'
-      ? { claude: 'https://xm-direct.solov.cc', codex: 'https://xm-direct.solov.cc/v1',
-        gemini: 'https://xm-direct.solov.cc', grok: 'https://xm-direct.solov.cc/v1' }
+      ? { claude: 'https://38.147.105.28:8443', codex: 'https://38.147.105.28:8443/v1',
+        gemini: 'https://38.147.105.28:8443', grok: 'https://38.147.105.28:8443/v1' }
       : relayProviderBaseUrls('solov', options.source ?? 'primary')
     saveProviderConfig(provider, 'sk-migration-fixture', 'fixture-model', 'reset', roots, {}, sourceUrls)
     const owner = JSON.stringify(['solov', 9])
@@ -653,7 +664,15 @@ describe('createSystemService', () => {
     },
   )
 
-  it('protects a historical backup alias before changing it to the fixed IP endpoint', async () => {
+  it('moves a CLI still on the retired IP test entry to the direct domain', async () => {
+    const f = await automaticRouteFixture({ source: 'historical' })
+    await f.save()
+    expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('protects the retired IP test entry before changing it to the direct domain', async () => {
     const f = await automaticRouteFixture({ source: 'historical', report: {
       running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false,
     } })
@@ -2104,25 +2123,6 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(occurrences).toBeGreaterThanOrEqual(2)
   })
 
-  it.each([
-    ['missing link', 'Grok automatic uninstall requires a verified grok symbolic link'],
-    ['escaped target', 'Grok agent link target must remain under ~/.grok'],
-    ['wrong owner', 'Grok CLI 符号链接 agent 所有者与卸载计划不一致'],
-    ['wrong type', 'Grok canonical link must be a symbolic link'],
-    ['link identity replacement', 'Grok CLI 符号链接 grok 身份与卸载计划不一致'],
-    ['quarantine race', 'Grok CLI 隔离文件 grok 在最终删除前发生变化'],
-  ])('returns manual help after %s validation failure', (_case, message) => {
-    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
-      outcome: 'manual-required',
-      previousVersion: '0.2.118',
-      error: message,
-      manualHelp: {
-        reason: `自动卸载安全验证失败：${message}`,
-        manualCommand: null,
-      },
-    })
-  })
-
   it('repairs a missing agent link before uninstalling through the public service', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
@@ -2381,6 +2381,55 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       expect(environment?.DYLD_INSERT_LIBRARIES).toBeUndefined()
       expect(environment?.XINGMANG_SYSTEM_SERVICE_SENTINEL).toBe('ordinary-value')
     }
+  })
+})
+
+// Linux 卸不了时走的也是它，所以不跟着上面那组只在 Mac 上跑。
+describe('grokManualUninstallResult', () => {
+  it.each([
+    ['wrong owner', 'Grok CLI 符号链接 agent 所有者与卸载计划不一致'],
+    ['link identity replacement', 'Grok CLI 符号链接 grok 身份与卸载计划不一致'],
+    ['quarantine race', 'Grok CLI 隔离文件 grok 在最终删除前发生变化'],
+  ])('returns manual help after %s validation failure', (_case, message) => {
+    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: '0.2.118',
+      error: message,
+      manualHelp: {
+        reason: `自动卸载安全验证失败：${message}`,
+        manualCommand: null,
+      },
+    })
+  })
+
+  // 已知48：Mac 上卸不了时这几句英文原话整句上屏。屏上换成现成的那句，原话留在 error 里给日志。
+  it.each([
+    ['missing link', 'Grok automatic uninstall requires a verified grok symbolic link; use the official manual uninstall instructions'],
+    ['escaped target', 'Grok agent link target must remain under ~/.grok'],
+    ['wrong type', 'Grok canonical link must be a symbolic link'],
+    ['non-plain directory under a Chinese user name', 'Grok uninstall path /Users/张三/.grok/bin must be a plain owned directory'],
+  ])('keeps the English %s validation failure off the screen', (_case, message) => {
+    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: '0.2.118',
+      error: message,
+      manualHelp: {
+        reason: 'Grok CLI 自动卸载安全验证失败',
+        manualCommand: null,
+      },
+    })
+  })
+
+  it('says the plain sentence once when the failure carries no message', () => {
+    expect(grokManualUninstallResult(null, new Error('  '))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: null,
+      error: 'Grok CLI 自动卸载安全验证失败',
+      manualHelp: {
+        reason: 'Grok CLI 自动卸载安全验证失败',
+        manualCommand: null,
+      },
+    })
   })
 })
 
@@ -4501,6 +4550,78 @@ describe('Darwin CLI launch planning', () => {
       env,
     })
   })
+
+  it('hands the Terminal launcher the login-shell variables to drop only when there are some', () => {
+    const command = { executable: '/Users/tester/.local/bin/claude', argv: [] }
+    const env = { HOME: '/Users/tester', PATH: '/usr/bin:/bin' }
+
+    expect(buildDarwinCliLaunchPlan(command, '/Users/tester/project', env, ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']).clearedEnvironmentKeys)
+      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'])
+    expect(buildDarwinCliLaunchPlan(command, '/Users/tester/project', env, [])).not.toHaveProperty('clearedEnvironmentKeys')
+  })
+})
+
+describe('variables kept from tools opened on every platform', () => {
+  it('keeps the model choices from Claude Code only while it is on the Xingmang account', () => {
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(claudeForeignModelEnvKeys)
+    expect(launchExcludedEnvironmentVariables('claude', 'relay'))
+      .toEqual(expect.arrayContaining(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']))
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_API_KEY')
+    // 用自己的 Claude 账号时，这些可能就是客户自己选的型号。
+    expect(launchExcludedEnvironmentVariables('claude', 'official')).toEqual([])
+  })
+
+  it('keeps nothing from the other tools', () => {
+    for (const provider of ['codex', 'gemini', 'grok'] as const) {
+      for (const accountMode of ['relay', 'official'] as const) {
+        expect(launchExcludedEnvironmentVariables(provider, accountMode)).toEqual([])
+      }
+    }
+  })
+
+  it('matches the names case-insensitively the way Windows does and leaves the rest alone', () => {
+    const env = { ANTHROPIC_MODEL: 'a', anthropic_small_fast_model: 'b', ANTHROPIC_BASE_URL: 'c', PATH: '/usr/bin' }
+
+    expect(withoutEnvironmentVariables(env, ['ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL']))
+      .toEqual({ ANTHROPIC_BASE_URL: 'c', PATH: '/usr/bin' })
+    expect(env.ANTHROPIC_MODEL).toBe('a')
+  })
+})
+
+describe('login-shell variables kept from tools opened on macOS', () => {
+  // 前两个是检查页实测会绕开当前账号的；ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，不在里面。
+  it('drops the Claude Code key, config folder and model choices only while Claude Code is on the Xingmang account', () => {
+    expect(macosShellOverrideVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+    // 用自己的 Claude 账号时，这些可能就是客户自己的 Key、登录和型号。
+    expect(macosShellOverrideVariables('claude', 'official')).toEqual([])
+  })
+
+  it('drops everything the other platforms keep from the tool as well', () => {
+    for (const provider of providerIds) {
+      for (const accountMode of ['relay', 'official'] as const) {
+        expect(macosShellOverrideVariables(provider, accountMode))
+          .toEqual(expect.arrayContaining([...launchExcludedEnvironmentVariables(provider, accountMode)]))
+      }
+    }
+  })
+
+  it.each(['relay', 'official'] as const)('drops for Gemini CLI on the %s account exactly what Windows and Linux leave out of its environment', (accountMode) => {
+    const candidates = [
+      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL', 'GOOGLE_GENAI_API_VERSION',
+      'GOOGLE_GEMINI_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'ANTHROPIC_API_KEY', 'KEEP_THIS',
+    ]
+    const kept = providerCommandEnvironment('gemini', Object.fromEntries(candidates.map((name) => [name, 'x'])), {})
+
+    expect([...macosShellOverrideVariables('gemini', accountMode)].sort())
+      .toEqual(candidates.filter((name) => kept[name] === undefined).sort())
+  })
+
+  it('drops nothing for Codex CLI and Grok CLI', () => {
+    for (const accountMode of ['relay', 'official'] as const) {
+      expect(macosShellOverrideVariables('codex', accountMode)).toEqual([])
+      expect(macosShellOverrideVariables('grok', accountMode)).toEqual([])
+    }
+  })
 })
 
 describe('reminder settings pointing at an old location', () => {
@@ -6121,6 +6242,44 @@ describe('installing or uninstalling a CLI', () => {
     expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: null }))
     expect(runCommand).not.toHaveBeenCalled()
   })
+
+  // 已知48：PATH 那一步以前就在这里等着、只给 8 秒，慢机器上 PowerShell 冷启动一超时，已经卸完的就被说成卸载失败。
+  // 真 Windows 上要删的文件名和托管目录跟着 process.platform 走，这里只验调用点，所以在 Mac、Linux 上模拟 Windows 的服务。
+  it.runIf(process.platform !== 'win32')('reports a Windows Grok uninstall without waiting for the PATH clean-up, which only logs a failure', async () => {
+    const userHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-path-')))
+    temporaryDirectories.push(userHome)
+    const bin = path.join(userHome, '.grok', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'grok'), 'grok binary')
+    fs.writeFileSync(path.join(bin, 'agent'), 'agent binary')
+    vi.stubEnv('HOME', userHome)
+    let failPathCleanUp: (error: Error) => void = () => undefined
+    const removeWindowsUserPath = vi.fn(() => new Promise<'removed'>((_resolve, reject) => { failPathCleanUp = reject }))
+    const log = vi.fn()
+    const service = createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation: vi.fn(async (provider: ProviderId) => provider === 'grok' && fs.existsSync(path.join(bin, 'grok'))
+        ? { commandPath: path.join(bin, 'grok'), installDirectory: bin, packageRoot: null, npmPrefix: null, source: 'native' as const }
+        : null),
+      findExecutable: vi.fn(async () => null),
+      runCommand: versionProbeRunner(),
+      removeWindowsUserPath,
+      runtimeLog: { log },
+    })
+
+    // The clean-up never settles until told to below, so this only resolves because nothing waits for it.
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    expect(fs.existsSync(path.join(bin, 'grok'))).toBe(false)
+    await vi.waitFor(() => expect(removeWindowsUserPath).toHaveBeenCalledWith(bin))
+    failPathCleanUp(new Error('Command failed: powershell.exe'))
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'install', 'cli.user-path.remove-failed', expect.any(String), {
+      provider: 'grok',
+      error: 'Command failed: powershell.exe',
+    }))
+  })
 })
 
 describe('trusting the workspace the user picked before opening a CLI', () => {
@@ -6243,7 +6402,12 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 })
 
 describe('opening a CLI on Linux', () => {
-  function linuxLaunchService(userHome: string, launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+  function linuxLaunchService(
+    userHome: string,
+    launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>,
+    runtimeLog?: SystemServiceOptions['runtimeLog'],
+    account: Partial<NativeConfigInspection> = {},
+  ) {
     return createService({
       platform: 'linux',
       ...(runtimeLog ? { runtimeLog } : {}),
@@ -6260,6 +6424,7 @@ describe('opening a CLI on Linux', () => {
         dataDirectoryExists: true,
         files: [],
         updatedAt: '2026-10-02T00:00:00.000Z',
+        ...account,
       })),
       resolveCliInstallation: vi.fn(async () => ({
         commandPath: '/opt/xm/npm/bin/claude',
@@ -6299,6 +6464,41 @@ describe('opening a CLI on Linux', () => {
     expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
     expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  // 已知45 跟进：用星芒账号时，客户环境里选型号的变量不交给 Claude Code；交给已经开着的命令窗口程序时，
+  // 脚本里还要再 unset 一次（linux-terminal.ts）。
+  it.runIf(process.platform !== 'win32')('keeps the model choices in the environment away from Claude Code on the Xingmang account', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', 'deepseek-chat')
+    vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'deepseek-chat')
+    const { userHome, workspace } = project('xingmang-linux-open-models-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+
+    await linuxLaunchService(userHome, launchLinuxTerminal).launchProvider('claude', workspace)
+
+    const plan = launchLinuxTerminal.mock.calls[0]?.[0]
+    expect(plan?.env).not.toHaveProperty('ANTHROPIC_MODEL')
+    expect(plan?.env).not.toHaveProperty('CLAUDE_CODE_SUBAGENT_MODEL')
+    expect(plan?.clearedEnvironmentKeys).toEqual(claudeForeignModelEnvKeys)
+  })
+
+  it.runIf(process.platform !== 'win32')('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    const { userHome, workspace } = project('xingmang-linux-open-official-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
+
+    await linuxLaunchService(userHome, launchLinuxTerminal, undefined, official).launchProvider('claude', workspace)
+
+    const plan = launchLinuxTerminal.mock.calls[0]?.[0]
+    expect(plan?.env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    expect(plan).not.toHaveProperty('clearedEnvironmentKeys')
   })
 
   it.runIf(process.platform !== 'win32')('says which tool did not open, and logs the terminals it tried with the home folder hidden', async () => {
@@ -6388,10 +6588,74 @@ describe('opening a CLI on macOS', () => {
     expect(failure instanceof Error && failure.message).toBe('未能打开 Claude Code：命令执行失败（退出码 1）：codesign')
     expect(failure instanceof Error && failure.cause).toBe(refused)
   })
+
+  function macosLaunch(prefix: string, account: Partial<NativeConfigInspection> = {}) {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const launchMacosTerminal = vi.fn<NonNullable<SystemServiceOptions['launchMacosTerminal']>>(async () => undefined)
+    const service = createService({
+      platform: 'darwin',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+        ...account,
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(userHome, '.local', 'bin', 'claude'),
+        installDirectory: path.join(userHome, '.local', 'share', 'claude'),
+        packageRoot: path.join(userHome, '.local', 'share', 'claude'),
+        npmPrefix: null,
+        packageVersion: '2.1.283',
+        source: 'native' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({ executable: path.join(userHome, '.local', 'bin', 'claude'), argv: [] })),
+      findExecutable: vi.fn(async () => null),
+      launchMacosTerminal,
+    })
+    return { launch: () => service.launchProvider('claude', workspace), launchMacosTerminal }
+  }
+
+  // 已知45：用星芒账号时，Mac 启动脚本把客户 shell 里的 Key、配置目录和选型号的变量都 unset 掉。
+  it.runIf(process.platform !== 'win32')('tells the Terminal launcher to drop the login-shell settings that would take Claude Code off the Xingmang account', async () => {
+    const { launch, launchMacosTerminal } = macosLaunch('xingmang-macos-open-relay-')
+
+    await launch()
+
+    expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
+    expect(launchMacosTerminal.mock.calls[0]?.[0].clearedEnvironmentKeys)
+      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+  })
+
+  it.runIf(process.platform !== 'win32')('leaves the login shell alone while Claude Code is on the customer’s own account', async () => {
+    const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
+    const { launch, launchMacosTerminal } = macosLaunch('xingmang-macos-open-official-', official)
+
+    await launch()
+
+    expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
+    expect(launchMacosTerminal.mock.calls[0]?.[0]).not.toHaveProperty('clearedEnvironmentKeys')
+  })
 })
 
 describe('opening a CLI on Windows', () => {
-  function windowsLaunchService(userHome: string, launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+  function windowsLaunchService(
+    userHome: string,
+    launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>,
+    runtimeLog?: SystemServiceOptions['runtimeLog'],
+    account: Partial<NativeConfigInspection> = {},
+  ) {
     return createService({
       platform: 'win32',
       windowsExecutionMode: 'same-user',
@@ -6409,6 +6673,7 @@ describe('opening a CLI on Windows', () => {
         dataDirectoryExists: true,
         files: [],
         updatedAt: '2026-10-04T00:00:00.000Z',
+        ...account,
       })),
       resolveCliInstallation: vi.fn(async () => ({
         commandPath: 'C:\\Program Files\\nodejs\\claude.cmd',
@@ -6458,6 +6723,40 @@ describe('opening a CLI on Windows', () => {
       expect(entry?.[4][field]).toContain('did not resolve to a file')
       expect(entry?.[4][field]).not.toContain(userHome)
     }
+  })
+
+  function project(prefix: string): { userHome: string; workspace: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    return { userHome, workspace }
+  }
+
+  // 已知45 跟进：用星芒账号时，客户环境里选型号的变量不交给 Claude Code；Windows 上变量名不分大小写。
+  it('keeps the model choices in the environment away from Claude Code on the Xingmang account', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', 'deepseek-chat')
+    vi.stubEnv('anthropic_small_fast_model', 'deepseek-chat')
+    const { userHome, workspace } = project('xingmang-windows-open-models-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+
+    await windowsLaunchService(userHome, launchCliPowerShell).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    const env = launchCliPowerShell.mock.calls[0]?.[0].env ?? {}
+    expect(Object.keys(env).filter((key) => /^anthropic_(model|small_fast_model)$/i.test(key))).toEqual([])
+  })
+
+  it('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    const { userHome, workspace } = project('xingmang-windows-open-official-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+    const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
+
+    await windowsLaunchService(userHome, launchCliPowerShell, undefined, official).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    expect(launchCliPowerShell.mock.calls[0]?.[0].env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
   })
 })
 
