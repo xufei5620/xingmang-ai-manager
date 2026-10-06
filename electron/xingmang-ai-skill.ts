@@ -18,6 +18,8 @@ export const XINGMANG_AI_SKILL_KEY_NAME = 'xingmang-ai'
 export const XINGMANG_AI_DEFAULT_BASE_URL = 'https://xm.solov.cc'
 export const XINGMANG_AI_CONFIG_FILE = 'config.json'
 export const XINGMANG_AI_MANAGED_MANIFEST_FILE = '.xingmang-managed.json'
+/** 放在 Codex config.toml 旁边，记这个技能现在的「关」是不是星芒替 ChatGPT 账号关的。 */
+export const XINGMANG_AI_CODEX_SKILL_STATE_FILE = 'xingmang-ai-skill-state.json'
 
 // Always install into ~/.agents/skills (Codex Desktop / Codex CLI / Gemini).
 // Claude and Grok only see their own homes, so copy there too — but only if
@@ -150,7 +152,8 @@ function normalizedSkillPathKey(value: string): string {
 
 /**
  * Codex Desktop / CLI 只认 ~/.codex/config.toml 的 [[skills.config]]。
- * ChatGPT 账号下星芒 Key 无效，必须显式关掉；切回星芒中转再打开。
+ * ChatGPT 账号下星芒 Key 无效，必须显式关掉；切回星芒中转时只打开星芒自己关的那一次
+ * （谁关的见 syncXingmangAiSkillCodexAvailability 的记录）。
  * 默认无条目 = 开启，所以关掉时一定要写出 enabled = false。
  */
 export function applyXingmangAiSkillEnabledFlag(
@@ -185,16 +188,65 @@ export function applyXingmangAiSkillEnabledFlag(
   return true
 }
 
+function isXingmangAiSkillTurnedOff(config: Record<string, unknown>, skillPath: string): boolean {
+  const skills = config.skills
+  if (!isRecord(skills) || !Array.isArray(skills.config)) return false
+  const key = normalizedSkillPathKey(skillPath)
+  return skills.config.some((entry) => (
+    isRecord(entry)
+    && typeof entry.path === 'string'
+    && normalizedSkillPathKey(entry.path) === key
+    && entry.enabled === false
+  ))
+}
+
+// 客户自己在 Codex 里关掉的技能，以前每次打开星芒、保存配置、切回星芒都被打开（#834 F07）：
+// 光看 config.toml 分不清这个「关」是谁的。所以星芒替 ChatGPT 账号关它时在旁边记一笔，切回
+// 星芒时只打开记着的那一个。三种状态：
+//   true  = 现在的关是星芒替 ChatGPT 账号关的，切回星芒时打开；
+//   false = 星芒没关过，config.toml 里的关都是客户自己的；
+//   null  = 还没有记录（以前的版本留下的配置）。以前的版本在 ChatGPT 账号下每次都强行关、
+//           在星芒下每次都强行开，所以这时 ChatGPT 账号下的关算星芒的，星芒下的关算客户的。
+async function readXingmangAiSkillOffRecord(statePath: string): Promise<boolean | null> {
+  const raw = await readSafeUtf8File(statePath, '星芒AI Skill 开关记录', 1024)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return isRecord(parsed) && parsed.version === 1 && typeof parsed.offByXingmang === 'boolean'
+      ? parsed.offByXingmang
+      : null
+  } catch {
+    return null
+  }
+}
+
+async function writeXingmangAiSkillOffRecord(statePath: string, offByXingmang: boolean): Promise<void> {
+  ensureSafeDataDirectory(path.dirname(statePath), 'Codex 配置目录')
+  await writeAtomicSafeUtf8File(
+    statePath,
+    `${JSON.stringify({ version: 1, offByXingmang })}\n`,
+    '星芒AI Skill 开关记录',
+  )
+}
+
+async function writeCodexSkillConfig(configPath: string, parsed: Record<string, unknown>): Promise<void> {
+  ensureSafeDataDirectory(path.dirname(configPath), 'Codex 配置目录')
+  await writeAtomicSafeUtf8File(
+    configPath,
+    `${TOML.stringify(parsed as Parameters<typeof TOML.stringify>[0])}\n`,
+    'Codex config.toml',
+  )
+}
+
 export async function syncXingmangAiSkillCodexAvailability(options: {
   userHome: string
   officialCodex: boolean
   configPath?: string
 }): Promise<{ changed: boolean; enabled: boolean }> {
-  const enabled = !options.officialCodex
   const skillPath = resolveXingmangAiCodexSkillPath(options.userHome)
   const configPath = path.resolve(options.configPath ?? path.join(options.userHome, '.codex', 'config.toml'))
   const existing = await readSafeUtf8File(configPath, 'Codex config.toml', MAX_CODEX_CONFIG_BYTES)
-  if (existing === null && enabled) return { changed: false, enabled }
+  if (existing === null && !options.officialCodex) return { changed: false, enabled: true }
 
   let parsed: Record<string, unknown> = {}
   if (existing !== null && existing.trim()) {
@@ -204,16 +256,33 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
       throw new Error('Codex config.toml 无法解析，未修改星芒AI Skill 开关')
     }
   }
-  if (!applyXingmangAiSkillEnabledFlag(parsed, skillPath, enabled)) {
-    return { changed: false, enabled }
+  const statePath = path.join(path.dirname(configPath), XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+  const offByXingmang = await readXingmangAiSkillOffRecord(statePath)
+  const turnedOff = isXingmangAiSkillTurnedOff(parsed, skillPath)
+
+  if (options.officialCodex) {
+    if (turnedOff) {
+      if (offByXingmang === null) await writeXingmangAiSkillOffRecord(statePath, true)
+      return { changed: false, enabled: false }
+    }
+    applyXingmangAiSkillEnabledFlag(parsed, skillPath, false)
+    // 先记再关：中途失败只多一笔记录，下次切回星芒时看见技能没关着就会把它改回来。
+    await writeXingmangAiSkillOffRecord(statePath, true)
+    await writeCodexSkillConfig(configPath, parsed)
+    return { changed: true, enabled: false }
   }
-  ensureSafeDataDirectory(path.dirname(configPath), 'Codex 配置目录')
-  await writeAtomicSafeUtf8File(
-    configPath,
-    `${TOML.stringify(parsed as Parameters<typeof TOML.stringify>[0])}\n`,
-    'Codex config.toml',
-  )
-  return { changed: true, enabled }
+
+  if (turnedOff && offByXingmang === true) {
+    applyXingmangAiSkillEnabledFlag(parsed, skillPath, true)
+    // 先开再改记录：中途失败时记录还在，下次照样打开。
+    await writeCodexSkillConfig(configPath, parsed)
+    await writeXingmangAiSkillOffRecord(statePath, false)
+    return { changed: true, enabled: true }
+  }
+  // 还关着就是客户自己关的，不动。记下「星芒没关过」：以后切到 ChatGPT 账号再切回来，
+  // 那边带过去的这个关也认得出是客户的。
+  if (offByXingmang !== false) await writeXingmangAiSkillOffRecord(statePath, false)
+  return { changed: false, enabled: !turnedOff }
 }
 
 async function applyXingmangAiSkillCodexAvailabilitySafely(

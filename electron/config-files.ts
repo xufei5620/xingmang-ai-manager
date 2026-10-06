@@ -700,16 +700,60 @@ function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void 
 // 交给了中转。国内连不上前者，后者对我们毫无用处。privacy.usageStatisticsEnabled = false
 // 两样一起去掉（沙箱实测 0.60.0），不影响任何功能。只在用户没表过态时补，切回 Google 账号
 // 时只收回本软件写的那一份。
+//
+// 「本软件写的」不能凭值猜：用星芒之前自己关掉统计的客户，文件里也是这一个 false，以前切回
+// Google 时被一并删掉，统计被悄悄打开（#834 F03）。所以写下它时在 settings.json 旁边记一笔，
+// 切回时只认这笔记录。有记录之前写下的那些分不清是谁的，切回时留着：关着统计不影响任何功能。
+export const geminiUsageStatisticsRecordName = 'xingmang-gemini-usage-statistics.json'
+const geminiUsageStatisticsRecordContent = jsonContent({ version: 1, usageStatisticsEnabled: false })
+
 function disableGeminiRelayUsageStatistics(parsed: Record<string, unknown>): void {
   const privacy = ensureRecord(parsed, 'privacy')
   if (privacy.usageStatisticsEnabled === undefined) privacy.usageStatisticsEnabled = false
 }
 
-function restoreGeminiUsageStatistics(parsed: Record<string, unknown>): void {
-  const privacy = parsed.privacy
-  if (isJsonRecord(privacy) && Object.keys(privacy).length === 1 && privacy.usageStatisticsEnabled === false) {
-    delete parsed.privacy
+/** privacy 不是一张表时按没设过算，与 disableGeminiRelayUsageStatistics 的判断一致。 */
+function geminiUsageStatisticsSetting(parsed: Record<string, unknown>): unknown {
+  return isJsonRecord(parsed.privacy) ? parsed.privacy.usageStatisticsEnabled : undefined
+}
+
+function geminiUsageStatisticsRecordPath(roots: ProviderConfigRoots): string {
+  return path.join(providerConfigRoot('gemini', roots), geminiUsageStatisticsRecordName)
+}
+
+function readGeminiUsageStatisticsRecord(roots: ProviderConfigRoots): string | null {
+  const recordPath = geminiUsageStatisticsRecordPath(roots)
+  assertSafeConfigPath(recordPath, providerConfigRoot('gemini', roots), 'file')
+  return requireConfigText(recordPath, '星芒写过的 Gemini 统计开关记录')
+}
+
+/** 记录读不懂就当没有：宁可留着一个关着的统计，也不替客户打开。 */
+function geminiUsageStatisticsWrittenByUs(record: string | null): boolean {
+  if (!record?.trim()) return false
+  try {
+    const parsed = JSON.parse(record) as unknown
+    return isJsonRecord(parsed) && parsed.version === 1 && parsed.usageStatisticsEnabled === false
+  } catch {
+    return false
   }
+}
+
+/** 写下统计开关时附上这笔记录；已经记着就不重写，免得每次保存多一份 .bak。 */
+function geminiUsageStatisticsRecordPlans(roots: ProviderConfigRoots): FilePlan[] {
+  if (geminiUsageStatisticsWrittenByUs(readGeminiUsageStatisticsRecord(roots))) return []
+  return [{ path: geminiUsageStatisticsRecordPath(roots), content: geminiUsageStatisticsRecordContent }]
+}
+
+/** 切回 Google 账号后这笔记录就用完了，写空（同 Claude 旧设置快照，不删文件）。 */
+function geminiUsageStatisticsRecordClearPlans(record: string | null, roots: ProviderConfigRoots): FilePlan[] {
+  return record?.trim() ? [{ path: geminiUsageStatisticsRecordPath(roots), content: '' }] : []
+}
+
+function restoreGeminiUsageStatistics(parsed: Record<string, unknown>, writtenByUs: boolean): void {
+  const privacy = parsed.privacy
+  if (!writtenByUs || !isJsonRecord(privacy) || privacy.usageStatisticsEnabled !== false) return
+  delete privacy.usageStatisticsEnabled
+  if (Object.keys(privacy).length === 0) delete parsed.privacy
 }
 
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
@@ -2231,6 +2275,7 @@ function createPlans(
       }
       if (cliHook) applyGeminiCliHooks(settings, cliHook)
       return [
+        ...geminiUsageStatisticsRecordPlans(roots),
         {
           path: paths[0],
           content: jsonContent(settings),
@@ -2334,7 +2379,7 @@ function createMergePlans(
     case 'gemini': {
       const plans: FilePlan[] = []
       if (!fs.existsSync(paths[0])) {
-        plans.push(initial(paths[0]))
+        plans.push(...geminiUsageStatisticsRecordPlans(roots), initial(paths[0]))
       } else {
         const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json', 'Gemini CLI')
         // Gemini CLI keeps the auth strategy in settings.json. Updating only
@@ -2345,8 +2390,10 @@ function createMergePlans(
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
+        const statisticsUnset = geminiUsageStatisticsSetting(parsed) === undefined
         disableGeminiRelayUsageStatistics(parsed)
         if (cliHook) applyGeminiCliHooks(parsed, cliHook)
+        if (statisticsUnset) plans.push(...geminiUsageStatisticsRecordPlans(roots))
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -2860,7 +2907,11 @@ function relayTemplateDefaultsPlans(
       fillGeminiRelayTemplateDefaults(parsed, geminiCliCompatibleModel(readEnvValue(paths[1], 'GEMINI_MODEL')))
       dropEmptyCreatedTables(parsed, before)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return []
-      return [{ path: paths[0], content: geminiJsonContent(original, parsed) }]
+      const statisticsAdded = geminiUsageStatisticsSetting(before) === undefined && geminiUsageStatisticsSetting(parsed) === false
+      return [
+        ...(statisticsAdded ? geminiUsageStatisticsRecordPlans(roots) : []),
+        { path: paths[0], content: geminiJsonContent(original, parsed) },
+      ]
     }
     case 'grok': {
       if (requireConfigText(paths[0], '现有 Grok config.toml') === null) return []
@@ -3223,8 +3274,10 @@ function createOfficialAccountPlans(
       return [...restore, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
+      const statisticsRecord = readGeminiUsageStatisticsRecord(roots)
       if (mode === 'reset') {
         return [
+          ...geminiUsageStatisticsRecordClearPlans(statisticsRecord, roots),
           {
             path: paths[0],
             content: jsonContent({
@@ -3245,8 +3298,9 @@ function createOfficialAccountPlans(
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
-        restoreGeminiUsageStatistics(parsed)
+        restoreGeminiUsageStatistics(parsed, geminiUsageStatisticsWrittenByUs(statisticsRecord))
         removeGeminiCliHooks(parsed)
+        plans.push(...geminiUsageStatisticsRecordClearPlans(statisticsRecord, roots))
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')

@@ -8,6 +8,7 @@ import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { managedCliKeyProfiles } from './catalog'
 import type { RelayBackendClient } from './relay-backend'
 import {
+  XINGMANG_AI_CODEX_SKILL_STATE_FILE,
   XINGMANG_AI_CONFIG_FILE,
   XINGMANG_AI_MANAGED_MANIFEST_FILE,
   XINGMANG_AI_DEFAULT_BASE_URL,
@@ -510,6 +511,90 @@ describe('xingmang-ai-skill', () => {
     })).resolves.toEqual({ changed: false, enabled: true })
     await expect(readFile(path.join(userHome, '.codex', 'config.toml'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
+    })
+    await expect(readFile(path.join(userHome, '.codex', XINGMANG_AI_CODEX_SKILL_STATE_FILE), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('leaves a Codex skill the user turned off alone every time Xingmang starts', async () => {
+    const userHome = await temporaryHome()
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    const userOff = [
+      'model = "gpt-5.4"',
+      '',
+      '[[skills.config]]',
+      `path = ${JSON.stringify(resolveXingmangAiCodexSkillPath(userHome))}`,
+      'enabled = false',
+      '',
+    ].join('\n')
+    await mkdir(path.dirname(configPath), { recursive: true })
+    await writeFile(configPath, userOff, 'utf8')
+
+    for (let launch = 0; launch < 2; launch += 1) {
+      await expect(installXingmangAiSkillFiles(bundledRoot, userHome, {
+        officialCodex: false,
+        codexHome: path.dirname(configPath),
+      })).resolves.toMatchObject({ warnings: [] })
+      expect(await readFile(configPath, 'utf8')).toBe(userOff)
+    }
+    expect(JSON.parse(await readFile(path.join(userHome, '.codex', XINGMANG_AI_CODEX_SKILL_STATE_FILE), 'utf8')))
+      .toEqual({ version: 1, offByXingmang: false })
+  })
+
+  it('turns back on only the off it wrote for the ChatGPT account across config swaps', async () => {
+    const userHome = await temporaryHome()
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    const relay = 'model = "relay-model"\n'
+    const userOff = `${relay}\n[[skills.config]]\npath = ${JSON.stringify(resolveXingmangAiCodexSkillPath(userHome))}\nenabled = false\n`
+    await mkdir(path.dirname(configPath), { recursive: true })
+    await writeFile(configPath, relay, 'utf8')
+    const sync = (officialCodex: boolean) => syncXingmangAiSkillCodexAvailability({ userHome, officialCodex, configPath })
+
+    // On the ChatGPT account Xingmang turns the skill off itself.
+    await expect(sync(true)).resolves.toEqual({ changed: true, enabled: false })
+    const chatgptWithOff = await readFile(configPath, 'utf8')
+    // Back on Xingmang the stored relay config returns without that off.
+    await writeFile(configPath, relay, 'utf8')
+    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: true })
+    // The user then turns it off on Xingmang.
+    await writeFile(configPath, userOff, 'utf8')
+    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
+    // ChatGPT again: the stored ChatGPT config already carries the earlier off.
+    await writeFile(configPath, chatgptWithOff, 'utf8')
+    await expect(sync(true)).resolves.toEqual({ changed: false, enabled: false })
+    // Back on Xingmang with the user's own off: it stays off.
+    await writeFile(configPath, userOff, 'utf8')
+    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
+    expect(await readFile(configPath, 'utf8')).toBe(userOff)
+  })
+
+  it('keeps the user\'s off when their relay config is carried into the first ChatGPT config', async () => {
+    const userHome = await temporaryHome()
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    const userOff = `[[skills.config]]\npath = ${JSON.stringify(resolveXingmangAiCodexSkillPath(userHome))}\nenabled = false\n`
+    await mkdir(path.dirname(configPath), { recursive: true })
+    await writeFile(configPath, userOff, 'utf8')
+    const sync = (officialCodex: boolean) => syncXingmangAiSkillCodexAvailability({ userHome, officialCodex, configPath })
+
+    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
+    await expect(sync(true)).resolves.toEqual({ changed: false, enabled: false })
+    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
+    expect(await readFile(configPath, 'utf8')).toBe(userOff)
+  })
+
+  it('treats an off left on the ChatGPT account by an older version as its own', async () => {
+    const userHome = await temporaryHome()
+    const skillPath = resolveXingmangAiCodexSkillPath(userHome)
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    await mkdir(path.dirname(configPath), { recursive: true })
+    await writeFile(configPath, `[[skills.config]]\npath = ${JSON.stringify(skillPath)}\nenabled = false\n`, 'utf8')
+    const sync = (officialCodex: boolean) => syncXingmangAiSkillCodexAvailability({ userHome, officialCodex, configPath })
+
+    await expect(sync(true)).resolves.toEqual({ changed: false, enabled: false })
+    await expect(sync(false)).resolves.toEqual({ changed: true, enabled: true })
+    expect(TOML.parse(await readFile(configPath, 'utf8'))).toEqual({
+      skills: { config: [{ path: skillPath, enabled: true }] },
     })
   })
 
