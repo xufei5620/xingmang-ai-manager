@@ -337,6 +337,21 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python').message).toContain('写不进安装目录')
   })
 
+  it('tells a switch that could not write the config file what to close and which buttons to press (known 29)', () => {
+    // 以前叫人去查安装目录的写入权限，可「改用当前账号」写的是工具的配置文件；
+    // 目录里那句说的「重试」「找客服」在引导里叫「再试一次」「复制给客服」。
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。"
+    const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
+    expect(failure.message).toBe('改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.reason).toBe('写不进配置文件')
+    expect(failure.detail).toContain('EPERM')
+    expect(failure.detail).not.toContain('alice')
+    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/关掉正在用这个工具的窗口后点「再试一次」，还不行就点「需要帮助」。$/)
+    expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
+    // 装东西的几步照旧是安装目录。
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python', true).reason).toBe('写不进安装目录')
+  })
+
   it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
     expect(guideStepFailure(new Error('请先确认账号连接，再打开工具。'), '打开工具').message).toBe('请先确认账号连接，再打开工具。')
     expect(guideStepFailure(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接').message).not.toContain('alice')
@@ -526,5 +541,11 @@ describe('guide switch failure exits', () => {
     expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits('不过账号余额不足，充值后再试。').map((action) => action.id)).toEqual(['recharge'])
     expect(guideFailureExits(new Error('something odd'))).toEqual([])
+  })
+
+  it('keeps the same buttons when the switch could not write the config file (known 29)', () => {
+    // 改的只是那句话：按钮照旧是「再试一次」「复制给客服」和这里的「查看日志」，不多出「找客服」。
+    expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
+      .toEqual([{ id: 'log', label: '查看日志' }])
   })
 })

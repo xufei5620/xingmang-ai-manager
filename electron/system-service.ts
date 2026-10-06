@@ -5413,9 +5413,16 @@ export function createSystemService(
         if (uninstall.delegated) {
           // 包自带的卸载脚本位于用户可写目录，绝不能拿主进程的管理员令牌去跑。
           if (!uninstall.manualCommand) throw new Error('缺少可执行的卸载命令')
+          const name = cliCatalog[provider].name
           await launchUnelevatedCommandWindow({
             commandLine: uninstall.manualCommand,
-            title: `Uninstall ${cliCatalog[provider].packageName}`,
+            // 窗口里的字说中文（已知33）；中间卸载程序自己吐的几行还是英文。
+            text: {
+              title: `星芒：卸载 ${name}`,
+              running: `正在卸载 ${name}，请稍等，别关这个窗口。`,
+              succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
+              failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+            },
             machinePaths: resolveWindowsMachinePaths(),
           })
           return { outcome: 'delegated', previousVersion: initial.status.version }

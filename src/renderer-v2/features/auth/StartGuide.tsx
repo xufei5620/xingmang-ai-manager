@@ -6,7 +6,7 @@ import { guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, of
 import { FirstRunSteps } from '../tools/FirstRun'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
-import { classifyOperationError, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
+import { classifyOperationError, operationTargetOf, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
 import { speaksChinese, supportDetailOf, userFacingErrorMessage } from '../../business-common'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { buildSupportBundle, type SupportFailure, type SupportIdentityInput } from '../app/SupportIdentity'
@@ -165,10 +165,17 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
   // 主进程已经按受限网络的几种情形写好了中文（DNS、证书被替换、门户认证没做完），原样上屏。
   const network = matchNetworkFailureMessage(message)
   if (network) return { message: network, reason: network, detail: guideDetail(error, network) }
-  const key = classifyOperationError(message)
+  // 「改用当前账号」写的是工具的配置文件，没权限时不叫人去查安装目录（已知29）。
+  const key = classifyOperationError(message, operationTargetOf(action))
   // 目录里「超时」那条的标题是「连不上星芒服务器」，这几步多半连的是下载源或本机，
   // 照搬会把人指错方向。
   if (key === 'timeout') return { message: `${action}没有成功：网络连不上。检查网络后点「再试一次」。`, reason: '网络连不上', detail: guideDetail(error, '') }
+  // 目录里那句叫人点错误框的「重试」「找客服」，引导里这两颗按钮叫「再试一次」「复制给客服」。
+  if (key === 'configPermission') {
+    const title = errors[key].title
+    const tail = copyable ? '还不行就点「复制给客服」发给客服。' : '还不行就点「需要帮助」。'
+    return { message: `${action}没有成功：${title}。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，${tail}`, reason: title, detail: guideDetail(error, '') }
+  }
   if (key !== 'unknown') {
     const { title, body } = errors[key]
     return { message: `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }

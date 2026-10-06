@@ -1271,6 +1271,8 @@ function AccountKeys({
   const resource = useResource(load)
   useRefreshRequest(refreshRequest, () => void resource.reload())
   const operation = useOperation()
+  // 「配置到工具」写的是工具的配置文件，没权限时说「写不进配置文件」（已知29）。
+  const configureFailureTarget = operation.failed === 'configure' ? 'config' : undefined
   const keyTotal = resource.data?.page.total
   useEffect(() => {
     if (keyTotal === undefined) return
@@ -1467,7 +1469,7 @@ function AccountKeys({
           </Button>
         }
       />
-      <ResultNotice {...operation} />
+      <ResultNotice {...operation} target={configureFailureTarget} />
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
           tone="warn"
@@ -1819,7 +1821,7 @@ function AccountKeys({
           </>
         }
       >
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice error={operation.error} detail={operation.detail} target={configureFailureTarget} />
         <Select
           aria-label="选择工具"
           options={tools

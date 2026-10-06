@@ -9,11 +9,13 @@ import {
   type WebContents,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
   buildSensitiveWorkspacePrompt,
   classifyWorkspace,
+  resolveRememberedWorkspace,
   sensitiveWorkspaceAsksAtLaunch,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
@@ -150,6 +152,7 @@ import type {
   RendererLogLevel,
   ToolModelCheck,
   ToolTemplateFillResult,
+  UpdateInstallOptions,
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
@@ -263,6 +266,11 @@ export interface IpcRegistrationOptions {
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
   relaunchApp?(): Promise<boolean>
+  /**
+   * 更新页「确认重启安装」（带 askIfInstalling）前问一句有没有工具在装（已知31）：false = 客户点了
+   * 「继续安装」，这次不装。不传 = 不问（测试与旧调用方）。
+   */
+  confirmUpdateInstall?(): Promise<boolean>
   /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
    * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
@@ -384,6 +392,13 @@ export function parseUpdateDownloadOptions(value: unknown): UpdateDownloadOption
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'ignoreDiskSpace')
     || (value.ignoreDiskSpace !== undefined && typeof value.ignoreDiskSpace !== 'boolean')) throw new Error('下载参数格式错误')
   return value.ignoreDiskSpace === true ? { ignoreDiskSpace: true } : {}
+}
+
+export function parseUpdateInstallOptions(value: unknown): UpdateInstallOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'askIfInstalling')
+    || (value.askIfInstalling !== undefined && typeof value.askIfInstalling !== 'boolean')) throw new Error('安装参数格式错误')
+  return value.askIfInstalling === true ? { askIfInstalling: true } : {}
 }
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {
@@ -653,9 +668,13 @@ function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   if (value === undefined) return {}
   if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
   const keys = Object.keys(value)
-  if (keys.some((key) => key !== 'createStarter')) throw new Error('选择工作目录的参数无效')
+  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择工作目录的参数无效')
   if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
-  return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
+  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择工作目录的参数无效')
+  return {
+    ...(value.createStarter === undefined ? {} : { createStarter: value.createStarter }),
+    ...(value.firstOpen === undefined ? {} : { firstOpen: value.firstOpen }),
+  }
 }
 
 export function parseNodeRuntimeInstallRequest(value: unknown): NodeRuntimeInstallRequest {
@@ -1689,6 +1708,7 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
   // 这个调用只是把安装交出去，真装没装上要等安装程序回话；写「完成」会让客服看反馈报告时
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
+  if (channel === 'update:install' && isRecord(result) && result.postponed === true) return '还有工具在装，这次没装新版本'
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
   // 开机先摆的上次结果（已知13）只读了本机一个文件，没检测；写「检测完成」会让客服看反馈报告时
   // 以为这次已经检测过了，真的那轮卡住或没跑完就分不出来。
@@ -2451,13 +2471,36 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.extensionService.setRepositoryContext(workspace)
     options.providerExtensionService.setRepositoryRoot(workspace)
   }
+  // 首页第一次点「打开」（已知40）时主进程已经记着的文件夹：上一次建好、记下了，只是没打开成
+  // （比如终端没起来）。渲染层那份快照要等打开成功才知道记下了哪个，再点「打开」或错误框里的
+  // 「重试」还会带着 firstOpen 来，这时用回它，不再建 my-project-2、-3。被删掉了就当没有。
+  // 和快照里的 rememberedWorkspace 同一个认法（system-service 的 rememberedWorkspaceFor）。
+  function rememberedExistingWorkspace(): string | null {
+    const remembered = resolveRememberedWorkspace(service.readStoredConfig().workspace, {
+      platform: process.platform,
+      home: options.providerRoots?.userHome ?? os.homedir(),
+      defaultWorkspace: os.homedir(),
+    })
+    if (!remembered) return null
+    try {
+      return fs.statSync(remembered).isDirectory() ? remembered : null
+    } catch {
+      return null
+    }
+  }
   registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const chooseOptions = parseChooseWorkspaceOptions(rawOptions)
     // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
     // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
-    const workspace = parseChooseWorkspaceOptions(rawOptions).createStarter
-      ? await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
-      : await pickWorkspace(parentWindow)
+    // 首页第一次点「打开」（已知40）建不成时不让人再点一次：说完接着弹选择器。
+    const workspace = !chooseOptions.createStarter
+      ? await pickWorkspace(parentWindow)
+      : chooseOptions.firstOpen
+        ? rememberedExistingWorkspace()
+          ?? await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
+          ?? await pickWorkspace(parentWindow)
+        : await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
     if (workspace === null) return null
     await rememberWorkspace(workspace)
     return workspace
@@ -2815,7 +2858,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('update:download', (_event, downloadOptions: unknown) => (
     options.updaterService.download(parseUpdateDownloadOptions(downloadOptions))
   ))
-  registerTrustedHandler('update:install', () => options.updaterService.install())
+  registerTrustedHandler('update:install', async (_event, rawOptions: unknown) => {
+    // 重启会打断正在装的工具：客户点了「继续安装」就这次不装，新版本留着（已知31）。只有
+    // 更新页「确认重启安装」要问；「必须更新」那层提示和旧回滚界面不带参数，照旧直接装。
+    const ask = parseUpdateInstallOptions(rawOptions).askIfInstalling === true
+    if (ask && options.confirmUpdateInstall && !await options.confirmUpdateInstall()) return { accepted: true, postponed: true }
+    return options.updaterService.install()
+  })
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (
     options.sessionsService.list(parseSessionListQuery(query))
   ))

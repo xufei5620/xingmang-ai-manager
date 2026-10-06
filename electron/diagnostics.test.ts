@@ -15,6 +15,7 @@ import {
   describeRelocationTarget,
   environmentOverrideNames,
   findRelocatedFolders,
+  homeFolderLeftoversOutcome,
   parseClashTunConfig,
   redactDiagnosticText,
   operatingSystemSummary,
@@ -34,6 +35,7 @@ import {
   type NodeTlsProbeInput,
 } from './diagnostics'
 import type { NodeTlsOutcome } from './certificate-trust-probe'
+import { readProjectInstructionsTemplate } from './project-instructions'
 import { macosShellOverrideVariables } from './system-service'
 
 const temporaryDirectories: string[] = []
@@ -2237,6 +2239,63 @@ describe('diagnostics', () => {
   })
 })
 
+describe('the home folder leftovers check', () => {
+  const instructions = '个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+    + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。'
+
+  it('passes when nothing was left behind', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: [] })).toEqual({
+      state: 'pass',
+      summary: '没有早先留下的项目说明和信任设置',
+      details: { untouchedInstructions: false, trustedBy: null },
+    })
+  })
+
+  it('offers to move the instructions this app left and only mentions trust', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: [] })).toEqual({
+      state: 'warn',
+      summary: instructions,
+      details: { untouchedInstructions: true, trustedBy: null, fix: 'set-aside-home-agents-md' },
+    })
+    const trust = homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude'] })
+    expect(trust.summary).toBe('Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。')
+    expect(trust.details).not.toHaveProperty('fix')
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude', 'codex', 'gemini'] }).summary)
+      .toBe('Claude Code、Codex、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。')
+  })
+
+  it('runs both paragraphs together when both were left behind', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: ['claude', 'gemini'] })).toMatchObject({
+      state: 'warn',
+      summary: `${instructions}Claude Code、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。`,
+      details: { trustedBy: 'claude,gemini', fix: 'set-aside-home-agents-md' },
+    })
+  })
+
+  it('reads what is actually in the home folder and leaves an edited copy out', async () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const template = readProjectInstructionsTemplate(
+      path.join(__dirname, '..', 'bundled-catalog', 'project-instructions', 'AGENTS.zh-CN.md'),
+    )
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), template, 'utf8')
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
+    const input = dependencies(home)
+
+    const found = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(found).toMatchObject({
+      title: '个人文件夹里早先留下的设置',
+      state: 'warn',
+      details: { untouchedInstructions: true, trustedBy: 'claude', fix: 'set-aside-home-agents-md' },
+    })
+
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), `${template}- 我自己的规矩\n`, 'utf8')
+    fs.rmSync(path.join(home, '.claude.json'))
+    const edited = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(edited).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置' })
+  })
+})
+
 describe('the disk space check', () => {
   const gigabyte = 1024 ** 3
 
@@ -2811,6 +2870,30 @@ describe('withAppProxyRoute', () => {
       details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy', systemProxy: '别的机器' },
     })
   })
+
+  it('says the account already goes direct instead of telling the user to quit the proxy', () => {
+    // 已知30：代理开着、只是不转发星芒时，账号和 AI 对话已经自己改了直连，这半不再标黄。
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 }, true)).toEqual({
+      state: 'pass',
+      summary: '电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
+      details: { systemProxy: '本机 7890 端口（开着）' },
+    })
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'remote' }, true).summary)
+      .toBe('电脑里开着代理（用的是别的机器上的代理）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。')
+    // 另外设过代理的那半照旧标黄、照旧接在后面。
+    const withVariables = withAppProxyRoute({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器' },
+    }, { reach: 'open', port: 7890 }, true)
+    expect(withVariables.state).toBe('warn')
+    expect(withVariables.summary).toBe('电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。'
+      + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。')
+    // 代理没开的那种照旧：装工具这些还跟着系统代理走。
+    const closed = withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'closed', port: 7890 }, true)
+    expect(closed.state).toBe('warn')
+    expect(closed.summary).toContain('但它现在没开')
+  })
 })
 
 describe('diagnostics system proxy', () => {
@@ -2828,6 +2911,18 @@ describe('diagnostics system proxy', () => {
       state: 'warn',
       summary: '电脑里开着代理（本机 7897 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
       details: { systemProxy: '本机 7897 端口（开着）' },
+    })
+  })
+
+  it('reports the direct account route the proxy bypass already took', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
+    input.probeLoopbackProxy = async () => true
+    input.siteDirectActive = () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      state: 'pass',
+      summary: '电脑里开着代理（本机 7897 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
     })
   })
 
