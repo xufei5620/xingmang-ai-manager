@@ -498,6 +498,18 @@ function skipClaudeWebFetchPreflight(parsed: Record<string, unknown>): void {
   parsed.skipWebFetchPreflight = true
 }
 
+/**
+ * 新客户的模板一直写「不逐条确认」。Claude Code 2.1.283 起接第三方中转、又没写
+ * permissions.defaultMode 的会话进自动模式，有些命令会停下来问「允许吗」；先装过 Claude
+ * Code 再接星芒的老客户走合并写入，以前没补这一项，升上去就会被问。没写才补，写过任何
+ * 模式的一律不动（2026-10-06 yoyo 定）。skipDangerousModePermissionPrompt 一并补上，
+ * 否则交互会话一打开先弹一屏英文的「绕过权限模式」确认。
+ */
+function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissions: Record<string, unknown>): void {
+  if (permissions.defaultMode === undefined) permissions.defaultMode = 'bypassPermissions'
+  if (parsed.skipDangerousModePermissionPrompt === undefined) parsed.skipDangerousModePermissionPrompt = true
+}
+
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
 // 在后台自更新，Gemini CLI 的 general.enableAutoUpdate 默认 true、启动就 npm install -g
 // 最新版，Codex 与 Grok 启动时催更并给出 npm 命令。装到的版本一旦被 CLI 自己换掉，名单
@@ -2427,7 +2439,9 @@ function createMergePlans(
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
-      denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
+      const permissions = ensureRecord(parsed, 'permissions')
+      denyClaudeRelayTool(permissions)
+      skipClaudeCommandConfirmation(parsed, permissions)
       skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
@@ -2868,7 +2882,8 @@ export function saveProviderConfig(
 // 这个号记在工具配置来源记录里（tool-config-ownership.ts）：记录落后于它、来源又确认是
 // 当前账号的配置，开机时由 fillRelayTemplateDefaults 补一次缺省项。往下面那几个
 // fill*RelayTemplateDefaults 里加了新的一项，就把这个号加一，否则老客户拿不到。
-export const relayTemplateRevision = 1
+// 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
+export const relayTemplateRevision = 2
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
 function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -2891,6 +2906,7 @@ function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void 
   if (env && env.DISABLE_AUTOUPDATER === undefined) disableClaudeSelfUpdate(env)
   const permissions = fillableRecord(parsed, 'permissions')
   if (permissions && (permissions.deny === undefined || Array.isArray(permissions.deny))) denyClaudeRelayTool(permissions)
+  if (permissions) skipClaudeCommandConfirmation(parsed, permissions)
   if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
   ensureClaudeResponseLanguage(parsed)
   extendClaudeSessionRetention(parsed)
