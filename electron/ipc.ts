@@ -2473,9 +2473,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // 首页第一次点「打开」（已知40）时主进程已经记着的文件夹：上一次建好、记下了，只是没打开成
   // （比如终端没起来）。渲染层那份快照要等打开成功才知道记下了哪个，再点「打开」或错误框里的
   // 「重试」还会带着 firstOpen 来，这时用回它，不再建 my-project-2、-3。被删掉了就当没有。
+  // 和快照里的 rememberedWorkspace 同一个认法（system-service 的 rememberedWorkspaceFor）。
   function rememberedExistingWorkspace(): string | null {
-    const home = os.homedir()
-    const remembered = resolveRememberedWorkspace(service.readStoredConfig().workspace, { platform: process.platform, home, defaultWorkspace: home })
+    const remembered = resolveRememberedWorkspace(service.readStoredConfig().workspace, {
+      platform: process.platform,
+      home: options.providerRoots?.userHome ?? os.homedir(),
+      defaultWorkspace: os.homedir(),
+    })
     if (!remembered) return null
     try {
       return fs.statSync(remembered).isDirectory() ? remembered : null
