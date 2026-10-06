@@ -739,6 +739,24 @@ describe('diagnostics', () => {
         expect(service.reportDirectFailure).not.toHaveBeenCalled()
       })
 
+      it('moves on when the proxy refuses the direct address or something other than the service answers on direct', async () => {
+        const answers: Array<{ direct: () => Response; reported: string }> = [
+          // 只放行老域名的公司网关：代理对直连域名的 CONNECT 回 403。
+          { direct: () => { throw new TypeError('fetch failed', { cause: new Error('net::ERR_TUNNEL_CONNECTION_FAILED') }) }, reported: 'ERR_TUNNEL_CONNECTION_FAILED' },
+          { direct: () => { throw new TypeError('fetch failed', { cause: new Error('unexpected redirect') }) }, reported: 'intercepted' },
+          { direct: () => new Response('<html>上网认证</html>', { status: 200, headers: { 'content-type': 'text/html' } }), reported: 'intercepted' },
+          { direct: () => new Response('请先认证', { status: 200, headers: { 'content-type': 'text/plain' } }), reported: 'intercepted' },
+          { direct: () => new Response('<html>Access denied</html>', { status: 403, headers: { 'content-type': 'text/html' } }), reported: 'intercepted' },
+        ]
+        for (const { direct, reported } of answers) {
+          const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+          input.fetch = vi.fn(async (url: string | URL | Request) => String(url) === 'https://xm-direct.solov.cc/api/status' ? direct() : statusJson())
+
+          expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
+          expect(reportDirectFailure).toHaveBeenCalledWith(reported)
+        }
+      })
+
       it('keeps the direct verdict when the default line does not answer either', async () => {
         const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         input.fetch = vi.fn(async () => { throw refused() })

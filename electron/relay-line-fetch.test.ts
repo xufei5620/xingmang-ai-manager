@@ -3,6 +3,7 @@ import {
   createRelayLineFetch,
   createRelayObservedFetch,
   relayDirectSlowResponseMs,
+  relayLineFailureAnswer,
   relayLineFailureReason,
   type RelayLineRouter,
 } from './relay-line-fetch'
@@ -37,6 +38,26 @@ function json(status: number, body: unknown = {}): Response {
 
 function page(status: number): Response {
   return new Response('<html>blocked</html>', { status, headers: { 'content-type': 'text/html' } })
+}
+
+function opaqueRedirect(): Response {
+  const response = new Response(null, { status: 200 })
+  Object.defineProperties(response, { type: { value: 'opaqueredirect' }, status: { value: 0 } })
+  return response
+}
+
+// 回了话、正文读到一半断了，跟 AI 回复写到一半连接断了一样。
+function cutReply(onPull?: () => void): Response {
+  let sent = false
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      onPull?.()
+      if (sent) controller.error(new TypeError('terminated', { cause: new Error('net::ERR_CONNECTION_RESET') }))
+      else controller.enqueue(new TextEncoder().encode('data: {"choices":[]}\n\n'))
+      sent = true
+    },
+  })
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
 function sentUrls(base: ReturnType<typeof vi.fn>): string[] {
@@ -110,18 +131,22 @@ describe('createRelayLineFetch', () => {
     expect(JSON.stringify(log.mock.calls)).not.toContain('sk-fixture')
   })
 
-  it('falls back for gateway pages and an allowlist 404, never for answers the service itself gave', async () => {
+  it('falls back for gateway pages, pages someone else answered with and an allowlist 404, never for answers the service itself gave', async () => {
     const cases: Array<{ answer: () => Response; fellBack: boolean; reported: string | null }> = [
       { answer: () => page(502), fellBack: true, reported: 'http-502' },
       { answer: () => page(504), fellBack: true, reported: 'http-504' },
       // 白名单挡下的是那一个接口，直连本身是通的：改走默认线路，但不报。
       { answer: () => page(404), fellBack: true, reported: null },
+      // 公司网关、上网认证替服务答的话：拦的可能只是直连域名。
+      { answer: () => page(200), fellBack: true, reported: 'intercepted' },
+      { answer: () => page(403), fellBack: true, reported: 'intercepted' },
+      { answer: () => page(500), fellBack: true, reported: 'intercepted' },
+      { answer: opaqueRedirect, fellBack: true, reported: 'intercepted' },
       { answer: () => json(404, { error: 'Invalid URL' }), fellBack: false, reported: null },
       { answer: () => json(503, { error: 'busy' }), fellBack: false, reported: null },
       { answer: () => json(401), fellBack: false, reported: null },
       { answer: () => json(403), fellBack: false, reported: null },
       { answer: () => json(429), fellBack: false, reported: null },
-      { answer: () => page(500), fellBack: false, reported: null },
     ]
     for (const { answer, fellBack, reported } of cases) {
       const { router, reports } = fakeRouter()
@@ -146,13 +171,14 @@ describe('createRelayLineFetch', () => {
       return { outcome, sent: sentUrls(base), reports }
     }
 
-    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CONNECTION_TIMED_OUT']) {
+    // 代理回绝了直连这个地址（ERR_TUNNEL_CONNECTION_FAILED）：连接都没建起来。
+    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TUNNEL_CONNECTION_FAILED']) {
       const result = await post(networkError(code))
       expect(result.outcome).toBe(200)
       expect(result.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
     }
-    // 送出去以后才断的：可能已经下了单，不重发。
-    for (const code of ['ERR_CONNECTION_RESET', 'ERR_TIMED_OUT', 'ERR_EMPTY_RESPONSE', 'ERR_NETWORK_CHANGED']) {
+    // 送出去以后才断的、被跳转到别处的：可能已经下了单，不重发。
+    for (const code of ['ERR_CONNECTION_RESET', 'ERR_TIMED_OUT', 'ERR_EMPTY_RESPONSE', 'ERR_NETWORK_CHANGED', 'ERR_UNSAFE_REDIRECT']) {
       const result = await post(networkError(code))
       expect(result.outcome).toBeInstanceOf(TypeError)
       expect(result.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay'])
@@ -162,19 +188,33 @@ describe('createRelayLineFetch', () => {
     expect(gateway.outcome).toBe(502)
     expect(gateway.sent).toHaveLength(1)
     expect(gateway.reports).toEqual([['solov', 'http-502']])
+    const intercepted = await post(page(200))
+    expect(intercepted.outcome).toBe(200)
+    expect(intercepted.sent).toHaveLength(1)
+    expect(intercepted.reports).toEqual([['solov', 'intercepted']])
     const blocked = await post(page(404))
     expect(blocked.outcome).toBe(200)
     expect(blocked.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
   })
 
-  it('leaves proxy and portal failures and the caller\'s own abort to the caller', async () => {
-    for (const code of ['ERR_TUNNEL_CONNECTION_FAILED', 'ERR_PROXY_CONNECTION_FAILED', 'ERR_UNSAFE_REDIRECT']) {
+  it('falls back when the proxy refuses the direct address or a portal redirects it', async () => {
+    for (const code of ['ERR_TUNNEL_CONNECTION_FAILED', 'ERR_UNSAFE_REDIRECT']) {
       const { router, reports } = fakeRouter()
-      const base = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError(code))
-      await expect(createRelayLineFetch(router, base)('https://xm.solov.cc/api/status')).rejects.toThrow('fetch failed')
-      expect(base).toHaveBeenCalledTimes(1)
-      expect(reports).toEqual([])
+      const base = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError(code)).mockResolvedValueOnce(json(200))
+      expect((await createRelayLineFetch(router, base)('https://xm.solov.cc/api/status')).status).toBe(200)
+      expect(sentUrls(base)).toEqual(['https://xm-direct.solov.cc/api/status', 'https://xm.solov.cc/api/status'])
+      expect(reports).toEqual([['solov', code]])
     }
+  })
+
+  it('leaves a proxy that is not running and the caller\'s own abort to the caller', async () => {
+    // 代理软件本身没开，换哪条线路都一样（归 proxy-bypass.ts 管）。
+    const proxyOff = fakeRouter()
+    const proxyBase = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_PROXY_CONNECTION_FAILED'))
+    await expect(createRelayLineFetch(proxyOff.router, proxyBase)('https://xm.solov.cc/api/status')).rejects.toThrow('fetch failed')
+    expect(proxyBase).toHaveBeenCalledTimes(1)
+    expect(proxyOff.reports).toEqual([])
+
     for (const abortMeansUnreachable of [false, true]) {
       const { router, reports } = fakeRouter()
       const caller = new AbortController()
@@ -188,6 +228,39 @@ describe('createRelayLineFetch', () => {
       // 账号请求只会因为等太久而中止，那正说明直连不通；AI 对话中止多半是客户点了「停止」。
       expect(reports).toEqual(abortMeansUnreachable ? [['solov', 'timeout']] : [])
     }
+  })
+
+  it('reports a reply cut midway without resending it, unless the caller stopped it', async () => {
+    const cut = fakeRouter()
+    const cutBase = vi.fn<typeof fetch>(async () => cutReply())
+    const reply = await createRelayLineFetch(cut.router, cutBase)('https://xm.solov.cc/v1/chat/completions', { method: 'POST', body: '{}' })
+    await expect(reply.text()).rejects.toThrow('terminated')
+    expect(cutBase).toHaveBeenCalledTimes(1)
+    expect(cut.reports).toEqual([['solov', 'body']])
+
+    // 客户点了「停止」：不算直连的毛病；账号请求只会因为等太久而中止，算。
+    for (const abortMeansUnreachable of [false, true]) {
+      const { router, reports } = fakeRouter()
+      const caller = new AbortController()
+      const base = vi.fn<typeof fetch>(async () => cutReply(() => caller.abort()))
+      const response = await createRelayLineFetch(router, base, { abortMeansUnreachable })('https://xm.solov.cc/api/user/self', { signal: caller.signal })
+      await expect(response.text()).rejects.toThrow('terminated')
+      expect(reports).toEqual(abortMeansUnreachable ? [['solov', 'body']] : [])
+    }
+  })
+
+  it('keeps a redirected answer recognisable for the caller to reject when direct is chosen automatically', async () => {
+    const { router, reports } = fakeRouter()
+    const redirected = json(200)
+    Object.defineProperties(redirected, {
+      redirected: { value: true },
+      url: { value: 'https://elsewhere.example/login' },
+    })
+    const response = await createRelayLineFetch(router, vi.fn<typeof fetch>(async () => redirected))('https://xm.solov.cc/api/user/self')
+    expect(response.redirected).toBe(true)
+    expect(response.url).toBe('https://elsewhere.example/login')
+    expect(await response.json()).toEqual({})
+    expect(reports).toEqual([])
   })
 
   it('cuts a read still waiting on direct when the line moves and resends it on the default line', async () => {
@@ -268,7 +341,23 @@ describe('createRelayObservedFetch', () => {
     expect(log).toHaveBeenCalledWith('warn', 'relay.line.blocked', expect.any(String), { siteId: 'solov', method: 'GET', path: '/v1/countTokens' })
   })
 
-  it('stays silent for the default line, a pinned site, a proxy failure and a caller abort', async () => {
+  it('reports a refused tunnel, a page someone else answered with and a reply cut midway', async () => {
+    const { router, reports } = fakeRouter()
+    const base = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_TUNNEL_CONNECTION_FAILED'))
+      .mockResolvedValueOnce(page(200))
+      .mockResolvedValueOnce(cutReply())
+    const observed = createRelayObservedFetch(router, base)
+
+    await expect(observed('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect((await observed('https://xm-direct.solov.cc/v1/models')).status).toBe(200)
+    await expect((await observed('https://xm-direct.solov.cc/v1/chat/completions', { method: 'POST', body: '{}' })).text()).rejects.toThrow('terminated')
+
+    expect(base).toHaveBeenCalledTimes(3)
+    expect(reports).toEqual([['solov', 'ERR_TUNNEL_CONNECTION_FAILED'], ['solov', 'intercepted'], ['solov', 'body']])
+  })
+
+  it('stays silent for the default line, a pinned site, a proxy that is not running and a caller abort', async () => {
     const auto = fakeRouter()
     const base = vi.fn<typeof fetch>().mockRejectedValue(networkError('ERR_CONNECTION_REFUSED'))
     const observed = createRelayObservedFetch(auto.router, base)
@@ -276,13 +365,27 @@ describe('createRelayObservedFetch', () => {
     const caller = new AbortController()
     caller.abort()
     await expect(observed('https://xm-direct.solov.cc/v1/models', { signal: caller.signal })).rejects.toThrow('fetch failed')
-    base.mockRejectedValueOnce(networkError('ERR_TUNNEL_CONNECTION_FAILED'))
+    base.mockRejectedValueOnce(networkError('ERR_PROXY_CONNECTION_FAILED'))
     await expect(observed('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    const stopped = new AbortController()
+    base.mockResolvedValueOnce(cutReply(() => stopped.abort()))
+    await expect((await observed('https://xm-direct.solov.cc/v1/models', { signal: stopped.signal })).text()).rejects.toThrow('terminated')
     expect(auto.reports).toEqual([])
 
     const pinned = fakeRouter('direct', false)
     await expect(createRelayObservedFetch(pinned.router, base)('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
     expect(pinned.reports).toEqual([])
+  })
+})
+
+describe('relayLineFailureAnswer', () => {
+  it('names the answers another line could avoid and leaves the service\'s own answers and an allowlist 404 alone', () => {
+    expect(relayLineFailureAnswer(page(502))).toBe('http-502')
+    expect(relayLineFailureAnswer(page(200))).toBe('intercepted')
+    expect(relayLineFailureAnswer(opaqueRedirect())).toBe('intercepted')
+    expect(relayLineFailureAnswer(page(404))).toBeNull()
+    expect(relayLineFailureAnswer(json(503))).toBeNull()
+    expect(relayLineFailureAnswer(cutReply())).toBeNull()
   })
 })
 
@@ -293,8 +396,10 @@ describe('relayLineFailureReason', () => {
     expect(relayLineFailureReason(networkError('ERR_CERT_DATE_INVALID'))).toBe('certDate')
     expect(relayLineFailureReason(networkError('ERR_CONNECTION_RESET'))).toBe('refused')
     expect(relayLineFailureReason(networkError('ERR_INTERNET_DISCONNECTED'))).toBe('offline')
-    expect(relayLineFailureReason(networkError('ERR_TUNNEL_CONNECTION_FAILED'))).toBeNull()
-    expect(relayLineFailureReason(networkError('ERR_UNSAFE_REDIRECT'))).toBeNull()
+    // 代理回绝了这个地址，换一条线路有可能放行；代理软件本身没开换哪条都一样。
+    expect(relayLineFailureReason(networkError('ERR_TUNNEL_CONNECTION_FAILED'))).toBe('proxy')
+    expect(relayLineFailureReason(networkError('ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
+    expect(relayLineFailureReason(networkError('ERR_UNSAFE_REDIRECT'))).toBe('intercepted')
     expect(relayLineFailureReason(new Error('余额不足'))).toBeNull()
   })
 })

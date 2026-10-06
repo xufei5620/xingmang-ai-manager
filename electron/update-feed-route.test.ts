@@ -145,11 +145,14 @@ describe('classifyDirectFeedFailure', () => {
     expect(classifyDirectFeedFailure(new Error('net::ERR_CONNECTION_REFUSED'))).toEqual({ reason: 'ERR_CONNECTION_REFUSED', lineFailure: true })
     expect(classifyDirectFeedFailure(new Error('net::ERR_NAME_NOT_RESOLVED'))).toEqual({ reason: 'ERR_NAME_NOT_RESOLVED', lineFailure: true })
     expect(classifyDirectFeedFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))).toEqual({ reason: 'timeout', lineFailure: true })
+    // 只放行老地址的公司网关回绝了直连这个地址：包里那份有可能放行。
+    expect(classifyDirectFeedFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))).toEqual({ reason: 'ERR_TUNNEL_CONNECTION_FAILED', lineFailure: true })
   })
 
   it('does not blame the line for a failure that switching lines cannot fix', () => {
     expect(classifyDirectFeedFailure(new Error('sha512 checksum mismatch'))).toBeNull()
     expect(classifyDirectFeedFailure(new Error('net::ERR_ABORTED'))).toBeNull()
+    expect(classifyDirectFeedFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
     expect(classifyDirectFeedFailure(null)).toBeNull()
   })
 })

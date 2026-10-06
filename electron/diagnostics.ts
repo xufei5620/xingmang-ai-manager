@@ -47,7 +47,7 @@ import {
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
-import { isRelayLineFailureReason } from './relay-line-fetch'
+import { relayLineFailureAnswer, relayLineFailureReason } from './relay-line-fetch'
 import { relayApiProbeBaseUrl, relayEndpointForUrl, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite, type RelayEndpointId, type RelayRouteLines, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -1233,12 +1233,16 @@ type RelayStatusProbe =
   | { kind: 'answered'; endpoint: string; response: Response; body: string }
   | { kind: 'failed'; endpoint: string; reason: NetworkFailureReason; error: unknown }
 
-// 直连那一次换成默认线路有可能查得通：连不上一类的失败，或者直连回的网关错误页、白名单挡下的网页
-// （同 relay-line-fetch.ts 的退回条件）。服务回的 JSON 错误是服务那一侧的事，两条线路一样。
-function relayLineFailed(probe: RelayStatusProbe): boolean {
-  if (probe.kind === 'failed') return isRelayLineFailureReason(probe.reason)
-  const { status, headers } = probe.response
-  return (status === 404 || status === 502 || status === 503 || status === 504) && !isJsonContentType(headers.get('content-type'))
+// 直连那一次换成默认线路有可能查得通：连不上一类的失败（含代理回绝了直连这个地址），或者直连回的
+// 不是星芒的回话（网关错误页、拦截页），同 relay-line-fetch.ts 的退回条件；白名单挡下的网页 404 也算，
+// 检查页要知道的是这会儿连不连得上。状态接口正常时一定回 JSON，回了 200 却读不出 JSON 的，同下面
+// 认拦截的口径。服务回的 JSON 错误是服务那一侧的事，两条线路一样。给出报给线路那边的原因，不然 null。
+function relayLineFailure(probe: RelayStatusProbe): string | null {
+  if (probe.kind === 'failed') return relayLineFailureReason(probe.error) ? networkFailureCode(probe.error) ?? probe.reason : null
+  const { response, body } = probe
+  if (response.status === 404 && !isJsonContentType(response.headers.get('content-type'))) return 'http-404'
+  if (response.ok && !parsesAsJson(body)) return 'intercepted'
+  return relayLineFailureAnswer(response)
 }
 
 /**
@@ -2188,17 +2192,16 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           : signal)
         let line: RelayEndpointId | null = route?.line ?? null
         let fellBack = false
-        if (route && directFirst && relayLineFailed(probe)) {
-          route.reportDirectFailure(probe.kind === 'failed'
-            ? networkFailureCode(probe.error) ?? probe.reason
-            : `http-${probe.response.status}`)
+        const directFailure = route && directFirst ? relayLineFailure(probe) : null
+        if (route && directFailure) {
+          route.reportDirectFailure(directFailure)
           // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
           relayAnswered = false
           const retry = await probeStatus(route.primarySite, signal).catch(() => null)
           // 默认线路也没查通就照直连那次的结论说：用的是直连，说的就是直连那边的事。
           if (retry?.kind === 'answered' && retry.response.ok && parsesAsJson(retry.body)) {
             log?.('info', 'diagnostics.network.fallback', '直连这次没查通，默认线路查通了', {
-              reason: probe.kind === 'failed' ? probe.reason : `http-${probe.response.status}`,
+              reason: probe.kind === 'failed' ? probe.reason : directFailure,
             })
             probe = retry
             line = 'primary'

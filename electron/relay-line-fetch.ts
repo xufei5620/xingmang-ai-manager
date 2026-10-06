@@ -5,18 +5,21 @@
  * sub2api-relay-backend.ts 里都写死着默认线路），这里按这个站这会儿走的线路换掉地址。选
  * 「自动」、这会儿走直连时，直连没走通就当场改走默认线路重发一次：
  *
- * - 会退回的：解析不出地址、连不上、TLS 握手失败、连接被断、超时；网关 502/503/504 回的网页；
- *   直连回的网页形式的 404（白名单挡下了这个接口，只记日志，不算直连坏了）。
- * - 不退回的：401、403、429、余额不足这些业务错误（服务回的是 JSON），代理软件、上网认证这些
- *   跟线路无关的，以及调用方自己中止的。
+ * - 会退回的：解析不出地址、连不上、TLS 握手失败、连接被断、超时；代理回绝了直连这个地址（只放行
+ *   老域名的公司网关、按域名列规则的代理）；网关 502/503/504 回的网页；直连回的别的网页或跳转（拦截页、
+ *   上网认证）；直连回的网页形式的 404（白名单挡下了这个接口，只记日志，不算直连坏了）。
+ * - 不退回的：401、403、429、余额不足这些业务错误（服务回的是 JSON），代理软件本身没开（换哪条都一样，
+ *   归 proxy-bypass.ts 管），以及调用方自己中止的。
  * - 会改动数据的请求（下单、建 Key、充值、AI 生成）只在请求肯定还没送到服务器时才重发：解析
- *   不出、连不上、TLS 失败、白名单 404。送出去以后才断的不重发，免得重复下单、重复扣费。
+ *   不出、连不上、TLS 失败、代理回绝、白名单 404。送出去以后才断的不重发，免得重复下单、重复扣费。
+ * - 回了话以后正文读到一半断了（AI 回复写到一半）：已经交给调用方的回应没法重发，只报给线路那边查一次。
  *
  * 写进工具配置之前那几次查模型、工具自检用的是另一个（createRelayObservedFetch）：它们查的
  * 正是那条线路通不通，不换地址也不重发，只把直连上的失败报给线路那边。
  */
-import { classifyNetworkFailure, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
 import { relayEndpointForUrl, relayEndpointOrigin, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { watchResponseBody } from './response-body-watch'
 
 export interface RelayLineRouter {
   /** 一个站这会儿走哪条线路；automatic 为真时（「自动」）直连没走通可以改走默认线路。 */
@@ -43,15 +46,24 @@ export interface RelayLineFetchOptions {
  */
 export const relayDirectSlowResponseMs = 3_000
 
-// 这些错误码出现时请求肯定还没送到服务器：连接都没建起来。
+/**
+ * 代理回绝了这一个地址：代理对 CONNECT 回 403、502 时 Chromium 报的是它（第三十八批在 Electron 上实测过），
+ * 归类和代理软件没开一样是 proxy。只放行老域名的公司网关、按域名列规则的代理碰上直连域名就是这样，
+ * 换默认线路有可能走得通；代理软件没开（ERR_PROXY_CONNECTION_FAILED）换哪条都一样。
+ */
+const tunnelRefusedCode = 'ERR_TUNNEL_CONNECTION_FAILED'
+
+// 这些错误码出现时请求肯定还没送到服务器：连接都没建起来，或者代理没放它过去。
 const unsentFailureCodes: ReadonlySet<string> = new Set([
   'ERR_NAME_NOT_RESOLVED', 'ERR_NAME_RESOLUTION_FAILED', 'ENOTFOUND', 'EAI_AGAIN',
   'ERR_CONNECTION_REFUSED', 'ECONNREFUSED', 'ERR_ADDRESS_UNREACHABLE', 'ERR_CONNECTION_FAILED',
   'ERR_CONNECTION_TIMED_OUT', 'ERR_INTERNET_DISCONNECTED', 'ENETDOWN', 'ENETUNREACH', 'EHOSTUNREACH',
+  tunnelRefusedCode,
 ])
 
-// 跟线路有关的失败：换一条线路有可能走得通。代理软件、上网认证、服务自己说暂时不可用（JSON）不算。
-const lineFailureReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'timeout'])
+// 跟线路有关的失败：换一条线路有可能走得通（被拦到别的页面也算：拦的可能只是直连域名）。代理软件
+// 本身没开、服务自己说暂时不可用（JSON）不算。
+const lineFailureReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'timeout', 'intercepted'])
 
 const gatewayStatuses: ReadonlySet<number> = new Set([502, 503, 504])
 
@@ -89,14 +101,26 @@ function gatewayFailure(response: Response): boolean {
   return gatewayStatuses.has(response.status) && !isJsonContentType(response.headers.get('content-type'))
 }
 
-export function isRelayLineFailureReason(reason: NetworkFailureReason): boolean {
-  return lineFailureReasons.has(reason)
+/** 直连回的不是星芒的回话：网页（拦截页、上网认证页、网关的错误页）或者跳转。 */
+function answeredBySomeoneElse(response: Response): boolean {
+  return response.type === 'opaqueredirect' || isHtmlContentType(response.headers.get('content-type'))
+}
+
+/**
+ * 直连上的这个回应说明直连这会儿没走通，就给出报给线路那边的原因（白名单 404 只挡这一个接口，不报，
+ * 由调用方另说）；服务自己回的话（JSON，流式正文）给 null。检查页也按这个认。
+ */
+export function relayLineFailureAnswer(response: Response): string | null {
+  if (gatewayFailure(response)) return `http-${response.status}`
+  if (blockedByAllowlist(response)) return null
+  return answeredBySomeoneElse(response) ? 'intercepted' : null
 }
 
 /** 换一条线路有可能走得通的失败（检查页、更新检查也按这个认）；别的返回 null。 */
 export function relayLineFailureReason(error: unknown): NetworkFailureReason | null {
   if (error instanceof Error && error.name === 'TimeoutError') return 'timeout'
   const reason = classifyNetworkFailure(error)
+  if (reason === 'proxy') return networkFailureCode(error) === tunnelRefusedCode ? reason : null
   return reason && lineFailureReasons.has(reason) ? reason : null
 }
 
@@ -199,14 +223,20 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
       log('warn', 'relay.line.blocked', '直连没放行这个接口，这次改走默认线路', { siteId, method, path })
       return fallBack('allowlist-404')
     }
-    if (gatewayFailure(response)) {
-      router.reportDirectFailure(siteId, `http-${response.status}`)
+    const failure = relayLineFailureAnswer(response)
+    if (failure) {
+      router.reportDirectFailure(siteId, failure)
       if (idempotent) {
         await discard(response)
-        return fallBack(`http-${response.status}`)
+        return fallBack(failure)
       }
     }
-    return asRequested(response, sent, requested)
+    // 回了话以后正文读到一半断了：这一次没法重发，只报给线路那边查一次直连。调用方自己中止的不算，
+    // 账号请求除外（同上）。
+    const watched = watchResponseBody(response, () => {
+      if (options.abortMeansUnreachable || !callerSignal?.aborted) router.reportDirectFailure(siteId, 'body')
+    })
+    return asRequested(watched, sent, requested)
   }
   return fetchOnLine
 }
@@ -231,7 +261,8 @@ export function createRelayObservedFetch(router: RelayLineRouter, base: typeof f
       if (reason) router.reportDirectFailure(siteId, networkFailureCode(error) ?? reason)
       throw error
     }
-    if (gatewayFailure(response)) router.reportDirectFailure(siteId, `http-${response.status}`)
+    const failure = relayLineFailureAnswer(response)
+    if (failure) router.reportDirectFailure(siteId, failure)
     else if (blockedByAllowlist(response)) {
       try {
         options.log?.('warn', 'relay.line.blocked', '直连没放行这个接口', {
@@ -239,6 +270,8 @@ export function createRelayObservedFetch(router: RelayLineRouter, base: typeof f
         })
       } catch { /* 记日志失败不影响请求 */ }
     }
-    return response
+    return watchResponseBody(response, () => {
+      if (!init?.signal?.aborted) router.reportDirectFailure(siteId, 'body')
+    })
   }
 }
