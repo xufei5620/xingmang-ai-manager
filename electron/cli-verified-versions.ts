@@ -67,7 +67,7 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
       version: '2.1.291',
       verifiedAt: '2026-10-06',
       verifiedSites: [],
-      note: '当前 npm latest;2.1.278~2.1.291 没有新的网关回归,修了中转断流被当成完成、重复流事件让工具调用跑两遍、工具返回非文本后每轮 400、网关拒收 structured outputs 时标题与记忆失败、网关拒收 beta 头时请求失败,2.1.291 修了 2.1.288 起退出时丢最后几条消息;2.1.285 起接自定义 ANTHROPIC_BASE_URL 时上下文按 1M 算(以前 200K),配置里写 CLAUDE_CODE_DISABLE_1M_CONTEXT 压回 200K',
+      note: '当前 npm latest;2.1.278~2.1.291 没有新的网关回归,修了中转断流被当成完成、重复流事件让工具调用跑两遍、工具返回非文本后每轮 400、网关拒收 structured outputs 时标题与记忆失败、网关拒收 beta 头时请求失败,2.1.291 修了 2.1.288 起退出时丢最后几条消息;2.1.285 起接自定义 ANTHROPIC_BASE_URL 时上下文按 1M 算(以前 200K),中转支持 1M,配置不压',
       userNote: '修好了几个会让回答中途断掉、或者每次提问都失败的问题',
     },
     blocked: [

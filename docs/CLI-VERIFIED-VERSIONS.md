@@ -139,7 +139,6 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
 | Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
-| Claude 的上下文窗口 | `env.CLAUDE_CODE_DISABLE_1M_CONTEXT` | 2.1.285 起接自定义 base URL 时按 1M 算 | `'1'`，压回 200K（用户写过就不动；切回官方删掉） | 中转的 Opus / Sonnet 没确认收得下超过 200K 的请求，超了整轮失败 |
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
@@ -413,13 +412,12 @@ npm `latest` 是 2.1.281（2.1.279 没发过）。上游 changelog 2.1.278、2.1
 模板写死 `permissions.defaultMode: 'bypassPermissions'`；2.1.284 把 Sonnet 5.5 设为 API 上的默认 Sonnet，
 模板用 `modelPicker` 整份换掉菜单、`ANTHROPIC_DEFAULT_MODEL` 自己写。
 
-**要中转那边回答的一条**：2.1.285 原文 *Changed sessions behind a custom `ANTHROPIC_BASE_URL` to use the 1M
+**上下文窗口变了（2.1.285）**：原文 *Changed sessions behind a custom `ANTHROPIC_BASE_URL` to use the 1M
 context window of models that have one (Opus 4.7+, Sonnet 5+, Fable); run `/autocompact 200k` if your gateway
 stops at 200K*。沙箱里按模板写配置跑 `claude -p /context`：2.1.277 显示 `1.9k / 200k`，2.1.289 显示
-`2k / 1m`——也就是到 200K 附近不再自动压缩，要一路涨到 1M 才压。中转的 Claude 渠道要是只收 200K，长对话会
-撑到中转回「太长」才失败。在 `env` 里写 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 后 2.1.289 又显示 `2k / 200k`，
-请求照常。2026-10-06 定下压回 200K：模板、合并写入与启动补默认都写这一项（用户自己写过的值不动，
-切回官方账号时删掉），见下表「Claude 的上下文窗口」。
+`2k / 1m`——也就是到 200K 附近不再自动压缩，要一路涨到 1M 才压。2026-10-06 yoyo 确认中转支持 1M 上下文，
+所以模板不压，交给 Claude Code 按 1M 算。哪天某个渠道只收 200K，退路是在 `env` 里写
+`CLAUDE_CODE_DISABLE_1M_CONTEXT=1`（2.1.289 实测写了以后显示 `2k / 200k`，请求照常）。
 
 沙箱实测（同上一段的做法）与 2.1.277 对照：`claude -p "hi"` 两版都拿到假接口的回复；请求体字段一样
 （`model`、`messages`、`system`、`tools`、`metadata`、`max_tokens`、`thinking`、`context_management`、
@@ -431,8 +429,8 @@ stops at 200K*。沙箱里按模板写配置跑 `claude -p /context`：2.1.277 �
 *Fixed requests failing behind proxies and gateways that reject one of Claude Code's beta headers with a status
 other than 400, or together with a second beta*；2.1.291 修了 2.1.288 起退出时可能丢掉会话最后几条消息
 （2.1.289 也带着这个毛病）。没有新的网关回归，上下文窗口的算法没再变。沙箱同上：`claude -p "hi"` 拿到
-回复，请求体字段、20 个工具、只带 `Authorization` 都和 2.1.289 一样；`/context` 不写那一项是 `2k / 1m`，
-写了 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 是 `2k / 200k`。
+回复，请求体字段、20 个工具、只带 `Authorization` 都和 2.1.289 一样；`/context` 是 `2k / 1m`，
+写了 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 是 `2k / 200k`，退路照样管用。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
