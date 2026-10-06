@@ -232,7 +232,8 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteForProviderBaseUrl,
+  type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -310,6 +311,9 @@ const npmMirrorRegistry = 'https://registry.npmmirror.com'
 // CLI 既跑不起来也回不去。这两条是拒绝取消时给用户看的原因。
 const managedPrefixSwapSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
 const grokBinarySwapSealReason = '正在替换 Grok CLI 可执行文件，这一步中断会让工具用不了，请等它结束。'
+// Windows 上装完 Claude Code 接着顺带装 Git 的那一段接不上取消（第四十批 C），
+// 用界面上别处「停不下来」时的同一句。
+const gitAlongsideClaudeSealReason = '这一步已经不能取消了。'
 const networkLocationUrl = 'https://www.cloudflare.com/cdn-cgi/trace'
 const networkLocationFallbackUrls = [
   'https://myip.ipip.net/',
@@ -2395,6 +2399,27 @@ export async function installGitAlongsideClaude(
   }
 }
 
+/**
+ * Windows 上装 Claude Code 时，顺带的 Git（installGitAlongsideClaude）是在 Claude Code 那一项出队之后
+ * 才装的，界面上却仍是同一次「安装」，那一行的「取消」也还亮着。装 Git 接不上取消，所以这次安装的取消
+ * 句柄先不收、改成封住：这时点「取消」回「这一步已经不能取消了。」，而不是「这个工具当前没有正在进行的
+ * 安装。」（第四十批 C）。Git 那段结束（装上、没装上都算）再收。Claude Code 自己没装成（失败或被取消）
+ * 就不进 Git 这段，照旧马上收。
+ */
+export async function finishClaudeInstallWithGit(
+  claude: Promise<void>,
+  cancellation: InstallCancellationHandle,
+  installGit: () => Promise<void>,
+): Promise<void> {
+  try {
+    await claude
+    cancellation.seal(gitAlongsideClaudeSealReason)
+    await installGit()
+  } finally {
+    cancellation.release()
+  }
+}
+
 export function buildToolStatusFromSettled(result: PromiseSettledResult<ToolStatus>): ToolStatus {
   if (result.status === 'fulfilled') return result.value
   return {
@@ -2468,6 +2493,8 @@ export interface SystemServiceOptions {
   externalClientRuntime?: ReturnType<typeof createExternalClientRuntime>
   /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
   getRelaySiteId?: () => string
+  /** Frozen at startup: pending settings must not repoint live account or tool work. */
+  relayEndpointRouting?: RelayEndpointRoutingSnapshot
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
   /** 开机补模板缺省项前问「哪些工具开着」的那一步；缺省 = 真去查进程，测试里替换掉。 */
@@ -2867,15 +2894,22 @@ export function createSystemService(
   }
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
-  // Read fresh at call time (not captured once at service construction) so a
-  // settings change takes effect on the very next inspection without
-  // requiring a service restart -- same reasoning as saveConfig's activeSite
-  // read below.
+  const relayRouting = serviceOptions.relayEndpointRouting ?? createRelayEndpointRoutingSnapshot(store.read().relayEndpointIds)
+  function activeRelaySite(): RelaySite {
+    return relayRouting.resolve(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+  }
+  function providerRelaySite(provider: ProviderId, current: NativeConfigInspection, removal = false): RelaySite {
+    const selected = activeRelaySite()
+    if (!removal && relayRouting.selection(selected.id) !== undefined) return selected
+    return relaySiteForProviderBaseUrl(selected.id, provider, current.actualBaseUrl) ?? selected
+  }
+  // The account's site remains live; its selected transport is frozen until
+  // restart so account clients, native writes and probes cannot use mixed lines.
   const inspectNativeProviderConfig = (provider: ProviderId) =>
     (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
       provider,
       providerRoots,
-      resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).providerBaseUrls,
+      activeRelaySite().providerBaseUrls,
     )
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
@@ -4976,6 +5010,9 @@ export function createSystemService(
     const key = `cli:install:${provider}`
     // 重复点击复用队列里的同一个 Promise,所以这里也不能再开一个取消句柄:
     // 后点的那次会把前一次的句柄挤掉,取消按钮就再也找不到正在跑的安装。
+    // Windows 上 Claude Code 接着装 Git 的那一段句柄也还登记着(见 finishClaudeInstallWithGit),
+    // 这时再装一次 Claude Code 会走到这里,另排一次取消不了的安装;界面上同一个工具
+    // 一次只放一个安装(useToolbox 的 run 按工具加锁),碰不到。
     if (installCancellations.has(key)) {
       return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
     }
@@ -4997,14 +5034,14 @@ export function createSystemService(
       const cancelled = new InstallCancelledError(`${cliCatalog[provider].name} 安装已取消`)
       sendInstallProgress(target, provider, 'error', cancelled.message)
       throw cancelled
-    }).finally(() => cancellation.release())
+    })
     // 装好一次顺手清掉以前中途被打断的残留：这次自己的临时目录已经在 finally 里删了，
     // 剩下的只会是更早的。排在队列末尾，不拖慢这次安装的完成提示。
     void finished.then(() => cleanupInstallLeftovers(), () => undefined)
     // Windows 上 Claude Code 靠 Git 自带的 bash 跑技能和插件里的命令。Claude Code 自己
     // 那一项出队之后才排 Git：队列是全局串行的，在队列任务里再入队会互相等死。
-    if (provider !== 'claude' || platform !== 'win32') return finished
-    return finished.then(() => installGitAlongsideClaude(
+    if (provider !== 'claude' || platform !== 'win32') return finished.finally(() => cancellation.release())
+    return finishClaudeInstallWithGit(finished, cancellation, () => installGitAlongsideClaude(
       () => installGitRuntime(target, (progress) => sendInstallProgress(
         target, provider, 'output', progress.message, progress.percent ?? undefined)),
       (message) => sendInstallProgress(target, provider, 'output', message),
@@ -5874,7 +5911,7 @@ export function createSystemService(
 
   async function fetchAvailableModels(
     apiKeyInput: string,
-    options: { bypassCache?: boolean } = {},
+    options: { bypassCache?: boolean; site?: RelaySite } = {},
   ): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
     if (!apiKey) throw new Error('请先填写 API Key')
@@ -5896,8 +5933,8 @@ export function createSystemService(
     // different relay site within the 2-minute TTL (site switcher), and a
     // model list fetched from the previous site must not validate a model
     // that then gets written into a config aimed at the new site.
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-    const cacheKey = `${activeSite.id}:${modelAccessCacheKey(apiKey)}`
+    const activeSite = options.site ?? activeRelaySite()
+    const cacheKey = `${activeSite.id}:${relayApiProbeBaseUrl(activeSite)}:${modelAccessCacheKey(apiKey)}`
     const cached = options.bypassCache ? undefined : modelAccessCache.get(cacheKey)
     if (cached) {
       modelAccessCache.delete(cacheKey)
@@ -5985,12 +6022,12 @@ export function createSystemService(
    * 说法。
    */
   function externalClientContext(tool: ExternalToolId) {
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    const activeSite = activeRelaySite()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
     const belongsToCurrentAccount = (apiKey: string) => owner !== null
       && serviceOptions.getExternalClientAccountId?.() === owner
-      && resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id === activeSite.id
+      && activeRelaySite().id === activeSite.id
       && externalOwnership.matches(tool, owner, baseUrl, apiKey)
     return { activeSite, baseUrl, belongsToCurrentAccount }
   }
@@ -6116,7 +6153,7 @@ export function createSystemService(
   ): Promise<ExternalClientConfigResult> {
     const work = async (): Promise<ExternalClientConfigResult> => {
       assertBeforeWrite?.()
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = activeRelaySite()
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const apiKey = requested.apiKey?.trim() ?? ''
       const model = requested.model?.trim() ?? ''
@@ -6124,7 +6161,7 @@ export function createSystemService(
       const models = await fetchAvailableModels(apiKey, { bypassCache: true })
       const assertContext = () => {
         assertBeforeWrite?.()
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
+        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
         if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
       }
       assertContext()
@@ -6636,21 +6673,25 @@ export function createSystemService(
         throw new Error('工具已选择官方账号，已保留原配置')
       }
       const model = payload.model.trim()
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = providerRelaySite(payload.provider, before)
+      const previousRoute = relaySiteForProviderBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl)
+      const automaticRouteMigration = ownership?.automatic === true
+        && relayRouting.selection(activeSite.id) !== undefined && previousRoute !== null
+        && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
       const assertUnchanged = () => {
         assertOwner()
         const current = inspectNativeProviderConfig(payload.provider)
         if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
           throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
         }
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
+        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
       if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
       if (!apiKey) throw new Error('请先填写 API Key')
-      const availableModels = await fetchAvailableModels(apiKey)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
       if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
@@ -6658,6 +6699,20 @@ export function createSystemService(
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       // 同上：要问一遍 Codex 命令行是哪一版，也放在「校验没变」之前。
       const codexModelCatalog = payload.provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
+      if (automaticRouteMigration) {
+        // A Start Menu launch can happen while the models request is in flight.
+        // Probe after asynchronous preparation, before invalidating ownership or
+        // changing any native file. This is a process snapshot, not an OS lock.
+        let stopped = false
+        try {
+          const report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([payload.provider])
+          stopped = !report.running.includes(payload.provider) && !report.unknown.includes(payload.provider)
+            && (payload.provider !== 'codex' || report.codexDesktopRunning === false)
+        } catch {
+          // A failed probe must preserve the account's working configuration.
+        }
+        if (!stopped) throw new Error('工具可能还开着，已保留原配置；请完全退出工具后重新同步连接线路')
+      }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.
@@ -6697,7 +6752,7 @@ export function createSystemService(
     const model = config.model.trim()
     if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
     if (accountOwnedOnly && configOwnership.read(provider, config, owner) !== 'account') return null
-    const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    const site = activeRelaySite()
     return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
   }
 
@@ -6793,7 +6848,7 @@ export function createSystemService(
         const wrote = await serializeConfigWrite(async () => {
           // 排队期间账号、配置都可能变了：进锁以后按同一套条件再判一次。
           if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner || !outdated(provider)) return false
-          const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+          const site = providerRelaySite(provider, inspectNativeProviderConfig(provider))
           // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
           // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；
           // 备份不成就不补。
@@ -6950,7 +7005,7 @@ export function createSystemService(
 
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = providerRelaySite(provider, inspectNativeProviderConfig(provider), true)
       // 与 saveConfig 对称：先放回官方 Key，放不回就不切；切换失败再把 Key 挪开。
       const restoredConsoleKey = provider === 'claude' && restoreOfficialCredentialsNow()
       let result: ReturnType<typeof switchProviderToOfficialAccount>
@@ -6980,8 +7035,9 @@ export function createSystemService(
   }
 
   return {
-    readStoredConfig: () => ({ ...store.read(), ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
-    updateStoredConfig: (update) => store.update(update),
+    readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.activeEndpointIds },
+      ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
+    updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.activeEndpointIds } }),
     inspectCodexReadiness,
     getConfig: buildConfigSummary,
     revealApiKey,

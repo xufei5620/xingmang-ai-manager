@@ -118,20 +118,35 @@ jobs:
           - shard: renderer-v2
             command: npm run test:v2:vitest
             timeout: 10
-          # Split along the one seam that does not touch the shared Vite
-          # dependency cache. The configFile:false browser-checks build their
-          # dev servers on one root and share node_modules/.vite, and the
-          # earlier files warm it for app-check.mjs, which runs last and is
-          # half the suite on its own. Splitting *those* across runners gave
-          # app-check a cold cache, and a mid-run re-optimisation then blew
-          # the 90s fixture mount budget on the NewAPI announcement-collection
-          # test (run 35420361508) — so they stay together, in their order.
+          # The fixture browser-checks, cut in two. app-check.mjs is two thirds
+          # of their time and gains ~20 tests a day, so a cut by file always
+          # left one runner holding all of it: #873 ran out the 18 minutes three
+          # times with every test passing, on runners that took about 1.55
+          # times as long as #871's over the same tests. So app-check's tests
+          # are dealt to both runners in declaration order (e2e/shard-tests.mjs,
+          # selected by XINGMANG_TEST_SHARD in each script), and the other
+          # files are divided between them by measured time.
+          #
+          # That used to be ruled out because app-check was thought to need
+          # the other files to warm the shared node_modules/.vite cache, after
+          # a lone app-check timed out a 90s mount on run 35420361508. None of
+          # it holds: node --test runs its files in sorted order, so app-check
+          # never ran last; auth and chat build their servers with another
+          # config, so Vite throws that cache away and the next file starts
+          # from nothing anyway; Vite's start-up scan reads every HTML entry
+          # in the repository and finds each dependency before the first page
+          # loads; and run 35420361508 was a lost navigation (test 59, with 58
+          # green before it and the next green in 1.9s), which openFixturePage
+          # now retries. When a half nears 18 minutes, deal to a third runner
+          # rather than raising the number.
+          #
           # The two e2e suites load vite.config.ts with a cacheDir of their
-          # own, never read or warm that cache, and run on their own runner.
-          # The whole suite had grown to 17m18s on #712 and ran out its 18
-          # minutes twice on #714 with every test up to that point passing.
-          - shard: renderer-v2-browser
-            command: npm run test:v2:browser:fixture
+          # own and run on their own runner.
+          - shard: renderer-v2-browser-1
+            command: npm run test:v2:browser:fixture:1
+            timeout: 18
+          - shard: renderer-v2-browser-2
+            command: npm run test:v2:browser:fixture:2
             timeout: 18
           - shard: renderer-v2-e2e
             command: npm run test:v2:browser:e2e
@@ -346,7 +361,7 @@ jobs:
   # Folds the Windows shards back into the single `test` check they replaced.
   # Two things depend on that name surviving: a branch protection rule may name
   # it, and a reader scanning a pull request should still find one check that
-  # answers "is Windows green" without counting six. It evaluates the change
+  # answers "is Windows green" without counting seven. It evaluates the change
   # scope itself, so it reports success — never "skipped" — for a
   # documentation-only change, which is what the aggregate below relies on.
   test:
@@ -611,10 +626,10 @@ jobs:
   # The fixture half of linux-test's renderer v2 browser suites: ~12 of the
   # ~14 minutes test:v2 took there. Beside linux-test instead of after it, the
   # two finished in ~13 and ~10 minutes on #780, both before the slowest
-  # Windows shard. It is cut where windows-test cuts it, and for the same
-  # reason it is not cut any finer: these files share one node_modules/.vite
-  # dependency cache that the earlier ones warm for app-check.mjs, which runs
-  # last (see the renderer-v2-browser shard above).
+  # Windows shard. It runs test:v2:browser:fixture whole, the same files the
+  # two Windows renderer-v2-browser shards divide between them, because its
+  # step has no budget short of the job's 30 minutes: it took 10 to 15
+  # minutes on the runs of 2026-10-06.
   linux-renderer-v2-browser:
     needs: changes
     if: needs.changes.outputs.code == 'true'

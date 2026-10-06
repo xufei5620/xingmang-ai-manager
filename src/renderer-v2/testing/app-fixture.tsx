@@ -9,6 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { accountScope } from '../account-context'
+import { relayProviderBaseUrlMatches, relayProviderBaseUrls } from '../../../electron/relay-sites'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -65,6 +66,8 @@ if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
 if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
+settings.relayEndpointIds = { solov: query.has('directRelayActive') ? 'direct' : 'primary', 'solov-api': 'primary' }
+settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as ExternalToolId[]).map((tool) => ({
@@ -79,6 +82,32 @@ const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop',
 const externalOwnerSite = session.siteId ?? 'solov'
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
+if (query.has('restoreDirectRoute')) {
+  settings.relayEndpointIds = { solov: 'direct', 'solov-api': 'primary' }
+  settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
+  config.providers.claude = { ...config.providers.claude, baseUrl: relayProviderBaseUrls('solov', 'direct').claude,
+    actualBaseUrl: relayProviderBaseUrls('solov', 'primary').claude }
+}
+// ?routedSwitch：同主进程，地址按当前账号那个站生效的线路报，工具配置里写着的地址原样留着，
+// 对不上的就不算当前账号的。工具先连着开机那个账号生效的线路。
+function activeSiteBaseUrls() {
+  const siteId = session.siteId ?? 'solov'
+  return relayProviderBaseUrls(siteId, settings.activeRelayEndpointIds?.[siteId] ?? 'primary')
+}
+function reportRoutedConfig() {
+  const expected = activeSiteBaseUrls()
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    const current = config.providers[provider]
+    current.baseUrl = expected[provider]
+    current.matchesRelay = current.hasApiKey && Boolean(current.actualBaseUrl) && relayProviderBaseUrlMatches(provider, current.actualBaseUrl, current.baseUrl)
+  }
+}
+if (query.has('routedSwitch')) {
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    config.providers[provider] = { ...config.providers[provider], actualBaseUrl: activeSiteBaseUrls()[provider], updatedAt: '2026-09-07T00:00:00Z' }
+  }
+  reportRoutedConfig()
+}
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
   claude: ['claude-opus-4-8', 'claude-opus-5', 'fixture-model'],
@@ -160,6 +189,10 @@ if (query.has('detectionFailed')) {
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
 }
+// 缺 Python（可选环境）：首页那一行写「可选 · 未装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
+if (query.has('pythonMissing')) {
+  system.runtime.python = { ...status, installed: false, version: null, path: null }
+}
 // 运行环境自己的探针抛错：整块系统状态是读到的，只有 Node.js 这一行没有结论。
 if (query.has('runtimeDetectionFailed')) {
   system.runtime.node = { ...system.runtime.node, installed: false, version: null, path: null,
@@ -192,7 +225,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -223,8 +256,8 @@ let nextUninstallHeld = false
 let releaseUninstall: () => void = () => undefined
 let nextInstallHeld = false
 let releaseInstall: (error?: string) => void = () => undefined
-const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) } }
+const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
@@ -256,6 +289,7 @@ const recentWorkspaceSessions = [
   recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100, true, false),
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
 ]
+// v2Test.addRecentSession 是「打开工具以后在终端里又聊了一条」：排在最前面，同主进程按时间倒序给的列表。
 function fixtureSetArchived(nativeId: string, archived: boolean) {
   const item = recentWorkspaceSessions.find((entry) => entry.nativeId === nativeId)
   if (!item) throw new Error('会话不存在。')
@@ -290,7 +324,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => ({ ...settings }),
-  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settings },
+  saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {
@@ -310,6 +344,11 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
+  // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。
+  bypassBrokenProxy: async () => {
+    if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''
+    return 'direct' as const
+  },
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}), ...(query.has('claudeDesktopRepaired') ? { claudeDesktopRepaired: true as const } : {}) }),
   relaunchApp: async () => true,
   uninstallApp: async () => ({ trashed: true, leftovers: [] }),
@@ -507,7 +546,9 @@ const methods = {
   listBackups: async () => [],
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
-  launchCli: async () => {
+  launchCli: async (_provider, workspace) => {
+    // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（system-service.ts 的 launchProviderOperation）。
+    if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
       return { rememberedWorkspace: launchedWorkspace }
@@ -537,6 +578,11 @@ const methods = {
     if (query.has('gitCancel')) return { installed: false, action: 'cancelled' as const, source: null, version: null, architecture: 'arm64' as const, pathRefreshRequired: false, message: '没有装 Git。需要时再点一次「安装 Git」就行。' }
     system.runtime.git = { ...system.runtime.git, installed: true, version: '2.55.0', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Git\\cmd\\git.exe' }
     return { installed: true as const, action: 'installed' as const, source: 'npmmirror' as const, version: '2.55.0.5', architecture: 'x64' as const, pathRefreshRequired: true }
+  },
+  // Windows 上由主进程代装 Python，装完重新检测就能看到版本。
+  installPythonRuntime: async () => {
+    system.runtime.python = { ...system.runtime.python, installed: true, version: '3.13.7', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Python\\Python313\\python.exe' }
+    return { installed: true as const, action: 'installed' as const, method: 'exe' as const, source: 'python-org' as const, version: '3.13.7', architecture: 'x64' as const, pathRefreshRequired: true }
   },
   installCli: async (provider) => {
     // 停在半路，好看「安装中」那一行；releaseInstall 带一句话就当没装上（取消也是这样结束的）。
@@ -700,6 +746,11 @@ const methods = {
     const nextAccount = query.has('crossSite') ? account : { ...account, userId: 18, username: 'saved-user' }
     session = { authenticated: true, account: nextAccount, ...(query.has('crossSite') ? sub2ApiMetadata : {}) }
     if (query.has('savedAccount') && !query.has('readOnlyAccountMatch')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
+    if (query.has('routedSwitch')) {
+      reportRoutedConfig()
+      // 归属是按账号记的：换了账号，上一个账号写的配置主进程就认不出归谁了。
+      for (const provider of Object.values(config.providers)) if (provider.configurationOwnership === 'account') provider.configurationOwnership = 'unknown'
+    }
     return session
   },
   replyWindowClose: async () => true,

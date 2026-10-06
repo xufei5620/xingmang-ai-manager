@@ -3,8 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
-import { isInstallCancelledError } from './install-cancellation'
-import { createSystemService, type SystemServiceOptions } from './system-service'
+import { InstallCancellationRegistry, InstallCancelledError, isInstallCancelledError } from './install-cancellation'
+import { createSystemService, finishClaudeInstallWithGit, type SystemServiceOptions } from './system-service'
 
 const temporaryDirectories: string[] = []
 
@@ -230,5 +230,69 @@ describe('cancelling a CLI install', () => {
     expect(((await running) as Error).message).toContain('安装已取消')
     // 出队的那次一直没跑：前前后后只下过 Claude Code 那一次。
     expect(fixture.downloadAttempts).toHaveLength(1)
+  })
+})
+
+// Windows 上装 Claude Code 时接着装 Git 的那一段（第四十批 C）。注入的 platform 管不到
+// installCliOperation 里读真实 process.platform 的那几处，在 Linux / macOS 主机上走不通
+// Windows 那条安装，所以这里只测「封住 → 装 Git → 收」这一段，三个平台都能跑。
+describe('the Git step that follows a Claude Code install on Windows', () => {
+  const key = 'cli:install:claude'
+
+  it('refuses a cancel while Git is being installed and says the step can no longer be cancelled', async () => {
+    const registry = new InstallCancellationRegistry()
+    const cancellation = registry.begin(key)
+    const gitStarted = deferred<void>()
+    const git = deferred<void>()
+    const finished = finishClaudeInstallWithGit(Promise.resolve(), cancellation, () => {
+      gitStarted.resolve()
+      return git.promise
+    })
+    await gitStarted.promise
+
+    // 那一行还在写「正在安装 Git」：不能回「没有正在进行的安装」，也不能真把 Git 停掉。
+    expect(registry.cancel(key)).toEqual({ cancelled: false, reason: '这一步已经不能取消了。' })
+    expect(cancellation.cancelled).toBe(false)
+
+    git.resolve()
+    await finished
+    expect(registry.activeKeys()).toEqual([])
+    expect(registry.cancel(key).reason).toContain('没有正在进行的安装')
+  })
+
+  it('stops tracking the install once Git is over, even when the Git step throws', async () => {
+    const registry = new InstallCancellationRegistry()
+    const cancellation = registry.begin(key)
+    const failure = new Error('Git 没装上')
+
+    await expect(finishClaudeInstallWithGit(Promise.resolve(), cancellation, async () => { throw failure })).rejects.toBe(failure)
+    expect(registry.activeKeys()).toEqual([])
+  })
+
+  it('lets Claude Code itself be cancelled as before, skips Git and stops tracking at once', async () => {
+    const registry = new InstallCancellationRegistry()
+    const cancellation = registry.begin(key)
+    // 安装那一步看到取消信号，照真实的样子带着 InstallCancelledError 结束。
+    const claude = new Promise<void>((_, reject) => {
+      cancellation.signal.addEventListener('abort', () => reject(new InstallCancelledError('Claude Code 安装已取消')), { once: true })
+    })
+    const installGit = vi.fn(async () => undefined)
+    const finished = finishClaudeInstallWithGit(claude, cancellation, installGit).catch((error: unknown) => error)
+
+    expect(registry.cancel(key)).toEqual({ cancelled: true, reason: null })
+    expect(isInstallCancelledError(await finished)).toBe(true)
+    expect(installGit).not.toHaveBeenCalled()
+    expect(registry.activeKeys()).toEqual([])
+  })
+
+  it('skips Git and stops tracking at once when Claude Code itself failed to install', async () => {
+    const registry = new InstallCancellationRegistry()
+    const cancellation = registry.begin(key)
+    const failure = new Error('Claude Code 安装失败：npm 官方源：网络连接中断')
+    const installGit = vi.fn(async () => undefined)
+
+    await expect(finishClaudeInstallWithGit(Promise.reject(failure), cancellation, installGit)).rejects.toBe(failure)
+    expect(installGit).not.toHaveBeenCalled()
+    expect(registry.activeKeys()).toEqual([])
   })
 })

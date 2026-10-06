@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
-import { relaySites } from './relay-sites'
+import { relayProviderBaseUrlMatches, relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { tomlErrorLocation } from './toml-error-location'
 import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
@@ -917,9 +917,8 @@ export function classifyCodexConfigProfile(
 
 function isKnownCodexRelayBaseUrl(baseUrl: string, siteBaseUrl: string): boolean {
   if (!baseUrl) return false
-  const normalized = normalizeUrl(baseUrl)
   return [siteBaseUrl, ...relaySites.map((site) => site.providerBaseUrls.codex)]
-    .some((candidate) => normalized === normalizeUrl(candidate))
+    .some((candidate) => relayProviderBaseUrlMatches('codex', baseUrl, candidate))
 }
 
 function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
@@ -1557,7 +1556,7 @@ export function inspectProviderConfig(
     actualBaseUrl,
     exists: files.some((file) => file.exists),
     hasApiKey: Boolean(apiKey),
-    matchesRelay: Boolean(apiKey && actualBaseUrl && normalizeUrl(actualBaseUrl) === normalizeUrl(baseUrl)),
+    matchesRelay: Boolean(apiKey && actualBaseUrl && relayProviderBaseUrlMatches(provider, actualBaseUrl, baseUrl)),
     apiKey,
     model,
     ...(authType !== undefined ? { authType } : {}),

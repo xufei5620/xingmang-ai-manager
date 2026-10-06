@@ -8,7 +8,7 @@ import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, 
 import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
-import { accountKeyChangePending, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
+import { accountKeyChangeInProgress, accountKeyChangePending, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry/business'
 import { tools as toolRegistry } from '../../registry/tools'
@@ -53,8 +53,8 @@ export interface HomeProps {
   externalError: string
   /**
    * 「最近」这份列表在 toolsApi 里缓存 60 秒。外层作废缓存时把这个数字加一，
-   * 首页就重读一遍（装卸工具、打开工具、换账号、主动重新检测都会走到）。
-   * 省略 = 不主动重读（旧行为）。
+   * 首页就重读一遍（装卸工具、换账号、主动重新检测都会走到）。打开工具只作废、不加一：
+   * 那一下终端里还没聊，首页等窗口回到前面时再读。省略 = 不主动重读（旧行为）。
    */
   recentRevision?: number
   onScan(): void
@@ -239,8 +239,8 @@ export function Home(props: HomeProps) {
   }, [account?.userId, props.accountScope, props.api, props.supportsUsage])
   /**
    * 「最近」那三行的「打开文件夹」。只传会话 id，路径由主进程从记录里取并校验。
-   * 失败（文件夹刚被删掉、盘符掉了）只提示一句，不动这份列表：它 60 秒后自己
-   * 会重读，而这一下点击不值得让整张卡重来一遍。
+   * 失败（文件夹刚被删掉、盘符掉了）只提示一句，不动这份列表：过了一分钟、窗口
+   * 再回到前面时它自己会重读，而这一下点击不值得让整张卡重来一遍。
    */
   async function openRecentDirectory(sessionId: string) {
     try { await props.api.openSessionDirectory(sessionId) }
@@ -261,6 +261,21 @@ export function Home(props: HomeProps) {
     })
     return () => { current = false }
   }, [props.api, recentAttempt, props.recentRevision])
+  // 首页一直开着就不会重新挂载：从这里打开工具、在终端里聊完再切回来，「最近」和工具那一行
+  // 「打开 xx」还是打开前读的那份。刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
+  // 而 Claude Code、Gemini CLI、Grok CLI 续接是按文件夹找最近一条（#292），点下去接上的是刚聊的那条。
+  // 所以窗口回到前面时再读一次：一分钟内又没打开过工具，toolsApi 给的还是原来那一份，不读盘，页面也不变。
+  useEffect(() => {
+    function foreground() {
+      if (document.visibilityState !== 'hidden') setRecentAttempt((value) => value + 1)
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+    }
+  }, [])
   const tools = snapshot ? presentTools(snapshot) : []
   const installed = tools.filter((tool) => tool.status.installed || jobs[tool.id])
   // 检测失败的不当成没装：留在「你的工具」里，那一行写「检测失败」、给「重新检测」，不挪进「还可以装」。
@@ -327,6 +342,11 @@ export function Home(props: HomeProps) {
   const runtimeHintClass = nodeOptional ? 'v2-runtime-hint is-quiet' : 'v2-runtime-hint'
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
+  function launchWaitingForAccount(provider: ProviderId): boolean {
+    const tool = tools.find((entry) => entry.provider === provider)
+    if (!tool || tool.source === 'official' || tool.source === 'manual') return false
+    return accountKeyChangeInProgress(props.bootstrap ?? null, provider)
+  }
   // 开机先摆的是上次的检测结果（cachedAt），真结果还在路上。这时只放开「打开」这一类：
   // 点下去配置现读、工具由主进程现找、目录现查，用不上这份旧结果。「安装」「重新配置」
   // 「连接账号」照旧等真结果；账号这一轮要换 Key 的那一家也等，免得带着旧 Key 打开。
@@ -427,8 +447,10 @@ export function Home(props: HomeProps) {
     const rollbackVerb = recommendedVersionVerb(tool)
     const rollbackIcon = tool.versionAdvice?.recommendedIsNewer ? Download : RotateCcw
     const waitingForScan = loading && !launchReadyBeforeScan(tool)
+    // 扫描结束后仍可能在写入和复核新线路，旧配置不能在这段时间被工具读走。
+    const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
-      disabled={waitingForScan || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
+      disabled={waitingForScan || waitingForAccount || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
@@ -461,9 +483,10 @@ export function Home(props: HomeProps) {
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}
-          anchor={<Button size="sm" variant="primary" icon={ChevronDown} disabled={waitingForScan || launchBusy} aria-label="换一个目录" />}
+          anchor={<Button size="sm" variant="primary" icon={ChevronDown} disabled={waitingForScan || waitingForAccount || launchBusy} aria-label="换一个目录" />}
           items={workspaceChoices(workspaces).filter((choice) => !choice.create || props.onLaunchInNewFolder).map((choice) => ({
             label: choice.label,
+            disabled: waitingForScan || waitingForAccount || launchBusy,
             testId: choice.create ? `tool-${tool.id}-new-workspace` : choice.path === null ? `tool-${tool.id}-choose-workspace` : undefined,
             onSelect: () => choice.create ? props.onLaunchInNewFolder?.(tool.id) : props.onLaunch(tool.id, choice.path ?? undefined),
           }))} />}
@@ -473,7 +496,7 @@ export function Home(props: HomeProps) {
         ...(opensWorkspace && !lastWorkspace && props.onLaunchInNewFolder ? [{
           label: newWorkspaceLabel,
           testId: `tool-${tool.id}-new-workspace`,
-          disabled: waitingForScan || launchBusy,
+          disabled: waitingForScan || waitingForAccount || launchBusy,
           onSelect: () => props.onLaunchInNewFolder?.(tool.id),
         }] : []),
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
@@ -502,7 +525,7 @@ export function Home(props: HomeProps) {
           ? [{ label: '卸载', danger: true, onSelect: () => props.onUninstall(tool.id) }]
           : []),
       ] : undefined} menuLabel={toolMenuLabel} testId={`tool-row-${tool.id}`} />
-  }, [bootstrapBusy, jobs, launchBusy, launchReadyBeforeScan, loading, props, recent])
+  }, [bootstrapBusy, jobs, launchBusy, launchReadyBeforeScan, launchWaitingForAccount, loading, props, recent])
   const renderExternal = (tool: ExternalPresentation) => {
     const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
     const status = installJob ? 'installing' : tool.status.detectionError ? 'detectionFailed' : !tool.status.installed ? 'missing'
@@ -575,7 +598,7 @@ export function Home(props: HomeProps) {
                 desc={<span title={session.cwd || undefined}>{recentSessionSubtitle(session)}</span>} meta={formatRecentTime(session.updatedAt, Date.now())}
                 badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
-                  {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchBusy || session.cwdExists === false}
+                  {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchWaitingForAccount(session.provider) || launchBusy || session.cwdExists === false}
                     onClick={() => props.onLaunch(session.provider, session.cwd, resumeLaunchChoice(session))}
                     title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
                   {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}

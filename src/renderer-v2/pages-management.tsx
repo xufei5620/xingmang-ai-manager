@@ -46,6 +46,7 @@ import {
   Pagination,
   ResultNotice,
   useOperation,
+  useReloadWhenShown,
   useResource,
 } from './business-common'
 import { scopeOptions } from './registry/business'
@@ -701,10 +702,14 @@ export function CuratedShelf({
     </Card>
   )
 }
+// 记录页显示着、窗口回到前面时，离上次读不到这么久就不再读（同 useNetworkLocation 的 focusRefreshIntervalMs）。
+const recordsForegroundReloadMs = 30_000
 export function SessionsPage({
   api,
   onSessionsChanged,
   onOpenTools,
+  beforeResume,
+  active,
 }: {
   api: V2Bridge
   /**
@@ -714,6 +719,17 @@ export function SessionsPage({
   onSessionsChanged?: () => void
   /** 一条记录都没有时「去打开工具」：回首页「你的工具」。省略 = 不放这颗按钮。 */
   onOpenTools?: () => void
+  /**
+   * 「接着聊」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
+   * Codex 老配置先修。过不了的原因照常抛出来，挂在页顶；返回 false = 不往下走（问话框里
+   * 关掉了，或者中途换了账号）。省略 = 不检查（旧行为）。
+   */
+  beforeResume?: (provider: Session['provider']) => Promise<boolean>
+  /**
+   * 外壳说的「现在显示的是这一页」（同 BusinessActions.active）：再显示时、显示着窗口又回到前面时重读；
+   * 缺省 = 只在第一次进来时读（旧行为）。
+   */
+  active?: boolean
 }) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -748,6 +764,33 @@ export function SessionsPage({
   )
   const detailResource = useResource(detailLoad)
   const detail = detailResource.data
+  // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「接着聊」还挂在
+  // 同一文件夹更早那条上；Claude Code、Gemini CLI、Grok CLI 按文件夹接最近一条（#292），点下去接上的是刚聊的
+  // 那条。所以再显示时、显示着窗口又回到前面时，两份列表连同开着的详情一起重读，先摆着旧的、读回来再换。
+  // 窗口那一下离上次读不到 30 秒就不读；本页「接着聊」打开了终端就清零，回来头一次切回窗口一定重读。
+  const lastRead = useRef(Number.NEGATIVE_INFINITY)
+  const reloadRecords = () => {
+    lastRead.current = performance.now()
+    void Promise.all([resource.reload(), latestResource.reload(), ...(selected ? [detailResource.reload()] : [])])
+  }
+  useReloadWhenShown(active, reloadRecords)
+  const latestReloadRecords = useRef(reloadRecords)
+  useEffect(() => { latestReloadRecords.current = reloadRecords })
+  useEffect(() => {
+    if (!active) return
+    // 进页、再显示的这一下本来就在读，从这里起算。
+    lastRead.current = performance.now()
+    function foreground() {
+      if (document.visibilityState === 'hidden' || performance.now() - lastRead.current < recordsForegroundReloadMs) return
+      latestReloadRecords.current()
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+    }
+  }, [active])
   const view = (session: Session) => {
     setSelected(session)
   }
@@ -811,13 +854,20 @@ export function SessionsPage({
     void operation.execute(
       'resume',
       async () => {
+        // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
+        // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
+        if (beforeResume && !(await beforeResume(session.provider))) return null
         try {
           const choice = resumeLaunchChoice(session)
           const result = await (typeof choice === 'object'
             ? api.launchCli(session.provider, session.cwd, 'resumeLast', choice.resumeSessionId)
             : api.launchCli(session.provider, session.cwd, 'resumeLast'))
           // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
-          if (!launchDeclined(result)) onSessionsChanged?.()
+          if (!launchDeclined(result)) {
+            onSessionsChanged?.()
+            // 终端里这就要多出新的对话，从终端回来头一次切回窗口不管隔了多久都重读。
+            lastRead.current = Number.NEGATIVE_INFINITY
+          }
           return result
         } catch (cause) {
           // 列表出来之后目录才被删掉的那一瞬间:按钮还亮着,但已经接不上了。
@@ -830,7 +880,10 @@ export function SessionsPage({
         }
       },
       // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
-      (result) => resumeSessionNotice(result, providerName(session.provider), session.cwd),
+      (result) =>
+        result === null
+          ? null
+          : resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
   /**
@@ -1125,7 +1178,8 @@ export function SessionsPage({
             重试读取
           </Button>
         )}
-        {detailResource.loading ? (
+        {/* 回到窗口时连详情一起重读：正读着的对话先摆着、读回来再换，不闪成「正在读取」，翻到的位置也不丢。 */}
+        {detailResource.loading && !detail ? (
           <p role="status">正在读取对话…</p>
         ) : (
           detail?.messages.map((message, i) => (
@@ -1222,6 +1276,7 @@ export function ExtensionsPage({
   onOpenHelp,
   onOpenTutorial,
   installedProviders,
+  onSystemChanged,
 }: {
   api: V2Bridge
   kind: ExtensionKind
@@ -1230,6 +1285,11 @@ export function ExtensionsPage({
   onOpenTutorial?: (section: string) => void
   /** 这台电脑上装好的命令行工具；缺省 = 不知道，默认选 Claude（旧行为）。 */
   installedProviders?: readonly string[]
+  /**
+   * 「自动安装 Python」装好以后叫一声，由 App 重新检测，首页「运行环境」跟着变（同 BusinessActions.onSystemChanged）。
+   * 缺省 = 只刷新本页（旧行为）。
+   */
+  onSystemChanged?: () => void
 }) {
   const page =
     kind === 'skill' ? 'skills' : kind === 'plugin' ? 'plugins' : 'mcp'
@@ -1322,6 +1382,9 @@ export function ExtensionsPage({
       'python',
       async () => {
         await api.installPythonRuntime()
+        // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
+        // 本页那次读接上 App 刚起的那一轮检测（同「安装卸载」页）。
+        onSystemChanged?.()
         await resource.reload()
       },
       'Python 已经装好了，可以继续添加这条连接',
@@ -2421,15 +2484,21 @@ export function BackupsPage({
   api,
   onRestored,
   navigate,
+  active,
 }: {
   api: V2Bridge
   /** 恢复成功后回调，用来让首页重读配置。 */
   onRestored?: (provider: Provider) => void
   /** section：连接测试结论是「网络」时落到设置的「网络」组；缺省 = 只跳页。 */
   navigate?: (page: V2Page, section?: string) => void
+  /** 外壳说的「现在显示的是这一页」：再显示时重读一次列表（同 BusinessActions.active）；缺省 = 不重读（旧行为）。 */
+  active?: boolean
 }) {
   const load = useCallback(() => api.listBackups(), [api])
   const resource = useResource(load)
+  // 改配置、改用账号前都会自动留一份，改用失败的错误框还叫人「到「备份」里恢复改用之前的那一份」：
+  // 去过这一页的话，回来时列表里得有它。
+  useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [backupProvider, setBackupProvider] = useState<Provider>('claude')

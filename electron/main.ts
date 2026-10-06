@@ -134,7 +134,7 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
@@ -194,6 +194,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdateRequestGuard } from './update-request-guard'
+import { locateDirectUpdateFeed } from './update-feed-route'
 import { createUpdaterService } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
@@ -1115,6 +1116,7 @@ if (!hasSingleInstanceLock) {
     }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
+    const relayRouting = createRelayEndpointRoutingSnapshot(settingsStore.read().relayEndpointIds)
     let settingsSaveIssue: SettingsSaveIssue | undefined
     // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
     // 记录，而 settings.json 会整份交给渲染层，没必要把机器上每个账号的记录都
@@ -1140,14 +1142,26 @@ if (!hasSingleInstanceLock) {
       })
       return siteDirectProxy.then(() => siteDirectSession.fetch(input instanceof URL ? input.href : input, init))
     }
+    // 整个改了直连以后默认会话不再经过系统代理，看代理软件是不是又好了，得另走一个只跟随
+    // 系统代理的会话。同样是内存分区，只用来探那一下。
+    const systemProxySession = session.fromPartition('xingmang-system-proxy')
+    let systemProxyMode: Promise<void> | null = null
+    const systemProxyFetch: typeof fetch = (input, init) => {
+      systemProxyMode ??= systemProxySession.setProxy({ mode: 'system' }).catch((error: unknown) => {
+        systemProxyMode = null
+        throw error
+      })
+      return systemProxyMode.then(() => systemProxySession.fetch(input instanceof URL ? input.href : input, init))
+    }
     // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连，
+    // 代理软件好了以后再一起改回来。
     // AI 聊天画图、连通检查、查模型（relayFetch）都连星芒站点，账号请求（accountFetch）
     // 改直连时跟着一起改，它们自己不触发改直连；别的地址照旧走默认会话。建在这里是因为
     // relayFetch 马上就要用；站点设置、加速状态都是出了事才去读。
     const { bypass: proxyBypass, relayFetch, accountFetch } = createSiteRouting({
       probeUrl: () => {
-        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
+        try { return relayStatusProbeUrl(relayRouting.resolve(systemService.readStoredConfig().relaySiteId)) }
         catch { return null }
       },
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
@@ -1156,6 +1170,14 @@ if (!hasSingleInstanceLock) {
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
       sessionFetch,
       siteDirectFetch,
+      systemProxyFetch,
+      // 代理软件好了、改回跟随系统代理：界面上「已经改为直接联网」那条提示跟着收起。
+      // 窗口是后面才建的，改回最早也在改直连 5 分钟以后，那时早就建好了。
+      directEnded: () => {
+        if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+        if (managedMainWindow.webContents.isDestroyed()) return
+        managedMainWindow.webContents.send(ipcEventChannels.onProxyBypassEnded, undefined)
+      },
     })
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
@@ -1277,7 +1299,7 @@ if (!hasSingleInstanceLock) {
       // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
       // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
       onlyNeededAtStartup: () => codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
-        rootedOptions.system.providerRoots, resolveRelaySite(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
+        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
@@ -1297,6 +1319,7 @@ if (!hasSingleInstanceLock) {
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
+      relayEndpointRouting: relayRouting,
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
@@ -1393,7 +1416,7 @@ if (!hasSingleInstanceLock) {
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
     function codexProbeContext() {
-      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
       const inspection = inspectProviderConfig(
         'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
       )
@@ -1451,9 +1474,9 @@ if (!hasSingleInstanceLock) {
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
-          // Read fresh on every run rather than captured once at startup, so
-          // a settings change is reflected on the very next diagnostics run.
-          relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
+          // Read the account's site on every run; endpoint preferences take
+          // effect only after restart, matching the live account clients.
+          relaySite: relayRouting.resolve(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
           // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
           // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
@@ -1471,7 +1494,7 @@ if (!hasSingleInstanceLock) {
       // 不信渲染层给的任何名字或路径（I5）。
       fix: async (kind: DiagnosticFixKind) => {
         if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
-        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
         return clearUserProviderOverrides({
           names: clearableEnvironmentOverrides(process.env, site.providerBaseUrls, codexContext.userHome),
         })
@@ -1480,7 +1503,7 @@ if (!hasSingleInstanceLock) {
       // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
       // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
       checkConnection: async (provider: ProviderId) => {
-        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
         const result = await runConnectionCheck({
           provider,
           site,
@@ -1534,6 +1557,18 @@ if (!hasSingleInstanceLock) {
       })
     }
     const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true
+    const updateConfigPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'app-update.yml')
+      : path.join(app.getAppPath(), 'dev-app-update.yml')
+    const directUpdateFeed = locateDirectUpdateFeed(updateConfigPath, {
+      activeSolovEndpointId: relayRouting.activeEndpointIds.solov,
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      localBuild,
+    })
+    // setFeedURL only changes transport. Keep configOnDisk intact: electron-updater
+    // still reads publisherName and updaterCacheDirName there when verifying/installing.
+    if (directUpdateFeed) autoUpdater.setFeedURL(directUpdateFeed.feed)
     // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
     // electron-updater returns from verifySignature before the strict verifier
     // above is ever reached. The updater re-checks the manifest digest itself;
@@ -1712,12 +1747,7 @@ if (!hasSingleInstanceLock) {
     // 要让他看到。
     const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
-      : locateServiceStatusUrl(
-        app.isPackaged
-          ? path.join(process.resourcesPath, 'app-update.yml')
-          : path.join(app.getAppPath(), 'dev-app-update.yml'),
-        { allowLocalHttp: !app.isPackaged },
-      )
+      : directUpdateFeed?.serviceStatusUrl ?? locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
         read: () => readServiceStatus({
@@ -1740,6 +1770,7 @@ if (!hasSingleInstanceLock) {
       ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
       requestGuard: updateRequests !== null,
+      updateFeedRoute: directUpdateFeed ? 'direct' : 'packaged',
     })
     if (unsignedChannel) {
       runtimeLog.log(
@@ -1786,7 +1817,7 @@ if (!hasSingleInstanceLock) {
     // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
     // checkConnection），否则换过站的用户会被告知一份好配置「没指向当前账号」。
     runtimeLog.attachEnvironmentDescriber(async () => {
-      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
       return buildFeedbackEnvironmentLines({
         clis: latestTraySystem?.clis ?? null,
         readConfig: (provider) => inspectProviderConfig(
@@ -2025,14 +2056,16 @@ if (!hasSingleInstanceLock) {
     // 改直连的是这个客户端连的站点：切账号时另一个站点的登录框也在发请求，它不一定是
     // 当前选中的那个。
     async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
-      const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
+      const siteProbeUrl = relayStatusProbeUrl(relayRouting.resolve(siteId))
       const retry = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
       if (retry) {
-        // 直连那一路刚交还给系统代理时，重发走的是系统代理。
+        // 直连那一路刚交还给系统代理、或者代理只断了一下又连得上时，重发走的是系统代理。
         const scope = proxyBypass.active() ? 'app' : proxyBypass.siteDirect() ? 'site' : 'proxy'
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope === 'proxy'
-          ? '账号请求直接联网没走通，已改回跟随系统代理'
-          : '账号请求经系统代理没走通，已改直接联网', {
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope !== 'proxy'
+          ? '账号请求经系统代理没走通，已改直接联网'
+          : failure.reason === 'proxy'
+            ? '账号请求撞上系统代理断了一下，代理又连得上了，经系统代理重发'
+            : '账号请求直接联网没走通，已改回跟随系统代理', {
           reason: failure.reason,
           method: failure.method,
           scope,
@@ -2053,7 +2086,7 @@ if (!hasSingleInstanceLock) {
             origin: 'https://xm.solov.cc', userId: String(persisted.userId), username: profile.username,
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
-        client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: accountFetch,
+        client = createNewApiClient({ baseUrl: relayRouting.require(siteId).accountBaseUrl, fetchImpl: accountFetch,
           retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
@@ -2161,7 +2194,7 @@ if (!hasSingleInstanceLock) {
       }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
     }
     function createBusiness(siteId: RealmAccountSiteId) {
-      const definition = requireSiteRuntimeDefinition(siteId)
+      const definition = requireSiteRuntimeDefinition(siteId, relayRouting.selection(siteId))
       const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
       const accountService = createRealmServiceDispatch(() => {
         if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')

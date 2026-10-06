@@ -65,6 +65,7 @@ import {
   resultNoticeLead,
   type OperationNotice,
   useOperation,
+  useReloadWhenShown,
   useResource,
   userFacingErrorMessage,
 } from './business-common'
@@ -101,6 +102,9 @@ import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
 import { AppUninstallRow } from './features/app/AppUninstall'
+import { RelayRouteSettings } from './features/app/RelayRouteSettings'
+import { createSettingsQueue } from './features/app/settings-queue'
+export { createSettingsQueue } from './features/app/settings-queue'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import {
@@ -212,6 +216,14 @@ export type BusinessActions = {
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
   /**
+   * 「安装卸载」页卸掉工具、装好或换了运行环境以后叫一声，由 App 重新检测，首页跟着变；
+   * 不叫的话首页还摆着卸掉的工具、还写 Node.js「未安装」。装工具不用它：走 installTool
+   * （没接时走 onToolsChanged），装完还要写 Key。页面先叫它、再读本页：本页那次读接上 App
+   * 刚起的那一轮检测，不另起一轮。
+   * 缺省 = 只刷新本页（旧行为）。
+   */
+  onSystemChanged?: () => void
+  /**
    * 首页那条完整的安装：缺 Node.js / Python 先装运行环境，装完写 Key、刷新检测。
    * 「安装卸载」页以前自己直接调主进程装工具，没装 Node.js 的人只看到「未检测到
    * npm」（全面检测 Q33）；有了它就只走这一条。
@@ -243,6 +255,11 @@ export type BusinessActions = {
    * 「自动更新」）各有一个开关，哪边改了另一边要跟着变；缺省 = 只用页面自己读到的那份（旧行为）。
    */
   appSettings?: AppSettings
+  /**
+   * 外壳告诉页面「现在显示的是你」。去过的页面换走时只藏起来、不卸载（App.tsx 的 visitedPages），
+   * 再显示时页面自己重读一次（useReloadWhenShown），和点页头那颗按钮一样；缺省 = 不重读（旧行为）。
+   */
+  active?: boolean
 }
 /** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
 const networkDiagnosticCode = 'XINGMANG_NETWORK'
@@ -408,6 +425,7 @@ export function HealthPage({
   openConfig,
   onRewriteKey,
   rewritableKeys,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
   // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
   const load = useCallback(() => api.runDiagnostics().then((report) => {
@@ -422,8 +440,9 @@ export function HealthPage({
   // 正常的项默认收成一行；从别处点名要看的那一项正好是正常的，就先摆出来再翻过去。
   const [showPassing, setShowPassing] = useState(false)
   // 设置里「企业证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
-  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。
-  useRowFocus('health', pageRef, Boolean(resource.data), (anchor) => {
+  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
+  // 等新结果出来再翻，不在几个小时前那份上亮。
+  useRowFocus('health', pageRef, Boolean(resource.data) && !resource.loading, (anchor) => {
     const code = anchor === firstProblemAnchor ? problems[0]?.code ?? null : anchor
     if (code && passing.some((item) => item.code === code)) setShowPassing(true)
     return code
@@ -444,13 +463,20 @@ export function HealthPage({
   const responsesEpoch = useRef(0)
   // 这张卡只对装了 Codex 的人有意义；没读到装没装时先不显示，免得没装的人看到一个点了只会报错的按钮。
   const [codexInstalled, setCodexInstalled] = useState(false)
+  const [codexProbe, setCodexProbe] = useState(0)
   useEffect(() => {
     let current = true
     api.scanSystem(false)
       .then((snapshot) => { if (current) setCodexInstalled(snapshot.clis.codex.installed === true) })
       .catch(() => { if (current) setCodexInstalled(false) })
     return () => { current = false }
-  }, [api])
+  }, [api, codexProbe])
+  // 从错误框「检查网络」、侧栏回到这一页，看到的该是现在的结果，不是几个小时前那份。
+  // 还在查就不再起一轮：探测要起好几个子进程，那一轮本来就是刚起的。
+  useReloadWhenShown(active, () => {
+    if (!resource.loading) void resource.reload()
+    setCodexProbe((value) => value + 1)
+  })
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
       responsesEpoch.current += 1
@@ -953,9 +979,12 @@ export function FeedbackPage({
   api,
   openHelp,
   navigate,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.getRuntimeLogs(runtimeLogLimit), [api])
   const resource = useResource(load)
+  // 错误框「查看日志」把人带回这一页时，刚出的那个错要在「运行日志」最上面，不用再点「刷新」。
+  useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState(anyRuntimeLogValue)
@@ -1761,6 +1790,22 @@ export function installJobRunning(job: ToolJob | undefined): boolean {
   return job !== undefined && job.kind !== 'uninstall'
 }
 
+/**
+ * 首页那份任务里本页有行的几个（四个命令行工具、Codex 桌面端、Node.js、Python）。
+ * Git、打开工具这些任务这一页不画，跑完也不用重读。
+ */
+export function maintenanceRowJobKeys(jobs: Readonly<Record<string, ToolJob>> | undefined): string[] {
+  return Object.keys(jobs ?? {}).filter((key) => isProvider(key) || key === 'codexDesktop' || key === 'node' || key === 'python')
+}
+
+/**
+ * 上次还在、这次没了的任务：在首页装好、更新完、卸掉（或没装上、取消了）。任务一没，
+ * 这一行就回到本页上次读的检测结果，写回做之前的样子，所以要重读。
+ */
+export function maintenanceJobsFinished(previous: readonly string[], current: readonly string[]): boolean {
+  return previous.some((key) => !current.includes(key))
+}
+
 /** 正在装的是哪个（工具或运行环境）；不是安装（检查更新、复制日志……）时为 null。 */
 function installingName(busy: string): string | null {
   if (busy === 'node') return 'Node.js'
@@ -1788,6 +1833,7 @@ export function MaintenancePage({
   api,
   navigate,
   onToolsChanged,
+  onSystemChanged,
   installTool,
   cancelToolInstall,
   toolJobs,
@@ -1855,6 +1901,16 @@ export function MaintenancePage({
     observer.observe(view)
     return () => observer.disconnect()
   }, [hasLogs])
+  // 首页那份任务一跑完（在首页装、更新、卸载工具，或者装运行环境），这一行就回到本页上次
+  // 读的结果：写回做之前的样子，又给「安装」或「卸载工具」。少了哪一行的任务就重读一次。
+  // 装好、卸掉、装好运行环境时首页自己也会重新检测，本页这次读接上那一轮，不另起一轮。
+  const rowJobs = useRef<string[]>([])
+  useEffect(() => {
+    const current = maintenanceRowJobKeys(toolJobs)
+    const finished = maintenanceJobsFinished(rowJobs.current, current)
+    rowJobs.current = current
+    if (finished) void resource.reload()
+  }, [toolJobs, resource.reload])
   function forgetProgress(id: string) {
     setProgress((previous) => {
       if (!(id in previous)) return previous
@@ -1891,6 +1947,10 @@ export function MaintenancePage({
           } finally {
             cancelRequested.current.delete(id)
             setCancelling('')
+            // 取消被拒时页顶那句只说这次安装还会跑完。跑完了（装好、没装上都算）就收起：
+            // 装好照常提示「安装完成，工具状态已更新」，没装上红条换成没装上的原因。不收的话
+            // 红条一直挂着，下一次别的操作清掉那条原因后它还会再冒出来。
+            setCancelNotice('')
           }
         }
         try {
@@ -1903,6 +1963,7 @@ export function MaintenancePage({
         } finally {
           cancelRequested.current.delete(id)
           setCancelling('')
+          setCancelNotice('')
         }
         // 先让 App 写 Key 并刷新全局检测，再读本页数据：顺序反过来这一页会先
         // 拿到一份还没配置 Key 的快照，而提示语已经说「工具状态已更新」。
@@ -1919,6 +1980,7 @@ export function MaintenancePage({
         const result = id === 'node'
           ? await api.installNodeRuntime()
           : await api.installPythonRuntime()
+        onSystemChanged?.()
         await resource.reload()
         return describeRuntimeInstallOutcome(id, result)
       }),
@@ -2310,12 +2372,15 @@ export function MaintenancePage({
                           manualCommand: result.manualHelp.manualCommand,
                         })
                         setRemove(null)
+                        // 程序已经卸掉了一部分，首页那份也要重查。
+                        onSystemChanged?.()
                         await resource.reload()
                         // Still a failed uninstall: the page must not claim
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
                       setRemove(null)
+                      onSystemChanged?.()
                       await resource.reload()
                       return uninstallHandOffNotice(result)
                     },
@@ -2354,6 +2419,7 @@ export function MaintenancePage({
               'node',
               () => tracked('node', async () => {
                 const result = await api.installNodeRuntime({ reason: 'certificate' })
+                onSystemChanged?.()
                 await resource.reload()
                 return describeNodeReplaceOutcome(result)
               }),
@@ -2373,26 +2439,6 @@ export function MaintenancePage({
       )}
     </section>
   )
-}
-
-export function createSettingsQueue(
-  save: V2Bridge['saveSettings'],
-  onSaved: (settings: AppSettings) => void,
-) {
-  let tail: Promise<unknown> = Promise.resolve()
-  return (patch: SettingsUpdate) => {
-    const finish = beginBusinessOperation('保存设置')
-    const task = tail
-      .catch(() => undefined)
-      .then(() => save(patch))
-      .then((value) => {
-        onSaved(value)
-        return value
-      })
-      .finally(finish)
-    tail = task
-    return task
-  }
 }
 
 /** 设置页顶上那句。原来那句后面加半句会折成两行，所以整句换短；Mac 上写 ⌘K。 */
@@ -3090,6 +3136,20 @@ export function SettingsPage({
       ),
       network: (
         <>
+          <RelayRouteSettings
+            settings={settings}
+            saving={pending > 0}
+            restarting={Boolean(operation.busy)}
+            onChange={(patch) => void update(patch)}
+            onRestart={() => void operation.execute(
+              'relaunch',
+              () => api.relaunchApp(),
+              (started) => {
+                if (!started) showToast('已取消重开', 'neutral')
+                return null
+              },
+            )}
+          />
           {row(
             'mirror',
             '自动选择可用来源；下载失败时可切换后重试',

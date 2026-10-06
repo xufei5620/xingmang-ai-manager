@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { before, after, test } from 'node:test'
+import { before, after } from 'node:test'
+// Windows CI deals this file's tests across runners; see e2e/shard-tests.mjs.
+import { test } from '../../../e2e/shard-tests.mjs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import react from '@vitejs/plugin-react'
@@ -396,6 +398,34 @@ test('opening a desktop client marks its row running and leaves the client rows 
     })
     assert.equal(await row.getByText(/运行中/).count(), 1)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第三十九批 C：客户端的「打开」和命令行工具排同一个队。前面没东西在装时照旧写「正在打开客户端」；
+// 正在装别的工具时写清在等谁装完，不再一直只写「正在打开客户端」。
+test('opening a desktop client behind a running install says which install it waits for', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy&externalLaunchPending=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    const opener = page.getByTestId('tool-workbuddy-primary')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await opener.click()
+    await row.getByText('正在打开客户端', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByText(/运行中/).waitFor()
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    await expect(opener).toBeEnabled()
+    await opener.click()
+    await row.getByText('正在等 Gemini CLI 安装完，安装完马上打开', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByText('正在等 Gemini CLI 安装完，安装完马上打开', { exact: true }).waitFor({ state: 'detached' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy', 'workbuddy'])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1081,6 +1111,193 @@ test('home reuses the recent list instead of rescanning session folders on every
   } finally { await page.close() }
 })
 
+// 首页一直开着就不会重新挂载。以前从这里打开工具、在终端里聊完再切回来，「最近」一直是打开前那份：
+// 刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，点下去接上的却是刚聊的那条（第四十一批 C）。
+test('home re-reads the recent list when the window comes back after a tool was opened', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  // 等一会儿再数：React 处理完这一下、该读的已经发出去了，才能说「没读」。
+  const focusWindow = () => page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'))
+    return new Promise((resolve) => setTimeout(resolve, 100))
+  })
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    assert.equal(await homeReads(), 1)
+    // 一分钟内、又没打开过工具：回到窗口还是那一份，不读盘。
+    await focusWindow()
+    assert.equal(await homeReads(), 1)
+
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    // 在终端里聊了一条，然后切回星芒。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 1)
+    await focusWindow()
+    await page.getByTestId('home-recent-resume-claude:6').waitFor()
+    assert.equal(await homeReads(), 2)
+    // 刚聊的排第一；my-app 里更早的 claude:1 不再挂「接着聊」，不会再有一颗接到别的对话上的按钮。
+    assert.equal(await page.locator('[data-testid^="home-recent-row-"]').first().getAttribute('data-testid'), 'home-recent-row-claude:6')
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('home re-reads the recent list when the window is shown again, so the open button names the folder just used', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  const visibility = (value) => page.evaluate((state) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    document.dispatchEvent(new Event('visibilitychange'))
+    return new Promise((resolve) => setTimeout(resolve, 100))
+  }, value)
+  try {
+    const button = page.getByTestId('tool-claude-primary')
+    await button.waitFor()
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 这次换了个文件夹：「换一个目录」→「选择其他目录…」，在那儿聊了一条。
+    await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\Selected Project', 500))
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 缩在托盘里、窗口看不见的时候不读。
+    await visibility('hidden')
+    assert.equal(await homeReads(), 1)
+    await visibility('visible')
+    await expect(button).toHaveAttribute('title', '在 C:\\Selected Project 打开')
+    assert.equal(await homeReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第四十二批 B：记录页读两份，列表本身（pageSize 20）和定「接着聊」挂在哪条上的最新 100 条；首页那份是 60，不混着数。
+// 开发模式挂两遍会让第一次进来读几次不固定，所以只数「多了几次」。
+async function recordsReads(page) {
+  return page.evaluate(() => [20, 100].map((size) => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === size).length))
+}
+
+// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
+// 而 Claude Code 按文件夹接最近一条（#292），点下去接上的是刚聊的那条。
+test('the records page reads both lists again when it is shown again, so 接着聊 sits on the newest record of the folder', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-resume-claude:1').waitFor()
+    const [list, latest] = await recordsReads(page)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    // 在首页打开 Claude Code，在 my-app 里新聊了一条。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-resume-claude:6').waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 刚聊的排第一、带「接着聊」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
+    assert.equal(await page.locator('[data-testid^="sessions-row-"]').first().getAttribute('data-testid'), 'sessions-row-claude:6')
+    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 停在记录页、窗口回到前面时也重读，离上次读不到半分钟不读，窗口藏着时不读。时钟停着，等的那一下在测试这边等。
+test('the records page reads again when the window comes back after half a minute, but not sooner and not while hidden', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1', true)
+  async function foreground(event) {
+    await page.evaluate((name) => {
+      if (name === 'focus') window.dispatchEvent(new Event('focus'))
+      else document.dispatchEvent(new Event('visibilitychange'))
+    }, event)
+    await page.waitForTimeout(100)
+  }
+  async function visibility(state) {
+    await page.evaluate((value) => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => value }), state)
+    await foreground('visibilitychange')
+  }
+  try {
+    await page.getByTestId('nav-sessions').click()
+    // 记录页是懒加载的：React 换下「正在加载」前要等那个占位摆满 300 毫秒（setTimeout），时钟停着就一直等，往前拨一秒。
+    await page.clock.runFor(1_000)
+    await page.getByTestId('sessions-resume-claude:1').waitFor()
+    const [list, latest] = await recordsReads(page)
+    // 刚进来：半分钟内回到窗口不读。
+    await foreground('focus')
+    assert.deepEqual(await recordsReads(page), [list, latest])
+    await page.clock.fastForward(30_000)
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await foreground('focus')
+    await page.getByTestId('sessions-resume-claude:6').waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 马上又回来一次：不读。
+    await foreground('focus')
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    // 缩在托盘里时不读；过了半分钟再显示出来，读。
+    await page.clock.fastForward(30_000)
+    await visibility('hidden')
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    await visibility('visible')
+    await expect.poll(() => recordsReads(page)).toEqual([list + 2, latest + 2])
+    // 换到别的页以后，窗口回到前面不替藏着的记录页读。
+    await page.clock.fastForward(30_000)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await foreground('focus')
+    assert.deepEqual(await recordsReads(page), [list + 2, latest + 2])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 在记录页点「接着聊」，在终端里聊完切回来：不用等半分钟，回到窗口那一下就重读，开着的详情里也是新的对话，
+// 读的时候不闪成「正在读取对话…」。
+test('after 接着聊 on the records page the next return to the window reads again at once, open record included', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  async function focusWindow() {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForTimeout(100)
+  }
+  try {
+    await page.evaluate(() => {
+      window.__transcript = [{ role: 'user', text: '上回问到这里' }]
+      window.xingmang.getProviderSessionDetail = async (id) => ({
+        session: { id, provider: 'claude', nativeId: '1', title: '会话 1', cwd: 'C:\\work\\my-app', model: 'fixture-model', archived: false, readonly: true,
+          createdAt: 400, updatedAt: 400, messageCount: window.__transcript.length, sourcePath: 'C:\\Fixture\\1.jsonl', detailAvailable: true, cwdExists: true },
+        messages: window.__transcript.map((message) => ({ ...message })),
+        messageStats: { total: window.__transcript.length, user: window.__transcript.length, assistant: 0, system: 0, other: 0, invalidLines: 0 },
+        messagesTruncated: false, sourceTruncated: false,
+      })
+    })
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-view-claude:1').click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    await drawer.getByText('上回问到这里', { exact: true }).waitFor()
+    const [list, latest] = await recordsReads(page)
+    // 刚进来：回到窗口不读。
+    await focusWindow()
+    assert.deepEqual(await recordsReads(page), [list, latest])
+    await drawer.getByTestId('session-detail-resume').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="session-detail-resume"]')?.disabled === false)
+    // 在终端里又问了一句，然后切回星芒。
+    await page.evaluate(() => {
+      window.__transcript.push({ role: 'user', text: '刚在终端里问的' })
+      window.__sawTranscriptLoading = false
+      new MutationObserver(() => {
+        if (document.querySelector('[data-testid="session-detail-drawer"]')?.textContent?.includes('正在读取对话')) window.__sawTranscriptLoading = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+    })
+    await focusWindow()
+    await drawer.getByText('刚在终端里问的', { exact: true }).waitFor()
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
+    await expect(drawer.getByText('上回问到这里', { exact: true })).toBeVisible()
+    assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home shows the last usage right away instead of asking the account backend on every visit', async () => {
   const page = await open('allInstalled=1')
   const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
@@ -1199,6 +1416,86 @@ test('a folder picked for one CLI opens the others there without asking again', 
     const calls = await page.evaluate(() => window.v2Test.calls)
     assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
     assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)), [['codex', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第四十批 A：托盘「已安装的工具」和 Ctrl+1～5 以前什么文件夹都不带，每次都弹选择框；
+// 现在和首页那颗「打开 xx」挑同一个文件夹，都没有才弹。
+test('the tray and Ctrl+1-5 open a CLI in the folder its home button shows', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args))
+  const choices = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length)
+  async function settled(id, count) {
+    await page.waitForFunction((expected) => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === expected, count)
+    await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"]`)?.disabled, `tool-${id}-primary`)
+  }
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent === '打开 my-app')
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await settled('claude', 1)
+    // Ctrl+2 是工具表里的第二个，Codex CLI。
+    await page.keyboard.press('Control+2')
+    await settled('codex', 2)
+    assert.deepEqual(await launches(), [['claude', 'C:\\work\\my-app'], ['codex', 'C:\\work\\codex-app']])
+    assert.equal(await choices(), 0)
+
+    // Grok 没有记录，也没选过文件夹：照旧先问。
+    await page.keyboard.press('Control+5')
+    await settled('grok', 3)
+    assert.deepEqual((await launches())[2], ['grok', 'C:\\Selected Project'])
+    assert.equal(await choices(), 1)
+
+    // Codex 桌面端自己管工作区，从托盘打开和以前一样。
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codexDesktop'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const desktop = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args))
+    assert.deepEqual(desktop, [['open']])
+    assert.equal(await choices(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a folder picked on home opens CLIs from the tray and shortcuts, even when records cannot be read', async () => {
+  const page = await open('launchRemembers=1')
+  const sessionReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderSessions').length)
+  try {
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    // 上一次打开收完尾再发托盘事件：还在打开时，requestLaunch 会把新来的请求直接丢掉。
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
+    // 记录读不到就只看上次选过的文件夹，不因此弹选择框，也不报错。
+    const readsBefore = await sessionReads()
+    await page.evaluate(() => { window.v2Test.fail = 'listProviderSessions' })
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    assert.equal(await sessionReads(), readsBefore + 1)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+
+    await page.keyboard.press('Control+1')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 3)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)),
+      [['codex', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project']])
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the tray says the remembered folder is gone and asks for another one', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&workspaceGone=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent === '打开 my-app')
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '上次用的目录已经找不到了，请重新选择。')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['claude', 'C:\\work\\my-app'], ['claude', 'C:\\Selected Project']])
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1540,6 +1837,43 @@ test('the home runtime card shows the Git version and no warning when Git is pre
     await page.getByTestId('page-home').waitFor()
     assert.equal(await page.getByTestId('home-runtime-git-hint').count(), 0)
     assert.equal(await page.getByTestId('home-runtime-git').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+// 第四十三批 F：在「外接工具」页点「自动安装 Python」装好以后回首页，「运行环境」里 Python 那一行是版本号，
+// 不再写「可选 · 未装」、不再给安装按钮。
+test('installing Python from the MCP page brings the home runtime card along', async () => {
+  const page = await open('pythonMissing=1')
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        runtimes: { python: window.v2Test.calls.some((entry) => entry.method === 'installPythonRuntime'), uv: false },
+      })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+    })
+    const row = page.getByTestId('home-runtime-row-python')
+    await expect(row).toContainText('可选 · 未装')
+    await page.getByTestId('home-runtime-python').waitFor()
+    await page.getByTestId('home-suggestion-mcp').click()
+    await page.getByTestId('page-mcp').waitFor()
+    // 还没有连接时空状态里也有一颗「添加」，点页头那颗。
+    await page.getByTestId('mcp-add').first().click()
+    await page.getByRole('button', { name: '本地程序', exact: true }).click()
+    await page.getByTestId('mcp-source').fill('python')
+    const notice = page.getByTestId('mcp-runtime-notice')
+    await notice.getByTestId('mcp-install-python').click()
+    // 本页重读以后有 Python 了，那条提示自己收起。这回先不加，关掉添加框回首页。
+    await notice.waitFor({ state: 'detached' })
+    const dialog = page.getByRole('dialog', { name: /添加连接/ })
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await page.getByTestId('nav-home').click()
+    await expect(row).toContainText('3.13.7')
+    assert.equal(await page.getByTestId('home-runtime-python').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2047,6 +2381,35 @@ test('a tool whose account key changes this startup keeps waiting for the scan w
 
 // 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
 // 问完了、谁都不用换，检测没跑完也能打开。
+test('an applied route migration blocks home and native launch after scanning until configuration finishes', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    await page.evaluate(() => { window.v2Test.holdNextConfigSave(); window.v2Test.releaseScan() })
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].providers.includes('claude')))
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
+    await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    const shortcutNumber = await page.evaluate(async () => {
+      const { tools } = await import('/src/renderer-v2/registry/tools.ts')
+      return tools.filter((entry) => !entry.hidden?.('win')).findIndex((entry) => entry.id === 'claude') + 1
+    })
+    await page.keyboard.press(`Control+${shortcutNumber}`)
+    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
+    const configured = await page.evaluate(async () => (await window.xingmang.getConfig()).providers.claude)
+    assert.equal(configured.actualBaseUrl, configured.baseUrl)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('opening waits while the account key sync has not answered yet, then opens before the scan finishes', async () => {
   const page = await open('allInstalled=1&cachedScan=1&bootstrapPending=1')
   try {
@@ -2172,6 +2535,72 @@ test('an updated tool row stays on the running install until the rescan lands', 
   } finally { await page.close() }
 })
 
+// 第四十批 C：装完以后同步 Key、重新检测那几秒，那一行的「取消」还亮着。主进程这时已经不登记这次安装了，
+// 再去问它只会回「这个工具当前没有正在进行的安装。」，可这一行明明还在走：直接说这一步停不下来。
+test('cancelling during the key sync after an install says the step can no longer be cancelled', async () => {
+  const page = await open('cliUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    const update = row.getByRole('button', { name: '更新', exact: true })
+    await update.waitFor()
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await update.click()
+    await row.getByText('安装完成，正在同步账号 Key 并刷新状态', { exact: true }).waitFor()
+    await row.getByTestId('tool-claude-cancel').click()
+    await waitForToast(page, '这一步已经不能取消了。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
+    await expect(row.getByTestId('tool-claude-cancel')).toHaveText('取消')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await row.getByText('v2.0.0', { exact: false }).waitFor()
+    assert.equal(await row.getByTestId('tool-claude-cancel').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+test('cancelling on the maintenance page during the key sync after an install says the step can no longer be cancelled', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const maintenance = page.getByTestId('page-maintenance')
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
+    await page.getByTestId('maintenance-cancel-gemini').click()
+    await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
+    await expect(page.getByTestId('maintenance-cancel-gemini')).toHaveText('取消')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    assert.equal(await page.getByTestId('maintenance-cancel-gemini').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 取消被拒那句红条只说这次安装还会跑完：跑完了就收起，照常提示装好了，不再挂着「未完成」。
+test('a refused cancel on the maintenance page stops showing once the install finishes', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const maintenance = page.getByTestId('page-maintenance')
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await page.getByTestId('maintenance-install-gemini').click()
+    await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
+    await page.getByTestId('maintenance-cancel-gemini').click()
+    await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await waitForToast(page, '安装完成，工具状态已更新')
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    await expect(maintenance.getByRole('alert')).toHaveCount(0)
+    assert.doesNotMatch(await maintenance.innerText(), /这一步已经不能取消了。/)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('saved-account switching leaves tools without an account key untouched', async () => {
   const page = await open('savedAccount=1')
   try {
@@ -2210,6 +2639,27 @@ test('read-only account matches switch only explicitly selected CLI providers on
     // 没勾的两个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
     for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('tools switched to a saved account open right away instead of waiting for a key sync that never runs', async () => {
+  const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    await page.getByTestId('account-sync-grok').waitFor()
+    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
+    await expect(page.locator('dialog[open]')).toHaveCount(0)
+    // 切换账号时 Key 已经在切换框里换好，开机那一轮同步不会再跑：「打开」不能一直灰着等它。
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codex'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.getByTestId('tool-claude-primary').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)).toBe(2)
+    assert.equal(await page.getByText('正在同步这个工具的账号连接，请稍后再打开。').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2541,6 +2991,146 @@ test('turning the display switch off in settings asks for a relaunch, and later 
     await page.getByTestId('settings-display-relaunch-later').click()
     await expect.poll(() => page.getByTestId('settings-display-relaunch').count()).toBe(0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a first login network failure can change routes without losing its draft or bypassing relaunch', async () => {
+  const page = await open('guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.evaluate(() => { window.v2Test.fail = 'loginAccount'; window.v2Test.failMessage = '连接账号服务超时' })
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').waitFor()
+    await page.getByTestId('auth-connection-settings').click()
+    const panel = page.getByTestId('auth-connection-routes')
+    await panel.waitFor()
+    await expect(page.locator('dialog[open]')).toHaveCount(1)
+    const route = panel.getByTestId('settings-relay-route-solov')
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await route.selectOption('direct')
+    await expect(route).toBeDisabled()
+    await expect(page.getByTestId('auth-connection-back')).toBeDisabled()
+    await expect(route).toHaveValue('primary')
+    await page.evaluate(() => window.v2Test.releaseConfigSave('线路设置没有保存成功'))
+    await panel.getByRole('alert').filter({ hasText: '线路设置没有保存成功' }).waitFor()
+    await expect(route).toHaveValue('primary')
+    await route.selectOption('direct')
+    await panel.getByTestId('settings-relay-relaunch').waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
+    await page.getByTestId('auth-connection-back').click()
+    await expect(page.getByTestId('login-account')).toHaveValue('fixture-user')
+    await expect(page.getByTestId('login-password')).toHaveValue('fixture-password')
+    await expect(page.getByTestId('auth-agree')).toBeChecked()
+    await page.getByTestId('auth-connection-settings').click()
+    await expect(route).toHaveValue('direct')
+    await page.evaluate(() => window.v2Test.emit('onWindowCloseRequest', { requestId: 'fixture-route-relaunch' }))
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === 'fixture-route-relaunch')?.args[1]?.unsavedChanges)).toBe(true)
+    await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
+    await panel.getByTestId('settings-relay-relaunch-now').click()
+    await waitForToast(page, '已取消重开')
+    await expect(panel.getByTestId('settings-relay-relaunch')).toBeVisible()
+    await page.screenshot({ path: path.join(artifacts, 'auth-relay-route-pending.png'), fullPage: true })
+    await page.getByTestId('auth-connection-back').click()
+    await expect(page.getByTestId('login-password')).toHaveValue('fixture-password')
+    assert.equal(await page.evaluate(async () => (await window.xingmang.getAccountSession()).authenticated), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unsigned first-run guide reaches connection routes before it can configure any tool', async () => {
+  const page = await open('guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-chat').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    await page.getByTestId('guide-login').click()
+    await page.getByTestId('auth-connection-settings').click()
+    const panel = page.getByTestId('auth-connection-routes')
+    await panel.getByTestId('settings-relay-route-solov').selectOption('direct')
+    await panel.getByTestId('settings-relay-relaunch').waitFor()
+    await page.getByTestId('auth-connection-back').click()
+    await page.getByTestId('login-cancel').click()
+    await expect(page.getByTestId('start-guide')).toHaveAttribute('data-guide-step', 'connect')
+    const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(calls.includes('loginAccount') || calls.includes('configureManagedCliKeys') || calls.includes('relaunchApp'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('relay route settings stay confirmed while saving and keep the restart notice across page visits', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await expect(route).toHaveValue('primary')
+    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeDisabled()
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await route.selectOption('direct')
+    await expect(route).toBeDisabled()
+    await expect(route).toHaveValue('primary')
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await expect(route).toHaveValue('direct')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } })
+    assert.equal(await page.evaluate(async () => (await window.xingmang.getSettings()).activeRelayEndpointIds.solov), 'primary')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-settings').click()
+    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await page.screenshot({ path: path.join(artifacts, 'settings-relay-route-pending.png'), fullPage: true })
+    await page.getByTestId('settings-relay-relaunch-now').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
+    await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('relay route settings roll back a failed save and do not announce a pending restart', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await page.evaluate(() => { window.v2Test.fail = 'saveSettings' })
+    await route.selectOption('direct')
+    await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
+    await expect(route).toHaveValue('primary')
+    await expect(route).toBeEnabled()
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await route.selectOption('direct')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await route.selectOption('primary')
+    await expect.poll(() => page.getByTestId('settings-relay-relaunch').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('relay route settings compare against the active backup route and preserve a cancelled restart', async () => {
+  const page = await open('directRelayActive=1')
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await expect(route).toHaveValue('direct')
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await route.selectOption('primary')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
+    await page.getByTestId('settings-relay-relaunch-now').click()
+    await waitForToast(page, '已取消重开')
+    await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
+    assert.equal(await page.evaluate(async () => (await window.xingmang.getAccountSession()).account.userId), 17)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3601,8 +4191,13 @@ test('NewAPI read states survive collection updates and stay isolated between ac
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '已读'])
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'other-user', group: 'default', role: 1, quota: 1, usedQuota: 0 } }))
+    await page.getByRole('button', { name: '打开个人中心 other-user', exact: true }).waitFor()
     await page.getByTestId('announcement-open').click()
-    await list.waitFor()
+    // Opening reloads the new account's collection. The container can briefly
+    // exist before that reload clears it; wait for both rows and their read
+    // states to finish loading before taking the original synchronous snapshot.
+    await expect(list.locator('.v2-announcement-title')).toHaveText(['第一条', '第二条'])
+    await expect(list.locator('.v2-announcement-read-state')).toHaveText(['未读', '未读'])
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读'])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
     await clean(page)
@@ -4112,6 +4707,30 @@ test('a saved account with the same id switches platform without reusing NewAPI 
   } finally { await page.close() }
 })
 
+test('tools on the backup route follow a switch to a historical account', async () => {
+  const page = await open('crossSite=1&directRelayActive=1&routedSwitch=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    const list = page.getByTestId('saved-accounts-list')
+    await expect(list.getByTestId('account-sync-claude')).toBeChecked()
+    await expect(list.getByTestId('account-sync-codex')).toBeChecked()
+    await list.getByRole('button', { name: '切换', exact: true }).click()
+    // 两个都换过去了，没有要用户看的：切换框自己关掉，不留「用的是别处的配置，保持原配置」。
+    await page.getByRole('dialog', { name: '切换账号', exact: true }).waitFor({ state: 'hidden' })
+    const writes = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').map((entry) => entry.args[0]))
+    assert.deepEqual(writes, [
+      { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
+      { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
+    ])
+    const addresses = await page.evaluate(async () => {
+      const { providers } = await window.xingmang.getConfig()
+      return [providers.claude.actualBaseUrl, providers.codex.actualBaseUrl]
+    })
+    assert.deepEqual(addresses, ['https://api.solov.cc', 'https://api.solov.cc/v1'])
+    await clean(page)
+  } finally { await page.close() }
+})
 
 test('relogin on an expired saved account opens the login dialog on that account source with its remembered email, not its nickname', async () => {
   const page = await open('crossSite=1&rememberedLegacy=1')
@@ -4593,6 +5212,118 @@ test('switching accounts while the model question is open drops it without openi
   } finally { await page.close() }
 })
 
+// 第四十批 B：记录页的「接着聊」以前直接叫主进程打开，首页打开前那几道关（核对默认模型、
+// 没连好账号先去连、Codex 老配置先修）一道都没过。
+const recordsResumedNotice = '已打开Claude Code，接着 C:\\work\\my-app 里最近的一条对话'
+async function resumeFromRecords(page) {
+  await page.getByTestId('nav-sessions').click()
+  await page.getByTestId('sessions-resume-claude:1').click()
+}
+async function waitForRecordsIdle(page) {
+  await page.waitForFunction(() => document.querySelector('[data-testid="sessions-resume-claude:1"]')?.disabled === false)
+}
+function launchCliCalls(page) {
+  return page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args))
+}
+
+test('resuming from the records page checks the tool first and opens right away when every check passes', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await resumeFromRecords(page)
+    await waitForToast(page, recordsResumedNotice)
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    const methods = await page.evaluate(() => window.v2Test.calls.map((call) => call.method))
+    assert.ok(methods.includes('checkToolModels') && methods.indexOf('checkToolModels') < methods.indexOf('launchCli'), '打开之前和首页一样核过默认模型')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('resuming from the records page asks about a gone default model first and only swaps it when told to', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    const question = page.getByTestId('model-swap-question')
+    await question.waitFor()
+    assert.match(await question.innerText(), /当前账号用不了了/)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli' || call.method === 'saveConfig')), false, '回答之前既不打开也不改配置')
+    await page.getByTestId('model-swap-confirm').click()
+    await waitForToast(page, recordsResumedNotice)
+    // 先把模型换好，再接着聊。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls
+      .filter((call) => call.method === 'saveConfig' || call.method === 'launchCli')
+      .map((call) => call.method === 'saveConfig' ? [call.method, call.args[0]] : [call.method, ...call.args])), [
+      ['saveConfig', { provider: 'claude', apiKey: '', model: 'claude-opus-5-5', mode: 'merge' }],
+      ['launchCli', 'claude', 'C:\\work\\my-app', 'resumeLast'],
+    ])
+    await question.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('closing the records page question opens nothing, and keeping the old model resumes without touching the config', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    await waitForRecordsIdle(page)
+    // 和问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
+    assert.deepEqual(await launchCliCalls(page), [])
+    await assertNoToast(page, recordsResumedNotice)
+    assert.equal(await page.locator('.v2-business-notice.is-error').count(), 0)
+    await page.getByTestId('sessions-resume-claude:1').click()
+    await page.getByTestId('model-swap-keep').click()
+    await waitForToast(page, recordsResumedNotice)
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'saveConfig')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('resuming a tool that is not connected to the current account opens its settings instead of the tool', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&unknownClaude=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByRole('dialog', { name: 'Claude Code 配置' }).waitFor()
+    await page.locator('.v2-business-notice.is-error').filter({ hasText: '请先确认账号连接，再打开工具。' }).waitFor()
+    assert.deepEqual(await launchCliCalls(page), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('switching accounts while the records page question is open drops it without resuming or saving', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli' || call.method === 'saveConfig')), false)
+    await assertNoToast(page, recordsResumedNotice)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 首页、托盘的「打开」一次只放一个，记录页「接着聊」不走那里：记录页那一问还开着时从托盘打开工具，
+// 后来的一问顶掉它。记录页这次不打开，也不能一直转圈等一个再也没人回答的问题。
+test('a tool opened from the tray while the records page question is open takes the question over', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await resumeFromRecords(page)
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForRecordsIdle(page)
+    await page.getByTestId('model-swap-keep').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCli'))
+    // 托盘开的是新对话，文件夹和首页按钮挑的一样（第四十批 A）：Claude Code 最近一条记录在 my-app。
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app']])
+    await assertNoToast(page, recordsResumedNotice)
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
   const page = await open('localeLaunchWarning=1')
   try {
@@ -4952,6 +5683,80 @@ test('installing from the maintenance page writes the account Key and refreshes 
     await row.getByText('已安装', { exact: true }).waitFor()
     await page.getByTestId('nav-home').click()
     await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第四十一批 B：「安装卸载」页和首页各记各的那几条路。R-G3 只补了「安装卸载」页装工具这一条。
+test('uninstalling on the maintenance page takes the tool off the home page tools', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('home-your-tools').getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('已安装')
+    await page.getByRole('button', { name: 'Claude Code 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '卸载工具', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载工具？', exact: true }).getByRole('button', { name: '确认卸载', exact: true }).click()
+    await waitForToast(page, '工具已卸载，配置已保留')
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('未安装')
+    // 以前首页还摆着它、写着「打开」，点了才报「未检测到 Claude Code，请先安装」。
+    await page.getByTestId('nav-home').click()
+    await expect(page.getByTestId('home-available').getByTestId('tool-claude-primary')).toHaveText('安装')
+    assert.equal(await page.getByTestId('home-your-tools').getByTestId('tool-row-claude').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+test('installing Node.js on the maintenance page updates the home runtime card', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    const node = page.getByTestId('home-runtime-row-node')
+    await expect(node).toContainText('未装')
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await page.getByTestId('maintenance-runtime-action-node').click()
+    await expect(page.getByTestId('maintenance-runtime-state-node')).toHaveText('已安装')
+    assert.match(await page.getByTestId('maintenance-runtime-node').innerText(), /24\.0\.0/)
+    await page.getByTestId('nav-home').click()
+    await expect(page.getByTestId('home-runtime-row-node')).toContainText('v24.0.0')
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a tool installed from the home page reads as installed on a maintenance page opened earlier', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.getByTestId('nav-home').click()
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('安装中')
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    // 以前任务一完这一行就回到进页时读的那份：又写「未安装」，按钮又是「安装」。
+    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    assert.match(await page.getByTestId('maintenance-tool-gemini').innerText(), /2\.0\.0/)
+    await expect(page.getByTestId('maintenance-install-gemini')).toHaveText('重新安装')
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a tool uninstalled from the home page reads as missing on a maintenance page opened earlier', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('已安装')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    await page.getByTestId('home-available').getByTestId('tool-row-grok').waitFor()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
+    await page.getByRole('button', { name: 'Grok CLI 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '检查更新', exact: true }).waitFor()
+    assert.equal(await page.getByRole('menuitem', { name: '卸载工具', exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -5651,6 +6456,149 @@ test('the startup notice lands on the first problem of the check results', async
   } finally { await page.close() }
 })
 
+// 第四十二批 A：检查页每次查都现取 window.__health.items；hold 为真时先停住，release() 了才回结果。
+async function stubHeldHealthReport(page, items) {
+  await page.evaluate((initial) => {
+    window.__health = { items: initial, hold: false, release: () => undefined }
+    window.xingmang.runDiagnostics = async () => {
+      if (window.__health.hold) await new Promise((resolve) => { window.__health.release = resolve })
+      const items = window.__health.items.map((item) => ({ durationMs: 1, ...item }))
+      const counts = { pass: 0, warn: 0, fail: 0, error: 0 }
+      for (const item of items) counts[item.state] += 1
+      return { version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts, items }
+    }
+  }, items)
+}
+
+// 只数检查页自己那一轮（不带参数）；开机检查带 reuseRecentScan，不算。
+function healthChecks(page) {
+  return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics' && entry.args.length === 0).length)
+}
+
+// 第四十二批 A：去过的页面换走时只藏起来、不卸载，再显示时自己重读一次，和点页头那颗按钮一样。
+// 从错误框「检查网络」、侧栏回到检查页，看到的是现在的结果；还在查的时候换走再回来，不再起一轮。
+// 开发模式挂两遍会让第一次查几轮不固定，所以只数「多了几轮」。
+test('the check page checks again when it is shown again, but not while a check is still running', async () => {
+  const page = await open()
+  try {
+    await stubHeldHealthReport(page, [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '连接正常' }])
+    const health = page.getByTestId('page-health')
+    await page.getByTestId('nav-health').click()
+    await expect(health.getByTestId('health-passing')).toContainText('全部 1 项正常')
+    const first = await healthChecks(page)
+    await page.evaluate(() => { window.__health.items = [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务' }] })
+    // 藏着的检查页不查。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.waitForTimeout(100)
+    assert.equal(await healthChecks(page), first)
+    // 回来不用点「重新检查」就是新结果，右上照旧写「上次检查」。
+    await page.getByTestId('nav-health').click()
+    await expect(health.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连不上星芒服务')
+    assert.equal(await healthChecks(page), first + 1)
+    await expect(health.locator('.xm-toolbar')).toContainText('上次检查')
+    // 查着的时候换走再回来：那一轮还没查完，不再起一轮；查完照样换上新结果。
+    await page.evaluate(() => {
+      window.__health.hold = true
+      window.__health.items = [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '连接正常' }]
+    })
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-health').click()
+    await expect.poll(() => healthChecks(page)).toBe(first + 2)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-health').click()
+    await page.waitForTimeout(100)
+    assert.equal(await healthChecks(page), first + 2)
+    await page.evaluate(() => { window.__health.hold = false; window.__health.release() })
+    await expect(health.getByTestId('health-passing')).toContainText('全部 1 项正常')
+    assert.equal(await healthChecks(page), first + 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 去过检查页、换走，再从设置「网络检查」点「去检查页」：这时正在重查，等新结果出来再翻到网络那一项、
+// 亮一下，不先在上回那份结果上亮。
+test('pointing at an item of a check page visited before waits for the new results', async () => {
+  const page = await open()
+  try {
+    await stubHeldHealthReport(page, [
+      { code: 'CLI_CODEX', title: 'Codex CLI', state: 'fail', summary: 'Codex CLI 打不开' },
+      { code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '上回查：连接正常' },
+    ])
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-row-CLI_CODEX').waitFor()
+    await page.evaluate(() => {
+      window.__health.hold = true
+      window.__health.items = [
+        { code: 'CLI_CODEX', title: 'Codex CLI', state: 'fail', summary: 'Codex CLI 打不开' },
+        { code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'pass', summary: '这回查：连接正常' },
+      ]
+    })
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('settings-network-health').click()
+    await page.getByTestId('page-health').waitFor()
+    // 新结果还没回来：哪一项都不亮，正常的几项也还收着。
+    await page.waitForTimeout(300)
+    assert.equal(await page.locator('[data-testid="page-health"] [data-anchor-focus]').count(), 0)
+    await expect(page.getByTestId('health-passing-toggle')).toHaveText('展开')
+    await page.evaluate(() => { window.__health.hold = false; window.__health.release() })
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="XINGMANG_NETWORK"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('这回查：连接正常')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 错误框「查看日志」把人带回去过的反馈页：刚出的那个错不点「刷新」就在「运行日志」最上面。
+test('the feedback page reads the run log again when it is shown again', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      const entry = (index, level, message) => ({ id: `2026-10-06T00:00:0${index}.000Z:4242:${index}`, timestamp: `2026-10-06T00:00:0${index}.000Z`, level, source: 'fixture', event: 'test', message, detail: null })
+      window.__logs = [entry(1, 'info', '上回进来时就有的日志')]
+      window.__logError = () => window.__logs.unshift(entry(2, 'error', '刚出的那个错'))
+      window.xingmang.getRuntimeLogs = async () => ({ generatedAt: new Date().toISOString(), directory: 'C:/logs', filePath: 'C:/logs/runtime.log', sizeBytes: 64,
+        total: window.__logs.length, truncated: false, counts: { debug: 0, info: 1, warn: 0, error: window.__logs.length - 1 }, sources: ['fixture'],
+        currentProcessId: 4242, startedAt: '2026-10-06T00:00:00.000Z', entries: window.__logs.map((item) => ({ ...item })) })
+    })
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-feedback').click()
+    const logs = page.getByTestId('page-feedback').locator('button.v2-feedback-log')
+    await expect(logs.first()).toContainText('上回进来时就有的日志')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.__logError())
+    await page.getByTestId('nav-feedback').click()
+    await expect(logs.first()).toContainText('刚出的那个错')
+    await expect(logs).toHaveCount(2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 改用失败的错误框叫人「到「备份」里恢复改用之前的那一份」：去过的备份页回来时，列表里得有这一份。
+test('the backups page lists a backup made while it was hidden once it is shown again', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.__backups = []
+      window.xingmang.listBackups = async () => window.__backups.map((item) => ({ ...item }))
+    })
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-backups').click()
+    await page.getByTestId('backups-empty').waitFor()
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => {
+      window.__backups.push({ id: 'backup-before-switch', provider: 'codex', reason: 'pre-save', createdAt: new Date().toISOString(),
+        fileCount: 2, existingFileCount: 2, totalSize: 2048, valid: true, error: null, keyOwnership: 'current', keyAccountName: null })
+    })
+    await page.getByTestId('nav-backups').click()
+    await expect(page.getByTestId('backups-row-backup-before-switch')).toContainText('配置前备份')
+    await expect(page.getByTestId('backups-empty')).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第五部分第 39 条：结论是「网络」时，「去处理」打开设置的「网络」那一组，不再落在第一组「外观」。
 test('a network self-check result sends 去处理 to the network group of settings', async () => {
   const page = await open()
@@ -5924,6 +6872,8 @@ test('a window narrower than the design collapses the sidebar by itself, floats 
     await page.screenshot({ path: path.join(artifacts, 'shell-narrow-overlay.png') })
     await page.keyboard.press('Escape')
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    // Escape restores focus in the next animation frame, after the class changes.
+    await expect(page.getByTestId('sidebar-collapse')).toBeFocused()
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '展开侧栏')
     await page.getByTestId('sidebar-collapse').click()
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')
@@ -6003,6 +6953,30 @@ test('going offline swaps the announcement bar for the offline bar and brings it
     await setBrowserOnline(page, true)
     await offline.waitFor({ state: 'detached' })
     await banner.waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the note that the app went direct closes by itself once the app is back on the system proxy', async () => {
+  const page = await open('sub2api=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    // 电脑里的代理软件关了：读余额连着被拒两次，星芒自己改成直连，余额又读得到了。
+    await page.evaluate(() => {
+      window.v2Test.fail = 'getAccountBalance'
+      window.v2Test.failMessage = "Error invoking remote method 'account:get-balance': Error: 系统里设置的代理连不上，请检查代理或加速设置后再试。"
+    })
+    const refresh = page.getByTestId('sidebar-balance-refresh')
+    await refresh.click()
+    await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
+    await refresh.click()
+    const notice = page.getByTestId('proxy-bypass-banner')
+    await notice.waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'bypassBrokenProxy').length), 1)
+    // 代理软件又开起来，主进程改回跟随系统代理：不用点「知道了」，这条提示自己收起。
+    await page.evaluate(() => window.v2Test.emit('onProxyBypassEnded', undefined))
+    await notice.waitFor({ state: 'detached' })
+    assert.equal(await page.getByTestId('offline-banner').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

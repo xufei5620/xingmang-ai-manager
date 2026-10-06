@@ -15,6 +15,7 @@ import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './feat
 import { buildEnvironmentStatus, publishDiagnosticsCounts, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
+import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
@@ -28,7 +29,7 @@ import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeR
 import { canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
-import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -70,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -110,6 +111,11 @@ function guideSource(source: ToolSource): GuideToolState['source'] {
 // 文案固定在主进程，渲染层只给一个事件编号；受设置里的桌面通知开关管。
 function notifyAnnouncement(eventKey: string) {
   void platformApi()?.notifyActivity('announcement', eventKey).catch(() => undefined)
+}
+
+// 「打开」排队时说在等谁（launchWaitLabel）：工具行任务的 key 就是工具或客户端的编号。
+function jobToolName(key: string): string | undefined {
+  return tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name
 }
 
 function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangApi; accelerationPreview?: boolean }) {
@@ -209,6 +215,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const onlineResync = useRef(idleOnlineResync())
   const resumeOnline = useRef<(() => void) | null>(null)
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
+  const accountBootstrapRef = useRef(accountBootstrap)
+  accountBootstrapRef.current = accountBootstrap
   // 会话变化事件来过几次。启动那次读取可能在事件之后才落地（账号恢复超时先放行
   // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
   const sessionEvents = useRef(0)
@@ -279,6 +287,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     })
   }, [native, toast])
   const dismissProxyBypassNotice = useCallback(() => setProxyBypassNotice(false), [])
+  // 代理软件好了以后主进程会改回跟随系统代理（electron/proxy-bypass.ts），这条提示说的就不对了：自己收起，不用等用户点「知道了」。
+  useEffect(() => native.onProxyBypassEnded?.(() => setProxyBypassNotice(false)), [native])
   const onlineStatus = useMemo<OnlineStatus>(() => ({
     offline,
     cause: onlineCause,
@@ -853,9 +863,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     const total = plan.prepare.length + 1
     // 运行环境那一段主进程没有取消通道；这时按「取消」要说清楚，而不是回一句
-    //「没有正在进行的安装」。换装时卸载那一步同样没有。
+    //「没有正在进行的安装」。换装时卸载那一步同样没有；装完以后同步 Key、重新检测
+    // 那几秒也没有，主进程装完就不再登记这次安装（第四十批 C）。
     let preparing = plan.prepare.length > 0
     let uninstalling = false
+    let finishing = false
     let outcome: ToolInstallOutcome = 'installed'
     const updating = Boolean(current?.status.installed)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
@@ -907,9 +919,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if (plan.prepare.length > 0 || switchVersion) void toolbox.refresh(true).catch(() => undefined)
         throw cause
       }
+      finishing = true
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
-    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
+    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling || finishing ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
   }
@@ -1030,7 +1043,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   async function launchExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
     try {
-      const launched = await toolbox.run(`launch:${id}`, '正在打开客户端', () => toolsApi.launchExternal(id))
+      // 和命令行工具的「打开」排同一个队：前面有东西在装，这一行写清在等谁（第三十九批 C）。
+      const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName, '正在打开客户端')
+      const launched = await toolbox.run(`launch:${id}`, waitLabel, () => toolsApi.launchExternal(id))
       // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
       if (launched && mounted.current && epoch === accountEpoch.current) toolbox.noteExternalLaunched(id)
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
@@ -1041,31 +1056,45 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (mounted.current && epoch === accountEpoch.current) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
     })
   }
-  /**
-   * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
-   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
-   */
   function launchIsCurrent(epoch: number): boolean {
     return mounted.current && accountEpoch.current === epoch
   }
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+  function accountConnectionPending(provider: ProviderId): boolean {
+    const latest = accountBootstrapRef.current
+    return accountKeyChangeInProgress(latest?.scope === scope ? latest : null, provider)
+  }
+  function waitForAccountConnection(tool: { source: ToolSource; provider: ProviderId }): boolean {
+    if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return false
+    toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral')
+    return true
+  }
+  /**
+   * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
+   * 首页「打开」「接着聊」走 launch()，记录页「接着聊」自己叫主进程打开，两边都先过这里
+   * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照、配置和工具；null = 不往下走
+   * （问话框里关掉了，或者中途换了账号），什么都不打开，也不报错。
+   */
+  async function prepareToolLaunch(id: ToolId, epoch: number) {
     try {
-      if (!launchIsCurrent(epoch)) return false
+      if (!launchIsCurrent(epoch)) return null
       const current = toolbox.snapshot
       if (!current) throw new Error('请先完成工具检测')
       const config = await toolsApi.readConfig()
-      if (!launchIsCurrent(epoch)) return false
+      if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
+      // Shortcuts, tray actions and the records page share this entry, including
+      // after the scan finishes but account configuration is still waiting on the backend.
+      if (waitForAccountConnection(tool)) return null
       // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
       // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
         const repaired = await switchToolAccount(id, 'account')
-        if (!repaired || !launchIsCurrent(epoch)) return false
+        if (!repaired || !launchIsCurrent(epoch)) return null
         const fresh = await toolsApi.readConfig()
-        if (!launchIsCurrent(epoch)) return false
+        if (!launchIsCurrent(epoch)) return null
         tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
         if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
       }
@@ -1073,11 +1102,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       // Every awaited step belongs to the account that requested this launch. A
       // later session event must not resume the old request against a new owner.
       const offer = modelSwapOffer(tool.name, await toolsApi.checkModels(id))
-      if (!launchIsCurrent(epoch)) return false
+      if (!launchIsCurrent(epoch)) return null
       if (offer) {
         let answerCurrent: (choice: ModelSwapChoice) => void = () => undefined
         const choice = await new Promise<ModelSwapChoice>((answer) => {
           answerCurrent = answer
+          // 首页、托盘的「打开」一次只放一个（launchRequest），记录页「接着聊」不走那里：记录页这一问
+          // 还开着时从托盘打开工具，新的一问会顶掉它。旧的那一问替用户关掉（等于这次先不打开），
+          // 不然它永远等不到回答，记录页一直转圈。
+          pendingModelSwap.current?.('cancel')
           pendingModelSwap.current = answer
           setModelSwap({ offer, answer })
         })
@@ -1085,7 +1118,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           pendingModelSwap.current = null
           setModelSwap(null)
         }
-        if (choice === 'cancel' || !launchIsCurrent(epoch)) return false
+        if (choice === 'cancel' || !launchIsCurrent(epoch)) return null
         if (choice === 'swap') {
           // Empty key keeps the existing source; an ordinary save failure still
           // opens with the old model, while an account change stops the launch.
@@ -1095,17 +1128,32 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             saved = true
           }
           catch (cause) {
-            if (!launchIsCurrent(epoch)) return false
+            if (!launchIsCurrent(epoch)) return null
             toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn')
           }
-          if (!launchIsCurrent(epoch)) return false
+          if (!launchIsCurrent(epoch)) return null
           if (saved) {
             const refreshed = await toolbox.refreshSavedConfig(() => launchIsCurrent(epoch))
-            if (!launchIsCurrent(epoch)) return false
+            if (!launchIsCurrent(epoch)) return null
             if (!refreshed) toast.show('模型已保存，但最新配置没有读到；工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
           }
         }
       }
+      return { current, config, tool }
+    } catch (cause) {
+      if (!launchIsCurrent(epoch)) return null
+      throw cause
+    }
+  }
+  /**
+   * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
+   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
+   */
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+    try {
+      const prepared = await prepareToolLaunch(id, epoch)
+      if (!prepared) return false
+      const { current, config, tool } = prepared
       let workspace = config.workspace
       if (id !== 'codexDesktop') {
         // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
@@ -1114,9 +1162,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         workspace = selectedWorkspace
       }
       if (!launchIsCurrent(epoch)) return false
-      const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
+      const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName)
+      let connectionDeferred = false
       const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
         if (!launchIsCurrent(epoch)) return
+        if (waitForAccountConnection(tool)) { connectionDeferred = true; return }
         const result = await toolsApi.launch(id, workspace, mode)
         const warning = launchWarning(result)
         if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
@@ -1131,7 +1181,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
         }
       })
-      return launchIsCurrent(epoch) && started
+      return launchIsCurrent(epoch) && started && !connectionDeferred
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       throw cause
@@ -1203,6 +1253,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
       return launch(id, 'open', undefined, false, epoch)
     }
+  }
+  /**
+   * 托盘「已安装的工具」和快捷键 Ctrl / Command + 1～5 没有按钮可看，就在首页那颗「打开 xx」
+   * 写的同一个文件夹打开（launchWorkspaces）。以前这两处什么都不带，每次都弹选择框（第四十批 A）。
+   * 记录读不到就只看上次选过的文件夹，都没有才弹；文件夹不在了，launchRemembered 提示一句再弹。
+   * Codex 桌面端自己管工作区，照旧。
+   */
+  async function requestLaunchInLastWorkspace(id: ToolId) {
+    if (id === 'codexDesktop') { requestLaunch(id); return }
+    const epoch = accountEpoch.current
+    const recent = await toolsApi.recent().catch(() => null)
+    // 读记录的这一下换了账号：这次按下去是上一个账号的，不接着打开（同 launch 里的 epoch）。
+    if (!launchIsCurrent(epoch)) return
+    requestLaunch(id, launchWorkspaces(recent?.items ?? [], providerFor(id), toolbox.snapshot?.config.rememberedWorkspace)[0]?.path)
   }
   // 设置窗口写进了新 Key：读回配置成功才告诉密钥页，好收起那条「还在用刚撤销的密钥」（#546）。
   // 读回失败就不收，警告宁可多留一会儿。
@@ -1287,7 +1351,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (target === 'announcement') { if (session.authenticated) setAnnouncementOpen(true) }
     else navigate(target)
   }), [native, navigate, session])
-  useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) requestLaunch(id) }), [native, toolbox.snapshot, session.authenticated])
+  useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) void requestLaunchInLastWorkspace(id) }), [native, toolbox.snapshot, session.authenticated])
   useEffect(() => {
     const unsubscribe = native.onWindowCloseRequest(({ requestId }) => {
       void native.replyWindowClose(requestId, {
@@ -1313,7 +1377,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
       if (/^[1-5]$/.test(event.key)) {
         const tool = tools.filter((entry) => !entry.hidden?.(os))[Number(event.key) - 1]
-        if (tool && isToolId(tool.id)) { event.preventDefault(); requestLaunch(tool.id) }
+        if (tool && isToolId(tool.id)) { event.preventDefault(); void requestLaunchInLastWorkspace(tool.id) }
       }
     }
     document.addEventListener('keydown', onShortcut)
@@ -1474,13 +1538,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   onSessionsChanged={refreshRecent}
+                  beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}
                   installedProviders={installedProviders}
+                  onSystemChanged={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
@@ -1494,6 +1560,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           </div>
         </AppFrame>}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
+      connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
       suppressRestoredBootstrap.current.add(authenticatedScope)

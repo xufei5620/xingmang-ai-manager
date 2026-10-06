@@ -10,7 +10,7 @@ import { copyBoundedFileExclusive, readBoundedFile } from './bounded-file'
 import { readDirectoryEntries } from './bounded-directory'
 import { assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 import { buildIsolatedMihomoConfig, type AccelerationClashProfile } from './acceleration-clash-config'
-import { relayDirectHosts } from './relay-sites'
+import { relayDirectHosts, relayDirectIps } from './relay-sites'
 import type { AccelerationLine } from './acceleration-contract'
 import { assertMacosAccelerationBinary } from './acceleration-binary'
 
@@ -467,7 +467,8 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
     try {
       assertNotAborted(abort.signal)
       const yaml = buildIsolatedMihomoConfig(profile, {
-        mixedPort: session.proxyPort, controllerPort: session.controllerPort, controllerSecret, directHosts: relayDirectHosts(),
+        mixedPort: session.proxyPort, controllerPort: session.controllerPort, controllerSecret,
+        directHosts: relayDirectHosts(), directIps: relayDirectIps(),
       })
       ensureSafeDataDirectory(options.runtimeDirectory, '加速运行目录')
       await fs.promises.mkdir(directory, { mode: 0o700 })
