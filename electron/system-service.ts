@@ -283,7 +283,7 @@ import {
   type ExternalToolId,
 } from './external-tool-config'
 import type { ExternalClientConfigResult, ExternalClientStatus, ExternalClientRuntimeStatus } from './external-client-contract'
-import { createExternalClientRuntime } from './external-client-runtime'
+import { createExternalClientRuntime, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
@@ -2869,6 +2869,16 @@ export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now
   }
 }
 
+/** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
+export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
+  return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
+}
+
+/** 苹果没放行时进运行日志的那几项：应用包可能在主目录下的「应用程序」里，原话里也会带着这个路径。 */
+export function buildExternalClientMacVerificationLogDetail(failure: ExternalClientMacVerificationFailure, userHome: string) {
+  return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -2976,6 +2986,11 @@ export function createSystemService(
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
+    // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
+    onRegistryIncomplete: (failures) => runtimeLog?.log('warn', 'system', 'external-client.registry-incomplete', '部分软件安装记录无法读取，桌面客户端检测不完整',
+      buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
+    onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
+      buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
   })
   let nodeRuntimeInstalling = false
   let windowsProcessor: Promise<WindowsProcessorArchitecture | null> | null = null
@@ -5697,7 +5712,9 @@ export function createSystemService(
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
+        // 随这次失败一起进运行日志。
+        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`, { cause: error })
       }
       return launchResult
     }

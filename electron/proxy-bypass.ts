@@ -20,7 +20,7 @@
  * 跟随系统代理。
  */
 
-import { classifyNetworkFailure, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, networkFailureCode, type NetworkFailureReason } from './network-failure'
 
 export type ProxyBypassOutcome =
   /** 直连通了：改成直连，代理软件又起来以后再改回去。 */
@@ -180,7 +180,15 @@ interface SiteRecheck {
  * 撞上「代理连不上」等一会儿再看的那一眼：又连得上了（answered）、还是连不上（down），
  * 或者换成了别的错（unclear：代理多半已经起来，线路还没缓过来，或者这会儿没网）。
  */
-type ProxyLook = 'answered' | 'down' | 'unclear'
+interface ProxyLook {
+  outcome: 'answered' | 'down' | 'unclear'
+  /**
+   * 还连不上时这一眼撞上的错误码，接着改直连的那条日志记它：代理软件没开
+   * （ERR_PROXY_CONNECTION_FAILED）和代理开着、回绝了连星芒的请求（ERR_TUNNEL_CONNECTION_FAILED）
+   * 归类都是 proxy，只有错误码分得开。
+   */
+  failureCode: string | null
+}
 
 const proxyAnswersMessage = '经系统代理现在连得上了，账号和 AI 请求改回跟随系统代理'
 
@@ -203,6 +211,8 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   let siteHandedBack: { probeUrl: string, at: number } | null = null
   let proxyCheck: Promise<void> | null = null
   let proxyLook: Promise<ProxyLook> | null = null
+  // 整个改了直连以后，隔一阵那一眼经系统代理还是连不上时记过的错误码（见 noteStillProxy）。
+  const stillProxyCodes = new Set<string | null>()
   const now = dependencies.now ?? Date.now
   const schedule = dependencies.schedule ?? scheduleTimeout
 
@@ -219,7 +229,7 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     return accelerating ? 'acceleration' : null
   }
 
-  async function attempt(): Promise<ProxyBypassOutcome> {
+  async function attempt(failureCode: string | null): Promise<ProxyBypassOutcome> {
     const url = dependencies.probeUrl()
     if (!url) return 'unavailable'
     const blocker = await bypassBlocker(url)
@@ -232,19 +242,20 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
       // 隔 systemProxyCheckIntervalMs 再看代理软件是不是又好了（见 restoreSystemProxy）。
       proxyCheckedAt = activatedAt
       unreachableAt = null
-      dependencies.log?.('info', 'proxy-bypass.direct', '系统代理连不上，本次运行改为直接联网')
+      dependencies.log?.('info', 'proxy-bypass.direct', '系统代理连不上，本次运行改为直接联网', { failureCode })
       return 'direct'
     }
     await dependencies.setProxy('system')
     unreachableAt = now()
-    dependencies.log?.('warn', 'proxy-bypass.unreachable', '系统代理连不上，直接联网也不通，已改回跟随系统代理')
+    dependencies.log?.('warn', 'proxy-bypass.unreachable', '系统代理连不上，直接联网也不通，已改回跟随系统代理', { failureCode })
     return 'unreachable'
   }
 
-  function tryBypass(): Promise<ProxyBypassOutcome> {
+  // failureCode 是改直连之前再看那一眼撞上的错误码，只进日志；「重新检测」那条路没再看，是 null。
+  function tryBypass(failureCode: string | null): Promise<ProxyBypassOutcome> {
     if (active) return Promise.resolve('direct')
     // 横幅和「重新检测」可能前后脚各点一次：同一时刻只试一次，不来回切代理。
-    if (!pending) pending = attempt().finally(() => { pending = null })
+    if (!pending) pending = attempt(failureCode).finally(() => { pending = null })
     return pending
   }
 
@@ -253,18 +264,18 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     // 等的这一会儿有人在试整个改直连（「重新检测」）：那时默认会话切着直连，经它探的不算数，
     // 等它试完；已经改成直连了就照那边答。
     if (pending) await pending.catch(() => undefined)
-    if (active) return 'down'
-    const failure = await dependencies.probe(url).then(
-      (answered) => answered ? null : 'no-answer',
-      (error: unknown) => probeFailure(error) ?? 'no-answer',
+    if (active) return { outcome: 'down', failureCode: null }
+    const { failure, failureCode } = await dependencies.probe(url).then(
+      (answered) => ({ failure: answered ? null : 'no-answer' as const, failureCode: null }),
+      (error: unknown) => ({ failure: probeFailure(error) ?? 'no-answer' as const, failureCode: networkFailureCode(error) }),
     )
     if (failure === null) {
       dependencies.log?.('info', 'proxy-bypass.proxy-back', '系统代理断了一下，再看已经连得上，照旧跟随系统代理')
-      return 'answered'
+      return { outcome: 'answered', failureCode: null }
     }
-    if (failure === 'proxy') return 'down'
+    if (failure === 'proxy') return { outcome: 'down', failureCode }
     dependencies.log?.('warn', 'proxy-bypass.proxy-unclear', '系统代理连不上，再看时换成了别的错，先照旧跟随系统代理', { failure })
-    return 'unclear'
+    return { outcome: 'unclear', failureCode: null }
   }
 
   // 撞上「代理连不上」以后先别急着整个改直连：代理软件换节点、重启内核时端口只断这一下。
@@ -403,8 +414,9 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     // 重启内核的那一下不算：等一会儿再看一眼，还连不上才改。
     if (failure !== 'proxy' || backingOff(automaticBypassCooldownMs)) return
     // 等的这一会儿别处刚试过整个改直连、直连也不通：不接着再试一遍。
-    if (await lookAgainAtProxy(url) !== 'down' || backingOff(automaticBypassCooldownMs)) return
-    await tryBypass()
+    const look = await lookAgainAtProxy(url)
+    if (look.outcome !== 'down' || backingOff(automaticBypassCooldownMs)) return
+    await tryBypass(look.failureCode)
   }
 
   // 整个改了直连以后，经只跟随系统代理的会话看一眼：连得上星芒，就把默认会话改回跟随系统
@@ -416,12 +428,13 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   async function restoreSystemProxy(): Promise<void> {
     const url = dependencies.probeUrl()
     if (!url) return
-    const failure = await dependencies.probeSystemProxy(url).then(
-      (answered) => answered ? null : 'no-answer',
-      (error: unknown) => probeFailure(error) ?? 'unknown',
+    const { failure, failureCode } = await dependencies.probeSystemProxy(url).then(
+      (answered) => ({ failure: answered ? null : 'no-answer' as const, failureCode: null }),
+      (error: unknown) => ({ failure: probeFailure(error) ?? 'unknown' as const, failureCode: networkFailureCode(error) }),
     )
     // 代理本身还连不上（代理软件没开，或者回绝了连星芒的请求，别处也都当它连不上）、这会儿
     // 没网，或者说不清是怎么失败的：接着直连，过一阵再看。
+    if (failure === 'proxy') noteStillProxy(failureCode)
     if (failure === 'proxy' || failure === 'offline' || failure === 'unknown') return
     // 代理起来了却没连上星芒：直连那一路也连得上星芒，才把它分过去；不然接着整个直连，过一阵再看。
     const siteOrigin = failure === null ? null : originOf(url)
@@ -446,6 +459,15 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     dependencies.directEnded?.()
   }
 
+  // 一直连不上时这一眼每隔 systemProxyCheckIntervalMs 就有一次，次次都记会刷满日志，所以同一个
+  // 错误码这次运行只记一条。换了错误码照样记：代理软件后来起来了、却回绝连星芒的请求
+  // （ERR_PROXY_CONNECTION_FAILED 换成 ERR_TUNNEL_CONNECTION_FAILED），要从日志里看出来的正是这种。
+  function noteStillProxy(failureCode: string | null): void {
+    if (stillProxyCodes.has(failureCode)) return
+    stillProxyCodes.add(failureCode)
+    dependencies.log?.('info', 'proxy-bypass.still-proxy', '改了直连以后再看，系统代理还是连不上，接着直接联网', { failureCode })
+  }
+
   // 隔 systemProxyCheckIntervalMs 才看一次系统代理，同一时刻只看一次；看的这一下在后台，
   // 不拖着借它时机的那次请求。
   function startProxyCheck(check: () => Promise<void>): void {
@@ -455,7 +477,7 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
   }
 
   return {
-    tryBypass,
+    tryBypass: () => tryBypass(null),
     async recoverFailedRequest(startedAt, reason, siteProbeUrl) {
       // 另一个请求正在试整个改直连：等它试完再答。试的那一会儿默认会话已经切成直连，
       // 这时去看「走没走代理」只会得到「没走」，这次请求就白白不重发了。
@@ -478,8 +500,8 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
         if (active) return startedAt < activatedAt
         if (backingOff(automaticBypassCooldownMs) || !url || await bypassBlocker(url)) return false
         const look = await lookAgainAtProxy(url)
-        if (look !== 'down') return look === 'answered'
-        return !backingOff(automaticBypassCooldownMs) && await tryBypass() === 'direct'
+        if (look.outcome !== 'down') return look.outcome === 'answered'
+        return !backingOff(automaticBypassCooldownMs) && await tryBypass(look.failureCode) === 'direct'
       }
       // 这次请求在站点交还给系统代理之前就发出了（同一毫秒也算），走的是交还掉的那条直连：交还时
       // 已经看过系统代理连得上星芒站点（或者现在本来就不该绕），换现在这条路重发一次（重不重发还要
