@@ -117,14 +117,17 @@ jobs:
           - shard: renderer-v2
             command: npm run test:v2:vitest
             timeout: 10
-          # The fixture browser-checks, cut in two. app-check.mjs is two thirds
-          # of their time and gains ~20 tests a day, so a cut by file always
-          # left one runner holding all of it: #873 ran out the 18 minutes three
-          # times with every test passing, on runners that took about 1.55
-          # times as long as #871's over the same tests. So app-check's tests
-          # are dealt to both runners in declaration order (e2e/shard-tests.mjs,
-          # selected by XINGMANG_TEST_SHARD in each script), and the other
-          # files are divided between them by measured time.
+          # The fixture browser-checks, cut in three. app-check.mjs is two
+          # thirds of their time and gains ~20 tests a day, so a cut by file
+          # always left one runner holding all of it: #873 ran out the 18
+          # minutes three times with every test passing, on runners that took
+          # about 1.55 times as long as #871's over the same tests. So
+          # app-check's tests are dealt to every runner in declaration order
+          # (e2e/shard-tests.mjs, selected by XINGMANG_TEST_SHARD in each
+          # script), and the other files are divided between them by measured
+          # time. Two halves ran 7 to 10 minutes on 2026-10-06 and each gained
+          # about half a minute a day on the slowest runners, so they were
+          # cut into thirds before either came near 18.
           #
           # That used to be ruled out because app-check was thought to need
           # the other files to warm the shared node_modules/.vite cache, after
@@ -136,7 +139,7 @@ jobs:
           # in the repository and finds each dependency before the first page
           # loads; and run 35420361508 was a lost navigation (test 59, with 58
           # green before it and the next green in 1.9s), which openFixturePage
-          # now retries. When a half nears 18 minutes, deal to a third runner
+          # now retries. When a third nears 18 minutes, deal to a fourth runner
           # rather than raising the number.
           #
           # The two e2e suites load vite.config.ts with a cacheDir of their
@@ -146,6 +149,9 @@ jobs:
             timeout: 18
           - shard: renderer-v2-browser-2
             command: npm run test:v2:browser:fixture:2
+            timeout: 18
+          - shard: renderer-v2-browser-3
+            command: npm run test:v2:browser:fixture:3
             timeout: 18
           - shard: renderer-v2-e2e
             command: npm run test:v2:browser:e2e
@@ -593,7 +599,7 @@ jobs:
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no
       # Electron and no display server here. These two steps and
-      # linux-renderer-v2-browser's one add up to exactly `npm run test:v2`.
+      # linux-renderer-v2-browser's two shards add up to exactly `npm run test:v2`.
       - run: npm run test:v2:vitest
       - run: npm run test:v2:browser:e2e
       - run: npm run test:canvas
@@ -625,15 +631,25 @@ jobs:
   # The fixture half of linux-test's renderer v2 browser suites: ~12 of the
   # ~14 minutes test:v2 took there. Beside linux-test instead of after it, the
   # two finished in ~13 and ~10 minutes on #780, both before the slowest
-  # Windows shard. It runs test:v2:browser:fixture whole, the same files the
-  # two Windows renderer-v2-browser shards divide between them, because its
-  # step has no budget short of the job's 30 minutes: it took 10 to 15
-  # minutes on the runs of 2026-10-06.
+  # Windows shard. It ran test:v2:browser:fixture whole until it took 13 to
+  # 16 minutes on the runs of 2026-10-06, gaining about a minute every few
+  # days towards its 30, and became the pipeline's wall clock. It is now cut
+  # in two the way the Windows shards are: app-check's tests dealt to both,
+  # the other files divided by their measured time on this runner.
   linux-renderer-v2-browser:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            command: npm run test:v2:browser:fixture:linux:1
+          - shard: 2
+            command: npm run test:v2:browser:fixture:linux:2
+    name: linux-renderer-v2-browser (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -651,7 +667,8 @@ jobs:
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
           bash scripts/ci-install-chromium-deps.sh
-      - run: npm run test:v2:browser:fixture
+      - name: Run fixture shard ${{ matrix.shard }}
+        run: ${{ matrix.command }}
       - name: Fail if the test run left files in the working tree
         shell: bash
         run: |
