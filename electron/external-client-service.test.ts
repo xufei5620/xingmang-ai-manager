@@ -620,6 +620,15 @@ describe('external clients follow the connection route the user selected (batch 
     return f.runtimeLog.log.mock.calls.filter(([, , event]) => event.startsWith('external-client.route.'))
   }
 
+  // 客户在客户端里自己换了一把 Key。
+  function replaceKeyByHand(tool: ExternalToolId, file: string) {
+    const config = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (tool === 'claudeDesktop') config.inferenceGatewayApiKey = 'sk-hand-edited'
+    else if (tool === 'workbuddy') config[0].apiKey = 'sk-hand-edited'
+    else config.provider.xingmang.options.apiKey = 'sk-hand-edited'
+    fs.writeFileSync(file, JSON.stringify(config), 'utf8')
+  }
+
   it('moves each client the current account configured to the selected route after a restart, keeping key, model and protocol', async () => {
     const f = fixture()
     const { files, before } = await configureAll(f)
@@ -634,10 +643,10 @@ describe('external clients follow the connection route the user selected (batch 
       expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool)!.replaceAll(primaryOrigin, directOrigin))
       expect(backupsOf(files.get(tool)!)).toContain(before.get(tool))
       expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.followed', expect.any(String),
-        { tool, from: 'primary', to: 'direct', connectionVerified: true }])
+        { tool, from: 'primary', to: 'direct' }])
     }
-    // 模型清单和写完那次自检都走新线路；结果与日志里没有 Key，日志里也不记地址。
-    expect(f.relayFetch.mock.calls.map(([url]) => String(url)).filter((url) => !url.startsWith(directOrigin))).toEqual([])
+    // 每家只在新线路上查一次模型清单，换完不再另发自检；结果与日志里没有 Key，日志里也不记地址。
+    expect(f.relayFetch.mock.calls.map(([url]) => String(url))).toEqual(externalToolIds.map(() => `${directOrigin}/v1/models`))
     expect(JSON.stringify(clients)).not.toContain(selectedKey)
     expect(JSON.stringify(routeLogs(f))).not.toMatch(/sk-selected|solov\.cc|38\.147/)
   })
@@ -677,13 +686,92 @@ describe('external clients follow the connection route the user selected (batch 
     const f = fixture()
     const { files, before } = await configureAll(f)
     const service = await restartOn(f, 'direct')
-    // 缓存里那份还是没开着；拉清单那几秒里客户打开了 WorkBuddy，写之前那次强制盘点看到了。
-    vi.mocked(f.runtime.scan).mockImplementation(async (options) => structuredClone(f.runtimeStatuses)
-      .map((status) => options?.force && status.tool === 'workbuddy' ? { ...status, running: true } : status))
+    // 盘点照真的那样缓存，不强制就给上一份；客户是在拉模型清单那几秒里打开 WorkBuddy 的，
+    // 只有拉完清单、动文件之前那次强制盘点看得到。
+    let cached: ExternalClientRuntimeStatus[] | null = null
+    vi.mocked(f.runtime.scan).mockImplementation(async (options) => {
+      if (options?.force || !cached) cached = structuredClone(f.runtimeStatuses)
+      return structuredClone(cached)
+    })
+    const answer = f.relayFetch.getMockImplementation()!
+    f.relayFetch.mockImplementation(async (...request) => {
+      f.runtimeStatuses.find((status) => status.tool === 'workbuddy')!.running = true
+      return answer(...request)
+    })
     const client = (await service.scanExternalClients()).find((entry) => entry.tool === 'workbuddy')
 
     expect(client).toMatchObject({ running: true, routePending: true, configurationSource: 'other' })
     expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(before.get('workbuddy'))
+    expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.deferred', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }])
+  })
+
+  it('writes nothing when the customer changes a client while the model list is being fetched', async () => {
+    const f = fixture()
+    const { files } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    // 三家按检测结果的顺序一家一家换，每家查一次模型清单：第几次查，就是第几家在那几秒里被客户改了。
+    const edited = new Map<ExternalToolId, string>()
+    const answer = f.relayFetch.getMockImplementation()!
+    f.relayFetch.mockImplementation(async (...request) => {
+      const tool = externalToolIds[edited.size]
+      replaceKeyByHand(tool, files.get(tool)!)
+      edited.set(tool, fs.readFileSync(files.get(tool)!, 'utf8'))
+      return answer(...request)
+    })
+    const clients = await service.scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(edited.get(tool))
+      expect(clients.find((entry) => entry.tool === tool)).toMatchObject({ configured: false, configurationSource: 'other' })
+      expect(routeLogs(f)).toContainEqual(['warn', 'config', 'external-client.route.failed', expect.any(String),
+        expect.objectContaining({ tool, from: 'primary', to: 'direct' })])
+    }
+    expect(routeLogs(f).map(([, , event]) => event)).not.toContain('external-client.route.followed')
+  })
+
+  it('keeps what the customer changed inside the clients and moves only the addresses', async () => {
+    const f = fixture()
+    const { files } = await configureAll(f)
+    // WorkBuddy 里星芒替这个账号存过两个型号，客户自己又加了一条别家的；Claude Desktop 里客户
+    // 加了型号、换了认证方式；OpenCode 里客户加了一行注释。
+    await f.service.configureExternalTool('workbuddy', { apiKey: selectedKey, model: 'gpt-5.4' })
+    const workbuddy = files.get('workbuddy')!
+    fs.writeFileSync(workbuddy, `${JSON.stringify([...JSON.parse(fs.readFileSync(workbuddy, 'utf8')),
+      { id: 'deepseek-chat', url: 'https://api.deepseek.com/chat/completions', apiKey: 'sk-customer-own' }], null, 2)}\n`, 'utf8')
+    const claude = files.get('claudeDesktop')!
+    fs.writeFileSync(claude, `${JSON.stringify({ ...JSON.parse(fs.readFileSync(claude, 'utf8')),
+      inferenceModels: [selectedModel, 'claude-opus-4-1'], inferenceGatewayAuthScheme: 'x-api-key' }, null, 2)}\n`, 'utf8')
+    const opencode = files.get('opencode')!
+    fs.writeFileSync(opencode, `// 客户自己的注释\n${fs.readFileSync(opencode, 'utf8')}`, 'utf8')
+    const before = new Map([...files].map(([tool, file]) => [tool, fs.readFileSync(file, 'utf8')]))
+    const clients = await (await restartOn(f, 'direct')).scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      expect(clients.find((entry) => entry.tool === tool)).toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool)!.replaceAll(primaryOrigin, directOrigin))
+    }
+    expect(JSON.parse(fs.readFileSync(workbuddy, 'utf8')).map((entry: { url: string }) => entry.url)).toEqual([
+      `${directOrigin}/v1/chat/completions`, `${directOrigin}/v1/chat/completions`, 'https://api.deepseek.com/chat/completions',
+    ])
+  })
+
+  it('leaves Claude Desktop alone when the customer applied a copy of the profile', async () => {
+    const f = fixture()
+    const { files } = await configureAll(f)
+    // 客户在 Claude Desktop 里把星芒那份复制了一份并切过去用：地址、Key 都一样，但那份不是星芒的。
+    const profile = files.get('claudeDesktop')!
+    const copyId = '00000000-0000-4000-8000-000000000001'
+    const copy = path.join(path.dirname(profile), `${copyId}.json`)
+    fs.copyFileSync(profile, copy)
+    const metadataPath = path.join(path.dirname(profile), '_meta.json')
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'))
+    fs.writeFileSync(metadataPath, JSON.stringify({ ...metadata, appliedId: copyId, entries: [...metadata.entries, { id: copyId, name: '星芒 AI 副本' }] }), 'utf8')
+    const before = [profile, copy, metadataPath].map((file) => fs.readFileSync(file, 'utf8'))
+    const clients = await (await restartOn(f, 'direct')).scanExternalClients()
+
+    expect(clients.find((entry) => entry.tool === 'claudeDesktop')).toMatchObject({ configured: false, configurationSource: 'other' })
+    expect([profile, copy, metadataPath].map((file) => fs.readFileSync(file, 'utf8'))).toEqual(before)
+    expect(routeLogs(f).filter(([, , , , detail]) => (detail as { tool?: string } | undefined)?.tool === 'claudeDesktop')).toEqual([])
   })
 
   it.each([
@@ -693,13 +781,7 @@ describe('external clients follow the connection route the user selected (batch 
       return restartOn(f, 'direct')
     }],
     ['the user replaced the key by hand', async (f: ReturnType<typeof fixture>, files: Map<ExternalToolId, string>) => {
-      for (const [tool, file] of files) {
-        const config = JSON.parse(fs.readFileSync(file, 'utf8'))
-        if (tool === 'claudeDesktop') config.inferenceGatewayApiKey = 'sk-hand-edited'
-        else if (tool === 'workbuddy') config[0].apiKey = 'sk-hand-edited'
-        else config.provider.xingmang.options.apiKey = 'sk-hand-edited'
-        fs.writeFileSync(file, JSON.stringify(config), 'utf8')
-      }
+      for (const [tool, file] of files) replaceKeyByHand(tool, file)
       return restartOn(f, 'direct')
     }],
   ])('leaves the clients alone when %s', async (_case, prepare) => {

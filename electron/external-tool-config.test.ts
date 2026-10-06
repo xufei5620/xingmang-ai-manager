@@ -6,6 +6,7 @@ import { parse } from 'jsonc-parser'
 import {
   createExternalToolConfig,
   externalToolConfigPath,
+  followExternalToolRoute,
   mergeExternalToolConfig,
   saveExternalToolConfig,
   inspectExternalToolConnection,
@@ -383,5 +384,79 @@ describe('external tool configuration', () => {
     expect(held).toBe(true)
     expect(fs.readFileSync(target, 'utf8')).toBe('{"concurrent":true}')
     expect(fs.readdirSync(path.dirname(target)).some((name) => name.endsWith('.tmp'))).toBe(false)
+  })
+})
+
+describe('followExternalToolRoute (batch 43 A)', () => {
+  const from = 'https://xm.solov.cc/v1'
+  const to = 'https://38.147.105.28:8443/v1'
+
+  function backups(target: string): string[] {
+    return fs.readdirSync(path.dirname(target)).filter((name) => name.includes('.bak.'))
+  }
+
+  // WorkBuddy 自己的对象写法、紧凑格式、带白名单：两条是星芒用这把 Key 存在旧线路上的，
+  // 一条是同一个地址别的 Key，一条是同一把 Key 别的地址。
+  function workBuddy(urls: [string, string]): string {
+    const entry = (id: string, url: string, apiKey: string, extra = '') => `{"id":"${id}","url":"${url}","apiKey":"${apiKey}"${extra}}`
+    return `{"availableModels":["claude-sonnet-4-6"],"models":[${entry('claude-sonnet-4-6', urls[0], 'sk-owned', ',"supportsImages":true')},`
+      + `${entry('gpt-5.4', urls[1], 'sk-owned')},${entry('mine', `${from}/chat/completions`, 'sk-someone-else')},`
+      + `${entry('elsewhere', 'https://other.example/v1/chat/completions', 'sk-owned')}]}`
+  }
+
+  it('moves every WorkBuddy entry that key saved on the old route and leaves every other byte alone', async () => {
+    const original = workBuddy([`${from}/chat/completions`, `${from}/chat/completions/`])
+    const { home, target } = existingConfig('workbuddy', original)
+    const result = await followExternalToolRoute('workbuddy', platform, { userHome: home }, { from, to, apiKey: 'sk-owned' })
+
+    expect(result.path).toBe(target)
+    expect(fs.readFileSync(target, 'utf8')).toBe(`${workBuddy([`${to}/chat/completions`, `${to}/chat/completions`])}\n`)
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
+  })
+
+  it('moves the OpenCode provider address and the selected model override, keeping comments, SDK, model and key', async () => {
+    const original = [
+      '{',
+      '  // 客户自己的注释',
+      '  "model": "xingmang/selected",',
+      '  "provider": {',
+      '    "xingmang": {',
+      '      "npm": "@ai-sdk/openai",',
+      `      "options": { "baseURL": "${from}", "apiKey": "sk-owned", "timeout": 5000 },`,
+      `      "models": { "selected": { "options": { "baseURL": "${from}/", "temperature": 0.2 } } }`,
+      '    }',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const { home, target } = existingConfig('opencode', original, 'opencode.jsonc')
+    const result = await followExternalToolRoute('opencode', platform, { userHome: home }, { from, to, apiKey: 'sk-owned' })
+
+    expect(fs.readFileSync(target, 'utf8')).toBe(original.replace(`"baseURL": "${from}"`, `"baseURL": "${to}"`).replace(`"baseURL": "${from}/"`, `"baseURL": "${to}"`))
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
+    expect(inspectExternalToolConnection('opencode', platform, { userHome: home }, to)).toMatchObject({ configured: true, model: 'selected' })
+  })
+
+  it.each<[string, ExternalToolId, string]>([
+    ['WorkBuddy has no entry left with that key', 'workbuddy', workBuddy([`${from}/chat/completions`, `${from}/chat/completions`]).replaceAll('sk-owned', 'sk-hand-edited')],
+    ['WorkBuddy already uses the new route', 'workbuddy', workBuddy([`${to}/chat/completions`, `${to}/chat/completions`])],
+    ['OpenCode uses another key', 'opencode', JSON.stringify({ model: 'xingmang/selected', provider: { xingmang: { options: { baseURL: from, apiKey: 'sk-hand-edited' }, models: { selected: {} } } } })],
+    ['the selected OpenCode model points elsewhere', 'opencode', JSON.stringify({ model: 'xingmang/selected', provider: { xingmang: { options: { baseURL: from, apiKey: 'sk-owned' }, models: { selected: { options: { baseURL: 'https://other.example/v1' } } } } } })],
+    ['OpenCode now uses another provider', 'opencode', JSON.stringify({ model: 'other/model', provider: { xingmang: { options: { baseURL: from, apiKey: 'sk-owned' }, models: { selected: {} } } } })],
+  ])('writes nothing when %s', async (_case, tool, original) => {
+    const { home, target } = existingConfig(tool, original, tool === 'opencode' ? 'opencode.jsonc' : undefined)
+    await expect(followExternalToolRoute(tool, platform, { userHome: home }, { from, to, apiKey: 'sk-owned' })).rejects.toThrow('在换线路前已变化')
+    expect(fs.readFileSync(target, 'utf8')).toBe(original)
+    expect(backups(target)).toEqual([])
+  })
+
+  it('does not clobber a change made between reading and replacing the configuration', async () => {
+    const original = workBuddy([`${from}/chat/completions`, `${from}/chat/completions`])
+    const { home, target } = existingConfig('workbuddy', original)
+    await expect(followExternalToolRoute('workbuddy', platform, { userHome: home }, { from, to, apiKey: 'sk-owned' }, {
+      beforeReplace() { fs.writeFileSync(target, '[]', 'utf8') },
+    })).rejects.toThrow('在保存前已变化')
+    expect(fs.readFileSync(target, 'utf8')).toBe('[]')
   })
 })

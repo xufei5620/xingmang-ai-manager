@@ -40,7 +40,7 @@ export interface ExternalToolConfigSaveResult {
 const MAX_EXTERNAL_CONFIG_BYTES = 2 * 1024 * 1024
 type JsonObject = Record<string, unknown>
 type JsonConfig = JsonObject | unknown[]
-type ConfigEdit = { path: string[]; value: unknown }
+type ConfigEdit = { path: (string | number)[]; value: unknown }
 
 /** Claude Desktop 的推理网关由独立模块管理，不向 CLI 配置路径写入。 */
 export function assertExternalToolImplemented(tool: ExternalToolId): asserts tool is 'workbuddy' | 'opencode' {
@@ -386,11 +386,12 @@ export async function followExternalToolRoute(
   const files = readExternalToolFiles(tool, platform, rootsInput)
   if (tool === 'workbuddy') {
     const current = parseConfig(tool, files.target.content)
-    const records = workBuddyModels(current)
-    const owned = (record: JsonObject) => typeof record.url === 'string' && record.url.replace(/\/+$/, '') === `${from}/chat/completions` && record.apiKey === apiKey
-    if (!records.some(owned)) configError('在换线路前已变化')
-    const moved = records.map((record) => owned(record) ? { ...record, url: `${to}/chat/completions` } : record)
-    return commitExternalToolFile(files, applyConfigEdits(files.target.content, [{ path: Array.isArray(current) ? [] : ['models'], value: moved }]), hooks)
+    const prefix = Array.isArray(current) ? [] : ['models']
+    const edits = workBuddyModels(current).flatMap((record, index): ConfigEdit[] => typeof record.url === 'string'
+      && record.url.replace(/\/+$/, '') === `${from}/chat/completions` && record.apiKey === apiKey
+      ? [{ path: [...prefix, index, 'url'], value: `${to}/chat/completions` }] : [])
+    if (!edits.length) configError('在换线路前已变化')
+    return commitExternalToolFile(files, applyConfigEdits(files.target.content, edits), hooks)
   }
   const current = mergedOpenCodeConfig(files.snapshots)
   const model = typeof current.model === 'string' && current.model.startsWith('xingmang/') ? current.model.slice('xingmang/'.length) : null

@@ -603,3 +603,67 @@ describe('Claude Desktop legacy model list repair', () => {
     expect(read(saved.path).inferenceModels).toEqual(['claude-sonnet-5'])
   })
 })
+
+describe('Claude Desktop connection route follow (batch 43 A)', () => {
+  const from = 'https://xm.solov.cc'
+  const to = 'https://38.147.105.28:8443'
+  const belongs = (key: string) => key === input.apiKey
+
+  it('changes only the gateway address of the toolbox profile and keeps the models and authentication the customer set', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    // 客户在 Claude Desktop 里加了型号、留着 x-api-key，还有自己的设置。
+    write(saved.path, { ...read(saved.path), inferenceModels: ['claude-opus-5', { name: 'claude-sonnet-5', displayName: 'Sonnet' }], custom: { preserved: true } })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    const others = snapshot([f.metadataPath, f.configPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json'), path.join(f.developerDirectory, 'developer_settings.json')])
+    expect(await f.service.inspectRouteCredential(from, belongs)).toEqual({ apiKey: input.apiKey, model: 'claude-opus-5' })
+
+    const result = await f.service.followRoute(from, to, input.apiKey)
+    expect(result.path).toBe(saved.path)
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${from}"`, `"${to}"`))
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(before)
+    expectSnapshot(others)
+    expect(JSON.stringify(result)).not.toContain(input.apiKey)
+    expect(await f.service.inspectConnection(to, belongs)).toMatchObject({ configured: true, configurationReady: true, model: 'claude-opus-5' })
+  })
+
+  it('does not take over a copy the customer applied in Claude Desktop, even with the same address and key', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const copyPath = path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`)
+    write(copyPath, read(saved.path))
+    const metadata = read(f.metadataPath) as { entries: unknown[] }
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '星芒 AI 副本' }] })
+    const previous = snapshot([saved.path, copyPath, f.metadataPath, f.configPath])
+    // 连接自检照旧认它（地址、Key 都对得上），换线路不认：那份不是星芒的。
+    expect(await f.service.inspectGatewayCredential(from, belongs)).not.toBeNull()
+    expect(await f.service.inspectRouteCredential(from, belongs)).toBeNull()
+    await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('在换线路前已变化')
+    expectSnapshot(previous)
+  })
+
+  it.each([
+    ['points elsewhere', { inferenceGatewayBaseUrl: 'https://gateway.example' }],
+    ['uses another key', { inferenceGatewayApiKey: 'sk-hand-edited' }],
+    ['switched to a dynamic credential', { inferenceCredentialKind: 'oidc' }],
+  ])('writes nothing when the toolbox profile now %s', async (_case, edit) => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    write(saved.path, { ...read(saved.path), ...edit })
+    const previous = snapshot([saved.path, f.metadataPath, f.configPath, markerPath(f)])
+    await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('在换线路前已变化')
+    expectSnapshot(previous)
+    expect(fs.readdirSync(path.dirname(saved.path)).filter((file) => file.includes('.bak.'))).toEqual([])
+  })
+
+  it('stops before writing when the account changes', async () => {
+    let switched = false
+    const f = fixture({ assertBeforeWrite: () => { if (switched) throw new Error('account switched') } })
+    const saved = await f.service.saveGateway(input)
+    const previous = snapshot([saved.path])
+    switched = true
+    await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('账号已切换')
+    expectSnapshot(previous)
+  })
+})
