@@ -181,6 +181,8 @@ export interface DiagnosticsDependencies {
    * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
    * 用的是直连还是默认线路；选「自动」、这会儿走直连却没连上时，改查同一个站的默认线路，查通了
    * 算能连上、说清已经自动改走默认线路，并把直连的失败报给线路那边。缺省 = 不提线路（旧行为）。
+   * 「电脑里另外设过的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
+   * （environmentAccountBaseUrls）。缺省 = 只认 relaySite 那一份。
    */
   relayRoute?: DiagnosticsRelayRoute
   /**
@@ -1110,6 +1112,21 @@ function sameHostAs(value: string, expected: string): boolean {
   }
 }
 
+/**
+ * 工具地址变量指到哪几份地址算「已指向当前账号」（直连适配第二步）。这会儿用的那条线路一直算。
+ * 选「自动」时默认线路也一直算：它是客户照旧教程设得最多的地址，「自动」走直连并不说明它不通，
+ * 报它只会教人删一个没问题的变量。直连只在这会儿真走直连时才算：「自动」退回了默认线路，说明直连
+ * 在这台电脑上连不上，指着直连的变量会让工具跟着连不上。写死「只用直连」的照旧只认直连，多半是
+ * 默认线路在他那儿不通才这么选。
+ */
+export function environmentAccountBaseUrls(
+  relaySite: RelaySite,
+  relayRoute: Pick<DiagnosticsRelayRoute, 'automatic' | 'primarySite'> | undefined,
+): ReadonlyArray<RelaySite['providerBaseUrls']> {
+  if (!relayRoute?.automatic) return [relaySite.providerBaseUrls]
+  return [relaySite.providerBaseUrls, relayRoute.primarySite.providerBaseUrls]
+}
+
 /** 本程序替这个工具写配置的那个目录：变量指的就是它，等于没设。 */
 function isProviderConfigDirectory(provider: ProviderId, value: string, userHome: string): boolean {
   return normalizedPathKey(value) === normalizedPathKey(path.join(userHome, providerConfigDirectoryNames[provider]))
@@ -1117,7 +1134,7 @@ function isProviderConfigDirectory(provider: ProviderId, value: string, userHome
 
 function collectEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): EnvironmentOverrideMatch[] {
   const matches: EnvironmentOverrideMatch[] = []
@@ -1128,9 +1145,10 @@ function collectEnvironmentOverrides(
     // 诊断拿到的 env 里它永远有值。指到默认位置就是本程序自己写的那份，报它等于
     // 每次检查都给一条假警报；只有指到别处才是用户真的改过。
     if (variable.kind === 'directory' && isProviderConfigDirectory(variable.provider, value, userHome)) continue
-    // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
+    // 指向当前账号的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
     // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
-    const overriding = !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider]))
+    const overriding = !(variable.kind === 'baseUrl'
+      && accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider])))
     matches.push({
       name: variable.name,
       provider: variable.provider,
@@ -1203,13 +1221,13 @@ async function readMacosShellSettings(
 function overridesFromShellSettings(
   variable: EnvironmentOverrideVariable,
   value: string | null,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): boolean {
   if (value === null) return true
   if (value === '') return false
   if (variable.kind === 'directory') return !isProviderConfigDirectory(variable.provider, value, userHome)
-  if (variable.kind === 'baseUrl') return !sameHostAs(value, providerBaseUrls[variable.provider])
+  if (variable.kind === 'baseUrl') return !accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider]))
   return true
 }
 
@@ -1222,7 +1240,7 @@ function overridesFromShellSettings(
 async function collectMacosShellOverrides(
   userHome: string,
   relayProviders: ReadonlySet<ProviderId>,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   skipped: (file: string, error: unknown) => void,
 ): Promise<EnvironmentOverrideMatch[]> {
   const variables = ENVIRONMENT_OVERRIDE_VARIABLES
@@ -1231,7 +1249,7 @@ async function collectMacosShellOverrides(
   const found = await readMacosShellSettings(userHome, variables.map((variable) => variable.name), skipped)
   return variables.flatMap((variable) => found
     .filter((settings) => settings.exports.some((exported) => exported.name === variable.name
-      && overridesFromShellSettings(variable, exported.value, providerBaseUrls, userHome)))
+      && overridesFromShellSettings(variable, exported.value, accountBaseUrls, userHome)))
     .map((settings) => ({
       name: variable.name,
       provider: variable.provider,
@@ -1271,10 +1289,10 @@ function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySe
  */
 export function clearableEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): string[] {
-  return collectEnvironmentOverrides(env, providerBaseUrls, userHome)
+  return collectEnvironmentOverrides(env, accountBaseUrls, userHome)
     .filter((match) => match.overriding && match.kind !== 'directory')
     .map((match) => match.name)
 }
@@ -2001,6 +2019,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectProvider = dependencies.inspectProvider
     ?? ((provider, roots) => inspectProviderConfig(provider, roots))
   const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
+  const accountBaseUrls = environmentAccountBaseUrls(relaySite, dependencies.relayRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
@@ -2743,7 +2762,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           const inspection = providerInspections.get(provider)
           return inspection !== undefined && providerAccountMode(inspection) === 'relay'
         }))
-        const environment = collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)
+        const environment = collectEnvironmentOverrides(env, accountBaseUrls, userHome)
         // 读不了是哪个文件、为什么，只进日志不进报告；原文里可能带着用户名，先脱敏。
         const skipped = (file: string, error: unknown): void => {
           log?.('info', 'diagnostics.shell-settings.skipped', '终端设置文件没读', { file, raw: sanitize(errorChainText(error)) })
@@ -2751,7 +2770,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const matches = platform === 'darwin'
           ? withShellSettingsOverrides(
             environment,
-            await collectMacosShellOverrides(userHome, relayProviders, relaySite.providerBaseUrls, skipped),
+            await collectMacosShellOverrides(userHome, relayProviders, accountBaseUrls, skipped),
           )
           : environment
         return withIgnoredCodexHome(
@@ -2760,7 +2779,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
               matches,
               (match) => platform === 'darwin' && droppedByMacosLauncher(match.provider, relayProviders),
             ),
-            platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
+            platform === 'win32' && clearableEnvironmentOverrides(env, accountBaseUrls, userHome).length > 0,
           ),
           inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
         )

@@ -121,7 +121,14 @@ describe('clearable environment overrides', () => {
       GOOGLE_GEMINI_BASE_URL: 'https://relay.example',
       CLAUDE_CONFIG_DIR: '/elsewhere/claude',
     }
-    expect(clearableEnvironmentOverrides(env, urls, '/home/user')).toEqual(['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL'])
+    expect(clearableEnvironmentOverrides(env, [urls], '/home/user')).toEqual(['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL'])
+  })
+
+  it('leaves an address alone when it points at any line that counts as the current account', () => {
+    const direct = { claude: 'https://direct.example', codex: 'https://direct.example/v1', gemini: 'https://direct.example', grok: 'https://direct.example/v1' }
+    const env = { GOOGLE_GEMINI_BASE_URL: 'https://relay.example', ANTHROPIC_BASE_URL: 'https://direct.example', OPENAI_BASE_URL: 'https://other.example/v1' }
+    expect(clearableEnvironmentOverrides(env, [direct, urls], '/home/user')).toEqual(['OPENAI_BASE_URL'])
+    expect(clearableEnvironmentOverrides(env, [direct], '/home/user')).toEqual(['OPENAI_BASE_URL', 'GOOGLE_GEMINI_BASE_URL'])
   })
 })
 

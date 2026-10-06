@@ -13,6 +13,7 @@ import {
   clockSyncGuidance,
   createDiagnosticsExport,
   describeRelocationTarget,
+  environmentAccountBaseUrls,
   environmentOverrideNames,
   findRelocatedFolders,
   homeFolderLeftoversOutcome,
@@ -1225,6 +1226,29 @@ describe('diagnostics', () => {
         })
       })
 
+      // 直连适配第二步：同进程环境那边一套判法，「自动」走直连时指着默认线路的也算当前账号。
+      it.runIf(posixHost)('takes the default line as the current account while auto runs on direct, but not direct once it fell back', async () => {
+        const home = realHome()
+        const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+        const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+        function onRoute(line: 'direct' | 'primary') {
+          const input = macosInput(home)
+          input.relaySite = line === 'direct' ? directSite : primarySite
+          input.relayRoute = { line, automatic: true, settled: true, primarySite, reportDirectFailure: vi.fn() }
+          return input
+        }
+
+        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc\n')
+        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
+
+        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm-direct.solov.cc\n')
+        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
+        expect(overrideItem(await runDiagnostics(onRoute('primary')))).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.zshrc）' },
+        })
+      })
+
       it.runIf(posixHost)('reports a value it cannot work out, and one export that points away is enough', async () => {
         const home = realHome()
         writeShellSettings(home, '.zshrc', [
@@ -1351,6 +1375,59 @@ describe('diagnostics', () => {
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'pass',
         details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）' },
+      })
+    })
+
+    // 直连适配第二步：「自动」走直连时，照旧教程指着默认线路的地址不能被当成别家报「待处理」、给一键删除。
+    describe('on the line the account site uses right now', () => {
+      const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+      const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+
+      function onRoute(line: 'direct' | 'primary', automatic: boolean, env: NodeJS.ProcessEnv) {
+        const input = dependencies(temporaryHome())
+        input.relaySite = line === 'direct' ? directSite : primarySite
+        input.relayRoute = { line, automatic, settled: true, primarySite, reportDirectFailure: vi.fn() }
+        input.env = env
+        input.platform = 'win32'
+        return input
+      }
+
+      it('counts the default line and the direct line as the current account while auto runs on direct', async () => {
+        for (const url of ['https://xm.solov.cc', 'https://xm-direct.solov.cc']) {
+          const item = overrideItem(await runDiagnostics(onRoute('direct', true, { GOOGLE_GEMINI_BASE_URL: url, ANTHROPIC_BASE_URL: url })))
+
+          expect(item).toMatchObject({
+            state: 'pass',
+            details: {
+              count: 2,
+              variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
+              variable2: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）',
+            },
+          })
+          expect(item?.details?.fix).toBeUndefined()
+        }
+      })
+
+      it('adds the default line to the line in use only under auto', () => {
+        const route = { primarySite, automatic: true }
+
+        expect(environmentAccountBaseUrls(directSite, route)).toEqual([directSite.providerBaseUrls, primarySite.providerBaseUrls])
+        expect(environmentAccountBaseUrls(directSite, { ...route, automatic: false })).toEqual([directSite.providerBaseUrls])
+        expect(environmentAccountBaseUrls(directSite, undefined)).toEqual([directSite.providerBaseUrls])
+      })
+
+      it('flags an address on direct once auto has moved to the default line', async () => {
+        const item = overrideItem(await runDiagnostics(onRoute('primary', true, { GOOGLE_GEMINI_BASE_URL: 'https://xm-direct.solov.cc' })))
+
+        expect(item).toMatchObject({ state: 'fail', details: { count: 1, fix: 'clear-user-overrides' } })
+      })
+
+      it('keeps flagging the default line for someone who fixed the direct line', async () => {
+        const fixed = overrideItem(await runDiagnostics(onRoute('direct', false, { GOOGLE_GEMINI_BASE_URL: 'https://xm.solov.cc' })))
+        const direct = overrideItem(await runDiagnostics(onRoute('direct', false, { GOOGLE_GEMINI_BASE_URL: 'https://xm-direct.solov.cc' })))
+
+        expect(fixed).toMatchObject({ state: 'fail', details: { fix: 'clear-user-overrides' } })
+        expect(direct).toMatchObject({ state: 'pass' })
       })
     })
 
