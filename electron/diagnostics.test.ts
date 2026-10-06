@@ -6,7 +6,7 @@ import type { ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
-import { relaySites } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relaySites } from './relay-sites'
 import {
   clockSkewMs,
   buildWindowsArmSummary,
@@ -403,6 +403,63 @@ describe('diagnostics', () => {
         expect.objectContaining({ reason, raw: expect.any(String) }),
       )
       expect(log.mock.calls[0][3].raw).not.toBe('')
+    })
+
+    // 第四十三批 B：检查页按查的是哪个站认出「换一条线路」救不救得回来。备用直连上又失败的，
+    // 查的仍是同一个站，检查页把人带回同一行线路设置，可以换回默认线路。
+    it('names the probed site on a connection failure, on either line of that site', async () => {
+      const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
+      const historical = relaySites.find((site) => site.accountBackend === 'sub2api')
+      const cases = [
+        { site: undefined, endpoint: 'https://xm.solov.cc/api/status', siteId: 'solov' },
+        { site: createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov'), endpoint: 'https://38.147.105.28:8443/api/status', siteId: 'solov' },
+        { site: historical, endpoint: 'https://api.solov.cc/api/v1/settings/public', siteId: 'solov-api' },
+      ]
+      for (const { site, endpoint, siteId } of cases) {
+        const input = dependencies(temporaryHome())
+        input.relaySite = site
+        input.fetch = vi.fn(async () => { throw refused })
+
+        const report = await runDiagnostics(input)
+
+        expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+          state: 'fail',
+          summary: networkFailureMessages.refused,
+          details: { endpoint, reason: 'refused', siteId },
+        })
+      }
+    })
+
+    // 当地网络切断一条线路时，请求常常发出去就没人回。以前这算检查自己出错（「检查超时」），
+    // 检查页认不出这是连不上，也就给不了换线路的出路。
+    it('reports a probe that never answers as a connection timeout of the probed site', async () => {
+      const input = dependencies(temporaryHome())
+      input.timeoutMs = 20
+      input.fetch = vi.fn(async () => await new Promise<Response>(() => undefined))
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({
+        state: 'fail',
+        summary: networkFailureMessages.timeout,
+        details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'timeout', siteId: 'solov' },
+      })
+      expect(network?.summary).not.toBe('检查超时')
+    })
+
+    // 回完了话、卡在问加速开没开（要排在正开关加速的后面）：网络是通的，不能说成连接超时、
+    // 把人带去换线路，照旧是检查自己超时。
+    it('keeps a plain check timeout when the probe answered but the acceleration lookup stalls', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => await new Promise<boolean>(() => undefined)
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'error', summary: '检查超时' })
+      expect(network?.details).not.toHaveProperty('siteId')
     })
 
     // #302 的误报：站点根路径本来就是网页前端，正常时也回 text/html。探测改打
