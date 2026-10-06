@@ -12,6 +12,8 @@ import {
   settingsItemAvailable,
   settingsItemLabel,
   settingsItems,
+  standardAccountUpdateNotice,
+  standardAccountUpdateText,
   updateBubbleRepeatsUpdatesPage,
   updateBubbleTitle,
   updateCardTitle,
@@ -221,6 +223,38 @@ describe('renderer-v2 auto-update bubble wording', () => {
     expect(autoUpdateBubbleBody('downloaded', true)).toContain('关掉软件或下次打开时自动装上');
     expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
     expect(autoUpdateBubbleBody('downloaded', false)).toBe('查看更新内容和安装状态。');
+  });
+});
+
+describe('renderer-v2 wording for a Windows account outside the administrators group', () => {
+  it('uses the sentence yoyo approved, the same one the system notification uses', () => {
+    // 2026-10-06 批的原话（句末补了句号）；主进程 desktop-notifications.ts 那一份也钉着同一句。
+    expect(standardAccountUpdateText).toBe('这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。');
+    expect(standardAccountUpdateNotice.body).toContain(`「${updateInstallActionLabel(undefined)}」`);
+  });
+
+  it('replaces the downloaded bubble whether or not auto-update is on', () => {
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, true)).toBe(standardAccountUpdateText);
+    expect(autoUpdateBubbleBody('downloaded', false, undefined, true)).toBe(standardAccountUpdateText);
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, false)).toBe(autoUpdateBubbleBody('downloaded', true));
+  });
+
+  it('stops promising an automatic install before the update is downloaded', () => {
+    // 他 2026-10-06 回「改」批的原话。
+    expect(autoUpdateBubbleBody('downloading', true, undefined, true)).toBe('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。');
+    expect(autoUpdateBubbleBody('available', true, undefined, true)).toBe(autoUpdateBubbleBody('downloading', true, undefined, true));
+    expect(autoUpdateBubbleBody('downloading', false, undefined, true)).toBe('查看更新内容和安装状态。');
+    expect(updatesPageLead(true, undefined, true)).toBe('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。');
+    // 自动更新关着时本来就不说会装，也不会在后台下。
+    expect(updatesPageLead(false, undefined, true)).toBe(updatesPageLead(false));
+    expect(autoUpdateSettingDescription(undefined, true)).toBe('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装');
+    for (const text of [autoUpdateBubbleBody('downloading', true, undefined, true), updatesPageLead(true, undefined, true), autoUpdateSettingDescription(undefined, true)]) {
+      expect(text).not.toMatch(/关掉软件或下次打开时自动装上|UAC|管理员权限/);
+    }
+    // 管理员账号照旧。
+    expect(autoUpdateBubbleBody('downloading', true, undefined, false)).toBe(autoUpdateBubbleBody('downloading', true));
+    expect(updatesPageLead(true, undefined, false)).toBe(updatesPageLead(true));
+    expect(autoUpdateSettingDescription(undefined, false)).toBe(autoUpdateSettingDescription(undefined));
   });
 });
 

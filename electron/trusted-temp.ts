@@ -58,6 +58,52 @@ export interface ProtectWindowsDirectoryOptions {
   inspectOwnership?: InspectWindowsDirectoryOwnership
 }
 
+export type RunIcacls = (args: string[], timeoutMs: number) => Promise<void>
+
+/** Whether the directory holds any entry at all. The contents reset uses a
+ * `\*` wildcard, which icacls reports as an error when nothing matches, so an
+ * empty root (nothing to reset once the root itself is hardened) skips it. A
+ * read failure counts as empty: the root is already hardened and the final
+ * read-back still verifies every item, so skipping the reset cannot loosen
+ * anything. */
+function directoryHasEntries(directory: string): boolean {
+  try {
+    return fs.readdirSync(directory).length > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The three icacls steps that harden a managed root, in the one order that
+ * never leaves the root writable by standard users. The order is the security
+ * contract, so it lives in its own function that tests drive directly:
+ *
+ * 1. Harden the root (break inheritance, grant only SYSTEM and Administrators).
+ *    From here on the root no longer inherits ProgramData's Users-writable ACL.
+ * 2. Reset the contents (not the root) so descendants inherit the hardened
+ *    root's ACL, and repair historical empty-DACL files.
+ * 3. Take ownership of the whole tree for Administrators.
+ *
+ * The old order reset the whole tree first and hardened the root second. That
+ * reset reverted the root to inheriting ProgramData for its duration, and a
+ * standard user who created a file in that window - with a SYSTEM/Administrators
+ * -only DACL of their own - had it adopted by the `/setowner /T` that followed
+ * and accepted by the read-back: attacker content on an elevated execution path
+ * wearing a trusted-looking ACL. Hardening the root first removes the window.
+ */
+export async function applyWindowsRootHardening(
+  directory: string,
+  runIcacls: RunIcacls,
+  hasEntries: (dir: string) => boolean = directoryHasEntries,
+): Promise<void> {
+  await runIcacls(windowsAclHardeningArguments(directory), 15_000)
+  if (hasEntries(directory)) {
+    await runIcacls(windowsAclResetContentsArguments(directory), 60_000)
+  }
+  await runIcacls([directory, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q'], 15_000)
+}
+
 export interface WindowsAclSnapshot {
   protected: boolean
   owner: string
@@ -169,11 +215,15 @@ export function assertPlainDirectory(directory: string, platform: NodeJS.Platfor
   }
 }
 
-/** Clears explicit ACEs on the whole tree so every descendant goes back to
- * inheriting. Must run before the root is hardened: it is also what repairs
- * trees whose files were left with an empty DACL by releases up to 0.1.7. */
-export function windowsAclResetArguments(directory: string): string[] {
-  return [directory, '/reset', '/T', '/C', '/Q']
+/** Clears explicit ACEs on every item INSIDE the root - the trailing `\*`
+ * matches the contents, never the root itself - so each descendant goes back to
+ * inheriting the already-hardened root's ACL. It is also what repairs trees
+ * whose files were left with an empty DACL by releases up to 0.1.7. The root is
+ * excluded deliberately: `/reset` on the root drops its hardened ACL and lets it
+ * inherit ProgramData's Users-writable one again, which is the standard-user
+ * write window that hardening the root first exists to close. */
+export function windowsAclResetContentsArguments(directory: string): string[] {
+  return [path.win32.join(directory, '*'), '/reset', '/T', '/C', '/Q']
 }
 
 /** Hardens only the root. `(OI)(CI)` are container-inheritance flags, so a
@@ -287,26 +337,15 @@ export async function protectWindowsDirectory(
     throw new Error('当前进程没有管理员权限，无法创建受保护的安装目录')
   }
   const icacls = windowsSystemExecutable('icacls.exe', env, 'win32', machinePaths)
-  // 先把整棵树恢复为继承，再单独加固根。这一步同时修复历史版本遗留的空 DACL
-  // 文件——它们连管理员都读不到，会让下面的校验必然失败。
-  await execFileAsync(icacls, windowsAclResetArguments(directory), {
-    env: trustedCommandEnvironment(env, machinePaths),
+  const trustedEnv = trustedCommandEnvironment(env, machinePaths)
+  // The icacls ordering that closes the standard-user write window lives in
+  // applyWindowsRootHardening; see its comment.
+  await applyWindowsRootHardening(directory, (args, timeoutMs) => execFileAsync(icacls, args, {
+    env: trustedEnv,
     windowsHide: true,
-    timeout: 60_000,
+    timeout: timeoutMs,
     maxBuffer: 1024 * 1024,
-  })
-  await execFileAsync(icacls, windowsAclHardeningArguments(directory), {
-    env: trustedCommandEnvironment(env, machinePaths),
-    windowsHide: true,
-    timeout: 15_000,
-    maxBuffer: 1024 * 1024,
-  })
-  await execFileAsync(icacls, [directory, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q'], {
-    env: trustedCommandEnvironment(env, machinePaths),
-    windowsHide: true,
-    timeout: 15_000,
-    maxBuffer: 1024 * 1024,
-  })
+  }).then(() => undefined))
 
   const aclScript = buildProtectedDirectoryAclScript()
   const { stdout } = await execFileAsync(
@@ -408,10 +447,9 @@ async function createWindowsDirectoryLevels(
   return preexisted
 }
 
-/** 同一个受保护根的加固必须串行。加固过程中 `icacls /reset /T` 会让根短暂恢复
- * 为继承 ProgramData 的 ACL（对 Users 可写），此时并发进来的另一个调用会探测到
- * 这个中间状态并判定目录被抢占。MCP、Plugins、环境扫描都会各自触发 ensure，
- * 并发是常态而非例外。 */
+/** 同一个受保护根的加固必须串行。加固先收紧根（根全程只给 SYSTEM/Administrators），
+ * 再重置根里面的内容、改属主，整棵树的这几步并发跑会互相看到对方改了一半的 ACL。
+ * MCP、Plugins、环境扫描都会各自触发 ensure，并发是常态而非例外。 */
 const trustedDirectoryQueue = new Map<string, Promise<unknown>>()
 
 export function ensureTrustedDirectory(

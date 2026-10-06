@@ -285,6 +285,15 @@ export function extensionRowState(
   }
 }
 
+/**
+ * 详情里的「范围」。scope 是 CLI 自己的英文叫法，界面上只放中文：local 是只在这个项目里用的那一份；
+ * 扩展自带的技能装在用户目录里，哪个文件夹打开都能用。没带 scope 的写「未提供」。
+ */
+export function extensionScopeLabel(scope: ExtensionItem['scope'] | undefined): string {
+  const shown = scope === 'local' ? 'project' : scope === 'extension' ? 'user' : scope
+  return scopeOptions.find((option) => option.value === shown)?.label ?? '未提供'
+}
+
 /** 列表里带回来的 scope 原样交回去；内置、扩展自带或不知道的不带，由主进程按缺省处理。 */
 export function extensionMutationScope(
   scope: ExtensionItem['scope'],
@@ -2424,7 +2433,7 @@ export function ExtensionsPage({
           <dt>工具</dt>
           <dd>{providerName(provider)}</dd>
           <dt>范围</dt>
-          <dd>{selected?.scope || '未提供'}</dd>
+          <dd>{extensionScopeLabel(selected?.scope)}</dd>
           <dt>来源</dt>
           <dd>{selected?.source.locator || '未提供'}</dd>
           <dt>当前版本</dt>

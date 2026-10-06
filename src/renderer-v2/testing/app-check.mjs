@@ -3675,6 +3675,36 @@ test('a stalled update download offers the download page next to downloading aga
   } finally { await page.close() }
 })
 
+// 检查更新 45 秒没动静被掐断：连更新清单都拿不回来的网络，再点「重试」多半一样。更新页在
+//「重试」旁边多给「打开下载页」；别的检查失败照旧只给「重试」。
+test('a stalled update check offers the download page next to retrying', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
+      error: { code: value.code, message: value.reason }, development: true,
+    }), { code, reason })
+    await emit('UPDATE_CHECK_STALLED')
+    const notice = updates.getByTestId('updates-failure-check')
+    await notice.getByText('检查更新失败', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual(['https://docs-new.solov.cc/guide/manager#download-installers'])
+
+    await emit('ENOTFOUND')
+    await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
 test('the updates page explains a full disk and still lets the user download', async () => {
@@ -3760,6 +3790,54 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
       await clean(page)
     } finally { await page.close() }
   }
+})
+
+// 账号不在管理员组的 Windows 电脑：下好的新版本不自动装（第二十四批 2）。首页气泡和更新页「重启安装」
+// 旁边说清要管理员密码、要谁来点，还没下好时也不说会自动装上，确认框不再只叫他点「是」，强制更新
+// 那道门同样改口；字都是 yoyo 2026-10-06 批的原话。管理员账号照旧。
+test('a Windows account outside the administrators group is told an administrator has to install updates', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const state = {
+      phase: 'downloading', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: { percent: 40, bytesPerSecond: 1, transferred: 40, total: 100 }, failedStep: null, error: null, development: true,
+      autoUpdateSupported: true, installNeedsAdminPassword: true,
+    }
+    const emit = (patch) => page.evaluate((value) => window.v2Test.emit('onUpdateState', value), { ...state, ...patch })
+    await emit({})
+    await page.locator('.xm-notice').getByText('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。', { exact: true }).waitFor()
+
+    await emit({ phase: 'downloaded', progress: null })
+    const bubble = page.locator('.xm-notice').filter({ hasText: '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。' })
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    // 更新页进来自己再读一次状态：主进程读回的就是上面这份，夹具读回的是默认那份，所以再发一次。
+    await emit({ phase: 'downloaded', progress: null })
+    await updates.getByText('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。', { exact: true }).waitFor()
+    await updates.getByText('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装', { exact: true }).waitFor()
+    const notice = updates.getByTestId('updates-admin-password')
+    await notice.getByText('这台电脑的账号不是管理员，装更新时要输入管理员密码', { exact: true }).waitFor()
+    await notice.getByText('让有管理员账号的人点一次「重启安装」，或者找客服。', { exact: true }).waitFor()
+    // 原话叫他点的就是卡片头上这颗按钮：自己点照样能装，确认框说清要输管理员密码。
+    await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+    await dialog.getByTestId('updates-windows-consent-hint').getByText('Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
+
+    await emit({ phase: 'downloaded', progress: null, installNeedsAdminPassword: false })
+    await notice.waitFor({ state: 'detached' })
+    await updates.getByText('新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。', { exact: true }).waitFor()
+
+    // 强制更新那道门在开发环境不拦，这里按正式环境发。
+    await emit({ phase: 'available', progress: null, development: false, requiredVersion: '0.1.32' })
+    const gate = page.getByTestId('required-update-gate')
+    await gate.getByTestId('required-update-admin-password').getByText('要输入管理员密码；让有管理员账号的人来点，或联系客服。', { exact: true }).waitFor()
+    assert.equal(await gate.getByText('是否允许更改', { exact: false }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
 })
 
 // Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
@@ -4105,6 +4183,43 @@ test('a key from another site is named for the account and switched from the row
     await row.getByText('已配好', { exact: true }).waitFor()
     const switched = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchAccountSource').map((entry) => entry.args))
     assert.deepEqual(switched, [['codex', 'account']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」就是配置里的
+// 「重置为初始状态」，按现在用的账号重新生成，不换来源。
+test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
+  const page = await open('codexBroken=1')
+  try {
+    for (const tool of ['codex', 'codexDesktop']) {
+      const row = page.getByTestId(`tool-row-${tool}`)
+      await row.getByText('配置文件坏了', { exact: true }).waitFor()
+      await row.getByText('Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留', { exact: true }).waitFor()
+      assert.equal(await page.getByTestId(`tool-${tool}-repair-config`).getAttribute('title'), '改之前会先备份原来的设置')
+    }
+    assert.equal(await page.getByText('还没配 Key', { exact: true }).count(), 0)
+    await page.getByTestId('tool-codexDesktop-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    for (const tool of ['codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a ChatGPT login whose Codex config cannot be read is reset on the official account', async () => {
+  const page = await open('codexBroken=1&official=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.getByText('配置文件坏了', { exact: true }).waitFor()
+    await page.getByTestId('tool-codex-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    await row.locator('.xm-tool-status').getByText('官方账号', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchToOfficialAccount').map((entry) => entry.args))
+    assert.deepEqual(resets, [['codex', 'reset']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset')), false)
     await clean(page)
   } finally { await page.close() }
 })
@@ -5231,6 +5346,39 @@ for (const { name, query, tool } of [
     await openGuestToolConfiguration(page, tool, true)
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知11：保存时文件被占用这类失败，以前红字只有一句「保存配置没有成功」。
+// 现在和页顶红条一个说法：先说是什么原因，原来那句跟在后面；重置的确认框里也一样。
+test('configuration save failures name the cause like the page notice in the dialog and the reset confirmation', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.evaluate(() => {
+      window.v2Test.fail = 'saveConfig'
+      window.v2Test.failMessage = "EBUSY: resource busy or locked, rename 'C:\\Users\\fixture\\.codex\\config.toml.tmp' -> 'C:\\Users\\fixture\\.codex\\config.toml'"
+    })
+    await page.getByTestId('tool-save-config').click()
+    const dialog = page.getByTestId('config-dialog')
+    const alert = dialog.getByRole('alert').filter({ hasText: '保存配置没有成功' })
+    await alert.waitFor()
+    assert.equal(await alert.locator('strong').innerText(), '工具正在运行')
+    assert.match(await alert.innerText(), /文件被占用。先关掉正在使用这个工具的窗口，再重试。/)
+    assert.doesNotMatch(await alert.innerText(), /EBUSY|fixture|config\.toml/)
+    await openConfigAdvanced(page)
+    await page.getByTestId('tool-save-reset').click()
+    const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
+    await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
+    const resetAlert = reset.getByRole('alert').filter({ hasText: '保存配置没有成功' })
+    await resetAlert.waitFor()
+    assert.equal(await resetAlert.locator('strong').innerText(), '工具正在运行')
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await reset.getByRole('button', { name: '取消', exact: true }).click()
+    await reset.waitFor({ state: 'hidden' })
+    await page.getByTestId('tool-save-config').click()
+    await waitForSavedConfiguration(page)
     await clean(page)
   } finally { await page.close() }
 })

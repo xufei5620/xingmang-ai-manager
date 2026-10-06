@@ -80,6 +80,7 @@ import {
   settingsGroups,
   settingsItemLabel,
   skinOptions,
+  standardAccountUpdateNotice,
   updateFailureLabel,
   updateCardTitle,
   updateDiskShortfallText,
@@ -1556,7 +1557,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod, update?.installNeedsAdminPassword)} />
       <ResultNotice
         error={resource.error || settingsError || operation.error}
         detail={resource.error ? resource.detail : settingsError ? undefined : operation.detail}
@@ -1588,6 +1589,15 @@ export function UpdatesPage({
               testId="updates-current-withdrawn"
             />
           )}
+          {/* 账号不是管理员的 Windows 电脑：下好的新版本不自动装，就在「重启安装」旁边说清要谁来点。 */}
+          {update?.phase === 'downloaded' && update.installNeedsAdminPassword && (
+            <Notice
+              tone="warn"
+              title={standardAccountUpdateNotice.title}
+              body={standardAccountUpdateNotice.body}
+              testId="updates-admin-password"
+            />
+          )}
           {update?.unsignedChannel && !update.autoUpdateSupported && (
             <ListRow
               title="更新方式"
@@ -1608,7 +1618,7 @@ export function UpdatesPage({
           {update?.autoUpdateSupported && (
             <ListRow
               title={settingsItemLabel('auto-update')}
-              desc={autoUpdateSettingDescription(update.installMethod)}
+              desc={autoUpdateSettingDescription(update.installMethod, update.installNeedsAdminPassword)}
               actions={settingSwitch(
                 '自动更新',
                 settings ? autoUpdateSetting : undefined,
@@ -1764,7 +1774,7 @@ export function UpdatesPage({
           ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
           : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
-        {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
+        {isWindows && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
@@ -1775,6 +1785,8 @@ export function UpdatesPage({
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
 // 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
 export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
+// 账号不在管理员组时那个窗口要的是管理员密码，只点「是」过不去。
+export const windowsAdminPasswordUpdateHint = 'Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。'
 // Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
 export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
@@ -3574,7 +3586,7 @@ export function SettingsPage({
           {resource.data?.update?.autoUpdateSupported &&
             row(
               'auto-update',
-              autoUpdateSettingDescription(resource.data.update.installMethod),
+              autoUpdateSettingDescription(resource.data.update.installMethod, resource.data.update.installNeedsAdminPassword),
               <Switch
                 testId="settings-auto-update"
                 checked={settings.autoUpdate !== false}
