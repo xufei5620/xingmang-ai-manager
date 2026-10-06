@@ -810,50 +810,80 @@ function assertAccessibleWorkspace(workspace: string): void {
   }
 }
 
+/** 命令窗口里给人看的几句话，全是固定文案，不许拼进渲染进程传来的字。 */
+export interface UnelevatedCommandWindowText {
+  title: string
+  /** 命令开始前那一行。 */
+  running: string
+  /** 命令退出码为 0 时那一行。 */
+  succeeded: string
+  /** 命令失败时那一行，{code} 换成退出码。 */
+  failed: string
+}
+
 export interface UnelevatedCommandWindowRequest {
   /** 固定拼装的命令行，禁止直接拼入渲染进程传来的字符串。 */
   commandLine: string
-  title: string
+  text: UnelevatedCommandWindowText
   env?: NodeJS.ProcessEnv
   machinePaths?: WindowsMachinePaths
 }
 
+/**
+ * 拼出那个 .cmd。命令行只许 ASCII；说明文字可以是中文（已知33），但不许带 cmd 会当成
+ * 命令符号的字（引号、百分号、&|<>^、半角括号、换行）：它们原样写进批处理，带上就成了
+ * 另一条命令。
+ *
+ * 文件按 UTF-8（不带 BOM）写。cmd.exe 按当前代码页一行一行地读 .cmd：头两行只有 ASCII，
+ * 第二行把这个窗口的代码页换成 UTF-8（65001），之后读到的每一行都按 UTF-8 解，中文才不乱码。
+ * 以前这里全写英文，理由是「chcp 管不到解析」；那只对 chcp 那一行之前读进来的内容成立。
+ * 这一点要在 Windows 真机上看过（星芒本来只支持 Windows 10 以上）。
+ *
+ * chcp 是 System32 里的外部程序，按固定解析出来的绝对路径叫它，不在窗口里查 PATH（I14 的
+ * 口径；这个窗口虽然已经降权，也不多开这个口子）。
+ */
+export function buildUnelevatedCommandScript(commandLine: string, text: UnelevatedCommandWindowText, chcpPath: string): string {
+  if (!/^[\x20-\x7E]+$/.test(commandLine)) {
+    throw new Error('降权命令包含非 ASCII 字符，已拒绝执行')
+  }
+  if (!/^[\x20-\x7E]+$/.test(chcpPath) || chcpPath.includes('"') || !path.win32.isAbsolute(chcpPath)) {
+    throw new Error('系统 chcp 路径无效，已拒绝执行')
+  }
+  for (const line of [text.title, text.running, text.succeeded, text.failed.replaceAll('{code}', '')]) {
+    if (!line.trim() || /["%&|<>^()\r\n]/.test(line)) throw new Error('降权命令窗口的说明文字含有命令符号，已拒绝执行')
+  }
+  return [
+    '@echo off',
+    `"${chcpPath}" 65001 >nul`,
+    `title ${text.title}`,
+    `echo ${text.running}`,
+    'echo.',
+    `call ${commandLine}`,
+    'echo.',
+    `if errorlevel 1 (echo ${text.failed.replaceAll('{code}', '%errorlevel%')}) else (echo ${text.succeeded})`,
+    'echo.',
+    'pause',
+    'del "%~f0"',
+    '',
+  ].join('\r\n')
+}
+
 /** 从提权进程以登录用户身份打开一个命令窗口。explorer.exe 始终以 shell 用户的
  * 令牌运行，它拉起的进程因此不会继承管理员令牌——这是不引入原生模块就能降权的
- * 常规做法。用于执行位于用户可写目录、不应以管理员身份运行的卸载脚本。
- *
- * 批处理内容一律使用 ASCII：cmd.exe 按当前代码页逐行解析 .cmd，写入 UTF-8 中文
- * 会乱码，而 chcp 只对其后的输出生效、管不到解析本身。 */
+ * 常规做法。用于执行位于用户可写目录、不应以管理员身份运行的卸载脚本。 */
 export async function launchUnelevatedCommandWindow(
   request: UnelevatedCommandWindowRequest,
 ): Promise<void> {
   if (process.platform !== 'win32') {
     throw new Error('降权命令窗口仅支持 Windows')
   }
-  if (!/^[\x20-\x7E]+$/.test(request.commandLine)) {
-    throw new Error('降权命令包含非 ASCII 字符，已拒绝执行')
-  }
   const machinePaths = request.machinePaths ?? resolveWindowsMachinePaths()
+  const script = buildUnelevatedCommandScript(request.commandLine, request.text, path.win32.join(machinePaths.system32, 'chcp.com'))
   const explorer = path.win32.join(machinePaths.systemRoot, 'explorer.exe')
   if (!fs.existsSync(explorer)) throw new Error('未找到 Windows 资源管理器，无法降权执行')
 
-  const script = [
-    '@echo off',
-    `title ${request.title}`,
-    `echo Running: ${request.commandLine}`,
-    'echo.',
-    `call ${request.commandLine}`,
-    'echo.',
-    'if errorlevel 1 (echo FAILED with code %errorlevel%) else (echo Completed successfully.)',
-    'echo.',
-    'echo You can close this window and refresh the app.',
-    'pause',
-    'del "%~f0"',
-    '',
-  ].join('\r\n')
-
   const scriptPath = path.join(os.tmpdir(), `xingmang-uninstall-${randomUUID()}.cmd`)
-  await fs.promises.writeFile(scriptPath, script, { encoding: 'ascii', flag: 'wx', mode: 0o600 })
+  await fs.promises.writeFile(scriptPath, script, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
   const child = spawn(explorer, [scriptPath], {
     detached: true,
     stdio: 'ignore',
