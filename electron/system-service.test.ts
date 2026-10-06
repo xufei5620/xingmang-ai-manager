@@ -6512,10 +6512,74 @@ describe('opening a CLI on macOS', () => {
     expect(failure instanceof Error && failure.message).toBe('未能打开 Claude Code：命令执行失败（退出码 1）：codesign')
     expect(failure instanceof Error && failure.cause).toBe(refused)
   })
+
+  function macosLaunch(prefix: string, account: Partial<NativeConfigInspection> = {}) {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const launchMacosTerminal = vi.fn<NonNullable<SystemServiceOptions['launchMacosTerminal']>>(async () => undefined)
+    const service = createService({
+      platform: 'darwin',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+        ...account,
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(userHome, '.local', 'bin', 'claude'),
+        installDirectory: path.join(userHome, '.local', 'share', 'claude'),
+        packageRoot: path.join(userHome, '.local', 'share', 'claude'),
+        npmPrefix: null,
+        packageVersion: '2.1.283',
+        source: 'native' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({ executable: path.join(userHome, '.local', 'bin', 'claude'), argv: [] })),
+      findExecutable: vi.fn(async () => null),
+      launchMacosTerminal,
+    })
+    return { launch: () => service.launchProvider('claude', workspace), launchMacosTerminal }
+  }
+
+  // 已知45：用星芒账号时，Mac 启动脚本把客户 shell 里的 Key、配置目录和选型号的变量都 unset 掉。
+  it.runIf(process.platform !== 'win32')('tells the Terminal launcher to drop the login-shell settings that would take Claude Code off the Xingmang account', async () => {
+    const { launch, launchMacosTerminal } = macosLaunch('xingmang-macos-open-relay-')
+
+    await launch()
+
+    expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
+    expect(launchMacosTerminal.mock.calls[0]?.[0].clearedEnvironmentKeys)
+      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+  })
+
+  it.runIf(process.platform !== 'win32')('leaves the login shell alone while Claude Code is on the customer’s own account', async () => {
+    const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
+    const { launch, launchMacosTerminal } = macosLaunch('xingmang-macos-open-official-', official)
+
+    await launch()
+
+    expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
+    expect(launchMacosTerminal.mock.calls[0]?.[0]).not.toHaveProperty('clearedEnvironmentKeys')
+  })
 })
 
 describe('opening a CLI on Windows', () => {
-  function windowsLaunchService(userHome: string, launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+  function windowsLaunchService(
+    userHome: string,
+    launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>,
+    runtimeLog?: SystemServiceOptions['runtimeLog'],
+    account: Partial<NativeConfigInspection> = {},
+  ) {
     return createService({
       platform: 'win32',
       windowsExecutionMode: 'same-user',
@@ -6533,6 +6597,7 @@ describe('opening a CLI on Windows', () => {
         dataDirectoryExists: true,
         files: [],
         updatedAt: '2026-10-04T00:00:00.000Z',
+        ...account,
       })),
       resolveCliInstallation: vi.fn(async () => ({
         commandPath: 'C:\\Program Files\\nodejs\\claude.cmd',
@@ -6582,6 +6647,40 @@ describe('opening a CLI on Windows', () => {
       expect(entry?.[4][field]).toContain('did not resolve to a file')
       expect(entry?.[4][field]).not.toContain(userHome)
     }
+  })
+
+  function project(prefix: string): { userHome: string; workspace: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    return { userHome, workspace }
+  }
+
+  // 已知45 跟进：用星芒账号时，客户环境里选型号的变量不交给 Claude Code；Windows 上变量名不分大小写。
+  it('keeps the model choices in the environment away from Claude Code on the Xingmang account', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', 'deepseek-chat')
+    vi.stubEnv('anthropic_small_fast_model', 'deepseek-chat')
+    const { userHome, workspace } = project('xingmang-windows-open-models-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+
+    await windowsLaunchService(userHome, launchCliPowerShell).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    const env = launchCliPowerShell.mock.calls[0]?.[0].env ?? {}
+    expect(Object.keys(env).filter((key) => /^anthropic_(model|small_fast_model)$/i.test(key))).toEqual([])
+  })
+
+  it('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    const { userHome, workspace } = project('xingmang-windows-open-official-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+    const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
+
+    await windowsLaunchService(userHome, launchCliPowerShell, undefined, official).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    expect(launchCliPowerShell.mock.calls[0]?.[0].env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
   })
 })
 

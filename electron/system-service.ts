@@ -2542,6 +2542,8 @@ export interface SystemServiceOptions {
   launchLinuxTerminal?: typeof launchLinuxTerminal
   /** Test seam: the real one has a hidden PowerShell start the terminal and hand back its process id (windows-elevation.ts). */
   launchCliPowerShell?: typeof launchCliPowerShell
+  /** Test seam: the real one writes the zsh launcher and has `open -a Terminal` run it (macos-platform.ts). */
+  launchMacosTerminal?: typeof launchMacosTerminal
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
@@ -3020,6 +3022,7 @@ export function createSystemService(
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
   const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
   const launchCliPowerShellForService = serviceOptions.launchCliPowerShell ?? launchCliPowerShell
+  const launchMacosTerminalForService = serviceOptions.launchMacosTerminal ?? launchMacosTerminal
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
@@ -5867,7 +5870,7 @@ export function createSystemService(
           darwinStagingRetention: 'retained',
           ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
-        await launchMacosTerminal(buildDarwinCliLaunchPlan(
+        await launchMacosTerminalForService(buildDarwinCliLaunchPlan(
           {
             ...command,
             argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),

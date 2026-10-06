@@ -32,8 +32,11 @@
   带上，stderr 为空。Linux 启动脚本同样排在进文件夹之后、export 之前，四种坏名字抛错，真 `/bin/sh` 跑时命令窗口程序环境里的
   `ANTHROPIC_MODEL` 没给名单时带过去、给了就到不了工具。`system-service` 这边钉住选型号的名单只在 Claude Code 用星芒账号时
   给出、Mac 名单包含三个平台都不带的、Claude Code 的 Key 和配置目录只在星芒账号时去掉、Gemini 的名单和 Windows、Linux
-  去掉的一样、Codex 和 Grok 不动、去名字不分大小写；Linux 打开 Claude Code 时，星芒账号下交给命令窗口的环境里没有
-  `ANTHROPIC_MODEL`、计划带着名单，自己账号下照旧带上。`config-files` 钉住名单和接账号时挪开的同一批（只差 Key）；
-  `diagnostics.test.ts` 逐个变量跑检查页，凡是判成「待处理」的都得在 Mac 启动脚本的名单里。故意改坏八处（去掉 Mac 的 `unset`、
-  Claude 不看账号、Claude 名单少一个、`launchMacosTerminal` 不带名单、打开时不去掉、Linux 脚本不 `unset`、Linux 不传名单、
-  选型号的名单不看账号），每处都有单测红。没在真 Mac、真 Windows、真 Linux 桌面上演过。
+  去掉的一样、Codex 和 Grok 不动、去名字不分大小写。三个平台各走一遍打开 Claude Code 的服务层流程（`SystemServiceOptions`
+  为此多一个测试接缝 `launchMacosTerminal`，同 `launchLinuxTerminal`、`launchCliPowerShell`）：星芒账号下，Windows 交给
+  PowerShell、Linux 交给命令窗口的环境里没有 `ANTHROPIC_MODEL`（Windows 那条连小写写法一起），Mac、Linux 的计划带着名单；
+  自己账号下 Windows、Linux 照旧带上 `ANTHROPIC_MODEL`，Mac、Linux 的计划不带名单。`config-files` 钉住名单和接账号时挪开的
+  同一批（只差 Key）；`diagnostics.test.ts` 逐个变量跑检查页，凡是判成「待处理」的都得在 Mac 启动脚本的名单里。故意改坏
+  十一处（去掉 Mac 的 `unset`、Claude 不看账号、Claude 名单少一个、`launchMacosTerminal` 不带名单、打开时不去掉、Linux 脚本
+  不 `unset`、Linux 不传名单、选型号的名单不看账号、Mac 打开时不把名单交给启动脚本、去名字时分大小写、Windows 那条不用去掉后的
+  环境），每处都有单测红。没在真 Mac、真 Windows、真 Linux 桌面上演过。
