@@ -206,7 +206,7 @@ export {
   supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
-export type { RelayEndpoint, RelayEndpointId, RelayEndpointSelections } from './relay-sites'
+export type { RelayEndpoint, RelayEndpointId, RelayRouteLine, RelayRouteLines, RelayRoutePreference, RelayRoutePreferences } from './relay-sites'
 
 export type ProviderId = CatalogProviderId
 export type { RelaySite } from './relay-sites'
@@ -1294,6 +1294,12 @@ export interface XingmangEventContract {
    * （electron/proxy-bypass.ts）。载荷为空：界面只拿它收起「已经改为直接联网」那条提示。
    */
   onProxyBypassEnded: IpcEventDefinition<'network:proxy-bypass-ended', undefined>
+  /**
+   * 选「自动」的站换了线路（electron/relay-route-controller.ts）：开机后第一次查出结论、直连
+   * 连不上改走默认线路、直连好了切回来。载荷为空：界面重读设置里的 relayRouteLines，再把
+   * 关着的工具迁过去。
+   */
+  onRelayRouteChanged: IpcEventDefinition<'network:relay-route-changed', undefined>
 }
 
 export type XingmangApi = {
@@ -1525,6 +1531,7 @@ export const ipcEventChannels = {
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
   onProxyBypassEnded: 'network:proxy-bypass-ended',
+  onRelayRouteChanged: 'network:relay-route-changed',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

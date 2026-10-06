@@ -288,7 +288,7 @@ const reroutableNetworkReasons: readonly string[] = ['dns', 'refused', 'timeout'
 /**
  * 「星芒 AI 网络」的「去处理」翻到「设置 → 网络」里哪一行线路（第四十三批 B）。三样都对上才给：
  * 查的就是登着的这个账号的站（访客不给；开机恢复历史账号时查的是默认那个站，也不给）、
- * 原因换线路有可能救回来、这个站不止一条线路（历史账号只有默认线路，那一行是灰的）。
+ * 原因换线路有可能救回来、这个站能选线路（选项不止一个）。
  */
 function networkRouteSetting(details: Diagnostic['details'], accountSiteId: string | null): string | null {
   const reason = details?.reason

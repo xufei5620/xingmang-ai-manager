@@ -3329,7 +3329,9 @@ test('relay route settings stay confirmed while saving and keep the restart noti
     await settings.getByRole('tab', { name: '网络', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
     await expect(route).toHaveValue('primary')
-    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeDisabled()
+    // 历史账号也有直连了，这一行能选。
+    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeEnabled()
+    await expect(page.getByTestId('settings-relay-route-solov-api')).toHaveValue('primary')
     await page.evaluate(() => window.v2Test.holdNextConfigSave())
     await route.selectOption('direct')
     await expect(route).toBeDisabled()
@@ -3389,6 +3391,81 @@ test('relay route settings compare against the active backup route and preserve 
     await waitForToast(page, '已取消重开')
     await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
     assert.equal(await page.evaluate(async () => (await window.xingmang.getAccountSession()).account.userId), 17)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 直连适配第二步：星芒账号线路没选过就是「自动」，主进程查出走哪条，换了就叫一声（onRelayRouteChanged）。
+test('relay route settings read nothing stored as auto and offer it first with the approved wording', async () => {
+  const page = await open('autoRelay=direct')
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    const route = page.getByTestId('settings-relay-route-solov')
+    await expect(route).toHaveValue('auto')
+    assert.deepEqual(await route.locator('option').allTextContents(), ['自动（推荐）', '只用直连', '只用默认线路'])
+    await page.getByText('自动会先走直连，直连连不上时改走默认线路。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('历史账号单独设置，用法和上面一样。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
+    await route.selectOption('primary')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, relayEndpointIds: { 'solov-api': 'primary', solov: 'primary' } })
+    await route.selectOption('auto')
+    await expect.poll(() => page.getByTestId('settings-relay-relaunch').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+async function settleStartupBootstrap(page) {
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+  await page.waitForFunction(() => !document.querySelector('.v2-bootstrap-notice[data-busy="true"]') && document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') !== 'true')
+}
+
+async function assertToolsOnTheirExpectedLine(page, line) {
+  const providers = await page.evaluate(async () => (await window.xingmang.getConfig()).providers)
+  for (const provider of ['claude', 'codex', 'gemini', 'grok']) {
+    assert.equal(new URL(providers[provider].actualBaseUrl).origin, line, provider)
+    assert.equal(new URL(providers[provider].baseUrl).origin, line, provider)
+  }
+}
+
+test('auto leaves the tools alone until its check settles, then moves the ones Xingmang configured onto that line', async () => {
+  const page = await open('allInstalled=1&autoRelay=pending')
+  try {
+    await settleStartupBootstrap(page)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '没查出线路以前不迁')
+    await assertToolsOnTheirExpectedLine(page, 'https://xm.solov.cc')
+    await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'direct', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await expect.poll(async () => (await page.evaluate(async () => (await window.xingmang.getConfig()).providers.grok.actualBaseUrl))).toBe('https://xm-direct.solov.cc/v1')
+    await assertToolsOnTheirExpectedLine(page, 'https://xm-direct.solov.cc')
+    // 改走的是直连，不是退回：首页不说退回那句。
+    assert.equal(await page.getByTestId('home-relay-fallback').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('when auto falls back while tools are open, home says so once and the rescan moves them after they quit', async () => {
+  const page = await open('allInstalled=1&autoRelay=direct&runningTools=1')
+  try {
+    await settleStartupBootstrap(page)
+    await assertToolsOnTheirExpectedLine(page, 'https://xm-direct.solov.cc')
+    await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'primary', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
+    const notice = page.getByTestId('home-relay-fallback')
+    await notice.getByText('直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换', { exact: true }).waitFor()
+    // 上面那句已经说了，横幅里不再逐个工具说一遍。
+    assert.equal(await page.getByText('连接线路暂未改动').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '开着的工具先不改')
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'inspectRunningTools').length)
+    assert.ok(before > 0)
+    await page.screenshot({ path: path.join(artifacts, 'home-relay-fallback.png'), fullPage: true })
+    await page.evaluate(() => window.v2Test.setToolsRunning(false))
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await notice.waitFor({ state: 'detached' })
+    await expect.poll(async () => (await page.evaluate(async () => (await window.xingmang.getConfig()).providers.grok.actualBaseUrl))).toBe('https://xm.solov.cc/v1')
+    await assertToolsOnTheirExpectedLine(page, 'https://xm.solov.cc')
     await clean(page)
   } finally { await page.close() }
 })
@@ -7028,17 +7105,22 @@ test('the cut-off network row offers the route setting while the startup restore
   } finally { await page.close() }
 })
 
-// 历史账号只有默认线路，访客没有账号：都不给，这一行照旧只有结论。开机恢复历史账号时，
-// 主进程查的还是默认那个站，那条线路不是这个账号的，也不给。
-test('a historical account or a guest gets no route fix on the cut-off network row', async () => {
-  const historical = await open('sub2api=1')
+// 直连适配第二步起历史账号也能选直连：它的「去处理」翻到「历史账号线路」那一行。
+test('a cut-off network row takes a historical account to its own route setting', async () => {
+  const page = await open('sub2api=1')
   try {
-    await stubCutOffNetwork(historical, 'solov-api')
-    await historical.getByTestId('nav-health').click()
-    await expect(historical.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
-    await expect(historical.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
-    assert.deepEqual(await historical.evaluate(() => window.v2Test.errors), [])
-  } finally { await historical.close() }
+    await stubCutOffNetwork(page, 'solov-api')
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov-api"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeFocused()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 访客没有账号，不给，这一行照旧只有结论。开机恢复历史账号时，主进程查的还是默认那个站，
+// 那条线路不是这个账号的，也不给。
+test('a guest or a check of another site gets no route fix on the cut-off network row', async () => {
   const restoring = await open('restoring=solov-api')
   try {
     await stubCutOffNetwork(restoring, 'solov')

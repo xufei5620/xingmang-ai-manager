@@ -134,7 +134,9 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { createRelayEndpointRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
+import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
@@ -142,8 +144,10 @@ import {
   createDiagnosticsExport,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
+  relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
+  type DiagnosticsRelayRoute,
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
 } from './diagnostics'
@@ -194,7 +198,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdateRequestGuard } from './update-request-guard'
-import { locateDirectUpdateFeed } from './update-feed-route'
+import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed } from './update-feed-route'
 import { createUpdaterService, type UpdateSnapshot } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
@@ -1116,12 +1120,21 @@ if (!hasSingleInstanceLock) {
     }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
-    const relayRouting = createRelayEndpointRoutingSnapshot(settingsStore.read().relayEndpointIds)
-    // 线路开机时定下，这次运行里不再变（设置里改了要重启才生效）。客服要从日志看出这次走的是
-    // 哪条：只记线路 id，不记地址。
+    // 线路选项开机时定下，这次运行里不再变（设置里改了要重启才生效）。选「自动」的站这次运行里会
+    // 换线路：先用上次存下的结论，开机后在后台查一次，直连连不上改走默认线路，好了再切回来
+    // （relay-route-controller.ts）。查线路走的是星芒自己连站点那条路（relayFetch，下面才建）。
+    const relayPreferences = resolveRelayRoutePreferences(settingsStore.read().relayEndpointIds)
+    const relayRouteController = createRelayRouteController({
+      preferences: relayPreferences,
+      ...createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json')),
+      probe: (siteId, line) => probeRelayLineHealth(relayFetch, relayStatusProbeUrl(requireRelaySite(siteId, line))),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    const relayRouting = createRelayEndpointRoutingSnapshot(relayPreferences, () => relayRouteController.lines())
+    // 客服要从日志看出这次走的是哪条：只记线路 id，不记地址。
     runtimeLog.log('info', 'config', 'relay.route.active', '本次运行用的连接线路', {
-      active: relayRouting.activeEndpointIds,
-      selected: relayRouting.selections,
+      preferences: relayRouting.preferences,
+      lines: relayRouting.lines(),
     })
     let settingsSaveIssue: SettingsSaveIssue | undefined
     // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
@@ -1170,6 +1183,8 @@ if (!hasSingleInstanceLock) {
         try { return relayStatusProbeUrl(relayRouting.resolve(systemService.readStoredConfig().relaySiteId)) }
         catch { return null }
       },
+      // 同一个站的默认线路和直连算一个站点：「自动」中途换了线路，分去直连会话的请求照样分过去。
+      siteProbeUrls: (url) => relaySiteStatusProbeUrls(url, relayRouting.lines()),
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
       setProxy: (mode) => session.defaultSession.setProxy({ mode }),
       accelerationActive: accelerationRunning,
@@ -1185,6 +1200,25 @@ if (!hasSingleInstanceLock) {
         managedMainWindow.webContents.send(ipcEventChannels.onProxyBypassEnded, undefined)
       },
     })
+    // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
+    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。账号请求只会因为等太久
+    // 没回话而中止，算直连没走通；AI 对话画图中止多半是客户点了「停止」，不算。工具相关的检查（写
+    // 配置前查模型、工具自检）查的正是工具会用的那条线路，不换不重发，直连上的失败只报给线路那边。
+    function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
+      runtimeLog.log(level, 'network', event, message, detail)
+    }
+    const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
+    const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansUnreachable: true, log: logRelayLine })
+    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansUnreachable: true, log: logRelayLine })
+    const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
+    // 「自动」换了线路：界面重读设置、把关着的工具迁过去（App.tsx）。窗口还没建好时不用叫，
+    // 首屏读设置时读到的就是新线路。
+    const unsubscribeRelayRoute = relayRouteController.subscribe(() => {
+      if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+      if (managedMainWindow.webContents.isDestroyed()) return
+      managedMainWindow.webContents.send(ipcEventChannels.onRelayRouteChanged, undefined)
+    })
+    relayRouteController.start()
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecution = await windowsCliExecutionModePromise
@@ -1359,7 +1393,8 @@ if (!hasSingleInstanceLock) {
       // 只由主进程自己读，随 app.asar 走即可，不必像上面两个脚本那样拷进 extraResources。
       bundledCodexModelCatalogPath: resolveBundledCodexModelCatalogPath(app.getAppPath()),
       ...rootedOptions.system,
-      relayFetch,
+      relayFetch: observedRelayFetch,
+      relayRoutedFetch: routedRelayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
       // Re-read the existing session/system proxy selection without changing
       // the OS proxy or imposing a new Chromium proxy mode.
@@ -1423,6 +1458,20 @@ if (!hasSingleInstanceLock) {
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
     })
     let latestDiagnostics: DiagnosticsReport | null = null
+    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。
+    function diagnosticsRelayRoute(siteId: string | undefined): DiagnosticsRelayRoute | undefined {
+      const site = relayRouting.resolve(siteId)
+      if (site.id !== 'solov' && site.id !== 'solov-api') return undefined
+      const routeSiteId: RelayRouteSiteId = site.id
+      const { line, settled } = relayRouting.lines()[routeSiteId]
+      return {
+        line,
+        settled,
+        automatic: relayRouting.preferences[routeSiteId] === 'auto',
+        primarySite: requireRelaySite(routeSiteId),
+        reportDirectFailure: (reason) => relayRouteController.reportDirectFailure(routeSiteId, reason),
+      }
+    }
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
@@ -1439,7 +1488,8 @@ if (!hasSingleInstanceLock) {
         return buildConnectionProbe('codex', site, inspection)
       },
       {
-        fetch: relayFetch,
+        // 查的是 Codex 自己那份配置里的地址：工具会走哪条就查哪条（observed，不换不重发）。
+        fetch: observedRelayFetch,
         // The Key stays in main-process memory. Re-reading it after the first
         // response prevents a second paid request after account/source changes.
         currentScope: () => {
@@ -1488,6 +1538,7 @@ if (!hasSingleInstanceLock) {
           // Read the account's site on every run; endpoint preferences take
           // effect only after restart, matching the live account clients.
           relaySite: relayRouting.resolve(systemService.readStoredConfig().relaySiteId),
+          relayRoute: diagnosticsRelayRoute(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
           // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
           // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
@@ -1522,7 +1573,8 @@ if (!hasSingleInstanceLock) {
           provider,
           site,
           inspection: inspectProviderConfig(provider, rootedOptions.system.providerRoots, site.providerBaseUrls),
-          fetch: relayFetch,
+          // 测的是工具配置里写的那个地址，工具走哪条就测哪条（observed，不换不重发）。
+          fetch: observedRelayFetch,
         })
         latestConnectionChecks.set(provider, {
           ok: result.ok,
@@ -1574,15 +1626,23 @@ if (!hasSingleInstanceLock) {
     const updateConfigPath = app.isPackaged
       ? path.join(process.resourcesPath, 'app-update.yml')
       : path.join(app.getAppPath(), 'dev-app-update.yml')
+    // 只有标准 Windows 正式版有直连那份更新目录（直连白名单里只有 Windows 的安装包）。星芒账号走
+    // 直连时更新也走直连；「自动」会在运行中换线路，所以每次检查前按这会儿的线路选（feedRoute）。
     const directUpdateFeed = locateDirectUpdateFeed(updateConfigPath, {
-      activeSolovEndpointId: relayRouting.activeEndpointIds.solov,
+      activeSolovEndpointId: 'direct',
       platform: process.platform,
       isPackaged: app.isPackaged,
       localBuild,
     })
+    let updateFeedLine: RelayEndpointId = 'primary'
     // setFeedURL only changes transport. Keep configOnDisk intact: electron-updater
     // still reads publisherName and updaterCacheDirName there when verifying/installing.
-    if (directUpdateFeed) autoUpdater.setFeedURL(directUpdateFeed.feed)
+    function useUpdateFeedLine(line: RelayEndpointId): void {
+      if (!directUpdateFeed || line === updateFeedLine) return
+      autoUpdater.setFeedURL((line === 'direct' ? directUpdateFeed : packagedUpdateFeed()).feed)
+      updateFeedLine = line
+    }
+    useUpdateFeedLine(relayRouteController.route('solov').line)
     // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
     // electron-updater returns from verifySignature before the strict verifier
     // above is ever reached. The updater re-checks the manifest digest itself;
@@ -1767,6 +1827,22 @@ if (!hasSingleInstanceLock) {
       restoreProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'system' })
       },
+      feedRoute: directUpdateFeed
+        ? {
+            prepare: () => useUpdateFeedLine(relayRouteController.route('solov').line),
+            // 「自动」时直连那份没查通：换回包里那份当场再查一次。连不上一类的报给线路那边再查直连；
+            // 白名单 404 只是那一个文件的事，下次检查照样先走直连。
+            fallBack: (error) => {
+              if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
+              const failure = classifyDirectFeedFailure(error)
+              if (!failure) return false
+              if (failure.lineFailure) relayRouteController.reportDirectFailure('solov', failure.reason)
+              useUpdateFeedLine('primary')
+              runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在直连上没走通，改走默认线路再查一次', { reason: failure.reason })
+              return true
+            },
+          }
+        : undefined,
     })
     // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
     // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
@@ -1774,11 +1850,12 @@ if (!hasSingleInstanceLock) {
     // 要让他看到。
     const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
-      : directUpdateFeed?.serviceStatusUrl ?? locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
+      : locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
+        // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
         read: () => readServiceStatus({
-          url: serviceStatusUrl,
+          url: directUpdateFeed && updateFeedLine === 'direct' ? directUpdateFeed.serviceStatusUrl : serviceStatusUrl,
           fetch: (url, init) => autoUpdater.netSession.fetch(url, init),
         }),
         onChange: (status) => {
@@ -1797,7 +1874,7 @@ if (!hasSingleInstanceLock) {
       ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
       requestGuard: updateRequests !== null,
-      updateFeedRoute: directUpdateFeed ? 'direct' : 'packaged',
+      updateFeedRoute: directUpdateFeed ? updateFeedLine : 'packaged',
     })
     if (unsignedChannel) {
       runtimeLog.log(
@@ -2146,7 +2223,8 @@ if (!hasSingleInstanceLock) {
     const accounts = createRealmAccountService({
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
-        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: relayFetch, onSessionChange,
+        // 历史账号的客户端写死的是默认线路的地址（sub2api-relay-backend.ts 不改），走直连靠请求这一层换地址。
+        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch, onSessionChange,
           onCredentialRotation: (saved) => vault.updateSession(saved) })
         let client: ReturnType<typeof createNewApiClient>
         function saved(): RealmSavedAccount | null {
@@ -2156,7 +2234,8 @@ if (!hasSingleInstanceLock) {
             origin: 'https://xm.solov.cc', userId: String(persisted.userId), username: profile.username,
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
-        client = createNewApiClient({ baseUrl: relayRouting.require(siteId).accountBaseUrl, fetchImpl: accountFetch,
+        // 客户端认的一直是默认线路的地址（登录记录、凭据都按它记），这会儿走哪条线路由请求这一层换。
+        client = createNewApiClient({ baseUrl: requireRelaySite(siteId).accountBaseUrl, fetchImpl: routedAccountFetch,
           retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
@@ -2264,7 +2343,8 @@ if (!hasSingleInstanceLock) {
       }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
     }
     function createBusiness(siteId: RealmAccountSiteId) {
-      const definition = requireSiteRuntimeDefinition(siteId, relayRouting.selection(siteId))
+      // AI 工作区的请求同样按默认线路的地址发，走哪条线路由 routedRelayFetch 换（「自动」会在运行中换线路）。
+      const definition = requireSiteRuntimeDefinition(siteId)
       const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
       const accountService = createRealmServiceDispatch(() => {
         if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
@@ -2285,7 +2365,10 @@ if (!hasSingleInstanceLock) {
       const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
       const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId, credentialPersistence)
       const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence)
-      const chatCredentials = createChatCredentialCoordinator({ accountService, modelService: systemService, keyStore: chatKeyStore })
+      // AI 工作区查模型是星芒自己的请求：「自动」时直连没走通当场改走默认线路。
+      const chatCredentials = createChatCredentialCoordinator({ accountService, keyStore: chatKeyStore, modelService: {
+        fetchAvailableModels: (apiKey, options) => systemService.fetchAvailableModels(apiKey, { ...options, routed: true }),
+      } })
       // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
       const aiOutputPlacement = chooseAiOutputRoot({
         isPackaged: app.isPackaged,
@@ -2513,7 +2596,7 @@ if (!hasSingleInstanceLock) {
         readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
         baseUrl: definition.aiBaseUrl,
         credentialCoordinator: chatCredentials,
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         emit: (senderId, event) => {
           const sender = BrowserWindow.getAllWindows()
             .map((window) => window.webContents)
@@ -2557,14 +2640,14 @@ if (!hasSingleInstanceLock) {
       })
       const imageService = createAiImageService({
         onRequestStarted: onAiRequestStarted,
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         assets: assetStore,
       })
       const canvasImageService = createAiImageService({
         onRequestStarted: onAiRequestStarted,
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         assets: {
@@ -2579,7 +2662,7 @@ if (!hasSingleInstanceLock) {
         rootDirectory: roots.canvasVideoTasksDirectory,
       })
       const videoService = createAiVideoService({
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         tasks: videoTasks,
@@ -3130,6 +3213,8 @@ if (!hasSingleInstanceLock) {
       unsubscribeInstallKeepAwakeQueue()
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
+      unsubscribeRelayRoute()
+      relayRouteController.dispose()
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()

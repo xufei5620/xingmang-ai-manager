@@ -1052,7 +1052,8 @@ export interface SystemService {
    * 照常看。可选 = 旧实现不提供，调用方照旧等它做完。
    */
   stopTemplateFillWaits?(): () => void
-  fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
+  /** routed：星芒自己用的（AI 工作区），「自动」时直连没走通当场改走默认线路；缺省查的是工具会用的那条线路。 */
+  fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean; routed?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
   /**
@@ -2533,7 +2534,7 @@ export interface SystemServiceOptions {
   externalClientRuntime?: ReturnType<typeof createExternalClientRuntime>
   /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
   getRelaySiteId?: () => string
-  /** Frozen at startup: pending settings must not repoint live account or tool work. */
+  /** Preferences freeze at startup; under "auto" the line itself may move during the run (relay-route-controller.ts). */
   relayEndpointRouting?: RelayEndpointRoutingSnapshot
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
@@ -2573,8 +2574,14 @@ export interface SystemServiceOptions {
   readWindowsLivePath?: (system32: string, env: NodeJS.ProcessEnv) => Promise<string | null>
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
   fetchOfficialChatGptUsage?: typeof fetchOfficialChatGptUsage
-  /** Relay traffic uses Electron's proxy-aware network stack in the desktop host. */
+  /**
+   * Relay traffic uses Electron's proxy-aware network stack in the desktop host. Tool-facing
+   * requests (model checks before a config write, client checks) go out on exactly the line the
+   * tool will use: no rewrite, no retry (relay-line-fetch.ts createRelayObservedFetch).
+   */
   relayFetch?: typeof fetch
+  /** 星芒自己的请求：「自动」时直连没走通当场改走默认线路（createRelayLineFetch）。缺省同 relayFetch。 */
+  relayRoutedFetch?: typeof fetch
   /** Location must use the desktop session's actual route, independently of relay traffic. */
   networkLocationFetch?: typeof fetch
   /** Re-read Chromium's proxy configuration before an explicit location refresh. */
@@ -3024,8 +3031,8 @@ export function createSystemService(
     if (!removal && relayRouting.selection(selected.id) !== undefined) return selected
     return relaySiteForProviderBaseUrl(selected.id, provider, current.actualBaseUrl) ?? selected
   }
-  // The account's site remains live; its selected transport is frozen until
-  // restart so account clients, native writes and probes cannot use mixed lines.
+  // The account's site remains live. An explicit line is frozen until restart; under "auto" the
+  // line may move mid-run, so each write and probe reads it once and uses that line throughout.
   const inspectNativeProviderConfig = (provider: ProviderId) =>
     (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
       provider,
@@ -6102,7 +6109,7 @@ export function createSystemService(
 
   async function fetchAvailableModels(
     apiKeyInput: string,
-    options: { bypassCache?: boolean; site?: RelaySite } = {},
+    options: { bypassCache?: boolean; site?: RelaySite; routed?: boolean } = {},
   ): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
     if (!apiKey) throw new Error('请先填写 API Key')
@@ -6136,7 +6143,8 @@ export function createSystemService(
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
     try {
-      const response = await (serviceOptions.relayFetch ?? fetch)(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
+      const relayFetch = (options.routed ? serviceOptions.relayRoutedFetch : undefined) ?? serviceOptions.relayFetch ?? fetch
+      const response = await relayFetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
         credentials: 'omit',
         redirect: 'error',
@@ -7483,9 +7491,11 @@ export function createSystemService(
   }
 
   return {
-    readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.activeEndpointIds },
+    readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.preferences },
+      relayRouteLines: relayRouting.lines(),
       ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
-    updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.activeEndpointIds } }),
+    updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
+      relayRouteLines: relayRouting.lines() }),
     inspectCodexReadiness,
     getConfig: buildConfigSummary,
     revealApiKey,

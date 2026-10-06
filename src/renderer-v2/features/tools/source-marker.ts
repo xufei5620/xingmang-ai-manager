@@ -1,5 +1,5 @@
 import type { ProviderId } from '../../../../electron/ipc-contract'
-import { relayEndpointAliasOrigins } from '../../../../electron/relay-sites'
+import { relayEndpointForUrl, relayEndpointOrigin, relaySiteKnownOrigins } from '../../../../electron/relay-sites'
 
 export type SourceMarkerStorage = Pick<
   Storage,
@@ -30,22 +30,33 @@ function markerKey(origin: string, provider: ProviderId): string {
   return `${markerPrefix}:${encodeURIComponent(origin)}:${provider}`
 }
 
-/** Provider paths and relay-site aliases on one origin intentionally share a marker. */
+/**
+ * Provider paths and relay-site aliases on one origin intentionally share a marker, and so do the
+ * lines of one site: under "auto" the line follows the network (relay-route-controller.ts), and
+ * a source the user chose must not vanish when the line moves.
+ */
 export function manualSourceMarkerKey(
   relayBaseUrl: string,
   provider: ProviderId,
 ): string | null {
   const origin = markerOrigin(relayBaseUrl)
-  return origin ? markerKey(origin, provider) : null
+  if (!origin) return null
+  const endpoint = relayEndpointForUrl(origin)
+  return markerKey(endpoint ? relayEndpointOrigin(endpoint.siteId, 'primary') ?? origin : origin, provider)
 }
 
 /**
- * 线路换地址以前按旧地址存的那几份：直连还是 IP 测试入口那阵子，选了备用直连时按 IP 存。读的时候
- * 一起认，写的时候顺手删掉，只留现在这个地址的那一份。
+ * 两条线路合用一个标记以前，按线路地址存的那几份：选了备用直连时按直连的地址存，直连还是 IP
+ * 测试入口那阵子按 IP 存。读的时候一起认，写的时候顺手删掉，只留合用的那一份。
  */
 function formerMarkerKeys(relayBaseUrl: string, provider: ProviderId): string[] {
   const origin = markerOrigin(relayBaseUrl)
-  return origin ? relayEndpointAliasOrigins(origin).map((alias) => markerKey(alias, provider)) : []
+  const endpoint = origin ? relayEndpointForUrl(origin) : null
+  const key = manualSourceMarkerKey(relayBaseUrl, provider)
+  if (!endpoint) return []
+  return relaySiteKnownOrigins(endpoint.siteId)
+    .map((known) => markerKey(known, provider))
+    .filter((former) => former !== key)
 }
 
 export function readManualSourceMarker(

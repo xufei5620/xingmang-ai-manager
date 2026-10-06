@@ -66,20 +66,46 @@ describe('renderer provider source marker', () => {
     ).toBe(true)
   })
 
-  // 直连从 IP 换成域名以后，选过直连的客户以前点过的「就用现在这份」不能就这么没了。
-  it('still honors a marker stored under the retired IP entry of the direct line and moves it on the next write', () => {
+  // 「自动」的线路跟着网络换，客户认过的「就用现在这份」不能因为线路换了就没了。
+  it('shares one marker between the lines of a site, and keeps each site separate', () => {
     const { storage, values } = memoryStorage()
-    const ipKey = `xingmang-v2:provider-source:v1:${encodeURIComponent('https://38.147.105.28:8443')}:claude`
-    values.set(ipKey, 'manual')
-    expect(readManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'claude')).toBe(true)
-    expect(readManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'codex')).toBe(false)
-    expect(readManualSourceMarker(storage, 'https://xm.solov.cc', 'claude')).toBe(false)
+    expect(manualSourceMarkerKey('https://xm-direct.solov.cc/v1', 'codex')).toBe(manualSourceMarkerKey('https://xm.solov.cc/v1', 'codex'))
+    expect(manualSourceMarkerKey('https://api-direct.solov.cc/v1', 'codex')).toBe(manualSourceMarkerKey('https://api.solov.cc/v1', 'codex'))
+    expect(manualSourceMarkerKey('https://api.solov.cc/v1', 'codex')).not.toBe(manualSourceMarkerKey('https://xm.solov.cc/v1', 'codex'))
+
+    writeManualSourceMarker(storage, 'https://xm-direct.solov.cc/v1', 'codex', true)
+    expect(readManualSourceMarker(storage, 'https://xm.solov.cc/v1', 'codex')).toBe(true)
+    expect(readManualSourceMarker(storage, 'https://api.solov.cc/v1', 'codex')).toBe(false)
+    expect([...values.keys()]).toEqual([manualSourceMarkerKey('https://xm.solov.cc/v1', 'codex')])
+  })
+
+  it.each([
+    ['the direct domain', 'https://xm-direct.solov.cc'],
+    ['the retired IP entry', 'https://38.147.105.28:8443'],
+  ])('still honors a marker stored under %s and moves it into the shared one on the next write', (_name, formerOrigin) => {
+    const { storage, values } = memoryStorage()
+    const formerKey = `xingmang-v2:provider-source:v1:${encodeURIComponent(formerOrigin)}:claude`
+    values.set(formerKey, 'manual')
+    for (const baseUrl of ['https://xm.solov.cc', 'https://xm-direct.solov.cc']) {
+      expect(readManualSourceMarker(storage, baseUrl, 'claude')).toBe(true)
+    }
+    expect(readManualSourceMarker(storage, 'https://xm.solov.cc', 'codex')).toBe(false)
 
     expect(writeManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'claude', true)).toBe(true)
-    expect([...values.keys()]).toEqual([manualSourceMarkerKey('https://xm-direct.solov.cc', 'claude')])
-    values.set(ipKey, 'manual')
-    expect(writeManualSourceMarker(storage, 'https://xm-direct.solov.cc', 'claude', false)).toBe(true)
+    expect([...values.keys()]).toEqual([manualSourceMarkerKey('https://xm.solov.cc', 'claude')])
+    expect(writeManualSourceMarker(storage, 'https://xm.solov.cc', 'claude', false)).toBe(true)
     expect(values.size).toBe(0)
+  })
+
+  it('keeps an address that is not a line of a known site on its own marker', () => {
+    const { storage, values } = memoryStorage()
+    // 别名只用来认旧记录，不会被当成哪条线路去合并。
+    writeManualSourceMarker(storage, 'https://38.147.105.28:8443/v1', 'codex', true)
+    expect([...values.keys()]).toEqual([`xingmang-v2:provider-source:v1:${encodeURIComponent('https://38.147.105.28:8443')}:codex`])
+    values.clear()
+    writeManualSourceMarker(storage, 'https://relay.example.test/v1', 'codex', true)
+    expect([...values.keys()]).toEqual([`xingmang-v2:provider-source:v1:${encodeURIComponent('https://relay.example.test')}:codex`])
+    expect(readManualSourceMarker(storage, 'https://xm.solov.cc/v1', 'codex')).toBe(false)
   })
 
   it('ignores invalid data and degrades safely when storage is unavailable', () => {

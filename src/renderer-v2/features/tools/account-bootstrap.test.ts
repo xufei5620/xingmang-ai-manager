@@ -10,11 +10,13 @@ import {
   accountBootstrapPlan,
   accountKeyChangeInProgress,
   accountKeyChangePending,
+  accountRoutesPending,
   bootstrapAccountTools,
   configurationFailure,
   configurationFailureMessages,
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
+  relayFallbackActive,
   routeDeferredMessage,
   skippedNamedProviders,
   type AccountBootstrapBridge,
@@ -867,6 +869,7 @@ describe('explicit applied connection routes on restore', () => {
     expect(api.inspectRunningTools.mock.invocationCallOrder[0]).toBeLessThan(api.configureManagedCliKeys.mock.invocationCallOrder[0])
     expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
     expect(result).toMatchObject({ configured: ['codex'], failed: [] })
+    expect(result).not.toHaveProperty('routeDeferred')
   })
 
   it.each([
@@ -881,6 +884,7 @@ describe('explicit applied connection routes on restore', () => {
     expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
     expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
     expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('关闭') })])
+    expect(result.routeDeferred).toEqual(['codex'])
   })
 
   it('tells a Mac user to quit the Codex desktop app with Command + Q when only it holds the route back', async () => {
@@ -931,6 +935,67 @@ describe('explicit applied connection routes on restore', () => {
     expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
     expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
     expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
+  })
+})
+
+// 直连适配第二步：「自动」的线路由主进程查出来（relayRouteLines），查出结论以后工具配置才跟着迁。
+describe('automatic connection route', () => {
+  const primary = relayProviderBaseUrls('solov', 'primary')
+  const direct = relayProviderBaseUrls('solov', 'direct')
+  const automatic: AppSettingsV2 = {
+    ...settings,
+    relaySiteId: 'solov',
+    activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'auto' },
+    relayRouteLines: { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: false } },
+  }
+  function ownedOn(expected: string, actual: string): AppConfigSummary {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true,
+      baseUrl: expected, actualBaseUrl: actual, model: 'kept-model', configurationOwnership: 'account' }
+    return current
+  }
+
+  it('moves an owned config to the line auto settled on', () => {
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(direct.codex, primary.codex), automatic, 'restore', null).targets).toEqual(['codex'])
+    expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), automatic, memoryStorage())).toBe(true)
+  })
+
+  it('moves it back to the default line after auto fell back', () => {
+    const fellBack: AppSettingsV2 = { ...automatic, relayRouteLines: { ...automatic.relayRouteLines!, solov: { line: 'primary', settled: true } } }
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(primary.codex, direct.codex), fellBack, 'restore', null).targets).toEqual(['codex'])
+  })
+
+  it('leaves the old line alone until auto has settled, or while another choice waits for a restart', () => {
+    const unsettled: AppSettingsV2 = { ...automatic, relayRouteLines: { ...automatic.relayRouteLines!, solov: { line: 'primary', settled: false } } }
+    const pending: AppSettingsV2 = { ...automatic, relayEndpointIds: { solov: 'primary' } }
+    for (const preferences of [unsettled, pending, { ...automatic, relayRouteLines: undefined }]) {
+      expect(accountBootstrapPlan(system(['codex']), ownedOn(primary.codex, direct.codex), preferences, 'restore', null).targets).toEqual([])
+      expect(accountRoutesPending(ownedOn(primary.codex, direct.codex), preferences, memoryStorage())).toBe(false)
+    }
+  })
+
+  it('has nothing pending once every owned config is on the current line', () => {
+    expect(accountRoutesPending(ownedOn(direct.codex, direct.codex), automatic, memoryStorage())).toBe(false)
+    expect(accountRoutesPending(config(), automatic, memoryStorage())).toBe(false)
+  })
+
+  it('treats a pinned line as settled even without the live route lines', () => {
+    const pinned: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+    expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), pinned, memoryStorage())).toBe(true)
+  })
+
+  it('reports a fallback only while auto runs, has settled, and settled on the default line of the account site', () => {
+    const fellBack: AppSettingsV2 = { ...automatic, relayRouteLines: { ...automatic.relayRouteLines!, solov: { line: 'primary', settled: true } } }
+    expect(relayFallbackActive(fellBack)).toBe(true)
+    // 存了别的选项、还没重启时，跑的照旧是「自动」。
+    expect(relayFallbackActive({ ...fellBack, relayEndpointIds: { solov: 'direct' } })).toBe(true)
+    expect(relayFallbackActive(automatic)).toBe(false)
+    expect(relayFallbackActive({ ...fellBack, relayRouteLines: { ...fellBack.relayRouteLines!, solov: { line: 'primary', settled: false } } })).toBe(false)
+    expect(relayFallbackActive({ ...fellBack, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'auto' } })).toBe(false)
+    // 看的是登着的这个账号的站：历史账号那边还没定下来。
+    expect(relayFallbackActive({ ...fellBack, relaySiteId: 'solov-api' })).toBe(false)
+    expect(relayFallbackActive({ ...fellBack, relaySiteId: 'solov-api', relayRouteLines: { ...fellBack.relayRouteLines!, 'solov-api': { line: 'primary', settled: true } } })).toBe(true)
+    expect(relayFallbackActive(null)).toBe(false)
   })
 })
 
