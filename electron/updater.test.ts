@@ -1106,6 +1106,126 @@ describe('service status from the update feed', () => {
   })
 })
 
+// 直连适配第二步：「自动」会在运行中换线路，更新地址每次检查前按这会儿的线路选；直连那份没查通时
+// 宿主换回包里那份，这里当场再查一次。
+describe('update feed line', () => {
+  it('asks the host which feed to use before reading the service status and before every check', async () => {
+    const client = new FakeUpdater()
+    const order: string[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      order.push('check')
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      refreshServiceStatus: async () => {
+        order.push('status')
+        return null
+      },
+      feedRoute: { prepare: () => { order.push('prepare') }, fallBack: () => false },
+    })
+
+    await service.check()
+    await service.check()
+
+    expect(order).toEqual(['prepare', 'status', 'check', 'prepare', 'status', 'check'])
+    service.dispose()
+  })
+
+  it('checks once more on the default feed when the host takes the failure as the direct line\'s', async () => {
+    const client = new FakeUpdater()
+    const failure = new Error('net::ERR_CONNECTION_REFUSED')
+    client.checkForUpdates.mockRejectedValueOnce(failure)
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const fallBack = vi.fn(() => true)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedRoute: { prepare: () => undefined, fallBack },
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available', error: null })
+    expect(fallBack).toHaveBeenCalledWith(failure)
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('reports the failure without another try when the host keeps the feed', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('依旧连不上'))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedRoute: { prepare: () => undefined, fallBack: () => false },
+    })
+
+    const state = await service.check()
+    expect(state).toMatchObject({ phase: 'error', failedStep: 'check' })
+    expect(state.error?.message).toContain('依旧连不上')
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
+    service.dispose()
+  })
+
+  it('reports what the second try ran into when the default feed fails as well', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('net::ERR_CONNECTION_REFUSED'))
+    client.checkForUpdates.mockRejectedValueOnce(new Error('默认线路也没连上'))
+    const fallBack = vi.fn(() => true)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedRoute: { prepare: () => undefined, fallBack },
+    })
+
+    const state = await service.check()
+    expect(state.phase).toBe('error')
+    expect(state.error?.message).toContain('默认线路也没连上')
+    expect(fallBack).toHaveBeenCalledOnce()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('still checks when choosing the feed throws, and treats a throwing fallback as no fallback', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('依旧连不上'))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedRoute: {
+        prepare: () => { throw new Error('setFeedURL failed') },
+        fallBack: () => { throw new Error('controller gone') },
+      },
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'error' })
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
+    service.dispose()
+  })
+
+  it('leaves a proxy failure to the proxy retry', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(proxyConnectionError())
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const fallBack = vi.fn(() => true)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy: async () => undefined,
+      restoreProxy: async () => undefined,
+      feedRoute: { prepare: () => undefined, fallBack },
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available' })
+    expect(fallBack).not.toHaveBeenCalled()
+    service.dispose()
+  })
+})
+
 describe('minimum version from the update feed', () => {
   it('requires an update only when this version is readably older than the minimum', () => {
     expect(resolveRequiredVersion('0.2.12', '0.2.13')).toBe('0.2.13')

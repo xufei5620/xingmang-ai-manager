@@ -28,7 +28,7 @@ import {
   shouldCheckWorkspaceWritable,
 } from './documents-fallback'
 import { usageDateRange } from './usage-date-range'
-import { parseRelayEndpointSelections, type AppSettingsUpdate, type AppTheme } from './app-settings'
+import { parseRelayRoutePreferences, type AppSettingsUpdate, type AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
@@ -49,7 +49,7 @@ import {
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
-import { relaySiteEndpointChoices, relaySites, resolveRelaySite } from './relay-sites'
+import { relayRoutePreferenceAllowed, relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
   AddMcpInput,
@@ -444,13 +444,11 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     : undefined
   if (value.relayEndpointIds !== undefined) {
     if (!isRecord(value.relayEndpointIds)) throw new Error('连接线路设置格式错误')
-    for (const [siteId, endpointId] of Object.entries(value.relayEndpointIds)) {
-      if (!relaySiteEndpointChoices(siteId).some((endpoint) => endpoint.id === endpointId)) {
-        throw new Error('无法使用这条连接线路，请重新选择')
-      }
+    for (const [siteId, preference] of Object.entries(value.relayEndpointIds)) {
+      if (!relayRoutePreferenceAllowed(siteId, preference)) throw new Error('无法使用这条连接线路，请重新选择')
     }
   }
-  const relayEndpointIds = parseRelayEndpointSelections(value.relayEndpointIds)
+  const relayEndpointIds = parseRelayRoutePreferences(value.relayEndpointIds)
   // Same degrade-don't-throw passthrough as relaySiteId above. 'auto' is the
   // explicit clear marker (absence means keep, so it can no longer express a
   // reset); unknown strings degrade to "keep the persisted policy".

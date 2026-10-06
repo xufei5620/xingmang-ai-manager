@@ -34,7 +34,7 @@ import {
 import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
 import { resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { managedCliRoot } from './managed-cli-paths'
-import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { classifyNetworkFailure, isJsonContentType, networkFailureCode, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import {
   buildNodeTlsProbeScript,
   certificateTrustNetworkFailedSummary,
@@ -47,7 +47,8 @@ import {
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
-import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
+import { relayLineFailureAnswer, relayLineFailureReason } from './relay-line-fetch'
+import { relayApiProbeBaseUrl, relayEndpointForUrl, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite, type RelayEndpointId, type RelayRouteLines, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import { inspectDocumentsWritability, type DocumentsWritability } from './documents-fallback'
@@ -174,6 +175,12 @@ export interface DiagnosticsDependencies {
   resolvePowerShellExecutable?: () => string
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
+  /**
+   * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
+   * 用的是直连还是默认线路；选「自动」、这会儿走直连却没连上时，改查同一个站的默认线路，查通了
+   * 算能连上、说清已经自动改走默认线路，并把直连的失败报给线路那边。缺省 = 不提线路（旧行为）。
+   */
+  relayRoute?: DiagnosticsRelayRoute
   /**
    * 加速开着没有。开着时星芒自己的服务按加速规则直接连（acceleration-clash-config.ts
    * 的 relayDirectHosts），「星芒 AI 网络」一项顺带说一句，免得用户以为这项量的是加速线路。
@@ -338,9 +345,23 @@ interface CheckDefinition {
   timeoutOutcome?: CheckOutcome | (() => CheckOutcome | undefined)
 }
 
+export interface DiagnosticsRelayRoute {
+  line: RelayEndpointId
+  /** 选的是「自动」：只有它会在直连连不上时改走默认线路。 */
+  automatic: boolean
+  /** 「自动」定下来了没有；定在默认线路上 = 直连上次没连上，已经退回。 */
+  settled: boolean
+  /** 同一个站默认线路上的那一份，退回时查它。 */
+  primarySite: RelaySite
+  reportDirectFailure(reason: string): void
+}
+
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
 const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
   + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
+// 「自动」走直连时直连那一次最多等这么久，剩下的留给默认线路：整项只有 DEFAULT_CHECK_TIMEOUT_MS。
+const DIRECT_NETWORK_PROBE_TIMEOUT_MS = 4_000
+
 /**
  * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
  * 阈值定低了就是每次检查都亮一条没人能处理的黄灯。
@@ -1193,6 +1214,47 @@ export function relayStatusProbeUrl(site: RelaySite): string {
     case 'sub2api':
       return new URL('/api/v1/settings/public', origin).href
   }
+}
+
+/**
+ * 一个地址所在站点每条线路的探测地址，这会儿用的那条排第一；不是星芒的地址给空的。代理分流
+ * （proxy-bypass.ts）靠它把同一个站的几个入口当成一个站点：「自动」中途换了入口，分去直连会话
+ * 的请求照样分过去，再看时探的也是这会儿用的入口。
+ */
+export function relaySiteStatusProbeUrls(url: string, lines: RelayRouteLines): string[] {
+  const endpoint = relayEndpointForUrl(url)
+  if (!endpoint) return []
+  const current = lines[endpoint.siteId].line
+  const others = relaySiteEndpointChoices(endpoint.siteId).map((choice) => choice.id).filter((line) => line !== current)
+  return [current, ...others].map((line) => relayStatusProbeUrl(requireRelaySite(endpoint.siteId, line)))
+}
+
+type RelayStatusProbe =
+  | { kind: 'answered'; endpoint: string; response: Response; body: string }
+  | { kind: 'failed'; endpoint: string; reason: NetworkFailureReason; error: unknown }
+
+// 直连那一次换成默认线路有可能查得通：连不上一类的失败（含代理回绝了直连这个地址），或者直连回的
+// 不是星芒的回话（网关错误页、拦截页），同 relay-line-fetch.ts 的退回条件；白名单挡下的网页 404 也算，
+// 检查页要知道的是这会儿连不连得上。状态接口正常时一定回 JSON，回了 200 却读不出 JSON 的，同下面
+// 认拦截的口径。服务回的 JSON 错误是服务那一侧的事，两条线路一样。给出报给线路那边的原因，不然 null。
+function relayLineFailure(probe: RelayStatusProbe): string | null {
+  if (probe.kind === 'failed') return relayLineFailureReason(probe.error) ? networkFailureCode(probe.error) ?? probe.reason : null
+  const { response, body } = probe
+  if (response.status === 404 && !isJsonContentType(response.headers.get('content-type'))) return 'http-404'
+  if (response.ok && !parsesAsJson(body)) return 'intercepted'
+  return relayLineFailureAnswer(response)
+}
+
+/**
+ * 「星芒 AI 网络」查通时那句结论（直连适配方案第六节第 3 条原话）。fellBack：选的是「自动」，
+ * 直连这会儿连不上，用的是默认线路（这次当场退回的，或者之前就已经退回的）。
+ */
+export function relayNetworkPassSummary(route: { line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
+  if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
+  const summary = route.line === 'direct'
+    ? '能连上星芒服务，用的是直连'
+    : route.fellBack ? '能连上星芒服务。直连这会儿连不上，已自动改走默认线路' : '能连上星芒服务，用的是默认线路'
+  return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
 }
 
 function parsesAsJson(body: string): boolean {
@@ -2095,25 +2157,60 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       },
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
-        const endpoint = relayStatusProbeUrl(relaySite)
-        let response: Response
-        let body = ''
-        try {
-          response = await fetchImpl(endpoint, {
-            method: 'GET',
-            credentials: 'omit',
-            redirect: 'error',
-            signal,
-            headers: { Accept: 'application/json' },
-          })
-          // 只有 2xx 才看内容；非 2xx 的错误页不读，免得一张大错误页顶掉下面那句 HTTP 状态。
-          if (response.ok) body = await readBoundedResponseText(response, MAX_NETWORK_PROBE_BYTES, '星芒 AI 状态接口')
-          else await response.body?.cancel().catch(() => undefined)
-        } catch (error) {
-          const reason = classifyNetworkFailure(error)
-          // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
-          // 只会让用户白折腾一轮（同 network-failure.ts 的口径）。
-          if (!reason) throw error
+        const fetchStatus = fetchImpl
+        async function probeStatus(site: RelaySite, probeSignal: AbortSignal): Promise<RelayStatusProbe> {
+          const endpoint = relayStatusProbeUrl(site)
+          try {
+            const response = await fetchStatus(endpoint, {
+              method: 'GET',
+              credentials: 'omit',
+              redirect: 'error',
+              signal: probeSignal,
+              headers: { Accept: 'application/json' },
+            })
+            // 只有 2xx 才看内容；非 2xx 的错误页不读，免得一张大错误页顶掉下面那句 HTTP 状态。
+            let body = ''
+            if (response.ok) body = await readBoundedResponseText(response, MAX_NETWORK_PROBE_BYTES, '星芒 AI 状态接口')
+            else await response.body?.cancel().catch(() => undefined)
+            relayAnswered = true
+            return { kind: 'answered', endpoint, response, body }
+          } catch (error) {
+            // 「自动」给直连那一次单独限的时间到了（整项还没到点）：按超时算，下面改查默认线路。
+            const reason = error instanceof Error && error.name === 'TimeoutError' && !signal.aborted
+              ? 'timeout'
+              : classifyNetworkFailure(error)
+            // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
+            // 只会让用户白折腾一轮（同 network-failure.ts 的口径）。
+            if (!reason) throw error
+            return { kind: 'failed', endpoint, reason, error }
+          }
+        }
+        const route = dependencies.relayRoute
+        const directFirst = route?.automatic === true && route.line === 'direct'
+        let probe = await probeStatus(relaySite, directFirst
+          ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_NETWORK_PROBE_TIMEOUT_MS)])
+          : signal)
+        let line: RelayEndpointId | null = route?.line ?? null
+        let fellBack = false
+        const directFailure = route && directFirst ? relayLineFailure(probe) : null
+        if (route && directFailure) {
+          route.reportDirectFailure(directFailure)
+          // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
+          relayAnswered = false
+          const retry = await probeStatus(route.primarySite, signal).catch(() => null)
+          // 默认线路也没查通就照直连那次的结论说：用的是直连，说的就是直连那边的事。
+          if (retry?.kind === 'answered' && retry.response.ok && parsesAsJson(retry.body)) {
+            log?.('info', 'diagnostics.network.fallback', '直连这次没查通，默认线路查通了', {
+              reason: probe.kind === 'failed' ? probe.reason : directFailure,
+            })
+            probe = retry
+            line = 'primary'
+            fellBack = true
+          }
+        }
+        const endpoint = probe.endpoint
+        if (probe.kind === 'failed') {
+          const { reason, error } = probe
           log?.('warn', 'diagnostics.network.failed', `星芒 AI 网络检查失败（${reason}）`, {
             endpoint,
             reason,
@@ -2123,7 +2220,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           // 新界面的「查看详情」不摆这个键（diagnostic-details.ts）。
           return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id } }
         }
-        relayAnswered = true
+        const { response, body } = probe
         // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
         // 这时没有异常可归类，只能从内容认出来：这个接口正常时一定回 JSON，
         // 拿到别的（网页、空白）就是中间有东西替服务器答了话。
@@ -2169,8 +2266,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务',
-          details: accelerating ? { endpoint, status: response.status, route: 'direct' } : { endpoint, status: response.status },
+          summary: relayNetworkPassSummary(route && line ? { line, fellBack: fellBack || (route.automatic && route.settled && line === 'primary') } : null, accelerating),
+          details: {
+            endpoint,
+            status: response.status,
+            ...(accelerating ? { route: 'direct' } : {}),
+            ...(line ? { line } : {}),
+            ...(fellBack ? { fellBack: true } : {}),
+          },
         }
       },
     },

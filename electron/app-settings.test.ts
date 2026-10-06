@@ -376,7 +376,7 @@ describe('application settings persistence', () => {
 })
 
 describe('relay endpoint selections', () => {
-  it('keeps the primary endpoint implicit until a line is explicitly selected', async () => {
+  it('leaves the route preference unstored, meaning auto, until one is explicitly chosen', async () => {
     const filePath = temporarySettingsPath()
     expect(readAppSettings(filePath)).not.toHaveProperty('relayEndpointIds')
     await writeAppSettings(filePath, settings())
@@ -394,15 +394,26 @@ describe('relay endpoint selections', () => {
     expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'primary', 'solov-api': 'primary' })
   })
 
+  it('round-trips an explicit auto choice next to a pinned line on the other site', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ relayEndpointIds: { solov: 'direct', 'solov-api': 'direct' } }))
+    await updateAppSettings(filePath, { version: 2, relayEndpointIds: { solov: 'auto' } })
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'direct' })
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).relayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'direct' })
+  })
+
   it('never persists or merges the active runtime endpoint snapshot', async () => {
     const filePath = temporarySettingsPath()
     const snapshot = settings({
-      relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'primary' },
+      relayRouteLines: { solov: { line: 'primary', settled: true }, 'solov-api': { line: 'primary', settled: true } },
     })
     await writeAppSettings(filePath, snapshot)
     expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'direct' })
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).not.toHaveProperty('activeRelayEndpointIds')
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).not.toHaveProperty('relayRouteLines')
     expect(mergeAppSettings(snapshot, { version: 2 })).not.toHaveProperty('activeRelayEndpointIds')
+    expect(mergeAppSettings(snapshot, { version: 2 })).not.toHaveProperty('relayRouteLines')
   })
 
   it.each([
@@ -412,19 +423,23 @@ describe('relay endpoint selections', () => {
     {},
     { solov: 'https://other.example/v1' },
     { solov: 'DIRECT' },
-    { 'solov-api': 'direct' },
+    { solov: 'Auto' },
+    { 'solov-api': 'backup' },
     { unknown: 'primary' },
+    { sub2api: 'auto' },
   ])('omits unsupported stored endpoint selections without discarding other settings: %j', (relayEndpointIds) => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ workspace: 'D:\\Keep' }), relayEndpointIds }), 'utf8')
     expect(readAppSettings(filePath)).toEqual(settings({ workspace: 'D:\\Keep' }))
   })
 
-  it('retains valid stored choices while omitting unknown sites and cross-site choices', () => {
+  it('retains each site\'s own valid choice while omitting unknown sites and unknown values', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({
-      ...settings(), relayEndpointIds: { solov: 'direct', 'solov-api': 'direct', unknown: 'primary' },
+      ...settings(), relayEndpointIds: { solov: 'auto', 'solov-api': 'direct', unknown: 'primary', sub2api: 'direct' },
     }), 'utf8')
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'direct' })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), relayEndpointIds: { solov: 'direct', 'solov-api': 'backup' } }), 'utf8')
     expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'direct' })
   })
 
@@ -442,7 +457,7 @@ describe('relay endpoint selections', () => {
 
   it('ignores invalid endpoint updates and sanitizes an untrusted merge base', () => {
     const base = settings({ relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } })
-    const invalid = { solov: 'https://other.example/v1', 'solov-api': 'direct', unknown: 'primary' }
+    const invalid = { solov: 'https://other.example/v1', 'solov-api': 'backup', unknown: 'primary' }
     expect(mergeAppSettings(base, { version: 2, relayEndpointIds: invalid as never }).relayEndpointIds)
       .toEqual(base.relayEndpointIds)
     expect(mergeAppSettings(settings({ relayEndpointIds: invalid as never }), { version: 2 }))
