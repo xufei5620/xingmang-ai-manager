@@ -4,7 +4,7 @@ import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClien
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
-import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolRow, useToast } from '../../ui'
+import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolRow, toastDurationMs, useToast } from '../../ui'
 import { accountSwitchTarget, balanceTier, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexConfigBroken, codexNeedsRepair, configBrokenDetail, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -16,7 +16,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
+import { latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
@@ -100,11 +100,13 @@ export interface HomeProps {
   onRuntime(runtime: 'node' | 'python' | 'git'): void
   onNavigate(page: PageId, section?: string): void
   onGuide(): void
-  bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; error?: string }) | null
+  /** finishedAt 是 result 落下来的时刻（Date.now()），「已完成…」那句据此到点收起；缺省 = 一直摆着（旧行为）。 */
+  bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string }) | null
   onBootstrapRetry?(): void
 }
 
 type ExternalPresentation = ReturnType<typeof presentExternalClients>[number]
+type RecentSession = MultiProviderSessionPage['items'][number]
 
 function firstRunOf(tool: ToolId) {
   return toolRegistry.find((item) => item.id === tool)?.firstRun
@@ -219,6 +221,23 @@ function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
 }
 
+function configuredKeysText(count: number) {
+  return `已完成 ${count} 组工具的 Key 配置。`
+}
+
+/**
+ * 「已完成 N 组工具的 Key 配置。」只是说一声做完了，照右下角提示条的读完时长摆着，到点自己收起（已知12）：
+ * 以前登录后整场挂着，装完一个工具又换成「已完成 1 组…」。有没写成的、有要留意的、被网拦住的，那几句
+ * 要客户动手，照旧一直摆着。返回 null = 一直摆着。
+ */
+export function bootstrapNoticeExpiresAt(bootstrap: HomeProps['bootstrap']): number | null {
+  const result = bootstrap?.result
+  if (!result || bootstrap?.finishedAt === undefined) return null
+  if (!result.configured.length || result.failed.length || result.warnings.length || result.networkBlocked) return null
+  const duration = toastDurationMs(configuredKeysText(result.configured.length), 'ok')
+  return duration === null ? null : bootstrap.finishedAt + duration
+}
+
 export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -232,6 +251,8 @@ export function Home(props: HomeProps) {
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
   const [recentAttempt, setRecentAttempt] = useState(0)
+  // 「接着聊」点下去以后正在核对的那一条（见 resumeRecent）；null = 没在核对。
+  const [resumeChecking, setResumeChecking] = useState<string | null>(null)
   const [usage, setUsage] = useState<BalanceUsage | null>(() => cachedUsage(props.api, props.accountScope))
   const [usageError, setUsageError] = useState('')
   const [officialOpen, setOfficialOpen] = useState(false)
@@ -259,6 +280,25 @@ export function Home(props: HomeProps) {
   async function openRecentDirectory(sessionId: string) {
     try { await props.api.openSessionDirectory(sessionId) }
     catch (cause) { if (active.current) toast.show(errorMessage(cause, '这条记录的文件夹没有打开。'), 'warn') }
+  }
+  /**
+   * 「接着聊」点下去先对一次「最近」（已知4）。窗口回到前面时的那次重读是异步的：从终端直接点回星芒，
+   * 这一下用的还是手上的旧列表，点同一文件夹里更早那条，Claude Code、Gemini CLI、Grok CLI 接上的
+   * 却是刚聊的那条。所以先真去读一份（不认一分钟的缓存，它可能是在终端里聊之前读的）：点的这条已经
+   * 不是它那个文件夹最近的了，就换上新列表、这次不打开，按钮自己挪到该挂的那条上。读不到就照旧打开。
+   */
+  async function resumeRecent(session: RecentSession) {
+    if (resumeNeedsRecheck(session)) {
+      setResumeChecking(session.id)
+      props.api.invalidateRecent()
+      const fresh = await props.api.recent().catch(() => null)
+      // 读的这一下首页已经换掉了（换账号会整页重挂）：这一下按的不再算数。
+      if (!active.current) return
+      setResumeChecking(null)
+      if (fresh) setRecent(fresh)
+      if (fresh && !resumeStillLatest(session, fresh.items)) return
+    }
+    props.onLaunch(session.provider, session.cwd, resumeLaunchChoice(session))
   }
   async function refreshOfficial() {
     if (officialLock.current) return
@@ -359,6 +399,18 @@ export function Home(props: HomeProps) {
     : null
   const runtimeHintClass = nodeOptional ? 'v2-runtime-hint is-quiet' : 'v2-runtime-hint'
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
+  // 「已完成…」那句到点收起（见 bootstrapNoticeExpiresAt）。首页每次进来都重新挂上，「现在」从挂上那一刻算，
+  // 回到首页时已经过了点的就不再冒出来；挂着的时候到点叫一次重画。
+  const bootstrapNoticeUntil = bootstrapNoticeExpiresAt(props.bootstrap)
+  const [bootstrapNoticeClock, setBootstrapNoticeClock] = useState(() => Date.now())
+  useEffect(() => {
+    if (bootstrapNoticeUntil === null) return
+    const remaining = bootstrapNoticeUntil - Date.now()
+    if (remaining <= 0) return
+    const timer = window.setTimeout(() => setBootstrapNoticeClock(Math.max(Date.now(), bootstrapNoticeUntil)), remaining)
+    return () => window.clearTimeout(timer)
+  }, [bootstrapNoticeUntil])
+  const bootstrapNoticeShown = bootstrapNoticeUntil === null || bootstrapNoticeClock < bootstrapNoticeUntil
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
   function launchWaitingForAccount(provider: ProviderId): boolean {
     const tool = tools.find((entry) => entry.provider === provider)
@@ -591,8 +643,8 @@ export function Home(props: HomeProps) {
       <span>{props.bootstrap.error ? bootstrapErrorText(props.bootstrap.error) : `${props.bootstrap.label}（${props.bootstrap.percent}%）`}</span>
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
-    {props.bootstrap?.result && (props.bootstrap.result.configured.length || props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : ''}`} role="status">
-      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? `已完成 ${props.bootstrap.result.configured.length} 组工具的 Key 配置。` : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
+    {props.bootstrap?.result && bootstrapNoticeShown && (props.bootstrap.result.configured.length || props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : ''}`} role="status">
+      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? configuredKeysText(props.bootstrap.result.configured.length) : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
       {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
       {(props.bootstrap.result.failed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
@@ -624,8 +676,9 @@ export function Home(props: HomeProps) {
                 desc={<span title={session.cwd || undefined}>{recentSessionSubtitle(session)}</span>} meta={formatRecentTime(session.updatedAt, Date.now())}
                 badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
-                  {resumable.has(session.id) && !session.archived && recentResumeOffered(tools, session.provider) && <Button size="xs" disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchWaitingForAccount(session.provider) || launchBusy || session.cwdExists === false}
-                    onClick={() => props.onLaunch(session.provider, session.cwd, resumeLaunchChoice(session))}
+                  {resumable.has(session.id) && !session.archived && recentResumeOffered(tools, session.provider) && <Button size="xs" loading={resumeChecking === session.id}
+                    disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchWaitingForAccount(session.provider) || launchBusy || resumeChecking !== null || session.cwdExists === false}
+                    onClick={() => void resumeRecent(session)}
                     title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
                   {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}
                     aria-label="打开文件夹" title={session.cwdExists === false ? '这个文件夹已经不在了，打不开' : `在文件管理器里打开 ${session.cwd}`}

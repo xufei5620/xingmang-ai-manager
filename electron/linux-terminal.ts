@@ -244,6 +244,11 @@ export interface LinuxTerminalScriptPlan {
   /** 窗口标题，例如「Claude Code · 星芒AI」。 */
   title: string
   env: NodeJS.ProcessEnv
+  /**
+   * 这次打开不交给工具的变量（system-service.ts 的 launchExcludedEnvironmentVariables）。env 里已经去掉了，
+   * 脚本再 unset 一次，免得命令窗口程序自己环境里的那份补上来；缺省 = 不 unset。
+   */
+  clearedEnvironmentKeys?: readonly string[]
 }
 
 export interface LinuxTerminalLaunchPlan extends Omit<LinuxTerminalScriptPlan, 'launcherPath'> {}
@@ -349,6 +354,10 @@ function assertLinuxTerminalPlan(plan: LinuxTerminalLaunchPlan): void {
   for (const [key, value] of exportedEnvironment(plan.env)) {
     if (value.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
   }
+  // unset 后面的名字不带引号写进脚本，所以只收普通的变量名。
+  for (const key of plan.clearedEnvironmentKeys ?? []) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new TypeError(`invalid environment key: ${key}`)
+  }
   for (const requiredKey of ['HOME', 'PATH'] as const) {
     if (!plan.env[requiredKey]?.trim()) {
       throw new TypeError(`environment ${requiredKey} is required`)
@@ -360,7 +369,10 @@ function assertLinuxTerminalPlan(plan: LinuxTerminalLaunchPlan): void {
 export function buildLinuxTerminalScript(plan: LinuxTerminalScriptPlan): string {
   assertLinuxTerminalPlan(plan)
   assertSimpleLauncherPath(plan.launcherPath)
-  const cleared = clearedWhenAbsentKeys.filter((key) => plan.env[key] === undefined)
+  const cleared = [
+    ...clearedWhenAbsentKeys.filter((key) => plan.env[key] === undefined),
+    ...(plan.clearedEnvironmentKeys ?? []),
+  ]
   const environmentExports = exportedEnvironment(plan.env)
     .map(([key, value]) => `export ${key}=${quotePosixArgument(value)}`)
 
