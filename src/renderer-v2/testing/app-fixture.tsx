@@ -62,8 +62,8 @@ const account = { userId: 17, username: 'fixture-user', group: 'default', role: 
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
-// 开机账号恢复超过启动画面的等待上限：会话先答「正在恢复 17 号账号」。
-if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
+// 开机账号恢复超过启动画面的等待上限：会话先答「正在恢复 17 号账号」（restoring=solov-api 恢复的是历史账号）。
+if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: query.get('restoring') === 'solov-api' ? 'solov-api' : 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
 settings.relayEndpointIds = { solov: query.has('directRelayActive') ? 'direct' : 'primary', 'solov-api': 'primary' }
