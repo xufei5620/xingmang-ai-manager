@@ -9,7 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { accountScope } from '../account-context'
-import { relayProviderBaseUrls } from '../../../electron/relay-sites'
+import { relayProviderBaseUrlMatches, relayProviderBaseUrls } from '../../../electron/relay-sites'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -87,6 +87,26 @@ if (query.has('restoreDirectRoute')) {
   settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
   config.providers.claude = { ...config.providers.claude, baseUrl: relayProviderBaseUrls('solov', 'direct').claude,
     actualBaseUrl: relayProviderBaseUrls('solov', 'primary').claude }
+}
+// ?routedSwitch：同主进程，地址按当前账号那个站生效的线路报，工具配置里写着的地址原样留着，
+// 对不上的就不算当前账号的。工具先连着开机那个账号生效的线路。
+function activeSiteBaseUrls() {
+  const siteId = session.siteId ?? 'solov'
+  return relayProviderBaseUrls(siteId, settings.activeRelayEndpointIds?.[siteId] ?? 'primary')
+}
+function reportRoutedConfig() {
+  const expected = activeSiteBaseUrls()
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    const current = config.providers[provider]
+    current.baseUrl = expected[provider]
+    current.matchesRelay = current.hasApiKey && Boolean(current.actualBaseUrl) && relayProviderBaseUrlMatches(provider, current.actualBaseUrl, current.baseUrl)
+  }
+}
+if (query.has('routedSwitch')) {
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    config.providers[provider] = { ...config.providers[provider], actualBaseUrl: activeSiteBaseUrls()[provider], updatedAt: '2026-09-07T00:00:00Z' }
+  }
+  reportRoutedConfig()
 }
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
@@ -717,6 +737,11 @@ const methods = {
     const nextAccount = query.has('crossSite') ? account : { ...account, userId: 18, username: 'saved-user' }
     session = { authenticated: true, account: nextAccount, ...(query.has('crossSite') ? sub2ApiMetadata : {}) }
     if (query.has('savedAccount') && !query.has('readOnlyAccountMatch')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
+    if (query.has('routedSwitch')) {
+      reportRoutedConfig()
+      // 归属是按账号记的：换了账号，上一个账号写的配置主进程就认不出归谁了。
+      for (const provider of Object.values(config.providers)) if (provider.configurationOwnership === 'account') provider.configurationOwnership = 'unknown'
+    }
     return session
   },
   replyWindowClose: async () => true,

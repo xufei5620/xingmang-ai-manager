@@ -14,6 +14,8 @@ import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
 } from './features/tools/source-marker'
+import { relayProviderBaseUrls } from '../../electron/relay-sites'
+import type { AccountSiteId } from './account-context'
 
 function memoryStorage(): SourceMarkerStorage {
   const values = new Map<string, string>()
@@ -115,6 +117,81 @@ describe('saved account explicit CLI key sync', () => {
     expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(change === 'none' ? 1 : 0)
     if (change === 'none') expect(h.api.configureManagedCliKeys).toHaveBeenCalledWith({
       providers: ['claude'], preferredModels: { claude: 'original-model' }, intent: 'explicit',
+    })
+  })
+  describe('across platforms with relay routes', () => {
+    type Addresses = Record<'claude' | 'codex', string>
+    const siteOrigins: Record<AccountSiteId, string> = { solov: 'https://xm.solov.cc', 'solov-api': 'https://api.solov.cc' }
+    function routeUrls(site: AccountSiteId, route: 'primary' | 'direct'): Addresses {
+      const urls = relayProviderBaseUrls(site, route)
+      return { claude: urls.claude, codex: urls.codex }
+    }
+    // before = 切换前主进程按上一个账号生效线路报的地址，actual = 工具配置里实际写着的，
+    // after = 切过去以后主进程按新账号生效线路报的地址。
+    async function switchAcross(from: AccountSiteId, to: AccountSiteId, addresses: { before: Addresses; actual: Addresses; after: Addresses }) {
+      const h = setup()
+      h.context.origin = siteOrigins[from]
+      for (const provider of ['claude', 'codex'] as const) {
+        h.context.configs[provider] = { ...h.context.configs[provider], codexAuthMode: provider === 'codex' ? 'apikey' : undefined,
+          baseUrl: addresses.before[provider], actualBaseUrl: addresses.actual[provider], apiKeyPreview: 'sk-ab••••1234', updatedAt: '2026-09-09T00:00:00Z' }
+        h.fresh.configs[provider] = { ...h.context.configs[provider], baseUrl: addresses.after[provider], matchesRelay: false, configurationOwnership: 'unknown' }
+      }
+      const active = { authenticated: true, ...(to === 'solov-api' ? { siteId: 'solov-api' as const } : {}),
+        account: { userId: 8 } as Awaited<ReturnType<AccountSwitchBridge['getAccountSession']>>['account'] }
+      h.api.switchSavedAccount.mockResolvedValue(active)
+      h.api.getAccountSession.mockResolvedValue(active)
+      const result = await switchAccountWithOptionalSync(h.api, { ...h.target, origin: siteOrigins[to] }, ['claude', 'codex'], h.context, h.context.origin, memoryStorage())
+      return { h, result }
+    }
+
+    it('rewrites selected tools from an xm account on the backup route to a historical account', async () => {
+      const direct = routeUrls('solov', 'direct')
+      const { h, result } = await switchAcross('solov', 'solov-api', { before: direct, actual: direct, after: routeUrls('solov-api', 'primary') })
+      expect(result.configured).toEqual(['claude', 'codex'])
+      expect(result.skipped).toEqual([])
+      expect(h.api.configureManagedCliKeys.mock.calls).toEqual([
+        [{ providers: ['claude'], preferredModels: { claude: 'original-model' }, intent: 'explicit' }],
+        [{ providers: ['codex'], preferredModels: { codex: 'original-model' }, intent: 'explicit' }],
+      ])
+    })
+
+    it('rewrites selected tools from a historical account to an xm account on the backup route', async () => {
+      const historical = routeUrls('solov-api', 'primary')
+      const { result } = await switchAcross('solov-api', 'solov', { before: historical, actual: historical, after: routeUrls('solov', 'direct') })
+      expect(result.configured).toEqual(['claude', 'codex'])
+      expect(result.skipped).toEqual([])
+    })
+
+    it('accepts the previous xm account tools still on another of its registered routes', async () => {
+      // 换线路那次工具还开着、没迁过去的，以及按别名写着的，都还是星芒账号这个站的地址。
+      const { result } = await switchAcross('solov', 'solov-api', {
+        before: routeUrls('solov', 'direct'),
+        actual: { claude: routeUrls('solov', 'primary').claude, codex: 'https://xm-direct.solov.cc/v1' },
+        after: routeUrls('solov-api', 'primary'),
+      })
+      expect(result.configured).toEqual(['claude', 'codex'])
+    })
+
+    it('keeps tools whose address is not a registered route of the previous account', async () => {
+      const { h, result } = await switchAcross('solov', 'solov-api', {
+        before: routeUrls('solov', 'direct'),
+        actual: { claude: 'https://38.147.105.28', codex: routeUrls('solov-api', 'primary').codex },
+        after: routeUrls('solov-api', 'primary'),
+      })
+      expect(result.configured).toEqual([])
+      expect(result.skipped).toEqual([
+        { provider: 'claude', message: '用的是别处的配置，保持原配置' },
+        { provider: 'codex', message: '用的是别处的配置，保持原配置' },
+      ])
+      expect(h.api.configureManagedCliKeys).not.toHaveBeenCalled()
+    })
+
+    it('keeps tools while the new account still reports a route of the previous one', async () => {
+      const direct = routeUrls('solov', 'direct')
+      const { h, result } = await switchAcross('solov', 'solov-api', { before: direct, actual: direct, after: routeUrls('solov', 'primary') })
+      expect(result.configured).toEqual([])
+      expect(result.skipped.map((entry) => entry.provider)).toEqual(['claude', 'codex'])
+      expect(h.api.configureManagedCliKeys).not.toHaveBeenCalled()
     })
   })
   it('defaults to no CLI writes and rejects another account origin before switching', async () => {
