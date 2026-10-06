@@ -403,24 +403,84 @@ export interface SafeAtomicWriteOptions {
    * non-atomic replacement. Disabled by default for configuration/state data.
    */
   allowNonAtomicFallback?: boolean
+  /**
+   * Permission bits for the new file; default 0o600. Set explicitly after open so
+   * the process umask cannot take bits away (a launcher has to stay executable).
+   */
+  mode?: number
 }
+
+const replaceAttempts = 5
 
 function isTransientReplaceError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code
   return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'EAGAIN'
 }
 
+function replaceRetryDelayMs(attempt: number): number {
+  return 20 * (2 ** attempt)
+}
+
 function delayReplaceRetry(attempt: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, 20 * (2 ** attempt))
+    setTimeout(resolve, replaceRetryDelayMs(attempt))
   })
+}
+
+function delayReplaceRetrySync(attempt: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, replaceRetryDelayMs(attempt))
 }
 
 /**
  * `rename(tmp, dest)` is atomic on a quiet disk. Windows Defender and the
  * indexer often hold the destination for a few milliseconds, which surfaces
- * as EPERM and used to abort canvas autosave mid-keystroke.
+ * as EPERM and used to abort canvas autosave mid-keystroke. A transient error
+ * is retried with backoff; anything else, or the last transient error, is
+ * rethrown unchanged so every caller keeps its existing wording.
+ *
+ * Pass the caller's own checks as `beforeAttempt`. It runs right before every
+ * attempt, the first one included, so nothing a check saw before the wait
+ * vouches for the retried rename: a link may have been planted meanwhile, or
+ * the program that held the file may have saved its own change.
  */
+export async function renameWithTransientRetry(
+  sourcePath: string,
+  targetPath: string,
+  beforeAttempt?: () => void | Promise<void>,
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    if (beforeAttempt) await beforeAttempt()
+    try {
+      await fs.promises.rename(sourcePath, targetPath)
+      return
+    } catch (error) {
+      if (!isTransientReplaceError(error) || attempt === replaceAttempts - 1) throw error
+    }
+    await delayReplaceRetry(attempt)
+  }
+}
+
+/**
+ * Synchronous twin for the configuration transaction, which cannot yield to
+ * the event loop. It blocks only after a failed attempt, 300 ms in total.
+ */
+export function renameWithTransientRetrySync(
+  sourcePath: string,
+  targetPath: string,
+  beforeAttempt?: () => void,
+): void {
+  for (let attempt = 0; ; attempt += 1) {
+    beforeAttempt?.()
+    try {
+      fs.renameSync(sourcePath, targetPath)
+      return
+    } catch (error) {
+      if (!isTransientReplaceError(error) || attempt === replaceAttempts - 1) throw error
+    }
+    delayReplaceRetrySync(attempt)
+  }
+}
+
 async function replaceSafeDataFile(
   temporaryPath: string,
   filePath: string,
@@ -428,15 +488,12 @@ async function replaceSafeDataFile(
   options: SafeAtomicWriteOptions,
 ): Promise<void> {
   let lastError: unknown
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await fs.promises.rename(temporaryPath, filePath)
-      return
-    } catch (error) {
-      lastError = error
-      if (!isTransientReplaceError(error)) throw error
-      if (attempt < 4) await delayReplaceRetry(attempt)
-    }
+  try {
+    await renameWithTransientRetry(temporaryPath, filePath)
+    return
+  } catch (error) {
+    if (!isTransientReplaceError(error)) throw error
+    lastError = error
   }
   if (options.allowNonAtomicFallback && assertSafeDataFile(filePath, label)) {
     try {
@@ -480,6 +537,7 @@ async function writeAtomicSafeFile(
   let handle: fs.promises.FileHandle | null = null
   try {
     handle = await fs.promises.open(temporaryPath, 'wx', 0o600)
+    if (options.mode !== undefined) await handle.chmod(options.mode)
     await handle.writeFile(content, { encoding })
     await handle.sync()
     await handle.close()

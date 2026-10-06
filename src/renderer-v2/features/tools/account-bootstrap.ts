@@ -13,6 +13,7 @@ import { codexNeedsRepair, connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
 import { networkBlockedFailures } from './online-resync'
 import { keySyncFailureText } from './key-sync-failure'
+import { relayProviderBaseUrls, relaySiteEndpointIdForBaseUrl } from '../../../../electron/relay-sites'
 import {
   applyManualSourceMarker,
   getSourceMarkerStorage,
@@ -35,6 +36,42 @@ export interface AccountBootstrapProgress {
   phase: AccountBootstrapPhase
   label: string
   percent: number
+  /**
+   * 开机恢复这一档问完服务端以后才填：已经连好的工具里，这一轮还要换 Key 的那几家
+   * （Key 换了分组，或用户选的连接线路已重启生效）。没填 = 还不知道，或者是会重写已连好工具的登录、点名重写两档。
+   */
+  connectedKeyChanges?: ProviderId[]
+}
+
+/**
+ * 开机检测还没跑完、首页摆着上次结果的那几秒里，账号这边还会不会换掉这个工具的 Key。
+ * 会换、或者还说不准的，「打开」照旧等检测跑完：Key 同步写配置要等那一轮检测，抢在它
+ * 前面打开，工具就带着旧 Key 起来了。登录还在恢复、或者同步还没开始的，都算说不准。
+ */
+export function accountKeyChangePending(
+  account: {
+    signedIn: boolean
+    restoring: boolean
+    bootstrap: (AccountBootstrapProgress & { result?: unknown; error?: string }) | null
+  },
+  provider: ProviderId,
+): boolean {
+  const { bootstrap } = account
+  if (!bootstrap) return account.signedIn || account.restoring
+  return accountKeyChangeInProgress(bootstrap, provider)
+}
+
+/**
+ * 检测跑完以后：这一轮账号同步正在给这个工具换 Key、改线路，这时打开工具会读走旧配置。
+ * 和上面不同，同步还没开始的不算——切完账号不再跑这一轮，开机恢复联不上时登录会一直搁着，
+ * 照上面那样算「说不准」，这几种情况下工具就一直打不开，得重开星芒。
+ */
+export function accountKeyChangeInProgress(
+  bootstrap: (AccountBootstrapProgress & { result?: unknown; error?: string }) | null,
+  provider: ProviderId,
+): boolean {
+  if (!bootstrap || bootstrap.result || bootstrap.error) return false
+  return bootstrap.connectedKeyChanges?.includes(provider) ?? true
 }
 
 export interface AccountBootstrapSkip {
@@ -95,7 +132,7 @@ export type AccountBootstrapBridge = Pick<
   | 'getSettings'
   | 'configureManagedCliKeys'
   | 'getAccountSession'
->
+> & Partial<Pick<XingmangApi, 'inspectRunningTools'>>
 
 function nameOf(provider: ProviderId) {
   return tools.find((tool) => tool.id === provider)?.name ?? provider
@@ -118,6 +155,31 @@ function installedState(system: SystemSnapshot, provider: ProviderId) {
       !desktop.installed &&
       (cli.detectionFailed === true || desktop.detectionFailed === true),
   }
+}
+
+function sameNativeRelayUrl(left: string, right: string): boolean {
+  try { return new URL(left).href.replace(/\/+$/, '') === new URL(right).href.replace(/\/+$/, '') }
+  catch { return false }
+}
+
+/** Alias recognition restores identity; only an explicit, applied choice permits migration. */
+function accountRouteMigrationNeeded(
+  current: AppConfigSummary['providers'][ProviderId],
+  provider: ProviderId,
+  settings: AppSettingsV2,
+  storage: SourceMarkerStorage | null,
+): boolean {
+  if (current.configurationOwnership !== 'account' || sourceFor(current, provider, storage) !== 'account'
+    || settings.officialProviders?.includes(provider)) return false
+  const siteId = settings.relaySiteId ?? 'solov'
+  if (siteId !== 'solov' && siteId !== 'solov-api') return false
+  const selected = settings.relayEndpointIds?.[siteId]
+  if (!selected || selected !== settings.activeRelayEndpointIds?.[siteId]) return false
+  const expected = relayProviderBaseUrls(siteId, selected)[provider]
+  if (!sameNativeRelayUrl(current.baseUrl, expected)
+    || relaySiteEndpointIdForBaseUrl(siteId, provider, current.actualBaseUrl) === null) return false
+  // Old DNS and current IP endpoints may share an id; the actual address must still migrate.
+  return !sameNativeRelayUrl(current.actualBaseUrl, expected)
 }
 
 export function accountBootstrapPlan(
@@ -220,9 +282,9 @@ export function accountBootstrapPlan(
       })
       continue
     }
-    // 已连好的工具开机时不重写，除非它的 Key 刚换了分组：买了订阅（或订阅到期），
-    // 配置里那把旧 Key 扣的已经不是该扣的额度了。
-    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage) && !regrouped.includes(provider)) {
+    // 已连好的工具开机时不重写，除非 Key 换了分组，或显式选择的线路已经重启生效。
+    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage)
+      && !regrouped.includes(provider) && !accountRouteMigrationNeeded(current, provider, settings, storage)) {
       skipped.push({
         provider,
         reason: 'configured',
@@ -247,6 +309,7 @@ export function accountBootstrapPlan(
 export const configurationFailureMessages = {
   missingKey: '配置文件里没有检测到密钥',
   relayMismatch: '服务地址尚未与当前账号匹配',
+  routeMismatch: '连接线路尚未更新，请关闭工具后重新同步',
   missingModel: '默认模型尚未写入配置',
   geminiAuthMode: 'Gemini 尚未切换到 API Key 模式',
   unconfirmedSource: '配置来源尚未确认属于当前账号',
@@ -312,15 +375,13 @@ export async function bootstrapAccountTools(
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40 })
-  const [system, config, settings] = await Promise.all([
-    // 这里只读「装没装、探测有没有失败」，而 scanSystem 从不缓存安装状态——
-    // force 清掉的是 npm 最新版与网络位置那几份缓存，跟这份计划无关，白清一次
-    // 就是开机时多打七八个外网请求、Windows 上多读一遍 Appx 清单。
-    api.scanSystem(),
-    api.getConfig(),
-    api.getSettings(),
-  ])
+  // 先读本次启动的线路与新鲜配置，再宣布哪些工具能先打开，避免带着旧地址抢跑。
+  const [config, settings] = await Promise.all([api.getConfig(), api.getSettings()])
+  const routeChanges = providerIds.filter((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
+  const keyChanges = mode === 'restore' ? { connectedKeyChanges: [...new Set([...(synchronized?.regrouped ?? []), ...routeChanges])] } : {}
+  onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40, ...keyChanges })
+  // scanSystem 从不缓存安装状态，无需强制清掉下载源与网络位置缓存。
+  const system = await api.scanSystem()
   await assertAccount(api, expectedUserId, expectedSiteId)
   const planned = accountBootstrapPlan(system, config, settings, mode, storage, synchronized?.regrouped ?? [])
   const permitted = onlyProviders ? new Set(onlyProviders) : null
@@ -328,27 +389,42 @@ export async function bootstrapAccountTools(
     ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
     : planned
 
+  const migrating = plan.targets.filter((provider) => routeChanges.includes(provider))
+  const deferred: Array<{ provider: ProviderId; message: string }> = []
+  if (migrating.length) {
+    const running = await api.inspectRunningTools?.(migrating).catch(() => null)
+    for (const provider of migrating) {
+      if (!running || running.running.includes(provider) || running.unknown.includes(provider)
+        || (provider === 'codex' && running.codexDesktopRunning !== false)) {
+        deferred.push({ provider, message: `${nameOf(provider)} 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步` })
+      }
+    }
+    await assertAccount(api, expectedUserId, expectedSiteId)
+  }
+  const configureTargets = plan.targets.filter((provider) => !deferred.some((entry) => entry.provider === provider))
   let outcome: Awaited<ReturnType<AccountBootstrapBridge['configureManagedCliKeys']>> = {
     configured: [],
-    failed: [],
+    failed: deferred,
   }
-  if (plan.targets.length) {
+  if (configureTargets.length) {
     onProgress({
       phase: 'configuring',
-      label: `正在为 ${plan.targets.length} 个已安装工具写入 Key`,
+      label: `正在为 ${configureTargets.length} 个已安装工具写入 Key`,
       percent: 65,
+      ...keyChanges,
     })
     outcome = await api.configureManagedCliKeys({
-      providers: plan.targets,
+      providers: configureTargets,
       preferredModels: plan.preferredModels,
       // 被改动过的配置在主进程那一侧也受「来源未确认就不自动改写」拦着，
       // 用户点名的这一次要说清楚是他自己要求的，才能穿过那道闸。
       ...(mode === 'rewrite' ? { intent: 'explicit' as const } : {}),
     })
+    outcome.failed = [...deferred, ...outcome.failed]
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'verifying', label: '正在复核 Key、服务地址和模型', percent: 88 })
+  onProgress({ phase: 'verifying', label: '正在复核 Key、服务地址和模型', percent: 88, ...keyChanges })
   const verified = await api.getConfig()
   await assertAccount(api, expectedUserId, expectedSiteId)
 
@@ -361,9 +437,13 @@ export async function bootstrapAccountTools(
       failed.push({ provider, message: reported.message || '账号 Key 配置失败' })
       continue
     }
-    const problem = outcome.configured.includes(provider)
+    let problem = outcome.configured.includes(provider)
       ? configurationFailure(verified, provider, storage)
       : '账号 Key 配置未返回成功结果'
+    if (!problem && routeChanges.includes(provider)
+      && !sameNativeRelayUrl(verified.providers[provider].actualBaseUrl, config.providers[provider].baseUrl)) {
+      problem = configurationFailureMessages.routeMismatch
+    }
     if (problem) {
       failed.push({ provider, message: problem })
       continue

@@ -13,6 +13,10 @@
 # Mac 钥匙串里那张证书。安装和使用没有区别（两者都未经公证，都得右键打开），但
 # electron-updater 认签名身份，所以这份包与正式发布版之间**不能互相自动更新**。
 #
+# **Linux 那一份只在选 linux 时出**：本地构建模式的 deb，x64 和 arm64 各一个，自动
+# 更新是关着的，因为 Linux 还没有发布通道（docs/LINUX.md）。上传之前每个架构都在
+# 原生机器上用 apt 真装一次、以普通用户真开一次。
+#
 # 与既有三个工作流的分工：
 #   - quality.yml 的 macos-test 跑的是同一条 macOS 打包链路，但它是演练，产物
 #     当场删掉；这里多传一个 --ci-keep-package 把产物留下来交给 upload-artifact。
@@ -33,10 +37,13 @@ on:
         required: true
         default: both
         type: choice
+        # both 仍然只指 Windows 和 macOS：Linux 还没对客户发布，点 both 的人
+        # 要的是发版前那两份，不该多等两份 Linux 包。
         options:
           - both
           - windows
           - macos
+          - linux
 
 permissions:
   contents: read
@@ -48,7 +55,7 @@ concurrency:
 
 jobs:
   windows-package:
-    if: ${{ inputs.platforms != 'macos' }}
+    if: ${{ inputs.platforms == 'both' || inputs.platforms == 'windows' }}
     runs-on: windows-latest
     # release:build:unsigned 在 Windows 上要跑完类型检查、四套测试、编译、三个
     # 冒烟和产物校验，实测接近一小时。这是卡死的兜底，不是预期时长。
@@ -69,6 +76,13 @@ jobs:
         run: node -p "'version=' + require('./package.json').version" >> "$GITHUB_OUTPUT"
 
       - run: npm ci --registry=https://registry.npmjs.org/
+
+      # Electron 43 的 npm 包不带二进制：release:build 里的 npm test 第一次
+      # require('electron') 时才现下，只试一次，网络一抖就红（#319、#796）。这里先
+      # 限时、带重试地装好，见 scripts/ci-ensure-electron-binary.cjs。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
 
       - name: Install the Chromium the layout tests need
         # 发布门禁跑 npm test，其中的布局用例用 @playwright/test 的 chromium 做
@@ -120,7 +134,7 @@ jobs:
           if-no-files-found: error
 
   macos-package:
-    if: ${{ inputs.platforms != 'windows' }}
+    if: ${{ inputs.platforms == 'both' || inputs.platforms == 'macos' }}
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -138,6 +152,11 @@ jobs:
         run: node -p "'version=' + require('./package.json').version" >> "$GITHUB_OUTPUT"
 
       - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 同 Windows：下面的 npm test 要 Electron 二进制，先装好。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
 
       - run: npx --no-install playwright install chromium
 
@@ -197,5 +216,120 @@ jobs:
           # 这份包的签名身份是一次性的，发出去既不能更新也无法追溯，名字必须自曝身份。
           name: macos-CI-SIGNED-DO-NOT-PUBLISH-${{ steps.metadata.outputs.version }}
           path: release-free-ci-${{ steps.metadata.outputs.version }}/*
+          retention-days: 14
+          if-no-files-found: error
+
+  # Linux 包的门禁。两个架构共用一份源码，类型检查和测试跑一遍就够，所以单独成
+  # 一个作业放在 x64 上，两个出包作业等它过了再开始。与 macOS 一样，这个工作流
+  # 可以指向任意分支，不能假定这个提交刚过 quality.yml。
+  linux-checks:
+    if: ${{ inputs.platforms == 'linux' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 同 Windows：下面的 npm test 要 Electron 二进制，先装好。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+
+      - run: npx --no-install playwright install chromium
+
+      - name: Install Chromium's system libraries
+        # 与 quality.yml 的 linux-test 同一个脚本：每次尝试限时，卡住就清掉 apt
+        # 残留进程再重试一次。
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+  linux-package:
+    needs: linux-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            unpacked: linux-unpacked
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            unpacked: linux-arm64-unpacked
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+      UNPACKED_DIRECTORY: release/${{ matrix.unpacked }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Read the version being packaged
+        id: metadata
+        run: node -p "'version=' + require('./package.json').version" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Build the deb for this runner's architecture
+        timeout-minutes: 15
+        run: npm run build:linux:ci
+
+      - run: node scripts/verify-packaged-hardening.cjs "$UNPACKED_DIRECTORY"
+
+      - run: node scripts/verify-linux-deb.cjs release --arch "$PACKAGE_ARCH"
+
+      # 与 quality.yml 的 linux-package 一样：像客户那样用 apt 装上，再以普通用户
+      # 真开一次、确认渲染进程在沙箱里，过了才上传。只看产物的检查看不见「装上去
+      # 打不开」，2026-09-19 的 macOS 包就是这么漏过去的。
+      - name: Install the deb the way a customer would
+        timeout-minutes: 10
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          deb="$(node -p "require('node:path').resolve(require('./scripts/verify-linux-deb.cjs').resolveDebPath('release', require('./package.json').version, process.env.PACKAGE_ARCH))")"
+          sudo timeout --kill-after=20s 240 apt-get update
+          sudo timeout --kill-after=20s 300 apt-get install -y --no-install-recommends xvfb "$deb"
+
+      - name: Turn on Ubuntu 24.04's user-namespace restriction
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          fi
+
+      - name: Launch the installed app as an ordinary user and require its sandbox
+        timeout-minutes: 5
+        run: xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
+
+      - name: Print artifact checksums
+        run: sha256sum release/*.deb
+
+      - name: Upload the Linux test package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # Linux 还没有发布通道，这份包的自动更新是关着的（本地构建模式）；装上
+          # 以后只能手动换新版本。名字照实写，免得被当成能发给客户的那一份。
+          name: linux-${{ matrix.arch }}-NO-AUTO-UPDATE-${{ steps.metadata.outputs.version }}
+          path: release/*.deb
           retention-days: 14
           if-no-files-found: error

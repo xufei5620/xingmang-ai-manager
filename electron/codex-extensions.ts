@@ -22,12 +22,15 @@ import {
 } from './tool-installation'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
+import { renameWithTransientRetrySync } from './safe-local-data'
 import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
+import { tomlErrorLocation } from './toml-error-location'
+import { describeBrokenConfig } from './broken-config-advice'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -519,15 +522,15 @@ function parseTomlFile(filePath: string): Record<string, unknown> {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) {
     throw new Error('Codex config.toml 必须是单链接普通文件')
   }
+  // 读文件自己的失败（超过上限、读的时候被换掉、被拒绝访问）照原样抛，那不是「无法解析」。
+  const content = readBoundedUtf8FileSync(filePath, MAX_CONFIG_BYTES, 'Codex config.toml')
   try {
-    return TOML.parse(readBoundedUtf8FileSync(
-      filePath,
-      MAX_CONFIG_BYTES,
-      'Codex config.toml',
-    )) as Record<string, unknown>
+    return TOML.parse(content) as Record<string, unknown>
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`Codex config.toml 无法解析，未执行修改：${detail}`)
+    // 解析器的原话会把出错那行连同上下几行原样抄进来，客户自己加的外接工具的令牌常常
+    // 就在旁边。这句会上屏、进运行日志和反馈报告，所以只报第几行（第三十批 B，I13），
+    // 再和保存配置那边一样指去「重置为初始状态」（第三十批 C）。
+    throw new Error(describeBrokenConfig('Codex', tomlErrorLocation(error)))
   }
 }
 
@@ -595,6 +598,22 @@ function writeUtf8Exclusive(filePath: string, content: string): void {
   }
 }
 
+// 不存在时返回 false；存在就必须是单链接普通文件，路径上也不能经过链接。
+function assertReplaceableTomlFile(filePath: string): boolean {
+  assertNoSymlinkComponents(filePath, 'Codex 配置路径')
+  let existing: fs.Stats
+  try {
+    existing = fs.lstatSync(filePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
+    throw new Error('Codex config.toml 必须是单链接普通文件')
+  }
+  return true
+}
+
 function performAtomicTomlMutation(
   filePath: string,
   mutate: (config: Record<string, unknown>) => void,
@@ -609,21 +628,16 @@ function performAtomicTomlMutation(
   let backupPath: string | null = null
   try {
     writeUtf8Exclusive(temporaryPath, content)
-    assertNoSymlinkComponents(filePath, 'Codex 配置路径')
-    let existing: fs.Stats | null = null
-    try {
-      existing = fs.lstatSync(filePath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    if (existing) {
-      if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
-        throw new Error('Codex config.toml 必须是单链接普通文件')
-      }
+    if (assertReplaceableTomlFile(filePath)) {
       backupPath = uniqueBackupPath(filePath)
       fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL)
     }
-    fs.renameSync(temporaryPath, filePath)
+    // Windows 上安全软件正扫着 config.toml 或刚写好的临时文件时，换过去会被拒
+    // （EPERM / EBUSY），过一会儿就好，等一下再试（第三十七批 C）。每次试之前再查一遍：
+    // 等的那一下，路径可能被换成联接，文件也可能多了硬链接。
+    renameWithTransientRetrySync(temporaryPath, filePath, () => {
+      assertReplaceableTomlFile(filePath)
+    })
   } finally {
     try {
       fs.rmSync(temporaryPath)
@@ -1013,7 +1027,12 @@ function moveToTrash(source: string, trashDirectory: string): string {
   )
   const sourceDirectory = path.dirname(source)
   try {
-    fs.renameSync(sourceDirectory, target)
+    // 安全软件正扫着 Skill 里的文件时，整个文件夹挪不动（EPERM），过一会儿就好，等一下
+    // 再试（第三十七批 C）；每次试之前照开头那样再查两边的路径。
+    renameWithTransientRetrySync(sourceDirectory, target, () => {
+      assertNoSymlinkComponents(source, 'Skill 路径')
+      assertNoSymlinkComponents(trashDirectory, '应用回收站路径')
+    })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
     validateSkillTree(sourceDirectory)

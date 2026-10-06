@@ -1,4 +1,5 @@
 import type { App } from 'electron'
+import type { LinuxAutostart } from '../linux-autostart'
 import { loginLaunchArgument } from '../login-launch'
 import { resolveRelaySite } from '../relay-sites'
 import type {
@@ -27,8 +28,12 @@ export interface PlatformSystemDependencies {
   packaged: boolean
   executablePath: string
   resolveProxy(url: string): Promise<string>
+  /** Linux 的开机启动（~/.config/autostart 里那份文件）；Electron 在 Linux 上没有登录项。 */
+  linuxAutostart?: LinuxAutostart
+  /** 托盘建没建出来；null = 还不知道。只影响 Linux 那句说明。 */
+  trayAvailable?: () => boolean | null
   relaySiteId?: () => string | undefined
-  /** 本次运行是否因为系统代理连不上而改成了直连（见 electron/proxy-bypass.ts）。 */
+  /** 现在是否因为系统代理连不上而改成了直连；代理又连得上以后会改回去（见 electron/proxy-bypass.ts）。 */
   proxyBypassed?: () => boolean
   onError?: (error: unknown) => void
   notify?: (
@@ -37,6 +42,11 @@ export interface PlatformSystemDependencies {
     detail?: PlatformActivityDetail,
   ) => PlatformNotificationResult
 }
+
+const startupTrayEnabledNote =
+  '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
+const startupTrayDisabledNote =
+  '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
 
 const proxyScopeNote =
   '这里只查看应用窗口如何连接。账号、AI 请求和工具安装继续使用各自原有的连接方式；此处不会更改电脑或工具的网络设置。'
@@ -145,7 +155,9 @@ export class PlatformSystemService {
   }
 
   private startup(): PlatformSystemState['startup'] {
-    const { app, platform, packaged, executablePath } = this.dependencies
+    const { app, platform, packaged, executablePath, linuxAutostart } = this.dependencies
+    if (packaged && linuxAutostart && platform !== 'win32' && platform !== 'darwin')
+      return this.linuxStartup(linuxAutostart)
     if ((platform !== 'win32' && platform !== 'darwin') || !packaged)
       return {
         supported: false,
@@ -182,8 +194,31 @@ export class PlatformSystemService {
         : requested && !enabled
           ? '启动项已登记，但系统尚未允许自动运行。'
           : enabled
-            ? '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
-            : '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。',
+            ? startupTrayEnabledNote
+            : startupTrayDisabledNote,
+    }
+  }
+
+  // Linux 的任务栏不一定有托盘（linux-tray-host.ts）。没有时开机直接弹窗口
+  // （shouldRevealInitialWindow），说明就不能再说「在托盘里待命」。
+  private linuxStartup(autostart: LinuxAutostart): PlatformSystemState['startup'] {
+    let state = { requested: false, enabled: false }
+    try {
+      state = autostart.inspect()
+    } catch (error) {
+      this.dependencies.onError?.(error)
+    }
+    const tray = this.dependencies.trayAvailable?.() ?? true
+    return {
+      supported: true,
+      requested: state.requested,
+      enabled: state.enabled,
+      approvalRequired: false,
+      note: state.requested && !state.enabled
+        ? '开机启动项还在，但现在不会生效，可能在系统设置里被关掉了。把开关关掉再打开就好。'
+        : state.enabled
+          ? tray ? startupTrayEnabledNote : '开机后自动打开星芒窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。'
+          : tray ? startupTrayDisabledNote : '打开后，开机时会自动打开星芒窗口，开机头几分钟也不跟电脑抢资源。',
     }
   }
 
@@ -253,11 +288,14 @@ export class PlatformSystemService {
     return this.serial(async () => {
       if (!this.startup().supported)
         throw new Error('当前运行环境不能设置开机自动启动。')
-      const { app, platform, executablePath } = this.dependencies
-      app.setLoginItemSettings({
-        openAtLogin: enabled,
-        ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
-      })
+      const { app, platform, executablePath, linuxAutostart } = this.dependencies
+      if (linuxAutostart && platform !== 'win32' && platform !== 'darwin')
+        await linuxAutostart.set(enabled)
+      else
+        app.setLoginItemSettings({
+          openAtLogin: enabled,
+          ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
+        })
       const state = this.getState()
       if (state.startup.requested !== enabled)
         throw new Error('系统没有保存开机启动设置，请在系统设置中检查。')

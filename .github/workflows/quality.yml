@@ -8,12 +8,12 @@ on:
     branches: [main]
   pull_request:
 
-# Superseded runs are wasted minutes, and one run bills ~49 of them. main is
-# included: while the project is pre-release, a burst of merges would otherwise
-# run the full matrix once per merge with no way to supersede an obsolete one,
-# and only the final state actually needs validating. Revisit when releases
-# start — then every main commit wants its own verified run so a bad one can be
-# bisected out.
+# A superseded run only holds runners that open pull requests are queueing
+# for. main is included on purpose: every merge was already checked as its
+# pull request's merge commit before it landed, so after a burst of merges
+# only the final state needs another run. This used to be marked for review
+# once releases started; on 2026-10-03, with releases going out, yoyo kept it
+# and added the wait at the top of `changes` so a burst cancels cheaply.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,11 +24,23 @@ permissions:
 jobs:
   changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Ten of these minutes are the wait below; the other five are the bound
+    # this job had before it.
+    timeout-minutes: 15
     outputs:
       code: ${{ steps.scope.outputs.code }}
       cliVersions: ${{ steps.scope.outputs.cliVersions }}
     steps:
+      # A merge to main used to start the whole matrix at once, and the next
+      # merge a few minutes later cancelled it part way: 65 of the 104 main
+      # runs in the three days to 2026-10-03 were superseded like that, each
+      # still holding a dozen runners (two of them macOS, the scarcest) while
+      # open pull requests queued behind it. Waiting here first means a burst
+      # of merges cancels only this one cheap job, and the matrix runs once,
+      # for the last merge. Pull requests never wait.
+      - name: Let a burst of merges to main settle before the matrix starts
+        if: github.event_name == 'push'
+        run: sleep 600
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
@@ -81,13 +93,16 @@ jobs:
           # The vitest half of `npm test`: ~10 of its ~11 minutes. Almost all
           # of that is per-file environment setup rather than assertions, so
           # splitting by file count — which is what --shard does — splits the
-          # time with it.
+          # time with it. Its electron/ suites load the Electron binary, so
+          # these two shards install it first (`electron`, see the steps).
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15
+            electron: true
           - shard: vitest-2
             command: npm run test:vitest:2
             timeout: 15
+            electron: true
           # The node --test half of `npm test`: the build and release script
           # suites, then the two browser suites that ride along with them. Under
           # a minute together, so they share one runner rather than a shard each.
@@ -103,20 +118,35 @@ jobs:
           - shard: renderer-v2
             command: npm run test:v2:vitest
             timeout: 10
-          # Split along the one seam that does not touch the shared Vite
-          # dependency cache. The configFile:false browser-checks build their
-          # dev servers on one root and share node_modules/.vite, and the
-          # earlier files warm it for app-check.mjs, which runs last and is
-          # half the suite on its own. Splitting *those* across runners gave
-          # app-check a cold cache, and a mid-run re-optimisation then blew
-          # the 90s fixture mount budget on the NewAPI announcement-collection
-          # test (run 35420361508) — so they stay together, in their order.
+          # The fixture browser-checks, cut in two. app-check.mjs is two thirds
+          # of their time and gains ~20 tests a day, so a cut by file always
+          # left one runner holding all of it: #873 ran out the 18 minutes three
+          # times with every test passing, on runners that took about 1.55
+          # times as long as #871's over the same tests. So app-check's tests
+          # are dealt to both runners in declaration order (e2e/shard-tests.mjs,
+          # selected by XINGMANG_TEST_SHARD in each script), and the other
+          # files are divided between them by measured time.
+          #
+          # That used to be ruled out because app-check was thought to need
+          # the other files to warm the shared node_modules/.vite cache, after
+          # a lone app-check timed out a 90s mount on run 35420361508. None of
+          # it holds: node --test runs its files in sorted order, so app-check
+          # never ran last; auth and chat build their servers with another
+          # config, so Vite throws that cache away and the next file starts
+          # from nothing anyway; Vite's start-up scan reads every HTML entry
+          # in the repository and finds each dependency before the first page
+          # loads; and run 35420361508 was a lost navigation (test 59, with 58
+          # green before it and the next green in 1.9s), which openFixturePage
+          # now retries. When a half nears 18 minutes, deal to a third runner
+          # rather than raising the number.
+          #
           # The two e2e suites load vite.config.ts with a cacheDir of their
-          # own, never read or warm that cache, and run on their own runner.
-          # The whole suite had grown to 17m18s on #712 and ran out its 18
-          # minutes twice on #714 with every test up to that point passing.
-          - shard: renderer-v2-browser
-            command: npm run test:v2:browser:fixture
+          # own and run on their own runner.
+          - shard: renderer-v2-browser-1
+            command: npm run test:v2:browser:fixture:1
+            timeout: 18
+          - shard: renderer-v2-browser-2
+            command: npm run test:v2:browser:fixture:2
             timeout: 18
           - shard: renderer-v2-e2e
             command: npm run test:v2:browser:e2e
@@ -131,6 +161,41 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # Electron 43 has no install script: `npm ci` leaves its binary out, and
+      # the first require('electron') downloads it on the spot in one fetch,
+      # with no retry and no timeout. One network blip then failed whichever
+      # test file happened to load Electron first: #319's vitest-1 on a GitHub
+      # HTTP 500, #796's linux-test on `fetch failed`. Every job that loads
+      # Electron installs it in these steps instead, from this cache when the
+      # version is unchanged and otherwise from GitHub with bounded, spaced
+      # retries (scripts/ci-ensure-electron-binary.cjs). The cached folder is
+      # @electron/get's own default for the runner's OS, not one passed in:
+      # electron-builder downloads Electron through the same library into the
+      # same folder, so the packaging steps later in windows-package and
+      # macos-test reuse this zip instead of fetching it again. Only a push to
+      # main writes the cache, right after the download: a pull request's cache
+      # can be read by that pull request alone, so a copy per pull request would
+      # only crowd the npm caches out of the repository's 10 GB, and saving
+      # before the tests run means a cancelled main run still leaves it behind.
+      - name: Restore the Electron download for this version
+        if: matrix.electron
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/electron/Cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        if: matrix.electron
+        # Above the script's worst case (every attempt timing out, plus every
+        # wait), so a dead download ends in its own named error.
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: matrix.electron && github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/electron/Cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       - run: npx --no-install playwright install chromium
       - name: Enable Windows Developer Mode for symlink security tests
         shell: pwsh
@@ -171,9 +236,25 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The same three Electron steps as windows-test, for the smokes below.
+      - name: Restore the Electron download for this version
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/electron/Cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/electron/Cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       # No `npx playwright install chromium` here on purpose: every smoke below
       # drives the application through _electron.launch, which uses the
-      # Electron binary the install already placed, not a downloaded Chromium.
+      # Electron binary installed above, not a downloaded Chromium.
       - run: npm run typecheck
       - run: npm run compile
       - name: Verify the default compile selected renderer v2
@@ -280,7 +361,7 @@ jobs:
   # Folds the Windows shards back into the single `test` check they replaced.
   # Two things depend on that name surviving: a branch protection rule may name
   # it, and a reader scanning a pull request should still find one check that
-  # answers "is Windows green" without counting six. It evaluates the change
+  # answers "is Windows green" without counting seven. It evaluates the change
   # scope itself, so it reports success — never "skipped" — for a
   # documentation-only change, which is what the aggregate below relies on.
   test:
@@ -326,6 +407,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The same three Electron steps as windows-test.
+      - name: Restore the Electron download for this version
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/electron
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
       - run: npm test
@@ -439,6 +536,13 @@ jobs:
     # These are the cheapest billed minutes in the matrix, so the coverage the
     # shipping renderer needs belongs here rather than behind the one job that
     # Defender timeouts already make unreliable.
+    #
+    # Everything here used to run back to back, and at ~21 minutes this job was
+    # the whole pipeline's wall clock, ~5 minutes behind the next slowest job
+    # (the Windows renderer-v2-browser shard); test:v2 alone took ~14 of those
+    # minutes. The fixture half of its browser suites now runs beside it in
+    # linux-renderer-v2-browser, split along the same seam the Windows matrix
+    # uses, so nothing is skipped and nothing is run twice.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -449,6 +553,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The same three Electron steps as windows-test.
+      - name: Restore the Electron download for this version
+        id: electron-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary before any test loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Save the Electron download for later runs
+        if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/electron
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
       # The browser download and its apt-installed system libraries are two
       # steps, because only the second one has ever hung. On #653 (runs
       # 36728268598 attempts 1 and 2) `playwright install --with-deps` went
@@ -473,8 +593,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no
-      # Electron and no display server here.
-      - run: npm run test:v2
+      # Electron and no display server here. These two steps and
+      # linux-renderer-v2-browser's one add up to exactly `npm run test:v2`.
+      - run: npm run test:v2:vitest
+      - run: npm run test:v2:browser:e2e
       - run: npm run test:canvas
       # The legacy rollback UI suites. They assert rendered markup only, so one
       # platform answers the question three platforms used to.
@@ -500,6 +622,135 @@ jobs:
             git status --porcelain
             exit 1
           fi
+
+  # The fixture half of linux-test's renderer v2 browser suites: ~12 of the
+  # ~14 minutes test:v2 took there. Beside linux-test instead of after it, the
+  # two finished in ~13 and ~10 minutes on #780, both before the slowest
+  # Windows shard. It runs test:v2:browser:fixture whole, the same files the
+  # two Windows renderer-v2-browser shards divide between them, because its
+  # step has no budget short of the job's 30 minutes: it took 10 to 15
+  # minutes on the runs of 2026-10-06.
+  linux-renderer-v2-browser:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - run: npx --no-install playwright install chromium
+      - name: Install Chromium's system libraries
+        # Same bounded installer as linux-test, for the same reason (#653).
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
+      - run: npm run test:v2:browser:fixture
+      - name: Fail if the test run left files in the working tree
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is dirty after the test run"
+            git status --porcelain
+            exit 1
+          fi
+
+  # Linux 安装包（docs/LINUX.md）。Linux 上没有代码签名，也没有 ASAR 完整性校验
+  # （那根 fuse 在 Linux 二进制里什么都不嵌），装好的程序靠的只是「/opt 下全归
+  # root」；客户能不能打开，靠的是安装脚本把 chrome-sandbox 设成 setuid root。
+  # 这两件事都只有真装一次才看得见，所以每个架构都打一个 deb、过产物校验、像客户
+  # 那样用 apt 装上，再以 runner 这个普通用户真开一次，从 /proc 读渲染进程是不是
+  # 在沙箱里，最后卸掉，确认一样不留。
+  #
+  # arm64 用 GitHub 的原生 arm 机器（公开仓库不计费）：x64 机器上装不了 arm64
+  # 的包，模拟器里起 Electron 也说明不了真机。typecheck 与 npm test 不在这里重跑，
+  # linux-test 已经跑过；这里只管 Linux 包本身。
+  linux-package:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            unpacked: linux-unpacked
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            unpacked: linux-arm64-unpacked
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+      UNPACKED_DIRECTORY: release/${{ matrix.unpacked }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - name: Build the deb for this runner's architecture
+        # Compile, then electron-builder's xz-compressed deb. A few minutes;
+        # the bound names this step if a download it makes ever hangs.
+        timeout-minutes: 15
+        run: npm run build:linux:ci
+      - run: node scripts/verify-packaged-hardening.cjs "$UNPACKED_DIRECTORY"
+      - run: node scripts/verify-linux-deb.cjs release --arch "$PACKAGE_ARCH"
+      - name: Install the deb the way a customer would
+        # apt resolves the package's Depends against the archive, which is the
+        # only check that the names in it exist on Ubuntu 24.04. xvfb is for
+        # the launches below; the arm image does not ship it. Recommends are
+        # left out because they are fonts, and the launch does not read them.
+        # Each apt call has its own bound and runs under sudo so the timeout
+        # can reach it (#695: a timeout outside sudo left apt holding the
+        # dpkg lock); the step bound is the backstop.
+        timeout-minutes: 10
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          # Absolute, because apt reads a relative "dir/name" as a package name.
+          deb="$(node -p "require('node:path').resolve(require('./scripts/verify-linux-deb.cjs').resolveDebPath('release', require('./package.json').version, process.env.PACKAGE_ARCH))")"
+          sudo timeout --kill-after=20s 240 apt-get update
+          sudo timeout --kill-after=20s 300 apt-get install -y --no-install-recommends xvfb "$deb"
+      - name: Turn on Ubuntu 24.04's user-namespace restriction
+        # Stock Ubuntu 24.04 desktops refuse unprivileged user namespaces
+        # unless an AppArmor profile allows them, and Chromium's preferred
+        # sandbox needs one. Set it explicitly so the launch below meets what a
+        # customer has, whatever the runner image ships with.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          fi
+      - name: Launch the installed app as an ordinary user and require its sandbox
+        # The script waits at most 90 seconds for the first page.
+        timeout-minutes: 5
+        run: xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
+      - name: Run the packaged hardening smoke against the installed app
+        # Two cold starts with a 40-second readiness bound each, then one
+        # launch that has to refuse --remote-debugging-port within 5 seconds.
+        timeout-minutes: 6
+        run: xvfb-run -a node e2e/packaged-hardening-smoke.mjs /usr/bin/xingmang-ai-manager
+      - name: Remove the deb and require that nothing is left behind
+        timeout-minutes: 5
+        run: |
+          sudo timeout --kill-after=20s 240 apt-get remove -y xingmang-ai-manager
+          for leftover in /opt/xingmang-ai-manager /usr/bin/xingmang-ai-manager /etc/alternatives/xingmang-ai-manager \
+            /usr/share/applications/xingmang-ai-manager.desktop /etc/apparmor.d/xingmang-ai-manager; do
+            if [ -e "$leftover" ] || [ -L "$leftover" ]; then
+              echo "::error::removing the package left $leftover behind"
+              exit 1
+            fi
+          done
 
   # N1 的已验证版本名单说「这个版本在我们的中转上能用」，而在这个作业存在之前
   # 那句话只有上游 changelog 作背书 —— 名单挡住的两次回归都是 CLI 发出的请求被
@@ -555,7 +806,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, audit, cli-relay-probe]
+    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -568,7 +819,7 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
           // `test` folds the Windows shards together and applies that same
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.

@@ -3,7 +3,8 @@
  * running CLI keeps its own executable mapped, so the replacement fails with a
  * sharing violation and the user is told the install was "blocked by antivirus"
  * — the wrong direction entirely. Detecting the CLI's own processes is what
- * lets the failure say「先关掉它的窗口」instead.
+ * lets the failure say「先关掉它的窗口」instead. Uninstalling runs into the same
+ * lock: npm moves the package directory aside before deleting it.
  *
  * The matching rule is deliberately narrow: a process counts only when its
  * image, or its command line, points inside the package directory of this one
@@ -151,7 +152,9 @@ export function managedCliPackageDirectory(
   packageName: string,
   platform: NodeJS.Platform,
 ): string {
-  const nodeModules = platform === 'darwin'
+  // npm keeps global packages in <prefix>/node_modules only on Windows; macOS and Linux
+  // both use <prefix>/lib/node_modules.
+  const nodeModules = platform !== 'win32'
     ? path.join(npmPrefix, 'lib', 'node_modules')
     : path.join(npmPrefix, 'node_modules')
   return cliPackageDirectory(nodeModules, packageName)
@@ -275,7 +278,7 @@ function extractErrorCode(error: unknown): string | null {
 
 export interface OccupiedUpdateFailureInput {
   toolName: string
-  action: '安装' | '更新'
+  action: '安装' | '更新' | '卸载'
   error: unknown
   probe: CliProcessProbe
   detail?: string

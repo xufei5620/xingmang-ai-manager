@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { resolveManagedCliKeyLimits } from '../../../../electron/account-key-quota'
 import type { AccountKey } from '../../../../electron/ipc-contract'
-import { ToolKeyLimitRow, toolKeyLimitDescription, toolKeyLimitReached, toolKeyLimitValue } from './ToolKeyLimits'
+import { ToolKeyLimitRow, toolKeyLimitDescription, toolKeyLimitLayout, toolKeyLimitReached, toolKeyLimitValue } from './ToolKeyLimits'
 
 function key(overrides: Partial<AccountKey> & Pick<AccountKey, 'id' | 'name'>): AccountKey {
   return {
@@ -30,6 +30,14 @@ const limits = resolveManagedCliKeyLimits(
 const [claude, codex, , gemini] = limits
 
 describe('tool key limit rows', () => {
+  it('lists only the tools that have a key, in the usual tool order, and names the rest', () => {
+    const layout = toolKeyLimitLayout(limits)
+    expect(layout.rows.map((limit) => limit.provider)).toEqual(['claude', 'codex'])
+    expect(layout.missing).toEqual(['Gemini CLI', 'Grok CLI'])
+    expect(toolKeyLimitLayout([...limits].reverse()).rows.map((limit) => limit.provider)).toEqual(['claude', 'codex'])
+    expect(toolKeyLimitLayout([...limits].reverse()).missing).toEqual(['Gemini CLI', 'Grok CLI'])
+  })
+
   it('describes a limited tool, an unlimited one and a tool without a key yet', () => {
     expect(toolKeyLimitDescription(claude)).toBe('已用 $4.00 · 上限剩余 $12.00')
     expect(toolKeyLimitDescription(codex)).toBe('已用 $3.00 · 不限额度')

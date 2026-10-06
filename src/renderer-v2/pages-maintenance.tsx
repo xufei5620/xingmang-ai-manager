@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,15 +18,14 @@ import {
   FileText,
   FolderOpen,
   HeartPulse,
-  HelpCircle,
   KeyRound,
   MoreHorizontal,
   PlugZap,
   RefreshCw,
-  Settings,
   ShieldCheck,
   Trash2,
   UserRound,
+  Users,
   Wrench,
   X,
   Zap,
@@ -56,53 +56,76 @@ import {
 } from './ui'
 import {
   displayDate,
+  RelativeTime,
   beginBusinessOperation,
   errorMessage,
+  failureWithDetail,
   ListState,
   ResultNotice,
+  resultNoticeLead,
   type OperationNotice,
   useOperation,
+  useReloadWhenShown,
   useResource,
   userFacingErrorMessage,
 } from './business-common'
 import {
+  autoUpdateSettingDescription,
+  cliTutorialTopic,
+  desktopInstallTutorialTopic,
+  macDesktopTutorialTopic,
+  macRuntimeTutorialTopic,
   notificationOptions,
+  notificationSettingsItemId,
   settingsGroups,
+  settingsItemLabel,
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
   updateDiskShortfallText,
   updateDownloadDetail,
+  updateInstallActionLabel,
   updateInstallNote,
+  updateNewVersion,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
+import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { tools } from './registry/tools'
 import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
-import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
-import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/elevation-notice'
-import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
+import { canUninstallTool, externalInstallHint, updatesOutsideApp } from './features/tools/model'
+import { elevatedInstallNotice } from './features/tools/elevation-notice'
+import { ToolStatusMeta, toolStatusView } from './features/tools/ToolStatusMeta'
+import { installProgressLabel } from './features/tools/install-stage-text'
+import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
 import { AppUninstallRow } from './features/app/AppUninstall'
+import { RelayRouteSettings } from './features/app/RelayRouteSettings'
+import { createSettingsQueue } from './features/app/settings-queue'
+export { createSettingsQueue } from './features/app/settings-queue'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import {
   canTrustCertificatesUserWide,
+  certificateDiagnosticCode,
   certificateTrustConfirmBody,
   certificateTrustConfirmTitle,
   certificateTrustMessage,
 } from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
-import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm } from './features/app/update-retry'
+import { firstProblemAnchor, useRowFocus } from './features/app/row-focus'
+import { publishDiagnosticsCounts } from './features/app/environment-status'
+import { currentWindowOs, type WindowOs } from './features/app/window-os'
+import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
 import type { Conversation } from './features/chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './features/app/data-transfer'
-import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
+import { rememberedLoginAction, rememberedLoginForgottenMessage, sessionOnlyLoginNotice } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -119,6 +142,7 @@ import {
   runtimeLogAreaLabel,
   runtimeLogDisplayMessage,
   runtimeLogSourceOptions,
+  runtimeLogTimeText,
   runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
@@ -130,6 +154,7 @@ import type {
   FeedbackReportCopyResult,
   FeedbackReportExportResult,
   InstallCancelResult,
+  PlatformCapabilities,
 } from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
@@ -166,11 +191,17 @@ type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConne
 // 没有自己的配置文件，自检无从下手，所以这里只取 CLI；三个外部客户端各有自己的
 // 配置文件，跟在 CLI 后面（registry/clients.ts 的次序）。
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
-/** installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）。 */
-export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped'
+/**
+ * installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）；
+ * declined：客户在「换成星芒装的」确认框里点了取消，什么都没动，也不用说什么。
+ */
+export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
 export type BusinessActions = {
-  navigate?: (page: V2Page) => void
+  /** 第二个参数是要落的分页、分组或那一页里的某一行；缺省 = 只跳页。 */
+  navigate?: (page: V2Page, section?: string) => void
   openLogin?: (target?: LoginTarget) => void
+  /** 设置「账号」里的「切换账号」：弹出侧栏小 ▾ 那个切换账号框；缺省 = 按钮点不了。 */
+  switchAccount?: () => void
   openHelp?: () => void
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
@@ -185,6 +216,14 @@ export type BusinessActions = {
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
   /**
+   * 「安装卸载」页卸掉工具、装好或换了运行环境以后叫一声，由 App 重新检测，首页跟着变；
+   * 不叫的话首页还摆着卸掉的工具、还写 Node.js「未安装」。装工具不用它：走 installTool
+   * （没接时走 onToolsChanged），装完还要写 Key。页面先叫它、再读本页：本页那次读接上 App
+   * 刚起的那一轮检测，不另起一轮。
+   * 缺省 = 只刷新本页（旧行为）。
+   */
+  onSystemChanged?: () => void
+  /**
    * 首页那条完整的安装：缺 Node.js / Python 先装运行环境，装完写 Key、刷新检测。
    * 「安装卸载」页以前自己直接调主进程装工具，没装 Node.js 的人只看到「未检测到
    * npm」（全面检测 Q33）；有了它就只走这一条。
@@ -192,6 +231,11 @@ export type BusinessActions = {
   installTool?: (tool: Provider | 'codexDesktop') => Promise<ToolInstallOutcome>
   /** 与 installTool 配对的取消：首页那条安装在准备运行环境时会说明为什么不能取消。 */
   cancelToolInstall?: (tool: Provider | 'codexDesktop') => Promise<InstallCancelResult>
+  /**
+   * 首页那份正在跑的任务（按工具编号）。「安装卸载」页拿它画「安装中」、进度那句白话和百分比；
+   * 在首页点的安装这一页也看得到。缺省 = 只看这一页自己发起的那次。
+   */
+  toolJobs?: Readonly<Record<string, ToolJob>>
   /**
    * 连接自检的密钥 / 分组层给出的「重新写入 Key」：复用装完工具后那条同样的重写
    * 流程（App 的 syncAfterToolInstalled），失败时把主进程的原话抛出来，页面照实显示。
@@ -206,7 +250,19 @@ export type BusinessActions = {
   uiScale?: NonNullable<AppSettingsV2Update['uiScale']>
   /** 设置页「搬到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
   chatTransfer?: ChatTransfer
+  /**
+   * App 手里最新的设置。「启动时检查新版本」「自动更新」在设置页、更新页（更新气泡里也有
+   * 「自动更新」）各有一个开关，哪边改了另一边要跟着变；缺省 = 只用页面自己读到的那份（旧行为）。
+   */
+  appSettings?: AppSettings
+  /**
+   * 外壳告诉页面「现在显示的是你」。去过的页面换走时只藏起来、不卸载（App.tsx 的 visitedPages），
+   * 再显示时页面自己重读一次（useReloadWhenShown），和点页头那颗按钮一样；缺省 = 不重读（旧行为）。
+   */
+  active?: boolean
 }
+/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
+const networkDiagnosticCode = 'XINGMANG_NETWORK'
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
 }
@@ -258,72 +314,105 @@ export function diagnosticHasFix(code: string, details?: Diagnostic['details']):
   return diagnosticTarget(code, details) !== null
 }
 
+/** 检查结果按轻重排：待处理在前，然后需留意，正常的在最后；同一档里照原来的次序。 */
+export function sortDiagnosticsBySeverity<T extends { state: string }>(items: readonly T[]): T[] {
+  return [...items].sort((left, right) => diagnosticRank(left.state) - diagnosticRank(right.state))
+}
+
+function diagnosticRank(state: string) {
+  return state === 'pass' ? 2 : state === 'warn' ? 1 : 0
+}
+
+/** 连接自检的小标：正常 / 有问题 / 没测成；未配置不是故障，照旧写「未配置」、灰色。 */
+export function connectionRowStatus(row: Pick<ConnectionRow, 'result'>): { label: string; tone: 'ok' | 'warn' | 'bad' | 'neutral' } {
+  if (!row.result) return { label: '没测成', tone: 'bad' }
+  const view = connectionCheckView(row.result)
+  if (view.tone === 'ok') return { label: '正常', tone: 'ok' }
+  if (view.tone === 'neutral') return { label: view.statusLabel, tone: 'neutral' }
+  return { label: '有问题', tone: view.tone }
+}
+
+/** 连接自检一行一个工具，有问题的排前：有问题、没测成、未配置、正常；同一档里照注册表的次序。 */
+export function sortConnectionRows<T extends Pick<ConnectionRow, 'result'>>(rows: readonly T[]): T[] {
+  return [...rows].sort((left, right) => connectionRank(left) - connectionRank(right))
+}
+
+function connectionRank(row: Pick<ConnectionRow, 'result'>) {
+  const { label, tone } = connectionRowStatus(row)
+  return label === '没测成' ? 1 : tone === 'ok' ? 3 : tone === 'neutral' ? 2 : 0
+}
+
 /**
- * 每个工具一条结论。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
+ * 每个工具一行：工具名、状态、一句结论，右边是能就地处理的那颗按钮；原来的第二句（怎么做、
+ * 测了什么、服务的原话）收进「查看详情」。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
  * 用户不该在这一页上看到三条失败。
  */
-function ConnectionRowNotice({
+function ConnectionRowItem({
   row,
   navigate,
   canRewriteKey,
   onRewriteKey,
+  onDetails,
 }: {
   row: ConnectionRow
-  navigate?: (page: V2Page) => void
+  navigate?: (page: V2Page, section?: string) => void
   canRewriteKey?: boolean
   onRewriteKey?: (provider: Provider) => void
+  onDetails: (row: ConnectionRow) => void
 }) {
+  const status = connectionRowStatus(row)
+  const badge = <Pill tone={status.tone} dot>{status.label}</Pill>
   if (!row.result) {
     return (
-      <Notice
-        tone="bad"
-        title={`${row.name} · 没测成`}
-        body={row.error ?? '自检没能完成'}
+      <ListRow
+        title={row.name}
+        badge={badge}
+        desc={row.error ?? '自检没能完成'}
         testId={`health-connection-error-${row.id}`}
       />
     )
   }
   const view = connectionCheckView(row.result, { canRewriteKey: canRewriteKey === true && Boolean(onRewriteKey) })
   const target = view.target
+  const section = view.section ?? undefined
   const rewritable = view.action === 'rewrite-key' ? row.provider : null
   return (
-    <Notice
-      tone={view.tone}
-      title={`${row.name} · ${view.statusLabel}`}
-      body={
-        <>
-          <div>{view.title}</div>
-          <div>{view.body}</div>
-          {view.detail && (
-            <details className="v2-connection-note">
-              <summary>服务的原话（联系客服时可以附上）</summary>
-              {view.detail}
-            </details>
-          )}
-        </>
-      }
+    <ListRow
+      title={row.name}
+      badge={badge}
+      desc={view.title}
       actions={
-        rewritable ? (
-          <Button
-            size="sm"
-            icon={KeyRound}
-            onClick={() => onRewriteKey?.(rewritable)}
-            testId={`health-connection-rewrite-${row.id}`}
-          >
-            重新写入 Key
-          </Button>
-        ) : (
-          target && (
+        <>
+          {rewritable ? (
             <Button
               size="sm"
-              icon={Wrench}
-              onClick={() => navigate?.(target)}
-              testId={`health-connection-fix-${row.id}`}
+              icon={KeyRound}
+              onClick={() => onRewriteKey?.(rewritable)}
+              testId={`health-connection-rewrite-${row.id}`}
             >
-              去处理
+              重新写入 Key
             </Button>
-          )
-        )
+          ) : (
+            target && (
+              <Button
+                size="sm"
+                icon={Wrench}
+                onClick={() => navigate?.(target, section)}
+                testId={`health-connection-fix-${row.id}`}
+              >
+                去处理
+              </Button>
+            )
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onDetails(row)}
+            testId={`health-connection-details-${row.id}`}
+          >
+            查看详情
+          </Button>
+        </>
       }
       testId={`health-connection-result-${row.id}`}
     />
@@ -336,11 +425,31 @@ export function HealthPage({
   openConfig,
   onRewriteKey,
   rewritableKeys,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
-  const load = useCallback(() => api.runDiagnostics(), [api])
+  // 每跑完一次就交给状态栏，处理完一项回到别的页，最左那项跟着变。
+  const load = useCallback(() => api.runDiagnostics().then((report) => {
+    publishDiagnosticsCounts(report.counts)
+    return report
+  }), [api])
   const resource = useResource(load)
+  const pageRef = useRef<HTMLElement>(null)
+  const diagnostics = sortDiagnosticsBySeverity(resource.data?.items ?? [])
+  const problems = diagnostics.filter((item) => item.state !== 'pass')
+  const passing = diagnostics.filter((item) => item.state === 'pass')
+  // 正常的项默认收成一行；从别处点名要看的那一项正好是正常的，就先摆出来再翻过去。
+  const [showPassing, setShowPassing] = useState(false)
+  // 设置里「企业证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
+  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
+  // 等新结果出来再翻，不在几个小时前那份上亮。
+  useRowFocus('health', pageRef, Boolean(resource.data) && !resource.loading, (anchor) => {
+    const code = anchor === firstProblemAnchor ? problems[0]?.code ?? null : anchor
+    if (code && passing.some((item) => item.code === code)) setShowPassing(true)
+    return code
+  })
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
+  const [connectionDetailsId, setConnectionDetailsId] = useState<string | null>(null)
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
   const [certificateTrustOpen, setCertificateTrustOpen] = useState(false)
   const [fixing, setFixing] = useState<DiagnosticFixKind | null>(null)
@@ -354,13 +463,20 @@ export function HealthPage({
   const responsesEpoch = useRef(0)
   // 这张卡只对装了 Codex 的人有意义；没读到装没装时先不显示，免得没装的人看到一个点了只会报错的按钮。
   const [codexInstalled, setCodexInstalled] = useState(false)
+  const [codexProbe, setCodexProbe] = useState(0)
   useEffect(() => {
     let current = true
     api.scanSystem(false)
       .then((snapshot) => { if (current) setCodexInstalled(snapshot.clis.codex.installed === true) })
       .catch(() => { if (current) setCodexInstalled(false) })
     return () => { current = false }
-  }, [api])
+  }, [api, codexProbe])
+  // 从错误框「检查网络」、侧栏回到这一页，看到的该是现在的结果，不是几个小时前那份。
+  // 还在查就不再起一轮：探测要起好几个子进程，那一轮本来就是刚起的。
+  useReloadWhenShown(active, () => {
+    if (!resource.loading) void resource.reload()
+    setCodexProbe((value) => value + 1)
+  })
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
       responsesEpoch.current += 1
@@ -504,8 +620,120 @@ export function HealthPage({
     navigate?.(target)
   }
   const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
+  const connectionDetails = connections?.find((row) => row.id === connectionDetailsId) ?? null
+  const connectionDetailsView = connectionDetails?.result
+    ? connectionCheckView(connectionDetails.result, {
+        canRewriteKey: connectionDetails.provider !== null && rewritableKeys?.includes(connectionDetails.provider) === true && Boolean(onRewriteKey),
+      })
+    : null
+  const exportReport = () =>
+    void operation.execute(
+      'export',
+      () => api.exportDiagnostics(),
+      (result) =>
+        result
+          ? {
+              text: `诊断报告已导出：${result.outputPath}`,
+              revealPath: result.outputPath,
+            }
+          : null,
+    )
+  const diagnosticRow = (item: Diagnostic) => (
+    <ListRow
+      key={item.code}
+      anchor={item.code}
+      icon={item.state === 'pass' ? Check : HeartPulse}
+      title={item.title}
+      badge={
+        <Pill
+          tone={
+            item.state === 'pass'
+              ? 'ok'
+              : item.state === 'warn'
+                ? 'warn'
+                : 'bad'
+          }
+          dot
+        >
+          {item.state === 'pass'
+            ? '正常'
+            : item.state === 'warn'
+              ? '需留意'
+              : '待处理'}
+        </Pill>
+      }
+      desc={item.summary}
+      actions={
+        <>
+          {canClearStaleProxy(item) && (
+            <Button
+              size="sm"
+              icon={Trash2}
+              onClick={() => setProxyClearItem(item)}
+              testId="health-clear-stale-proxy"
+            >
+              清掉这条旧设置
+            </Button>
+          )}
+          {canTrustCertificatesUserWide(item) && (
+            <Button
+              size="sm"
+              icon={ShieldCheck}
+              onClick={() => setCertificateTrustOpen(true)}
+              testId="health-trust-certificates"
+            >
+              让这台电脑上所有终端都信任
+            </Button>
+          )}
+          {diagnosticFixKind(item) && (
+            <Button
+              size="sm"
+              icon={Wrench}
+              onClick={() => setFixing(diagnosticFixKind(item))}
+              testId={`health-fix-inline-${item.code}`}
+            >
+              {diagnosticFixLabel(item)}
+            </Button>
+          )}
+          {diagnosticFolderTarget(item) && (
+            <Button
+              size="sm"
+              icon={FolderOpen}
+              onClick={() => openDiagnosticFolder(item)}
+              testId={`health-open-folder-${item.code}`}
+            >
+              打开文件夹
+            </Button>
+          )}
+          {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
+            <Button
+              size="sm"
+              icon={Wrench}
+              onClick={() => fix(item)}
+              testId={`health-fix-${item.code}`}
+            >
+              去处理
+            </Button>
+          )}
+          <Menu
+            label={`${item.title} 的更多操作`}
+            anchor={<MoreHorizontal size={18} />}
+            items={[
+              {
+                label: '查看详情',
+                icon: FileText,
+                onSelect: () => setDetails(item),
+              },
+            ]}
+          />
+        </>
+      }
+      testId={`health-row-${item.code}`}
+    />
+  )
   return (
     <section
+      ref={pageRef}
       className="v2-page"
       data-page-id="health"
       data-testid="page-health"
@@ -514,20 +742,75 @@ export function HealthPage({
         title="检查"
         lead="逐项检查当前工具和连接；没有使用的可选环境可以先不装。"
         actions={
-          <Button
-            variant="primary"
-            icon={RefreshCw}
-            loading={resource.loading}
-            onClick={() => void resource.reload()}
-          >
-            重新检查
-          </Button>
+          <>
+            <Button
+              icon={Download}
+              disabled={resource.loading}
+              onClick={exportReport}
+            >
+              导出检查报告
+            </Button>
+            <Button
+              variant="primary"
+              icon={RefreshCw}
+              loading={resource.loading}
+              onClick={() => void resource.reload()}
+            >
+              重新检查
+            </Button>
+          </>
         }
       />
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
       />
+      {resource.data && (
+        <Toolbar
+          left={
+            <>
+              <Pill tone="bad">
+                待处理 {resource.data.counts.fail + resource.data.counts.error}
+              </Pill>
+              <Pill tone="warn">需留意 {resource.data.counts.warn}</Pill>
+              <Pill tone="ok">正常 {resource.data.counts.pass}</Pill>
+            </>
+          }
+          right={<span>上次检查 <RelativeTime value={resource.data.generatedAt} /></span>}
+        />
+      )}
+      <Card padding="none">
+        <ListState
+          page="health"
+          noun="检查结果"
+          emptyDescription="点右上角「重新检查」。"
+          loading={resource.loading}
+          error={resource.error}
+          count={diagnostics.length}
+          retry={() => void resource.reload()}
+        >
+          {problems.map(diagnosticRow)}
+          {passing.length > 0 && (
+            <ListRow
+              icon={Check}
+              title={problems.length ? `另外 ${passing.length} 项正常` : `全部 ${passing.length} 项正常`}
+              actions={
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-expanded={showPassing}
+                  onClick={() => setShowPassing((value) => !value)}
+                  testId="health-passing-toggle"
+                >
+                  {showPassing ? '收起' : '展开'}
+                </Button>
+              }
+              testId="health-passing"
+            />
+          )}
+          {showPassing && passing.map(diagnosticRow)}
+        </ListState>
+      </Card>
       <Card
         title="连接自检"
         meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
@@ -543,13 +826,14 @@ export function HealthPage({
         }
         testId="health-connection"
       >
-        {connections?.map((row) => (
-          <ConnectionRowNotice
+        {connections && sortConnectionRows(connections).map((row) => (
+          <ConnectionRowItem
             key={row.id}
             row={row}
             navigate={navigate}
             canRewriteKey={row.provider !== null && rewritableKeys?.includes(row.provider)}
             onRewriteKey={onRewriteKey ? (provider) => void rewriteKey(provider) : undefined}
+            onDetails={(entry) => setConnectionDetailsId(entry.id)}
           />
         ))}
         {!connections && (
@@ -563,23 +847,25 @@ export function HealthPage({
         meta="上面的连接自检只确认能连上。这里让 Codex 用的模型真的做一件小事：调用一个什么都不改的测试工具，再把结果读回来。会用当前账号的额度发两次请求，花费很少，但不是零；不会碰你电脑上的文件。"
         testId="health-codex-responses"
       >
-        <Switch
-          checked={responsesConsent}
-          onChange={setResponsesConsent}
-          label="我知道这次检查会用当前账号的一点额度"
-          description="每次检查前都要重新勾选。"
-          disabled={responsesBusy}
-          testId="health-codex-responses-consent"
-        />
-        <Button
-          icon={PlugZap}
-          disabled={!responsesConsent || responsesBusy}
-          loading={responsesBusy}
-          onClick={() => void runCodexResponsesProbe()}
-          testId="health-codex-responses-run"
-        >
-          开始检查
-        </Button>
+        <div className="v2-health-consent">
+          <Switch
+            checked={responsesConsent}
+            onChange={setResponsesConsent}
+            label="我知道这次检查会用当前账号的一点额度"
+            description="每次检查前都要重新勾选。"
+            disabled={responsesBusy}
+            testId="health-codex-responses-consent"
+          />
+          <Button
+            icon={PlugZap}
+            disabled={!responsesConsent || responsesBusy}
+            loading={responsesBusy}
+            onClick={() => void runCodexResponsesProbe()}
+            testId="health-codex-responses-run"
+          >
+            开始检查
+          </Button>
+        </div>
         {responsesView && (
           <Notice
             tone={responsesView.tone}
@@ -590,146 +876,6 @@ export function HealthPage({
         )}
         {responsesError && <Notice tone="bad" title="Codex 干活检查 · 没测成" body={responsesError} testId="health-codex-responses-error" />}
       </Card>}
-      {resource.data && (
-        <Toolbar
-          left={
-            <>
-              <Pill tone="ok">正常 {resource.data.counts.pass}</Pill>
-              <Pill tone="warn">需留意 {resource.data.counts.warn}</Pill>
-              <Pill tone="bad">
-                待处理 {resource.data.counts.fail + resource.data.counts.error}
-              </Pill>
-            </>
-          }
-          right={<span>{displayDate(resource.data.generatedAt)}</span>}
-        />
-      )}
-      <Card padding="none">
-        <ListState
-          page="health"
-          noun="检查结果"
-          loading={resource.loading}
-          error={resource.error}
-          count={resource.data?.items.length ?? 0}
-          retry={() => void resource.reload()}
-        >
-          {resource.data?.items.map((item) => (
-            <ListRow
-              key={item.code}
-              icon={item.state === 'pass' ? Check : HeartPulse}
-              title={item.title}
-              badge={
-                <Pill
-                  tone={
-                    item.state === 'pass'
-                      ? 'ok'
-                      : item.state === 'warn'
-                        ? 'warn'
-                        : 'bad'
-                  }
-                  dot
-                >
-                  {item.state === 'pass'
-                    ? '正常'
-                    : item.state === 'warn'
-                      ? '需留意'
-                      : '待处理'}
-                </Pill>
-              }
-              desc={item.summary}
-              actions={
-                <>
-                  {canClearStaleProxy(item) && (
-                    <Button
-                      size="sm"
-                      icon={Trash2}
-                      onClick={() => setProxyClearItem(item)}
-                      testId="health-clear-stale-proxy"
-                    >
-                      清掉这条旧设置
-                    </Button>
-                  )}
-                  {canTrustCertificatesUserWide(item) && (
-                    <Button
-                      size="sm"
-                      icon={ShieldCheck}
-                      onClick={() => setCertificateTrustOpen(true)}
-                      testId="health-trust-certificates"
-                    >
-                      让这台电脑上所有终端都信任
-                    </Button>
-                  )}
-                  {diagnosticFixKind(item) && (
-                    <Button
-                      size="sm"
-                      icon={Wrench}
-                      onClick={() => setFixing(diagnosticFixKind(item))}
-                      testId={`health-fix-inline-${item.code}`}
-                    >
-                      {diagnosticFixLabel(item)}
-                    </Button>
-                  )}
-                  {diagnosticFolderTarget(item) && (
-                    <Button
-                      size="sm"
-                      icon={FolderOpen}
-                      onClick={() => openDiagnosticFolder(item)}
-                      testId={`health-open-folder-${item.code}`}
-                    >
-                      打开文件夹
-                    </Button>
-                  )}
-                  {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
-                    <Button
-                      size="sm"
-                      icon={Wrench}
-                      onClick={() => fix(item)}
-                      testId={`health-fix-${item.code}`}
-                    >
-                      去处理
-                    </Button>
-                  )}
-                  <Menu
-                    label={`${item.title} 的更多操作`}
-                    anchor={<MoreHorizontal size={18} />}
-                    items={[
-                      {
-                        label: '查看详情',
-                        icon: FileText,
-                        onSelect: () => setDetails(item),
-                      },
-                    ]}
-                  />
-                </>
-              }
-              testId={`health-row-${item.code}`}
-            />
-          ))}
-        </ListState>
-      </Card>
-      <Toolbar
-        right={
-          <Button
-            icon={Download}
-            disabled={resource.loading}
-            onClick={() =>
-              void operation.execute(
-                'export',
-                () => api.exportDiagnostics(),
-                (result) =>
-                  result
-                    ? {
-                        text: `诊断报告已导出：${result.outputPath}`,
-                        revealPath: result.outputPath,
-                      }
-                    : null,
-              )
-            }
-          >
-            导出检查报告
-          </Button>
-        }
-      />
       <Confirm
         open={Boolean(fixing)}
         title={fixing ? diagnosticFixConfirm[fixing].title : ''}
@@ -761,6 +907,25 @@ export function HealthPage({
         testId="health-trust-certificates-confirm"
       />
       <Drawer
+        open={Boolean(connectionDetails)}
+        title={connectionDetails ? `${connectionDetails.name} · ${connectionDetailsView?.statusLabel ?? '没测成'}` : '连接自检'}
+        onClose={() => setConnectionDetailsId(null)}
+        testId="health-connection-details"
+      >
+        {connectionDetailsView && (
+          <>
+            <p>{connectionDetailsView.title}</p>
+            <p>{connectionDetailsView.body}</p>
+            {connectionDetailsView.detail && (
+              <details className="v2-connection-note">
+                <summary>服务的原话（联系客服时可以附上）</summary>
+                {connectionDetailsView.detail}
+              </details>
+            )}
+          </>
+        )}
+      </Drawer>
+      <Drawer
         open={Boolean(details)}
         title={details?.title ?? '检查详情'}
         onClose={() => setDetails(null)}
@@ -786,6 +951,10 @@ const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
   info: '信息',
   debug: '调试',
 }
+/** 反馈页一次读多少条运行日志；读满了卡头就写「最近 500 条」。 */
+const runtimeLogLimit = 500
+/** 日志列表先铺这么多条，最后一行「再显示 100 条」。 */
+const runtimeLogPage = 100
 
 // 预览过了 30 分钟，主进程会按最新日志重生成再复制/导出；提示要让客户知道拿到的是新的那份。
 export function feedbackCopyNotice(result: FeedbackReportCopyResult) {
@@ -810,14 +979,22 @@ export function FeedbackPage({
   api,
   openHelp,
   navigate,
+  active,
 }: { api: V2Bridge } & BusinessActions) {
-  const load = useCallback(() => api.getRuntimeLogs(500), [api])
+  const load = useCallback(() => api.getRuntimeLogs(runtimeLogLimit), [api])
   const resource = useResource(load)
+  // 错误框「查看日志」把人带回这一页时，刚出的那个错要在「运行日志」最上面，不用再点「刷新」。
+  useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState(anyRuntimeLogValue)
   const [source, setSource] = useState(anyRuntimeLogValue)
   const [onlyCurrentBoot, setOnlyCurrentBoot] = useState(false)
+  // 「再显示 100 条」点到第几页；换了筛选条件就从头的 100 条重新开始，改回原来的条件也不接着上次的页数。
+  const filterKey = JSON.stringify([level, source, query, onlyCurrentBoot])
+  const [shown, setShown] = useState({ key: filterKey, count: runtimeLogPage })
+  if (shown.key !== filterKey) setShown({ key: filterKey, count: runtimeLogPage })
+  const visibleCount = shown.key === filterKey ? shown.count : runtimeLogPage
   const [report, setReport] = useState<Awaited<
     ReturnType<V2Bridge['getFeedbackReport']>
   > | null>(null)
@@ -833,6 +1010,10 @@ export function FeedbackPage({
   }
   const list = filterRuntimeLogs(resource.data?.entries ?? [], filter)
   const writeNotice = runtimeLogWriteNotice(resource.data?.writeFailure)
+  const now = Date.now()
+  const shownLogs = list.slice(0, visibleCount).map((entry) => ({ entry, time: runtimeLogTimeText(entry.timestamp, now) }))
+  // 去年的条目时间带年份，比平常长一截：有一条带年份，各行的时间那一格一起放宽，才对得齐。
+  const logRowClass = shownLogs.some(({ time }) => time.includes('年')) ? 'v2-feedback-log has-year' : 'v2-feedback-log'
   const resetFilters = () => {
     setQuery('')
     setLevel(anyRuntimeLogValue)
@@ -865,16 +1046,13 @@ export function FeedbackPage({
           </Button>
         }
       />
-      <Notice
-        tone="neutral"
-        title="报告会自动脱敏"
-        body="不会包含账号密码与完整密钥。发送前仍请检查私有项目名称和地址。"
-        actions={
-          <Button size="sm" icon={HelpCircle} onClick={openHelp}>
-            联系客服
-          </Button>
-        }
-      />
+      <div className="v2-feedback-privacy" data-testid="feedback-privacy">
+        <ShieldCheck size={16} aria-hidden="true" />
+        <span>报告会自动脱敏：不会包含账号密码与完整密钥。发送前仍请检查私有项目名称和地址。</span>
+        <Button size="sm" variant="ghost" onClick={openHelp}>
+          联系客服
+        </Button>
+      </div>
       {writeNotice ? (
         <Notice
           tone="warn"
@@ -940,75 +1118,86 @@ export function FeedbackPage({
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
       />
-      <Card padding="none">
+      <Card
+        title="运行日志"
+        meta={
+          resource.data && !resource.error
+            ? resource.data.truncated ? `最近 ${runtimeLogLimit} 条` : `共 ${list.length} 条`
+            : undefined
+        }
+        padding="none"
+        actions={
+          <>
+            <Button
+              size="sm"
+              icon={FolderOpen}
+              onClick={() =>
+                void operation.execute(
+                  'directory',
+                  () => api.openRuntimeLogDirectory(),
+                  '',
+                )
+              }
+            >
+              打开日志目录
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              icon={Trash2}
+              disabled={!resource.data?.entries.length || Boolean(resource.error)}
+              onClick={() => setClearOpen(true)}
+              testId="feedback-clear"
+            >
+              清除日志
+            </Button>
+          </>
+        }
+      >
         <ListState
           page="feedback"
           noun="运行日志"
           loading={resource.loading}
           error={resource.error}
           count={list.length}
+          query={query}
           filtered={hasRuntimeLogFilter(filter)}
           retry={() => void resource.reload()}
           clear={resetFilters}
+          emptyDescription="软件运行时的事件会记录在这里。"
+          errorDescription="点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。"
         >
-          {list.map((entry) => (
-            <ListRow
+          {shownLogs.map(({ entry, time }) => (
+            <button
               key={entry.id}
-              icon={FileText}
-              title={runtimeLogDisplayMessage(entry.message)}
-              badge={
-                <Pill
-                  tone={
-                    entry.level === 'error'
-                      ? 'bad'
-                      : entry.level === 'warn'
-                        ? 'warn'
-                        : 'neutral'
-                  }
-                >
-                  {runtimeLogLevelLabels[entry.level] ?? entry.level}
-                </Pill>
-              }
-              desc={[displayDate(entry.timestamp), runtimeLogAreaLabel(entry)].filter(Boolean).join(' · ')}
-              actions={
-                <Button
-                  size="sm"
-                  icon={FileText}
-                  onClick={() => setSelected(entry)}
-                >
-                  详情
-                </Button>
-              }
-            />
+              type="button"
+              className={logRowClass}
+              onClick={() => setSelected(entry)}
+              data-testid={`feedback-log-${entry.id}`}
+            >
+              <time dateTime={entry.timestamp} title={displayDate(entry.timestamp)}>
+                {time}
+              </time>
+              <span className={`v2-feedback-log-level is-${entry.level}`}>
+                {runtimeLogLevelLabels[entry.level] ?? entry.level}
+              </span>
+              <span className="v2-feedback-log-message">{runtimeLogDisplayMessage(entry.message)}</span>
+              <span className="v2-feedback-log-source">{runtimeLogAreaLabel(entry)}</span>
+              <span className="v2-feedback-log-more">详情 ›</span>
+            </button>
           ))}
+          {list.length > visibleCount && (
+            <button
+              type="button"
+              className="v2-feedback-log-next"
+              onClick={() => setShown({ key: filterKey, count: visibleCount + runtimeLogPage })}
+              data-testid="feedback-log-next"
+            >
+              再显示 {runtimeLogPage} 条
+            </button>
+          )}
         </ListState>
       </Card>
-      {resource.data?.truncated && <p>已限制为最近日志。</p>}
-      <Toolbar
-        left={
-          <Button
-            icon={FolderOpen}
-            onClick={() =>
-              void operation.execute(
-                'directory',
-                () => api.openRuntimeLogDirectory(),
-                '',
-              )
-            }
-          >
-            打开日志目录
-          </Button>
-        }
-        right={
-          <Button
-            variant="danger"
-            icon={Trash2}
-            onClick={() => setClearOpen(true)}
-          >
-            清除日志
-          </Button>
-        }
-      />
       <Dialog
         open={Boolean(report)}
         title="脱敏反馈报告"
@@ -1055,6 +1244,28 @@ export function FeedbackPage({
           </>
         }
       >
+        {report?.selfChecked === false && navigate && (
+          <Notice
+            tone="accent"
+            icon={HeartPulse}
+            title="报告里还没有检查结果"
+            body="点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。"
+            actions={
+              <Button
+                size="sm"
+                icon={HeartPulse}
+                onClick={() => {
+                  setReport(null)
+                  navigate('health')
+                }}
+                testId="feedback-report-go-check"
+              >
+                去检查
+              </Button>
+            }
+            testId="feedback-report-unchecked"
+          />
+        )}
         <ResultNotice
           {...operation}
           onReveal={(path) => api.revealExportedFile(path)}
@@ -1138,7 +1349,7 @@ export function FeedbackPage({
         }
       >
         <p>仅清除运行日志，不会删除工具配置、账号或对话记录。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
   )
@@ -1147,14 +1358,20 @@ export function FeedbackPage({
 export function UpdatesPage({
   api,
   navigate,
+  appSettings,
+  onSettingsChanged,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.getUpdateState(), [api])
   const resource = useResource(load)
   const operation = useOperation()
+  const showToast = useToast().show
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
   const [isWindows, setIsWindows] = useState(false)
-  const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
+  const [ownSettings, setOwnSettings] = useState<AppSettings | null>(null)
+  const [settingsReadFailed, setSettingsReadFailed] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
   const [diskCleanupOpen, setDiskCleanupOpen] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
@@ -1173,12 +1390,48 @@ export function UpdatesPage({
     let current = true
     // 读不到设置就按关着说：多承诺一句「会自动装」比少说一句更糟。
     void api.getSettings()
-      .then((settings) => { if (current) setAutoUpdateSetting(settings.autoUpdate !== false) })
-      .catch(() => undefined)
+      .then((settings) => { if (current) setOwnSettings(settings) })
+      .catch(() => { if (current) setSettingsReadFailed(true) })
     return () => { current = false }
   }, [api])
+  // App 手里那份最新（设置页、更新气泡里改过也算）；还没有就用这一页自己读到的。
+  const settings = appSettings ?? ownSettings
+  const autoUpdateSetting = settings ? settings.autoUpdate !== false : false
+  // 「启动时检查新版本」「自动更新」直接在这一页改，和设置「更新与关于」里那两行是同一份设置。
+  async function saveSetting(patch: Omit<SettingsUpdate, 'version'>) {
+    const finish = beginBusinessOperation('保存设置')
+    setSettingsSaving(true)
+    setSettingsError('')
+    try {
+      const saved = await api.saveSettings({ version: 2, ...patch })
+      setOwnSettings(saved)
+      onSettingsChanged?.(saved)
+      showToast('已保存', 'ok')
+    } catch (error) {
+      setSettingsError(errorMessage(error))
+    } finally {
+      setSettingsSaving(false)
+      finish()
+    }
+  }
+  // 还在读：开关灰着点不了；没读到：写「暂未读到」，不装成关着的样子（同设置页）。
+  function settingSwitch(label: string, checked: boolean | undefined, onChange: (value: boolean) => void, testId: string) {
+    if (checked === undefined && settingsReadFailed) return <Pill tone="neutral">暂未读到</Pill>
+    return (
+      <Switch
+        checked={checked ?? false}
+        disabled={checked === undefined || settingsSaving}
+        aria-label={label}
+        onChange={onChange}
+        testId={testId}
+      />
+    )
+  }
   const update = resource.data
+  const newVersion = updateNewVersion(update)
   const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
+  // Linux 的 .deb：装这一步交给系统安装程序，软件只关掉、不会自己重开（updater.ts 的 UpdateInstallMethod）。
+  const systemInstaller = update?.installMethod === 'system-installer'
   const check = () =>
     void operation.execute(
       'check',
@@ -1209,6 +1462,9 @@ export function UpdatesPage({
   const failure = updateFailureLabel(update?.failedStep)
   const releaseNotes = releaseNotesSection(update)
   const retryFailedStep = () => retryFailedUpdateStep(update?.failedStep, { check, redownload, confirmInstall: () => setConfirm(true) })
+  const manualReinstall = updateNeedsManualReinstall(update)
+  const offerDownloadPage = updateOffersDownloadPage(update)
+  const openDownloadPage = () => void operation.execute('download-page', async () => { await api.openExternal(appReleaseDownloadUrl) }, '')
   // 首页气泡上点了「重新安装」：跳过来直接弹确认框。
   useEffect(() => subscribeUpdateInstallConfirm(() => {
     if (takeUpdateInstallConfirm()) setConfirm(true)
@@ -1219,13 +1475,16 @@ export function UpdatesPage({
         下载更新
       </Button>
     ) : update?.phase === 'downloaded' ? (
-      <Button
-        variant="primary"
-        icon={RefreshCw}
-        onClick={() => setConfirm(true)}
-      >
-        重启安装
-      </Button>
+      // 验签没通过时「重启安装」和失败卡里去掉的「重新安装」是同一条死路，下一步只在失败卡的「打开下载页」。
+      manualReinstall ? null : (
+        <Button
+          variant="primary"
+          icon={RefreshCw}
+          onClick={() => setConfirm(true)}
+        >
+          {updateInstallActionLabel(update.installMethod)}
+        </Button>
+      )
     ) : (
       <Button
         variant="primary"
@@ -1247,22 +1506,30 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn)} />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod)} />
       <ResultNotice
-        error={resource.error || operation.error}
+        error={resource.error || settingsError || operation.error}
+        detail={resource.error ? resource.detail : settingsError ? undefined : operation.detail}
         message={operation.message}
       />
       <div className="v2-business-update-grid">
         <Card
-          title={update ? updateCardTitle(update) : '正在读取更新状态…'}
+          title={update ? updateCardTitle(update) : resource.error ? '更新状态暂未读到' : '正在读取更新状态…'}
           actions={action}
         >
           <ListRow
-            icon={RefreshCw}
             title="当前版本"
-            meta={update?.currentVersion ?? '暂未读到'}
+            meta={<span className="v2-update-version">{update?.currentVersion ?? '暂未读到'}</span>}
+            testId="updates-current-version"
           />
-          <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
+          {newVersion && (
+            <ListRow
+              title="新版本"
+              meta={<span className="v2-update-version">{newVersion}</span>}
+              testId="updates-new-version"
+            />
+          )}
+          <ListRow title="上次检查" meta={<RelativeTime value={update?.checkedAt} />} />
           {update?.currentVersionWithdrawn && (
             <Notice
               tone="warn"
@@ -1279,17 +1546,27 @@ export function UpdatesPage({
             />
           )}
           <ListRow
-            title="启动时检查"
-            actions={
-              <Button
-                size="sm"
-                icon={Settings}
-                onClick={() => navigate?.('settings')}
-              >
-                去设置
-              </Button>
-            }
+            title={settingsItemLabel('update-check')}
+            desc="发现新版本会提醒你"
+            actions={settingSwitch(
+              '启动时检查新版本',
+              settings?.checkUpdatesOnStartup,
+              (checkUpdatesOnStartup) => void saveSetting({ checkUpdatesOnStartup }),
+              'updates-check-on-startup',
+            )}
           />
+          {update?.autoUpdateSupported && (
+            <ListRow
+              title={settingsItemLabel('auto-update')}
+              desc={autoUpdateSettingDescription(update.installMethod)}
+              actions={settingSwitch(
+                '自动更新',
+                settings ? autoUpdateSetting : undefined,
+                (autoUpdate) => void saveSetting({ autoUpdate }),
+                'updates-auto-update',
+              )}
+            />
+          )}
           {update?.progress && (
             <Progress
               value={update.progress.percent}
@@ -1343,13 +1620,20 @@ export function UpdatesPage({
               testId={`updates-failure-${update.failedStep ?? 'unknown'}`}
               actions={
                 <>
-                  <Button
-                    size="sm"
-                    icon={!update.failedStep || update.failedStep === 'download' ? Download : RefreshCw}
-                    onClick={retryFailedStep}
-                  >
-                    {failure.retry}
-                  </Button>
+                  {!manualReinstall && (
+                    <Button
+                      size="sm"
+                      icon={!update.failedStep || update.failedStep === 'download' ? Download : RefreshCw}
+                      onClick={retryFailedStep}
+                    >
+                      {failure.retry}
+                    </Button>
+                  )}
+                  {offerDownloadPage && (
+                    <Button size="sm" icon={ExternalLink} onClick={openDownloadPage}>
+                      打开下载页
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     icon={FileText}
@@ -1358,6 +1642,23 @@ export function UpdatesPage({
                     查看日志
                   </Button>
                 </>
+              }
+            />
+          )}
+          {update?.installMethod === 'manual' && (
+            <Notice
+              tone="warn"
+              title="这台电脑上没法自动更新"
+              body="星芒在这台电脑上不是用安装包装的，没法自己更新。到下载页下载新版本的安装包，装好后打开就行。"
+              testId="updates-manual-install"
+              actions={
+                <Button
+                  size="sm"
+                  icon={ExternalLink}
+                  onClick={openDownloadPage}
+                >
+                  打开下载页
+                </Button>
               }
             />
           )}
@@ -1376,15 +1677,15 @@ export function UpdatesPage({
           ) : (
             <div className="v2-business-release-notes">{releaseNotes.text}</div>
           )}
-          <details>
-            <summary>安装前需要知道</summary>
+          <div className="v2-update-install-note" data-testid="updates-install-note">
+            <h3>安装前需要知道</h3>
             <p>{updateInstallNote}</p>
-          </details>
+          </div>
         </Card>
       </div>
       <Dialog
         open={confirm}
-        title="重启并安装更新？"
+        title={systemInstaller ? '安装新版本？' : '重启并安装更新？'}
         onClose={() => setConfirm(false)}
         footer={
           <>
@@ -1404,15 +1705,17 @@ export function UpdatesPage({
                 )
               }
             >
-              确认重启安装
+              {systemInstaller ? '关掉并安装' : '确认重启安装'}
             </Button>
           </>
         }
       >
-        <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
+        {systemInstaller
+          ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
+          : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
         {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
   )
@@ -1422,21 +1725,118 @@ export function UpdatesPage({
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
 // 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
 export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
+// Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
+export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
-export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
+export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string | null {
+  if (result === 'declined') return null
   if (result === 'cancelled') return '安装已取消'
   if (result === 'restart') return '运行环境已装好，重启电脑后再点一次「安装」'
   if (result === 'skipped') return '这个工具正在安装，等它做完就好'
   return '安装完成，工具状态已更新'
 }
 
+/** 安装卸载页一行在装的时候，名字下面那句白话和百分比（同首页的工具行）。 */
+interface RowProgress {
+  label: string
+  percent?: number
+}
+
+/**
+ * 安装卸载页的一行。和表头同一套三栏：工具（图标单独一格，名字和厂商上下两行）、
+ * 版本与状态、操作；有百分比时整行底下加一道细进度条。
+ */
+function MaintenanceRow({
+  icon,
+  name,
+  desc,
+  status,
+  actions,
+  progress,
+  testId,
+}: {
+  icon: ReactNode
+  name: string
+  desc: ReactNode
+  status: ReactNode
+  actions?: ReactNode
+  progress?: number
+  testId: string
+}) {
+  return (
+    <div className="xm-list-row v2-maintenance-row" data-testid={testId}>
+      {icon}
+      <div className="xm-row-main">
+        <div className="xm-row-title">{name}</div>
+        <div className="xm-row-desc">{desc}</div>
+      </div>
+      <div className="xm-row-meta">{status}</div>
+      <div className="xm-row-actions">{actions}</div>
+      {typeof progress === 'number' && (
+        <div className="v2-maintenance-row-progress">
+          <Progress value={progress} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 首页那边这个工具正挂着的任务算不算这一行在装：卸载也挂在工具编号下，那不是安装，
+ * 这一行不能标「安装中」，只说正在卸载、按钮先灰着。
+ */
+export function installJobRunning(job: ToolJob | undefined): boolean {
+  return job !== undefined && job.kind !== 'uninstall'
+}
+
+/**
+ * 首页那份任务里本页有行的几个（四个命令行工具、Codex 桌面端、Node.js、Python）。
+ * Git、打开工具这些任务这一页不画，跑完也不用重读。
+ */
+export function maintenanceRowJobKeys(jobs: Readonly<Record<string, ToolJob>> | undefined): string[] {
+  return Object.keys(jobs ?? {}).filter((key) => isProvider(key) || key === 'codexDesktop' || key === 'node' || key === 'python')
+}
+
+/**
+ * 上次还在、这次没了的任务：在首页装好、更新完、卸掉（或没装上、取消了）。任务一没，
+ * 这一行就回到本页上次读的检测结果，写回做之前的样子，所以要重读。
+ */
+export function maintenanceJobsFinished(previous: readonly string[], current: readonly string[]): boolean {
+  return previous.some((key) => !current.includes(key))
+}
+
+/** 正在装的是哪个（工具或运行环境）；不是安装（检查更新、复制日志……）时为 null。 */
+function installingName(busy: string): string | null {
+  if (busy === 'node') return 'Node.js'
+  if (busy === 'python') return 'Python'
+  return tools.find((tool) => tool.id === busy)?.name ?? null
+}
+
+/**
+ * 「查看安装步骤」「安装指南」落到教程哪一章。以前一律落到第一章，客户还得自己翻：
+ * 桌面端在 Mac 上去「Mac 上装桌面端」、别的电脑去「Codex 桌面端怎么安装？」；四个命令行
+ * 工具去「进阶：安装与使用命令行工具」；运行环境在 Mac 上去「Mac 上准备 Node.js 和 Python」，
+ * 别的电脑也去命令行工具那一章。
+ */
+export function installGuideTopic(
+  id: Provider | 'codexDesktop' | 'node' | 'python',
+  platform: PlatformCapabilities['platform'] | undefined,
+): string {
+  const mac = platform === 'macos'
+  if (id === 'codexDesktop') return mac ? macDesktopTutorialTopic : desktopInstallTutorialTopic
+  if (id === 'node' || id === 'python') return mac ? macRuntimeTutorialTopic : cliTutorialTopic
+  return cliTutorialTopic
+}
+
 export function MaintenancePage({
   api,
   navigate,
   onToolsChanged,
+  onSystemChanged,
   installTool,
   cancelToolInstall,
+  toolJobs,
 }: { api: V2Bridge } & BusinessActions) {
   const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
@@ -1449,6 +1849,10 @@ export function MaintenancePage({
   const statusUnknown = Boolean(resource.data) && snapshot === null
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
+  // 首页那份任务（toolJobs）管不到的安装——运行环境、没接 installTool 时的工具——进度从事件里自己记。
+  const [progress, setProgress] = useState<Record<string, RowProgress>>({})
+  // 刚才没装上的那一行。原因和页顶红框领头的是同一句；红框换了说法（又做了别的操作）就不再算。
+  const [failedInstall, setFailedInstall] = useState<{ id: string; message: string } | null>(null)
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
   // 主进程拒绝取消时的中文原因，和检测失败共用页面顶部那条提示。
   const [cancelNotice, setCancelNotice] = useState('')
@@ -1457,22 +1861,81 @@ export function MaintenancePage({
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [runtimeRestart, setRuntimeRestart] = useState(false)
   const [nodeReplaceOpen, setNodeReplaceOpen] = useState(false)
+  const logView = useRef<HTMLPreElement>(null)
+  // 日志框只有八行高：停在最底下时新的一行进来跟着往下走，往上翻着看时不打断他。
+  const followLog = useRef(true)
   useEffect(() => {
-    const stopCli = api.onInstallProgress((event) =>
-      setLogs((previous) => [...previous.slice(-199), event.message]),
-    )
-    const stopDesktop = api.onCodexDesktopInstallProgress((event) =>
-      setLogs((previous) => [...previous.slice(-199), event.message]),
-    )
-    return () => {
-      stopCli()
-      stopDesktop()
-    }
+    // 进度那一行只放白话（同首页），原话照旧进下面的「安装日志」。
+    const note = (id: string, label: string, percent: number | null | undefined) =>
+      setProgress((previous) => ({
+        ...previous,
+        [id]: { label, percent: typeof percent === 'number' ? percent : undefined },
+      }))
+    const stops = [
+      api.onInstallProgress((event) => {
+        setLogs((previous) => [...previous.slice(-199), event.message])
+        const label = installProgressLabel(event)
+        if (label !== null) note(event.provider, label, event.percent)
+      }),
+      api.onCodexDesktopInstallProgress((event) => {
+        setLogs((previous) => [...previous.slice(-199), event.message])
+        note('codexDesktop', event.message, event.percent)
+      }),
+      api.onNodeRuntimeInstallProgress((event) => note('node', event.message, event.percent)),
+      api.onPythonRuntimeInstallProgress((event) => note('python', event.message, event.percent)),
+    ]
+    return () => stops.forEach((stop) => stop())
   }, [api])
+  useLayoutEffect(() => {
+    const view = logView.current
+    if (view && followLog.current) view.scrollTop = view.scrollHeight
+  }, [logs])
+  // 去别的页时这一页只是藏起来：那时进来的日志滚不动，回到这页再补一次贴底。
+  const hasLogs = logs.length > 0
+  useEffect(() => {
+    const view = logView.current
+    if (!view || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (followLog.current) view.scrollTop = view.scrollHeight
+    })
+    observer.observe(view)
+    return () => observer.disconnect()
+  }, [hasLogs])
+  // 首页那份任务一跑完（在首页装、更新、卸载工具，或者装运行环境），这一行就回到本页上次
+  // 读的结果：写回做之前的样子，又给「安装」或「卸载工具」。少了哪一行的任务就重读一次。
+  // 装好、卸掉、装好运行环境时首页自己也会重新检测，本页这次读接上那一轮，不另起一轮。
+  const rowJobs = useRef<string[]>([])
+  useEffect(() => {
+    const current = maintenanceRowJobKeys(toolJobs)
+    const finished = maintenanceJobsFinished(rowJobs.current, current)
+    rowJobs.current = current
+    if (finished) void resource.reload()
+  }, [toolJobs, resource.reload])
+  function forgetProgress(id: string) {
+    setProgress((previous) => {
+      if (!(id in previous)) return previous
+      const next = { ...previous }
+      delete next[id]
+      return next
+    })
+  }
+  // 包住一次安装：开始前清掉这一行上次的进度和失败，没装上时记下是哪一行、红框里那句是什么。
+  async function tracked<T>(id: string, work: () => Promise<T>): Promise<T> {
+    setFailedInstall(null)
+    forgetProgress(id)
+    try {
+      return await work()
+    } catch (cause) {
+      setFailedInstall({ id, message: failureWithDetail(cause).message })
+      throw cause
+    } finally {
+      forgetProgress(id)
+    }
+  }
   const install = (id: Provider | 'codexDesktop') =>
     void operation.execute(
       id,
-      async () => {
+      () => tracked(id, async () => {
         cancelRequested.current.delete(id)
         setCancelNotice('')
         if (installTool) {
@@ -1484,6 +1947,10 @@ export function MaintenancePage({
           } finally {
             cancelRequested.current.delete(id)
             setCancelling('')
+            // 取消被拒时页顶那句只说这次安装还会跑完。跑完了（装好、没装上都算）就收起：
+            // 装好照常提示「安装完成，工具状态已更新」，没装上红条换成没装上的原因。不收的话
+            // 红条一直挂着，下一次别的操作清掉那条原因后它还会再冒出来。
+            setCancelNotice('')
           }
         }
         try {
@@ -1496,14 +1963,32 @@ export function MaintenancePage({
         } finally {
           cancelRequested.current.delete(id)
           setCancelling('')
+          setCancelNotice('')
         }
         // 先让 App 写 Key 并刷新全局检测，再读本页数据：顺序反过来这一页会先
         // 拿到一份还没配置 Key 的快照，而提示语已经说「工具状态已更新」。
         await onToolsChanged?.(id)
         await resource.reload()
         return 'installed' as const
-      },
+      }),
       (result) => installResultMessage(result),
+    )
+  const installRuntime = (id: 'node' | 'python') =>
+    void operation.execute(
+      id,
+      () => tracked(id, async () => {
+        const result = id === 'node'
+          ? await api.installNodeRuntime()
+          : await api.installPythonRuntime()
+        onSystemChanged?.()
+        await resource.reload()
+        return describeRuntimeInstallOutcome(id, result)
+      }),
+      (outcome) => {
+        // 3010：结果条照样说清楚，另外弹重启确认（第七批 5）。
+        if (outcome.restartRequired) setRuntimeRestart(true)
+        return outcome.message
+      },
     )
   const cancelInstall = (id: Provider | 'codexDesktop') => {
     cancelRequested.current.add(id)
@@ -1529,12 +2014,27 @@ export function MaintenancePage({
     void operation.execute(
       `check-${id}`,
       async () => {
+        setFailedInstall(null)
         if (id === 'codexDesktop') await api.checkCodexDesktopUpdate()
         else await api.checkCliUpdate(id)
         await resource.reload()
       },
       '工具版本已检查',
     )
+  // 别的行正在装时，这一行的按钮是灰的：鼠标停上去说清在等谁。
+  const busyInstall = operation.busy ? installingName(operation.busy) : null
+  const waitTitle = (id: string) =>
+    busyInstall && operation.busy !== id ? `等 ${busyInstall} 装完再操作` : undefined
+  const rowProgress = (id: string) => {
+    const job = toolJobs?.[id]
+    return {
+      label: job?.label ?? progress[id]?.label,
+      percent: job ? job.percent : progress[id]?.percent,
+    }
+  }
+  const failedHere = (id: string, installed: boolean | undefined, running: boolean) =>
+    failedInstall?.id === id && failedInstall.message === operation.error && !running && installed !== true
+  const platform = capability?.platform
   return (
     <section
       className="v2-page"
@@ -1556,6 +2056,7 @@ export function MaintenancePage({
       />
       <ResultNotice
         error={resource.error || operation.error || cancelNotice}
+        detail={resource.error ? resource.detail : operation.detail}
         message={operation.message}
       />
       {failures.map((failure) => {
@@ -1585,252 +2086,260 @@ export function MaintenancePage({
           />
         )
       })}
-      <Card title="工具">
-        <div className="v2-business-table-head">
-          <span>工具</span>
-          <span>版本与状态</span>
-          <span>操作</span>
+      <Card title="工具" padding="none">
+        <div className="v2-maintenance-table">
+          <div className="v2-business-table-head">
+            <span>工具</span>
+            <span>版本与状态</span>
+            <span>操作</span>
+          </div>
+          {tools.map((tool) => {
+            const id = tool.id
+            if (!isProvider(id) && id !== 'codexDesktop') return null
+            // 和首页同一口径（presentTools）：打不开桌面端的系统（Linux）不列这一行。
+            if (id === 'codexDesktop' && capability && !capability.codexDesktop.launch) return null
+            const status =
+              id === 'codexDesktop'
+                ? snapshot?.desktopApps.codex
+                : snapshot?.clis[id]
+            const version =
+              status && 'appVersion' in status
+                ? status.appVersion
+                : status && 'version' in status
+                  ? status.version
+                  : null
+            const managed =
+              id === 'codexDesktop'
+                ? capability?.codexDesktop.install === 'managed'
+                : capability?.cliInstall[id] === 'managed'
+            // A probe that failed says nothing about what is installed, so the
+            // row offers a rescan instead of an install that could land on top
+            // of a working tool.
+            const detectionFailed = status?.detectionFailed === true
+            // 官方安装器或别的方式装的 CLI，这里的「重新安装」走的是 npm，只会在
+            // 旁边再装一份和它抢着用（#481）。与首页一样不给这个按钮，改说明怎么更新。
+            // 官方安装器装的 Claude Code 照首页一样放开：点了先问一句，卸掉再装。
+            const externalHint = id !== 'codexDesktop' && !statusUnknown && !detectionFailed && updatesOutsideApp(id, status)
+              ? externalInstallHint(status?.installSource)
+              : null
+            // 走首页那条安装时，这一行跟着首页的任务走（在首页点的也算）；任务要等确认框点过才开始。
+            const job = toolJobs?.[id]
+            const uninstalling = job?.kind === 'uninstall'
+            const running = installTool && toolJobs ? installJobRunning(job) : operation.busy === id
+            const ownInstall = running && operation.busy === id
+            const live = running ? rowProgress(id) : null
+            const failed = failedHere(id, status?.installed, running)
+            const view = toolStatusView(status, statusUnknown, version, running ? 'installing' : failed ? 'failed' : null)
+            const lead = withElevationNotice(
+              tool.vendor,
+              externalHint ?? (id === 'codexDesktop' && !status?.installed && !statusUnknown && !detectionFailed
+                ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                : null),
+            )
+            return (
+              <MaintenanceRow
+                key={id}
+                testId={'maintenance-tool-' + id}
+                icon={<BrandIcon tool={id} size={32} variant="tile" />}
+                name={tool.name}
+                desc={live?.label ?? (uninstalling ? job.label : failed ? resultNoticeLead(operation.error, operation.detail) : lead)}
+                status={
+                  <ToolStatusMeta
+                    view={view}
+                    testId={'maintenance-state-' + id}
+                    reasonTestId={'maintenance-reason-' + id}
+                  />
+                }
+                progress={live?.percent}
+                actions={
+                  <>
+                    {/* 整页没读到时各行不再各放一颗「重新检测」：页头和红框里那两颗就够了。 */}
+                    {(!statusUnknown || running) && (
+                      <Button
+                        size="sm"
+                        icon={detectionFailed || status?.installed ? RefreshCw : Download}
+                        loading={running}
+                        disabled={(!managed && !detectionFailed) || Boolean(externalHint) || Boolean(operation.busy) || uninstalling}
+                        title={externalHint ?? waitTitle(id)}
+                        testId={'maintenance-install-' + id}
+                        onClick={() => detectionFailed ? check(id) : install(id)}
+                      >
+                        {running && typeof live?.percent === 'number'
+                          ? `${Math.round(live.percent)}%`
+                          : detectionFailed ? '重新检测' : status?.installed ? '重新安装' : '安装'}
+                      </Button>
+                    )}
+                    {ownInstall && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={X}
+                        loading={cancelling === id}
+                        onClick={() => cancelInstall(id)}
+                        testId={'maintenance-cancel-' + id}
+                      >
+                        {cancelling === id ? '正在停止' : '取消'}
+                      </Button>
+                    )}
+                    <Menu
+                      label={`${tool.name} 的更多操作`}
+                      anchor={<MoreHorizontal size={18} />}
+                      items={[
+                        {
+                          label: '检查更新',
+                          icon: RefreshCw,
+                          onSelect: () => check(id),
+                        },
+                        ...(status?.installed === true &&
+                        canUninstallTool(status, id === 'codexDesktop' &&
+                          capability?.codexDesktop.uninstall === true) &&
+                        (id !== 'codexDesktop' ||
+                        capability?.codexDesktop.uninstall)
+                          ? [
+                              {
+                                label: '卸载工具',
+                                icon: Trash2,
+                                danger: true,
+                                onSelect: () => setRemove(id),
+                              },
+                            ]
+                          : []),
+                        ...(!managed
+                          ? [
+                              {
+                                label: '查看安装步骤',
+                                icon: BookOpen,
+                                onSelect: () => navigate?.('tutorial', installGuideTopic(id, platform)),
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                  </>
+                }
+              />
+            )
+          })}
         </div>
-        {tools.map((tool) => {
-          const id = tool.id
-          if (!isProvider(id) && id !== 'codexDesktop') return null
-          const status =
-            id === 'codexDesktop'
-              ? snapshot?.desktopApps.codex
-              : snapshot?.clis[id]
-          const version =
-            status && 'appVersion' in status
-              ? status.appVersion
-              : status && 'version' in status
-                ? status.version
-                : null
-          const managed =
-            id === 'codexDesktop'
-              ? capability?.codexDesktop.install === 'managed'
-              : capability?.cliInstall[id] === 'managed'
-          // A probe that failed says nothing about what is installed, so the
-          // row offers a rescan instead of an install that could land on top
-          // of a working tool.
-          const detectionFailed = status?.detectionFailed === true
-          const rescan = statusUnknown || detectionFailed
-          // 官方安装器或别的方式装的 CLI，这里的「重新安装」走的是 npm，只会在
-          // 旁边再装一份和它抢着用（#481）。与首页一样不给这个按钮，改说明怎么更新。
-          const externalHint = id !== 'codexDesktop' && !rescan && isExternallyManagedInstall(status)
-            ? externalInstallHint(status?.installSource)
-            : null
-          return (
-            <ListRow
-              key={id}
-              testId={'maintenance-tool-' + id}
-              title={
-                <>
-                  <BrandIcon tool={id} size={32} />
-                  {tool.name}
-                </>
-              }
-              desc={
-                <ToolStatusReason
-                  lead={withElevationNotice(
-                    tool.vendor,
-                    externalHint ?? (id === 'codexDesktop' && !status?.installed && !rescan
-                      ? storeAppLaunchNotice(snapshot?.desktopApps.codex.storeAppLaunchBlock)
-                        ?? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
-                      : null),
-                  )}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-reason-' + id}
-                />
-              }
-              meta={
-                <ToolStatusMeta
-                  version={version}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-state-' + id}
-                />
-              }
-              actions={
-                <>
-                  <Button
+      </Card>
+      <Card title="运行环境" padding="none">
+        <div className="v2-maintenance-table">
+          {(['node', 'python'] as const).map((id) => {
+            const status = snapshot?.runtime[id]
+            const managed =
+              id === 'node'
+                ? capability?.nodeRuntimeInstall === 'managed'
+                : capability?.pythonRuntimeInstall === 'managed'
+            // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
+            // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
+            const replace =
+              id === 'node' &&
+              nodeReplaceOffered({
+                platform: capability?.platform,
+                nodeRuntimeInstall: capability?.nodeRuntimeInstall,
+                node: status,
+              })
+            const name = id === 'node' ? 'Node.js' : 'Python'
+            const running = operation.busy === id || Boolean(toolJobs?.[id])
+            const live = running ? rowProgress(id) : null
+            const failed = failedHere(id, status?.installed, running)
+            const view = toolStatusView(status, statusUnknown, status?.version, running ? 'installing' : failed ? 'failed' : null)
+            const lead = withElevationNotice(
+              id === 'node'
+                ? managed
+                  ? '命令行工具需要的运行环境；装工具时会自动准备，一般不用单独点'
+                  : '命令行工具需要的运行环境'
+                : '部分工具需要的可选运行环境',
+              id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
+                ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
+                : null,
+            )
+            // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而
+            // 以为没装好、反复点（新手引导梳理 9-25 第 4 条）。要换新版的照旧给按钮。
+            // 整页没读到时也不给「安装」：红框里说了读到之前装不了；「安装指南」只是打开教程，照旧。
+            const action = running
+              ? 'install'
+              : status?.installed && !statusUnknown && !replace
+                ? null
+                : statusUnknown && managed ? null : replace ? 'replace' : managed ? 'install' : 'guide'
+            return (
+              <MaintenanceRow
+                key={id}
+                testId={'maintenance-runtime-' + id}
+                icon={<BrandIcon tool={id} size={32} variant="tile" />}
+                name={name}
+                desc={live?.label ?? (failed ? resultNoticeLead(operation.error, operation.detail) : lead)}
+                status={
+                  <ToolStatusMeta
+                    view={view}
+                    testId={'maintenance-runtime-state-' + id}
+                    reasonTestId={'maintenance-runtime-reason-' + id}
+                  />
+                }
+                progress={live?.percent}
+                actions={
+                  action && <Button
                     size="sm"
-                    icon={rescan || status?.installed ? RefreshCw : Download}
-                    disabled={
-                      statusUnknown
-                        ? resource.loading
-                        : (!managed && !detectionFailed) || Boolean(externalHint) || Boolean(operation.busy)
-                    }
-                    title={externalHint ?? undefined}
-                    testId={'maintenance-install-' + id}
+                    icon={Download}
+                    loading={running}
+                    disabled={Boolean(operation.busy)}
+                    title={waitTitle(id)}
+                    testId={'maintenance-runtime-action-' + id}
                     onClick={() =>
-                      statusUnknown
-                        ? void resource.reload()
-                        : detectionFailed
-                          ? check(id)
-                          : install(id)
+                      action === 'replace'
+                        ? setNodeReplaceOpen(true)
+                        : action === 'install'
+                        ? installRuntime(id)
+                        : navigate?.('tutorial', installGuideTopic(id, platform))
                     }
                   >
-                    {rescan ? '重新检测' : status?.installed ? '重新安装' : '安装'}
+                    {running && typeof live?.percent === 'number'
+                      ? `${Math.round(live.percent)}%`
+                      : action === 'replace' ? '换成新版' : action === 'install' ? '安装' : '安装指南'}
                   </Button>
-                  {operation.busy === id && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={X}
-                      loading={cancelling === id}
-                      onClick={() => cancelInstall(id)}
-                      testId={'maintenance-cancel-' + id}
-                    >
-                      {cancelling === id ? '取消中' : '取消'}
-                    </Button>
-                  )}
-                  <Menu
-                    label={`${tool.name} 的更多操作`}
-                    anchor={<MoreHorizontal size={18} />}
-                    items={[
-                      {
-                        label: '检查更新',
-                        icon: RefreshCw,
-                        onSelect: () => check(id),
-                      },
-                      ...(status?.installed === true &&
-                      canUninstallTool(status, id === 'codexDesktop' &&
-                        capability?.codexDesktop.uninstall === true) &&
-                      (id !== 'codexDesktop' ||
-                      capability?.codexDesktop.uninstall)
-                        ? [
-                            {
-                              label: '卸载工具',
-                              icon: Trash2,
-                              danger: true,
-                              onSelect: () => setRemove(id),
-                            },
-                          ]
-                        : []),
-                      ...(!managed
-                        ? [
-                            {
-                              label: '查看安装步骤',
-                              icon: BookOpen,
-                              onSelect: () => navigate?.('tutorial'),
-                            },
-                          ]
-                        : []),
-                    ]}
-                  />
-                </>
-              }
-            />
-          )
-        })}
+                }
+              />
+            )
+          })}
+        </div>
       </Card>
-      <Card title="运行环境">
-        {(['node', 'python'] as const).map((id) => {
-          const status = snapshot?.runtime[id]
-          const managed =
-            id === 'node'
-              ? capability?.nodeRuntimeInstall === 'managed'
-              : capability?.pythonRuntimeInstall === 'managed'
-          // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
-          // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
-          const replace =
-            id === 'node' &&
-            nodeReplaceOffered({
-              platform: capability?.platform,
-              nodeRuntimeInstall: capability?.nodeRuntimeInstall,
-              node: status,
-            })
-          return (
-            <ListRow
-              key={id}
-              testId={'maintenance-runtime-' + id}
-              icon={Wrench}
-              title={id === 'node' ? 'Node.js' : 'Python'}
-              desc={
-                <ToolStatusReason
-                  lead={withElevationNotice(
-                    id === 'node'
-                      ? managed
-                        ? '命令行工具需要的运行环境；装工具时会自动准备，一般不用单独点'
-                        : '命令行工具需要的运行环境'
-                      : '部分工具需要的可选运行环境',
-                    id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
-                      ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
-                      : null,
-                  )}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-runtime-reason-' + id}
-                />
+      {/* 平时不占地方：装命令行工具或 Codex 桌面端时一有日志就出现（运行环境的安装不写日志），
+          装完留着；最高八行，多了在卡里滚。 */}
+      {hasLogs && (
+        <Card
+          title="安装日志"
+          actions={
+            <Button
+              size="sm"
+              icon={Copy}
+              onClick={() =>
+                void operation.execute(
+                  'copy-log',
+                  () => {
+                    setFailedInstall(null)
+                    return navigator.clipboard.writeText(logs.join('\n'))
+                  },
+                  '安装日志已复制',
+                )
               }
-              meta={
-                <ToolStatusMeta
-                  version={status?.version}
-                  status={status}
-                  statusUnknown={statusUnknown}
-                  testId={'maintenance-runtime-state-' + id}
-                />
-              }
-              actions={
-                // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而
-                // 以为没装好、反复点（新手引导梳理 9-25 第 4 条）。要换新版的照旧给按钮。
-                status?.installed && !statusUnknown && !replace ? undefined : <Button
-                  size="sm"
-                  icon={Download}
-                  disabled={Boolean(operation.busy)}
-                  testId={'maintenance-runtime-action-' + id}
-                  onClick={() =>
-                    replace
-                      ? setNodeReplaceOpen(true)
-                      : managed
-                      ? void operation.execute(
-                          id,
-                          async () => {
-                            const result = id === 'node'
-                              ? await api.installNodeRuntime()
-                              : await api.installPythonRuntime()
-                            await resource.reload()
-                            return describeRuntimeInstallOutcome(id, result)
-                          },
-                          (outcome) => {
-                            // 3010：结果条照样说清楚，另外弹重启确认（第七批 5）。
-                            if (outcome.restartRequired) setRuntimeRestart(true)
-                            return outcome.message
-                          },
-                        )
-                      : navigate?.('tutorial')
-                  }
-                >
-                  {replace ? '换成新版' : managed ? '安装' : '安装指南'}
-                </Button>
-              }
-            />
-          )
-        })}
-      </Card>
-      <Card
-        title="安装日志"
-        actions={
-          <Button
-            size="sm"
-            icon={Copy}
-            disabled={!logs.length}
-            onClick={() =>
-              void operation.execute(
-                'copy-log',
-                () => navigator.clipboard.writeText(logs.join('\n')),
-                '安装日志已复制',
-              )
-            }
+            >
+              复制
+            </Button>
+          }
+        >
+          <pre
+            ref={logView}
+            className="v2-business-code v2-maintenance-log"
+            role="log"
+            onScroll={(event) => {
+              const view = event.currentTarget
+              followLog.current = view.scrollTop + view.clientHeight >= view.scrollHeight - 4
+            }}
           >
-            复制
-          </Button>
-        }
-      >
-        <pre className="v2-business-code" role="log">
-          {logs.join('\n') || '开始安装后，这里会显示进度。'}
-        </pre>
-      </Card>
+            {logs.join('\n')}
+          </pre>
+        </Card>
+      )}
       <Dialog
         open={Boolean(remove)}
         title="卸载工具？"
@@ -1847,6 +2356,7 @@ export function MaintenancePage({
                   void operation.execute(
                     'uninstall',
                     async () => {
+                      setFailedInstall(null)
                       const result =
                         remove === 'codexDesktop'
                           ? await api.uninstallCodexDesktop()
@@ -1862,12 +2372,15 @@ export function MaintenancePage({
                           manualCommand: result.manualHelp.manualCommand,
                         })
                         setRemove(null)
+                        // 程序已经卸掉了一部分，首页那份也要重查。
+                        onSystemChanged?.()
                         await resource.reload()
                         // Still a failed uninstall: the page must not claim
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
                       setRemove(null)
+                      onSystemChanged?.()
                       await resource.reload()
                       return uninstallHandOffNotice(result)
                     },
@@ -1887,7 +2400,7 @@ export function MaintenancePage({
         }
       >
         <p>卸载所选工具程序，保留账号与工具配置。需要时可重新安装。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       {manualUninstall && (
         <ManualUninstallDialog
@@ -1904,11 +2417,12 @@ export function MaintenancePage({
             setNodeReplaceOpen(false)
             void operation.execute(
               'node',
-              async () => {
+              () => tracked('node', async () => {
                 const result = await api.installNodeRuntime({ reason: 'certificate' })
+                onSystemChanged?.()
                 await resource.reload()
                 return describeNodeReplaceOutcome(result)
-              },
+              }),
               (outcome) => {
                 if (outcome.restartRequired) setRuntimeRestart(true)
                 return outcome.message
@@ -1927,36 +2441,13 @@ export function MaintenancePage({
   )
 }
 
-export function createSettingsQueue(
-  save: V2Bridge['saveSettings'],
-  onSaved: (settings: AppSettings) => void,
-) {
-  let tail: Promise<unknown> = Promise.resolve()
-  return (patch: SettingsUpdate) => {
-    const finish = beginBusinessOperation('保存设置')
-    const task = tail
-      .catch(() => undefined)
-      .then(() => save(patch))
-      .then((value) => {
-        onSaved(value)
-        return value
-      })
-      .finally(finish)
-    tail = task
-    return task
-  }
-}
-
-function UnsupportedControl({ label }: { label: string }) {
-  return (
-    <Pill tone="neutral">
-      {label === '当前运行环境' ? '此版本暂不支持' : label}
-    </Pill>
-  )
+/** 设置页顶上那句。原来那句后面加半句会折成两行，所以整句换短；Mac 上写 ⌘K。 */
+export function settingsPageLead(os: WindowOs): string {
+  return `改完自动保存。找不到某一项，按 ${os === 'mac' ? '⌘K' : 'Ctrl K'} 搜它的名字。`
 }
 
 /**
- * 设置页「关于」里的两个重来入口。两件事名字很像、做的事不一样：上面一行重走
+ * 设置页「更新与关于」里的两个重来入口。两件事名字很像、做的事不一样：上面一行重走
  * 安装配置的四步引导，下面一行只是把首页上那几条操作提示再放一遍。
  */
 export function OnboardingSettingRows({
@@ -1966,7 +2457,8 @@ export function OnboardingSettingRows({
   return (
     <>
       <SettingRow
-        title="新手引导"
+        title={settingsItemLabel('guide')}
+        anchor="guide"
         description="重新走一遍安装和配置的步骤，已经填好的账号和密钥不会被清空"
         control={
           <Button
@@ -1981,7 +2473,8 @@ export function OnboardingSettingRows({
       />
       {replayTour ? (
         <SettingRow
-          title="界面导览"
+          title={settingsItemLabel('tour')}
+          anchor="tour"
           description="再看一遍首页上指着按钮讲的那几条提示"
           control={
             <Button
@@ -2003,19 +2496,21 @@ export function SettingsPage({
   api,
   navigate,
   openLogin,
+  switchAccount,
   onAccountChanged,
   onSettingsChanged,
   openGuide,
   replayTour,
   uiScale,
   chatTransfer,
+  appSettings,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(async () => {
     const [settings, capabilities, session, update] = await Promise.all([
       api.getSettings(),
       api.getWindowCapabilities(),
       api.getAccountSession(),
-      // 只用来决定显不显示「自动更新」：读不到就当这台电脑不支持，不挡设置页。
+      // 「自动更新」显不显示、「当前版本」写哪一版：读不到就当这台电脑不支持、版本暂未读到，不挡设置页。
       api.getUpdateState().catch(() => null),
     ])
     return { settings, capabilities, session, update }
@@ -2031,20 +2526,38 @@ export function SettingsPage({
       return { ...previous, settings: persisted === undefined ? rest : { ...rest, uiScale: persisted } }
     })
   }, [uiScale, setResourceData])
+  // 「更新」页和更新气泡里也能改这两项，改完 App 拿到的是最新的；这一页开着时跟着变。
+  const checkUpdatesOnStartup = appSettings?.checkUpdatesOnStartup
+  const autoUpdate = appSettings?.autoUpdate
+  useEffect(() => {
+    if (checkUpdatesOnStartup === undefined) return
+    setResourceData((previous) => {
+      if (!previous || (previous.settings.checkUpdatesOnStartup === checkUpdatesOnStartup && previous.settings.autoUpdate === autoUpdate)) return previous
+      return { ...previous, settings: { ...previous.settings, checkUpdatesOnStartup, autoUpdate } }
+    })
+  }, [checkUpdatesOnStartup, autoUpdate, setResourceData])
   const operation = useOperation()
+  const showToast = useToast().show
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
     null,
   )
   const [systemError, setSystemError] = useState('')
+  // 「重新读取」一次就加一，系统状态那一块从头再读一遍。
+  const [systemAttempt, setSystemAttempt] = useState(0)
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
   const [isMac, setIsMac] = useState(false)
+  const [isLinux, setIsLinux] = useState(false)
+  const [accelerationAvailable, setAccelerationAvailable] = useState(true)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
     void api.getPlatformCapabilities()
       .then((capability) => {
-        if (current) setIsMac(capability.platform === 'macos')
+        if (!current) return
+        setIsMac(capability.platform === 'macos')
+        setIsLinux(capability.platform === 'linux')
+        setAccelerationAvailable(capability.acceleration !== false)
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -2056,6 +2569,7 @@ export function SettingsPage({
     const accept = (state: PlatformSystemState) => {
       if (active) {
         setSystemState(state)
+        setSystemError('')
         document.documentElement.dataset.contrast = state.appearance
           .highContrast
           ? 'high'
@@ -2082,7 +2596,12 @@ export function SettingsPage({
       active = false
       unsubscribe()
     }
-  }, [systemApi])
+  }, [systemApi, systemAttempt])
+  // 做成了的结果改成会自己消失的小提示，页面不再往下跳；没做成的照旧在页顶出红条。
+  const toasted = (text: string) => () => {
+    showToast(text, 'ok')
+    return null
+  }
   const readProxy = () => {
     if (systemApi)
       void operation.execute(
@@ -2099,6 +2618,9 @@ export function SettingsPage({
     const requested = takeSettingsGroup()
     if (requested) setGroup(requested)
   }, [])
+  const pageRef = useRef<HTMLElement>(null)
+  // 顶部搜索搜到某一项：打开那一组以后翻到那一行、亮一下。
+  useRowFocus('settings', pageRef, Boolean(resource.data))
   const [pending, setPending] = useState(0)
   const pendingRef = useRef(0)
   pendingRef.current = pending
@@ -2134,7 +2656,6 @@ export function SettingsPage({
     }
   }, [api, resource.setData])
   const [saveError, setSaveError] = useState('')
-  const [saved, setSaved] = useState('')
   const [legal, setLegal] = useState<Awaited<
     ReturnType<V2Bridge['getLegalDocument']>
   > | null>(null)
@@ -2170,13 +2691,13 @@ export function SettingsPage({
       ),
     [api],
   )
-  const update = async (patch: Omit<SettingsUpdate, 'version'>) => {
+  // quiet：导入时设置只是其中一半，存好了由导入那句一起说，不另弹「已保存」。
+  const update = async (patch: Omit<SettingsUpdate, 'version'>, options?: { quiet?: boolean }) => {
     setPending((value) => value + 1)
     setSaveError('')
-    setSaved('')
     try {
       await writer({ version: 2, ...patch })
-      setSaved('已保存')
+      if (!options?.quiet) showToast('已保存', 'ok')
       return true
     } catch (error) {
       setSaveError(errorMessage(error))
@@ -2202,7 +2723,7 @@ export function SettingsPage({
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
-    if (patch && !(await update(patch))) {
+    if (patch && !(await update(patch, { quiet: true }))) {
       throw new Error(
         added
           ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
@@ -2215,6 +2736,10 @@ export function SettingsPage({
       signedIn: Boolean(chatTransfer),
       settingsChanged: Boolean(patch),
     })
+  }
+  const importDone = (message: string | null) => {
+    if (message) showToast(message, 'ok')
+    return null
   }
   const startImport = () =>
     void operation.execute(
@@ -2229,7 +2754,7 @@ export function SettingsPage({
         }
         return applyImport(preview, conversations, false)
       },
-      (message) => message,
+      importDone,
     )
   const finishImport = (overwrite: boolean) => {
     const ask = importAsk
@@ -2238,9 +2763,10 @@ export function SettingsPage({
     void operation.execute(
       'transfer-import',
       () => applyImport(ask.preview, ask.conversations, overwrite),
-      (message) => message,
+      importDone,
     )
   }
+  // 导出的结果带「打开所在位置」，要给人点，照旧留在页顶。
   const startExport = () =>
     void operation.execute(
       'transfer-export',
@@ -2259,30 +2785,41 @@ export function SettingsPage({
           : null,
     )
   const settings = resource.data?.settings
-  const rememberedLogin = rememberedLoginAction(resource.data?.session)
-  const row = (title: string, description: string, control: ReactNode) => (
+  const session = resource.data?.session
+  const rememberedLogin = rememberedLoginAction(session)
+  // 行标题从注册表取（settingsItems），顶部搜索和这里说的是同一个名字。
+  const row = (id: string, description: ReactNode, control: ReactNode) => (
     <SettingRow
-      key={title}
-      title={title}
+      key={id}
+      anchor={id}
+      title={settingsItemLabel(id)}
       description={description}
       control={control}
     />
   )
-  const unavailable = (title: string, description: string) =>
-    row(
-      title,
-      description,
-      <Button size="sm" icon={BookOpen} onClick={() => navigate?.('tutorial')}>
-        查看使用步骤
-      </Button>,
+  // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
+  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「此版本暂不支持」。
+  const systemPending = (label: string) =>
+    !systemApi ? (
+      <Pill tone="neutral">此版本暂不支持</Pill>
+    ) : systemError ? (
+      <Pill tone="neutral">暂未读到</Pill>
+    ) : (
+      <Switch
+        checked={false}
+        disabled
+        aria-label={label}
+        onChange={() => undefined}
+      />
     )
+  const currentVersion = resource.data?.update?.currentVersion
   let content: ReactNode = null
   if (settings) {
     const groups: Record<typeof group, ReactNode> = {
       appearance: (
         <>
           {row(
-            '主题',
+            'theme',
             '外观调整会应用到整个工具箱',
             <Segment
               label="主题"
@@ -2310,7 +2847,7 @@ export function SettingsPage({
                     'platform-theme',
                     async () =>
                       setSystemState(await systemApi.setThemePreference(theme)),
-                    '主题偏好已保存',
+                    toasted('主题偏好已保存'),
                   )
                 else if (theme === 'light' || theme === 'dark')
                   void update({ theme })
@@ -2318,7 +2855,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '界面皮肤',
+            'skin',
             '四套配色，暗色和亮色模式下都适用，选完立即生效',
             <div className="v2-skin-row" role="group" aria-label="界面皮肤">
               {skinOptions.map((skin) => (
@@ -2344,7 +2881,7 @@ export function SettingsPage({
             </div>,
           )}
           {row(
-            '界面缩放',
+            'ui-scale',
             '自动适应窗口；也可以按阅读习惯调整',
             <Segment
               options={[
@@ -2366,7 +2903,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '大字',
+            'large-text',
             '把说明文字和小字放大一些，看着更轻松',
             <Switch
               checked={Boolean(settings.largeText)}
@@ -2376,7 +2913,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '高对比度',
+            'high-contrast',
             systemState?.appearance.systemHighContrast
               ? '系统高对比度已开启；手动偏好会单独保留'
               : '加大文字、边框和按钮的对比度，开启时皮肤配色暂停使用',
@@ -2390,16 +2927,16 @@ export function SettingsPage({
                     'contrast',
                     async () =>
                       setSystemState(await systemApi.setHighContrast(enabled)),
-                    '高对比度偏好已保存',
+                    toasted('高对比度偏好已保存'),
                   )
                 }
               />
             ) : (
-              <UnsupportedControl label="当前运行环境" />
+              systemPending('高对比度')
             ),
           )}
           {row(
-            '减少动画',
+            'reduced-motion',
             '关闭页面过渡、滚动动画和循环装饰效果',
             <Switch
               checked={Boolean(settings.reducedMotion)}
@@ -2408,7 +2945,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '用显卡加速显示',
+            'hardware-acceleration',
             resource.data?.capabilities.displayCompat === 'auto'
               ? '显卡驱动刚才接连出了几次问题，这次已临时改用兼容方式显示。界面出现黑屏、花屏、闪烁或打开就闪退时关掉它，重启软件后生效。'
               : '界面出现黑屏、花屏、闪烁或打开就闪退时关掉它，重启软件后生效。',
@@ -2440,7 +2977,10 @@ export function SettingsPage({
                       void operation.execute(
                         'relaunch',
                         () => api.relaunchApp(),
-                        (started) => (started ? null : '已取消重开'),
+                        (started) => {
+                          if (!started) showToast('已取消重开', 'neutral')
+                          return null
+                        },
                       )
                     }
                   >
@@ -2458,7 +2998,7 @@ export function SettingsPage({
             />
           )}
           {row(
-            '语言',
+            'language',
             '当前提供简体中文；AI 的回答语言由你在对话中指定',
             <Select
               aria-label="界面语言"
@@ -2472,7 +3012,7 @@ export function SettingsPage({
       startup: (
         <>
           {row(
-            '开机自动启动',
+            'launch-at-login',
             systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
             systemApi && systemState?.startup.supported ? (
               <Switch
@@ -2488,13 +3028,18 @@ export function SettingsPage({
                   )
                 }
               />
+            ) : systemState ? (
+              <Pill tone="neutral">此版本暂不支持</Pill>
             ) : (
-              <UnsupportedControl label="当前运行环境" />
+              systemPending('开机自动启动')
             ),
           )}
           {row(
-            '点关闭按钮时',
-            '按你的选择关闭窗口或缩到托盘',
+            'close-behavior',
+            // Linux 的任务栏不一定有放托盘图标的地方（主进程先问过），没有就只能退出。
+            isLinux && resource.data && !resource.data.capabilities.tray
+              ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
+              : '按你的选择关闭窗口或缩到托盘',
             <Segment
               options={[
                 { value: 'ask', label: '每次询问' },
@@ -2517,29 +3062,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '启动时检查新版本',
-            '发现新版本会提醒你',
-            <Switch
-              checked={settings.checkUpdatesOnStartup}
-              aria-label="启动时检查新版本"
-              onChange={(checkUpdatesOnStartup) =>
-                void update({ checkUpdatesOnStartup })
-              }
-            />,
-          )}
-          {resource.data?.update?.autoUpdateSupported &&
-            row(
-              '自动更新',
-              '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装',
-              <Switch
-                testId="settings-auto-update"
-                checked={settings.autoUpdate !== false}
-                aria-label="自动更新"
-                onChange={(autoUpdate) => void update({ autoUpdate })}
-              />,
-            )}
-          {row(
-            '启动时检查环境',
+            'startup-diagnostics',
             '只检查已使用工具和当前运行环境',
             <Switch
               checked={settings.runDiagnosticsOnStartup}
@@ -2549,23 +3072,12 @@ export function SettingsPage({
               }
             />,
           )}
-          {row(
-            '命令行工具总是装最新版',
-            '默认安装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到尚未验证的问题',
-            <Switch
-              checked={settings.alwaysInstallLatestCli === true}
-              aria-label="命令行工具总是装最新版"
-              onChange={(alwaysInstallLatestCli) =>
-                void update({ alwaysInstallLatestCli })
-              }
-            />,
-          )}
         </>
       ),
       tools: (
         <>
           {row(
-            '默认工作文件夹',
+            'workspace',
             '工具打开后从这个文件夹开始；请选择你信任的项目',
             <div className="v2-business-control">
               <span className="v2-business-path">{settings.workspace}</span>
@@ -2583,43 +3095,63 @@ export function SettingsPage({
                   )
                 }
               >
-                更换
+                选择文件夹
               </Button>
             </div>,
           )}
           {row(
-            '用哪个终端打开工具',
+            'latest-cli',
+            '默认安装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到尚未验证的问题',
+            <Switch
+              checked={settings.alwaysInstallLatestCli === true}
+              aria-label="命令行工具总是装最新版"
+              onChange={(alwaysInstallLatestCli) =>
+                void update({ alwaysInstallLatestCli })
+              }
+            />,
+          )}
+          {row(
+            'terminal',
             '使用工具箱为当前系统准备的终端；此版本不支持更换终端',
             <Button
               size="sm"
               icon={BookOpen}
-              onClick={() => navigate?.('tutorial')}
+              onClick={() => navigate?.('tutorial', cliTutorialTopic)}
             >
               查看打开方式
             </Button>,
           )}
           {row(
-            '工具装在哪里',
+            'install-location',
             '沿用你电脑上原来的安装位置，不影响别的软件',
             <Button
               size="sm"
               icon={Wrench}
               onClick={() => navigate?.('maintenance')}
             >
-              查看安装状态
+              去安装卸载
             </Button>,
-          )}
-          {row(
-            '连哪台服务器',
-            '新配置默认采用的星芒连接方式；现有工具可单独调整',
-            <Pill>星芒 AI</Pill>,
           )}
         </>
       ),
       network: (
         <>
+          <RelayRouteSettings
+            settings={settings}
+            saving={pending > 0}
+            restarting={Boolean(operation.busy)}
+            onChange={(patch) => void update(patch)}
+            onRestart={() => void operation.execute(
+              'relaunch',
+              () => api.relaunchApp(),
+              (started) => {
+                if (!started) showToast('已取消重开', 'neutral')
+                return null
+              },
+            )}
+          />
           {row(
-            '下载来源',
+            'mirror',
             '自动选择可用来源；下载失败时可切换后重试',
             <Segment
               options={[
@@ -2639,7 +3171,7 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '网络连接',
+            'proxy',
             proxy?.note?.replaceAll('代理路由', '连接路径').replaceAll('代理', '网络设置') ??
               '可查看应用窗口的连接路径；账号请求和工具安装使用各自的连接设置。',
             systemApi ? (
@@ -2651,35 +3183,44 @@ export function SettingsPage({
                   loading={operation.busy === 'proxy'}
                   onClick={readProxy}
                 >
-                  查看路由
+                  看连接方式
                 </Button>
               </div>
             ) : (
-              <UnsupportedControl label="当前运行环境" />
+              <Pill tone="neutral">此版本暂不支持</Pill>
             ),
           )}
           {row(
-            '网络检查',
+            'network-check',
             '更换网络设置后，可再次检查连接',
             <Button
               size="sm"
               icon={HeartPulse}
-              onClick={() => navigate?.('health')}
+              onClick={() => navigate?.('health', networkDiagnosticCode)}
+              testId="settings-network-health"
             >
-              去检查
+              去检查页
             </Button>,
           )}
-          {unavailable(
-            '企业证书',
-            '公司要求使用专用证书时，先向管理员确认来源',
+          {row(
+            'certificate',
+            '公司电脑装了专用安全证书、装工具时报证书错误，到检查页看「安全证书」那一项',
+            <Button
+              size="sm"
+              icon={HeartPulse}
+              onClick={() => navigate?.('health', certificateDiagnosticCode)}
+              testId="settings-certificate-health"
+            >
+              去检查页
+            </Button>,
           )}
         </>
       ),
       notifications: (
         <>
           {row(
-            '桌面通知',
-            '后台运行时提醒你查看结果',
+            'desktop-notifications',
+            '后台运行时提醒你查看结果；新版本和更新下载好的提醒也归它管',
             <Switch
               checked={settings.desktopNotifications !== false}
               disabled={!resource.data?.capabilities.notifications}
@@ -2689,46 +3230,8 @@ export function SettingsPage({
               }
             />,
           )}
-          {notificationOptions.map((option) =>
-            row(
-              option.label,
-              option.description,
-              systemApi && systemState ? (
-                <Switch
-                  aria-label={`${option.label}通知`}
-                  checked={
-                    systemState.preferences.notifications?.[option.value] ??
-                    true
-                  }
-                  disabled={
-                    settings.desktopNotifications === false || Boolean(operation.busy)
-                  }
-                  onChange={(enabled) =>
-                    void operation.execute(
-                      'notification-preference',
-                      async () =>
-                        setSystemState(
-                          await systemApi.setNotificationPreference(
-                            option.value,
-                            enabled,
-                          ),
-                        ),
-                      '通知偏好已保存',
-                    )
-                  }
-                />
-              ) : (
-                <UnsupportedControl label="此版本暂不支持" />
-              ),
-            ),
-          )}
           {row(
-            '新版本可用',
-            '新版本和更新下载完成提醒随桌面通知总开关控制',
-            <Pill>{settings.desktopNotifications !== false ? '已开启' : '已关闭'}</Pill>,
-          )}
-          {row(
-            '看看长什么样',
+            'test-notification',
             '系统可能关闭或静音通知；应用内状态会继续保留',
             <Button
               size="sm"
@@ -2750,20 +3253,99 @@ export function SettingsPage({
                     if (result === 'unsupported')
                       throw new Error('这台电脑当前无法显示系统通知。')
                   },
-                  '已请求显示测试通知',
+                  toasted('已请求显示测试通知'),
                 )
               }
             >
               发一条测试通知
             </Button>,
           )}
+          <div className="v2-settings-section" data-testid="settings-notification-kinds">
+            <h3>提醒哪些事</h3>
+            {settings.desktopNotifications === false && (
+              <span>桌面通知关着，下面这些都不会提醒</span>
+            )}
+          </div>
+          {notificationOptions.filter((option) => option.value !== 'acceleration' || accelerationAvailable).map((option) =>
+            row(
+              notificationSettingsItemId(option.value),
+              option.description,
+              systemApi && systemState ? (
+                <Switch
+                  aria-label={`${option.label}通知`}
+                  checked={
+                    systemState.preferences.notifications?.[option.value] ??
+                    true
+                  }
+                  disabled={
+                    settings.desktopNotifications === false || Boolean(operation.busy)
+                  }
+                  onChange={(enabled) =>
+                    void operation.execute(
+                      'notification-preference',
+                      async () =>
+                        setSystemState(
+                          await systemApi.setNotificationPreference(
+                            option.value,
+                            enabled,
+                          ),
+                        ),
+                      toasted('通知偏好已保存'),
+                    )
+                  }
+                />
+              ) : (
+                systemPending(`${option.label}通知`)
+              ),
+            ),
+          )}
         </>
       ),
       account: (
         <>
-          {rememberedLogin.kind === 'forget'
+          {row(
+            'current-account',
+            session?.authenticated
+              ? `${session.account?.username ? `${session.account.username}。` : ''}资料、改密码、余额、密钥和订单都在个人中心`
+              : '还没登录',
+            session?.authenticated ? (
+              <Button
+                size="sm"
+                icon={UserRound}
+                onClick={() => navigate?.('account')}
+                testId="settings-account-center"
+              >
+                去个人中心
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                icon={UserRound}
+                onClick={() => openLogin?.()}
+                testId="settings-account-login"
+              >
+                登录
+              </Button>
+            ),
+          )}
+          {row(
+            'switch-account',
+            '换成这台电脑上保存过的另一个账号，或者再添加一个',
+            <Button
+              size="sm"
+              icon={Users}
+              disabled={!switchAccount}
+              onClick={() => switchAccount?.()}
+              testId="settings-switch-account"
+            >
+              切换账号
+            </Button>,
+          )}
+          {session?.sessionOnly
+            ? row('remember-password', sessionOnlyLoginNotice, null)
+            : rememberedLogin.kind === 'forget'
             ? row(
-                '记住密码',
+                'remember-password',
                 '由客户端安全存储处理；清掉后下次登录要重新输入密码',
                 <Button
                   size="sm"
@@ -2773,7 +3355,7 @@ export function SettingsPage({
                     void operation.execute(
                       'forget-remembered-login',
                       () => api.setRememberedAccountLogin(null, rememberedLogin.siteId),
-                      rememberedLoginForgottenMessage,
+                      toasted(rememberedLoginForgottenMessage),
                     )
                   }
                 >
@@ -2781,99 +3363,32 @@ export function SettingsPage({
                 </Button>,
               )
             : row(
-                '记住密码',
+                'remember-password',
                 '由客户端安全存储处理',
                 <Button size="sm" icon={UserRound} onClick={() => openLogin?.()}>
                   管理登录
                 </Button>,
               )}
-          {row(
-            '退出登录',
-            resource.data?.session.account?.username ?? '当前未登录',
-            resource.data?.session.authenticated ? (
+          {session?.authenticated &&
+            row(
+              'logout',
+              session.account?.username ?? '',
               <Button
                 size="sm"
                 variant="danger"
                 icon={Trash2}
                 onClick={() => setLogout(true)}
+                testId="settings-logout"
               >
-                退出
-              </Button>
-            ) : (
-              <Button size="sm" icon={UserRound} onClick={() => openLogin?.()}>
-                登录
-              </Button>
-            ),
-          )}
+                退出登录
+              </Button>,
+            )}
         </>
       ),
       privacy: (
         <>
           {row(
-            '崩溃自动上报',
-            '应用出错时，自动把错误堆栈和版本、系统信息发到海外的错误收集服务，帮助我们更快修好；不包含你的账号、密钥、文件路径和聊天内容',
-            <Switch
-              aria-label="崩溃自动上报"
-              checked={settings.crashReporting !== false}
-              onChange={(enabled) => void update({ crashReporting: enabled })}
-            />,
-          )}
-          {row(
-            '使用统计',
-            '只记下你的选择；目前软件不会收集或上传任何使用记录',
-            systemApi && systemState ? (
-              <Switch
-                aria-label="匿名使用统计偏好"
-                checked={
-                  systemState.preferences.privacy?.anonymousUsage ?? false
-                }
-                disabled={Boolean(operation.busy)}
-                onChange={(enabled) =>
-                  void operation.execute(
-                    'privacy',
-                    async () =>
-                      setSystemState(
-                        await systemApi.setPrivacyPreference(
-                          'anonymousUsage',
-                          enabled,
-                        ),
-                      ),
-                    '偏好已保存在本机，没有上传使用记录',
-                  )
-                }
-              />
-            ) : (
-              <UnsupportedControl label="未收集使用统计" />
-            ),
-          )}
-          {row(
-            '本机日志',
-            '打开日志目录，或预览和导出脱敏报告',
-            <>
-              <Button
-                size="sm"
-                icon={FolderOpen}
-                onClick={() =>
-                  void operation.execute(
-                    'directory',
-                    () => api.openRuntimeLogDirectory(),
-                    '',
-                  )
-                }
-              >
-                打开目录
-              </Button>
-              <Button
-                size="sm"
-                icon={FileText}
-                onClick={() => navigate?.('feedback')}
-              >
-                查看报告
-              </Button>
-            </>,
-          )}
-          {row(
-            '搬到新电脑',
+            'transfer',
             chatTransfer
               ? '把软件里的聊天记录和设置存成一个文件，在新电脑上导入。文件里没有密码和 Key，新电脑上登录一下就行'
               : '把软件里的设置存成一个文件，在新电脑上导入。登录后再导出，会连当前账号的聊天记录一起带上',
@@ -2899,12 +3414,7 @@ export function SettingsPage({
             </>,
           )}
           {row(
-            '以前的设置',
-            '升级后沿用你以前的设置和工具配置，不用重新设置',
-            <Pill>已沿用</Pill>,
-          )}
-          {row(
-            '工具配置备份',
+            'backups',
             '恢复前会保留当前配置快照',
             <Button
               size="sm"
@@ -2914,13 +3424,78 @@ export function SettingsPage({
               查看备份
             </Button>,
           )}
+          {row(
+            'logs',
+            '打开日志目录，或预览和导出脱敏报告',
+            <>
+              <Button
+                size="sm"
+                icon={FolderOpen}
+                onClick={() =>
+                  void operation.execute(
+                    'directory',
+                    () => api.openRuntimeLogDirectory(),
+                    '',
+                  )
+                }
+              >
+                打开目录
+              </Button>
+              <Button
+                size="sm"
+                icon={FileText}
+                onClick={() => navigate?.('feedback')}
+              >
+                去反馈页
+              </Button>
+            </>,
+          )}
+          {row(
+            'crash-reporting',
+            '出错时自动把错误堆栈、版本和系统信息发到海外的错误收集服务，帮我们更快修好；不含账号、密钥、文件路径和聊天内容',
+            <Switch
+              aria-label="崩溃自动上报"
+              checked={settings.crashReporting !== false}
+              onChange={(enabled) => void update({ crashReporting: enabled })}
+            />,
+          )}
+          {row(
+            'usage-stats',
+            '只记下你的选择；目前软件不会收集或上传任何使用记录',
+            systemApi && systemState ? (
+              <Switch
+                aria-label="匿名使用统计偏好"
+                checked={
+                  systemState.preferences.privacy?.anonymousUsage ?? false
+                }
+                disabled={Boolean(operation.busy)}
+                onChange={(enabled) =>
+                  void operation.execute(
+                    'privacy',
+                    async () =>
+                      setSystemState(
+                        await systemApi.setPrivacyPreference(
+                          'anonymousUsage',
+                          enabled,
+                        ),
+                      ),
+                    toasted('偏好已保存在本机，没有上传使用记录'),
+                  )
+                }
+              />
+            ) : (
+              systemPending('匿名使用统计偏好')
+            ),
+          )}
         </>
       ),
       about: (
         <>
           {row(
-            '星芒 AI 管理工具',
-            '应用版本与更新说明',
+            'version',
+            currentVersion
+              ? `v${currentVersion}。点右边看这一版改了什么、检查有没有新版本`
+              : '版本暂未读到',
             <Button
               size="sm"
               icon={RefreshCw}
@@ -2930,7 +3505,29 @@ export function SettingsPage({
             </Button>,
           )}
           {row(
-            '快捷键',
+            'update-check',
+            '发现新版本会提醒你',
+            <Switch
+              checked={settings.checkUpdatesOnStartup}
+              aria-label="启动时检查新版本"
+              onChange={(checkUpdatesOnStartup) =>
+                void update({ checkUpdatesOnStartup })
+              }
+            />,
+          )}
+          {resource.data?.update?.autoUpdateSupported &&
+            row(
+              'auto-update',
+              autoUpdateSettingDescription(resource.data.update.installMethod),
+              <Switch
+                testId="settings-auto-update"
+                checked={settings.autoUpdate !== false}
+                aria-label="自动更新"
+                onChange={(autoUpdate) => void update({ autoUpdate })}
+              />,
+            )}
+          {row(
+            'shortcuts',
             '查看当前系统使用的快捷键',
             <Button
               size="sm"
@@ -2945,7 +3542,7 @@ export function SettingsPage({
             replayTour={replayTour}
           />
           {row(
-            '用户协议与隐私政策',
+            'legal',
             '查看协议和数据处理说明',
             <>
               <Button
@@ -2979,6 +3576,7 @@ export function SettingsPage({
           <AppUninstallRow
             api={api}
             isMac={isMac}
+            isLinux={isLinux}
             openMaintenance={() => navigate?.('maintenance')}
           />
         </>
@@ -2986,21 +3584,30 @@ export function SettingsPage({
     }
     content = groups[group]
   }
+  // 读不到的是设置本身或系统状态时，红条右边给「重新读取」；保存失败不给，那是另一回事。
+  const readFailed = Boolean(resource.error) || (!saveError && Boolean(systemError))
+  function reread() {
+    if (resource.error) void resource.reload()
+    if (systemError) {
+      setSystemError('')
+      setSystemAttempt((value) => value + 1)
+    }
+  }
   return (
     <section
+      ref={pageRef}
       className="v2-page"
       data-page-id="settings"
       data-testid="page-settings"
     >
-      <PageHead
-        title="设置"
-        lead="外观调整即时显示，其他设置会提示保存结果。"
-      />
+      <PageHead title="设置" lead={settingsPageLead(currentWindowOs())} />
       <ResultNotice
         error={resource.error || saveError || systemError || operation.error}
-        message={operation.message || saved}
-        revealPath={operation.message ? operation.revealPath : undefined}
+        detail={resource.error ? resource.detail : saveError || systemError ? undefined : operation.detail}
+        message={operation.revealPath ? operation.message : undefined}
+        revealPath={operation.revealPath || undefined}
         onReveal={(path) => api.revealExportedFile(path)}
+        retry={readFailed ? { label: '重新读取', onClick: reread } : undefined}
       />
       <div className="v2-business-settings-grid">
         <nav
@@ -3046,16 +3653,19 @@ export function SettingsPage({
           id="v2-settings-panel"
           aria-labelledby={`v2-settings-${group}`}
         >
-          <h2>{settingsGroups.find((item) => item.value === group)?.label}</h2>
-          {pending > 0 && <p role="status">正在保存更改…</p>}
+          {/* 「正在保存更改…」挂在组名右边，不单独占一行，存的时候页面不往下跳。 */}
+          <div className="v2-settings-panel-head">
+            <h2>{settingsGroups.find((item) => item.value === group)?.label}</h2>
+            {pending > 0 && <span role="status">正在保存更改…</span>}
+          </div>
           <Card padding="none">
-            {content ?? <p role="status">正在读取设置…</p>}
+            {content ?? <p role="status">{resource.error ? '设置暂时没有读到' : '正在读取设置…'}</p>}
           </Card>
         </div>
       </div>
       <Dialog
         open={logout}
-        title="退出当前账号？"
+        title="退出登录？"
         onClose={() => setLogout(false)}
         footer={
           <>
@@ -3072,7 +3682,7 @@ export function SettingsPage({
                     await resource.reload()
                     onAccountChanged?.()
                   },
-                  '已退出登录',
+                  toasted('已退出登录'),
                 )
               }
             >
@@ -3081,7 +3691,7 @@ export function SettingsPage({
           </>
         }
       >
-        <p>工具中已写入的配置继续保留。</p>
+        <p>工具里已写入的配置继续保留。</p>
       </Dialog>
       <Dialog
         open={Boolean(importAsk)}

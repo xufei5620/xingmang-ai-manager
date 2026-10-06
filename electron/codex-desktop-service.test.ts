@@ -8,6 +8,7 @@ import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
+import { InstallCancelledError, isInstallCancelledError } from './install-cancellation'
 import { parseWindowsProcessesJson } from './codex-desktop'
 import type { NativeConfigInspection } from './config-files'
 import {
@@ -51,6 +52,7 @@ import {
   codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopOfficialDownload,
   describeCodexDesktopStoreNotice,
   describeCodexDesktopStoreFailure,
   codexDesktopStoreExitCode,
@@ -62,18 +64,26 @@ import {
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
+  downloadCodexDesktopOfficialPackage,
+  buildCodexDesktopOfficialPackageSource,
+  codexDesktopOfficialDownloadLimitMs,
+  codexDesktopSlowDownloadGraceMs,
+  estimateCodexDesktopDownloadRemainingMs,
+  isCodexDesktopDownloadTooSlow,
   fetchCodexDesktopManifestCandidate,
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
   parseCodexDesktopCombinedProbeJson,
   validateCodexDesktopResourceUrl,
+  toCodexDesktopMacInstallFailure,
   type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
-import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { MacosDesktopInstallError } from './macos-desktop-app-installer'
+import { isMacosDesktopInstallFailure } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const temporaryDirectories: string[] = []
@@ -128,26 +138,6 @@ function testMirrorCandidate(
 }
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
-  it('recognizes the built-in Administrator SID and numeric UAC values', () => {
-    expect(parseWindowsStoreAppLaunchContext(
-      '{"sid":"S-1-5-21-2548096332-2102100343-2330258446-500","uacEnabled":0,"filterAdministratorToken":0}\n',
-    )).toEqual({
-      userSid: 'S-1-5-21-2548096332-2102100343-2330258446-500',
-      isBuiltInAdministrator: true,
-      uacEnabled: false,
-      filterAdministratorToken: false,
-    })
-  })
-
-  it('degrades malformed PowerShell output without exposing arbitrary text', () => {
-    expect(parseWindowsStoreAppLaunchContext('warning\nnot-json\n')).toEqual({
-      userSid: null,
-      isBuiltInAdministrator: false,
-      uacEnabled: null,
-      filterAdministratorToken: null,
-    })
-  })
-
   it('resets only the probed package, passing its name as a PowerShell literal', () => {
     const script = buildCodexDesktopResetScript("OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0'; Remove-Item C:\\")
     expect(script).toContain("Reset-AppxPackage -Package 'OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0''; Remove-Item C:\\'")
@@ -168,29 +158,8 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(slow).toContain('两分钟')
   })
 
-  it('tells a built-in Administrator user to sign in with an ordinary account', () => {
-    const message = describeCodexDesktopLaunchFailure({
-      userSid: 'S-1-5-21-1-2-3-500',
-      isBuiltInAdministrator: true,
-      uacEnabled: false,
-      filterAdministratorToken: false,
-    })
-    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(message).toContain('「Administrator」账户')
-    expect(message).toContain('换一个普通账户登录电脑')
-  })
-
-  it('names turned-off account control and otherwise gives the three steps a customer can take', () => {
-    const uacOff = describeCodexDesktopLaunchFailure({
-      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
-    })
-    expect(uacOff.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(uacOff).toContain('「用户账户控制」')
-    expect(uacOff).toContain('联系客服')
-
-    const generic = describeCodexDesktopLaunchFailure({
-      userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null,
-    })
+  it('gives the three steps a customer can take', () => {
+    const generic = describeCodexDesktopLaunchFailure()
     expect(generic.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
     expect(generic).toContain('点「重试」')
     expect(generic).toContain('开始菜单里搜「Codex」')
@@ -198,8 +167,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('says how long it waited and gives a start-menu check the customer can do alone', () => {
-    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
-    const noWindow = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 47, processSeen: true })
+    const noWindow = describeCodexDesktopLaunchFailure({ waitedSeconds: 47, processSeen: true })
     expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
     expect(noWindow).toContain('等了 47 秒')
     expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
@@ -207,22 +175,26 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
     expect(noWindow).toContain('联系客服')
 
-    const notStarted = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false })
+    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })
     expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
     expect(notStarted).not.toContain('窗口一直没出来')
   })
 
-  it('keeps the account-specific advice when the wait outcome is known', () => {
-    const message = describeCodexDesktopLaunchFailure(
-      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
-      { waitedSeconds: 45, processSeen: false },
-    )
-    expect(message).toContain('「Administrator」账户')
+  // Windows only refuses sandboxed store apps on these accounts; Codex Desktop
+  // is a full-trust package and opened on the built-in Administrator test
+  // machine. A failure there has the same causes as anywhere else.
+  it('never blames the Windows account for a failed launch', () => {
+    for (const message of [
+      describeCodexDesktopLaunchFailure(),
+      describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }),
+      describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: true }, '26.924.2738.0'),
+    ]) {
+      expect(message).not.toMatch(/Administrator|用户账户控制|普通账户/)
+    }
   })
 
   it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
-    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
-    const message = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
     expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
     expect(message).toContain('等了 51 秒，Codex 没有启动起来')
     expect(message).toContain('你装的这一版（26.924.2738.0）')
@@ -231,27 +203,49 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(message).not.toContain('开始菜单里搜「Codex」')
     expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
 
-    const noOutcome = describeCodexDesktopLaunchFailure(context, undefined, '26.924.2738.0')
+    const noOutcome = describeCodexDesktopLaunchFailure(undefined, '26.924.2738.0')
     expect(noOutcome).toContain('等了将近一分钟')
     expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
 
-    const admin = describeCodexDesktopLaunchFailure(
-      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
-      { waitedSeconds: 45, processSeen: false },
-      '26.924.2738.0',
-    )
-    expect(admin).toContain('「Administrator」账户')
-    expect(admin).not.toContain(codexDesktopKnownIssueMarker)
-
-    expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
     expect(describeCodexDesktopLaunchWait('preparing', 5)).toBe('正在准备打开 Codex 桌面端，已经等了 5 秒。')
     expect(describeCodexDesktopLaunchWait('waiting-window', 15)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 15 秒。Codex 第一次打开有时要一分钟。')
     expect(describeCodexDesktopLaunchWait('waiting-window', 20)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 20 秒。Codex 第一次打开有时要一分钟，可以先去开始菜单看看它有没有弹出来。')
-    for (const stage of ['preparing', 'waiting-window'] as const) {
-      expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID/i)
+    for (const stage of ['preparing', 'waiting-window', 'switching-language'] as const) {
+      expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID|调试端口|CDP/i)
+    }
+  })
+
+  it('says Codex is already open while its interface is switched to Chinese and never sends the customer to the start menu', () => {
+    expect(describeCodexDesktopLaunchWait('switching-language', 8)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 8 秒。')
+    expect(describeCodexDesktopLaunchWait('switching-language', 25)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。')
+    for (const elapsed of [5, 20, 45, 90]) {
+      const message = describeCodexDesktopLaunchWait('switching-language', elapsed)
+      expect(message).not.toContain('开始菜单')
+      expect(message).not.toContain('等 Codex 桌面端的窗口出现')
+    }
+  })
+
+  it('moves the heartbeat to the Chinese-switch sentence once the stage changes', () => {
+    vi.useFakeTimers()
+    try {
+      let clock = 0
+      const reports: Array<{ elapsedSeconds: number; message: string }> = []
+      const heartbeat = startCodexDesktopLaunchHeartbeat((progress) => reports.push(progress), { now: () => clock })
+      heartbeat.setStage('waiting-window')
+      clock = 4 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(4 * codexDesktopLaunchHeartbeatIntervalMs)
+      heartbeat.setStage('switching-language')
+      clock = 5 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports.at(-2)?.message).toBe(describeCodexDesktopLaunchWait('waiting-window', 20))
+      expect(reports.at(-1)).toEqual({ elapsedSeconds: 25, message: 'Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。' })
+      heartbeat.stop()
+    } finally {
+      vi.useRealTimers()
     }
   })
 
@@ -279,17 +273,10 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('keeps Windows internals out of every sentence a customer can see', () => {
-    const contexts = [
-      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
-      { userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null },
-      { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null },
-    ]
-    for (const context of contexts) {
-      for (const processSeen of [true, false]) {
-        expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen })).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
-      }
-      expect(describeCodexDesktopLaunchFailure(context)).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+    for (const processSeen of [true, false]) {
+      expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen })).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
     }
+    expect(describeCodexDesktopLaunchFailure()).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
   })
 
   it('counts a process that refuses the liveness probe as still running', () => {
@@ -1492,8 +1479,6 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('catch { $startAppsError = $_.Exception.Message }')
     expect(combined).toContain('catch { $processesError = $_.Exception.Message }')
     expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
-    expect(combined).toContain('storeAppLaunch = $storeAppLaunchContext')
-    expect(combined).toContain('WindowsIdentity]::GetCurrent()')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
@@ -1662,27 +1647,6 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     })
     expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
     expect(probe.processes).toHaveLength(1)
-  })
-
-  it('flags an account that Windows will not let open store apps', () => {
-    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
-      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 0 },
-    })).storeAppLaunchBlock).toBe('builtInAdministrator')
-    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
-      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 0, filterAdministratorToken: null },
-    })).storeAppLaunchBlock).toBe('uacDisabled')
-  })
-
-  it('leaves the store-app flag out for ordinary accounts and missing segments', () => {
-    for (const storeAppLaunch of [
-      { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 1, filterAdministratorToken: null },
-      { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 1 },
-      null,
-      'garbage',
-    ]) {
-      expect(parseCodexDesktopCombinedProbeJson(combinedOutput({ storeAppLaunch }))).not.toHaveProperty('storeAppLaunchBlock')
-    }
-    expect(parseCodexDesktopCombinedProbeJson(combinedOutput())).not.toHaveProperty('storeAppLaunchBlock')
   })
 
   it('isolates a failed start-menu segment', () => {
@@ -2009,6 +1973,271 @@ describe('Codex Desktop launch acceleration', () => {
   })
 })
 
+describe('Codex Desktop install on macOS', () => {
+  function macInstallFixture(overrides: Partial<CodexDesktopServiceOptions> = {}) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-install-'))
+    temporaryDirectories.push(directory)
+    const routed: string[] = []
+    const downloadFetch = vi.fn<typeof fetch>()
+    const executeCommand = vi.fn<CodexDesktopServiceOptions['executeCommand']>(async (spec) => ({
+      executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+      stdout: spec.executable === '/usr/sbin/sysctl' ? '1\n' : '', stderr: '', outputBytes: 0, durationMs: 1,
+    }))
+    const installMacosDesktopApp = vi.fn<NonNullable<CodexDesktopServiceOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.930.31730', percent: 40 })
+      options.onProgress?.({ phase: 'checking', message: '正在检查下载下来的安装包是不是完整的官方版', percent: null })
+      await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
+    })
+    const service = createCodexDesktopService({
+      platform: 'darwin',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      executeCommand,
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch,
+      installMacosDesktopApp,
+      withDownloadRoute: async (operation) => {
+        routed.push('start')
+        try { return await operation() } finally { routed.push('end') }
+      },
+      userHome: '/Users/tester',
+      getuid: () => 501,
+      architecture: 'arm64',
+      ...overrides,
+    })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    function progress(): unknown[][] {
+      return target.send.mock.calls
+        .filter(([channel]) => channel === 'desktop:codex-install-progress')
+        .map(([, event]) => [event.phase, event.percent, event.message])
+    }
+    return { service, target, installMacosDesktopApp, executeCommand, downloadFetch, routed, progress }
+  }
+
+  it('installs the official package through the shared Mac installer, inside the download route', async () => {
+    const f = macInstallFixture()
+
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
+      tool: 'codexDesktop', architecture: 'arm64', userHome: '/Users/tester', fetch: f.downloadFetch, signal: expect.any(AbortSignal),
+    }))
+    expect(f.progress()).toEqual([
+      ['downloading', 40, '正在下载 Codex 桌面端 26.930.31730'],
+      ['validating', null, '正在检查下载下来的安装包是不是完整的官方版'],
+      ['installing', null, '正在放进「应用程序」'],
+      ['completed', 100, 'Codex 桌面端 26.930.31730 装好了，在「应用程序」里叫 ChatGPT'],
+    ])
+    // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
+    expect(f.executeCommand).toHaveBeenCalledWith(
+      { executable: '/usr/bin/codesign', argv: ['--verify'] },
+      expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000, signal: expect.any(AbortSignal) }),
+    )
+    for (const [, options] of f.executeCommand.mock.calls) expect(options?.trustedOnly).toBe(false)
+  })
+
+  it('installs the Apple silicon package when an Intel build of the toolbox runs under Rosetta', async () => {
+    const rosetta = macInstallFixture({ architecture: 'x64' })
+    await rosetta.service.installCodexDesktop(rosetta.target)
+    expect(rosetta.executeCommand).toHaveBeenCalledWith({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, expect.objectContaining({ trustedOnly: false }))
+    expect(rosetta.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64' }))
+
+    // Intel Macs report 0, or have no such key and sysctl fails.
+    for (const answer of [async () => '0\n', async (): Promise<string> => { throw new Error('unknown oid') }]) {
+      const intel = macInstallFixture({
+        architecture: 'x64',
+        executeCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: spec.executable === '/usr/sbin/sysctl' ? await answer() : '', stderr: '', outputBytes: 0, durationMs: 1,
+        }),
+      })
+      await intel.service.installCodexDesktop(intel.target)
+      expect(intel.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'x64' }))
+    }
+  })
+
+  it('leaves an installed desktop app alone', async () => {
+    const f = macInstallFixture({
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+  })
+
+  // 点「安装」那一刻检测没做完：照「没装」往下走的话，安装那一步会把「应用程序」里客户自己装好的
+  // 正版 ChatGPT 说成「不是官方原版」，叫客户移到废纸篓。
+  it('checks once more when the first detection did not finish, and leaves the app it then finds alone', async () => {
+    const installed = {
+      app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+      detectionFailed: false,
+      detectionError: null,
+    }
+    const unfinished = { app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' }
+    const firstAttempts: Array<() => Promise<MacosCodexAppInspection>> = [
+      async () => unfinished,
+      async () => { throw new Error('plutil 没有起来') },
+    ]
+    for (const first of firstAttempts) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+        .mockImplementationOnce(first)
+        .mockResolvedValueOnce(installed)
+      const f = macInstallFixture({ detectMacosCodexApp })
+      await expect(f.service.installCodexDesktop(f.target))
+        .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
+      expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+      expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+    }
+  })
+
+  // 没做完的原因不一定和 ChatGPT.app 有关（Spotlight 查不了、扫应用目录超时）：一律停下会让这类 Mac
+  // 再也装不上。
+  it('installs as before when the second detection does not finish either', async () => {
+    const unfinished = { app: null, detectionFailed: true, detectionError: '应用目录扫描达到时间上限，Codex 检测未能完成' }
+    const secondAttempts: Array<() => Promise<MacosCodexAppInspection>> = [
+      async () => unfinished,
+      async () => { throw new Error('plutil 没有起来') },
+    ]
+    for (const second of secondAttempts) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+        .mockResolvedValueOnce(unfinished)
+        .mockImplementationOnce(second)
+      const f = macInstallFixture({ detectMacosCodexApp })
+      await expect(f.service.installCodexDesktop(f.target))
+        .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
+      expect(f.installMacosDesktopApp).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('does not detect a second time once the customer has cancelled during the first one', async () => {
+    let finishFirst = (): void => {}
+    const firstFinished = new Promise<void>((resolve) => { finishFirst = resolve })
+    const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>(async () => {
+      await firstFinished
+      return { app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' }
+    })
+    const f = macInstallFixture({ detectMacosCodexApp })
+    const install = f.service.installCodexDesktop(f.target)
+    await vi.waitFor(() => expect(detectMacosCodexApp).toHaveBeenCalledTimes(1))
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    finishFirst()
+    const error = await install.then(() => null, (reason: unknown) => reason)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(detectMacosCodexApp).toHaveBeenCalledTimes(1)
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
+  })
+
+  it('detects only once when the first detection finished and found nothing', async () => {
+    const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>(async () => ({
+      app: null,
+      detectionFailed: false,
+      detectionError: null,
+    }))
+    const f = macInstallFixture({ detectMacosCodexApp })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+    expect(detectMacosCodexApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('will not install for root, whose copy the customer could never update', async () => {
+    const f = macInstallFixture({ getuid: () => 0 })
+    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。')
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('tells root that an app already there is installed instead of refusing', async () => {
+    const f = macInstallFixture({
+      getuid: () => 0,
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('passes the Mac wording on as it is, never the Windows one that points at the Microsoft Store', async () => {
+    const failure = new MacosDesktopInstallError('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。', 'fetch failed')
+    const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
+    await expect(failing.service.installCodexDesktop(failing.target)).rejects.toBe(failure)
+    expect(failing.progress().at(-1)).toEqual(['error', null, failure.message])
+
+    const unexpected = macInstallFixture({ withDownloadRoute: async () => { throw new Error('连接超时') } })
+    const error = await unexpected.service.installCodexDesktop(unexpected.target).then(() => null, (reason: unknown) => reason)
+    expect(error).toBeInstanceOf(MacosDesktopInstallError)
+    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect((error as MacosDesktopInstallError).detail).toBe('连接超时')
+  })
+
+  it('says why a Mac install failed in plain words, keeping the ones already written for customers', () => {
+    const disk = new Error('Codex 桌面端安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
+    expect(toCodexDesktopMacInstallFailure(disk)).toBe(disk)
+    const failure = toCodexDesktopMacInstallFailure(new Error('HTTP 503'))
+    expect(failure.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect(isMacosDesktopInstallFailure(failure.message)).toBe(true)
+    expect(failure.message).not.toContain('Codex 桌面端没装上')
+  })
+
+  it('stops a cancelled install and reports it as cancelled', async () => {
+    let release = (): void => {}
+    const f = macInstallFixture({
+      installMacosDesktopApp: async (options) => {
+        await new Promise<void>((resolve) => { release = resolve })
+        options.signal?.throwIfAborted()
+        return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
+      },
+    })
+    const install = f.service.installCodexDesktop(f.target)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    release()
+    const error = await install.then(() => null, (reason: unknown) => reason)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
+  })
+
+  it('takes an install still waiting in the queue out at once instead of waiting for the one ahead', async () => {
+    const queue = new InstallationQueue()
+    let release = (): void => {}
+    const ahead = queue.enqueue('cli:install:claude', () => new Promise<void>((resolve) => { release = resolve }))
+    const f = macInstallFixture({ installationQueue: queue })
+    const install = f.service.installCodexDesktop(f.target).then(() => 'installed', (reason: unknown) => reason)
+    expect(queue.snapshot().pendingKeys).toEqual(['desktop:codex:install'])
+
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const error = await Promise.race([install, Promise.resolve('still waiting for the install ahead')])
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('Codex 桌面端安装已取消')
+    expect(f.progress()).toEqual([['error', null, 'Codex 桌面端安装已取消']])
+    expect(queue.snapshot()).toEqual({ activeKey: 'cli:install:claude', pendingKeys: [] })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.service.cancelCodexDesktopInstall().cancelled).toBe(false)
+    release()
+    await ahead
+  })
+})
+
 describe('Codex Desktop Microsoft Store install', () => {
   const winget = 'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.0_x64__8wekyb3d8bbwe\\winget.exe'
 
@@ -2061,7 +2290,7 @@ describe('Codex Desktop Microsoft Store install', () => {
   it('says how much longer the Store gets before switching to the fallback download', () => {
     const timeoutMs = 15 * 60_000
     expect(buildCodexDesktopStoreWaitMessage(12 * 60_000, null, timeoutMs))
-      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换国内下载线路接着装，请别关窗口')
+      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换 OpenAI 官网的离线安装包接着装，请别关窗口')
     expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等 1 分钟')
     expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等 1 分钟')
     expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已经等了 11 分 00 秒')
@@ -2081,6 +2310,422 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(shouldTryCodexDesktopStoreUpdate('26.900.1.0', '26.917.9434.0')).toBe(true)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', '26.917.9434.0')).toBe(false)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', null)).toBe(true)
+  })
+})
+
+describe('Codex Desktop official offline package', () => {
+  const manifestUrl = 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'
+  const packageUrl = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix'
+
+  function officialMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
+    return {
+      name: 'OpenAI.Codex',
+      version,
+      architecture: 'x64',
+      publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B',
+      hasSignature: true,
+      ...overrides,
+    }
+  }
+
+  function officialFetch(options: { version?: string; contentType?: string | null; manifestStatus?: number } = {}) {
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x43)
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      requested.push(url)
+      let response: Response
+      if (url === manifestUrl) {
+        response = new Response(JSON.stringify({
+          schemaVersion: 1,
+          buildVersion: options.version ?? '26.930.1.0',
+          storeProductId: '9PLM9XGG6VKS',
+          packageIdentity: 'OpenAI.Codex',
+        }), { status: options.manifestStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
+      } else if (url === packageUrl) {
+        const headers: Record<string, string> = { 'Content-Length': String(bytes.byteLength) }
+        if (options.contentType !== null) headers['Content-Type'] = options.contentType ?? 'application/octet-stream'
+        response = new Response(bytes, { headers })
+      } else {
+        throw new Error(`unexpected request ${url}`)
+      }
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    return { bytes, requested, fetchMock }
+  }
+
+  function officialDestination(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-msix-'))
+    temporaryDirectories.push(directory)
+    return path.join(directory, 'ChatGPT-x64.msix')
+  }
+
+  it('words the official download step the way the customer was told', () => {
+    const storeFailed = { storeFailure: '连不上微软商店' }
+    expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 12 }))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（12%）')
+    expect(describeCodexDesktopOfficialDownload({ storeFailure: null, storeUnavailable: true }, '26.930.1.0'))
+      .toBe('这台电脑没有微软商店，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（0%）')
+    expect(describeCodexDesktopOfficialDownload({
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+    }, '26.930.1.0', { percent: 40 }))
+      .toBe('微软商店少一个安装组件，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（40%）')
+    expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 40, resuming: true }))
+      .toBe('网络断了一下，正在接着从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（已下 40%）')
+    // 接线路、读官网清单那几秒还不知道版本：先把「正在等微软商店」换掉。
+    expect(describeCodexDesktopOfficialDownload(storeFailed, null))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端的离线安装包')
+  })
+
+  it('names the failed official package, without the store reason, before every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    const official = 'OpenAI 官网连接或下载超时'
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: '连不上微软商店', officialFailure: official }))
+      .toBe('微软商店这次没装上，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: null, storeUnavailable: true, officialFailure: official }))
+      .toBe('这台电脑没有微软商店，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+      officialFailure: official,
+    })).toBe('微软商店少一个安装组件，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: '连不上微软商店', officialFailure: official })).not.toContain(official)
+  })
+
+  it('keeps install jargon out of every official download line', () => {
+    const attempts = [
+      { storeFailure: '连不上微软商店' },
+      { storeFailure: null, storeUnavailable: true },
+      { storeFailure: '这台电脑上的微软商店安装组件用不了', storeInstallerMissing: true },
+    ]
+    for (const attempt of attempts) {
+      for (const message of [
+        describeCodexDesktopOfficialDownload(attempt, null),
+        describeCodexDesktopOfficialDownload(attempt, '26.930.1.0', { percent: 3 }),
+        describeCodexDesktopOfficialDownload(attempt, '26.930.1.0', { percent: 3, resuming: true }),
+        describeCodexDesktopStoreNotice({ ...attempt, officialFailure: 'OpenAI 官网返回 HTTP 403' }),
+      ]) {
+        expect(message).not.toMatch(/winget|msstore|appx|msix|app installer|powershell|HTTP \d{3}/i)
+      }
+    }
+  })
+
+  it('downloads the package for this processor from the official site and checks it is the signed OpenAI build', async () => {
+    const destination = officialDestination()
+    const { bytes, requested, fetchMock } = officialFetch()
+    const events: string[] = []
+    const inspected: string[] = []
+
+    const result = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      onVersion: (version) => events.push(`version ${version}`),
+      onProgress: (version, progress) => {
+        if (progress.percent === 100) events.push(`downloaded ${version}`)
+      },
+      onValidating: () => events.push('validating'),
+      inspectPackage: async (packagePath) => {
+        inspected.push(packagePath)
+        return officialMetadata('26.930.1.0')
+      },
+    })
+
+    expect(requested).toEqual([manifestUrl, packageUrl])
+    expect(result).toEqual({
+      status: 'downloaded',
+      version: '26.930.1.0',
+      download: {
+        transferred: bytes.byteLength,
+        total: bytes.byteLength,
+        sha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+    })
+    expect(events).toEqual(['version 26.930.1.0', 'downloaded 26.930.1.0', 'validating'])
+    expect(inspected).toEqual([destination])
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(buildCodexDesktopOfficialPackageSource('arm64').url)
+      .toBe('https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix')
+  })
+
+  it('installs the newer build the official package turns out to carry', async () => {
+    const { fetchMock } = officialFetch({ version: '26.930.1.0' })
+
+    const result = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.900.1.0',
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      inspectPackage: async () => officialMetadata('26.931.2.0'),
+    })
+
+    expect(result.status === 'downloaded' && result.version).toBe('26.931.2.0')
+  })
+
+  it('accepts whatever binary type the official CDN sends but not a web page', async () => {
+    for (const contentType of [null, 'application/x-msix', 'application/vnd.ms-appx']) {
+      const { fetchMock } = officialFetch({ contentType })
+      await expect(downloadCodexDesktopOfficialPackage({
+        architecture: 'x64',
+        destination: officialDestination(),
+        installedVersion: null,
+        knownVersion: '26.930.1.0',
+        fetchImplementation: fetchMock,
+        inspectPackage: async () => officialMetadata('26.930.1.0'),
+      })).resolves.toMatchObject({ status: 'downloaded' })
+    }
+
+    const destination = officialDestination()
+    const page = officialFetch({ contentType: 'text/html; charset=utf-8' })
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: page.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+    })).rejects.toThrow('OpenAI 官网返回的不是 MSIX 文件（Content-Type: text/html; charset=utf-8）')
+    expect(fs.existsSync(destination)).toBe(false)
+
+    // 国内镜像那一路照旧只认 MSIX 与二进制流。
+    const mirror = officialFetch({ contentType: null })
+    await expect(downloadCodexDesktopPackage(
+      { label: '国内镜像', url: packageUrl },
+      officialDestination(),
+      () => undefined,
+      mirror.fetchMock,
+    )).rejects.toThrow('国内镜像返回的不是 MSIX 文件（Content-Type: 缺失）')
+  })
+
+  it('skips the download when the official build is not newer than the installed one', async () => {
+    const asked = officialFetch({ version: '26.930.1.0' })
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.930.1.0',
+      knownVersion: null,
+      fetchImplementation: asked.fetchMock,
+    })).resolves.toEqual({ status: 'not-newer', version: '26.930.1.0' })
+    expect(asked.requested).toEqual([manifestUrl])
+
+    const known = officialFetch()
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.931.0.0',
+      knownVersion: '26.930.1.0',
+      fetchImplementation: known.fetchMock,
+    })).resolves.toEqual({ status: 'not-newer', version: '26.930.1.0' })
+    expect(known.requested).toEqual([])
+  })
+
+  it('uses the version read when the install started instead of asking the official site again', async () => {
+    const { requested, fetchMock } = officialFetch()
+
+    await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.900.1.0',
+      knownVersion: '26.930.1.0',
+      fetchImplementation: fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+    })
+
+    expect(requested).toEqual([packageUrl])
+  })
+
+  it('deletes the download and gives up on this route when the package is not the official build', async () => {
+    for (const [metadata, reason] of [
+      [officialMetadata('26.930.1.0', { publisher: 'CN=Someone Else' }), '发布者身份不匹配'],
+      [officialMetadata('26.930.1.0', { name: 'Contoso.Codex' }), '产品身份不是 OpenAI.Codex'],
+      [officialMetadata('26.930.1.0', { hasSignature: false }), '缺少 Appx 签名'],
+      [officialMetadata('26.930.1.0', { architecture: 'arm64' }), '架构 arm64 与本机 x64 不匹配'],
+      [officialMetadata('26.929.0.0'), '低于更新清单 26.930.1.0'],
+    ] as const) {
+      const destination = officialDestination()
+      const { fetchMock } = officialFetch()
+      await expect(downloadCodexDesktopOfficialPackage({
+        architecture: 'x64',
+        destination,
+        installedVersion: null,
+        knownVersion: null,
+        fetchImplementation: fetchMock,
+        inspectPackage: async () => metadata,
+      })).rejects.toThrow(reason)
+      expect(fs.existsSync(destination)).toBe(false)
+    }
+  })
+
+  it('says why the route failed when the official version list cannot be read', async () => {
+    const { requested, fetchMock } = officialFetch({ manifestStatus: 403 })
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+    })).rejects.toThrow('OpenAI 官网版本清单读取失败：返回 HTTP 403')
+    expect(requested).toEqual([manifestUrl])
+  })
+
+  it('reports a cancellation as a cancellation and asks nothing more', async () => {
+    const controller = new AbortController()
+    controller.abort(new InstallCancelledError())
+    const { requested, fetchMock } = officialFetch()
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      signal: controller.signal,
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(requested).toEqual([])
+  })
+
+  /**
+   * 每读一块就把假时钟往前拨 secondsPerChunk 秒：下载「花了多久」全由它说了算，
+   * 测试本身不用真等。cancelled 记下连接有没有被掐断（没掐断的话连接会一直挂着）。
+   */
+  function trickleFetch(secondsPerChunk: number, options: { chunks?: number; onChunk?: (sent: number) => void } = {}) {
+    const chunks = options.chunks ?? 10
+    const chunkBytes = 1024 * 1024
+    const clock = { now: 0 }
+    const stream = { sent: 0, cancelled: false }
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      // highWaterMark 0: a chunk "arrives" only when the download asks for it, so the
+      // fake clock reads exactly the time the chunks handed out so far took.
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (stream.sent >= chunks) {
+            controller.close()
+            return
+          }
+          stream.sent += 1
+          clock.now += secondsPerChunk * 1000
+          controller.enqueue(new Uint8Array(chunkBytes).fill(0x43))
+          options.onChunk?.(stream.sent)
+        },
+        cancel() {
+          stream.cancelled = true
+        },
+      }, { highWaterMark: 0 })
+      const response = new Response(body, {
+        headers: { 'Content-Length': String(chunks * chunkBytes), 'Content-Type': 'application/octet-stream' },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    return { fetchMock, clock, stream, now: () => clock.now }
+  }
+
+  it('estimates how much longer a download takes at its average speed so far', () => {
+    const megabytes = 1024 * 1024
+    // 一分钟下了 30 MB，剩下 270 MB 还要九分钟。
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 30 * megabytes, 300 * megabytes)).toBe(9 * 60_000)
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 300 * megabytes, 300 * megabytes)).toBe(0)
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 0, 300 * megabytes)).toBeNull()
+  })
+
+  it('gives up on a download only after half a minute and only when ten more minutes are still ahead', () => {
+    const megabytes = 1024 * 1024
+    const limit = codexDesktopOfficialDownloadLimitMs
+    expect(limit).toBe(10 * 60_000)
+    // 前半分钟速度还没稳，再慢也不判。
+    expect(isCodexDesktopDownloadTooSlow(codexDesktopSlowDownloadGraceMs - 1, 1, 300 * megabytes, limit)).toBe(false)
+    // 半分钟下了 15 MB：剩下 285 MB 要 9.5 分钟，接着下。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 15 * megabytes, 300 * megabytes, limit)).toBe(false)
+    // 半分钟只下了 12 MB：还要 12 分钟，换下一路。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 12 * megabytes, 300 * megabytes, limit)).toBe(true)
+    // 半分钟一个字节都没收到。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 0, 300 * megabytes, limit)).toBe(true)
+    // 前面慢过、已经下了二十分钟，但只差最后一点：不扔掉重下。
+    expect(isCodexDesktopDownloadTooSlow(20 * 60_000, 299 * megabytes, 300 * megabytes, limit)).toBe(false)
+  })
+
+  it('drops the official download as too slow, not as cancelled, once ten more minutes are ahead', async () => {
+    const destination = officialDestination()
+    // 两分钟才 1 MB：第一块到时已过了半分钟的观察期，剩下 9 MB 照这个速度还要 18 分钟，
+    // 超过 10 分钟，第一块之后就停下。
+    const slow = trickleFetch(120)
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: slow.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: slow.now },
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(false)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('OpenAI 官网下载太慢：照目前的速度还要 18 分钟才下得完')
+    // 顶多多向服务器要了一块，没写进文件。
+    expect(slow.stream.sent).toBeLessThanOrEqual(2)
+    expect(slow.stream.cancelled).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+
+  it('lets a slow official download finish when what is left is short', async () => {
+    // 十秒一块（每分钟 6 MB）：半分钟时还剩 7 MB、七十秒，不换。
+    const steady = trickleFetch(10)
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: steady.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: steady.now },
+    })).resolves.toMatchObject({ status: 'downloaded', version: '26.930.1.0' })
+    expect(steady.stream.sent).toBe(10)
+  })
+
+  it('never drops the domestic mirror for being slow: it is the last route', async () => {
+    const slow = trickleFetch(120)
+
+    await expect(downloadCodexDesktopPackage(
+      { label: '国内镜像', url: packageUrl },
+      officialDestination(),
+      () => undefined,
+      slow.fetchMock,
+      undefined,
+      { now: slow.now },
+    )).resolves.toMatchObject({ transferred: 10 * 1024 * 1024 })
+  })
+
+  it('still reports the customer pressing cancel mid-download as a cancellation', async () => {
+    const controller = new AbortController()
+    const destination = officialDestination()
+    const download = trickleFetch(10, { onChunk: (sent) => { if (sent === 2) controller.abort(new InstallCancelledError()) } })
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: download.fetchMock,
+      signal: controller.signal,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: download.now },
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(download.stream.cancelled).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
   })
 })
 

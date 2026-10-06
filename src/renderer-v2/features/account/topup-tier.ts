@@ -5,10 +5,12 @@ export type TopupQuoteState = number | 'loading' | 'failed'
 
 export interface TopupTierView {
   credited: string
-  // 试算失败时为 null：只显示到账和赠送，不在每张卡上报错。
+  // 试算好的实付；还在算、算不了时为 null：卡上不写「实付」，也不在每张卡上报错。
   paid: string | null
-  bonus: string
-  hasBonus: boolean
+  // 实付还在算：卡上放一条灰色占位条，不写字。
+  quoting: boolean
+  // 有赠送时的「送 10%」；没有赠送时为 null，不写「无赠送」。
+  bonus: string | null
   label: string
 }
 
@@ -17,9 +19,10 @@ export interface TopupTierView {
 // 单位跟余额一样是美元，赠送按档位各自的折扣算。实付由服务端试算
 // （会把档位折扣和当前账号所在分组的倍率都算进去），客户端不自己乘比例：
 // 价格和活动都在后台改，写死在这里迟早对不上。
+// quote 为 'unavailable'：这会儿算不了（断网、没有支付渠道、充值信息没读到），不写「实付」。
 export function describeTopupTier(input: {
   amount: number
-  quote: TopupQuoteState | undefined
+  quote: TopupQuoteState | 'unavailable' | undefined
   discounts: Record<string, number> | undefined
   provider: string | undefined
   creditMultiplier?: number
@@ -28,17 +31,17 @@ export function describeTopupTier(input: {
   const credited = `$${formatAmount(multiplier === undefined ? input.amount : Math.round(input.amount * multiplier * 100) / 100)}`
   const paid = typeof input.quote === 'number'
     ? `${payableSymbol(input.provider)}${input.quote.toFixed(2)}`
-    : input.quote === 'failed' ? null : '正在计算'
+    : null
   const percent = multiplier === undefined
     ? buildTopupBonus(input.amount, input.discounts)?.percent ?? 0
     : Math.round((multiplier - 1) * 100)
-  const bonusText = percent > 0 ? `送 ${percent}%` : '无赠送'
+  const bonus = percent > 0 ? `送 ${percent}%` : null
   return {
     credited,
     paid,
-    bonus: bonusText,
-    hasBonus: percent > 0,
-    label: paid === null ? `到账 ${credited}，${bonusText}` : `到账 ${credited}，实付 ${paid}，${bonusText}`,
+    quoting: input.quote === undefined || input.quote === 'loading',
+    bonus,
+    label: [`到账 ${credited}`, paid === null ? null : `实付 ${paid}`, bonus].filter(Boolean).join('，'),
   }
 }
 

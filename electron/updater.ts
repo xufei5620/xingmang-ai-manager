@@ -1,4 +1,5 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
+import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
@@ -21,6 +22,18 @@ export type UpdatePhase =
  * 其实根本没开始下。这个字段让界面按步骤说话，并给出这一步对应的重试动作。
  */
 export type UpdateFailedStep = 'check' | 'download' | 'install'
+
+/**
+ * 新版本怎么装上。缺省（快照里没有这一项）＝安装器接手退出、装完自动重开，Windows 和
+ * Mac 一直是这样。
+ *
+ * - 'system-installer'：Linux 的 .deb。下好并核对后交给这台电脑自己的安装程序打开，软件
+ *   随即关掉；客户在系统的安装窗口里点「安装」、输入开机密码，装好后自己重新打开。软件
+ *   从不提权，所以既不在退出时、也不在打开时自动装，每次都由客户点一下。
+ * - 'manual'：这种装法自动更新用不了（Linux 上不是用 .deb 装的，electron-updater 对它
+ *   什么也不做）。阶段停在 disabled，界面请客户去下载页手动下新版本。
+ */
+export type UpdateInstallMethod = 'system-installer' | 'manual'
 
 /**
  * 下载前量出来的空间缺口。不是错误：新版本照旧摆在那里（phase 仍是 available），
@@ -130,6 +143,8 @@ export interface UpdateSnapshot {
    * 只在 phase 为 downloaded 时有值，阶段一变就清掉。可选＝旧快照，界面照旧不显示。
    */
   launchInstallNotice?: LaunchInstallNotice | null
+  /** 见 UpdateInstallMethod。可选＝旧快照，界面照旧按「重启安装」说。 */
+  installMethod?: UpdateInstallMethod | null
 }
 
 export interface LaunchInstallNotice {
@@ -154,6 +169,37 @@ type UpdateEventName =
   | 'update-cancelled'
   | 'error'
 
+/**
+ * The one member of builder-util-runtime's CancellationToken the stall watchdog
+ * uses. The host creates the token from electron-updater's own export: the
+ * library recognises a cancellation with `instanceof CancellationError`, so a
+ * token from a second copy of builder-util-runtime would surface as an error.
+ */
+export interface UpdateDownloadCancellation {
+  cancel(): void
+}
+
+/** 看门狗停掉一次下载时交给宿主记日志的东西。*/
+export interface UpdateDownloadStall {
+  /** true＝接下来自动重下一次；false＝这就报下载失败。*/
+  retrying: boolean
+  /**
+   * true＝取消、掐断以后 electron-updater 那次一直没收尾（宿主没掐到它的请求，增量下载又不认
+   * 取消）。这时再下只会接回同一次，所以不自动重下。
+   */
+  unsettled: boolean
+  /**
+   * true＝停住的是看门狗停过一次以后的那次重下，它关掉了增量下载，只下整个安装包。false＝头一次
+   * 下，可能是只下改了的那几段，也可能是整个安装包（没有旧安装包可比、增量下载失败时
+   * electron-updater 自己改下整包）。
+   */
+  fullPackage: boolean
+  /** 停住前最后一次进度是 100%：停在下完以后的核对、改名那几步，或者分批下载的下一批开头。*/
+  transferEnded: boolean
+  transferred: number
+  total: number
+}
+
 export interface UpdateClient {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
@@ -162,11 +208,16 @@ export interface UpdateClient {
   allowDowngrade: boolean
   disableWebInstaller: boolean
   forceDevUpdateConfig: boolean
+  /**
+   * electron-updater 的增量下载（只下变了的那几段）开关，下载开始那一刻读。看门狗停住一次后
+   * 重下时临时关掉增量下载，见 downloadWatched。
+   */
+  disableDifferentialDownload?: boolean
   logger: unknown
   on(event: UpdateEventName, listener: (...args: any[]) => void): this
   off(event: UpdateEventName, listener: (...args: any[]) => void): this
   checkForUpdates(): Promise<unknown>
-  downloadUpdate(): Promise<unknown>
+  downloadUpdate(cancellationToken?: UpdateDownloadCancellation): Promise<unknown>
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void
   /**
    * electron-updater 判断「这台电脑在不在放量范围内」的钩子，默认读 latest.yml
@@ -282,6 +333,50 @@ export interface UpdaterRuntime {
   readFreeDiskBytes?: () => Promise<number | null>
   /** 这一轮因为空间不够没下。宿主拿去记一条日志。*/
   diskShortfallSkipped?: (shortfall: UpdateDiskShortfall, version: string | null) => void
+  /**
+   * Gives each download a token the stall watchdog cancels. Cancelling settles
+   * a full-package download and a blockmap fetch at once. The differential
+   * downloader never reads the token while no data arrives; that is what
+   * `abortDownloadRequests` is for.
+   */
+  createDownloadCancellation?: () => UpdateDownloadCancellation
+  /**
+   * When an electron-updater request last received response headers or bytes,
+   * from the host's request guard (update-request-guard.ts). The watchdog counts
+   * it as activity next to progress events, which electron-updater does not send
+   * for blockmaps, for single-range differential batches or for a response
+   * without a Content-Length. Without it only progress events count. The check
+   * watchdog reads it too: a check sends no progress events at all, so without
+   * it a check only counts as stalled once updateCheckStallMs have passed.
+   */
+  downloadReceivedAt?: () => number | null
+  /**
+   * Fails every request electron-updater still has open with `reason`, the way a
+   * dropped connection would. The watchdog calls it right after cancelling the
+   * token, so a stalled differential download settles as well: electron-updater
+   * then falls back to a full download, which the cancelled token ends at once.
+   * Closing the updater session's connections is no substitute. In Electron 43 it
+   * leaves HTTP/1.1 sockets that are in use open, and on HTTP/2 the differential
+   * response it fails has no 'error' listener, so the failure is uncaught. Both
+   * were reproduced against a local server that stalls mid-body.
+   * The check watchdog calls it on a check that hears nothing back. That failure
+   * is also what makes electron-updater drop the check it keeps in flight, which
+   * every later check would otherwise be handed again.
+   */
+  abortDownloadRequests?: (reason: Error) => void
+  /** 看门狗停掉了一次下载。宿主拿去记一条日志。*/
+  downloadStalled?: (stall: UpdateDownloadStall) => void
+  /** 见 UpdateInstallMethod。不传＝安装器接手退出（Windows、Mac 的旧行为）。 */
+  installMethod?: UpdateInstallMethod
+  /**
+   * 'system-installer' 通道：把下载时已经核对过 SHA-512 的安装包交给系统安装程序。
+   * 必须在返回之前就把安装程序拉起来（退出确认里选「安装并退出」时，紧接着软件就退了，
+   * 等不到任何 await）；返回的 Promise resolve＝安装窗口已经交出去，reject＝没交出去，
+   * 软件照常开着，报安装失败。
+   */
+  openSystemInstaller?: (packagePath: string) => Promise<void>
+  /** 安装窗口交出去之后把软件关掉：安装包要替换的正是这个软件自己的文件。 */
+  quitAfterSystemInstaller?: () => void
 }
 
 /**
@@ -374,6 +469,104 @@ export function resolveDownloadSecondsRemaining(
   return Math.ceil((total - transferred) / rate)
 }
 
+/**
+ * 到 `at` 这一刻的平均速度：最后一个样本之后没有新进度，就当这段时间一个字节也没进账。
+ * 下载停住时 electron-updater 不再报进度，只看已有的样本，界面会一直挂着停住前的速度和
+ * 「大约还要多久」。
+ */
+export function resolveDownloadRateAt(samples: readonly DownloadProgressSample[], at: number): number | null {
+  const last = samples.at(-1)
+  if (!last || at <= last.at) return resolveAverageDownloadRate(samples)
+  return resolveAverageDownloadRate(recordDownloadProgressSample(samples, { at, transferred: last.transferred }))
+}
+
+/**
+ * 下载多久没有新数据算停住了，和装 Codex 桌面端、Node.js 那几个大安装包同一个数
+ * （download-retry.ts）。
+ *
+ * electron-updater 自带的 60 秒超时在 Electron 里不起作用：builder-util-runtime 把它挂在
+ * 请求的 socket 事件上，而 Electron 的 net 请求不发这个事件。断网、换了网络旧连接没断
+ * 干净、代理软件不转发时，下载就一直停在那里，不报错也不重试。
+ */
+export const updateDownloadStallMs = 45_000
+/**
+ * 停住或代理连不上以后自动换直连重下的那一次，多久没有新数据才算又停住。有的公司网关、上网
+ * 行为管理、带下载查毒的代理会先把整个安装包收完、查完，再一次性转过来，这段时间一个字节也
+ * 收不到：第一次照 45 秒掐断是为了尽快换条路，换了路还停着就多等一会儿。这是最后一次自动重下，
+ * 再停住就报下载失败，界面在「重新下载」旁边给「打开下载页」（update-retry.ts）。
+ */
+export const updateDownloadRetryStallMs = 120_000
+/**
+ * 进度到过 100% 以后，多久没动静算停住。下完以后 electron-updater 还要核对签名
+ * （update-signature.ts 最多 30 秒）、改名（文件被占着时最多重试 30 秒），这几步都不报进度；
+ * 增量下载分批的话，下一批开头也要过一会儿才报进度。
+ */
+export const updateDownloadSettleMs = 180_000
+/** 下载中多久看一眼：停没停住、要不要把停住前的速度收起来，都按这个节拍。*/
+export const updateDownloadWatchMs = 5_000
+/**
+ * 取消、掐断一次停住的下载以后，等 electron-updater 收尾的时间，期间又来了数据就从那一刻重新算。
+ * 宿主掐得到请求时几毫秒就收完；等不到说明掐不到（宿主没装上 update-request-guard.ts，增量下载
+ * 又不认取消），不再干等，照「停住了」往下走。
+ */
+export const updateDownloadCancelWaitMs = 10_000
+/**
+ * 检查更新多久收不到响应头、一个字节也没有算挂住，和下载停住同一个数。检查只拉几 KB 的更新
+ * 清单，正常网络一两秒就回。electron-updater 自带的超时同样不起作用（见 updateDownloadStallMs），
+ * 而它上一次检查没收场时再调，交回来的还是那一次：不掐断的话，之后的「重试」、三小时那次都接回
+ * 同一个挂住的请求，整次运行停在「正在检查」，「必须更新」那道门里只剩「联系客服」。
+ */
+export const updateCheckStallMs = 45_000
+
+/**
+ * 看门狗交给宿主去掐断挂住的检查用的错误（abortDownloadRequests）。electron-updater 以它让那次
+ * 检查失败、丢掉记着的那一次，失败前先把它当 error 事件发一遍；宿主掐不到请求时，看门狗不再等，
+ * 自己以它收场。进快照前换成「超时」那句话。
+ */
+class UpdateCheckAborted extends Error {
+  constructor() {
+    super('update check stalled')
+    this.name = 'UpdateCheckAborted'
+  }
+}
+
+/** 看门狗停掉的那一次下载。只在 download() 里流转，进快照前换成「超时」那句话。*/
+class UpdateDownloadStalled extends Error {
+  /** 见 UpdateDownloadStall.unsettled。*/
+  readonly unsettled: boolean
+  readonly fullPackage: boolean
+  readonly transferEnded: boolean
+
+  constructor(unsettled: boolean, detail: { fullPackage: boolean; transferEnded: boolean }) {
+    super('update download stalled')
+    this.name = 'UpdateDownloadStalled'
+    this.unsettled = unsettled
+    this.fullPackage = detail.fullPackage
+    this.transferEnded = detail.transferEnded
+  }
+}
+
+/**
+ * 看门狗交给宿主去掐断请求的错误（abortDownloadRequests）。下整个安装包时令牌已经让那次下载以
+ * 「已取消」收场，这个错误落空，宿主没给令牌时它才成了那次下载的失败。增量下载时 electron-updater
+ * 自己接住它，改下整个安装包，再被已经取消的令牌当场结束。
+ */
+class UpdateDownloadAborted extends Error {
+  constructor() {
+    super('update download stalled')
+    this.name = 'UpdateDownloadAborted'
+  }
+}
+
+/**
+ * 一次下载是不是以看门狗的取消、掐断收场。令牌取消时 electron-updater 给 CancellationError，
+ * 取消以后又到一块数据时是它的进度流抛的普通 Error，两种的 message 都是 'cancelled'；宿主掐断了
+ * 请求、令牌又没起作用时，回来的是 UpdateDownloadAborted 本身。
+ */
+function isDownloadCancellation(error: unknown): boolean {
+  return error instanceof UpdateDownloadAborted || (error instanceof Error && error.message === 'cancelled')
+}
+
 function versionParts(version: string): number[] | null {
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim())
   return match ? match.slice(1, 4).map(Number) : null
@@ -397,6 +590,29 @@ export function isOlderVersion(candidate: string, current: string): boolean {
 export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
   if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
   return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
+}
+
+/**
+ * 「必须更新」那道门此刻该不该亮出来：返回要求的最低版本，不拦时返回 null。
+ *
+ * Windows、Mac 低于最低版本就拦（旧行为）：它们的更新包和发布一起出，拦下来就有东西
+ * 可装。交给系统安装器的那条路（Linux）不一样：Linux 的更新包可能还没上架、这台电脑
+ * 的架构可能没有包，最低版本却是对所有平台写的。拦了也装不上，付费客户就被整个关在
+ * 门外（摸底明细 U1）。所以 Linux 只在更新目录真的给了这台电脑一个够得上最低版本的
+ * 新版本时才拦；退回（找到的版本比本机还旧）不算。
+ */
+export function resolveGatedRequiredVersion(input: {
+  minimumRequired: string | null
+  installMethod: UpdateInstallMethod | null | undefined
+  availableVersion: string | null
+  rollback: boolean
+}): string | null {
+  const minimum = input.minimumRequired
+  if (!minimum) return null
+  if (input.installMethod !== 'system-installer') return minimum
+  const offered = input.availableVersion
+  if (!offered || input.rollback || !versionParts(offered)) return null
+  return isOlderVersion(offered, minimum) ? null : minimum
 }
 
 /**
@@ -535,6 +751,25 @@ function hasChannelManifestUrl(description: string, channelFile: string): boolea
   }
 }
 
+// Squirrel.Mac validates the unpacked update against the designated requirement
+// of the running app, which pins its signing certificate. A rejection is final for
+// this installation: the same package fails identically on every retry, and no
+// later release signed with the published certificate can satisfy a requirement
+// that pins another one. Only a manual reinstall gets the machine back.
+// 渲染层 features/app/update-retry.ts 按这个代码把「重新安装」换成「打开下载页」，两边字面量要一致。
+export const updateSignatureRejectedCode = 'UPDATE_SIGNATURE_REJECTED'
+/** 安装看门狗等不到安装器退出时报的错误代码：说的是「还没退」，不是「装不上」。 */
+export const updateInstallLaunchTimeoutCode = 'UPDATE_INSTALL_LAUNCH_TIMEOUT'
+
+const updateSignatureRejectedMessage = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+
+/** Squirrel.Mac 的原话是「Code signature at URL … did not pass validation: <系统给的原因>」，原因按系统语言走。 */
+export function isMacUpdateSignatureRejection(source: string): boolean {
+  return /did not pass validation/i.test(source)
+    || /failed to satisfy specified code requirement/i.test(source)
+    || source.includes('代码未能满足指定的代码要求')
+}
+
 function safeError(error: unknown, platform: NodeJS.Platform): { code: string; message: string; detail?: string } {
   const candidate = error as {
     code?: unknown
@@ -555,6 +790,11 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
   const redacted = redactSecretShapes(redactSecretQueryParameters(
     source.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@'),
   )).slice(0, 500)
+  // 原话里夹着系统给的中文原因，交给 describeUnrecognizedUpdateFailure 会被当成「本来就是
+  // 中文」整句上屏，客户看到半句英文和一个被打码成「本地配置文件」的路径。
+  if (platform === 'darwin' && isMacUpdateSignatureRejection(source)) {
+    return { code: updateSignatureRejectedCode, message: updateSignatureRejectedMessage, detail: redacted }
+  }
   const missingChannelManifest = code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
     || (
       isNotFound
@@ -583,9 +823,11 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
  * electron-updater 与 Node 的原话几乎都是英文（`ENOENT: no such file or directory…`），
  * 直接上屏客户看不懂。认得出的按原因说人话，认不出的也不贴原文，只说原话记进日志了；
  * 本来就是中文的（主进程自己抛的那些）原样保留。原话放在 detail 里进 runtime.jsonl。
+ * 是不是中文要去掉路径再看：Windows 的中文用户名、Mac 上的「星芒AI管理工具.app」都在
+ * 路径里，以前带着它们的英文原话整句上屏，脱敏后成了「…, open '本地配置文件」（第三十批跟进项）。
  */
 export function describeUnrecognizedUpdateFailure(source: string): string {
-  if (!source || /[\u4e00-\u9fff]/.test(source)) return source
+  if (!source || isChineseSentence(source)) return source
   if (/\bENOSPC\b|no space left/i.test(source)) return '电脑的磁盘空间不够了，清出一些空间后再试。'
   if (/\b(?:EPERM|EACCES|EBUSY)\b|operation not permitted|permission denied|resource busy/i.test(source)) {
     return '新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。'
@@ -620,7 +862,12 @@ export function createUpdaterService(
 ): UpdaterService {
   const development = !runtime.isPackaged || runtime.localBuild === true
   const platform = runtime.platform ?? process.platform
+  const installMethod = runtime.installMethod ?? null
+  const systemInstaller = installMethod === 'system-installer'
+  // 'manual' 的装法 electron-updater 不认（checkForUpdates 什么事件都不发就返回），
+  // 开着只会让界面永远停在「正在检查」。
   const enabled = runtime.localBuild !== true
+    && installMethod !== 'manual'
     && (runtime.isPackaged || runtime.enableDevelopmentUpdates === true)
   const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
   const now = runtime.now ?? (() => new Date())
@@ -655,6 +902,21 @@ export function createUpdaterService(
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
   let offeredPackageBytes: number | null = null
+  // 状态文件定的最低版本、而本机低于它时的那个版本。快照里的 requiredVersion 由它和
+  // 当前提议一起算（resolveGatedRequiredVersion），分批放量的豁免则只看它。
+  let minimumRequired: string | null = null
+  // 下载后 SHA-512 核对通过的那个安装包。只有 'system-installer' 通道用它：安装包要原样
+  // 交给系统安装程序，而不是像 electron-updater 那样由它自己去找缓存里的文件。
+  let verifiedPackagePath: string | null = null
+  // 正在下载的那一次的看门狗（见 downloadWatched）；没在下载时为 null。
+  let downloadWatch: { observe(percent: number): void; stop(): void } | null = null
+  // 正在等的那一次检查和盯着它的看门狗（见 checkWatched）；没在检查时为 null。
+  let checkWatch: { pending: Promise<unknown>; outcome: Promise<unknown>; stop(): void } | null = null
+  // check() 每真正开始一次加一。挂住的检查被掐断时只让最新那一次报（见 reportCheckFailure）。
+  let latestCheck = 0
+  // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
+  // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
+  const abandonedDownloads = new Set<Promise<unknown>>()
   let snapshot: UpdateSnapshot = {
     phase: enabled ? 'idle' : 'disabled',
     currentVersion: runtime.currentVersion,
@@ -675,6 +937,8 @@ export function createUpdaterService(
     diskShortfall: null,
     requiredVersion: null,
     launchInstallNotice: null,
+    // 只在 Linux 上出现：Windows、Mac 的快照与以前逐字相同。
+    ...(installMethod ? { installMethod } : {}),
   }
 
   client.autoDownload = false
@@ -700,7 +964,8 @@ export function createUpdaterService(
       badVersions: serviceStatus?.badVersions ?? [],
       rollout: serviceStatus?.rollout ?? null,
       // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
-      manual: manualCheck || Boolean(snapshot.requiredVersion),
+      // 看的是本机低不低于最低版本，不是那道门亮没亮：Linux 的门要等有了提议才亮。
+      manual: manualCheck || Boolean(minimumRequired),
     })
     if (!decision.offer) return false
     if (!defaultRolloutCheck) return true
@@ -727,7 +992,16 @@ export function createUpdaterService(
     const launchInstallNotice = phase !== 'downloaded' || (patch.error !== undefined && patch.error !== null)
       ? null
       : patch.launchInstallNotice !== undefined ? patch.launchInstallNotice : snapshot.launchInstallNotice ?? null
-    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall, launchInstallNotice }
+    const merged = { ...snapshot, ...patch, failedStep, diskShortfall, launchInstallNotice }
+    // 那道门跟着提议走（见 resolveGatedRequiredVersion），提议在这里统一落地，门也就在
+    // 这里统一重算，不用每个改 availableVersion 的地方各补一句。
+    const requiredVersion = resolveGatedRequiredVersion({
+      minimumRequired,
+      installMethod,
+      availableVersion: merged.availableVersion,
+      rollback: merged.rollback === true,
+    })
+    snapshot = { ...merged, requiredVersion }
     const value = cloneSnapshot(snapshot)
     for (const listener of listeners) listener(value)
   }
@@ -748,6 +1022,7 @@ export function createUpdaterService(
 
   // 已经找到或下载好的版本刚被撤回：收回这个提议，界面回到「没有可装的更新」。
   const withdrawOffer = () => {
+    verifiedPackagePath = null
     emit({
       phase: 'idle',
       availableVersion: null,
@@ -770,9 +1045,10 @@ export function createUpdaterService(
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
     // 开发态装不了更新，拦下来只会把人困住。
     const required = enabled && !development ? resolveRequiredVersion(runtime.currentVersion, status?.minimumVersion) : null
-    const previouslyRequired = snapshot.requiredVersion ?? null
-    if (required !== previouslyRequired) patch.requiredVersion = required
-    if (Object.keys(patch).length) emit(patch)
+    const previouslyRequired = minimumRequired
+    minimumRequired = required
+    // 快照里的 requiredVersion 由 emit 按 minimumRequired 重算，这里只判断要不要发一次。
+    if (Object.keys(patch).length || required !== previouslyRequired) emit(patch)
     // 最低版本是软件开着时才定下的：上一次检查可能已经说过「没有新版本」，界面据此不拦。
     // 刚变成「必须更新」时补查一次，免得要等到三小时后的例行检查。
     if (
@@ -835,7 +1111,62 @@ export function createUpdaterService(
     return true
   }
 
+  const startInstallWatchdog = (message: string) => {
+    installWatchdogTimer = setTimeout(() => {
+      installWatchdogTimer = null
+      if (!installRequested || disposed) return
+      reportInstallFailure({ code: updateInstallLaunchTimeoutCode, message })
+    }, installLaunchTimeoutMs)
+    installWatchdogTimer.unref?.()
+  }
+
+  // Linux never lets electron-updater install: its DebUpdater builds a shell
+  // command line, runs dpkg as root through pkexec/sudo found on PATH, and falls
+  // back to a root `apt-get install -f -y` (摸底明细 U4). The verified package is
+  // handed to the desktop's own package installer instead, which owns the
+  // password prompt and the privilege boundary; this process stays unprivileged.
+  const launchSystemInstaller = (): boolean => {
+    const packagePath = verifiedPackagePath
+    // 安装包没了要重来的是下载：停在「已下载」只会让「重新安装」一遍遍撞同一堵墙。
+    const packageMissing = () => {
+      try { runtime.installQuitAborted?.() } catch { /* The rejection below is what the user needs to see. */ }
+      rejectDownloadedUpdate(
+        'UPDATE_PACKAGE_PATH_MISSING',
+        '下载好的安装包找不到了，可能被清理软件删掉了。点「重新下载」再试一次。',
+      )
+    }
+    if (!packagePath) {
+      packageMissing()
+      return false
+    }
+    if (!runtime.openSystemInstaller) {
+      reportInstallFailure({ code: 'UPDATE_SYSTEM_INSTALLER_MISSING', message: '这台电脑上没法打开安装程序。请找客服。' })
+      return false
+    }
+    const failed = (error: unknown) => {
+      if ((error as { code?: unknown } | null)?.code === 'UPDATE_PACKAGE_PATH_MISSING') packageMissing()
+      else reportInstallFailure(error)
+    }
+    let opening: Promise<void>
+    try {
+      opening = runtime.openSystemInstaller(packagePath)
+    } catch (error) {
+      failed(error)
+      return false
+    }
+    void opening.then(() => {
+      if (disposed || !installRequested) return
+      startInstallWatchdog('安装窗口已经打开了，可星芒没能自己关掉。在安装窗口里点「安装」、输入开机密码；装好后关掉星芒再重新打开。')
+      runtime.quitAfterSystemInstaller?.()
+    }, (error: unknown) => {
+      if (disposed || !installRequested) return
+      failed(error)
+    })
+    return true
+  }
+
   const launchInstaller = (): boolean => {
+    if (systemInstaller) return launchSystemInstaller()
     try {
       installEnvironmentGuard(() => {
         if (macInstallHandoffRegistered && macInstallHandoff) {
@@ -858,17 +1189,9 @@ export function createUpdaterService(
       reportInstallFailure(error)
       return false
     }
-    installWatchdogTimer = setTimeout(() => {
-      installWatchdogTimer = null
-      if (!installRequested || disposed) return
-      reportInstallFailure({
-        code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT',
-        message: platform === 'win32'
-          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
-          : '新版本没装上：安装程序没起来。点「重新安装」再试一次。',
-      })
-    }, installLaunchTimeoutMs)
-    installWatchdogTimer.unref?.()
+    startInstallWatchdog(platform === 'win32'
+      ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+      : '新版本没装上：安装程序没起来。点「重新安装」再试一次。')
     return true
   }
 
@@ -893,6 +1216,7 @@ export function createUpdaterService(
   const rejectDownloadedUpdate = (code: string, message: string, detail?: string) => {
     clearInstallWatchdog()
     installRequested = false
+    verifiedPackagePath = null
     emit({
       phase: 'error',
       checkedAt: now().toISOString(),
@@ -942,6 +1266,7 @@ export function createUpdaterService(
       )
       return
     }
+    verifiedPackagePath = downloadedFile
     acceptDownloadedUpdate(event)
   }
 
@@ -961,6 +1286,10 @@ export function createUpdaterService(
       void verifyDownloadedUpdate(event)
     },
     'update-cancelled': (info: UpdateInfo) => {
+      // 取消下载的只有看门狗（autoDownload 关着，electron-updater 不会自己起一次带令牌的
+      // 下载），接下来重下还是报错由它定。把它的回声落成「已取消」，会盖掉它要发的状态；
+      // 放弃的那次过了很久才收尾的话，盖掉的就是界面上早已报出的失败。
+      if (abandonedDownloads.size > 0) return
       clearInstallWatchdog()
       installRequested = false
       applyInfo('cancelled', info)
@@ -970,6 +1299,11 @@ export function createUpdaterService(
       const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0))
       const transferred = Math.max(0, Number(progress.transferred) || 0)
       const total = Math.max(0, Number(progress.total) || 0)
+      // 没人盯着时来的进度，只能是看门狗放弃的那次又动了。界面已经报了下载失败，不能悄悄
+      // 翻回「正在下载」又没人看它停没停；它真下完了，update-downloaded 照常接住。
+      if (!downloadWatch && abandonedDownloads.size > 0) return
+      // 在节流之前告诉看门狗：被节流掉的那几次同样说明数据还在来。
+      downloadWatch?.observe(percent)
       // 样本在节流之前记：被节流掉的那几次也是真实的进度，算速度用得上。
       progressSamples = recordDownloadProgressSample(progressSamples, { at: timestamp, transferred })
       if (
@@ -994,6 +1328,10 @@ export function createUpdaterService(
       })
     },
     error: (error: unknown) => {
+      // 看门狗掐断请求用的那个错误：接下来重下还是报「下载更新失败」由看门狗定。宿主没给取消
+      // 令牌时，electron-updater 才会把它当成下载出错发出来。掐断挂住的检查时它每次都发，报什么
+      // 由 check() 定（开机那次「网络有点慢」那句要留着）。
+      if (error instanceof UpdateDownloadAborted || error instanceof UpdateCheckAborted) return
       if (
         snapshot.phase === 'downloaded'
         && (
@@ -1010,10 +1348,14 @@ export function createUpdaterService(
       // 这里永远不标 'install'：这条分支会把阶段推到 error，安装包不再可用，界面
       // 给出的「重新安装」会当场被主进程以「更新尚未下载并校验完成」顶回来。真正
       // 的安装失败走 reportInstallFailure，那条路把阶段留在 downloaded。
+      // 看门狗放弃的那次晚到的出错（比如它自己下完了、签名却对不上）也是下载那一步的，
+      // 哪怕界面已经报了失败。正在检查时来的出错算检查的：检查失败时 electron-updater 先发
+      // error 再让检查失败，check() 随后照样标成检查失败，中间不能闪一下「下载更新失败」。
       emit({
         phase: 'error',
         error: safeError(error, platform),
-        failedStep: snapshot.phase === 'downloading' || snapshot.phase === 'downloaded'
+        failedStep: snapshot.phase !== 'checking'
+          && (abandonedDownloads.size > 0 || snapshot.phase === 'downloading' || snapshot.phase === 'downloaded')
           ? 'download'
           : 'check',
         progress: null,
@@ -1024,6 +1366,10 @@ export function createUpdaterService(
   for (const [event, handler] of Object.entries(eventHandlers)) {
     client.on(event as UpdateEventName, handler)
   }
+
+  // A function call is not narrowed by an earlier comparison on snapshot.phase,
+  // which event handlers may have changed while an await was pending.
+  const currentPhase = (): UpdatePhase => snapshot.phase
 
   const requireEnabled = () => {
     if (!enabled) throw new Error('开发环境未启用主程序更新')
@@ -1046,6 +1392,93 @@ export function createUpdaterService(
     }
   }
 
+  // 检查一次，期间盯着更新请求有没有收到东西（宿主看到的响应头和字节，downloadReceivedAt）。
+  // updateCheckStallMs 什么都没收到就算挂住：让宿主掐断还开着的请求，electron-updater 以
+  // UpdateCheckAborted 让这次检查失败，同时丢掉它记着的那一次，下一次检查重新发请求。掐断以后
+  // updateDownloadCancelWaitMs 还没收场（宿主掐不到请求）就不再等它，照样算挂住。
+  function checkWatched(): Promise<unknown> {
+    const pending = client.checkForUpdates()
+    // electron-updater 同时只查一次：上一次没收场时再调，交回来的就是那一次（开机检查超时以后
+    // 点「重试」就是这样）。后来的检查等同一个结果，不另起一个看门狗。
+    if (checkWatch?.pending === pending) return checkWatch.outcome
+    const settled = pending.then(
+      (value) => ({ failed: false as const, value }),
+      (error: unknown) => ({ failed: true as const, error }),
+    )
+    let lastActivityAt = Date.now()
+    let lastTickAt = lastActivityAt
+    let reportStall: () => void = () => undefined
+    const stalled = new Promise<'stalled'>((resolve) => { reportStall = () => resolve('stalled') })
+    const timer = setInterval(() => {
+      const at = Date.now()
+      // 机器睡着时什么也进不来，时钟往前、往回跳的那一截也不是在等：都从这一刻重新算。
+      if (at < lastTickAt || at - lastTickAt > 2 * updateDownloadWatchMs) lastActivityAt = at
+      lastTickAt = at
+      try {
+        const received = runtime.downloadReceivedAt?.()
+        // 时钟往回跳以前记下的时间比现在还晚，不能把刚重新算的这一刻又推到后面去。
+        if (typeof received === 'number' && received <= at && received > lastActivityAt) lastActivityAt = received
+      } catch {
+        // 读不到就只看时间。
+      }
+      if (at - lastActivityAt < updateCheckStallMs) return
+      clearInterval(timer)
+      reportStall()
+    }, updateDownloadWatchMs)
+    timer.unref?.()
+    const outcome = (async () => {
+      try {
+        const first = await Promise.race([settled, stalled])
+        if (first !== 'stalled') {
+          if (first.failed) throw first.error
+          return first.value
+        }
+        const aborted = new UpdateCheckAborted()
+        try { runtime.abortDownloadRequests?.(aborted) } catch { /* the wait below still bounds this check */ }
+        let giveUp: NodeJS.Timeout | null = null
+        const late = await Promise.race([
+          settled,
+          new Promise<'unsettled'>((resolve) => {
+            giveUp = setTimeout(() => resolve('unsettled'), updateDownloadCancelWaitMs)
+            giveUp.unref?.()
+          }),
+        ])
+        if (giveUp) clearTimeout(giveUp)
+        if (late === 'unsettled') throw aborted
+        // 掐断前后它自己查完了：就当没挂住过。
+        if (!late.failed) return late.value
+        throw late.error
+      } finally {
+        clearInterval(timer)
+      }
+    })()
+    const watch = { pending, outcome, stop: () => clearInterval(timer) }
+    checkWatch = watch
+    const forget = () => {
+      if (checkWatch === watch) checkWatch = null
+    }
+    outcome.then(forget, forget)
+    return outcome
+  }
+
+  // 挂住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多一句新话；
+  // code 另记，日志里分得清是看门狗停的。挂住的那次被掐断时只让最新那一次检查说话：之后又开始了
+  // 一次的，那一次接回了同一个请求就和它一起报，还没发出请求就会重新发，这里再报只会让「检查更新
+  // 失败」在它查的时候闪一下。开机那次已经说过「网络有点慢…在后台接着查」、之后没人再点过检查的，
+  // 那句留着：掐掉挂住的那次只是为了让之后的「重试」和三小时那次能重新发请求。
+  const reportCheckFailure = (error: unknown, failedCheck: number) => {
+    const stalledCheck = error instanceof UpdateCheckAborted
+    if (stalledCheck && (failedCheck !== latestCheck || snapshot.error?.code === 'STARTUP_UPDATE_TIMEOUT')) return
+    emit({
+      phase: 'error',
+      error: stalledCheck
+        ? { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout }
+        : safeError(error, platform),
+      failedStep: 'check',
+      progress: null,
+    })
+  }
+
   const check = async (options: UpdateCheckOptions = {}): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (
@@ -1055,6 +1488,7 @@ export function createUpdaterService(
       // failed install would lock out update checks for the whole session.
       || (snapshot.phase === 'downloaded' && !snapshot.error)
     ) return cloneSnapshot(snapshot)
+    const thisCheck = ++latestCheck
     emit({ phase: 'checking', error: null, progress: null })
     await syncServiceStatus()
     if (disposed) return cloneSnapshot(snapshot)
@@ -1062,23 +1496,41 @@ export function createUpdaterService(
     // 让全体用户跟着「更新」回去。
     client.allowDowngrade = isWithdrawn(runtime.currentVersion)
     manualCheck = options.manual === true
+    let result: unknown
     try {
-      await client.checkForUpdates()
+      result = await checkWatched()
     } catch (error) {
       if (retryWithoutProxy && isProxyConnectionFailure(error)) {
         try {
           await retryOffProxy(async () => {
             emit({ phase: 'checking', error: null, progress: null })
-            await client.checkForUpdates()
+            result = await checkWatched()
           })
         } catch (retryError) {
-          emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'check', progress: null })
+          reportCheckFailure(retryError, thisCheck)
         }
       } else {
-        emit({ phase: 'error', error: safeError(error, platform), failedStep: 'check', progress: null })
+        reportCheckFailure(error, thisCheck)
       }
     } finally {
       manualCheck = false
+    }
+    // electron-updater resolves null without emitting a single event when it
+    // considers this install unable to update itself (on Linux: an AppImage
+    // started without $APPIMAGE, a snap, an unpacked or tar.gz build). Every
+    // later check() returns early while the phase is 'checking', so without this
+    // the updater would sit in '正在检查' for the rest of the session. A packaged
+    // Windows or macOS build is always active, so this never fires there.
+    if (result === null && currentPhase() === 'checking' && !disposed) {
+      emit({
+        phase: 'error',
+        error: {
+          code: 'UPDATE_INACTIVE',
+          message: '这台电脑上的星芒没法自己更新。到下载页下载新版本的安装包，装好后打开就行；不会装请找客服。',
+        },
+        failedStep: 'check',
+        progress: null,
+      })
     }
     return cloneSnapshot(snapshot)
   }
@@ -1094,6 +1546,146 @@ export function createUpdaterService(
       return null
     }
     return resolveUpdateDiskShortfall(freeBytes, requiredUpdateDiskBytes(offeredPackageBytes))
+  }
+
+  // 下载停住时快照里一直是停住前那个速度。还在报进度时不动它（免得多发快照）；停了一拍
+  // 以上，按「这段时间没进账」重算：10 秒没进账速度就是 0，界面只留「已下载多少」。
+  const refreshIdleDownloadRate = (at: number) => {
+    const progress = snapshot.progress
+    const last = progressSamples.at(-1)
+    if (!progress || !last || at - last.at < updateDownloadWatchMs) return
+    const averageBytesPerSecond = resolveDownloadRateAt(progressSamples, at)
+    const secondsRemaining = resolveDownloadSecondsRemaining(averageBytesPerSecond, progress.transferred, progress.total)
+    if (
+      averageBytesPerSecond === (progress.averageBytesPerSecond ?? null)
+      && secondsRemaining === (progress.secondsRemaining ?? null)
+    ) return
+    emit({ progress: { ...progress, averageBytesPerSecond, secondsRemaining } })
+  }
+
+  const noteDownloadStall = (stall: UpdateDownloadStalled, retrying: boolean) => {
+    try {
+      runtime.downloadStalled?.({
+        retrying,
+        unsettled: stall.unsettled,
+        fullPackage: stall.fullPackage,
+        transferEnded: stall.transferEnded,
+        transferred: snapshot.progress?.transferred ?? 0,
+        total: snapshot.progress?.total ?? 0,
+      })
+    } catch {
+      // 记日志失败不影响接下来重下或报错。
+    }
+  }
+
+  // 停住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多
+  // 一句新话；code 另记，日志里分得清是看门狗停的。
+  const downloadFailure = (error: unknown) => error instanceof UpdateDownloadStalled
+    ? { code: 'UPDATE_DOWNLOAD_STALLED', message: updateNetworkFailureMessages.timeout }
+    : safeError(error, platform)
+
+  // 下载一次，期间盯着有没有新数据进来：electron-updater 的进度和宿主看到的字节
+  // （downloadReceivedAt）都算。还在传时 stallMs、进度到过 100% 以后
+  // updateDownloadSettleMs 没动静，就算停住：取消令牌、让宿主掐断还开着的请求，以
+  // UpdateDownloadStalled 收场；electron-updater 自己报的错原样抛出。掐断以后
+  // updateDownloadCancelWaitMs 没收尾、期间也没再来数据，就不再等它；又来了数据就接着等，它真
+  // 下完了就当没停过。fullPackage 让这一次不走增量下载。
+  async function downloadWatched(fullPackage: boolean, stallMs = updateDownloadStallMs): Promise<void> {
+    const cancellation = runtime.createDownloadCancellation?.()
+    let lastActivityAt = Date.now()
+    let lastTickAt = lastActivityAt
+    let transferEnded = false
+    // 已经取消、掐断过，在等 electron-updater 收尾。
+    let cancelling = false
+    let reportStall: () => void = () => undefined
+    let reportUnsettled: () => void = () => undefined
+    const stalled = new Promise<'stalled'>((resolve) => { reportStall = () => resolve('stalled') })
+    const unsettled = new Promise<'unsettled'>((resolve) => { reportUnsettled = () => resolve('unsettled') })
+    const noteActivity = (at: number) => {
+      if (at > lastActivityAt) lastActivityAt = at
+    }
+    const abortStalled = () => {
+      // 令牌让下整个安装包的那条路当场收场；增量下载不认令牌，靠宿主掐断它开着的请求。
+      try { cancellation?.cancel() } catch { /* the wait that follows still bounds this attempt */ }
+      try { runtime.abortDownloadRequests?.(new UpdateDownloadAborted()) } catch { /* same */ }
+    }
+    const timer = setInterval(() => {
+      const at = Date.now()
+      // 机器睡着时什么也进不来，时钟往前、往回跳的那一截也不是在等：都从这一刻重新算。
+      if (at < lastTickAt || at - lastTickAt > 2 * updateDownloadWatchMs) lastActivityAt = at
+      lastTickAt = at
+      try {
+        const received = runtime.downloadReceivedAt?.()
+        // 时钟往回跳以前记下的时间比现在还晚，不能把刚重新算的这一刻又推到后面去。
+        if (typeof received === 'number' && received <= at) noteActivity(received)
+      } catch {
+        // 读不到就只看进度。
+      }
+      if (cancelling) {
+        if (at - lastActivityAt < updateDownloadCancelWaitMs) return
+        watch.stop()
+        reportUnsettled()
+        return
+      }
+      if (snapshot.phase !== 'downloading') return
+      if (at - lastActivityAt < (transferEnded ? updateDownloadSettleMs : stallMs)) {
+        refreshIdleDownloadRate(at)
+        return
+      }
+      cancelling = true
+      lastActivityAt = at
+      reportStall()
+    }, updateDownloadWatchMs)
+    timer.unref?.()
+    const watch = {
+      observe(percent: number) {
+        transferEnded = percent >= 100
+        noteActivity(Date.now())
+      },
+      stop() {
+        clearInterval(timer)
+        if (downloadWatch === watch) downloadWatch = null
+      },
+    }
+    downloadWatch = watch
+    const stalledDownload = (unsettledDownload: boolean) => (
+      new UpdateDownloadStalled(unsettledDownload, { fullPackage, transferEnded })
+    )
+    const differential = client.disableDifferentialDownload
+    try {
+      if (fullPackage) client.disableDifferentialDownload = true
+      const pending = cancellation ? client.downloadUpdate(cancellation) : client.downloadUpdate()
+      // electron-updater 同时只下一次：上一次还没收尾时，downloadUpdate() 交回来的就是那一次。
+      const inherited = abandonedDownloads.has(pending)
+      const settled = pending.then(
+        () => ({ failed: false as const, error: null }),
+        (error: unknown) => ({ failed: true as const, error }),
+      )
+      const outcome = await Promise.race([settled, stalled])
+      if (outcome !== 'stalled') {
+        if (!outcome.failed) return
+        // 接手的是放弃过的那次，它以当初看门狗的取消收场：对客户来说还是停住了，不过它这就收了
+        // 尾，再下就是新的一次。它自己出的错（比如下完了签名对不上）照实报。
+        if (inherited && isDownloadCancellation(outcome.error)) throw stalledDownload(false)
+        throw outcome.error
+      }
+      // 先记成放弃的，再取消：取消引来的「已取消」回声得认得出来。
+      if (!abandonedDownloads.has(pending)) {
+        abandonedDownloads.add(pending)
+        const settle = () => { abandonedDownloads.delete(pending) }
+        pending.then(settle, settle)
+      }
+      abortStalled()
+      const late = await Promise.race([settled, unsettled])
+      if (late === 'unsettled') throw stalledDownload(true)
+      // 掐断前后它自己下完了：就当没停过。
+      if (!late.failed) return
+      if (isDownloadCancellation(late.error)) throw stalledDownload(false)
+      throw late.error
+    } finally {
+      watch.stop()
+      if (fullPackage) client.disableDifferentialDownload = differential
+    }
   }
 
   const download = async (options: UpdateDownloadOptions = {}): Promise<UpdateSnapshot> => {
@@ -1116,22 +1708,34 @@ export function createUpdaterService(
       }
     }
     progressSamples = []
+    verifiedPackagePath = null
     emit({ phase: 'downloading', progress: null, error: null })
     try {
-      await client.downloadUpdate()
+      await downloadWatched(false)
     } catch (error) {
-      if (retryWithoutProxy && isProxyConnectionFailure(error)) {
+      const stall = error instanceof UpdateDownloadStalled ? error : null
+      // 自动再下只有一次，再不行就照实报下载失败，重下的按钮界面上都有。停住的那次多半是
+      // 这条路不通了（代理软件不转发、换了网络旧连接没断干净），和代理连不上一样换直连，
+      // 而且重下整个安装包：只有一个请求，取消令牌就停得下来，不靠宿主掐请求。这一次按
+      // updateDownloadRetryStallMs 多等一会儿才算停住。
+      // electron-updater 那次一直没收尾时不重下：再下只会接回同一次，白等一轮。
+      const retry = stall
+        ? !stall.unsettled
+        : retryWithoutProxy !== undefined && isProxyConnectionFailure(error)
+      if (stall) noteDownloadStall(stall, retry)
+      if (retry) {
         try {
           await retryOffProxy(async () => {
             progressSamples = []
             emit({ phase: 'downloading', error: null, progress: null })
-            await client.downloadUpdate()
+            await downloadWatched(stall !== null, updateDownloadRetryStallMs)
           })
         } catch (retryError) {
-          emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'download', progress: null })
+          if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)
+          emit({ phase: 'error', error: downloadFailure(retryError), failedStep: 'download', progress: null })
         }
       } else {
-        emit({ phase: 'error', error: safeError(error, platform), failedStep: 'download', progress: null })
+        emit({ phase: 'error', error: downloadFailure(error), failedStep: 'download', progress: null })
       }
     }
     return cloneSnapshot(snapshot)
@@ -1240,6 +1844,8 @@ export function createUpdaterService(
       disposed = true
       listeners.clear()
       clearInstallWatchdog()
+      downloadWatch?.stop()
+      checkWatch?.stop()
       for (const [event, handler] of Object.entries(eventHandlers)) {
         client.off(event as UpdateEventName, handler)
       }

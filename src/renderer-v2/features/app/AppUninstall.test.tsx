@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { AppUninstallDialog, AppUninstallRow, appUninstallNotice, appUninstallRowDescription } from './AppUninstall'
+import { AppUninstallDialog, AppUninstallRow, appUninstallNotice, appUninstallRowDescription, toolUninstallRowDescription } from './AppUninstall'
 
 function dialog(overrides: Partial<Parameters<typeof AppUninstallDialog>[0]> = {}) {
   return renderToStaticMarkup(
@@ -28,19 +28,32 @@ describe('app uninstall row', () => {
     expect(markup).toContain('settings-app-uninstall-open')
     expect(markup).toContain('卸载星芒')
     expect(markup).toContain(appUninstallRowDescription)
-    expect(markup).not.toContain('查看安装卸载')
+    expect(markup).toContain('data-anchor="uninstall-app"')
+    expect(markup).not.toContain('去安装卸载')
   })
 
-  it('keeps the tool uninstall page elsewhere', () => {
+  it('keeps the tool uninstall page elsewhere and says where the app itself is removed on Windows', () => {
     const markup = renderToStaticMarkup(
       <AppUninstallRow api={{ uninstallApp: async () => ({ trashed: true, leftovers: [] }) }} isMac={false} openMaintenance={() => undefined} />,
     )
-    expect(markup).toContain('查看安装卸载')
+    expect(markup).toContain('卸载工具或星芒')
+    expect(markup).toContain('去安装卸载')
+    expect(markup).toContain('data-anchor="uninstall"')
+    expect(markup).toContain('打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载')
     expect(markup).not.toContain('settings-app-uninstall-open')
   })
 
+  it('points Linux users at the system package manager instead of Windows settings', () => {
+    const markup = renderToStaticMarkup(
+      <AppUninstallRow api={{ uninstallApp: async () => ({ trashed: true, leftovers: [] }) }} isMac={false} isLinux openMaintenance={() => undefined} />,
+    )
+    expect(markup).toContain('要卸载星芒本身，用系统的软件管理器')
+    expect(markup).not.toContain('Windows')
+  })
+
   it('never names a site or technical term in the row text', () => {
-    expect(appUninstallRowDescription).not.toMatch(/solov|PATH|npm|钩子|hook/i)
+    for (const text of [appUninstallRowDescription, toolUninstallRowDescription(false), toolUninstallRowDescription(true)])
+      expect(text).not.toMatch(/solov|PATH|npm|钩子|hook/i)
   })
 })
 

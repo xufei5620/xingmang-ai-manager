@@ -84,7 +84,6 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     timeoutMs: 100,
     inspectAdministrator: async () => false,
     inspectElevationCapability: async () => 'unknown' as const,
-    inspectStoreAppLaunchContext: async () => ({ userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }),
     inspectPowerShell: async () => ({
       installed: true,
       version: '5.1.26100.1',
@@ -131,8 +130,32 @@ describe('diagnostics', () => {
     })
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'pass',
+      summary: 'Mac 不需要这一项',
       details: { required: false, installed: null, path: null },
     })
+    expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
+  it('names the terminal program Linux will open tools in, and fails with a fix when there is none', async () => {
+    const home = temporaryHome()
+    const inspectPowerShell = vi.fn(dependencies(home).inspectPowerShell)
+    const found = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'linux',
+      inspectPowerShell,
+      findLinuxTerminal: () => ({ id: 'deepin-terminal', label: '深度终端', executable: '/usr/bin/deepin-terminal' }),
+    })
+    const missing = await runDiagnostics({ ...dependencies(home), platform: 'linux', findLinuxTerminal: () => null })
+
+    expect(found.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
+      state: 'pass',
+      summary: '可用，会用「深度终端」打开工具',
+      details: { required: true, installed: true, terminal: 'deepin-terminal', path: expect.stringContaining('deepin-terminal') },
+    })
+    const failed = missing.items.find((item) => item.code === 'SYSTEM_POWERSHELL')
+    expect(failed).toMatchObject({ state: 'fail', details: { installed: false, terminal: null, path: null } })
+    expect(failed?.summary).toContain('应用商店')
+    expect(failed?.summary).not.toContain('Mac')
     expect(inspectPowerShell).not.toHaveBeenCalled()
   })
 
@@ -168,10 +191,38 @@ describe('diagnostics', () => {
     }
   })
 
-  it('continues to mark unrecognized operating systems as unsupported', async () => {
+  it('names the Linux distribution and counts Linux as supported now that it has its own build', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
     input.platform = 'linux'
+    input.arch = 'arm64'
+    input.readLinuxSystemName = async () => 'Ubuntu 24.04.1 LTS'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({
+      state: 'pass',
+      summary: 'Ubuntu 24.04.1 LTS（ARM 芯片）',
+      details: { supported: true },
+    })
+  })
+
+  it('still says Linux when the distribution cannot be read', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'linux'
+    input.arch = 'x64'
+    input.readLinuxSystemName = async () => { throw new Error('unreadable') }
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({ state: 'pass', summary: 'Linux（64 位）' })
+  })
+
+  it('continues to mark unrecognized operating systems as unsupported', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'freebsd'
 
     const report = await runDiagnostics(input)
 
@@ -1120,7 +1171,9 @@ describe('diagnostics', () => {
   it('calmly passes an account whose ordinary token is already elevated', async () => {
     // The built-in Administrator (or a machine with the consent prompt turned off)
     // runs every program at High integrity with a default token, so the startup
-    // probe settled on same-user and there is no "normal start" to ask for.
+    // probe settled on same-user and there is no "normal start" to ask for. Codex
+    // Desktop opens on such an account too (full-trust package), so the row no
+    // longer warns about store apps either.
     const home = temporaryHome()
     const input = dependencies(home)
     input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
@@ -1136,77 +1189,7 @@ describe('diagnostics', () => {
       details: { elevated: true, required: false, alwaysElevated: true },
     })
     expect(item?.summary).toContain('不用处理')
-    expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator/)
-  })
-
-  it('warns ahead of a store install on the built-in Administrator account', async () => {
-    const home = temporaryHome()
-    const input = dependencies(home)
-    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
-    input.inspectAdministrator = async () => true
-    input.inspectStoreAppLaunchContext = async () => ({
-      userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: true, filterAdministratorToken: false,
-    })
-
-    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
-
-    expect(item).toMatchObject({
-      state: 'warn',
-      details: { elevated: true, alwaysElevated: true, storeAppLaunchBlock: 'builtInAdministrator' },
-    })
-    expect(item?.summary).toContain('Administrator')
-    expect(item?.summary).toContain('Codex 桌面端')
-    expect(item?.summary).toContain('普通账户')
-    expect(item?.summary).not.toMatch(/UAC|AppX|Appx|MSIX|令牌|SID/)
-  })
-
-  it('warns ahead of a store install when the consent prompt is turned off', async () => {
-    const home = temporaryHome()
-    const input = dependencies(home)
-    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
-    input.inspectAdministrator = async () => true
-    input.inspectStoreAppLaunchContext = async () => ({
-      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
-    })
-
-    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
-
-    expect(item).toMatchObject({ state: 'warn', details: { storeAppLaunchBlock: 'uacDisabled' } })
-    expect(item?.summary).toContain('用户账户控制')
-    expect(item?.summary).not.toMatch(/UAC|AppX|Appx|令牌/)
-  })
-
-  it('keeps the calm answer when the store-app probe cannot tell', async () => {
-    const home = temporaryHome()
-    const input = dependencies(home)
-    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
-    input.inspectAdministrator = async () => true
-    input.inspectStoreAppLaunchContext = async () => {
-      throw new Error('powershell unavailable')
-    }
-
-    expect((await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')).toMatchObject({
-      state: 'pass',
-      details: { alwaysElevated: true },
-    })
-  })
-
-  it('does not ask about store apps on an ordinary or explicitly elevated start', async () => {
-    const home = temporaryHome()
-    const probe = vi.fn(async () => ({
-      userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: null,
-    }))
-    const ordinary = dependencies(home)
-    ordinary.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
-    ordinary.inspectStoreAppLaunchContext = probe
-    await runDiagnostics(ordinary)
-    const elevated = dependencies(home)
-    elevated.windowsExecution = { mode: 'trusted-only', elapsedMs: 120 }
-    elevated.inspectAdministrator = async () => true
-    elevated.inspectStoreAppLaunchContext = probe
-    await runDiagnostics(elevated)
-
-    expect(probe).not.toHaveBeenCalled()
+    expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator|商店|Codex/)
   })
 
   it('still advises a normal start when the app was explicitly elevated', async () => {
@@ -2075,8 +2058,15 @@ describe('operatingSystemSummary', () => {
     expect(operatingSystemSummary('darwin', '25.0.0', 'arm64')).toBe('macOS 26（Apple 芯片）')
   })
 
+  it('names a Linux machine by its distribution, never by the kernel number', () => {
+    expect(operatingSystemSummary('linux', '6.8.0-45-generic', 'x64', 'Ubuntu 24.04.1 LTS')).toBe('Ubuntu 24.04.1 LTS（64 位）')
+    expect(operatingSystemSummary('linux', '5.10.0', 'arm64', 'UOS Desktop 20')).toBe('UOS Desktop 20（ARM 芯片）')
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64')).toBe('Linux（64 位）')
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64', null)).toBe('Linux（64 位）')
+  })
+
   it('falls back to the raw values it cannot map', () => {
-    expect(operatingSystemSummary('linux', '6.8.0', 'x64')).toBe('linux 6.8.0 (x64)')
+    expect(operatingSystemSummary('freebsd', '14.1', 'x64')).toBe('freebsd 14.1 (x64)')
     expect(operatingSystemSummary('win32', '6.3.9600', 'x64')).toBe('win32 6.3.9600 (x64)')
   })
 })

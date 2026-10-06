@@ -282,6 +282,29 @@ describe('downloadWithResume', () => {
     expect(waited).toBe(false)
   })
 
+  it('stops at the cancel even when the body already has the next chunks queued', async () => {
+    const target = temporaryTarget()
+    const bytes = packageBytes()
+    const controller = new AbortController()
+    const cancelled = new Error('用户取消了')
+    const requests: RecordedRequest[] = []
+    const progress: number[] = []
+
+    const error = await downloadWithResume(options(target, [
+      () => fullResponse(streamOf(bytes), bytes.byteLength),
+    ], requests, {
+      signal: controller.signal,
+      onProgress: (transferred) => {
+        progress.push(transferred)
+        if (transferred >= 8192) controller.abort(cancelled)
+      },
+    })).catch((cause: unknown) => cause)
+
+    expect(error).toBe(cancelled)
+    expect(progress).toEqual([4096, 8192])
+    expect(fs.existsSync(target)).toBe(false)
+  })
+
   it('resumes a transfer that stopped sending data without an error', async () => {
     const target = temporaryTarget()
     const bytes = packageBytes()

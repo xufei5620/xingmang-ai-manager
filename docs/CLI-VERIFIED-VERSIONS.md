@@ -91,6 +91,10 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 软件装的、也由本软件更新，账号来源换了这一点没变。更新提醒仍走首页的新版本角标与一键更新
 （A5），那条路径走 npm 官方源并对 SHA-512，CLI 自己的 `npm install -g` 没有这一层。
 
+写这几个键时不看安装方式，官方原生安装器装的那份 Claude Code 也一样被关掉了自更新，而本软件
+又不能用 npm 原地升级它。所以首页对它照给更新按钮（第三十一批 B）：点了先问一句，客户同意后
+先卸掉官方那份、再用 npm 装上本软件的，见 `CLI-NATIVE-INSTALLS.md` 的「识别口径」。
+
 **验证依据**（沙箱，2026-09-22，空 HOME，装的都是名单里的推荐版本）：
 
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
@@ -98,7 +102,11 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`。同一台机器上不写这个键时是
   `Auto-updates: enabled` 外加一行 `- Can't auto-update: npm global folder isn't writable`。
   二进制里那段判定先看 `DISABLE_UPDATES`、再看 `DISABLE_AUTOUPDATER`，与安装方式无关，所以
-  对官方原生安装器装的那一份同样生效（这一条是读二进制得出的，没有真机演过）。
+  对官方原生安装器装的那一份同样生效。2026-10-03 第三十一批在沙箱里用真二进制演过：把 npm 上的
+  Claude Code Linux 二进制按官方安装器的样子摆好，2.1.277 与 2.1.288 的 `claude doctor` 都认出
+  是官方安装器装的（2.1.288 原文 `Running: native (2.1.288)`），写了这个键是
+  `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`，不写是 `Auto-updates: enabled`。
+  Windows 与 Mac 真机没演过。
   刻意**不用** `DISABLE_UPDATES`：那个连手动 `claude update` 也一起禁掉。
 - **Codex 0.155.1 — 跑起来看到了**。`~/.codex/config.toml` 写
   `check_for_update_on_startup = false` 后跑 `codex doctor`，Updates 一节的
@@ -140,6 +148,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
 | Codex 干活时不让电脑睡 | `~/.codex/config.toml` 的 `[features] prevent_idle_sleep` | 关（0.156.1 实验功能） | `true`（用户写过就不动；切回 ChatGPT 不收回） | 只在一轮进行中生效；笔记本跑长任务睡着，连接断了这一轮就白扣 |
 | Codex 的后台服务 | `~/.codex/config.toml` 的 `[features] daemon_auto_start`；从本软件打开时另带 `--no-daemon`（已装 ≥ 0.156.0） | 0.157.0 起开：交互会话自动拉起多窗口共享用的后台服务，退出 Codex 后仍常驻 | `false`（用户写过就不动；切回 ChatGPT 不收回） | 低配电脑上是没人要的常驻开销；Windows 上外层 Job Object 不许脱离时直接报错退出。`codex agents` 自己会按需拉起服务，不受影响；0.155.x 只在日志记一行未知键 |
+| Codex 的型号名单 | `~/.codex/config.toml` 顶层的 `model_catalog_json`，指向同目录的 `xingmang-models.json` | 只用二进制自带的名单（桌面端自带的 Codex 常比命令行旧，26.930 那批没有 GPT-6.1 Sol） | 随包官方名单里当前 Key 能用的那几项，原样照抄（用户自己设过就不动；命令行低于名单要求的版本、桌面端早于 26.917 那批不写；切回 ChatGPT 收回） | 不写的话中转开了新型号，桌面端菜单里也选不到；见 `docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」 |
 | Codex 在 Windows 上的沙箱档位 | `~/.codex/config.toml` 的 `[windows] sandbox`（只在 Windows 上写） | 未设：第一次跑命令弹英文沙箱设置，推荐档还要一次管理员确认 | `"unelevated"`（用户写过就不动；切回 ChatGPT 不收回） | `sandbox_mode` 仍是 `workspace-write`，只是换成不需要提权的实现；按 0.156.1 源码（`tui/src/app/platform_actions.rs`）配了档位就不再弹引导，**Windows 真机没验证** |
 | Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
@@ -288,7 +297,9 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 - 开机恢复账号后，渲染层调 `config:fill-template-defaults`：对来源确认是当前账号、版本号落后的配置，
   由 `fillRelayTemplateDefaults` **只补缺省的键**（用户写过的值哪怕是 `false` 也不动，不碰 Key、
   地址、型号、钩子、状态行），补之前在「备份」页留一份整套备份，写入走两阶段 + `.bak`；工具开着或
-  看不出开没开的这次跳过；失败只记日志、版本号不前进。首页角落说一次补了哪几个工具。
+  看不出开没开的这次跳过，记进结果的 `pending`，渲染层每 10 分钟、或窗口回到前台时带 `retry` 再要一次，
+  只补欠着的、换了账号不补，最多 6 次（`template-fill-retry.ts`）；失败只记日志、版本号不前进，下次开机再试。
+  首页角落说一次补了哪几个工具（补做那次补上了也说）。
 - 官方账号、手填、来源没确认、被改动过的配置一律不碰。
 
 **规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
@@ -390,6 +401,7 @@ base URL 指本地假接口，型号名故意起成内置目录里没有的 `rel
 **建议把这条巡检扩到 Codex 与 Gemini**（这份 PR 没有动 routine 本身，它归「Claude Code 新版每周巡检」那条线程管）：
 
 - **Codex 最该扩**。它现在几乎每天发 alpha、正式版每周一发，0.155.0 那次回归的窗口只有一天——每周看一次仍会漏，但至少名单不会一直停在几个月前。上游看 `https://github.com/openai/codex/releases`（`rust-v*` tag），关注的关键词是 reasoning summary、wire API、`requires_openai_auth`、third-party provider。
+  **抬 Codex 推荐版本时顺手换随包型号名单**（`bundled-catalog/codex-models/models.json`，步骤见同目录 README）：桌面端菜单靠它列出中转开着的新 GPT 型号，名单停在旧 tag 上，新型号就进不了菜单。
 - **Gemini 一并扩，但频次可以低**。它一周一个正式版，0.57~0.60 都是安全加固；要盯的是 `GOOGLE_GEMINI_BASE_URL` 与 `security.auth.selectedType` 这两处——上游已经把带 base URL 的情形单独识别成 `AuthType.GATEWAY`，哪天它把 `gateway` 做成正式的 `selectedType`，本产品写的 `gemini-api-key` 就要跟着改。
 - **Grok 也要扩**（2026-09-30 起名单里有它）：比 npm `latest` 与 xAI stable 两处，两者一致且比名单新才考虑抬；抬之前在沙箱重核上一节那五条配置。
 - 扩之后那条 routine 的判据不变：只看 npm `latest`（`stable` 这个 dist-tag 不可信，它曾经指向 blocked 区间里的版本），比对上游 changelog，开草稿 PR，不自合。

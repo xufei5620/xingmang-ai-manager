@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage } from './fixture-readiness.mjs'
 import { projectRoot, withBrowserFixture } from './harness.mjs'
 
 async function withFixture(run, { viewport = { width: 1100, height: 760 } } = {}) {
@@ -14,10 +14,11 @@ async function withFixture(run, { viewport = { width: 1100, height: 760 } } = {}
 // Every case in this suite opens its own cold page, so first paint waits on Vite
 // transforming the fixture's module graph on demand. Waiting for the mount on the
 // shared budget keeps that out of the cases' own timeouts, which stay at the
-// default so a real regression still fails fast.
+// default so a real regression still fails fast. This suite runs in the Windows
+// node shard, where a page can also lose its navigation outright, so the budget
+// is spent as up to three navigations rather than one.
 async function visit(page, url) {
-  await page.goto(url)
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
+  await openFixturePage(page, url, (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label: 'account commerce fixture' })
 }
 
 // 控件的暗色底可能是半透明叠加（disabled 就是 rgba(255,255,255,.075)），只看

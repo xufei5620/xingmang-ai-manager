@@ -10,6 +10,19 @@ export interface SupportIdentityInput {
   account: Pick<NonNullable<AccountSessionState['account']>, 'userId' | 'username'> | null | undefined
   version: string | undefined
   os: WindowOs
+  /** 只有 Linux 用：发行版和芯片（「Ubuntu 24.04.1 LTS · 64 位」）。光写 Linux 客服还得再问一轮。 */
+  systemDetail?: string | undefined
+}
+
+/** 「复制给客服」里 Linux 后面括号那一段，和检查页「操作系统」一项同一套叫法。 */
+export function linuxSystemDetail(systemLabel: string | undefined, architecture: string | undefined): string | undefined {
+  const chip = architecture === 'arm64' ? 'ARM 芯片' : architecture === 'x64' ? '64 位' : architecture
+  const detail = [systemLabel, chip].filter(Boolean).join(' · ')
+  return detail || undefined
+}
+
+function supportSystemLabel(input: SupportIdentityInput): string {
+  return input.os === 'linux' && input.systemDetail ? `Linux（${input.systemDetail}）` : osLabels[input.os]
 }
 
 /**
@@ -20,7 +33,7 @@ export interface SupportIdentityInput {
  */
 export function buildSupportIdentityLine(input: SupportIdentityInput): string {
   const app = input.version ? `星芒AI管理工具 ${input.version}` : '星芒AI管理工具'
-  return [supportAccountLabel(input), app, osLabels[input.os]].join(' · ')
+  return [supportAccountLabel(input), app, supportSystemLabel(input)].join(' · ')
 }
 
 function supportAccountLabel(input: SupportIdentityInput): string {
@@ -62,7 +75,7 @@ export function buildSupportBundle(input: SupportIdentityInput, failure: Support
   const lines = [
     '星芒AI管理工具 · 给客服的信息',
     supportAccountLabel(input),
-    `版本 ${input.version ?? '未知'} · ${osLabels[input.os]}`,
+    `版本 ${input.version ?? '未知'} · ${supportSystemLabel(input)}`,
     `时间 ${supportTime(failure.at)}`,
   ]
   if (failure.action) lines.push(`做什么：${failure.action}`)

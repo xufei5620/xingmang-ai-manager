@@ -3,6 +3,7 @@ import {
   type AccountSourceTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
+  type CliUninstallOptions,
   type CodexDesktopLaunchMode,
   type ExternalToolId,
   type InstallCancelResult,
@@ -168,6 +169,7 @@ export function createToolsApi(bridge: XingmangApi) {
     },
     readExternal: (force = false) => bridge.scanExternalClients(force),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
+    cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
@@ -179,8 +181,9 @@ export function createToolsApi(bridge: XingmangApi) {
     cancelInstall: (id: ToolId): Promise<InstallCancelResult> => id === 'codexDesktop'
       ? bridge.cancelCodexDesktopInstall()
       : bridge.cancelCliInstall(id),
-    uninstall: async (id: ToolId) => {
-      const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id))
+    // options 只有「换成星芒装的」会带（reinstall），见 CliUninstallOptions。
+    uninstall: async (id: ToolId, options?: CliUninstallOptions) => {
+      const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id, options))
       recentSessions.invalidate()
       return result
     },

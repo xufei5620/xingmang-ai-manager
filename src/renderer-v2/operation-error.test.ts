@@ -3,7 +3,13 @@ import { classifyOperationError, operationFallbackActions, operationLogPage, pre
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
+import {
+  macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
+  macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage, macosLegacyChatgptMessage,
+} from '../../electron/macos-desktop-install-failure'
+import { operationFailureFrom } from './business-common'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -22,6 +28,11 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
   codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
+  // 主进程 claude-desktop-install-failure.ts 的 buildClaudeDesktopInstallFailureMessage。
+  claudeDesktopInstallFailed: { sample: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。' },
+  // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
+  macDesktopInstallFailed: { sample: macosDesktopDownloadFailedMessage('OpenCode') },
+  macDesktopTooOld: { sample: macosDesktopSystemTooOldMessage('OpenCode', '13.0') },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
@@ -44,7 +55,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
-  unsafeStorage: { sample: '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入托管 API Key。' },
+  unsafeStorage: { sample: '这台电脑没法安全保存密码，已拒绝写入托管 API Key。' },
   // 支付的两个终态不走这条路：pages-account.tsx 的 paymentTerminalPresentation
   // 已经按回跳结果给出更具体的说法，再用目录文案盖一层只会更含糊。
   paymentClosed: { unreachable: 'paymentTerminalPresentation 直接给终态文案' },
@@ -171,19 +182,6 @@ describe('renderer-v2 operation error classification', () => {
       .some((action) => action.label.includes('管理员'))).toBe(false)
   })
 
-  it('gives a Codex window that never appeared a retry and a way to support, even when it names Windows settings', () => {
-    for (const message of [
-      'Codex 桌面端没有打开：这台电脑正用 Windows 自带的「Administrator」账户登录，Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。',
-      'Codex 桌面端没有打开：这台电脑关掉了 Windows 的「用户账户控制」，Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。',
-    ]) {
-      const hint = presentOperationError(message)
-      expect(hint?.key).toBe('codexDesktopNotStarted')
-      // 这两种是 Windows 不让这个账户打开商店软件，重置 Codex 帮不上忙，正文也不能提它。
-      expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
-      expect(hint?.body).not.toContain('重置')
-    }
-  })
-
   it('offers 重置 Codex between retry and support when the Codex window simply never appeared', () => {
     const hint = presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。')
     expect(hint?.key).toBe('codexDesktopNotStarted')
@@ -249,6 +247,97 @@ describe('renderer-v2 operation error classification', () => {
     }
   })
 
+  it('gives every failed Windows Claude Desktop install a retry, the download page, the log and support', () => {
+    // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
+    for (const reason of Object.keys(claudeDesktopInstallFailureReasons) as ClaudeDesktopInstallFailureReason[]) {
+      for (const wingetTried of [true, false]) {
+        const message = buildClaudeDesktopInstallFailureMessage(reason, { wingetTried })
+        const hint = presentOperationError(message)
+        expect([message, hint?.key]).toEqual([message, 'claudeDesktopInstallFailed'])
+        expect(hint?.actions).toEqual([
+          { id: 'retry', label: '重试' },
+          { id: 'claudeDesktopDownload', label: '去官网下载' },
+          { id: 'log', label: '查看日志' },
+          { id: 'support', label: '找客服' },
+        ])
+        // 原话（签名、HTTP 状态码）只记在运行日志里。
+        expect(operationLogPage({ message, tool: 'claudeDesktop' })).toBe('feedback')
+      }
+    }
+    // 授权、磁盘这几句各有自己的下一步，主进程原样放行，这里也不归到这一类。
+    expect(classifyOperationError('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')).not.toBe('claudeDesktopInstallFailed')
+  })
+
+  it('puts a failed Claude Desktop install on screen without the class name Electron adds to the rejection', () => {
+    const message = buildClaudeDesktopInstallFailureMessage('damaged', { wingetTried: true })
+    const failure = operationFailureFrom(new Error(`Error invoking remote method 'external-clients:install': Error: ${message}`), '安装客户端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('claudeDesktopInstallFailed')
+  })
+
+  it('gives every failed one-click Mac desktop install a retry and the install guide, ahead of the network rules', () => {
+    // 「检查网络」那一句不能被 timeout 抢走：那边没有「看安装指南」这条出路。
+    for (const message of [
+      macosDesktopDownloadFailedMessage('OpenCode'),
+      macosDesktopNotOfficialMessage,
+      macosDesktopNameTakenMessage('OpenCode'),
+      macosDesktopInstallFailedMessage('OpenCode'),
+      macosDesktopDownloadFailedMessage('Claude Desktop'),
+      macosDesktopDownloadFailedMessage('Codex 桌面端'),
+      macosDesktopInstallFailedMessage('Codex 桌面端'),
+      macosDesktopNameTakenMessage('ChatGPT'),
+      macosLegacyChatgptMessage,
+    ]) {
+      const hint = presentOperationError(message)
+      expect([message, hint?.key]).toEqual([message, 'macDesktopInstallFailed'])
+      expect(hint?.actions).toEqual([
+        { id: 'retry', label: '重试' },
+        { id: 'installGuide', label: '看安装指南' },
+        { id: 'log', label: '查看日志' },
+        { id: 'support', label: '找客服' },
+      ])
+      // 原因原话只记在运行日志里。
+      expect(operationLogPage({ message })).toBe('feedback')
+    }
+    // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
+    expect(classifyOperationError('OpenCode 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError(macosDesktopDiskFullMessage('OpenCode'))).toBe('diskFull')
+  })
+
+  it('puts a failed Mac desktop install on screen without the class name Electron adds to the rejection', () => {
+    // Electron 把主进程的拒绝写成「Error invoking remote method '通道': 类名: 原话」。
+    const message = macosDesktopDownloadFailedMessage('OpenCode')
+    const rejected = new Error(`Error invoking remote method 'external-clients:install': ${macosDesktopInstallErrorName}: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装客户端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
+  })
+
+  it('gives a failed Codex desktop install on a Mac the install guide, never the Microsoft Store', () => {
+    const message = macosDesktopDownloadFailedMessage('Codex 桌面端')
+    expect(message).toBe('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。')
+    const rejected = new Error(`Error invoking remote method 'desktop:install-codex': ${macosDesktopInstallErrorName}: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装 Codex 桌面端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
+    expect(presentOperationError(macosDesktopSystemTooOldMessage('Codex 桌面端', '14.0'))?.key).toBe('macDesktopTooOld')
+  })
+
+  it('puts a failed Codex desktop install on screen without its class name, which does not end in Error', () => {
+    const message = buildCodexDesktopInstallFailureMessage('unreachable', { storeTried: true, updating: false })
+    const rejected = new Error(`Error invoking remote method 'desktop:install-codex': CodexDesktopInstallFailure: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装 Codex 桌面端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('codexDesktopInstallFailed')
+  })
+
+  it('offers neither a retry nor the install guide when the Mac is too old for the app', () => {
+    const hint = presentOperationError(macosDesktopSystemTooOldMessage('OpenCode', '13.0'))
+    expect(hint?.key).toBe('macDesktopTooOld')
+    expect(hint?.actions.map((action) => action.id)).toEqual(['log', 'support'])
+  })
+
   it('sends a relocated folder to the check page instead of blaming permissions', () => {
     // 同一句里带着 EPERM 也不能被 permission 抢走：改权限、关杀毒都修不好它。
     const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
@@ -276,9 +365,15 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('tells the user this machine has no keyring rather than blaming permissions', () => {
-    const hint = presentOperationError('当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入已保存的账号。请先启用系统凭据服务后重试。')
-    expect(hint?.key).toBe('unsafeStorage')
-    expect(hint?.title).toBe('这台电脑无法安全保存密码')
+    // safe-storage-backend.ts 现在的说法，和老版本主进程的说法都要认得。
+    for (const message of [
+      '这台电脑没法安全保存密码，已拒绝写入已保存的账号。',
+      '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入已保存的账号。请先启用系统凭据服务后重试。',
+    ]) {
+      const hint = presentOperationError(message)
+      expect(hint?.key).toBe('unsafeStorage')
+      expect(hint?.title).toBe('这台电脑无法安全保存密码')
+    }
   })
 
   it('never reassures when the backend says the rollback failed too', () => {

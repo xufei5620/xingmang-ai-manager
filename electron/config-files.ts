@@ -4,8 +4,10 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
-import { relaySites } from './relay-sites'
+import { relayProviderBaseUrlMatches, relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { tomlErrorLocation } from './toml-error-location'
+import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
 import {
   defaultProviderConfigRoots,
   providerConfigRoot,
@@ -29,7 +31,19 @@ import {
   type ManagedCliHookTarget,
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
-import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
+import {
+  applyCodexRelayModelCatalog,
+  codexModelCatalogFileName,
+  codexRelayModelCatalogOutdated,
+  isManagedCodexModelCatalogSetting,
+  removeCodexRelayModelCatalog,
+} from './codex-model-catalog'
+import {
+  assertNoReparseComponents,
+  ensureSafeDataDirectory,
+  readSafeUtf8FileSync,
+  renameWithTransientRetrySync,
+} from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
   applyXingmangImageMcpToJson,
@@ -226,17 +240,6 @@ function withoutByteOrderMark(content: string): string {
   return content.replace(/^\uFEFF/, '')
 }
 
-/**
- * @iarna/toml's message quotes the lines around the failure, and in these
- * files those lines are often `api_key = "..."` or an MCP server's token. The
- * message reaches the screen, the runtime log and the feedback export (I13),
- * so only the row number is kept -- the same reason requireJson drops V8's.
- */
-function tomlErrorLocation(error: unknown): string {
-  const line = error && typeof error === 'object' && 'line' in error ? error.line : null
-  return typeof line === 'number' && Number.isInteger(line) && line >= 0 ? `（第 ${line + 1} 行附近）` : ''
-}
-
 function requireConfigText(
   filePath: string,
   label: string,
@@ -278,7 +281,9 @@ function readToml(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function requireJson(filePath: string, label: string): Record<string, unknown> {
+// `brokenTool`：读不懂时指给客户去哪重置（broken-config-advice.ts），传首页那一行的工具名。只有保存、
+// 写 Key（merge）那几处传；不传照旧报 label 那句，开机核对、画图登记这些多半只进日志（第三十批 C）。
+function requireJson(filePath: string, label: string, brokenTool?: string): Record<string, unknown> {
   const content = requireConfigText(filePath, label)
   if (content === null) return {}
   try {
@@ -293,18 +298,20 @@ function requireJson(filePath: string, label: string): Record<string, unknown> {
     // flows into the on-screen failure reason, the runtime log, and the
     // feedback export (I13). The label already names the file; the byte
     // offset does not help a non-technical user.
-    throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+    throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 无法解析为 JSON，未执行修改`)
   }
-  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+  throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
-function requireToml(filePath: string, label: string): Record<string, unknown> {
+function requireToml(filePath: string, label: string, brokenTool?: string): Record<string, unknown> {
   const content = requireConfigText(filePath, label)
   if (content === null) return {}
   try {
     return TOML.parse(content)
   } catch (error) {
-    throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
+    throw new Error(brokenTool
+      ? describeBrokenConfig(brokenTool, tomlErrorLocation(error))
+      : `${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
   }
 }
 
@@ -317,7 +324,7 @@ function requireToml(filePath: string, label: string): Record<string, unknown> {
  * rejects them). Duplicate keys are refused on this path only, because the
  * comment-preserving write edits one occurrence while Gemini reads the last.
  */
-function parseGeminiJsonObject(content: string, label: string): Record<string, unknown> {
+function parseGeminiJsonObject(content: string, label: string, brokenTool?: string): Record<string, unknown> {
   let parsed: unknown
   try {
     parsed = JSON.parse(content) as unknown
@@ -326,12 +333,12 @@ function parseGeminiJsonObject(content: string, label: string): Record<string, u
     const tree = parseTree(content, errors, { allowTrailingComma: false, disallowComments: false })
     // Same reason as requireJson for not surfacing the parser's own message.
     if (!tree || errors.length || hasDuplicateProperties(tree)) {
-      throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+      throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 无法解析为 JSON，未执行修改`)
     }
     parsed = getNodeValue(tree) as unknown
   }
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+  throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
 function hasDuplicateProperties(node: Node): boolean {
@@ -356,9 +363,9 @@ function readGeminiJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function requireGeminiJson(filePath: string, label: string): { parsed: Record<string, unknown>, original: string | null } {
+function requireGeminiJson(filePath: string, label: string, brokenTool?: string): { parsed: Record<string, unknown>, original: string | null } {
   const original = requireConfigText(filePath, label)
-  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label), original }
+  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label, brokenTool), original }
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -869,6 +876,25 @@ export function codexConfigSnapshotPaths(
   }
 }
 
+/** 本软件写的 Codex 型号名单，放在 config.toml 旁边（见 codex-model-catalog.ts）。 */
+export function codexModelCatalogPath(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): string {
+  return path.join(providerConfigRoot('codex', normalizeProviderConfigRoots(rootsInput)), codexModelCatalogFileName)
+}
+
+/**
+ * 名单文件的位置能不能写：还不存在、或是单链接普通文件才行。被换成符号链接、硬链接时
+ * 不能经它写（I8），也不该让 Codex 经它读到我们核对不了的内容。
+ */
+export function codexModelCatalogTargetUsable(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  try {
+    assertSafeConfigPath(codexModelCatalogPath(roots), providerConfigRoot('codex', roots), 'file')
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function classifyCodexConfigProfile(
   parsed: Record<string, unknown> | null,
   siteBaseUrl: string,
@@ -884,9 +910,8 @@ export function classifyCodexConfigProfile(
 
 function isKnownCodexRelayBaseUrl(baseUrl: string, siteBaseUrl: string): boolean {
   if (!baseUrl) return false
-  const normalized = normalizeUrl(baseUrl)
   return [siteBaseUrl, ...relaySites.map((site) => site.providerBaseUrls.codex)]
-    .some((candidate) => normalized === normalizeUrl(candidate))
+    .some((candidate) => relayProviderBaseUrlMatches('codex', baseUrl, candidate))
 }
 
 function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
@@ -987,6 +1012,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  removeCodexRelayModelCatalog(parsed)
   removeCodexCliNotify(parsed)
   restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
@@ -1033,6 +1059,7 @@ function buildCodexRelayConfigTemplate(
   providerName: string,
   siteBaseUrl: string,
   cliHook?: CliHookInvocation,
+  withModelCatalog = false,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
@@ -1040,6 +1067,9 @@ function buildCodexRelayConfigTemplate(
   const notifyLine = cliHook
     ? [`notify = [${[cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory].map(tomlString).join(', ')}]`]
     : []
+  // Codex only honours this key above the first table; a relative name resolves
+  // next to config.toml, which also keeps Windows paths out of TOML escaping.
+  const catalogLine = withModelCatalog ? [`model_catalog_json = ${tomlString(codexModelCatalogFileName)}`] : []
   // Same values as applyCodexRelayMachineDefaults; the template is spelled out
   // so a fresh install reads top to bottom like the upstream docs.
   const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
@@ -1051,6 +1081,7 @@ function buildCodexRelayConfigTemplate(
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     'check_for_update_on_startup = false',
+    ...catalogLine,
     ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
@@ -1077,7 +1108,12 @@ function snapshotOfficialCodexConfigText(
   siteBaseUrl: string,
 ): string {
   if (classifyCodexConfigProfile(currentParsed, siteBaseUrl) === 'official') {
-    return withTrailingNewline(currentText)
+    if (!isManagedCodexModelCatalogSetting(currentParsed.model_catalog_json)) return withTrailingNewline(currentText)
+    // 我们那份型号名单会整份顶掉 ChatGPT 登录时服务器下发的名单，官方快照里不能留着指向
+    // 它的那一行。只摘这一行，用户自己的官方设置一个不动。
+    const official = cloneTomlRecord(currentParsed)
+    removeCodexRelayModelCatalog(official)
+    return tomlContent(official)
   }
   const cleaned = cloneTomlRecord(currentParsed)
   stripCodexRelayFromConfig(cleaned, siteBaseUrl)
@@ -1091,7 +1127,8 @@ function readStoredCodexConfig(filePath: string, label: string): string | null {
   try {
     TOML.parse(text)
   } catch {
-    throw new Error(`${label} 无法解析，未执行修改`)
+    // 只在 merge 时读它（切回当前账号要用这份），读不懂就指去重置（第三十批 C）。
+    throw new Error(describeConfigReset('Codex', '星芒替 Codex 存的那份配置读不出来了'))
   }
   return withTrailingNewline(text)
 }
@@ -1102,9 +1139,15 @@ function createCodexRelayConfigPlans(
   siteBaseUrls: Record<ProviderId, string>,
   mode: NativeConfigSaveMode,
   cliHook?: CliHookInvocation,
+  // 本软件管的型号名单（codex-model-catalog.ts）：字符串 = 写这份文件并指向它；null = 收回
+  // 本软件写的那一行；缺省 = 那一行和文件都原样不动，与从前一致。
+  modelCatalog?: string | null,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
+  // 名单文件被换成了链接：这次只收回那一行，Key 和其余配置照常保存，不让一个写不了的
+  // 附属文件把整次保存连累失败。
+  const catalog = typeof modelCatalog === 'string' && !codexModelCatalogTargetUsable(roots) ? null : modelCatalog
   const currentText = fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null
@@ -1114,7 +1157,8 @@ function createCodexRelayConfigPlans(
       currentParsed = TOML.parse(currentText)
     } catch (error) {
       if (mode !== 'reset') {
-        throw new Error(`现有 Codex config.toml 无法解析，未执行修改${tomlErrorLocation(error)}`)
+        // Codex CLI 和 Codex 桌面端共用这一份，句子里只叫「Codex」（第三十批 C）。
+        throw new Error(describeBrokenConfig('Codex', tomlErrorLocation(error)))
       }
     }
   }
@@ -1128,22 +1172,36 @@ function createCodexRelayConfigPlans(
 
   const storedRelay = mode === 'merge' && currentKind === 'official'
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
+  const templateCatalog = typeof catalog === 'string'
+  let catalogInUse = false
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook)
+    catalogInUse = templateCatalog
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook, templateCatalog)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
     applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(stored, cliHook)
+    if (catalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(stored, templateCatalog)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
     applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
+    if (catalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(currentParsed, templateCatalog)
     nextContent = tomlContent(currentParsed)
   } else {
-    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook)
+    catalogInUse = templateCatalog
+    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook, templateCatalog)
   }
 
+  // Codex refuses to start when model_catalog_json names a missing file, so the
+  // catalog is committed before the config that points at it: a crash between
+  // the renames leaves an unused file, never a dangling setting. An unchanged
+  // file is not rewritten, which also keeps every save from adding a backup.
+  if (catalogInUse && typeof catalog === 'string') {
+    const catalogPath = codexModelCatalogPath(roots)
+    if (readText(catalogPath) !== catalog) plans.unshift({ path: catalogPath, content: catalog })
+  }
   plans.push({ path: paths.relay, content: nextContent })
   plans.push({ path: paths.active, content: nextContent })
   return plans
@@ -1330,6 +1388,124 @@ export function claudeModelPickerNeedsRefresh(
   return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel)
 }
 
+/**
+ * Codex 那份型号名单按 expected 重写会不会变（见 codex-model-catalog.ts 的
+ * codexRelayModelCatalogOutdated）。只读，读之前先过路径校验；不该有名单时只看那一行，
+ * 不去碰名单文件。
+ */
+export function codexModelCatalogNeedsRefresh(
+  expected: string | null,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const [configPath] = providerConfigPaths('codex', roots)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const parsed = requireToml(configPath, '现有 Codex config.toml')
+  if (expected === null) return codexRelayModelCatalogOutdated(parsed, null, null)
+  const catalogPath = codexModelCatalogPath(roots)
+  assertSafeConfigPath(catalogPath, providerRoot, 'file')
+  return codexRelayModelCatalogOutdated(parsed, expected, readText(catalogPath))
+}
+
+export interface CodexModelCatalogOnDisk {
+  /** config.toml 顶层有本软件写的那一行。 */
+  managed: boolean
+  /** 那一行指向的名单文件内容；不存在、读不了或被换成链接时是 null。 */
+  content: string | null
+}
+
+/** 本软件写的型号名单现在是什么样：开机、换了命令行版本之后据此判断还能不能留着。 */
+export function inspectCodexModelCatalogOnDisk(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): CodexModelCatalogOnDisk {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const [configPath] = providerConfigPaths('codex', roots)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  if (!isManagedCodexModelCatalogSetting(requireToml(configPath, '现有 Codex config.toml').model_catalog_json)) {
+    return { managed: false, content: null }
+  }
+  return { managed: true, content: codexModelCatalogTargetUsable(roots) ? readText(codexModelCatalogPath(roots)) : null }
+}
+
+const managedCodexModelCatalogLine = new RegExp(
+  `^\\s*model_catalog_json\\s*=\\s*(["'])${codexModelCatalogFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1\\s*(?:#.*)?$`,
+)
+
+/** 两份 TOML 读出来的值逐项相同（大整数读出来是 BigInt，JSON.stringify 不认，换成文本比）。 */
+function sameTomlValue(left: unknown, right: unknown): boolean {
+  function replacer(_key: string, value: unknown): unknown {
+    return typeof value === 'bigint' ? `${value}n` : value
+  }
+  return JSON.stringify(left, replacer) === JSON.stringify(right, replacer)
+}
+
+/**
+ * 去掉本软件写的那一行，其余一个字不动（注释、顺序、每一行的换行符都留着）；没有那一行
+ * 返回 null。按行删不干净（写法少见）时才退回整份重新排版。
+ */
+function withoutManagedCodexModelCatalogLine(text: string, label: string): string | null {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(text)
+  } catch (error) {
+    throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
+  }
+  if (!isManagedCodexModelCatalogSetting(parsed.model_catalog_json)) return null
+  removeCodexRelayModelCatalog(parsed)
+  // 每一行连着它自己的换行符切开，删掉那一行再原样拼回。
+  const lines = text.split(/(?<=\n)/)
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line))
+  const topLevelEnd = firstTable === -1 ? lines.length : firstTable
+  const index = lines.slice(0, topLevelEnd).findIndex((line) => managedCodexModelCatalogLine.test(line.replace(/\r?\n$/, '')))
+  if (index !== -1) {
+    const next = [...lines.slice(0, index), ...lines.slice(index + 1)].join('')
+    try {
+      // 删掉的必须恰好是那一个键：读回来与「原样去掉它」逐项一致才用按行删的结果
+      // （防的是多行字符串里刚好有一行长得一样）。
+      if (sameTomlValue(TOML.parse(next), parsed)) return next
+    } catch {
+      // 按行删坏了结构：下面整份重排。
+    }
+  }
+  return tomlContent(parsed)
+}
+
+function codexConfigWithoutManagedCatalog(filePath: string, label: string, providerRoot: string): FilePlan | null {
+  assertSafeConfigPath(filePath, providerRoot, 'file')
+  const text = requireConfigText(filePath, label)
+  const next = text ? withoutManagedCodexModelCatalogLine(text, label) : null
+  return next === null ? null : { path: filePath, content: next }
+}
+
+/**
+ * 只收回本软件写的 model_catalog_json 那一行（正在用的 config.toml 与切回星芒时用的那份），
+ * 不看账号、不联网：命令行退回旧版、桌面端太旧时，名单读不进 Codex 就起不来，这一步
+ * 不能等账号核对。名单文件留着。什么都没改返回 null。
+ */
+export function takeBackCodexModelCatalog(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  hooks: NativeConfigWriteHooks = {},
+): NativeConfigSaveResult | null {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const paths = codexConfigSnapshotPaths(roots)
+  const plans: FilePlan[] = []
+  try {
+    const relay = codexConfigWithoutManagedCatalog(paths.relay, '已保存的星芒 Codex 配置', providerRoot)
+    if (relay) plans.push(relay)
+  } catch {
+    // 切回星芒用的那份快照读不了、或被换成了链接：留着不碰，不挡住收回 Codex 正在读的这份。
+  }
+  const active = codexConfigWithoutManagedCatalog(paths.active, '现有 Codex config.toml', providerRoot)
+  if (active) plans.push(active)
+  if (plans.length === 0) return null
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans(plans, hooks, providerRoot)
+}
+
 export function inspectProviderConfig(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
@@ -1373,7 +1549,7 @@ export function inspectProviderConfig(
     actualBaseUrl,
     exists: files.some((file) => file.exists),
     hasApiKey: Boolean(apiKey),
-    matchesRelay: Boolean(apiKey && actualBaseUrl && normalizeUrl(actualBaseUrl) === normalizeUrl(baseUrl)),
+    matchesRelay: Boolean(apiKey && actualBaseUrl && relayProviderBaseUrlMatches(provider, actualBaseUrl, baseUrl)),
     apiKey,
     model,
     ...(authType !== undefined ? { authType } : {}),
@@ -2009,12 +2185,13 @@ function createPlans(
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
   cliHook?: CliHookInvocation,
+  codexModelCatalog?: string | null,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook, codexModelCatalog),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -2117,6 +2294,7 @@ function createMergePlans(
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
   cliHook?: CliHookInvocation,
+  codexModelCatalog?: string | null,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
@@ -2132,12 +2310,12 @@ function createMergePlans(
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, codexModelCatalog),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
-      const parsed = requireJson(paths[0], '现有 Claude settings.json')
+      const parsed = requireJson(paths[0], '现有 Claude settings.json', 'Claude Code')
       const env = ensureRecord(parsed, 'env')
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
@@ -2158,7 +2336,7 @@ function createMergePlans(
       if (!fs.existsSync(paths[0])) {
         plans.push(initial(paths[0]))
       } else {
-        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json', 'Gemini CLI')
         // Gemini CLI keeps the auth strategy in settings.json. Updating only
         // .env after a prior OAuth login leaves the UI looking configured while
         // the CLI continues to authenticate with Google, so merge must restore
@@ -2189,15 +2367,15 @@ function createMergePlans(
     }
     case 'grok': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
-      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      const parsed = requireToml(paths[0], '现有 Grok config.toml', 'Grok CLI')
       // 切回官方时整张中转模型表连同 models.default 一起拿掉（createOfficialAccountPlans）。
-      // 再切回当前账号时按初始模板补回，不让用户去点「重置为初始配置」。
+      // 再切回当前账号时按初始模板补回，不让用户去点「重置为初始状态」。
       if (!nestedString(parsed, ['models', 'default'])) addManagedGrokModel(parsed)
       const defaultModel = nestedString(parsed, ['models', 'default'])
       const models = ensureRecord(parsed, 'model')
       const target = models[defaultModel]
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
-        throw new Error('现有 Grok 默认模型配置无效，请选择“重置为初始配置”')
+        throw new Error(describeConfigReset('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对'))
       }
       const targetModel = target as Record<string, unknown>
       targetModel.api_key = apiKey
@@ -2415,8 +2593,11 @@ function rollbackCommittedPlans(
         assertSafeSourceAndTarget(plan.backupPath, rollbackPath, providerRoot)
         fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
         rollbackCopyCreated = true
-        assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot)
-        fs.renameSync(rollbackPath, plan.path)
+        renameWithTransientRetrySync(
+          rollbackPath,
+          plan.path,
+          () => assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot),
+        )
         rollbackCopyCreated = false
       } catch (error) {
         rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
@@ -2480,9 +2661,13 @@ export function executeFilePlans(
     }
     for (const [index, plan] of prepared.entries()) {
       assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      hooks.beforeReplace?.(plan.path, index)
-      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      fs.renameSync(plan.temporaryPath, plan.path)
+      // A hook may re-read what this save was computed from (external-tool-config
+      // does), so it runs again before every retry: whoever held the file may
+      // have just saved its own change.
+      renameWithTransientRetrySync(plan.temporaryPath, plan.path, () => {
+        hooks.beforeReplace?.(plan.path, index)
+        assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
+      })
       committed.push(plan)
     }
   } catch (error) {
@@ -2540,6 +2725,9 @@ export function saveProviderConfig(
   // 终端里出错、做完、等人时通知星芒的钩子（见 cli-hooks.ts）。缺省 = 不写，与从前一致；
   // 只有 Claude Code 与 Gemini CLI 用得上，其余工具传了也不看。
   cliHook?: CliHookInvocation,
+  // 写给 Codex 的型号名单全文（codex-model-catalog.ts）：null = 收回本软件写的那一行，
+  // 缺省 = 不动，与从前一致。只有 Codex 看。
+  codexModelCatalog?: string | null,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -2556,8 +2744,8 @@ export function saveProviderConfig(
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

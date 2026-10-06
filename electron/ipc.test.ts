@@ -115,6 +115,7 @@ function serviceStub(): SystemService {
     onInstallationQueueChange: vi.fn(() => () => undefined),
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
+    cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
     launchExternalClient: vi.fn(async () => undefined),
   }
 }
@@ -463,6 +464,57 @@ describe('registerIpcHandlers', () => {
     const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'acceleration:get-state')
     expect(logged).toHaveLength(2)
     expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
+  })
+
+  it('keeps routine notice and subscription polling out of the feedback report but logs slow reads and recoveries', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(0)
+      const marker = `newapi-${'a'.repeat(64)}`
+      const accountService = accountServiceStub()
+      const getNotice = vi.fn(async () => null)
+      accountService.getNotice = getNotice
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 7, username: 'notice-reader', group: null, role: 1, quota: 100, usedQuota: 0 },
+      })
+      vi.mocked(accountService.getSubscriptionSelf).mockResolvedValue({ subscriptions: [] } as never)
+      const announcementReads = { sync: vi.fn(async (_scope: string, ids: string[]) => ids) }
+      const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { announcementReads })
+      const readNotice = electronMocks.handlers.get('account:get-notice')!
+      const readSubscription = electronMocks.handlers.get('account:get-subscription-self')!
+      const syncReads = electronMocks.handlers.get('account:sync-local-notice-reads')!
+
+      await readNotice(trustedEvent())
+      await syncReads(trustedEvent(), 'xm-account:7', [marker])
+      getNotice.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 3_500)
+        return null
+      })
+      await readNotice(trustedEvent())
+      getNotice.mockRejectedValueOnce(new Error('账号服务请求超时'))
+      await expect(readNotice(trustedEvent())).rejects.toThrow('账号服务请求超时')
+      // Another channel succeeding in between neither counts as nor clears the notice recovery.
+      await readSubscription(trustedEvent())
+      await readNotice(trustedEvent())
+      await readNotice(trustedEvent())
+
+      const polled = new Set(['account:get-notice', 'account:sync-local-notice-reads', 'account:get-subscription-self'])
+      const logged = vi.mocked(runtimeLog.log).mock.calls
+        .filter(([, , event]) => polled.has(event))
+        .map(([level, , event, , detail]) => [event, level, (detail as { recovered?: boolean }).recovered === true])
+      expect(logged).toEqual([
+        ['account:get-notice', 'debug', false],
+        ['account:sync-local-notice-reads', 'debug', false],
+        ['account:get-notice', 'info', false],
+        ['account:get-notice', 'error', false],
+        ['account:get-subscription-self', 'debug', false],
+        ['account:get-notice', 'info', true],
+        ['account:get-notice', 'debug', false],
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('builds the acceleration change key from state fields only, ignoring the ticking remaining time', () => {
@@ -841,6 +893,35 @@ describe('registerIpcHandlers', () => {
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })
 
+    it('tells the window whether the report carries any self-check result, also after regenerating it', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        let checked = false
+        const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+          diagnosticsService: {
+            run: vi.fn(),
+            checkConnection: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            exportLatest: vi.fn(),
+            hasSelfCheckResult: () => checked,
+          },
+        })
+        runtimeLog.captureFeedbackReport
+          .mockResolvedValueOnce({ text: 'before checking\n', entries: 1 })
+          .mockResolvedValueOnce({ text: 'after checking\n', entries: 2 })
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        expect(preview).toEqual({ id: expect.any(String), text: 'before checking\n', entries: 1, selfChecked: false })
+        // The customer went to the check page and came back after the preview expired.
+        checked = true
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({
+          entries: 2,
+          regenerated: { id: expect.any(String), text: 'after checking\n', entries: 2, selfChecked: true },
+        })
+      } finally { clock.mockRestore() }
+    })
+
     it('allows clipboard retry and save cancellation without changing the preview', async () => {
       const { runtimeLog } = register()
       const owner = trustedEvent()
@@ -1057,6 +1138,8 @@ describe('registerIpcHandlers', () => {
 
   it('installs the bundled 星芒AI skill on key sync without returning the image key', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({
       authenticated: true,
@@ -1078,7 +1161,7 @@ describe('registerIpcHandlers', () => {
       key: `sk-cached-${provider}-not-for-ipc`,
     }))
     register(
-      serviceStub(),
+      service,
       'C:\\app-data\\logs',
       undefined,
       accountService,
@@ -1109,6 +1192,8 @@ describe('registerIpcHandlers', () => {
 
   it('hands a plain-language notice to the renderer when the image tool could not be registered', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({
       authenticated: true,
@@ -1124,7 +1209,7 @@ describe('registerIpcHandlers', () => {
     }))
     const syncImageMcp = vi.fn(async () => [XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
     const { runtimeLog } = register(
-      serviceStub(),
+      service,
       'C:\\app-data\\logs',
       undefined,
       accountService,
@@ -1150,6 +1235,66 @@ describe('registerIpcHandlers', () => {
       expect(summary.imageMcpWarning).not.toContain('Node.js')
       expect(summary.imageSkillWarning).toBeUndefined()
       expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { active: 'primary' as const, pending: 'direct' as const, baseUrl: 'https://xm.solov.cc/v1', origin: 'https://xm.solov.cc' },
+    { active: 'direct' as const, pending: 'primary' as const, baseUrl: 'https://xm-direct.solov.cc/v1', origin: 'https://xm-direct.solov.cc' },
+  ])('binds Skill sync to the active main-process endpoint while ignoring pending and renderer URLs: $active', async ({ active, pending, baseUrl, origin }) => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.readStoredConfig).mockReturnValue({
+      ...stubStoredConfig, relayEndpointIds: { solov: pending }, activeRelayEndpointIds: { solov: active, 'solov-api': 'primary' },
+    })
+    vi.mocked(service.getConfig).mockReturnValue({
+      providers: { codex: { baseUrl, actualBaseUrl: 'https://attacker.invalid/v1' } },
+    } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7, name: input?.name ?? 'key', key: 'sk-ipc-fixture-only-skill-key',
+    }))
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      const result = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent(), {
+        baseUrl: 'https://attacker.invalid', relayEndpointIds: { solov: pending },
+      })
+      expect(result).not.toHaveProperty('imageSkillWarning')
+      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).baseUrl).toBe(origin)
+      expect(service.getConfig).toHaveBeenCalledWith(false)
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the image Skill out of the historical account realm', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm-direct.solov.cc/v1' } } } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov-api' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
+      expect(service.getConfig).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json'))).toBe(false)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
@@ -1626,6 +1771,43 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
   })
 
+  it('logs each tool whose detection failed with its reason, home folder redacted, so the feedback report carries it', async () => {
+    const service = serviceStub()
+    const reason = "EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'"
+    const ok = { installed: true, version: '1.0.0', path: null }
+    vi.mocked(service.scanSystem).mockResolvedValueOnce({
+      checkedAt: '2026-10-03T00:00:00.000Z',
+      runtime: { node: { installed: false, version: null, path: null, detectionFailed: true, detectionError: reason }, npm: ok, python: ok, git: ok },
+      clis: { claude: { installed: false, version: null, path: null, detectionFailed: true, detectionError: reason }, codex: ok, grok: ok, gemini: ok },
+      desktopApps: { codex: { installed: false, version: null, appVersion: null, mirrorVersion: null, mirrorUpdateAvailable: null, mirrorError: null, path: null, running: false, detectionFailed: true, detectionError: null } },
+    } as never)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      providerRoots: { userHome: 'C:\\Users\\yoyo', codexHome: 'C:\\Users\\yoyo\\.codex' },
+    })
+
+    await electronMocks.handlers.get('system:scan')!(trustedEvent(), true)
+
+    const redacted = "EPERM: operation not permitted, scandir '%USERPROFILE%\\AppData\\Roaming\\npm'"
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'cli.detection-failed', `Claude Code 检测失败：${redacted}`, { provider: 'claude' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'runtime.detection-failed', `Node.js 检测失败：${redacted}`, { tool: 'node' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'desktop.detection-failed', 'Codex 桌面端 检测失败：没有给出原因', {})
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => String(call[2]).endsWith('detection-failed'))).toHaveLength(3)
+  })
+
+  it('logs an external client whose detection failed, and nothing for the ones that were read', async () => {
+    const service = serviceStub()
+    vi.mocked(service.scanExternalClients).mockResolvedValueOnce([
+      { tool: 'workbuddy', detectionError: 'Code signature check failed' },
+      { tool: 'opencode', detectionError: null },
+    ] as never)
+    const { runtimeLog } = register(service)
+
+    await expect(electronMocks.handlers.get('external-clients:scan')!(trustedEvent(), true)).resolves.toHaveLength(2)
+
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'external-client.detection-failed', 'WorkBuddy 检测失败：Code signature check failed', { tool: 'workbuddy' })
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toHaveLength(1)
+  })
+
   it('answers the first home page read with the last saved scan, only when asked and never for a forced rescan', async () => {
     const service = serviceStub()
     const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }
@@ -1675,6 +1857,14 @@ describe('registerIpcHandlers', () => {
     await pendingUpdate
     expect(service.scanSystem).toHaveBeenCalledWith(false)
     expect(updaterService.startup).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs an update install request as handed over, not as installed', async () => {
+    const updaterService = updaterStub()
+    const { runtimeLog } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService })
+    await expect(Promise.resolve(electronMocks.handlers.get('update:install')!(trustedEvent()))).resolves.toEqual({ accepted: true })
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
+    expect(logged).toEqual([['info', 'ipc', 'update:install', '已把新版本交给安装程序，装没装上看下一条更新状态', expect.any(Object)]])
   })
 
   it('refreshes only the network location through trusted IPC', async () => {
@@ -1783,6 +1973,30 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
 
     await expect(handler(trustedEvent())).resolves.toEqual({ filled: [] })
+  })
+
+  it('passes a later try through as a retry and keeps a plain call as the startup round', async () => {
+    const service = serviceStub()
+    const fill = vi.fn(async (_backup?: (provider: 'codex') => void, _retry?: boolean) => ({ filled: [], pending: ['codex' as const] }))
+    service.fillToolTemplateDefaults = fill
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: [], pending: ['codex'] })
+    await handler(trustedEvent(), true)
+
+    expect(fill.mock.calls.map((call) => call[1])).toEqual([false, true])
+  })
+
+  it('rejects a retry flag that is not a boolean before touching any tool config', async () => {
+    const service = serviceStub()
+    const fill = vi.fn(async (_backup?: (provider: 'codex') => void, _retry?: boolean) => ({ filled: [] }))
+    service.fillToolTemplateDefaults = fill
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('补设置参数格式错误')
+    expect(fill).not.toHaveBeenCalled()
   })
 
   it('skips the model check when the service cannot do it', async () => {
@@ -2420,6 +2634,11 @@ describe('registerIpcHandlers', () => {
       await electronMocks.handlers.get('external-clients:launch')!(event, tool)
       expect(service.installExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
       expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool)
+      // 拒绝取消时那句原因要原样交给界面，按钮才不会像是坏了。
+      expect(electronMocks.handlers.get('external-clients:cancel-install')!(event, tool)).toEqual({
+        cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+      })
+      expect(service.cancelExternalClientInstall).toHaveBeenLastCalledWith(tool)
     }
     expect(service.scanExternalClients).toHaveBeenCalledOnce()
     expect(service.configureExternalTool).not.toHaveBeenCalled()
@@ -2429,21 +2648,23 @@ describe('registerIpcHandlers', () => {
   it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {
     const service = serviceStub()
     register(service)
-    for (const channel of ['external-clients:install', 'external-clients:launch']) {
+    for (const channel of ['external-clients:install', 'external-clients:cancel-install', 'external-clients:launch']) {
       for (const input of [undefined, null, {}, ['opencode'], 'codex', 'C:\\untrusted.exe', 'opencode --shell']) {
         expect(() => electronMocks.handlers.get(channel)!(trustedEvent(), input)).toThrow('未知的外部客户端类型')
       }
     }
     expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.cancelExternalClientInstall).not.toHaveBeenCalled()
     expect(service.launchExternalClient).not.toHaveBeenCalled()
   })
 
-  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
+  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:cancel-install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
     const service = serviceStub()
     register(service)
     expect(() => electronMocks.handlers.get(channel)!(trustedEvent('https://untrusted.example/'), 'opencode')).toThrow('已拒绝')
     expect(service.scanExternalClients).not.toHaveBeenCalled()
     expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.cancelExternalClientInstall).not.toHaveBeenCalled()
     expect(service.launchExternalClient).not.toHaveBeenCalled()
   })
 
@@ -2696,8 +2917,24 @@ describe('registerIpcHandlers', () => {
       outcome: 'uninstalled',
       previousVersion: 'grok 0.2.111',
     })
-    expect(service.uninstallCli).toHaveBeenCalledWith('grok')
+    expect(service.uninstallCli).toHaveBeenCalledWith('grok', {})
     await expect(electronMocks.handlers.get('cli:uninstall')!(trustedEvent(), 'unknown')).rejects.toThrow('未知的 CLI 类型')
+  })
+
+  it('passes the reinstall request of an uninstall through and rejects any other shape', async () => {
+    const service = serviceStub()
+    vi.mocked(service.uninstallCli).mockResolvedValue({ outcome: 'uninstalled', previousVersion: '2.1.276' })
+    register(service)
+    const handler = electronMocks.handlers.get('cli:uninstall')!
+
+    await handler(trustedEvent(), 'claude', { reinstall: true })
+    expect(service.uninstallCli).toHaveBeenLastCalledWith('claude', { reinstall: true })
+    await handler(trustedEvent(), 'claude', { reinstall: false })
+    expect(service.uninstallCli).toHaveBeenLastCalledWith('claude', {})
+    await expect(handler(trustedEvent(), 'claude', { reinstall: 'yes' })).rejects.toThrow('卸载参数格式错误')
+    await expect(handler(trustedEvent(), 'claude', { reinstall: true, path: '/tmp' })).rejects.toThrow('卸载参数格式错误')
+    await expect(handler(trustedEvent(), 'claude', 'reinstall')).rejects.toThrow('卸载参数格式错误')
+    expect(service.uninstallCli).toHaveBeenCalledTimes(2)
   })
 
   it('exposes sanitized runtime logs and copies the feedback report', async () => {
@@ -3019,6 +3256,104 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseSettingsUpdate (settings:save)', () => {
+    it.each([
+      { solov: 'primary' as const },
+      { solov: 'direct' as const },
+      { 'solov-api': 'primary' as const },
+    ])('accepts a registered endpoint selection: %j', async (relayEndpointIds) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds }))
+        .resolves.toMatchObject({ relayEndpointIds })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds })
+    })
+
+    it.each([
+      null,
+      [],
+      'https://xm-direct.solov.cc',
+      { unknown: 'primary' },
+      { solov: 'https://other.example/v1' },
+      { solov: 'DIRECT' },
+      { 'solov-api': 'direct' },
+    ])('rejects unsupported endpoint settings before persistence: %j', async (relayEndpointIds) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds })).rejects.toThrow(/连接线路/)
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('preserves the other site and the active startup lines when saving a pending choice', async () => {
+      const service = serviceStub()
+      const active: NonNullable<AppSettings['activeRelayEndpointIds']> = { solov: 'primary', 'solov-api': 'primary' }
+      const stored: AppSettings = { ...stubStoredConfig, relayEndpointIds: { 'solov-api': 'primary' }, activeRelayEndpointIds: active }
+      vi.mocked(service.readStoredConfig).mockReturnValue(stored)
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => ({
+        ...mergeAppSettings(stored, update), activeRelayEndpointIds: active,
+      }))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds: { solov: 'direct' } }))
+        .resolves.toMatchObject({
+          relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' }, activeRelayEndpointIds: active,
+        })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds: { solov: 'direct' } })
+    })
+
+    it('accepts an unchanged legacy runtime snapshot echo without persisting it', async () => {
+      const service = serviceStub()
+      const active: NonNullable<AppSettings['activeRelayEndpointIds']> = { solov: 'direct', 'solov-api': 'primary' }
+      const stored: AppSettings = { ...stubStoredConfig, activeRelayEndpointIds: active }
+      vi.mocked(service.readStoredConfig).mockReturnValue(stored)
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => ({
+        ...mergeAppSettings(stored, update), activeRelayEndpointIds: active,
+      }))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        ...stored, theme: 'light', activeRelayEndpointIds: { 'solov-api': 'primary', solov: 'direct' },
+      })).resolves.toMatchObject({ theme: 'light', activeRelayEndpointIds: active })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({
+        version: 2, workspace: stored.workspace, theme: 'light',
+        checkUpdatesOnStartup: true, runDiagnosticsOnStartup: false,
+      })
+    })
+
+    it.each([
+      null,
+      [],
+      'https://xm-direct.solov.cc',
+      { solov: 'direct', 'solov-api': 'primary' },
+      { solov: 'primary' },
+      { solov: 'primary', unknown: 'primary' },
+      { solov: 'https://other.example/v1', 'solov-api': 'primary' },
+      { solov: 'primary', 'solov-api': 'direct' },
+    ])('rejects a changed or malformed runtime endpoint snapshot: %j', async (activeRelayEndpointIds) => {
+      const service = serviceStub()
+      vi.mocked(service.readStoredConfig).mockReturnValue({
+        ...stubStoredConfig, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      })
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, activeRelayEndpointIds })).rejects.toThrow('当前连接线路只读')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('rejects a runtime endpoint echo when the service has no matching snapshot', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      })).rejects.toThrow('当前连接线路只读')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it('persists appearance updates without replacing unrelated settings', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
@@ -6831,6 +7166,21 @@ describe('exports:reveal-file', () => {
         .rejects.toThrow('导出文件路径')
     }
     expect(revealInFolder).not.toHaveBeenCalled()
+  })
+})
+
+describe('text export save dialogs', () => {
+  it('names the file type in Chinese for every report saved as text', async () => {
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { desktopDirectory: () => os.tmpdir() })
+    electronMocks.showSaveDialog.mockResolvedValue({ canceled: true })
+
+    await expect(electronMocks.handlers.get('diagnostics:export')!(trustedEvent())).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('chat-history:export-text')!(trustedEvent(), { title: '周报', text: '我：你好' })).resolves.toBeNull()
+
+    // Windows 保存窗口底下的「保存类型」显示的就是这个名字；诊断报告和反馈报告以前写的是英文 Text。
+    const textFilter = [{ name: '文本文件', extensions: ['txt'] }]
+    expect(electronMocks.showSaveDialog.mock.calls.map(([options]) => options.filters)).toEqual([textFilter, textFilter, textFilter])
   })
 })
 

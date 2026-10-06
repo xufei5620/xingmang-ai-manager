@@ -7,11 +7,12 @@ import type { RuntimeInstallOutcome } from './runtime-install-outcome'
  * Node.js 要 22.19 / 24.6 以上才认这台电脑装的证书；更旧的那些照样够装工具，所以
  * 「安装」一直回「无需重复安装」，客户照提示走进了死胡同。
  *
- * 只有 Windows 换得了：那边装的是官方安装包，本软件找 Node.js 时先看它的默认目录。
- * Mac 上本软件代下的那份排在客户自己装的后面（macos-platform.ts），装了也用不上。
+ * Windows 换得了：那边装的是官方安装包，本软件找 Node.js 时先看它的默认目录。Linux 也换得了：
+ * 本软件代下的那份在软件里排在最前（electron/linux-platform.ts）。Mac 上代下的那份排在客户
+ * 自己装的后面（macos-platform.ts），装了也用不上。
  */
 export function canReplaceNode(input: { platform: PlatformCapabilities['platform'] | null | undefined; nodeRuntimeInstall: PlatformCapabilities['nodeRuntimeInstall'] | null | undefined }): boolean {
-  return input.platform === 'windows' && input.nodeRuntimeInstall === 'managed'
+  return (input.platform === 'windows' || input.platform === 'linux') && input.nodeRuntimeInstall === 'managed'
 }
 
 /** 「安装卸载」页 Node.js 那一行：装着、但版本认不了证书时，按钮改叫「换成新版」。 */

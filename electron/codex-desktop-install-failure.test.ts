@@ -58,8 +58,8 @@ describe('Codex Desktop install failure wording', () => {
   it('never shows a customer the technical words the raw failure is full of', () => {
     for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
       for (const [storeTried, storeUnavailable] of [[true, false], [false, false], [false, true]]) {
-        for (const updating of [true, false]) {
-          const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, storeUnavailable, updating })
+        for (const [updating, officialTried] of [[true, false], [false, false], [true, true], [false, true]]) {
+          const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, storeUnavailable, officialTried, updating })
           expect(message.startsWith(`${codexDesktopInstallFailedPrefix}：`)).toBe(true)
           expect(isCodexDesktopInstallFailureMessage(message)).toBe(true)
           expect(message).not.toMatch(codexDesktopTechnicalWords)
@@ -98,6 +98,33 @@ describe('Codex Desktop install failure wording', () => {
     expect((failure as CodexDesktopInstallFailure).detail).toBe(`这台电脑没有微软商店，国内镜像也没装上：${samples.unreachable[0]}`)
     const withStore = buildCodexDesktopInstallFailureMessage('unreachable', { storeTried: true, updating: false })
     expect(isCodexDesktopNoStoreInstallFailure(withStore)).toBe(false)
+  })
+
+  it('names the failed official package between the store and the reason', () => {
+    const raw = new Error(samples.unreachable[0])
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '连不上微软商店', storeExitCode: null, updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
+    })
+    expect(failure.message).toBe('Codex 桌面端没装上：微软商店这次没装上，OpenAI 官网的离线安装包也没下成，国内下载线路这会儿连不上。')
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(
+      `微软商店这次没装上（连不上微软商店），OpenAI 官网的离线安装包也没下成（OpenAI 官网连接或下载超时），国内镜像也没装上：${samples.unreachable[0]}`,
+    )
+
+    const noStore = toCodexDesktopInstallFailure(raw, {
+      storeFailure: null, storeExitCode: null, updating: true, storeUnavailable: true, officialFailure: 'OpenAI 官网返回 HTTP 403',
+    })
+    expect(noStore.message).toBe('Codex 桌面端没装上：这台电脑没有微软商店，OpenAI 官网的离线安装包也没下成，国内下载线路这会儿连不上。原来那一版照常能用。')
+    expect(isCodexDesktopNoStoreInstallFailure(noStore.message)).toBe(true)
+  })
+
+  it('blames Windows, not the download, when the official package downloaded but would not install', () => {
+    const raw = new Error(samples.blocked[0])
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false, officialPackage: true,
+    })
+    expect(failure.message).toBe(`Codex 桌面端没装上：微软商店这次没装上，${codexDesktopInstallFailureReasons.blocked}`)
+    expect((failure as CodexDesktopInstallFailure).detail)
+      .toBe(`微软商店这次没装上（商店那边没说原因），OpenAI 官网的离线安装包也没装上：${samples.blocked[0]}`)
   })
 
   it('tells a too-old Windows apart from a Windows that refused the install', () => {

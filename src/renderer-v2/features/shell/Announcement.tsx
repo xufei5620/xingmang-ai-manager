@@ -6,6 +6,7 @@ import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
+import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
 import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
@@ -1094,7 +1095,10 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const [barHiddenDay, setBarHiddenDay] = useState(() => readPromoBarHiddenDay(scope))
   // 首页大卡片已经在说活动时不再挂活动条；卡片收起后（不管点的哪个按钮）和别的页面都挂，
   // 点过 × 只收起当天。没有永久关掉的按钮：活动一截止自己消失。
-  const promoBarShown = !open && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
+  // 断网条和公告条、活动条共用顶栏下面那一个位置：断网时只挂断网条，这两条先藏起来，
+  // 铃铛上的红点照旧，联网后自己回来。
+  const { offline } = useOnlineStatus()
+  const promoBarShown = !offline && !open && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
   // 活动没结束前铃铛一直留着红点，点过「这个活动不再提醒」也一样，免得客户找不回活动。
   useEffect(() => { onUnread(unseen || allPromos.length > 0) }, [unseen, allPromos.length, onUnread])
   const [topupOffers, setTopupOffers] = useState<TopupOffers | null>(null)
@@ -1239,7 +1243,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   // 首页卡片或活动条已经在说的活动，细横条不再重复说一遍。
   const coveredPromoIds = promoCardShown || promoBarShown ? allPromos.map((item) => item.id) : []
-  const bannerShown = unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
+  const bannerShown = !offline && unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
   const unreadEntries = entries?.filter((entry) => !entry.read && !coveredPromoIds.includes(entry.id))
   const promoOthers = promoCardShown && promo ? allPromos.filter((item) => item.id !== promo.id).map((item) => ({ id: item.id, title: stripSiteAddresses(item.title) || '活动' })) : []
   const soonestExplicitEnd = Math.min(...allPromos.filter((item) => item.endsExplicitly).map((item) => item.endsAt))
@@ -1251,7 +1255,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   })) : []
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
-    {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
+    {!offline && !open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
     {promoBarShown && <PromoBar items={promoBarItems} onHide={hidePromoBar}
       onTopUp={onTopUp && promos.length ? () => { promos.forEach((item) => acknowledgePromoEntry(item.id)); onTopUp() } : undefined} />}
     {promoCardShown && promo && <PromoCard title={stripSiteAddresses(promo.title) || '充值活动'} deadline={formatPromoDeadline(promo, now)}

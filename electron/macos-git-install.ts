@@ -41,7 +41,8 @@ export async function requestMacCommandLineToolsInstall(
   } catch (error) {
     const output = error instanceof CommandRunnerError ? `${error.stdout}\n${error.stderr}` : ''
     if (/already installed/i.test(output)) return 'already-installed'
-    throw new Error('没能打开苹果的安装窗口，可以再点一次「安装 Git」；还不行请联系客服')
+    // xcode-select 交回来的退出码和原话挂在 cause 上，随这次失败进运行日志。
+    throw new Error('没能打开苹果的安装窗口，可以再点一次「安装 Git」；还不行请联系客服', { cause: error })
   }
 }
 

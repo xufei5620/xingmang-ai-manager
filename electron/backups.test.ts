@@ -6,10 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, type ConfigBackupAccountContext } from './backups'
 import type { ProviderId } from './catalog'
 import { providerConfigPaths } from './config-files'
+import { renameWithTransientRetrySync } from './safe-local-data'
 
 const temporaryDirectories: string[] = []
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -31,6 +33,18 @@ function writeConfig(filePath: string, content: string): void {
 
 function fixtureProviderRoots(userHome: string) {
   return { userHome, codexHome: path.join(userHome, '.codex') }
+}
+
+// What a rename reports on Windows while a scanner or the indexer holds the file.
+function heldError(code: 'EPERM' | 'EBUSY'): NodeJS.ErrnoException {
+  const message = code === 'EPERM'
+    ? 'EPERM: operation not permitted, rename'
+    : 'EBUSY: resource busy or locked, rename'
+  return Object.assign(new Error(message), { code })
+}
+
+function temporaryNames(directory: string): string[] {
+  return fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))
 }
 
 function writeBackupManifestFixture(
@@ -719,5 +733,192 @@ describe('ConfigBackupStore', () => {
     expect(() => store.create('codex')).toThrow(/符号链接|目录联接/)
     expect(() => store.list()).toThrow(/符号链接|目录联接/)
     expect(fs.readdirSync(outside)).toEqual([])
+  })
+
+  it('waits out a scanner briefly holding the new backup folder', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    writeConfig(authPath, '{"OPENAI_API_KEY":"sk-held-folder"}\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const originalRename = fs.renameSync.bind(fs)
+    let held = 2
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (held > 0 && path.basename(String(from)).endsWith('.tmp')) {
+        held -= 1
+        throw heldError('EPERM')
+      }
+      originalRename(from, to)
+    })
+
+    const backup = store.create('codex')
+
+    expect(held).toBe(0)
+    expect(fs.readdirSync(path.join(userData, 'backups'))).toEqual([backup.id])
+    expect(store.inspect(backup.id).valid).toBe(true)
+  })
+
+  it('keeps the original error and leaves no backup behind when the new folder stays held', () => {
+    const { home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const originalRename = fs.renameSync.bind(fs)
+    let attempts = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (path.basename(String(from)).endsWith('.tmp')) {
+        attempts += 1
+        throw heldError('EPERM')
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => store.create('codex')).toThrow('EPERM: operation not permitted, rename')
+    expect(attempts).toBe(5)
+    expect(fs.readdirSync(path.join(userData, 'backups'))).toEqual([])
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "gpt-5.6-sol"\n')
+  })
+
+  it('checks the backup folder again before retrying a held backup', () => {
+    const { root, home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const backupsRoot = path.join(userData, 'backups')
+    const displaced = path.join(root, 'displaced-backups')
+    const originalRename = fs.renameSync.bind(fs)
+    let redirected = false
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (!redirected && path.basename(String(from)).endsWith('.tmp')) {
+        redirected = true
+        // A scanner may still hold a file just written here; wait it out the same
+        // way, or moving the folder could fail and hide what this test checks.
+        renameWithTransientRetrySync(backupsRoot, displaced)
+        fs.symlinkSync(displaced, backupsRoot, process.platform === 'win32' ? 'junction' : 'dir')
+        throw heldError('EPERM')
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => store.create('codex')).toThrow(/符号链接|目录联接/)
+    expect(redirected).toBe(true)
+    expect(fs.readdirSync(displaced).filter((name) => !name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('waits out a scanner briefly holding config files while restoring', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original-config')
+    writeConfig(authPath, 'original-auth')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const backup = store.create('codex')
+    writeConfig(configPath, 'current-config')
+    writeConfig(authPath, 'current-auth')
+    const originalRename = fs.renameSync.bind(fs)
+    let movingAsideHeld = 2
+    let restoringHeld = 2
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (movingAsideHeld > 0 && path.resolve(String(from)) === path.resolve(configPath)) {
+        movingAsideHeld -= 1
+        throw heldError('EPERM')
+      }
+      if (restoringHeld > 0 && path.resolve(String(to)) === path.resolve(authPath)) {
+        restoringHeld -= 1
+        throw heldError('EBUSY')
+      }
+      originalRename(from, to)
+    })
+
+    store.restore(backup.id)
+
+    expect([movingAsideHeld, restoringHeld]).toEqual([0, 0])
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('original-config')
+    expect(fs.readFileSync(authPath, 'utf8')).toBe('original-auth')
+    expect(temporaryNames(path.dirname(configPath))).toEqual([])
+  })
+
+  it('keeps the original error and puts the current files back when a restored file stays held', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original-config')
+    writeConfig(authPath, 'original-auth')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const backup = store.create('codex')
+    writeConfig(configPath, 'current-config')
+    writeConfig(authPath, 'current-auth')
+    const originalRename = fs.renameSync.bind(fs)
+    let attempts = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from).includes('.xingmang-restore-') && path.resolve(String(to)) === path.resolve(authPath)) {
+        attempts += 1
+        throw heldError('EPERM')
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => store.restore(backup.id)).toThrow('EPERM: operation not permitted, rename')
+    expect(attempts).toBe(5)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('current-config')
+    expect(fs.readFileSync(authPath, 'utf8')).toBe('current-auth')
+    expect(temporaryNames(path.dirname(configPath))).toEqual([])
+  })
+
+  it('waits out a briefly held file while putting the current files back', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original-config')
+    writeConfig(authPath, 'original-auth')
+    const backup = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home }).create('codex')
+    writeConfig(configPath, 'current-config')
+    writeConfig(authPath, 'current-auth')
+    const failingStore = new ConfigBackupStore({
+      userDataDirectory: userData,
+      homeDirectory: home,
+      hooks: {
+        beforeRestoreCommit: (_target, index) => {
+          if (index === 1) throw new Error('injected restore failure')
+        },
+      },
+    })
+    const originalRename = fs.renameSync.bind(fs)
+    // auth.json goes back inside its own plan, config.toml in the rollback of committed plans.
+    const held = new Set([path.resolve(configPath), path.resolve(authPath)])
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from).includes('.xingmang-rollback-') && held.delete(path.resolve(String(to)))) {
+        throw heldError('EBUSY')
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => failingStore.restore(backup.id)).toThrow('injected restore failure')
+    expect(held.size).toBe(0)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('current-config')
+    expect(fs.readFileSync(authPath, 'utf8')).toBe('current-auth')
+    expect(temporaryNames(path.dirname(configPath))).toEqual([])
+  })
+
+  it('checks the current config again before retrying a held restore', () => {
+    const { home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original-config')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const backup = store.create('codex')
+    writeConfig(configPath, 'current-config')
+    const originalRename = fs.renameSync.bind(fs)
+    let held = false
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (!held && path.resolve(String(from)) === path.resolve(configPath)) {
+        held = true
+        // Whoever held the file saves its own change while the restore waits.
+        fs.writeFileSync(configPath, 'saved-while-held', 'utf8')
+        throw heldError('EPERM')
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => store.restore(backup.id)).toThrow('当前配置文件在恢复期间发生变化')
+    expect(held).toBe(true)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('saved-while-held')
+    expect(temporaryNames(path.dirname(configPath))).toEqual([])
   })
 })

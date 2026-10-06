@@ -4,6 +4,7 @@ import {
   buildActivityNotificationMessage,
   buildTerminalNotificationMessage,
   createPlatformNotifications,
+  hiddenWindowNotification,
   hostNotificationMessage,
   resolveNotificationTarget,
   resolveTerminalNotificationTarget,
@@ -151,6 +152,18 @@ describe('acceleration reminders sent by the main process', () => {
     })
   })
 
+  it('says where the window went in each system\'s own words', () => {
+    expect(hiddenWindowNotification('win32')).toBe('hiddenToTray')
+    expect(hiddenWindowNotification('darwin')).toBe('hiddenToMenuBar')
+    expect(hiddenWindowNotification('linux')).toBe('hiddenToPanel')
+    expect(hostNotificationMessage('hiddenToPanel')).toEqual({
+      title: '星芒AI管理工具还在运行',
+      body: '窗口已收起，点屏幕顶部或任务栏右边的星芒图标就能打开。',
+    })
+    // Linux 上没有 Windows 那个小箭头，也不一定在右下角。
+    expect(hostNotificationMessage('hiddenToPanel').body).not.toMatch(/右下角|\^/)
+  })
+
   it('says a payment settled after its window closed, once per order, without the order number', () => {
     const h = setup()
     for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
@@ -205,7 +218,7 @@ describe('CLI update reminders', () => {
       'requested',
     )
     expect(h.runtime.create).toHaveBeenCalledWith({
-      title: '命令行工具有新版本',
+      title: '工具有新版本',
       body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
       silent: true,
     })
@@ -220,6 +233,17 @@ describe('CLI update reminders', () => {
       'disabled',
     )
     expect(h.runtime.create).toHaveBeenCalledTimes(2)
+  })
+
+  // 第三十二批 B：Windows 客户日志里真发过这一条（只装了 Codex 桌面端，四家命令行工具一个没装），
+  // 编号就是下面这个。标题说「命令行工具」像是发错了人。
+  it('does not call a desktop app update a command-line tool update', () => {
+    const message = buildActivityNotificationMessage('cliUpdate', 'cli-update:codexDesktop.26.928.3736.0')
+    expect(message).toEqual({
+      title: '工具有新版本',
+      body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+    })
+    expect(`${message.title} ${message.body}`).not.toContain('命令行')
   })
 })
 

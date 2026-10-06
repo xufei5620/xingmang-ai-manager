@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +11,8 @@ import { InstallationQueue } from './installation-queue'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls } from './relay-sites'
+import type { RunningToolsReport } from './running-tools'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
   CommandRunnerError,
@@ -21,13 +24,20 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
+import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } from './codex-model-catalog'
 import type { MacosCodexAppInspection } from './macos-codex-app'
-import { managedCliPackageDirectory } from './cli-process-probe'
+import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
+import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { ensureManagedNpmLayout } from './managed-cli'
+import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
+import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
+import { WindowsCliLaunchError } from './windows-elevation'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
+  type CliInstallation,
 } from './tool-installation'
 import { buildCliVersionAdvice, cliVerifiedVersions } from './cli-verified-versions'
 import {
@@ -56,6 +66,11 @@ import {
   offlineLatestVersionBudgetMs,
   settleLatestVersionProbes,
   createSystemService,
+  codexDesktopCatalogProbeFromMacosApp,
+  codexDesktopCatalogProbeFromPackage,
+  createCachedProbe,
+  settleWithin,
+  unlessStopped,
   nodeStillOutdatedAfterReplaceMessage,
   shouldReplaceNodeForCertificates,
   DarwinGrokRetainedPathsError,
@@ -68,6 +83,7 @@ import {
   fetchNpmPackageReleaseMetadata,
   formatMebibytes,
   cliInstallTargetDirectory,
+  cliLatestVersionSource,
   grokInstallStrategyFor,
   grokManualUninstallResult,
   formatElapsedDuration,
@@ -77,6 +93,7 @@ import {
   npmInstallRegistries,
   npmRegistryLabel,
   describeNpmCommandFailure,
+  describeNpmUninstallFailure,
   grokDownloadStallHeartbeatMs,
   grokDownloadStallMessage,
   npmResolutionHeartbeatMessage,
@@ -102,6 +119,13 @@ import {
   type SystemServiceOptions,
   type ToolStatus,
 } from './system-service'
+
+// 卸载失败时要数这个工具的进程（第三十三批 C）。默认照真的跑；Linux 上真的那份
+// 一律回 unsupported，所以要「数到进程」的用例临时换掉一次结果。
+vi.mock('./cli-process-probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./cli-process-probe')>()
+  return { ...actual, probeRunningCliProcesses: vi.fn(actual.probeRunningCliProcesses) }
+})
 
 const temporaryDirectories: string[] = []
 
@@ -315,7 +339,10 @@ function officialDarwinGrokUninstallResult(
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
+  // restoreAllMocks 不碰 vi.fn：换回真的进程检测，用例里排着没用掉的结果也一并清掉。
+  vi.mocked(probeRunningCliProcesses).mockReset()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
   for (const directory of temporaryDirectories.splice(0)) {
@@ -462,7 +489,8 @@ describe('createSystemService', () => {
   it('delegates settings reads and merged durable updates to AppSettingsStore', async () => {
     const service = createService()
     const initial = service.readStoredConfig()
-    expect(initial).toEqual(defaultAppSettings(initial.workspace))
+    expect(initial).toEqual({ ...defaultAppSettings(initial.workspace),
+      activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' } })
 
     const merged = await service.updateStoredConfig({ version: 2, theme: 'light' })
 
@@ -486,6 +514,173 @@ describe('createSystemService', () => {
       relaySiteId: 'solov-api',
       sidebarMoreExpanded: true,
     })
+  })
+
+  it('persists pending endpoint preferences without changing live transport or snapshot', async () => {
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ relayFetch })
+    const saved = await service.updateStoredConfig({ version: 2, relayEndpointIds: { solov: 'direct' } })
+    expect(saved.relayEndpointIds).toEqual({ solov: 'direct' })
+    expect(saved.activeRelayEndpointIds).toEqual({ solov: 'primary', 'solov-api': 'primary' })
+    expect(service.readStoredConfig().activeRelayEndpointIds).toEqual(saved.activeRelayEndpointIds)
+    await service.fetchAvailableModels('sk-fixture')
+    expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
+  })
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] satisfies ProviderId[])(
+    'uses one selected origin for the %s write and its model probe after restart', async (provider) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-selected-endpoint-'))
+      temporaryDirectories.push(root)
+      const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+      const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+      const service = createService({ providerRoots, relayFetch,
+        relayEndpointRouting: createRelayEndpointRoutingSnapshot({ solov: 'direct' }) })
+      await service.saveConfig({ provider, apiKey: 'sk-fixture', model: 'fixture-model', mode: 'reset' }, false)
+      const direct = relayProviderBaseUrls('solov', 'direct')
+      expect(relayFetch.mock.calls[0][0]).toBe(`${direct.claude}/v1/models`)
+      const written = inspectProviderConfig(provider, providerRoots, providerBaseUrls)
+      expect(written.actualBaseUrl).toBe(direct[provider])
+      expect(written.matchesRelay).toBe(true)
+      expect(inspectProviderConfig(provider, providerRoots, sub2ApiProviderBaseUrls).matchesRelay).toBe(false)
+    },
+  )
+
+  it('keeps a recognized existing native endpoint during an ordinary save with no line preference', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-preserved-endpoint-'))
+    temporaryDirectories.push(root)
+    const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+    const direct = relayProviderBaseUrls('solov', 'direct')
+    saveProviderConfig('codex', 'sk-fixture', 'fixture-model', 'reset', providerRoots, {}, direct)
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ providerRoots, relayFetch })
+    await service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false)
+    expect(inspectProviderConfig('codex', providerRoots, providerBaseUrls).actualBaseUrl).toBe(direct.codex)
+    expect(relayFetch.mock.calls[0][0]).toBe(`${direct.claude}/v1/models`)
+  })
+
+  it('applies an explicit primary preference through the normal config ownership flow', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-explicit-endpoint-'))
+    temporaryDirectories.push(root)
+    const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+    saveProviderConfig('codex', 'sk-fixture', 'fixture-model', 'reset', providerRoots, {}, relayProviderBaseUrls('solov', 'direct'))
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ providerRoots, relayFetch,
+      relayEndpointRouting: createRelayEndpointRoutingSnapshot({ solov: 'primary' }) })
+    await service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false)
+    const written = service.getConfig(false).providers.codex
+    expect(written.actualBaseUrl).toBe(providerBaseUrls.codex)
+    expect(written.configurationOwnership).not.toBe('account')
+    expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
+  })
+
+  async function automaticRouteFixture(options: {
+    provider?: ProviderId
+    source?: 'primary' | 'direct' | 'historical'
+    explicit?: boolean
+    report?: RunningToolsReport | Error
+  } = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-route-migration-'))
+    temporaryDirectories.push(root)
+    const provider = options.provider ?? 'codex'
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const sourceUrls = options.source === 'historical'
+      ? { claude: 'https://xm-direct.solov.cc', codex: 'https://xm-direct.solov.cc/v1',
+        gemini: 'https://xm-direct.solov.cc', grok: 'https://xm-direct.solov.cc/v1' }
+      : relayProviderBaseUrls('solov', options.source ?? 'primary')
+    saveProviderConfig(provider, 'sk-migration-fixture', 'fixture-model', 'reset', roots, {}, sourceUrls)
+    const owner = JSON.stringify(['solov', 9])
+    const account = { owner: owner as string | null }
+    const ownership = new ToolConfigOwnershipStore(path.join(root, 'tool-config-ownership'))
+    await ownership.write(provider, inspectProviderConfig(provider, roots, sourceUrls), 'account', owner)
+    let modelsReturned = false
+    const relayFetch = vi.fn<typeof fetch>(async () => {
+      modelsReturned = true
+      return Response.json({ data: [{ id: 'fixture-model' }] })
+    })
+    const inspectRunning = vi.fn(async () => {
+      expect(modelsReturned).toBe(true)
+      if (options.report instanceof Error) throw options.report
+      return options.report ?? { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
+    })
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      managerDataDirectory: root, providerRoots: roots, getExternalClientAccountId: () => account.owner,
+      relayEndpointRouting: createRelayEndpointRoutingSnapshot(options.explicit === false ? {} : { solov: 'direct' }),
+      relayFetch, inspectRunningToolsForTemplateFill: inspectRunning,
+      resolveCliInstallation: async () => null,
+      inspectCodexDesktopForModelCatalog: async () => ({ installed: false, version: null }),
+    })
+    function files(): Record<string, string> {
+      const result: Record<string, string> = {}
+      function collect(directory: string): void {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          const file = path.join(directory, entry.name)
+          if (entry.isDirectory()) collect(file)
+          else result[path.relative(root, file)] = fs.readFileSync(file).toString('base64')
+        }
+      }
+      collect(root)
+      return result
+    }
+    return { provider, service, inspectRunning, files, account,
+      save: (automatic = true) => service.saveConfig({ provider, apiKey: '', model: 'fixture-model', mode: 'merge' },
+        false, undefined, { source: 'account', automatic }) }
+  }
+
+  it.each([
+    { label: 'a CLI starts during the model query', report: { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false } },
+    { label: 'the CLI state becomes unknown', report: { running: [], unknown: ['codex'], codexDesktopRunning: false, canRestartCodexDesktop: false } },
+    { label: 'Codex desktop starts during the model query', report: { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false } },
+    { label: 'Codex desktop cannot be checked', report: { running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false } },
+    { label: 'the process probe fails', report: new Error('fixture process probe failed') },
+  ] satisfies Array<{ label: string; report: RunningToolsReport | Error }>)(
+    'retains native files and ownership during automatic route migration when $label', async ({ report }) => {
+      const f = await automaticRouteFixture({ report })
+      const before = f.files()
+      await expect(f.save()).rejects.toThrow('已保留原配置')
+      expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
+      expect(f.files()).toEqual(before)
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    },
+  )
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] satisfies ProviderId[])(
+    'checks that %s stayed closed before committing an explicit automatic route migration', async (provider) => {
+      const f = await automaticRouteFixture({ provider })
+      await f.save()
+      expect(f.inspectRunning).toHaveBeenCalledWith([provider])
+      expect(f.service.getConfig(false).providers[provider].actualBaseUrl).toBe(relayProviderBaseUrls('solov', 'direct')[provider])
+      expect(f.service.getConfig(false).providers[provider].configurationOwnership).toBe('account')
+    },
+  )
+
+  it('protects a historical backup alias before changing it to the fixed IP endpoint', async () => {
+    const f = await automaticRouteFixture({ source: 'historical', report: {
+      running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false,
+    } })
+    const before = f.files()
+    await expect(f.save()).rejects.toThrow('已保留原配置')
+    expect(f.files()).toEqual(before)
+  })
+
+  it('revalidates the account after the final automatic route migration process probe', async () => {
+    const f = await automaticRouteFixture()
+    const before = f.files()
+    f.inspectRunning.mockImplementationOnce(async () => {
+      f.account.owner = JSON.stringify(['solov', 10])
+      return { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
+    })
+    await expect(f.save()).rejects.toThrow('账号已变化')
+    expect(f.files()).toEqual(before)
+  })
+
+  it.each([
+    { label: 'manual account configuration', source: 'primary' as const, explicit: true, automatic: false },
+    { label: 'ordinary account refresh on the active route', source: 'direct' as const, explicit: true, automatic: true },
+    { label: 'a known native route without an explicit line choice', source: 'direct' as const, explicit: false, automatic: true },
+  ])('keeps existing $label outside the migration-only running gate', async ({ source, explicit, automatic }) => {
+    const f = await automaticRouteFixture({ source, explicit, report: new Error('must not be used') })
+    await f.save(automatic)
+    expect(f.inspectRunning).not.toHaveBeenCalled()
   })
 
   it('saves provider configuration under the injected roots', async () => {
@@ -523,6 +718,377 @@ describe('createSystemService', () => {
       authSnapshots.active,
     ])
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
+  })
+
+  function codexCatalogFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-catalog-save-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const packageRoot = path.join(root, 'npm', 'lib', 'node_modules', '@openai', 'codex')
+    // 测试中途换成别的版本或「读不出来」，看同一个服务下一次保存怎么处理那一行。
+    const cli: { installation: CliInstallation | null | Error } = { installation: null }
+    // 桌面端自带的那份 Codex：缺省是没装；真去探在 Windows / Mac CI 上会问到 runner 自己的系统。
+    const desktop: { probe: CodexDesktopCatalogProbe } = { probe: { installed: false, version: null } }
+    const account = { models: ['gpt-5.5', 'claude-opus-5', 'gpt-6.1-sol'] }
+    const fetchModels = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchModels)
+    const running = vi.fn(async () => ({ running: [] as ProviderId[], unknown: [] as ProviderId[], codexDesktopRunning: false as boolean | null, canRestartCodexDesktop: false }))
+    const session = { account: JSON.stringify(['solov', 36]) as string | null }
+    const desktopProbe = vi.fn(async () => desktop.probe)
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      bundledCodexModelCatalogPath: resolveBundledCodexModelCatalogPath(path.resolve(__dirname, '..')),
+      resolveCliInstallation: async () => {
+        if (cli.installation instanceof Error) throw cli.installation
+        return cli.installation
+      },
+      inspectCodexDesktopForModelCatalog: desktopProbe,
+      inspectRunningToolsForTemplateFill: running,
+      getExternalClientAccountId: () => session.account,
+    })
+    function installCodexCli(version: string): void {
+      cli.installation = {
+        commandPath: path.join(root, 'npm', 'bin', 'codex'),
+        installDirectory: packageRoot,
+        packageRoot,
+        npmPrefix: path.join(root, 'npm'),
+        packageVersion: version,
+        source: 'npm',
+      }
+    }
+    function save(model = 'gpt-6.1-sol') {
+      return service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model, mode: 'merge' }, false)
+    }
+    function catalogSetting(): unknown {
+      return asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))).model_catalog_json
+    }
+    function storedRelaySetting(): unknown {
+      return asTomlRecord(TOML.parse(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8'))).model_catalog_json
+    }
+    return {
+      cli, desktop, desktopProbe, account, session, fetchModels, running, roots, service, installCodexCli, save, catalogSetting, storedRelaySetting,
+      catalogPath: path.join(roots.codexHome, 'xingmang-models.json'),
+      catalogSlugs: () => (JSON.parse(fs.readFileSync(path.join(roots.codexHome, 'xingmang-models.json'), 'utf8')) as { models: Array<{ slug: string }> })
+        .models.map((model) => model.slug),
+    }
+  }
+
+  function asTomlRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  }
+
+  /** 本机版本探测 30 秒内复用；测试里让时间走过去，下一次保存才会重新探。 */
+  function letCatalogReaderProbesExpire(): void {
+    vi.setSystemTime(Date.now() + 31_000)
+  }
+
+  // 开机那轮在后台跑，测试只能等结果落盘。Windows CI 上保存一次配置就要 0.8 秒上下，
+  // waitFor 缺省的 1 秒连一次保存都等不完。
+  const backgroundStartupWait = { timeout: 10_000 }
+
+  it('writes the official Codex entries for the models the account can use, so the desktop menu lists GPT-6.1 Sol', async () => {
+    const f = codexCatalogFixture()
+    f.installCodexCli('0.156.1')
+
+    const result = await f.save()
+
+    expect(result.files[0]).toBe(f.catalogPath)
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    const written = JSON.parse(fs.readFileSync(f.catalogPath, 'utf8')) as { models: Array<{ slug: string }> }
+    expect(written.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('writes the catalog when only a Codex desktop app from a release that reads it is on this computer', async () => {
+    const f = codexCatalogFixture()
+    f.desktop.probe = { installed: true, version: '26.930.2377.0' }
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+  })
+
+  it('does not write the catalog for a Codex desktop app from a release that predates it', async () => {
+    const f = codexCatalogFixture()
+    f.desktop.probe = { installed: true, version: '26.909.1234.0' }
+
+    const result = await f.save()
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(result.files).not.toContain(f.catalogPath)
+    expect(fs.existsSync(f.catalogPath)).toBe(false)
+  })
+
+  it('does not write a catalog that would leave out the configured default model', async () => {
+    const f = codexCatalogFixture()
+
+    await f.save('claude-opus-5')
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(fs.existsSync(f.catalogPath)).toBe(false)
+  })
+
+  it('takes its catalog back once the Codex CLI on this computer is too old to read it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.installCodexCli('0.150.0')
+    letCatalogReaderProbesExpire()
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBeUndefined()
+  })
+
+  it('leaves the catalog as it is when the Codex CLI version cannot be read', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.cli.installation = new Error('注册表读取失败')
+    letCatalogReaderProbesExpire()
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+  })
+
+  it('leaves the catalog as it is when it cannot tell whether the Codex desktop app is installed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.desktop.probe = { installed: null, version: null }
+    letCatalogReaderProbesExpire()
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+  })
+
+  it('takes the catalog back on this computer before a launch once the Codex CLI was swapped for an older one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.installCodexCli('0.146.1')
+    letCatalogReaderProbesExpire()
+
+    expect(await f.service.checkToolModels!('codex')).toEqual({ status: 'skipped' })
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(f.storedRelaySetting()).toBeUndefined()
+    // 名单文件留着：星芒的快照和旧备份可能还指向它。
+    expect(fs.existsSync(f.catalogPath)).toBe(true)
+  })
+
+  it('takes the catalog back before a launch when its file went missing', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    fs.rmSync(f.catalogPath)
+
+    await f.service.checkToolModels!('codex')
+
+    expect(f.catalogSetting()).toBeUndefined()
+  })
+
+  it('keeps a readable catalog before a launch while the Codex CLI still reads it', async () => {
+    const f = codexCatalogFixture()
+    f.installCodexCli('0.156.1')
+    await f.save()
+    const before = fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')
+
+    await f.service.checkToolModels!('codex')
+
+    expect(fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')).toBe(before)
+  })
+
+  it('brings the catalog up to the account at startup, backing the config up first, once Codex is closed', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+    f.account.models.push('gpt-6-astra')
+    const backups: Array<{ provider: ProviderId; slugs: string[] }> = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, slugs: f.catalogSlugs() }) })).toEqual({ filled: [] })
+
+    // 名单落盘之后来源记录还要再写一次才改回「账号」，两样都到位才算这次同步做完。
+    await vi.waitFor(() => {
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
+    expect(f.running).toHaveBeenCalledWith(['codex'])
+  })
+
+  it('refreshes the Claude Code menu before a launch and keeps the account as the source of the config', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-picker-refresh-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['claude-opus-5', 'claude-sonnet-5'] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+    })
+    await service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    account.models.push('claude-haiku-5')
+
+    // 刷新那次写入会先把来源记录改成「手动」再写：按记录认人的话写到一半就作废，记录还留在「手动」。
+    expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
+
+    expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  it('leaves the catalog for a later try while Codex may still be open, and says it is still owed', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false })
+    const requests = f.fetchModels.mock.calls.length
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).toHaveBeenCalledWith(['codex'])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(backup).not.toHaveBeenCalled()
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('brings the catalog up to the account on a later try once Codex has been closed', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+    const backups: Array<{ provider: ProviderId; slugs: string[] }> = []
+    function backup(provider: ProviderId): void { backups.push({ provider, slugs: f.catalogSlugs() }) }
+    await f.service.fillToolTemplateDefaults!(backup)
+
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [], pending: ['codex'] })
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
+    // 核对过就不欠了：再来要不再起进程看 Codex 开没开，也不再问中转。
+    const probes = f.running.mock.calls.length
+    const requests = f.fetchModels.mock.calls.length
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+    expect(f.running.mock.calls.length).toBe(probes)
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+  })
+
+  it('stops waiting for the Codex check once an account change begins, and still owes the catalog', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    // 安全软件拖住了 PowerShell：看 Codex 开没开这一下迟迟没有回音。
+    f.running.mockImplementation(() => new Promise<never>(() => undefined))
+    const requests = f.fetchModels.mock.calls.length
+    const backups: Array<{ provider: ProviderId; slugs: string[] }> = []
+    function backup(provider: ProviderId): void { backups.push({ provider, slugs: f.catalogSlugs() }) }
+
+    const startup = f.service.fillToolTemplateDefaults!(backup)
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['codex']), backgroundStartupWait)
+    const resume = f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(backups).toEqual([])
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+
+    // 换账号那段等完了、没换成，还是这个账号：再来要时照常看，Codex 关着就按账号核对。
+    resume()
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+    await vi.waitFor(() => {
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
+  })
+
+  it('stops waiting for the startup check of the catalog once an account change begins', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    // 开机那次本机核对要重新问桌面端是哪一版，这一问迟迟没有回音。
+    letCatalogReaderProbesExpire()
+    f.desktopProbe.mockImplementation(() => new Promise<never>(() => undefined))
+    const desktopProbes = f.desktopProbe.mock.calls.length
+
+    const startup = f.service.fillToolTemplateDefaults!(() => undefined)
+    await vi.waitFor(() => expect(f.desktopProbe.mock.calls.length).toBeGreaterThan(desktopProbes), backgroundStartupWait)
+    f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).not.toHaveBeenCalled()
+  })
+
+  it('owes nothing for a Codex config the account did not write, even while Codex is open', async () => {
+    const f = codexCatalogFixture()
+    await f.save()
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    expect(f.running).not.toHaveBeenCalled()
+  })
+
+  it('takes the catalog back at startup once the Codex desktop app turns out to predate it, without an account', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.desktop.probe = { installed: true, version: '26.827.5501.0' }
+    letCatalogReaderProbesExpire()
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.catalogSetting()).toBeUndefined(), backgroundStartupWait)
+  })
+
+  it('takes the catalog back at startup while logged out, once for the whole startup', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    await f.save()
+    f.session.account = null
+    f.desktop.probe = { installed: true, version: '26.827.5501.0' }
+    letCatalogReaderProbesExpire()
+
+    const startup = f.service.guardCodexModelCatalogAtStartup!()
+    await startup
+
+    expect(f.catalogSetting()).toBeUndefined()
+    // 登录状态下开机那轮按账号同步也走这一次，不再问一遍。
+    expect(f.service.guardCodexModelCatalogAtStartup!()).toBe(startup)
+  })
+
+  it('does not hold a launch behind another config write while the catalog is readable', async () => {
+    const f = codexCatalogFixture()
+    f.installCodexCli('0.156.1')
+    await f.save()
+    // 另一次保存（换了一把 Key，模型列表不在缓存里）卡在问中转：它拿着写配置的锁。
+    let answer!: () => void
+    f.fetchModels.mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      answer = () => resolve(new Response(JSON.stringify({ data: f.account.models.map((id) => ({ id })) }), { status: 200 }))
+    }))
+    const pendingSave = f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog-next', model: 'gpt-6.1-sol', mode: 'merge' }, false)
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+
+    // 排在锁后面的话要等到打开前那 3 秒上限才放行：给慢机器留些余量，但不能放到 3 秒。
+    const launch = await Promise.race([
+      f.service.checkToolModels!('codex').then(() => 'checked'),
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000)),
+    ])
+
+    expect(launch).toBe('checked')
+    answer()
+    await pendingSave
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
   })
 
   function claudeConsoleKeyFixture(prefix: string) {
@@ -1967,6 +2533,23 @@ describe('npm registry metadata', () => {
     })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
+  it('takes Linux Grok straight from npm without asking x.ai for its stable version', async () => {
+    const requestedVersions: string[] = []
+    const release = await resolveCliInstallRelease('grok', 'linux-official-npm', {
+      version: '1.0.44',
+      fetchGrokStableVersion: async () => {
+        throw new Error('must not query Grok stable metadata')
+      },
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version, integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['1.0.44'])
+    expect(release.version).toBe('1.0.44')
+  })
+
   it('keeps other npm providers on their latest npm release selector', async () => {
     const requestedVersions: string[] = []
     await resolveCliInstallRelease('codex', null, {
@@ -2168,17 +2751,84 @@ describe('managed npm transaction', () => {
     return { active, transaction, staged }
   }
 
-  it('promotes a verified prefix while retaining rollback data until transaction cleanup', async () => {
+  it('promotes a verified prefix and keeps the old copy, marked as superseded, until transaction cleanup', async () => {
     const fixture = transactionFixture()
-    await replaceManagedNpmPrefixAtomically(
+    await expect(replaceManagedNpmPrefixAtomically(
       fixture.active,
       fixture.staged,
       fixture.transaction,
       async () => {
         expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('new')
+        // Until the new version has been verified, the old copy keeps the name recovery rolls back to.
+        expect(fs.readFileSync(path.join(fixture.transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
       },
-    )
+    )).resolves.toEqual({ backupRetired: true })
     expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('new')
+    expect(fs.readFileSync(path.join(fixture.transaction, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.existsSync(path.join(fixture.transaction, 'previous-prefix'))).toBe(false)
+  })
+
+  it('retries marking the old copy superseded while something briefly holds it', async () => {
+    const fixture = transactionFixture()
+    let busy = 2
+    const rename = vi.fn(async (source: string, destination: string) => {
+      if (path.basename(destination) === 'superseded-prefix' && busy > 0) {
+        busy -= 1
+        throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
+      }
+      await fs.promises.rename(source, destination)
+    })
+
+    await expect(replaceManagedNpmPrefixAtomically(
+      fixture.active,
+      fixture.staged,
+      fixture.transaction,
+      async () => undefined,
+      { rename },
+    )).resolves.toEqual({ backupRetired: true })
+    expect(rename).toHaveBeenCalledTimes(5)
+    expect(fs.readFileSync(path.join(fixture.transaction, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('old')
+  })
+
+  it('still reports the verified update when the old copy cannot be marked superseded', async () => {
+    const fixture = transactionFixture()
+    const rename = vi.fn(async (source: string, destination: string) => {
+      if (path.basename(destination) === 'superseded-prefix') {
+        throw Object.assign(new Error('cross-device link not permitted'), { code: 'EXDEV' })
+      }
+      await fs.promises.rename(source, destination)
+    })
+
+    await expect(replaceManagedNpmPrefixAtomically(
+      fixture.active,
+      fixture.staged,
+      fixture.transaction,
+      async () => undefined,
+      { rename },
+    )).resolves.toEqual({ backupRetired: false })
+    // A non-transient failure is not retried; the old copy stays where it was, as before.
+    expect(rename).toHaveBeenCalledTimes(3)
+    expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('new')
+    expect(fs.readFileSync(path.join(fixture.transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
+  })
+
+  it('gives up marking the old copy superseded after a bounded number of transient failures', async () => {
+    const fixture = transactionFixture()
+    const rename = vi.fn(async (source: string, destination: string) => {
+      if (path.basename(destination) === 'superseded-prefix') {
+        throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+      }
+      await fs.promises.rename(source, destination)
+    })
+
+    await expect(replaceManagedNpmPrefixAtomically(
+      fixture.active,
+      fixture.staged,
+      fixture.transaction,
+      async () => undefined,
+      { rename },
+    )).resolves.toEqual({ backupRetired: false })
+    expect(rename.mock.calls.filter(([, destination]) => path.basename(destination) === 'superseded-prefix')).toHaveLength(5)
     expect(fs.readFileSync(path.join(fixture.transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
   })
 
@@ -2191,6 +2841,7 @@ describe('managed npm transaction', () => {
       async () => { throw new Error('verification failed') },
     )).rejects.toThrow('verification failed')
     expect(fs.readFileSync(path.join(fixture.active, 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.existsSync(path.join(fixture.transaction, 'superseded-prefix'))).toBe(false)
   })
 
   it('preserves rollback data when restoring the previous prefix also fails', async () => {
@@ -2361,11 +3012,21 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
   })
 })
 
-// The same-user install path is shared by Windows (same-user mode) and Linux;
-// Linux is the platform where it can run here without Windows-only fakes.
-describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () => {
-  it('passes the prefix from the user npm config while keeping the empty userconfig', async () => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-npm-'))
+// Linux installs into the same per-user managed layout as macOS (Linux 版拆分 ②), so the
+// user's own ~/.npmrc no longer decides where the CLIs land. These run only on Linux,
+// where the fake npm below is a plain POSIX script.
+describe.runIf(process.platform === 'linux')('Linux managed npm install', () => {
+  interface LinuxInstallFixture {
+    root: string
+    homeDirectory: string
+    userPrefix: string
+    npmExecutable: string
+    expectedVersion: string
+    integrity: string
+  }
+
+  function linuxInstallFixture(npmrc: (userPrefix: string) => string): LinuxInstallFixture {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-managed-npm-'))
     temporaryDirectories.push(temporaryRoot)
     const root = fs.realpathSync(temporaryRoot)
     const homeDirectory = path.join(root, 'home')
@@ -2374,11 +3035,12 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     fs.mkdirSync(homeDirectory, { recursive: true })
     fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
     fs.mkdirSync(runtimeBin, { recursive: true })
-    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), npmrc(userPrefix))
     const npmExecutable = path.join(runtimeBin, 'npm')
     fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
     fs.chmodSync(npmExecutable, 0o700)
     vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
     vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
     // `npm test` exports these to its children; the desktop app never inherits them.
     vi.stubEnv('npm_config_prefix', undefined)
@@ -2400,13 +3062,18 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       }
       throw new Error(`Unexpected fetch: ${url}`)
     }))
+    return { root, homeDirectory, userPrefix, npmExecutable, expectedVersion, integrity }
+  }
 
-    let installArgv: readonly string[] | null = null
-    const runCommand = vi.fn(async (
+  function fakeNpm(
+    fixture: LinuxInstallFixture,
+    onGlobalInstall: (prefix: string, argv: readonly string[]) => void,
+  ) {
+    return vi.fn(async (
       spec: { executable: string; argv: readonly string[] },
       options: { cwd?: string; onOutput?: (event: { stream: 'stdout' | 'stderr'; text: string }) => void } = {},
     ) => {
-      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
+      if (spec.executable !== fixture.npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
       if (spec.argv[0] === 'ci') options.onOutput?.({ stream: 'stdout', text: 'added 12 packages in 3s\n' })
       if (spec.argv.includes('--package-lock-only')) {
         const cwd = options.cwd
@@ -2423,11 +3090,13 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
           lockfileVersion: 3,
           packages: {
             '': { dependencies: manifest.dependencies },
-            [`node_modules/${packageName}`]: { version, integrity },
+            [`node_modules/${packageName}`]: { version, integrity: fixture.integrity },
           },
         }))
       } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
-        installArgv = [...spec.argv]
+        const prefixArgument = spec.argv.find((argument) => argument.startsWith('--prefix='))
+        if (!prefixArgument) throw new Error('Managed install omitted --prefix')
+        onGlobalInstall(prefixArgument.slice('--prefix='.length), spec.argv)
       }
       return {
         executable: spec.executable,
@@ -2440,34 +3109,69 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
         durationMs: 1,
       }
     })
-    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
-    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => installArgv
+  }
+
+  function writeCodexPackage(prefix: string, version: string, withNative: boolean): void {
+    const packageRoot = path.join(prefix, 'lib', 'node_modules', '@openai', 'codex')
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+    fs.mkdirSync(packageRoot, { recursive: true })
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex',
+      version,
+      optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${version}-linux-x64` },
+    }))
+    if (withNative) {
+      fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
+      fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    }
+  }
+
+  function managedResolution(fixture: LinuxInstallFixture) {
+    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
+    const packageRoot = path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    return vi.fn<typeof resolveCliInstallationForTest>(async () => fs.existsSync(path.join(packageRoot, 'package.json'))
       ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
+          commandPath: path.join(managedPrefix, 'bin', 'codex'),
           installDirectory: packageRoot,
           packageRoot,
-          npmPrefix: userPrefix,
-          packageVersion: expectedVersion,
+          npmPrefix: managedPrefix,
+          packageVersion: fixture.expectedVersion,
           source: 'npm',
         }
       : null)
+  }
+
+  it('installs into the per-user managed prefix and ignores both the prefix and the registry in ~/.npmrc', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    let installArgv: readonly string[] | null = null
+    let stagedPrefix: string | null = null
+    const runCommand = fakeNpm(fixture, (prefix, argv) => {
+      installArgv = argv
+      stagedPrefix = prefix
+      writeCodexPackage(prefix, fixture.expectedVersion, true)
+    })
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
-      new AppSettingsStore(path.join(root, 'settings.json'), root),
-      { platform: 'linux', runCommand, resolveCliInstallation },
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture) },
     )
 
     await service.installCli('codex', target)
 
-    expect(installArgv).not.toBeNull()
+    const productRoot = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI')
     const argv = installArgv!
-    expect(argv).toContain(`--prefix=${userPrefix}`)
-    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toHaveLength(1)
-    const userConfigArgument = argv.find((argument) => argument.startsWith('--userconfig='))
-    expect(userConfigArgument).toBeDefined()
-    expect(userConfigArgument).not.toBe(`--userconfig=${path.join(homeDirectory, '.npmrc')}`)
-    // Only prefix is carried over; the registry line in the same file stays ignored.
+    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toEqual([`--prefix=${stagedPrefix}`])
+    // The lifecycle runs against a staged copy inside the managed cache, never the user's prefix.
+    expect(path.relative(path.join(productRoot, 'Cli', 'npm-cache'), stagedPrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
+    expect(argv.some((argument) => argument.includes(fixture.userPrefix))).toBe(false)
+    expect(argv).toContain(`--userconfig=${path.join(productRoot, 'Cli', 'npmrc')}`)
     expect(argv.some((argument) => argument.includes('example.invalid'))).toBe(false)
+    // The staged prefix was promoted into place.
+    expect(JSON.parse(fs.readFileSync(
+      path.join(productRoot, 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex', 'package.json'),
+      'utf8',
+    ))).toMatchObject({ version: fixture.expectedVersion })
+    expect(fs.existsSync(path.join(fixture.userPrefix, 'lib'))).toBe(false)
     expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -2483,102 +3187,235 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
   })
 
-  it('fails the install when npm silently skipped the platform build', async () => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-native-'))
-    temporaryDirectories.push(temporaryRoot)
-    const root = fs.realpathSync(temporaryRoot)
-    const homeDirectory = path.join(root, 'home')
-    const userPrefix = path.join(root, 'npm-global')
-    const runtimeBin = path.join(root, 'runtime-bin')
-    fs.mkdirSync(homeDirectory, { recursive: true })
-    fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
-    fs.mkdirSync(runtimeBin, { recursive: true })
-    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `prefix=${userPrefix}\n`)
-    const npmExecutable = path.join(runtimeBin, 'npm')
-    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
-    fs.chmodSync(npmExecutable, 0o700)
-    vi.stubEnv('HOME', homeDirectory)
-    vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
-    vi.stubEnv('npm_config_prefix', undefined)
-    vi.stubEnv('npm_config_userconfig', undefined)
-
-    const expectedVersion = recommendedCodexVersion()
-    const integrity = `sha512-${Buffer.alloc(64, 0x32).toString('base64')}`
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
-        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+  it('keeps a verified update when the cleanup after it was cut short, and sweeps the leftover later', async () => {
+    const fixture = linuxInstallFixture(() => '')
+    const productRoot = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI')
+    const managedPrefix = path.join(productRoot, 'Cli', 'npm')
+    const cacheRoot = path.join(productRoot, 'Cli', 'npm-cache')
+    const managedManifest = path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex', 'package.json')
+    writeCodexPackage(managedPrefix, '0.1.0', true)
+    const runCommand = fakeNpm(fixture, (prefix) => writeCodexPackage(prefix, fixture.expectedVersion, true))
+    // 星芒在「完成」之后、临时文件夹删完之前被关掉：收尾那一下删除没有做成。
+    const realRm = fs.promises.rm
+    const rm = vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
+      // Only the transaction folder itself, as the final cleanup removes it; whatever the install does inside runs for real.
+      if (path.dirname(String(target)) === cacheRoot && path.basename(String(target)).startsWith('npm-transaction-')) {
+        throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
       }
-      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
-        return new Response(JSON.stringify({
-          name: '@openai/codex',
-          version: expectedVersion,
-          dist: { integrity },
-        }), { status: 200 })
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
-    }))
-
-    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
-    let globalInstalls = 0
-    const runCommand = vi.fn(async (
-      spec: { executable: string; argv: readonly string[] },
-      options: { cwd?: string } = {},
-    ) => {
-      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
-      if (spec.argv.includes('--package-lock-only')) {
-        const cwd = options.cwd
-        if (!cwd) throw new Error('Fake npm requires cwd')
-        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
-          name: string
-          version: string
-          dependencies: Record<string, string>
-        }
-        const [[packageName, version]] = Object.entries(manifest.dependencies)
-        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
-          name: manifest.name,
-          version: manifest.version,
-          lockfileVersion: 3,
-          packages: {
-            '': { dependencies: manifest.dependencies },
-            [`node_modules/${packageName}`]: { version, integrity },
-          },
-        }))
-      } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
-        // npm exits 0 after dropping an optional dependency whose download failed.
-        globalInstalls += 1
-        fs.mkdirSync(packageRoot, { recursive: true })
-        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
-          name: '@openai/codex',
-          version: expectedVersion,
-          optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${expectedVersion}-linux-x64` },
-        }))
-      }
-      return {
-        executable: spec.executable,
-        argv: [...spec.argv],
-        exitCode: 0,
-        signal: null,
-        stdout: '',
-        stderr: '',
-        outputBytes: 0,
-        durationMs: 1,
-      }
+      return realRm(target, options)
     })
-    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => globalInstalls > 0
-      ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
+    let sweepNow: number | null = null
+    const sweep = vi.fn(async (locations: readonly InstallLeftoverLocation[]) => sweepNow === null
+      ? { removed: 0, freedBytes: 0, failed: 0 }
+      // Only the managed npm cache: never touch whatever sits in this machine's own temp directory.
+      : sweepInstallLeftovers(locations.filter((location) => location.directory === cacheRoot), { now: sweepNow }))
+    const runtimeLog = { log: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      {
+        platform: 'linux',
+        runCommand,
+        resolveCliInstallation: managedResolution(fixture),
+        sweepInstallLeftovers: sweep,
+        runtimeLog,
+      },
+    )
+
+    await service.installCli('codex', { isDestroyed: () => false, send: vi.fn() })
+    // The sweep queued after every successful install; it must be done before the later one is queued.
+    await vi.waitFor(() => expect(sweep).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(service.inspectInstallationQueue().activeKey).toBeNull())
+    rm.mockRestore()
+
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'install', 'cli.install.transaction-cleanup-failed', expect.any(String), expect.objectContaining({ provider: 'codex' }))
+    const leftovers = fs.readdirSync(cacheRoot).filter((name) => name.startsWith('npm-transaction-'))
+    expect(leftovers).toHaveLength(1)
+    const leftover = path.join(cacheRoot, leftovers[0])
+    expect(fs.existsSync(path.join(leftover, 'superseded-prefix'))).toBe(true)
+    expect(fs.existsSync(path.join(leftover, 'previous-prefix'))).toBe(false)
+
+    // Every later install, update or uninstall starts by preparing the managed layout.
+    await ensureManagedNpmLayout({ platform: 'linux', env: process.env })
+    expect(JSON.parse(fs.readFileSync(managedManifest, 'utf8'))).toMatchObject({ version: fixture.expectedVersion })
+
+    sweepNow = Date.now() + installLeftoverMinimumAgeMs + 60_000
+    await expect(service.cleanupInstallLeftovers()).resolves.toMatchObject({ removed: 1, failed: 0 })
+    expect(fs.existsSync(leftover)).toBe(false)
+    expect(JSON.parse(fs.readFileSync(managedManifest, 'utf8'))).toMatchObject({ version: fixture.expectedVersion })
+  })
+
+  it('brings the terminal commands in line after an install and again after the uninstall', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
+    const managedPackage = path.join(
+      fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
+    )
+    const runCommand = fakeNpm(fixture, (prefix) => writeCodexPackage(prefix, fixture.expectedVersion, true))
+    // The uninstall spawns npm for real rather than through the injected runner.
+    fs.writeFileSync(fixture.npmExecutable, `#!/bin/sh\nif [ "$1" = uninstall ]; then rm -rf '${managedPackage}'; fi\nexit 0\n`)
+    const syncLinuxTerminalCommands = vi.fn(async () => ({ outcome: 'added' as const, launchers: ['codex'], skipped: [] }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture), syncLinuxTerminalCommands },
+    )
+
+    await service.installCli('codex', { isDestroyed: () => false, send: vi.fn() })
+    await vi.waitFor(() => expect(syncLinuxTerminalCommands).toHaveBeenCalledWith('install'))
+
+    await expect(service.uninstallCli('codex')).resolves.toMatchObject({ outcome: 'uninstalled' })
+    await vi.waitFor(() => expect(syncLinuxTerminalCommands).toHaveBeenLastCalledWith('uninstall'))
+    expect(syncLinuxTerminalCommands).toHaveBeenCalledTimes(2)
+  })
+
+  // 卸载那一步的 npm 是真起的子进程：换成照 npm 原样报错、什么都没删的脚本。
+  function failNpmUninstall(fixture: LinuxInstallFixture, npmErrorLines: readonly string[]): void {
+    fs.writeFileSync(fixture.npmExecutable, [
+      '#!/bin/sh',
+      'if [ "$1" = uninstall ]; then',
+      "  /bin/cat >&2 <<'EOF'",
+      ...npmErrorLines,
+      'EOF',
+      '  exit 1',
+      'fi',
+      'exit 0',
+      '',
+    ].join('\n'))
+  }
+
+  // 包目录直接写好，不先走一遍安装。
+  function failingCodexUninstall(fixture: LinuxInstallFixture, npmErrorLines: readonly string[]) {
+    const managedPrefix = path.join(fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
+    writeCodexPackage(managedPrefix, fixture.expectedVersion, true)
+    failNpmUninstall(fixture, npmErrorLines)
+    const runtimeLog = { log: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', resolveCliInstallation: managedResolution(fixture), runtimeLog },
+    )
+    return { service, runtimeLog, packageRoot: path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex') }
+  }
+
+  const npmRenameDenied = [
+    'npm error code EPERM',
+    'npm error syscall rename',
+    'npm error errno -1',
+    "npm error Error: EPERM: operation not permitted, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'",
+  ]
+  const npmRenameDeniedDetail = "命令执行失败（退出码 1）：npm（EPERM；Error: EPERM: operation not permitted, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
+
+  it('names the tool that failed to uninstall and keeps npm\'s EPERM when none of its processes is running', async () => {
+    const { service, packageRoot } = failingCodexUninstall(linuxInstallFixture(() => ''), npmRenameDenied)
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).toMatchObject({
+      message: `Codex CLI 卸载失败：${npmRenameDeniedDetail}`,
+      cause: expect.any(CommandRunnerError),
+    })
+    // EPERM by itself reads the same as a folder the user cannot write to, so it
+    // stays a permission problem until a process of this tool is actually found.
+    expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
+    expect(classifyOperationError(`Codex CLI 卸载失败：${npmRenameDeniedDetail}`)).toBe('permission')
+    // The runtime log keeps only enumerable fields, and npm's raw output is what
+    // support reads there.
+    expect(Object.prototype.propertyIsEnumerable.call(failure, 'cause')).toBe(true)
+    expect(fs.existsSync(path.join(packageRoot, 'package.json'))).toBe(true)
+  })
+
+  it('tells the customer to close the tool when one of its processes holds the folder', async () => {
+    const { service, runtimeLog, packageRoot } = failingCodexUninstall(linuxInstallFixture(() => ''), npmRenameDenied)
+    vi.mocked(probeRunningCliProcesses).mockResolvedValueOnce({
+      status: 'checked',
+      processes: [{ processId: 4242, name: 'codex', executablePath: path.join(packageRoot, 'bin', 'codex') }],
+    })
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    const message = 'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+      + `原始报错：${npmRenameDeniedDetail}`
+    expect(failure).toMatchObject({ message })
+    expect(probeRunningCliProcesses).toHaveBeenCalledTimes(1)
+    expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
+    expect(classifyOperationError(message)).toBe('toolRunning')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'install', 'cli.file-locked', 'Codex CLI 卸载时文件被占用', {
+      provider: 'codex',
+      probeStatus: 'checked',
+      processes: 1,
+    })
+  })
+
+  it('still points at the running tool when npm says the folder is busy but no process was counted', async () => {
+    const { service } = failingCodexUninstall(linuxInstallFixture(() => ''), [
+      'npm error code EBUSY',
+      'npm error syscall rename',
+      'npm error errno -16',
+      "npm error Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'",
+    ])
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    const message = 'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+      + "原始报错：命令执行失败（退出码 1）：npm（EBUSY；Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
+    expect(failure).toMatchObject({ message })
+    expect(classifyOperationError(message)).toBe('toolRunning')
+  })
+
+  it('keeps a Mac permission failure a permission problem even while the tool is running', async () => {
+    // Mac 挪得动正开着的程序文件，npm 在那边报 EACCES 只会是权限不够，比如用 sudo 装进
+    // /usr/local 的那份。这时就算数得到进程也不能叫客户去关窗口：关了照样卸不掉。
+    const fixture = linuxInstallFixture(() => '')
+    writeCodexPackage(fixture.userPrefix, fixture.expectedVersion, false)
+    const packageRoot = path.join(fixture.userPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    failNpmUninstall(fixture, [
+      'npm error code EACCES',
+      'npm error syscall rename',
+      'npm error path /usr/local/lib/node_modules/@openai/codex',
+      'npm error errno -13',
+      "npm error Error: EACCES: permission denied, rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-x'",
+    ])
+    vi.mocked(probeRunningCliProcesses).mockResolvedValue({
+      status: 'checked',
+      processes: [{ processId: 4242, name: 'codex', executablePath: path.join(packageRoot, 'bin', 'codex') }],
+    })
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      {
+        platform: 'darwin',
+        windowsExecutionMode: 'same-user',
+        resolveCliInstallation: vi.fn<typeof resolveCliInstallationForTest>(async () => ({
+          commandPath: path.join(fixture.userPrefix, 'bin', 'codex'),
           installDirectory: packageRoot,
           packageRoot,
-          npmPrefix: userPrefix,
-          packageVersion: expectedVersion,
+          npmPrefix: fixture.userPrefix,
+          packageVersion: fixture.expectedVersion,
           source: 'npm',
-        }
-      : null)
+        })),
+      },
+    )
+
+    const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
+
+    const message = 'Codex CLI 卸载失败：命令执行失败（退出码 1）：npm（EACCES；Error: EACCES: permission denied, '
+      + "rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-x'）"
+    expect(failure).toMatchObject({ message })
+    expect(probeRunningCliProcesses).not.toHaveBeenCalled()
+    expect(classifyOperationError(message)).toBe('permission')
+  })
+
+  it('fails the install when npm silently skipped the platform build and keeps nothing half-installed', async () => {
+    const fixture = linuxInstallFixture((userPrefix) => `prefix=${userPrefix}\n`)
+    let withNative = false
+    const runCommand = fakeNpm(fixture, (prefix) => {
+      // npm exits 0 after dropping an optional dependency whose download failed.
+      writeCodexPackage(prefix, fixture.expectedVersion, withNative)
+    })
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
-      new AppSettingsStore(path.join(root, 'settings.json'), root),
-      { platform: 'linux', runCommand, resolveCliInstallation },
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand, resolveCliInstallation: managedResolution(fixture) },
+    )
+    const managedPackage = path.join(
+      fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
     )
 
     await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
@@ -2586,14 +3423,196 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+    // Each attempt failed inside its own staged prefix, so the managed prefix was never touched.
+    expect(fs.existsSync(managedPackage)).toBe(false)
 
-    fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
-    fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    withNative = true
     await service.installCli('codex', target)
+    expect(fs.existsSync(path.join(managedPackage, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'))).toBe(true)
     expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+  })
+})
+
+describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () => {
+  const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
+
+  function recommendedGrokVersion(): string {
+    const recommended = cliVerifiedVersions.grok.recommended
+    if (!recommended) throw new Error('cliVerifiedVersions.grok 必须有推荐版本')
+    return recommended.version
+  }
+
+  interface GrokFixture {
+    root: string
+    homeDirectory: string
+    npmExecutable: string
+    version: string
+    binary: Buffer
+  }
+
+  function grokFixture(): GrokFixture {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-grok-install-'))
+    temporaryDirectories.push(temporaryRoot)
+    const root = fs.realpathSync(temporaryRoot)
+    const homeDirectory = path.join(root, 'home')
+    const runtimeBin = path.join(root, 'runtime-bin')
+    fs.mkdirSync(homeDirectory, { recursive: true })
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    const npmExecutable = path.join(runtimeBin, 'npm')
+    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(npmExecutable, 0o700)
+    vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
+    vi.stubEnv('PATH', runtimeBin)
+    vi.stubEnv('npm_config_prefix', undefined)
+    vi.stubEnv('npm_config_userconfig', undefined)
+    const version = recommendedGrokVersion()
+    const integrity = `sha512-${Buffer.alloc(64, 0x47).toString('base64')}`
+    // Anything aimed at x.ai (the stable manifest Windows and macOS use) fails the test.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
+        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      }
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@xai-official/grok', version)) {
+        return new Response(JSON.stringify({ name: '@xai-official/grok', version, dist: { integrity } }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+    const binary = Buffer.concat([Buffer.from('\x7fELF grok '), Buffer.alloc(70_000, 0x61)])
+    return { root, homeDirectory, npmExecutable, version, binary }
+  }
+
+  /**
+   * Stands in for npm and for the installed program. `npm ci --ignore-scripts` unpacks the
+   * packages into the resolution directory; the lifecycle run is where xAI's postinstall
+   * writes ~/.grok/bin, so that is where `installedBytes` lands.
+   */
+  function grokCommands(fixture: GrokFixture, installedBytes: () => Buffer) {
+    const calls: Array<{ executable: string; argv: readonly string[] }> = []
+    const runCommand = vi.fn(async (
+      spec: { executable: string; argv: readonly string[] },
+      options: { cwd?: string } = {},
+    ) => {
+      calls.push(spec)
+      let stdout = ''
+      if (spec.argv.length === 1 && spec.argv[0] === '--version') {
+        if (path.dirname(spec.executable) !== path.join(fixture.homeDirectory, '.grok', 'bin')) {
+          throw new Error(`Unexpected command: ${spec.executable}`)
+        }
+        stdout = `grok ${fixture.version} (6b2c1a0)\n`
+      } else if (spec.executable !== fixture.npmExecutable) {
+        throw new Error(`Unexpected command: ${spec.executable}`)
+      } else if (spec.argv.includes('--package-lock-only')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+          name: string
+          version: string
+          dependencies: Record<string, string>
+        }
+        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
+          name: manifest.name,
+          version: manifest.version,
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: manifest.dependencies },
+            'node_modules/@xai-official/grok': {
+              version: fixture.version,
+              integrity: `sha512-${Buffer.alloc(64, 0x47).toString('base64')}`,
+            },
+          },
+        }))
+      } else if (spec.argv[0] === 'ci' && spec.argv.includes('--ignore-scripts')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const platformPackage = path.join(cwd, 'node_modules', '@xai-official', `grok-linux-${architecture}`)
+        fs.mkdirSync(path.join(platformPackage, 'bin'), { recursive: true })
+        fs.writeFileSync(path.join(platformPackage, 'package.json'), JSON.stringify({
+          name: `@xai-official/grok-linux-${architecture}`,
+          version: fixture.version,
+        }))
+        fs.writeFileSync(path.join(platformPackage, 'bin', 'grok.br'), zlib.brotliCompressSync(fixture.binary))
+      } else if (spec.argv[0] === 'ci') {
+        const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+        fs.mkdirSync(bin, { recursive: true })
+        fs.writeFileSync(path.join(bin, `grok-${fixture.version}`), installedBytes(), { mode: 0o755 })
+        fs.rmSync(path.join(bin, 'grok'), { force: true })
+        fs.symlinkSync(`grok-${fixture.version}`, path.join(bin, 'grok'))
+      }
+      return {
+        executable: spec.executable,
+        argv: [...spec.argv],
+        exitCode: 0,
+        signal: null,
+        stdout,
+        stderr: '',
+        outputBytes: Buffer.byteLength(stdout),
+        durationMs: 1,
+      }
+    })
+    return { runCommand, calls }
+  }
+
+  it('installs Grok with the lifecycle run, checks it byte for byte and never asks x.ai', async () => {
+    const fixture = grokFixture()
+    const { runCommand, calls } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+
+    await service.installCli('grok', target)
+
+    const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+    expect(fs.readlinkSync(path.join(bin, 'grok'))).toBe(`grok-${fixture.version}`)
+    expect(fs.readlinkSync(path.join(bin, 'agent'))).toBe(`grok-${fixture.version}`)
+    expect(target.send).toHaveBeenCalledWith('cli:install-progress', expect.objectContaining({ state: 'success' }))
+    const npmRuns = calls.filter((call) => call.executable === fixture.npmExecutable && call.argv[0] === 'ci')
+    expect(npmRuns.map((call) => call.argv.includes('--ignore-scripts'))).toEqual([true, false])
+    // The lifecycle run installs the resolved lock in place: no global install, no prefix.
+    expect(npmRuns[1].argv.some((argument) => argument === '--global' || argument.startsWith('--prefix='))).toBe(false)
+    expect(calls).toContainEqual({ executable: path.join(bin, `grok-${fixture.version}`), argv: ['--version'] })
+  })
+
+  it('uninstalls what it installed and leaves the Grok settings alone', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => fixture.binary)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+    await service.installCli('grok', target)
+    const grokRoot = path.join(fixture.homeDirectory, '.grok')
+    fs.writeFileSync(path.join(grokRoot, 'config.toml'), 'model = "grok"\n')
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'uninstalled',
+      previousVersion: fixture.version,
+    })
+    expect(fs.readdirSync(path.join(grokRoot, 'bin'))).toEqual([])
+    expect(fs.readFileSync(path.join(grokRoot, 'config.toml'), 'utf8')).toBe('model = "grok"\n')
+  })
+
+  it('rolls the command back and reports failure when the installed program is not the verified one', async () => {
+    const fixture = grokFixture()
+    const { runCommand } = grokCommands(fixture, () => Buffer.from('some other program'))
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
+      { platform: 'linux', runCommand },
+    )
+
+    await expect(service.installCli('grok', target)).rejects.toThrow('Grok CLI 装好的程序文件和官方发布的不一致')
+    expect(target.send).not.toHaveBeenCalledWith('cli:install-progress', expect.objectContaining({ state: 'success' }))
+    const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
+    expect(fs.existsSync(path.join(bin, 'grok'))).toBe(false)
+    expect(fs.existsSync(path.join(bin, 'agent'))).toBe(false)
   })
 })
 
@@ -3107,7 +4126,7 @@ describe('npm install progress reporting', () => {
     )
   })
 
-  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows', () => {
+  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows and Linux', () => {
     const old = { installed: true, version: 'v20.11.1' }
     const certificate = { reason: 'certificate' as const }
     expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: old })).toBe(true)
@@ -3120,6 +4139,9 @@ describe('npm install progress reporting', () => {
     expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: false, version: null } })).toBe(false)
     // Mac 上代下的那份排在客户自己的后面，换了也用不上。
     expect(shouldReplaceNodeForCertificates({ platform: 'darwin', request: certificate, node: old })).toBe(false)
+    // Linux 上代下的那份在软件里排在最前，装上就是它（linux-platform.ts）。
+    expect(shouldReplaceNodeForCertificates({ platform: 'linux', request: certificate, node: { installed: true, version: 'v22.10.0' } })).toBe(true)
+    expect(shouldReplaceNodeForCertificates({ platform: 'linux', request: {}, node: old })).toBe(false)
   })
 
   function outdatedNodeService(directory: string, versions: string[], installNodeRuntime: () => Promise<NodeRuntimeInstallResult>) {
@@ -3257,6 +4279,48 @@ describe('npm install progress reporting', () => {
 
     expect(describeNpmCommandFailure(failure)).toContain('下载超时')
     expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
+  })
+
+  it('never calls a stuck uninstall a download timeout, but keeps the code npm printed', () => {
+    // 卸载不下载东西。借安装那句「下载超时」的话，渲染层会叫客户换源重试（第三十三批 C）。
+    const timedOut = new CommandRunnerError('命令执行时间过长，已中止：node.exe', {
+      code: 'TIMED_OUT',
+      executable: 'node.exe',
+      argv: [],
+      exitCode: null,
+      signal: 'SIGTERM',
+      stdout: '',
+      stderr: '',
+      outputBytes: 0,
+      maxOutputBytes: 0,
+      durationMs: 2 * 60_000,
+    })
+    expect(describeNpmUninstallFailure(timedOut)).toBe('命令执行时间过长，已中止：node.exe')
+    expect(classifyOperationError(`Codex CLI 卸载失败：${describeNpmUninstallFailure(timedOut)}`)).toBe('unknown')
+
+    const locked = new CommandRunnerError('命令执行失败（退出码 1）：node.exe', {
+      code: 'EXIT_NON_ZERO',
+      executable: 'node.exe',
+      argv: [],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: [
+        'npm error code EPERM',
+        'npm error syscall rename',
+        'npm error path C:\\Users\\a\\AppData\\Local\\XingMangAI\\Cli\\npm\\node_modules\\@openai\\codex',
+        'npm error errno -4048',
+        "npm error Error: EPERM: operation not permitted, rename 'C:\\npm\\@openai\\codex' -> 'C:\\npm\\@openai\\.codex-x'",
+        'npm error A complete log of this run can be found in: C:\\Users\\a\\AppData\\Local\\npm-cache\\_logs\\debug-0.log',
+      ].join('\n'),
+      outputBytes: 0,
+      maxOutputBytes: 0,
+      durationMs: 0,
+    })
+    expect(describeNpmUninstallFailure(locked)).toBe(
+      "命令执行失败（退出码 1）：node.exe（EPERM；Error: EPERM: operation not permitted, rename 'C:\\npm\\@openai\\codex' -> 'C:\\npm\\@openai\\.codex-x'）",
+    )
+    expect(describeNpmUninstallFailure(new Error('plain'))).toBe('plain')
   })
 
   it('tells the user why the official source cannot be replaced by a mirror', () => {
@@ -3899,11 +4963,15 @@ describe('Darwin Codex Desktop integration', () => {
     expect(fs.existsSync(fixture.executionMarker)).toBe(false)
   })
 
-  it('rejects managed install operations with actionable macOS guidance', async () => {
-    const { service } = await createDarwinService()
+  it('sends a macOS Codex desktop install to the Mac installer, which leaves an app that is already there alone', async () => {
+    // 以前 Mac 上这一步直接拒绝（「由 Codex App 管理」）；现在走 Mac 安装器，认得出的那份不重装。
+    const { service, execute } = await createDarwinService()
     const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(service.installCodexDesktop(target)).rejects.toThrow('由 Codex App 管理')
+    await expect(service.installCodexDesktop(target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.727.51351', installedVersion: '26.727.51351' })
+    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('rejects managed uninstall operations with actionable macOS guidance', async () => {
@@ -4266,6 +5334,22 @@ describe('CLI latest version state', () => {
     expect(parseGrokLocalVersion('<html>')).toBeNull()
   })
 
+  it.runIf(process.platform === 'linux')('reads the Linux Grok version from the link npm postinstall made', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
+    temporaryDirectories.push(home)
+    const bin = path.join(home, '.grok', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'grok-1.0.44'), 'test-binary', { mode: 0o755 })
+    fs.symlinkSync('grok-1.0.44', path.join(bin, 'grok'))
+    // A stale file from an earlier official install must not win over the link.
+    fs.writeFileSync(path.join(home, '.grok', 'version.json'), '{"version":"0.2.112"}\n', 'utf8')
+
+    await expect(readGrokLocalVersionForExecutable(path.join(bin, 'grok'), {
+      platform: 'linux',
+      homeDirectory: home,
+    })).resolves.toBe('1.0.44')
+  })
+
   it('prefers Grok metadata beside the executable over stale root metadata', async () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
     temporaryDirectories.push(home)
@@ -4437,7 +5521,18 @@ describe('CLI latest version state', () => {
   it('selects the Grok installer appropriate to each platform', () => {
     expect(grokInstallStrategyFor('win32')).toBe('windows-native')
     expect(grokInstallStrategyFor('darwin')).toBe('darwin-official-npm')
-    expect(grokInstallStrategyFor('linux')).toBe('external')
+    expect(grokInstallStrategyFor('linux')).toBe('linux-official-npm')
+    expect(grokInstallStrategyFor('freebsd')).toBe('external')
+  })
+
+  it('asks npm for the newest Grok only on Linux, where Grok is installed from npm', () => {
+    expect(cliLatestVersionSource('grok', 'linux')).toBe('npm')
+    expect(cliLatestVersionSource('grok', 'win32')).toBe('official-manifest')
+    expect(cliLatestVersionSource('grok', 'darwin')).toBe('official-manifest')
+    // Callers that do not say which platform keep the old answer.
+    expect(cliLatestVersionSource('grok')).toBe('official-manifest')
+    expect(cliLatestVersionSource('codex', 'win32')).toBe('npm')
+    expect(cliLatestVersionSource('gemini', 'linux')).toBe('npm')
   })
 
   it('names where a first install would land, mirroring the choices installCli makes', () => {
@@ -4488,6 +5583,13 @@ describe('CLI latest version state', () => {
       managedNpmPrefix: null,
       managedNativeRoot: null,
     })).toBe(path.join('/usr/local/lib/node_modules', '@xai-official', 'grok'))
+    // Linux 上 npm 的 postinstall 把程序放进 ~/.grok/bin，不在 node_modules 里。
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'linux',
+      npmGlobalRoot: '/usr/lib/node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: '/home/tester/.grok/bin',
+    })).toBe('/home/tester/.grok/bin')
   })
 
   it('returns null rather than a guessed path when nothing resolves', () => {
@@ -4505,7 +5607,7 @@ describe('CLI latest version state', () => {
     })).toBeNull()
   })
 
-  it('allows Grok npm maintenance only after Darwin integrity verification', () => {
+  it('allows Grok npm maintenance only after Darwin or Linux integrity verification', () => {
     expect(buildCliMaintenancePlan(
       'grok',
       '/Users/tester/.local/bin/npm',
@@ -4553,13 +5655,36 @@ describe('CLI latest version state', () => {
       'win32',
     )).toThrow('已签名二进制')
 
+    // Linux 和 macOS 一样跑 npm ci，同样要先过生命周期脚本的完整性对账（Linux 版拆分 ③）。
+    expect(buildCliMaintenancePlan(
+      'grok',
+      '/home/tester/.local/share/XingMangAI/Runtime/node/bin/npm',
+      null,
+      '1.0.44',
+      true,
+      'linux',
+    )).toEqual({
+      kind: 'npm-install',
+      executable: '/home/tester/.local/share/XingMangAI/Runtime/node/bin/npm',
+      argv: ['ci', '--omit=dev'],
+      windowsPackageManager: 'npm',
+    })
+    expect(() => buildCliMaintenancePlan(
+      'grok',
+      '/usr/bin/npm',
+      null,
+      '1.0.44',
+      false,
+      'linux',
+    )).toThrow('完整性校验')
+
     expect(() => buildCliMaintenancePlan(
       'grok',
       '/usr/bin/npm',
       null,
       '0.2.118',
       true,
-      'linux',
+      'freebsd',
     )).toThrow('不支持')
   })
 
@@ -4666,6 +5791,9 @@ describe('latest version probe budget when the machine looks offline', () => {
       error: latestVersionUncheckedMessage,
     })
     expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'win32').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'darwin').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'linux').source).toBe('npm')
     expect(buildUncheckedLatestVersion('gemini', false, '2026-09-22T00:00:00.000Z')).toEqual({
       status: 'skipped',
       version: null,
@@ -5114,6 +6242,225 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
   })
 })
 
+describe('opening a CLI on Linux', () => {
+  function linuxLaunchService(userHome: string, launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+    return createService({
+      platform: 'linux',
+      ...(runtimeLog ? { runtimeLog } : {}),
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-02T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: '/opt/xm/npm/bin/claude',
+        installDirectory: '/opt/xm/npm/lib/node_modules/@anthropic-ai/claude-code',
+        packageRoot: '/opt/xm/npm/lib/node_modules/@anthropic-ai/claude-code',
+        npmPrefix: '/opt/xm/npm',
+        packageVersion: '2.1.283',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({ executable: '/opt/xm/npm/bin/claude', argv: [] })),
+      findExecutable: vi.fn(async () => null),
+      probeLoopbackProxy: async () => true,
+      launchLinuxTerminal,
+    })
+  }
+
+  function project(prefix: string): { userHome: string; workspace: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    return { userHome, workspace }
+  }
+
+  it.runIf(process.platform !== 'win32')('hands the resolved tool, the folder and a titled window to the Linux launcher', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const log = vi.fn()
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)).resolves.toBeDefined()
+
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+    const plan = launchLinuxTerminal.mock.calls[0]?.[0]
+    expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
+    expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
+    expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  it.runIf(process.platform !== 'win32')('says which tool did not open, and logs the terminals it tried with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-fail-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.notStarted, [
+        { terminal: 'kitty', executable: path.join(userHome, '.local', 'bin', 'kitty'), outcome: 'exited', detail: '1' },
+      ])
+    })
+    const log = vi.fn()
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace))
+      .rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.notStarted}`)
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 3)).toEqual(['warn', 'system', 'terminal.failed'])
+    expect(JSON.stringify(entry?.[4])).toContain('kitty')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
+  })
+
+  it.runIf(process.platform !== 'win32')('keeps the system error behind an unusable temporary folder in the log only, with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-tmp-')
+    const reason = `EACCES: permission denied, mkdtemp '${path.join(userHome, '.cache', 'xingmang-terminal-1-')}XXXXXX'`
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.noLauncherDirectory, [], reason)
+    })
+    const log = vi.fn()
+
+    const failure = linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)
+    await expect(failure).rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.noLauncherDirectory}`)
+    await expect(failure).rejects.not.toThrow('EACCES')
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(JSON.stringify(entry?.[4])).toContain('EACCES')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
+  })
+})
+
+describe('opening a CLI on macOS', () => {
+  it.runIf(process.platform !== 'win32')('keeps the reason a tool did not open as the cause, so the log records it', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-open-fail-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const refused = new CommandRunnerError('命令执行失败（退出码 1）：codesign', {
+      code: 'EXIT_NON_ZERO',
+      executable: '/usr/bin/codesign',
+      argv: ['--verify', '--strict', path.join(userHome, '.local', 'bin', 'claude')],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: 'code object is not signed at all',
+      outputBytes: 32,
+      maxOutputBytes: 1024,
+      durationMs: 3,
+    })
+    const service = createService({
+      platform: 'darwin',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-06T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: path.join(userHome, '.local', 'bin', 'claude'),
+        installDirectory: path.join(userHome, '.local', 'share', 'claude'),
+        packageRoot: path.join(userHome, '.local', 'share', 'claude'),
+        npmPrefix: null,
+        packageVersion: '2.1.283',
+        source: 'native' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => { throw refused }),
+      findExecutable: vi.fn(async () => null),
+    })
+
+    const failure: unknown = await service.launchProvider('claude', workspace).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error && failure.message).toBe('未能打开 Claude Code：命令执行失败（退出码 1）：codesign')
+    expect(failure instanceof Error && failure.cause).toBe(refused)
+  })
+})
+
+describe('opening a CLI on Windows', () => {
+  function windowsLaunchService(userHome: string, launchCliPowerShell: NonNullable<SystemServiceOptions['launchCliPowerShell']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+    return createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      ...(runtimeLog ? { runtimeLog } : {}),
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-04T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: 'C:\\Program Files\\nodejs\\claude.cmd',
+        installDirectory: 'C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code',
+        packageRoot: 'C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code',
+        npmPrefix: 'C:\\Program Files\\nodejs',
+        packageVersion: '2.1.283',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({
+        executable: 'C:\\Program Files\\nodejs\\node.exe',
+        argv: ['C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\cli.js'],
+      })),
+      findExecutable: vi.fn(async () => null),
+      probeLoopbackProxy: async () => true,
+      launchCliPowerShell,
+    })
+  }
+
+  it('says why the tool did not open, and logs what PowerShell reported with the home folder hidden', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-windows-open-fail-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const cause = `Cannot perform operation because the wildcard path ${path.join(workspace, '作业[1]')} did not resolve to a file.`
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => {
+      throw new WindowsCliLaunchError(`Windows 无法启动 PowerShell：${cause}`, {
+        stderr: cause,
+        message: `Command failed: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [REDACTED]\n${cause}`,
+        code: 1,
+        signal: null,
+        killed: false,
+      })
+    })
+    const log = vi.fn()
+
+    const failure = windowsLaunchService(userHome, launchCliPowerShell, { log }).launchProvider('claude', workspace)
+    await expect(failure).rejects.toThrow(`未能打开 Claude Code：Windows 无法启动 PowerShell：${cause}`)
+    await expect(failure).rejects.not.toThrow('Command failed')
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    expect(launchCliPowerShell.mock.calls[0]?.[0]).toMatchObject({ workspace, title: 'Claude Code · 星芒AI' })
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 4)).toEqual(['warn', 'system', 'terminal.failed', 'Claude Code 的命令窗口没能打开'])
+    expect(entry?.[4]).toMatchObject({ provider: 'claude', code: 1, signal: null, killed: false })
+    for (const field of ['stderr', 'message']) {
+      expect(entry?.[4][field]).toContain('did not resolve to a file')
+      expect(entry?.[4][field]).not.toContain(userHome)
+    }
+  })
+})
+
 describe('scan coalescing', () => {
   function harness() {
     let revision = 0
@@ -5294,5 +6641,99 @@ describe('CC Switch leftovers in the config summary', () => {
     expect(after.claude.ccSwitchLeftover).toBe('proxy')
     expect(after.gemini.ccSwitchLeftover).toBe('provider')
     expect(after.codex).not.toHaveProperty('ccSwitchLeftover')
+  })
+})
+
+describe('telling which Codex builds would read the model catalog', () => {
+  const desktopPackage = {
+    name: 'OpenAI.Codex',
+    version: '26.930.2377.0',
+    packageFullName: 'OpenAI.Codex_26.930.2377.0_x64__2p2nqsd0c76g0',
+    packageFamilyName: 'OpenAI.Codex_2p2nqsd0c76g0',
+    installLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.930.2377.0_x64__2p2nqsd0c76g0',
+  }
+
+  it('counts a Windows desktop app as absent only when the Appx probe confirmed it', () => {
+    expect(codexDesktopCatalogProbeFromPackage({ value: desktopPackage, error: null, source: 'current-user', confirmedAbsent: false }))
+      .toEqual({ installed: true, version: '26.930.2377.0' })
+    expect(codexDesktopCatalogProbeFromPackage({ value: null, error: null, source: null, confirmedAbsent: true }))
+      .toEqual({ installed: false, version: null })
+    expect(codexDesktopCatalogProbeFromPackage({ value: null, error: 'Get-AppxPackage 超时', source: null, confirmedAbsent: true }))
+      .toEqual({ installed: null, version: null })
+    expect(codexDesktopCatalogProbeFromPackage({ value: null, error: null, source: null, confirmedAbsent: false }))
+      .toEqual({ installed: null, version: null })
+  })
+
+  it('treats an unfinished macOS app scan as unknown rather than absent', () => {
+    expect(codexDesktopCatalogProbeFromMacosApp({ app: { path: '/Applications/Codex.app', version: '26.930.11008', running: false }, detectionFailed: false, detectionError: null }))
+      .toEqual({ installed: true, version: '26.930.11008' })
+    expect(codexDesktopCatalogProbeFromMacosApp({ app: null, detectionFailed: false, detectionError: null }))
+      .toEqual({ installed: false, version: null })
+    expect(codexDesktopCatalogProbeFromMacosApp({ app: null, detectionFailed: true, detectionError: 'codesign 超时' }))
+      .toEqual({ installed: null, version: null })
+  })
+
+  it('reuses one probe within its time window and probes again after it or once forgotten', async () => {
+    let clock = 1_000
+    let runs = 0
+    const probe = createCachedProbe(async () => ++runs, 30_000, () => clock)
+
+    expect(await Promise.all([probe.read(), probe.read()])).toEqual([1, 1])
+    clock += 29_999
+    expect(await probe.read()).toBe(1)
+    clock += 1
+    expect(await probe.read()).toBe(2)
+    probe.forget()
+    expect(await probe.read()).toBe(3)
+    // 系统时间往回拨了：不能让这一次的结论一直用到时间追回来。
+    clock -= 60_000
+    expect(await probe.read()).toBe(4)
+  })
+
+  it('stops waiting at the deadline but lets the work finish on its own, and never throws', async () => {
+    vi.useFakeTimers()
+    try {
+      let finish!: () => void
+      let finished = false
+      const work = new Promise<void>((resolve) => { finish = resolve }).then(() => { finished = true })
+      let waited = false
+      void settleWithin(work, 3_000).then(() => { waited = true })
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(waited).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(waited).toBe(true)
+      expect(finished).toBe(false)
+      finish()
+      await work
+      expect(finished).toBe(true)
+
+      await expect(settleWithin(Promise.reject(new Error('收回失败')), 3_000)).resolves.toBeUndefined()
+      await expect(settleWithin(Promise.resolve('done'), 3_000)).resolves.toBeUndefined()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('stops waiting once the signal stops but lets the work finish on its own', async () => {
+    let finish!: (value: string) => void
+    let finished = false
+    const work = new Promise<string>((resolve) => { finish = resolve }).then((value) => {
+      finished = true
+      return value
+    })
+    const stop = new AbortController()
+    const waiting = unlessStopped(() => work, stop.signal)
+    stop.abort()
+
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    expect(finished).toBe(false)
+    finish('done')
+    expect(await work).toBe('done')
+    expect(finished).toBe(true)
+
+    // 已经停了的不再起；没停的照常交回结果，或原样交回它自己的错。
+    const late = vi.fn(async () => 'late')
+    await expect(unlessStopped(late, stop.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(late).not.toHaveBeenCalled()
+    await expect(unlessStopped(async () => 'ok', new AbortController().signal)).resolves.toBe('ok')
+    await expect(unlessStopped(async () => { throw new Error('探测失败') }, new AbortController().signal)).rejects.toThrow('探测失败')
   })
 })

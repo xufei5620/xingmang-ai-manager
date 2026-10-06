@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -11,12 +11,13 @@ class FakeUpdater extends EventEmitter implements UpdateClient {
   allowDowngrade = true
   disableWebInstaller = false
   forceDevUpdateConfig = false
+  disableDifferentialDownload = false
   logger: unknown = console
   // Typed to match UpdateClient's `Promise<unknown>` return so mockImplementationOnce
   // can be swapped for any Promise-returning implementation used in the tests below,
   // not just ones resolving with `undefined`.
   checkForUpdates = vi.fn<() => Promise<unknown>>(async () => undefined)
-  downloadUpdate = vi.fn<() => Promise<unknown>>(async () => undefined)
+  downloadUpdate = vi.fn<UpdateClient['downloadUpdate']>(async () => undefined)
   quitAndInstall = vi.fn()
   isUserWithinRollout?: UpdateClient['isUserWithinRollout']
 }
@@ -1858,10 +1859,66 @@ describe('describeUnrecognizedUpdateFailure', () => {
     expect(describeUnrecognizedUpdateFailure('')).toBe('')
   })
 
+  it('does not take an English failure for Chinese because of a Chinese name in its path', () => {
+    // Windows 的中文用户名、Mac 上的「星芒AI管理工具」都在路径里。以前这几句被当成中文整句交给界面，
+    // 脱敏后客户看到的是「EPERM: operation not permitted, open '本地配置文件」（第三十批跟进项）。
+    expect(describeUnrecognizedUpdateFailure("EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\temp-XingMang-AI-Manager-0.2.15-Setup.exe'"))
+      .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
+    expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked, unlink C:\\Users\\张 三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\update.exe'))
+      .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
+    expect(describeUnrecognizedUpdateFailure("ENOENT: no such file or directory, open '/Users/张三/Library/Caches/xingmang-ai-manager-updater/pending/星芒AI管理工具-0.2.15-mac.zip'"))
+      .toBe('下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。')
+  })
+
+  it('still keeps a Chinese sentence that names a path', () => {
+    expect(describeUnrecognizedUpdateFailure("安装包 'C:\\Users\\张三\\update.exe' 校验没通过"))
+      .toBe("安装包 'C:\\Users\\张三\\update.exe' 校验没通过")
+  })
+
   it('never puts English letters on screen', () => {
     for (const source of ['ENOSPC', 'EACCES: permission denied', 'ENOENT', 'weird']) {
       expect(describeUnrecognizedUpdateFailure(source)).not.toMatch(/[A-Za-z]/)
     }
+  })
+})
+
+describe('Mac update signature rejection', () => {
+  // 10-2 一台 Mac 的反馈报告原话：装的是测试包，正式版的签名比不上它钉住的那张证书。
+  const rejection = 'Code signature at URL file:///Users/alex/Library/Caches/com.xingmang.ai.manager.ShipIt/update.LokvtZX/%E6%98%9F%E8%8A%92AI%E7%AE%A1%E7%90%86%E5%B7%A5%E5%85%B7.app/ did not pass validation: 代码未能满足指定的代码要求'
+
+  it('uses the code the renderer swaps the reinstall button on', () => {
+    // 渲染层 features/app/update-retry.test.ts 钉住同一个字面量。
+    expect(updateSignatureRejectedCode).toBe('UPDATE_SIGNATURE_REJECTED')
+  })
+
+  it('recognizes the Squirrel.Mac wording in either system language', () => {
+    expect(isMacUpdateSignatureRejection(rejection)).toBe(true)
+    expect(isMacUpdateSignatureRejection('Code signature at URL file:///x.app/ did not pass validation: code failed to satisfy specified code requirement(s)')).toBe(true)
+    expect(isMacUpdateSignatureRejection('ENOSPC: no space left on device, write')).toBe(false)
+    expect(isMacUpdateSignatureRejection('更新尚未下载并校验完成')).toBe(false)
+  })
+
+  it('tells the user to reinstall from the download page and keeps the original only in the detail', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    client.emit('error', new Error(rejection))
+    const state = service.getState()
+    expect(state).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { code: updateSignatureRejectedCode } })
+    expect(state.error?.message).toBe('新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。')
+    expect(state.error?.detail).toContain('did not pass validation')
+    service.dispose()
+  })
+
+  it('leaves the same wording alone on other platforms', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32' })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    client.emit('error', new Error(rejection))
+    expect(service.getState().error?.code).not.toBe(updateSignatureRejectedCode)
+    service.dispose()
   })
 })
 
@@ -2035,6 +2092,1147 @@ describe('download progress smoothing', () => {
   })
 })
 
+describe('stalled update downloads', () => {
+  // electron-updater 的 CancellationToken 这里只用到 cancel()；另记下取消后要做的事，好让
+  // 假下载照它的样子收场。
+  class FakeCancellation implements UpdateDownloadCancellation {
+    cancelled = false
+    private readonly handlers: Array<() => void> = []
+
+    onCancel(handler: () => void): void {
+      this.handlers.push(handler)
+    }
+
+    cancel(): void {
+      this.cancelled = true
+      for (const handler of this.handlers) handler()
+    }
+  }
+
+  const total = 100_000_000
+
+  function progress(percent: number) {
+    return { percent, bytesPerSecond: 1, transferred: total * percent / 100, total, delta: 0 }
+  }
+
+  // 下整个安装包时 electron-updater 的样子：令牌一取消，先发 update-cancelled，再以「已取消」
+  // 收场（AppUpdater.executeDownload 的 catch 就是这个顺序）；不取消就一直挂着。
+  function stalledFullDownload(client: FakeUpdater, token: UpdateDownloadCancellation | undefined): Promise<unknown> {
+    return new Promise((_resolve, reject) => {
+      if (!(token instanceof FakeCancellation)) return
+      token.onCancel(() => {
+        client.emit('update-cancelled', updateInfo())
+        reject(new Error('cancelled'))
+      })
+    })
+  }
+
+  // 不认令牌的下载（electron-updater 的增量下载就是这样），只有用例自己能让它收场。
+  function heldDownload() {
+    let resolve: () => void = () => undefined
+    let reject: (error: unknown) => void = () => undefined
+    const promise = new Promise<void>((settle, fail) => {
+      resolve = settle
+      reject = fail
+    })
+    return { promise, resolve: () => resolve(), reject: (error: unknown) => reject(error) }
+  }
+
+  function watchedService(runtime: Partial<UpdaterRuntime> = {}) {
+    const client = new FakeUpdater()
+    const tokens: FakeCancellation[] = []
+    const stalls: UpdateDownloadStall[] = []
+    const aborts: Error[] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      createDownloadCancellation: () => {
+        const token = new FakeCancellation()
+        tokens.push(token)
+        return token
+      },
+      abortDownloadRequests: (reason) => { aborts.push(reason) },
+      downloadStalled: (stall) => { stalls.push(stall) },
+      ...runtime,
+    })
+    const phases: string[] = []
+    service.subscribe((state) => phases.push(state.phase))
+    client.emit('update-available', updateInfo())
+    return { client, service, tokens, stalls, aborts, phases }
+  }
+
+  it('counts the time since the last sample as time without data', () => {
+    const samples = [{ at: 0, transferred: 0 }, { at: 4_000, transferred: 8_000_000 }]
+    expect(resolveDownloadRateAt(samples, 4_000)).toBe(2_000_000)
+    expect(resolveDownloadRateAt(samples, 8_000)).toBe(1_000_000)
+    expect(resolveDownloadRateAt(samples, 4_000 + downloadRateWindowMs)).toBeNull()
+    expect(resolveDownloadRateAt([], 1_000)).toBeNull()
+  })
+
+  it('restarts a download that stops receiving data off the proxy and as a full package', async () => {
+    vi.useFakeTimers()
+    try {
+      const order: string[] = []
+      const retryWithoutProxy = vi.fn(async () => { order.push('direct') })
+      const restoreProxy = vi.fn(async () => { order.push('restore') })
+      const { client, service, tokens, stalls, aborts, phases } = watchedService({ retryWithoutProxy, restoreProxy })
+      let differentialDisabled: boolean | undefined
+      client.downloadUpdate.mockImplementationOnce((token) => {
+        client.emit('download-progress', progress(30))
+        return stalledFullDownload(client, token)
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        order.push('request')
+        differentialDisabled = client.disableDifferentialDownload
+        client.emit('download-progress', progress(100))
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
+      expect(service.getState().phase).toBe('downloading')
+      expect(tokens[0]?.cancelled).toBe(false)
+      expect(aborts).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(tokens.map((token) => token.cancelled)).toEqual([true, false])
+      expect(aborts.map((reason) => reason.message)).toEqual(['update download stalled'])
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      expect(order).toEqual(['direct', 'request', 'restore'])
+      expect(differentialDisabled).toBe(true)
+      expect(client.disableDifferentialDownload).toBe(false)
+      expect(stalls).toEqual([{
+        retrying: true,
+        unsettled: false,
+        fullPackage: false,
+        transferEnded: false,
+        transferred: 30_000_000,
+        total,
+      }])
+      expect(phases).not.toContain('cancelled')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a timeout on the download step when the retried download stops as well', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens, stalls, phases } = watchedService({
+        retryWithoutProxy: async () => {},
+        restoreProxy: async () => {},
+      })
+      client.downloadUpdate.mockImplementation((token) => stalledFullDownload(client, token))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      expect(tokens.map((token) => token.cancelled)).toEqual([true, false])
+      // 重下的那一次多等一会儿：过了第一次的门槛还在等。
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      expect(service.getState().phase).toBe('downloading')
+      expect(tokens.map((token) => token.cancelled)).toEqual([true, false])
+
+      await vi.advanceTimersByTimeAsync(updateDownloadRetryStallMs - updateDownloadStallMs)
+      await expect(downloading).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'download',
+        progress: null,
+        error: { code: 'UPDATE_DOWNLOAD_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      expect(tokens.map((token) => token.cancelled)).toEqual([true, true])
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      expect(client.disableDifferentialDownload).toBe(false)
+      expect(stalls.map(({ retrying, unsettled, fullPackage }) => ({ retrying, unsettled, fullPackage }))).toEqual([
+        { retrying: true, unsettled: false, fullPackage: false },
+        { retrying: false, unsettled: false, fullPackage: true },
+      ])
+      expect(phases).not.toContain('cancelled')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gets the package on the retry from a network that holds it back longer than the first wait', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens, stalls } = watchedService({
+        retryWithoutProxy: async () => {},
+        restoreProxy: async () => {},
+      })
+      let finish: () => void = () => undefined
+      client.downloadUpdate.mockImplementationOnce((token) => stalledFullDownload(client, token))
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      // 公司网关、带下载查毒的代理先把整个安装包收完、查完才放行：重下的那一次过了
+      // 第一次的门槛还是一个字节也没收到，再晚一些才一下子全到。
+      await vi.advanceTimersByTimeAsync(updateDownloadRetryStallMs - 2 * updateDownloadWatchMs)
+      expect(tokens.map((token) => token.cancelled)).toEqual([true, false])
+      client.emit('download-progress', progress(100))
+      client.emit('update-downloaded', updateInfo())
+      finish()
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(stalls.map(({ retrying, fullPackage }) => ({ retrying, fullPackage }))).toEqual([
+        { retrying: true, fullPackage: false },
+      ])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives the retry after a proxy failure the same longer wait', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens, stalls } = watchedService({
+        retryWithoutProxy: async () => {},
+        restoreProxy: async () => {},
+      })
+      client.downloadUpdate.mockRejectedValueOnce(proxyConnectionError())
+      client.downloadUpdate.mockImplementationOnce((token) => stalledFullDownload(client, token))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadRetryStallMs - updateDownloadWatchMs)
+      expect(service.getState().phase).toBe('downloading')
+      expect(tokens.map((token) => token.cancelled)).toEqual([false, false])
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      await expect(downloading).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'download',
+        error: { code: 'UPDATE_DOWNLOAD_STALLED' },
+      })
+      expect(tokens.map((token) => token.cancelled)).toEqual([false, true])
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      expect(stalls.map(({ retrying, fullPackage }) => ({ retrying, fullPackage }))).toEqual([
+        { retrying: false, fullPackage: false },
+      ])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the differential download when it retries a proxy failure', async () => {
+    const { client, service, stalls } = watchedService({
+      retryWithoutProxy: async () => {},
+      restoreProxy: async () => {},
+    })
+    let differentialDisabled: boolean | undefined
+    client.downloadUpdate.mockRejectedValueOnce(proxyConnectionError())
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      differentialDisabled = client.disableDifferentialDownload
+      client.emit('update-downloaded', updateInfo())
+    })
+
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded', error: null })
+    expect(differentialDisabled).toBe(false)
+    expect(stalls).toEqual([])
+    service.dispose()
+  })
+
+  it('keeps waiting on a slow download while data keeps arriving', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens } = watchedService()
+      let finish: () => void = () => undefined
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+
+      const downloading = service.download()
+      for (let percent = 1; percent <= 9; percent += 1) {
+        await vi.advanceTimersByTimeAsync(updateDownloadStallMs - 1_000)
+        client.emit('download-progress', progress(percent))
+      }
+      expect(service.getState().phase).toBe('downloading')
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      client.emit('update-downloaded', updateInfo())
+      finish()
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      expect(client.downloadUpdate).toHaveBeenCalledOnce()
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('counts bytes the host saw as activity when electron-updater reports no progress', async () => {
+    vi.useFakeTimers()
+    try {
+      let receivedAt: number | null = null
+      const { client, service, tokens } = watchedService({ downloadReceivedAt: () => receivedAt })
+      client.downloadUpdate.mockImplementationOnce((token) => stalledFullDownload(client, token))
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      // 增量下载只剩一段要下、或者响应不带长度时，electron-updater 一次进度也不报。
+      for (let round = 0; round < 3; round += 1) {
+        await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
+        receivedAt = Date.now()
+      }
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(true)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives the steps after 100% a longer wait, then stops a download that hangs there', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens, stalls } = watchedService()
+      client.downloadUpdate.mockImplementationOnce((token) => {
+        client.emit('download-progress', progress(100))
+        return stalledFullDownload(client, token)
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      // 下完以后核对签名、改名，这些都不报进度。
+      await vi.advanceTimersByTimeAsync(updateDownloadSettleMs - updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(true)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      expect(stalls).toEqual([{
+        retrying: true,
+        unsettled: false,
+        fullPackage: false,
+        transferEnded: true,
+        transferred: total,
+        total,
+      }])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('goes back to the shorter wait when another batch reports progress after 100%', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens } = watchedService()
+      client.downloadUpdate.mockImplementationOnce((token) => {
+        client.emit('download-progress', progress(100))
+        return stalledFullDownload(client, token)
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(3 * updateDownloadStallMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      // 增量下载的下一批又从头报进度，之后停住照样 45 秒算停住。
+      client.emit('download-progress', progress(10))
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(true)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails the requests electron-updater still has open, which settles a differential download', async () => {
+    vi.useFakeTimers()
+    try {
+      const differential = heldDownload()
+      let onAbort: (reason: Error) => void = () => undefined
+      const { client, service, tokens, stalls, phases } = watchedService({
+        abortDownloadRequests: (reason) => onAbort(reason),
+      })
+      const reasons: Error[] = []
+      // electron-updater：失败的请求结束了增量下载，它改下整个安装包，又被已经取消的令牌当场结束。
+      onAbort = (reason) => {
+        reasons.push(reason)
+        client.emit('update-cancelled', updateInfo())
+        differential.reject(new Error('cancelled'))
+      }
+      client.downloadUpdate.mockImplementationOnce(() => {
+        client.emit('download-progress', progress(20))
+        return differential.promise
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(tokens[0]?.cancelled).toBe(true)
+      expect(reasons.map((reason) => reason.message)).toEqual(['update download stalled'])
+      expect(stalls).toEqual([{
+        retrying: true,
+        unsettled: false,
+        fullPackage: false,
+        transferEnded: false,
+        transferred: 20_000_000,
+        total,
+      }])
+      expect(phases).not.toContain('cancelled')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops waiting on a download that ignores the cancellation and lets it finish on its own', async () => {
+    vi.useFakeTimers()
+    try {
+      const retryWithoutProxy = vi.fn(async () => {})
+      const { client, service, tokens, stalls, aborts, phases } = watchedService({ retryWithoutProxy })
+      let finish: () => void = () => undefined
+      // 宿主没掐到它的请求、它又不认令牌时，停住以后就一直挂着。
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(0)
+      client.emit('download-progress', progress(40))
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(downloading).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'download',
+        error: { code: 'UPDATE_DOWNLOAD_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      expect(tokens[0]?.cancelled).toBe(true)
+      expect(aborts).toHaveLength(1)
+      expect(client.downloadUpdate).toHaveBeenCalledOnce()
+      expect(retryWithoutProxy).not.toHaveBeenCalled()
+      expect(stalls).toEqual([{
+        retrying: false,
+        unsettled: true,
+        fullPackage: false,
+        transferEnded: false,
+        transferred: 40_000_000,
+        total,
+      }])
+
+      // 放弃的那次后来又动了：界面停在失败上，不悄悄翻回「正在下载」。
+      client.emit('download-progress', progress(60))
+      expect(service.getState()).toMatchObject({ phase: 'error', progress: null })
+      // 它真下完了，照常落到「已下载」。
+      client.emit('update-downloaded', updateInfo())
+      finish()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
+      expect(phases).not.toContain('cancelled')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps waiting on a download it cancelled while data still arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      const download = heldDownload()
+      const { client, service, tokens, stalls } = watchedService()
+      client.downloadUpdate.mockImplementationOnce(() => download.promise)
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(0)
+      client.emit('download-progress', progress(40))
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + 1_000)
+      expect(tokens[0]?.cancelled).toBe(true)
+
+      // 掐不到它，它却又动了：接着等，不报失败。
+      for (let percent = 50; percent <= 90; percent += 10) {
+        await vi.advanceTimersByTimeAsync(4_000)
+        client.emit('download-progress', progress(percent))
+      }
+      await vi.advanceTimersByTimeAsync(updateDownloadCancelWaitMs - 1_000)
+      expect(service.getState()).toMatchObject({ phase: 'downloading', error: null, progress: { percent: 90 } })
+
+      client.emit('update-downloaded', updateInfo())
+      download.resolve()
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(client.downloadUpdate).toHaveBeenCalledOnce()
+      expect(stalls).toEqual([])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes a download that finishes while it waits on the cancellation as done', async () => {
+    vi.useFakeTimers()
+    try {
+      const download = heldDownload()
+      const { client, service, stalls } = watchedService()
+      client.downloadUpdate.mockImplementationOnce(() => download.promise)
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      client.emit('update-downloaded', updateInfo())
+      download.resolve()
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(client.downloadUpdate).toHaveBeenCalledOnce()
+      expect(stalls).toEqual([])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats the end of an abandoned download it is handed back as a stall and starts afresh', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, stalls, phases } = watchedService({
+        retryWithoutProxy: async () => {},
+        restoreProxy: async () => {},
+      })
+      let fail: (error: Error) => void = () => undefined
+      const abandoned = new Promise<unknown>((_resolve, reject) => { fail = reject })
+      client.downloadUpdate.mockReturnValueOnce(abandoned)
+      const first = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(first).resolves.toMatchObject({ phase: 'error' })
+
+      // 客户点「重新下载」：界面先检查一次再下载，electron-updater 交回的还是挂着的那一次。
+      client.emit('update-available', updateInfo())
+      client.downloadUpdate.mockReturnValueOnce(abandoned)
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+      const again = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      // 那一次终于以当初那个令牌的「已取消」收场。
+      client.emit('update-cancelled', updateInfo())
+      fail(new Error('cancelled'))
+      await expect(again).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(3)
+      expect(stalls.map(({ retrying, unsettled }) => ({ retrying, unsettled }))).toEqual([
+        { retrying: false, unsettled: true },
+        { retrying: true, unsettled: false },
+      ])
+      expect(phases).not.toContain('cancelled')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports what an abandoned download it is handed back really failed on', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, stalls } = watchedService({
+        retryWithoutProxy: async () => {},
+        restoreProxy: async () => {},
+      })
+      let fail: (error: Error) => void = () => undefined
+      const abandoned = new Promise<unknown>((_resolve, reject) => { fail = reject })
+      client.downloadUpdate.mockReturnValueOnce(abandoned)
+      const first = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(first).resolves.toMatchObject({ phase: 'error' })
+
+      client.emit('update-available', updateInfo())
+      client.downloadUpdate.mockReturnValueOnce(abandoned)
+      const again = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      // 它自己下完了，签名却对不上：照实报，不当成停住再下一遍。
+      const failure = new Error('New version 1.1.0 is not signed by the application owner')
+      client.emit('error', failure)
+      fail(failure)
+      await expect(again).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      expect(stalls.map(({ retrying, unsettled }) => ({ retrying, unsettled }))).toEqual([
+        { retrying: false, unsettled: true },
+      ])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('puts a late failure of an abandoned download on the download step', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service } = watchedService()
+      let fail: (error: Error) => void = () => undefined
+      client.downloadUpdate.mockReturnValueOnce(new Promise<unknown>((_resolve, reject) => { fail = reject }))
+      const first = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(first).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+
+      // 客户又检查了一次，放弃的那次这时才以出错收场：失败的是下载，不是检查。
+      client.emit('update-available', updateInfo())
+      const failure = new Error('sha512 checksum mismatch')
+      client.emit('error', failure)
+      fail(failure)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'download' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a check that fails while an abandoned download is still out on the check step', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service } = watchedService()
+      client.downloadUpdate.mockReturnValueOnce(new Promise<unknown>(() => undefined))
+      const first = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(first).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+
+      // 「重新下载」先检查一次，网还断着：electron-updater 先发 error，再让检查失败。界面上
+      // 不能先闪一下「下载更新失败」。
+      const offline = new Error('net::ERR_INTERNET_DISCONNECTED')
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('error', offline)
+        throw offline
+      })
+      const failedSteps: Array<string | null | undefined> = []
+      service.subscribe((state) => {
+        if (state.phase === 'error') failedSteps.push(state.failedStep)
+      })
+      await expect(service.check()).resolves.toMatchObject({ phase: 'error', failedStep: 'check' })
+      expect(failedSteps).toEqual(['check', 'check'])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still lands on cancelled when nothing was abandoned', () => {
+    const { client, service } = watchedService()
+    client.emit('update-cancelled', updateInfo())
+    expect(service.getState().phase).toBe('cancelled')
+    service.dispose()
+  })
+
+  it('starts the wait over after the machine sleeps', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens } = watchedService()
+      client.downloadUpdate.mockImplementationOnce((token) => {
+        client.emit('download-progress', progress(10))
+        return stalledFullDownload(client, token)
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(4 * updateDownloadWatchMs)
+      // 睡了一小时：醒来那一拍不算已经停了一小时。
+      vi.setSystemTime(Date.now() + 60 * 60_000)
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(true)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts the wait over after the clock is set back', async () => {
+    vi.useFakeTimers()
+    try {
+      let receivedAt: number | null = null
+      const { client, service, tokens } = watchedService({ downloadReceivedAt: () => receivedAt })
+      client.downloadUpdate.mockImplementationOnce((token) => {
+        client.emit('download-progress', progress(10))
+        return stalledFullDownload(client, token)
+      })
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(4 * updateDownloadWatchMs)
+      receivedAt = Date.now()
+      // 对时把时钟往回拨了一小时：拨之前记下的时间都比现在晚，不能让它一小时里都不算停住。
+      vi.setSystemTime(Date.now() - 60 * 60_000)
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs - updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      expect(tokens[0]?.cancelled).toBe(true)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops watching once an error ends the download', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens, stalls } = watchedService()
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        const failure = new Error('Cannot download "https://example.invalid/app.exe", status 404: Not Found')
+        client.emit('error', failure)
+        throw failure
+      })
+
+      await expect(service.download()).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadStallMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+      expect(stalls).toEqual([])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives up on a stalled download it has no way to stop', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, stalls } = watchedService({
+        createDownloadCancellation: undefined,
+        abortDownloadRequests: undefined,
+      })
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(downloading).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'download',
+        error: { code: 'UPDATE_DOWNLOAD_STALLED' },
+      })
+      expect(client.downloadUpdate).toHaveBeenCalledWith()
+      expect(stalls.map(({ retrying, unsettled }) => ({ retrying, unsettled }))).toEqual([
+        { retrying: false, unsettled: true },
+      ])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not flash the error electron-updater raises for a request the watchdog failed', async () => {
+    vi.useFakeTimers()
+    try {
+      const download = heldDownload()
+      let onAbort: (reason: Error) => void = () => undefined
+      const { client, service, stalls, phases } = watchedService({
+        createDownloadCancellation: undefined,
+        abortDownloadRequests: (reason) => onAbort(reason),
+      })
+      // 没有令牌时，electron-updater 把掐断请求的那个错误当成下载出错发出来。
+      onAbort = (reason) => {
+        client.emit('error', reason)
+        download.reject(reason)
+      }
+      client.downloadUpdate.mockImplementationOnce(() => download.promise)
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        client.emit('update-downloaded', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(phases).not.toContain('error')
+      expect(stalls.map(({ retrying, unsettled }) => ({ retrying, unsettled }))).toEqual([
+        { retrying: true, unsettled: false },
+      ])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops the speed and remaining time of a download that stopped receiving data', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(0)
+      const { client, service } = watchedService()
+      let finish: () => void = () => undefined
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(0)
+      client.emit('download-progress', progress(0))
+      for (let second = 1; second <= 4; second += 1) {
+        await vi.advanceTimersByTimeAsync(1_000)
+        client.emit('download-progress', progress(second * 2))
+      }
+      expect(service.getState().progress).toMatchObject({ averageBytesPerSecond: 2_000_000, secondsRemaining: 46 })
+
+      await vi.advanceTimersByTimeAsync(6_000)
+      expect(service.getState().progress).toMatchObject({ transferred: 8_000_000, averageBytesPerSecond: 800_000, secondsRemaining: 115 })
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloading',
+        progress: { transferred: 8_000_000, total, averageBytesPerSecond: null, secondsRemaining: null },
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      finish()
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops watching once the service is disposed', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, tokens } = watchedService()
+      client.downloadUpdate.mockImplementationOnce((token) => stalledFullDownload(client, token))
+      void service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      service.dispose()
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadStallMs)
+      expect(tokens[0]?.cancelled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('stalled update checks', () => {
+  // electron-updater 6.8.9 的 checkForUpdates（AppUpdater.js）：上一次检查没收场时再调，交回来的
+  // 是同一个 Promise；出错时先丢掉记着的那一次、发 error 事件，再让检查失败。宿主掐断请求时，
+  // 那次检查以掐断用的那个错误失败。这里的检查默认一直等不到回话。
+  function hangingCheckService(runtime: Partial<UpdaterRuntime> = {}) {
+    const client = new FakeUpdater()
+    let requests = 0
+    let inFlight: { promise: Promise<unknown>; resolve(): void; reject(error: unknown): void } | null = null
+    client.checkForUpdates.mockImplementation(() => {
+      if (inFlight) return inFlight.promise
+      requests += 1
+      let resolve: () => void = () => undefined
+      let reject: (error: unknown) => void = () => undefined
+      const promise = new Promise<void>((settle, fail) => {
+        resolve = settle
+        reject = fail
+      }).then(() => {
+        inFlight = null
+      }, (error: unknown) => {
+        inFlight = null
+        client.emit('error', error)
+        throw error
+      })
+      inFlight = { promise, resolve: () => resolve(), reject: (error) => reject(error) }
+      return promise
+    })
+    const aborts: Error[] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      abortDownloadRequests: (reason) => {
+        aborts.push(reason)
+        inFlight?.reject(reason)
+      },
+      ...runtime,
+    })
+    const errors: Array<string | undefined> = []
+    service.subscribe((state) => {
+      if (state.phase === 'error') errors.push(state.error?.code)
+    })
+    // 那头终于回话了：electron-updater 先发结果事件，再让检查收场。
+    function answer(version = '1.0.0') {
+      client.emit(version === '1.0.0' ? 'update-not-available' : 'update-available', updateInfo(version))
+      inFlight?.resolve()
+    }
+    return { client, service, aborts, errors, answer, requests: () => requests }
+  }
+
+  it('stops a check that hears nothing back and reports a timeout instead of checking forever', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = hangingCheckService()
+      const checking = f.service.check({ manual: true })
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - updateDownloadWatchMs)
+      expect(f.service.getState().phase).toBe('checking')
+      expect(f.aborts).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      await expect(checking).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'check',
+        progress: null,
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      expect(f.aborts.map((reason) => reason.message)).toEqual(['update check stalled'])
+      // electron-updater 为掐断的请求发的 error 不能先闪一下别的话。
+      expect(f.errors).toEqual(['UPDATE_CHECK_STALLED'])
+
+      // electron-updater 不再记着挂住的那一次：再查就重新发请求。
+      const again = f.service.check({ manual: true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.requests()).toBe(2)
+      f.answer()
+      await expect(again).resolves.toMatchObject({ phase: 'not-available', error: null })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps waiting on a slow check while the host still sees bytes arriving', async () => {
+    vi.useFakeTimers()
+    try {
+      let receivedAt: number | null = null
+      const f = hangingCheckService({ downloadReceivedAt: () => receivedAt })
+      const checking = f.service.check()
+      for (let elapsed = 0; elapsed < 3 * updateCheckStallMs; elapsed += 20_000) {
+        await vi.advanceTimersByTimeAsync(20_000)
+        receivedAt = Date.now()
+      }
+      expect(f.service.getState().phase).toBe('checking')
+      expect(f.aborts).toEqual([])
+
+      f.answer('1.1.0')
+      await expect(checking).resolves.toMatchObject({ phase: 'available', availableVersion: '1.1.0' })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the startup message when it stops the startup check, and the scheduled check asks again', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = hangingCheckService({ startupCheckTimeoutMs: 8_000 })
+      const startup = f.service.startup()
+      await vi.advanceTimersByTimeAsync(8_000)
+      await expect(startup).resolves.toMatchObject({ phase: 'error', error: { code: 'STARTUP_UPDATE_TIMEOUT' } })
+
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs)
+      expect(f.aborts).toHaveLength(1)
+      expect(f.service.getState()).toMatchObject({
+        phase: 'error',
+        failedStep: 'check',
+        error: {
+          code: 'STARTUP_UPDATE_TIMEOUT',
+          message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+        },
+      })
+      expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
+
+      // 「在后台接着查」：三小时那次真的重新发请求，找到了就下载。
+      f.client.downloadUpdate.mockImplementationOnce(async () => {
+        f.client.emit('update-downloaded', updateInfo('1.1.0'))
+      })
+      const scheduled = f.service.scheduledCheck()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.requests()).toBe(2)
+      f.answer('1.1.0')
+      await expect(scheduled).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails a retry that joined the hung startup check together with it, then asks afresh', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = hangingCheckService({ startupCheckTimeoutMs: 8_000 })
+      void f.service.startup()
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(f.service.getState().error?.code).toBe('STARTUP_UPDATE_TIMEOUT')
+
+      // 「必须更新」那道门里点「重试」：electron-updater 交回来的还是挂住的那一次。
+      const retry = f.service.check({ manual: true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.service.getState().phase).toBe('checking')
+      expect(f.client.checkForUpdates).toHaveBeenCalledTimes(2)
+      expect(f.requests()).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - 20_000 + updateDownloadWatchMs)
+      await expect(retry).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'check',
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      expect(f.aborts).toHaveLength(1)
+
+      const again = f.service.check({ manual: true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.requests()).toBe(2)
+      f.answer()
+      await expect(again).resolves.toMatchObject({ phase: 'not-available', error: null })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets a retry that joined the hung startup check end on the same watchdog', async () => {
+    vi.useFakeTimers()
+    try {
+      // 宿主掐不到请求时看门狗还要再等 updateDownloadCancelWaitMs。接回同一次的「重试」跟着开机那次
+      // 的看门狗一起收场，不另起一个从头再等 45 秒。
+      const f = hangingCheckService({ startupCheckTimeoutMs: 8_000, abortDownloadRequests: undefined })
+      void f.service.startup()
+      await vi.advanceTimersByTimeAsync(20_000)
+      let settled = false
+      const retry = f.service.check({ manual: true })
+      void retry.then(() => { settled = true })
+
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - 20_000 + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      expect(settled).toBe(true)
+      await expect(retry).resolves.toMatchObject({
+        phase: 'error',
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the stopped startup check silent while a later check is still on its way', async () => {
+    vi.useFakeTimers()
+    try {
+      let statusReads = 0
+      let releaseStatus: () => void = () => undefined
+      const f = hangingCheckService({
+        startupCheckTimeoutMs: 8_000,
+        // 开机那次照常读完服务状态文件；后来那次读的时候网络还卡着。
+        refreshServiceStatus: () => {
+          statusReads += 1
+          if (statusReads === 1) return Promise.resolve(null)
+          return new Promise<null>((resolve) => { releaseStatus = () => resolve(null) })
+        },
+      })
+      void f.service.startup()
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - 3_000)
+      expect(f.service.getState().error?.code).toBe('STARTUP_UPDATE_TIMEOUT')
+
+      const retry = f.service.check({ manual: true })
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      // 开机那次在这时被掐断：后来那次还没发请求，等它自己的结果，不先闪一句「检查更新失败」。
+      expect(f.aborts).toHaveLength(1)
+      expect(f.service.getState().phase).toBe('checking')
+      expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
+
+      releaseStatus()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.requests()).toBe(2)
+      f.answer()
+      await expect(retry).resolves.toMatchObject({ phase: 'not-available', error: null })
+      expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('watches the check it retries off the proxy as well', async () => {
+    vi.useFakeTimers()
+    try {
+      const order: string[] = []
+      const f = hangingCheckService({
+        retryWithoutProxy: async () => { order.push('direct') },
+        restoreProxy: async () => { order.push('restore') },
+      })
+      f.client.checkForUpdates.mockImplementationOnce(async () => { throw proxyConnectionError() })
+      const checking = f.service.check()
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs + updateDownloadWatchMs)
+      await expect(checking).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'check',
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      expect(order).toEqual(['direct', 'restore'])
+      expect(f.aborts).toHaveLength(1)
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives up on a stalled check it has no way to stop', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = hangingCheckService({ abortDownloadRequests: undefined })
+      const checking = f.service.check()
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs + updateDownloadWatchMs)
+      expect(f.service.getState().phase).toBe('checking')
+
+      await vi.advanceTimersByTimeAsync(updateDownloadCancelWaitMs)
+      await expect(checking).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'check',
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes the answer of a check that finishes just as it is stopped', async () => {
+    vi.useFakeTimers()
+    try {
+      let onAbort: () => void = () => undefined
+      const f = hangingCheckService({ abortDownloadRequests: () => onAbort() })
+      onAbort = () => f.answer('1.1.0')
+      const checking = f.service.check()
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs + updateDownloadWatchMs)
+      await expect(checking).resolves.toMatchObject({ phase: 'available', availableVersion: '1.1.0', error: null })
+      expect(f.errors).toEqual([])
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts the wait over after the machine sleeps', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = hangingCheckService()
+      void f.service.check()
+      await vi.advanceTimersByTimeAsync(4 * updateDownloadWatchMs)
+      // 睡了一小时：醒来那一拍不算已经挂了一小时。
+      vi.setSystemTime(Date.now() + 60 * 60_000)
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs - updateDownloadWatchMs)
+      expect(f.aborts).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(2 * updateDownloadWatchMs)
+      expect(f.aborts).toHaveLength(1)
+      expect(f.service.getState().error?.code).toBe('UPDATE_CHECK_STALLED')
+      f.service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops watching a check once the service is disposed', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = hangingCheckService()
+      void f.service.check()
+      await vi.advanceTimersByTimeAsync(updateDownloadWatchMs)
+      f.service.dispose()
+      await vi.advanceTimersByTimeAsync(2 * updateCheckStallMs)
+      expect(f.aborts).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('launch install notice', () => {
   const notice = { version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 }
 
@@ -2079,5 +3277,222 @@ describe('launch install notice', () => {
     client.emit('checking-for-update')
     expect(service.getState().launchInstallNotice).toBeNull()
     service.dispose()
+  })
+})
+
+describe('system installer channel (Linux .deb)', () => {
+  const debFile = '/home/tester/.cache/xingmang-ai-manager-updater/pending/XingMang-AI-Manager-1.1.0-linux-amd64.deb'
+  const debInfo = (version = '1.1.0') => ({
+    ...updateInfo(version),
+    files: [{ url: `XingMang-AI-Manager-${version}-linux-amd64.deb`, sha512: 'deb-digest', size: 42 }],
+    downloadedFile: debFile,
+  })
+  const linuxRuntime = (overrides: Record<string, unknown> = {}) => ({
+    currentVersion: '1.0.0',
+    isPackaged: true,
+    platform: 'linux' as NodeJS.Platform,
+    installMethod: 'system-installer' as const,
+    verifyPackageDigest: vi.fn(async () => true),
+    ...overrides,
+  })
+
+  it('keeps the Windows and macOS snapshot free of the install method', () => {
+    const service = createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true })
+    expect(Object.keys(service.getState())).not.toContain('installMethod')
+    service.dispose()
+  })
+
+  it('disables an install electron-updater cannot update instead of checking forever', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'linux', installMethod: 'manual' })
+    expect(service.getState()).toMatchObject({ phase: 'disabled', installMethod: 'manual', development: false })
+    await expect(service.startup()).resolves.toMatchObject({ phase: 'disabled' })
+    await expect(service.check()).rejects.toThrow()
+    expect(client.checkForUpdates).not.toHaveBeenCalled()
+    service.setServiceStatus({ maintenance: { message: '维护中' }, minimumVersion: '9.9.9' })
+    expect(service.getState()).toMatchObject({ requiredVersion: null, serviceMaintenance: { message: '维护中' } })
+    service.dispose()
+  })
+
+  it('leaves checking when electron-updater resolves null without a single event', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => null)
+    const service = createUpdaterService(client, linuxRuntime())
+    await service.check()
+    expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'check', error: { code: 'UPDATE_INACTIVE' } })
+    // The next check is not swallowed by a stuck 'checking' phase.
+    await service.check()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('gates a Linux machine only once an install that satisfies the minimum is on offer', () => {
+    const gate = (availableVersion: string | null, rollback = false, installMethod: 'system-installer' | null = 'system-installer') =>
+      resolveGatedRequiredVersion({ minimumRequired: '1.2.0', installMethod, availableVersion, rollback })
+    expect(gate(null)).toBeNull()
+    expect(gate('1.1.0')).toBeNull()
+    expect(gate('1.2.0')).toBe('1.2.0')
+    expect(gate('1.3.0')).toBe('1.2.0')
+    expect(gate('1.3.0', true)).toBeNull()
+    expect(gate('nightly')).toBeNull()
+    // Windows and macOS keep gating on the minimum alone.
+    expect(gate(null, false, null)).toBe('1.2.0')
+    expect(resolveGatedRequiredVersion({ minimumRequired: null, installMethod: 'system-installer', availableVersion: '1.3.0', rollback: false })).toBeNull()
+  })
+
+  it('does not lock Linux customers out while the feed has no Linux package', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => {
+      const error = Object.assign(new Error('Cannot find latest-linux.yml in the latest release artifacts'), { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })
+      client.emit('error', error)
+      throw error
+    })
+    const service = createUpdaterService(client, linuxRuntime())
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    await vi.waitFor(() => expect(client.checkForUpdates).toHaveBeenCalled())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().requiredVersion).toBeNull()
+
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', debInfo('1.2.0'))
+    })
+    await service.check()
+    expect(service.getState()).toMatchObject({ phase: 'available', availableVersion: '1.2.0', requiredVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  it('keeps the Windows gate up even before any package is offered', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(() => new Promise(() => undefined))
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32' })
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    expect(service.getState()).toMatchObject({ phase: 'checking', requiredVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  it('still lets a Linux machine below the minimum past a staged rollout before its gate is up', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50
+    const status = { maintenance: null, rollout: { version: '1.2.0', percent: 0 }, minimumVersion: '1.2.0' }
+    const service = createUpdaterService(client, linuxRuntime({ refreshServiceStatus: async () => status }))
+    const offered: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      offered.push(await client.isUserWithinRollout!(updateInfo('1.2.0')))
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    await service.check()
+    expect(offered).toEqual([true])
+    expect(service.getState().requiredVersion).toBeNull()
+    service.dispose()
+  })
+
+  it('hands the verified package to the system installer, then quits, and never runs electron-updater install', async () => {
+    const client = new FakeUpdater()
+    const openSystemInstaller = vi.fn(async (_packagePath: string) => undefined)
+    const quitAfterSystemInstaller = vi.fn()
+    const prepareInstallQuit = vi.fn(async () => undefined)
+    const runtime = linuxRuntime({ openSystemInstaller, quitAfterSystemInstaller, prepareInstallQuit })
+    const service = createUpdaterService(client, runtime)
+    client.emit('update-downloaded', debInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    expect(runtime.verifyPackageDigest).toHaveBeenCalledWith(debFile, 'deb-digest')
+
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(quitAfterSystemInstaller).toHaveBeenCalledOnce())
+    expect(prepareInstallQuit).toHaveBeenCalledOnce()
+    expect(openSystemInstaller).toHaveBeenCalledWith(debFile)
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(client.autoInstallOnAppQuit).toBe(false)
+    service.dispose()
+  })
+
+  it('opens the installer before returning when the host is already quitting', () => {
+    const client = new FakeUpdater()
+    const openSystemInstaller = vi.fn(() => new Promise<void>(() => undefined))
+    const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, prepareInstallQuit: () => undefined }))
+    client.emit('update-downloaded', debInfo())
+    return vi.waitFor(() => expect(service.getState().phase).toBe('downloaded')).then(() => {
+      service.install()
+      expect(openSystemInstaller).toHaveBeenCalledOnce()
+      service.dispose()
+    })
+  })
+
+  it('stays open and keeps the package for a retry when the installer cannot be opened', async () => {
+    const client = new FakeUpdater()
+    const quitAfterSystemInstaller = vi.fn()
+    const installQuitAborted = vi.fn()
+    const openSystemInstaller = vi.fn(async (_packagePath: string): Promise<void> => {
+      throw Object.assign(new Error('没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。'), { code: 'UPDATE_SYSTEM_INSTALLER_FAILED' })
+    })
+    const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, quitAfterSystemInstaller, installQuitAborted, prepareInstallQuit: async () => undefined }))
+    client.emit('update-downloaded', debInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    service.install()
+    await vi.waitFor(() => expect(service.getState().failedStep).toBe('install'))
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      error: { code: 'UPDATE_SYSTEM_INSTALLER_FAILED', message: '没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。' },
+    })
+    expect(installQuitAborted).toHaveBeenCalledOnce()
+    expect(quitAfterSystemInstaller).not.toHaveBeenCalled()
+
+    openSystemInstaller.mockImplementationOnce(async () => undefined)
+    service.install()
+    await vi.waitFor(() => expect(quitAfterSystemInstaller).toHaveBeenCalledOnce())
+    service.dispose()
+  })
+
+  it('sends a vanished package back to the download step', async () => {
+    const client = new FakeUpdater()
+    const installQuitAborted = vi.fn()
+    const openSystemInstaller = vi.fn(async () => {
+      throw Object.assign(new Error('gone'), { code: 'UPDATE_PACKAGE_PATH_MISSING' })
+    })
+    const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, installQuitAborted }))
+    client.emit('update-downloaded', debInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    service.install()
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_PACKAGE_PATH_MISSING' } })
+    expect(installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('never hands over a package that was not verified', async () => {
+    const client = new FakeUpdater()
+    const openSystemInstaller = vi.fn(async () => undefined)
+    const service = createUpdaterService(client, linuxRuntime({ verifyPackageDigest: undefined, openSystemInstaller }))
+    client.emit('update-downloaded', debInfo())
+    expect(service.getState().phase).toBe('downloaded')
+    expect(() => service.install()).toThrow()
+    expect(openSystemInstaller).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'download' })
+    service.dispose()
+  })
+
+  it('reports a quit that never happens after the installer window opened', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, linuxRuntime({
+        openSystemInstaller: async () => undefined,
+        quitAfterSystemInstaller: () => undefined,
+        installLaunchTimeoutMs: 1_000,
+      }))
+      client.emit('update-downloaded', debInfo())
+      await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+      service.install()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        failedStep: 'install',
+        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT' },
+      })
+      expect(service.getState().error?.message).toContain('安装窗口已经打开')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

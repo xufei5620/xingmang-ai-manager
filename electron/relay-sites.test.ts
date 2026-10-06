@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { providerBaseUrls, providerIds } from './catalog'
 import {
+  createRelayEndpointRoutingSnapshot,
   defaultRelaySiteId,
   privacyPolicyUrl,
   relayApiProbeBaseUrl,
   relayDirectHosts,
+  relayDirectIps,
+  relayProviderBaseUrlMatches,
+  relayProviderBaseUrls,
+  relaySiteEndpointChoices,
+  relaySiteEndpointIdForBaseUrl,
+  relaySiteForProviderBaseUrl,
   relaySiteExternalUrls,
   relaySites,
   resolveRelaySite,
@@ -183,7 +190,8 @@ describe('relay site registry', () => {
 
   it('lists every host a relay site sends account or CLI traffic to, once each', () => {
     const hosts = relayDirectHosts()
-    expect(hosts).toEqual(['xm.solov.cc', 'api.solov.cc'])
+    expect(hosts).toEqual(['xm.solov.cc', 'xm-direct.solov.cc', 'api.solov.cc'])
+    expect(relayDirectIps()).toEqual(['38.147.105.28'])
     for (const site of relaySites) {
       for (const url of [...Object.values(site.providerBaseUrls), site.accountBaseUrl, site.websiteUrl, site.keysPageUrl]) {
         if (url) expect(hosts).toContain(new URL(url).hostname)
@@ -193,6 +201,55 @@ describe('relay site registry', () => {
 
   it('skips non-https URLs when listing direct hosts', () => {
     expect(relayDirectHosts([{ ...relaySites[0], websiteUrl: 'http://plain.example.com', keysPageUrl: 'https://Keys.Example.com/keys' }]))
-      .toEqual(['xm.solov.cc', 'keys.example.com'])
+      .toEqual(['xm.solov.cc', 'keys.example.com', 'xm-direct.solov.cc'])
+  })
+
+  it('exposes only fixed choices belonging to each account site', () => {
+    expect(relaySiteEndpointChoices('solov').map((endpoint) => endpoint.id)).toEqual(['primary', 'direct'])
+    expect(relaySiteEndpointChoices('solov-api').map((endpoint) => endpoint.id)).toEqual(['primary'])
+    expect(relaySiteEndpointChoices('https://xm.solov.cc')).toEqual([])
+    expect(() => relayProviderBaseUrls('solov-api', 'direct')).toThrow('连接线路无效')
+  })
+
+  it('recognizes same-site aliases without accepting other sites or lookalike URLs', () => {
+    const direct = relayProviderBaseUrls('solov', 'direct')
+    for (const provider of providerIds) {
+      expect(relayProviderBaseUrlMatches(provider, direct[provider], providerBaseUrls[provider])).toBe(true)
+      expect(relayProviderBaseUrlMatches(provider, providerBaseUrls[provider], direct[provider])).toBe(true)
+      expect(relayProviderBaseUrlMatches(provider, relaySites[1].providerBaseUrls[provider], direct[provider])).toBe(false)
+    }
+    for (const actual of ['https://xm.solov.cc.evil.example/v1', 'https://user:secret@xm.solov.cc/v1',
+      'https://xm.solov.cc/v1?key=fixture', 'http://xm.solov.cc/v1', 'https://anything.solov.cc/v1']) {
+      expect(relayProviderBaseUrlMatches('codex', actual, providerBaseUrls.codex)).toBe(false)
+    }
+    expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', `${direct.codex}/`)).toBe('direct')
+    expect(relaySiteEndpointIdForBaseUrl('solov-api', 'codex', direct.codex)).toBeNull()
+    expect(relaySiteForProviderBaseUrl('solov', 'codex', direct.codex)?.providerBaseUrls).toEqual(direct)
+    expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', 'https://xm-direct.solov.cc/v1')).toBe('direct')
+    expect(relaySiteForProviderBaseUrl('solov', 'codex', 'https://xm-direct.solov.cc/v1')?.providerBaseUrls.codex)
+      .toBe('https://xm-direct.solov.cc/v1')
+  })
+
+  it('freezes active transport independently of pending settings and canonical site identity', () => {
+    const preferences = { solov: 'direct' as const }
+    const routing = createRelayEndpointRoutingSnapshot(preferences)
+    Object.assign(preferences, { solov: 'primary' })
+    expect(routing.activeEndpointIds).toEqual({ solov: 'direct', 'solov-api': 'primary' })
+    expect(routing.require('solov').accountBaseUrl).toBe('https://38.147.105.28:8443')
+    expect(routing.require('solov').providerBaseUrls).toEqual(relayProviderBaseUrls('solov', 'direct'))
+    expect(routing.require('solov').websiteUrl).toBe('https://xm.solov.cc')
+    expect(routing.require('solov-api').accountBaseUrl).toBe('https://api.solov.cc')
+    expect(resolveRelaySite('solov').accountBaseUrl).toBe('https://xm.solov.cc')
+    expect(Object.isFrozen(routing.require('solov').providerBaseUrls)).toBe(true)
+    expect(createRelayEndpointRoutingSnapshot().selection('solov')).toBeUndefined()
+    expect(() => routing.require('sub2api')).toThrow('未知中转站点')
+    expect(() => routing.require('https://xm-direct.solov.cc')).toThrow('未知中转站点')
+  })
+
+  it('separates literal IPs from DNS acceleration rules without changing registry choices', () => {
+    const site = { ...relaySites[0], id: 'fixture-ip', accountBaseUrl: 'https://38.147.105.28:8443',
+      providerBaseUrls: { ...providerBaseUrls, codex: 'https://38.147.105.28:8443/v1', gemini: 'https://[2001:db8::1]:8443' } }
+    expect(relayDirectHosts([site])).toEqual(['xm.solov.cc'])
+    expect(relayDirectIps([site])).toEqual(['38.147.105.28', '2001:db8::1'])
   })
 })

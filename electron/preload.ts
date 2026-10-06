@@ -23,6 +23,7 @@ const ipcInvokeChannels = {
   configureExternalTool: 'config:configure-external-tool',
   scanExternalClients: 'external-clients:scan',
   installExternalClient: 'external-clients:install',
+  cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
@@ -227,6 +228,7 @@ const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onProxyBypassEnded: 'network:proxy-bypass-ended',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }
@@ -265,6 +267,7 @@ const xingmangApi: XingmangApi = {
   configureExternalTool: (tool, options) => invoke('configureExternalTool', tool, options),
   scanExternalClients: (force) => invoke('scanExternalClients', force),
   installExternalClient: (tool) => invoke('installExternalClient', tool),
+  cancelExternalClientInstall: (tool) => invoke('cancelExternalClientInstall', tool),
   launchExternalClient: (tool) => invoke('launchExternalClient', tool),
   switchToOfficialAccount: (provider, mode) => mode === undefined
     ? invoke('switchToOfficialAccount', provider)
@@ -273,7 +276,7 @@ const xingmangApi: XingmangApi = {
   repairCliHooks: (provider) => invoke('repairCliHooks', provider),
   inspectRunningTools: (providers) => invoke('inspectRunningTools', providers),
   checkToolModels: (provider) => invoke('checkToolModels', provider),
-  fillToolTemplateDefaults: () => invoke('fillToolTemplateDefaults'),
+  fillToolTemplateDefaults: (retry) => retry === undefined ? invoke('fillToolTemplateDefaults') : invoke('fillToolTemplateDefaults', retry),
   listModels: (apiKey) => invoke('listModels', apiKey),
   listConfiguredModels: (provider) => invoke('listConfiguredModels', provider),
   chooseWorkspace: (options) => options === undefined ? invoke('chooseWorkspace') : invoke('chooseWorkspace', options),
@@ -284,7 +287,7 @@ const xingmangApi: XingmangApi = {
   installGitRuntime: () => invoke('installGitRuntime'),
   installCli: (provider, version) => invoke('installCli', provider, version),
   cancelCliInstall: (provider) => invoke('cancelCliInstall', provider),
-  uninstallCli: (provider) => invoke('uninstallCli', provider),
+  uninstallCli: (provider, options) => invoke('uninstallCli', provider, options),
   checkCliUpdate: (provider) => invoke('checkCliUpdate', provider),
   getCodexSetupStatus: () => invoke('getCodexSetupStatus'),
   installCodexDesktop: () => invoke('installCodexDesktop'),
@@ -472,6 +475,7 @@ const xingmangApi: XingmangApi = {
   onUpdateState: (listener) => subscribe('onUpdateState', listener),
   onAccountPaymentWindowTerminal: (listener) => subscribe('onAccountPaymentWindowTerminal', listener),
   onAiChatStream: (listener) => subscribe('onAiChatStream', listener),
+  onProxyBypassEnded: (listener) => subscribe('onProxyBypassEnded', listener),
 }
 
 contextBridge.exposeInMainWorld('xingmang', xingmangApi)

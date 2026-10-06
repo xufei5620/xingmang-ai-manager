@@ -9,6 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { accountScope } from '../account-context'
+import { relayProviderBaseUrlMatches, relayProviderBaseUrls } from '../../../electron/relay-sites'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -65,6 +66,8 @@ if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
 if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
+settings.relayEndpointIds = { solov: query.has('directRelayActive') ? 'direct' : 'primary', 'solov-api': 'primary' }
+settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as ExternalToolId[]).map((tool) => ({
@@ -79,6 +82,32 @@ const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop',
 const externalOwnerSite = session.siteId ?? 'solov'
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
+if (query.has('restoreDirectRoute')) {
+  settings.relayEndpointIds = { solov: 'direct', 'solov-api': 'primary' }
+  settings = { ...settings, activeRelayEndpointIds: { ...settings.relayEndpointIds } }
+  config.providers.claude = { ...config.providers.claude, baseUrl: relayProviderBaseUrls('solov', 'direct').claude,
+    actualBaseUrl: relayProviderBaseUrls('solov', 'primary').claude }
+}
+// ?routedSwitch：同主进程，地址按当前账号那个站生效的线路报，工具配置里写着的地址原样留着，
+// 对不上的就不算当前账号的。工具先连着开机那个账号生效的线路。
+function activeSiteBaseUrls() {
+  const siteId = session.siteId ?? 'solov'
+  return relayProviderBaseUrls(siteId, settings.activeRelayEndpointIds?.[siteId] ?? 'primary')
+}
+function reportRoutedConfig() {
+  const expected = activeSiteBaseUrls()
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    const current = config.providers[provider]
+    current.baseUrl = expected[provider]
+    current.matchesRelay = current.hasApiKey && Boolean(current.actualBaseUrl) && relayProviderBaseUrlMatches(provider, current.actualBaseUrl, current.baseUrl)
+  }
+}
+if (query.has('routedSwitch')) {
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    config.providers[provider] = { ...config.providers[provider], actualBaseUrl: activeSiteBaseUrls()[provider], updatedAt: '2026-09-07T00:00:00Z' }
+  }
+  reportRoutedConfig()
+}
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
   claude: ['claude-opus-4-8', 'claude-opus-5', 'fixture-model'],
@@ -134,20 +163,35 @@ if (query.has('desktopOnly')) {
 if (query.has('cliUpdate')) {
   system.clis.claude = { ...system.clis.claude, latestVersion: '2.0.0', updateAvailable: true }
 }
-// 官方安装器装的 Claude Code：维护页不给 npm「重新安装」（#481）。
+// 官方安装器装的 Claude Code：星芒卸得掉，按钮照给，点了先问再换成星芒装的（第三十一批 B）。
 if (query.has('nativeInstall')) {
   system.clis.claude = { ...system.clis.claude, installSource: 'native' }
+}
+// 官方安装器装的 Codex：星芒卸不掉，维护页不给 npm「重新安装」（#481），通知也不为它叫人回来。
+if (query.has('nativeCodex')) {
+  system.clis.codex = { ...system.clis.codex, installSource: 'native',
+    uninstall: { available: false, reason: '这份 Codex 不是本工具装的，请用它原来的方式卸载', manualCommand: null } }
+}
+if (query.has('codexUpdate')) {
+  system.clis.codex = { ...system.clis.codex, latestVersion: '2.0.0', updateAvailable: true }
 }
 // 探针抛错时主进程给的就是这个形状（`buildToolStatusFromSettled`）：装没装没有结论，
 // 版本号也没有，只有一句原因。
 if (query.has('detectionFailed')) {
+  // =eperm：探针拿到的是系统给的英文原话（安全软件拦了读目录），界面要换成中文说法（第二十六批 D）。
   system.clis.claude = { ...system.clis.claude, installed: false, version: null, path: null,
-    detectionFailed: true, detectionError: '本地探针暂时不可用' }
+    detectionFailed: true, detectionError: query.get('detectionFailed') === 'eperm'
+      ? "EPERM: operation not permitted, scandir 'C:\\Users\\fixture\\AppData\\Roaming\\npm'"
+      : '本地探针暂时不可用' }
 }
 // 缺 Git（可选环境）：首页运行环境行给中文提示 + Windows「安装 Git」按钮，装完 Claude Code
 // 的第一条命令卡下面也补一句。
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
+}
+// 缺 Python（可选环境）：首页那一行写「可选 · 未装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
+if (query.has('pythonMissing')) {
+  system.runtime.python = { ...status, installed: false, version: null, path: null }
 }
 // 运行环境自己的探针抛错：整块系统状态是读到的，只有 Node.js 这一行没有结论。
 if (query.has('runtimeDetectionFailed')) {
@@ -181,16 +225,21 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
+let cancelExternalInstall: ((error: Error) => void) | null = null
 let holdExternalScan = false
 let releaseExternalScan: () => void = () => undefined
 let holdConfigRead = false
 let releaseConfigRead: () => void = () => undefined
 let holdScan = query.has('holdFirstScan')
 let releaseScan: () => void = () => undefined
+/** ?cachedScan：开机那一轮还没跑完。同主进程，这时谁来要真结果（首页、账号 Key 同步）都接这同一轮，releaseScan 一起放行。 */
+let startupScan: Promise<void> | null = null
+/** ?launchRemembers：同主进程，打开过一次之后读配置也带着那个目录。 */
+let launchedWorkspace: string | undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
@@ -203,8 +252,12 @@ let nextResponsesHeld = false
 let releaseResponses: () => void = () => undefined
 let nextAccountSessionHeld = false
 let releaseAccountSession: () => void = () => undefined
-const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() } }
+let nextUninstallHeld = false
+let releaseUninstall: () => void = () => undefined
+let nextInstallHeld = false
+let releaseInstall: (error?: string) => void = () => undefined
+const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
@@ -232,10 +285,11 @@ const recentWorkspaceSessions = [
   // older-app 的目录已经被删掉了:卡片上这一行的「接着聊」该按不动（候选 7）。
   recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300, false),
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
-  // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页「查看记录」置灰并说明。
+  // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页照样能点开，详情里说明只有摘要、不能导出。
   recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100, true, false),
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
 ]
+// v2Test.addRecentSession 是「打开工具以后在终端里又聊了一条」：排在最前面，同主进程按时间倒序给的列表。
 function fixtureSetArchived(nativeId: string, archived: boolean) {
   const item = recentWorkspaceSessions.find((entry) => entry.nativeId === nativeId)
   if (!item) throw new Error('会话不存在。')
@@ -270,7 +324,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => ({ ...settings }),
-  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown }; return settings },
+  saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {
@@ -290,6 +344,11 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
+  // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。
+  bypassBrokenProxy: async () => {
+    if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''
+    return 'direct' as const
+  },
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}), ...(query.has('claudeDesktopRepaired') ? { claudeDesktopRepaired: true as const } : {}) }),
   relaunchApp: async () => true,
   uninstallApp: async () => ({ trashed: true, leftovers: [] }),
@@ -371,16 +430,18 @@ const methods = {
     if (options?.acceptCached && query.has('cachedScan')) {
       const cached = structuredClone(system)
       cached.clis.grok = { ...cached.clis.grok, installed: false, version: null }
-      holdScan = true
+      startupScan = new Promise<void>((resolve) => { releaseScan = () => { startupScan = null; resolve() } })
       return { ...cached, cachedAt: '2026-09-21T10:00:00.000Z' }
     }
     if (query.has('desktopEvent')) window.v2Test.emit('onCodexDesktopStatus', { status: { ...system.desktopApps.codex, appVersion: '9.9.9' } })
     const result = structuredClone(system)
-    if (holdScan) { holdScan = false; await new Promise<void>((resolve) => { releaseScan = resolve }) }
+    if (startupScan) await startupScan
+    else if (holdScan) { holdScan = false; await new Promise<void>((resolve) => { releaseScan = resolve }) }
     return result
   },
   getConfig: async () => {
     const result = structuredClone(config)
+    if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -404,12 +465,18 @@ const methods = {
   },
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
-    if (query.has('externalInstallPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
+    if (query.has('externalInstallPending')) await new Promise<void>((resolve, reject) => { releaseLaunch = resolve; cancelExternalInstall = reject })
     if (query.has('externalInstallFailure')) throw new Error('客户端安装失败，请重试')
     const current = externalStatuses.find((entry) => entry.tool === tool)!
     Object.assign(current, { installed: true, version: '2.0.0' })
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'completed', message: '安装完成', percent: 100 })
     return structuredClone(current)
+  },
+  // 同主进程：下载那一段点了就停，安装那一步拒绝并给原因（externalCancelRefused）。
+  cancelExternalClientInstall: async (tool) => {
+    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。' }
+    cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
+    return { cancelled: true, reason: null }
   },
   launchExternalClient: async (tool) => {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
@@ -479,7 +546,15 @@ const methods = {
   listBackups: async () => [],
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
-  launchCli: async () => query.has('launchRemembers') ? { rememberedWorkspace: config.workspace } : query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
+  launchCli: async (_provider, workspace) => {
+    // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（system-service.ts 的 launchProviderOperation）。
+    if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
+    if (query.has('launchRemembers')) {
+      launchedWorkspace = config.workspace
+      return { rememberedWorkspace: launchedWorkspace }
+    }
+    return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
+  },
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
@@ -504,9 +579,39 @@ const methods = {
     system.runtime.git = { ...system.runtime.git, installed: true, version: '2.55.0', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Git\\cmd\\git.exe' }
     return { installed: true as const, action: 'installed' as const, source: 'npmmirror' as const, version: '2.55.0.5', architecture: 'x64' as const, pathRefreshRequired: true }
   },
+  // Windows 上由主进程代装 Python，装完重新检测就能看到版本。
+  installPythonRuntime: async () => {
+    system.runtime.python = { ...system.runtime.python, installed: true, version: '3.13.7', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Python\\Python313\\python.exe' }
+    return { installed: true as const, action: 'installed' as const, method: 'exe' as const, source: 'python-org' as const, version: '3.13.7', architecture: 'x64' as const, pathRefreshRequired: true }
+  },
   installCli: async (provider) => {
+    // 停在半路，好看「安装中」那一行；releaseInstall 带一句话就当没装上（取消也是这样结束的）。
+    if (nextInstallHeld) {
+      nextInstallHeld = false
+      await new Promise<void>((resolve, reject) => { releaseInstall = (error) => error ? reject(new Error(error)) : resolve() })
+    }
     if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)
     system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0', latestVersion: '2.0.0', updateAvailable: false }
+  },
+  // 同主进程：取消只是递个话，那次安装自己报错结束（测试里用 releaseInstall 放行）。
+  cancelCliInstall: async () => ({ cancelled: true, reason: null }),
+  // 同主进程：卸完这一份就不在了，也不再带安装来源。
+  uninstallCli: async (provider) => {
+    if (nextUninstallHeld) {
+      nextUninstallHeld = false
+      await new Promise<void>((resolve) => { releaseUninstall = resolve })
+    }
+    const previousVersion = system.clis[provider].version
+    system.clis[provider] = { ...system.clis[provider], installed: false, version: null, path: null, installDirectory: null, installSource: undefined }
+    // 管理员模式下的第二轮：官方安装器那份已经卸掉，剩下的交给普通窗口去卸，等客户在那边卸完。
+    if (query.has('uninstallHandOff')) return { outcome: 'delegated' as const, previousVersion }
+    // 程序已经卸掉，只剩几个旧版本文件删不掉（Claude Code 还开着）。
+    if (query.has('uninstallLeftovers')) {
+      const reason = 'Claude Code 已卸载，但有 1 个旧版本文件没能删除，可能还有 Claude Code 在运行。'
+      return { outcome: 'manual-required' as const, previousVersion, error: reason,
+        manualHelp: { reason, manualCommand: 'Remove-Item -LiteralPath "C:\\Users\\Fixture\\.local\\share\\claude\\versions\\1.2.3"' } }
+    }
+    return { outcome: 'uninstalled' as const, previousVersion }
   },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
   getAccountKeys: async () => ({ keys: query.has('keyOptions') ? [
@@ -558,7 +663,10 @@ const methods = {
     ? { status: 'unavailable' as const, model: config.providers.claude.model, replacement: 'claude-opus-5-5' }
     : { status: 'skipped' as const },
   // templateFilled：开机恢复账号后给老配置补齐了新版设置，角落该说一句。
-  fillToolTemplateDefaults: async () => ({ filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] }),
+  // templateDeferred：开机那轮 Codex 开着没补成，隔一阵再要（retry）时已经关了、补上了。
+  fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')
+    ? retry ? { filled: ['codex'] as ProviderId[] } : { filled: [] as ProviderId[], pending: ['codex'] as ProviderId[] }
+    : { filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] },
   getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {
@@ -582,7 +690,10 @@ const methods = {
   },
   listModels: async () => detectedModels,
   syncManagedCliKeys: async () => {
-    const result = { ready: (['claude', 'codex', 'grok', 'gemini'] as ProviderId[]).map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [] }
+    // ?regrouped=claude：这个工具的 Key 换了分组（买了订阅、订阅到期），开机这一轮要给已连好的它换 Key。
+    const providers = ['claude', 'codex', 'grok', 'gemini'] as ProviderId[]
+    const regrouped = providers.filter((provider) => query.get('regrouped') === provider)
+    const result = { ready: providers.map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [], ...(regrouped.length ? { regrouped } : {}) }
     if (!query.has('bootstrapPending')) return result
     return new Promise<typeof result>((resolve) => { releaseBootstrap = () => resolve(result) })
   },
@@ -635,6 +746,11 @@ const methods = {
     const nextAccount = query.has('crossSite') ? account : { ...account, userId: 18, username: 'saved-user' }
     session = { authenticated: true, account: nextAccount, ...(query.has('crossSite') ? sub2ApiMetadata : {}) }
     if (query.has('savedAccount') && !query.has('readOnlyAccountMatch')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
+    if (query.has('routedSwitch')) {
+      reportRoutedConfig()
+      // 归属是按账号记的：换了账号，上一个账号写的配置主进程就认不出归谁了。
+      for (const provider of Object.values(config.providers)) if (provider.configurationOwnership === 'account') provider.configurationOwnership = 'unknown'
+    }
     return session
   },
   replyWindowClose: async () => true,

@@ -30,6 +30,12 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { canvasHostChannels, type CanvasAppearance } from './canvas-contract'
 import {
+  createLinuxRendererSandboxGate,
+  linuxRendererSandboxRefusalMessage,
+  readLinuxProcessStatus,
+  type LinuxRendererSandboxVerdict,
+} from './linux-renderer-sandbox'
+import {
   canvasSaveFileName,
   parseCanvasAssetQuery,
   parseCanvasAssetId,
@@ -156,6 +162,8 @@ export interface CanvasWindowControllerOptions {
   projectAssets?: CanvasProjectAssetManager
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
+  /** Test seam; production starts a probe renderer on Linux and answers sandboxed elsewhere. */
+  inspectRendererSandbox?: () => Promise<LinuxRendererSandboxVerdict>
 }
 
 export interface CanvasWindowController {
@@ -176,6 +184,36 @@ export interface CanvasWindowController {
 
 function senderUrlOf(event: IpcMainInvokeEvent): string {
   return event.senderFrame?.url ?? event.sender.getURL()
+}
+
+/**
+ * The canvas renderer's isolation settings, shared with the Linux sandbox probe below so
+ * the probe proves exactly the configuration the canvas runs with. No webview escape
+ * hatch, and no drag-drop navigation out of the sandboxed origin -- matches the main
+ * window's hardening exactly.
+ */
+export const canvasRendererIsolation = {
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+  webviewTag: false,
+  navigateOnDragDrop: false,
+} as const
+
+/**
+ * A hidden first-party renderer with the canvas's isolation settings and no preload,
+ * read before any third-party code is loaded into a real canvas renderer. The sandbox
+ * is a property of how this Electron process was launched, so what holds for this
+ * renderer holds for the canvas's.
+ */
+async function probeSandboxedRendererStatus(): Promise<string | null> {
+  const probe = new BrowserWindow({ show: false, width: 64, height: 64, webPreferences: { ...canvasRendererIsolation, devTools: false } })
+  try {
+    await probe.loadURL('about:blank')
+    return readLinuxProcessStatus(probe.webContents.getOSProcessId())
+  } finally {
+    probe.destroy()
+  }
 }
 
 export const canvasWindowBackgroundColor = '#0b0c10'
@@ -210,6 +248,12 @@ export function createCanvasWindowController(
     packagedBaseUrl: canvasPackagedBaseUrl,
   }
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  const inspectRendererSandbox = options.inspectRendererSandbox ?? createLinuxRendererSandboxGate({
+    platform: process.platform,
+    hasSwitch: (name) => app.commandLine.hasSwitch(name),
+    env: process.env,
+    readSandboxedRendererStatus: probeSandboxedRendererStatus,
+  })
   // The popup / navigation hooks cannot await, and a browser that fails to
   // start (no default browser, association broken) must not surface as an
   // unhandled rejection. The link itself was already checked against the
@@ -1039,6 +1083,14 @@ export function createCanvasWindowController(
 
   async function createWindow(): Promise<void> {
     assertCanvasDistPresent()
+    const sandbox = await inspectRendererSandbox()
+    if (sandbox.kind !== 'sandboxed') {
+      options.runtimeLog.log('error', 'canvas', 'sandbox.refused', '画布所需的系统沙箱没有生效，已拒绝打开', {
+        verdict: sandbox.kind,
+        reason: sandbox.reason,
+      })
+      throw new Error(linuxRendererSandboxRefusalMessage(sandbox))
+    }
     rendererUnavailable = false
     rendererReady = true
     rendererReadinessGeneration += 1
@@ -1054,14 +1106,8 @@ export function createCanvasWindowController(
       icon: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       webPreferences: {
         preload: path.join(__dirname, 'canvas-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
+        ...canvasRendererIsolation,
         devTools: !app.isPackaged,
-        // No webview escape hatch, and no drag-drop navigation out of the
-        // sandboxed origin -- matches the main window's hardening exactly.
-        webviewTag: false,
-        navigateOnDragDrop: false,
       },
     })
     canvasWindow = window

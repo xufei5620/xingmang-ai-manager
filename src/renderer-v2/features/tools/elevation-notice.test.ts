@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { elevatedInstallNotice, elevatedInstallShortNotice, storeAppLaunchNotice, storeAppLaunchShortNotice } from './elevation-notice'
+import { elevatedInstallNotice, elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 
 describe('elevatedInstallNotice', () => {
   it('warns before the UAC prompt on Windows', () => {
@@ -35,35 +35,30 @@ describe('elevatedInstallShortNotice', () => {
   })
 })
 
-describe('storeAppLaunchNotice', () => {
-  it('warns the built-in Administrator account before a store install', () => {
-    for (const notice of [storeAppLaunchNotice('builtInAdministrator'), storeAppLaunchShortNotice('builtInAdministrator')]) {
-      expect(notice).toContain('「Administrator」账户')
-      expect(notice).toContain('可能打不开')
-      expect(notice).toContain('普通账户')
-      expect(notice).toContain('Codex 命令行版')
-    }
+describe('homeNodeElevationNotice', () => {
+  it('names the step the way the home card button reads, without pointing at a button called install', () => {
+    const notice = homeNodeElevationNotice('windows', 'managed', false)
+    expect(notice).toBe('这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。')
+    expect(notice).not.toContain('点「安装」')
   })
 
-  it('names the Windows setting when the consent prompt is off', () => {
-    for (const notice of [storeAppLaunchNotice('uacDisabled'), storeAppLaunchShortNotice('uacDisabled')]) {
-      expect(notice).toContain('「用户账户控制」')
-      expect(notice).toContain('客服')
-    }
+  it('explains Node.js is prepared on demand when no command-line tool needs it yet', () => {
+    const notice = homeNodeElevationNotice('windows', 'managed', true)
+    expect(notice).toBe('Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。')
+    expect(notice).not.toContain('这一步需要')
   })
 
-  it('stays silent when nothing was detected', () => {
-    for (const block of [null, undefined]) {
-      expect(storeAppLaunchNotice(block)).toBeNull()
-      expect(storeAppLaunchShortNotice(block)).toBeNull()
-    }
+  it('keeps the maintenance page sentence as it was, because that page really has an install button', () => {
+    expect(elevatedInstallNotice('node', 'windows', 'managed')).toContain('点「安装」后')
   })
 
-  it('keeps Windows internals out and never tells the user to run as administrator', () => {
-    for (const block of ['builtInAdministrator', 'uacDisabled'] as const) {
-      for (const notice of [storeAppLaunchNotice(block), storeAppLaunchShortNotice(block)]) {
-        expect(notice).not.toMatch(/UAC|AppX|Appx|MSIX|令牌|SID|注册表|以管理员身份运行/)
-      }
+  it('stays silent wherever the long notice does', () => {
+    for (const optional of [true, false]) {
+      expect(homeNodeElevationNotice('macos', 'managed', optional)).toBeNull()
+      expect(homeNodeElevationNotice('linux', 'managed', optional)).toBeNull()
+      expect(homeNodeElevationNotice('windows', 'external', optional)).toBeNull()
+      expect(homeNodeElevationNotice(undefined, undefined, optional)).toBeNull()
+      expect(homeNodeElevationNotice('windows', 'managed', optional)).not.toContain('以管理员身份运行')
     }
   })
 })

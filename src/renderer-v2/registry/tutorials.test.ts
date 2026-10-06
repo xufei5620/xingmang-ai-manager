@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { accountTabs, macRuntimeTutorialTopic, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
-import { macKeychainTutorialTitle, tutorialTopics, updateDiskCleanupDetail, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
+import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
+import { accountTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
   const found = tutorialTopics.find((topic) => topic.id === topicId)?.steps.find((entry) => entry.action === action);
@@ -77,7 +78,7 @@ describe('tutorial wording that follows the current app', () => {
     const update = step('safety', '打开工具箱更新');
     const text = JSON.stringify(update);
     expect(update.detail).toContain('自动装上');
-    expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'startup')?.label}」`);
+    expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'about')?.label}」`);
     expect(text).toContain('「自动更新」');
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
@@ -100,4 +101,68 @@ describe('tutorial wording that follows the current app', () => {
     const homebrew = tutorialTopics.find((topic) => topic.id === macRuntimeTutorialTopic)?.steps.find((entry) => entry.where === 'Mac 终端 → 安装命令');
     expect(homebrew?.bullets?.[0]).toContain('Command + 空格');
   });
+
+  // Codex 的中文开关每次启动时才拿，只有从星芒打开的那一下拿得到；先问从哪打开，再教「检查中文界面」。
+  it('asks where Codex was opened from before sending an English desktop app to the locale check', () => {
+    const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
+    expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
+    expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
+    expect(entry?.detail).toContain('的星芒图标 →「已安装的工具」→「Codex 桌面端」');
+    expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「检查中文界面」') ?? -1);
+  });
 });
+
+describe('linux tutorials', () => {
+  const linux = tutorialTopicsFor('linux');
+  const visible = JSON.stringify(linux.map(({ keywords: _keywords, ...topic }) => topic));
+
+  it('gives Windows and macOS exactly the tutorials they had', () => {
+    expect(tutorialTopicsFor('win')).toBe(tutorialTopics);
+    expect(tutorialTopicsFor('mac')).toBe(tutorialTopics);
+    expect(updateDiskCleanupStepsFor('win')).toBe(updateDiskCleanupSteps);
+    expect(updateDiskCleanupStepsFor('mac')).toBe(updateDiskCleanupSteps);
+  });
+
+  it('drops the Codex desktop, acceleration and Mac-only chapters and keeps everything else in order', () => {
+    const ids = linux.map((topic) => topic.id);
+    const hidden = ['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic];
+    expect(ids).toEqual(tutorialTopics.map((topic) => topic.id).filter((id) => !hidden.includes(id)));
+    expect(ids[0]).toBe('start');
+    expect(linux.flatMap((topic) => topic.steps).some((entry) => entry.page === 'acceleration')).toBe(false);
+  });
+
+  it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {
+    expect(visible).not.toMatch(/Windows|Mac|桌面端|Homebrew|访达|PowerShell|开始菜单|废纸篓|游戏加速|C 盘|钥匙串/);
+    expect(visible).not.toMatch(/npm|PATH|TOML/i);
+    expect(visible.replace(/(Codex|Gemini|Grok) CLI/g, '')).not.toMatch(/CLI/);
+  });
+
+  it('walks a Linux beginner through Codex CLI in the same four steps', () => {
+    const start = linux[0];
+    expect(start.title).toBe(tutorialTopics[0].title);
+    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '装好 Codex CLI', '看到「已配好」就继续', '打开 Codex，发出第一条消息']);
+    expect(start.steps[0]).toBe(tutorialTopics[0].steps[0]);
+    expect(start.reminders).toEqual(tutorialTopics[0].reminders);
+    expect(JSON.stringify(start)).toContain('不用输开机密码');
+  });
+
+  it('describes the Linux self-update the way the update page and quit prompt do', () => {
+    const updates = linux.find((topic) => topic.id === updatesTutorialTopic);
+    const self = updates?.steps.find((entry) => entry.page === 'updates');
+    const text = JSON.stringify(self);
+    expect(text).toContain('「安装新版本」');
+    expect(text).toContain('输入开机密码');
+    expect(text).toContain('从应用菜单重新打开');
+    expect(text).toContain(linuxUpdateDiskCleanupSteps);
+    expect(text).toContain('「退回更新前的版本」');
+    expect(updates?.steps.length).toBe(tutorialTopics.find((topic) => topic.id === updatesTutorialTopic)?.steps.length);
+    expect(updateDiskCleanupStepsFor('linux')).toBe(linuxUpdateDiskCleanupSteps);
+  });
+
+  it('gives the Git command instead of the Windows button in the command-line chapter', () => {
+    const cli = JSON.stringify(linux.find((topic) => topic.id === 'cli'));
+    expect(cli).toContain(gitLinuxInstallCommand);
+    expect(cli).toContain('已经装过这个工具？');
+  });
+});
+

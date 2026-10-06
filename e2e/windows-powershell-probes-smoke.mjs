@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -38,11 +39,8 @@ const { windowsExternalClientInventoryScript } = compiled('external-client-runti
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
 const { trustedCommandEnvironment } = compiled('command-runner')
 const {
-  buildWindowsStoreAppLaunchContextScript,
   buildWindowsStoreAvailabilityScript,
-  inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
-  parseWindowsStoreAppLaunchContext,
   parseWindowsStoreAvailability,
 } = compiled('windows-store-app-launch')
 
@@ -105,6 +103,27 @@ async function runMockedCodexProcessProbe(scope) {
   return { calls, processIds: parseWindowsProcessesJson(lines.join('\n')).map((entry) => entry.processId) }
 }
 
+// Three uninstall roots holding one key each whose Get-ItemProperty fails the
+// way a malformed value makes it fail; the key's own GetValue answers with
+// `values`, a PowerShell body over $name. The current-user Claude AppX package
+// is there, so the verified result is seen to survive either way.
+function malformedUninstallKeyMocks(values) {
+  return String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem {
+  param([string]$LiteralPath)
+  $key = [pscustomobject]@{ PSPath='malformed-key'; PSChildName='nbi-nb-all-8.0.2.0' }
+  $key | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($name) ${values} }
+  $key
+}
+function Get-ItemProperty { param([string]$LiteralPath) throw [System.InvalidCastException]::new('Specified cast is not valid.') }
+function Get-Process { @() }
+function Get-AppxPackage {
+  [pscustomobject]@{ PackageFamilyName='Claude_pzs8sxrjxfjjc'; InstallLocation='C:\Program Files\WindowsApps\Claude_2.110.1.0_x64__pzs8sxrjxfjjc'; Version='2.110.1.0'; Publisher='CN="Anthropic, PBC", O="Anthropic, PBC", C=US' }
+}
+`
+}
+
 const externalClientSubjects = {
   workbuddy: 'CN=Tencent Technology (Shenzhen) Company Limited, O=Tencent Technology (Shenzhen) Company Limited, C=CN',
   opencode: 'CN="Anomaly Innovations, Inc https://anoma.ly/", O="Anomaly Innovations, Inc https://anoma.ly/", C=US',
@@ -115,14 +134,12 @@ const checks = [
     const output = await runScript(buildCodexDesktopProcessProbeScript())
     if (output.trim()) assert.doesNotThrow(() => JSON.parse(output))
   }],
-  ['Codex merged probe answers all three segments and the current account', async () => {
+  ['Codex merged probe answers all three segments', async () => {
     const output = await runScript(buildCodexDesktopCombinedProbeScript())
     const parsed = JSON.parse(output.trim())
     assert.ok(Object.prototype.hasOwnProperty.call(parsed, 'startApps'))
     assert.ok(Object.prototype.hasOwnProperty.call(parsed, 'processes'))
     assert.ok(parsed.package)
-    // 首页装之前的「这个账户打不开商店应用」提醒靠这一段读出当前用户。
-    assert.match(String(parsed.storeAppLaunch?.sid ?? ''), /^S-1-\d+(?:-\d+)+$/)
     // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错。
     const probe = parseCodexDesktopCombinedProbeJson(output)
     assert.ok(probe.packageProbe.value !== null || probe.packageProbe.confirmedAbsent === true || probe.packageProbe.error !== null)
@@ -166,6 +183,27 @@ function Get-AppxPackage {
     assert.equal(data.clients[0].tool, 'claudeDesktop')
     assert.equal(data.clients[0].version, '2.110.1.0')
     assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
+    // The mocked key cannot be read value by value either; why goes to the log, once per root.
+    assert.deepEqual(data.registryFailures.map((failure) => failure.reason), Array(3).fill('Access denied to unrelated registry item'))
+  }],
+  // An installer that writes a malformed value (an 8-byte REG_DWORD, say) makes
+  // Get-ItemProperty fail its whole key. The key is then read again for just the
+  // values the matching uses: here they read, so nothing is unreadable, and the
+  // check below has one of those values malformed too.
+  ['external client inventory reads past a value Get-ItemProperty cannot convert in an unrelated uninstall key', async () => {
+    const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' }") + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.equal(data.clients.length, 1)
+    assert.equal(data.clients[0].tool, 'claudeDesktop')
+    assert.deepEqual(data.errors, {})
+    assert.deepEqual(data.registryFailures, [])
+  }],
+  ['external client inventory still cannot tell when one of the values it reads is malformed as well', async () => {
+    const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' } elseif ($name -eq 'DisplayVersion') { [long]8 }") + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.equal(data.clients.length, 1)
+    assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
+    assert.deepEqual(data.registryFailures, Array(3).fill({ entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
   }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
@@ -181,11 +219,6 @@ function Get-AppxPackage { @() }
     assert.equal(line, `KNOWN:${known.map((entry) => entry.path).sort().join('|')}`)
   }],
 ]
-
-checks.push(['store app launch script reads the current account', async () => {
-  const context = parseWindowsStoreAppLaunchContext(await runScript(buildWindowsStoreAppLaunchContextScript()))
-  assert.match(context.userSid ?? '', /^S-1-\d+(?:-\d+)+$/)
-}])
 
 checks.push(['store availability probe answers without throwing', async () => {
   // A runner image may or may not carry the Store; the probe must still reach a
@@ -269,9 +302,20 @@ const { resolveCodexDesktopCdpPortOwners, codexDesktopCdpCommandTimeoutMs } = co
 const { externalClientSystemCommandTimeoutMs } = compiled('external-client-runtime')
 const { uninstallAccountProbeScript } = compiled('uninstall-cleanup')
 const { buildClaudeDesktopManifestInspectionScript, claudeDesktopPowerShellTimeoutMs } = compiled('claude-desktop-manifest')
+const {
+  buildClaudeDesktopPackageInspectionScript,
+  claudeDesktopPackageInspectionTimeoutMs,
+  validateClaudeDesktopPackageInspection,
+  windowsPackagePublisherId,
+} = compiled('claude-desktop-msix-installer')
 const { claudeDesktopPolicyReadScript } = compiled('claude-desktop-policy')
 const { buildReadProxyScopesScript, readWindowsProxyScopes, windowsProxyPowerShellTimeoutMs } = compiled('stale-proxy-environment')
-const { windowsSystemProxyScript, windowsSystemProxyCommandTimeoutMs } = compiled('platform/windows-system-proxy')
+const {
+  parseWindowsProxySnapshot,
+  windowsSystemProxyCommandTimeoutMs,
+  windowsSystemProxyCompiledScript,
+  windowsSystemProxyScript,
+} = compiled('platform/windows-system-proxy')
 const {
   appInstallerQueryScript,
   inspectWindowsRestartRequired,
@@ -300,10 +344,52 @@ fs.mkdirSync(path.join(scratch, 'tree', 'nested'), { recursive: true })
 const manifestPath = path.join(scratch, 'AppxManifest.xml')
 fs.writeFileSync(manifestPath, '<?xml version="1.0" encoding="utf-8"?><Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Claude" Version="1.0.0.0" ProcessorArchitecture="x64" Publisher="CN=Test"/></Package>')
 const systemProxyRequest = Buffer.from(JSON.stringify({ operation: 'owner', pid: process.pid }), 'utf8').toString('base64')
+// Read-only: the reading every acceleration start takes, WinInet included. Nothing here writes
+// the runner's proxy; windows-uninstall-smoke.yml does that.
+const systemProxyReadRequest = Buffer.from(JSON.stringify({ operation: 'inspect', pid: process.pid }), 'utf8').toString('base64')
+const claudePackagePath = path.join(scratch, 'Claude-x64.msix')
+fs.writeFileSync(claudePackagePath, storedZip('AppxManifest.xml', fs.readFileSync(manifestPath)))
 const programFilesCandidate = path.join(machinePaths.programFiles, 'Common Files')
 
 function trustedEnv(extra = {}) {
   return { ...trustedCommandEnvironment(), ...extra }
+}
+
+// An unsigned stand-in for the Claude Desktop MSIX: a zip holding only the
+// manifest, stored without compression so no zip library is needed here.
+function storedZip(name, data) {
+  let crc = 0xffffffff
+  for (const byte of data) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  crc = (crc ^ 0xffffffff) >>> 0
+  const fileName = Buffer.from(name, 'utf8')
+  const local = Buffer.alloc(30)
+  local.writeUInt32LE(0x04034b50, 0)
+  local.writeUInt16LE(20, 4)
+  local.writeUInt16LE(0x21, 12)
+  local.writeUInt32LE(crc, 14)
+  local.writeUInt32LE(data.length, 18)
+  local.writeUInt32LE(data.length, 22)
+  local.writeUInt16LE(fileName.length, 26)
+  const central = Buffer.alloc(46)
+  central.writeUInt32LE(0x02014b50, 0)
+  central.writeUInt16LE(20, 4)
+  central.writeUInt16LE(20, 6)
+  central.writeUInt16LE(0x21, 14)
+  central.writeUInt32LE(crc, 16)
+  central.writeUInt32LE(data.length, 20)
+  central.writeUInt32LE(data.length, 24)
+  central.writeUInt16LE(fileName.length, 28)
+  const centralOffset = local.length + fileName.length + data.length
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(1, 8)
+  end.writeUInt16LE(1, 10)
+  end.writeUInt32LE(central.length + fileName.length, 12)
+  end.writeUInt32LE(centralOffset, 16)
+  return Buffer.concat([local, fileName, data, central, fileName, end])
 }
 
 // [name, limit, run]; run returns a short description for the log.
@@ -316,10 +402,6 @@ const trustedProbes = [
   ['check page Codex desktop', diagnosticsCodexDesktopProbeTimeoutMs, async () => {
     const parsed = JSON.parse((await runPowerShell(['-Command', buildDiagnosticsCodexDesktopProbeScript()], trustedEnv())).trim())
     return `installed=${Boolean(parsed.AppID)}, running=${parsed.Running}`
-  }],
-  ['Codex debugging port owner', codexDesktopCdpCommandTimeoutMs, async () => {
-    const owners = await resolveCodexDesktopCdpPortOwners(1)
-    return `${owners.length} listener(s)`
   }],
   ['external client inventory', externalClientSystemCommandTimeoutMs, async () => {
     const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientInventoryScript())], trustedEnv())).trim())
@@ -341,6 +423,17 @@ const trustedProbes = [
     const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(claudeDesktopPolicyReadScript)], trustedEnv())).trim())
     return `${(parsed.machine ?? []).length + (parsed.user ?? []).length} policy value(s)`
   }],
+  ['Claude desktop package inspection', claudeDesktopPackageInspectionTimeoutMs, async () => {
+    const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(buildClaudeDesktopPackageInspectionScript(claudePackagePath))], trustedEnv())
+    const parsed = JSON.parse(output.trim())
+    assert.deepEqual(
+      [parsed.name, parsed.version, parsed.architecture, parsed.publisher, parsed.publisherCanonical, parsed.hasSignature],
+      ['Claude', '1.0.0.0', 'x64', 'CN=Test', 'CN=Test', false],
+    )
+    // Every identity field was read; the unsigned stand-in is refused for its signature alone.
+    assert.throws(() => validateClaudeDesktopPackageInspection(output, 'x64', windowsPackagePublisherId('CN=Test')), /缺少有效的 Anthropic 签名/)
+    return `signature=${parsed.signatureStatus}`
+  }],
   ['proxy settings', windowsProxyPowerShellTimeoutMs, async () => {
     const scopes = await readWindowsProxyScopes()
     return `user=${Object.keys(scopes.user).length}, machine=${Object.keys(scopes.machine).length}`
@@ -349,6 +442,12 @@ const trustedProbes = [
     const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], trustedEnv({ XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }))).trim())
     assert.match(String(parsed.startedAt), /^\d+$/)
     return 'owner found'
+  }],
+  ['system proxy reading', windowsSystemProxyCommandTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], trustedEnv({ XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }))).trim())
+    assert.match(String(parsed.owner?.startedAt), /^\d+$/)
+    // Only the flags reach the log: the proxy strings are the runner's settings, not ours.
+    return `flags=${parseWindowsProxySnapshot(parsed.snapshot).flags}`
   }],
   ['pending restart', nodeRuntimeWindowsProbeTimeoutMs, async () => {
     const status = await inspectWindowsRestartRequired()
@@ -396,6 +495,252 @@ for (const [name, limit, run] of trustedProbes) {
   }])
 }
 
+function runFile(executable, argv) {
+  return new Promise((resolve, reject) => {
+    execFile(executable, argv, { encoding: 'utf8', windowsHide: true, timeout: probeBudgetMs }, (error, stdout, stderr) => {
+      if (error) reject(new Error(`${error.message}\n${stderr}`))
+      else resolve(stdout)
+    })
+  })
+}
+
+// The malformed value of the mocked checks above, in a real uninstall key under
+// this runner's HKCU for the length of the check: an 8-byte REG_DWORD, which
+// Windows stores as written and reg import takes in the hex(4) form regedit
+// exports it in. It shows the premise holds (Get-ItemProperty fails the key) and
+// that the shipped script, run as the app runs it, reads the key all the same.
+checks.push(['external client inventory reads a real uninstall key that holds a malformed DWORD', async () => {
+  const name = `XingmangProbeSmoke${process.pid}`
+  const key = `HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${name}`
+  const registryFile = path.join(scratch, 'malformed-uninstall-key.reg')
+  const contents = ['Windows Registry Editor Version 5.00', '', `[${key}]`, '"DisplayName"="Xingmang probe smoke"', '"NoModify"=hex(4):01,00,00,00,00,00,00,00', ''].join('\r\n')
+  fs.writeFileSync(registryFile, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(contents, 'utf16le')]))
+  const reg = path.join(machinePaths.system32, 'reg.exe')
+  try {
+    // Inside the try: an import that fails halfway may still have created the key.
+    await runFile(reg, ['import', registryFile])
+    const premise = (await runEncoded(String.raw`
+$ErrorActionPreference = 'Stop'
+try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catch { 'failed: ' + $_.Exception.Message }
+`)).trim()
+    assert.match(premise, /^failed: /, `Get-ItemProperty read the malformed key, so this check no longer stands for the customer's case: ${premise}`)
+    const script = windowsExternalClientInventoryScript()
+      + `\n'SMOKE:' + @($registry | Where-Object { [string]$_.PSChildName -eq '${name}' }).Count + ':' + @($registryFailures | Where-Object { $_.entry -eq '${name}' }).Count`
+    const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
+    assert.equal(output.split(/\r?\n/).find((line) => line.startsWith('SMOKE:')), 'SMOKE:1:0', output)
+    console.log(`info malformed uninstall key: Get-ItemProperty ${premise}; the inventory read it`)
+  } finally {
+    await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete the malformed uninstall key (left behind, unless the import never created it): ${error.message}`))
+  }
+}])
+
+// The CLI terminal itself stays closed, but the step of its launch that reads
+// the folder's name runs here. The broker's Start-Process resolves
+// -WorkingDirectory as a wildcard, so a project folder such as 作业[1] used to
+// fail on every open. The broker the app builds for such a folder runs as built,
+// except that its Start-Process starts a hidden, waited-for cmd.exe in place of
+// the terminal, so the runner keeps no window; cmd records where it was started.
+// Unescaped, the same broker must still fail: that is the premise of the
+// escaping, and the failure is the one the customer's error dialog quotes, so it
+// must come back as the cause alone, in plain text that reads back as UTF-8.
+// Both shells the app may pick are tried.
+const {
+  buildCliLaunchPlan,
+  decodeWindowsPowerShellCommand,
+  describeWindowsCliLaunchError,
+  parseStartedWindowsProcessId,
+  powerShellLiteral,
+  windowsPowerShellCandidates,
+} = compiled('windows-elevation')
+const launchBrokerMarker = path.join(scratch, 'launch-broker-cwd.txt')
+
+function withLaunchedCmd(broker) {
+  const cmd = path.join(machinePaths.system32, 'cmd.exe')
+  // /u: cmd writes what `cd` prints as UTF-16, so the folder's Chinese name survives the file.
+  const argumentList = ['/d', '/u', '/c', `cd > "${launchBrokerMarker}"`].map(powerShellLiteral).join(', ')
+  const launched = / -FilePath '(?:[^']|'')*' -ArgumentList @\([^)]*\) -WorkingDirectory /
+  const shown = ' -WindowStyle Normal -PassThru;'
+  assert.ok(launched.test(broker) && broker.includes(shown), 'the broker no longer reads the way this check expects')
+  return broker
+    .replace(launched, () => ` -FilePath ${powerShellLiteral(cmd)} -ArgumentList @(${argumentList}) -WorkingDirectory `)
+    .replace(shown, () => ' -WindowStyle Hidden -Wait -PassThru;')
+}
+
+function runLaunchBroker(shell, script, cwd) {
+  return new Promise((resolve) => {
+    const child = execFile(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)], {
+      cwd, env: trustedEnv(), encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
+    child.stdin?.end()
+  })
+}
+
+checks.push(['the CLI launch broker opens a folder whose name has brackets, and reports a failure by its cause', async () => {
+  const folder = path.join(scratch, '作业[1]', 'a`[b]')
+  fs.mkdirSync(folder, { recursive: true })
+  const shells = windowsPowerShellCandidates(process.env, 'win32', machinePaths).filter((shell) => fs.existsSync(shell))
+  assert.ok(shells.length > 0)
+  for (const shell of shells) {
+    const name = path.basename(shell)
+    const broker = withLaunchedCmd(decodeWindowsPowerShellCommand(buildCliLaunchPlan({ executable: process.execPath, workspace: folder, title: 'smoke' }, shell).argv.at(-1)))
+    const shipped = / -WorkingDirectory ('(?:[^']|'')*') /.exec(broker)?.[1]
+    assert.ok(shipped && shipped !== powerShellLiteral(folder), 'the broker no longer escapes the folder')
+
+    fs.rmSync(launchBrokerMarker, { force: true })
+    const startedAt = Date.now()
+    const opened = await runLaunchBroker(shell, broker, folder)
+    const elapsed = Date.now() - startedAt
+    assert.equal(opened.error, null, `${name}: ${opened.stderr}`)
+    assert.ok(parseStartedWindowsProcessId(opened.stdout), `${name} printed no process id: ${opened.stdout}`)
+    // Both sides resolved, so a short 8.3 temp path still compares equal.
+    const recorded = fs.readFileSync(launchBrokerMarker, 'utf16le').trim()
+    assert.equal(fs.realpathSync.native(recorded).toLowerCase(), fs.realpathSync.native(folder).toLowerCase())
+
+    const unescapedBroker = broker.replace(shipped, () => powerShellLiteral(folder))
+    const unescaped = await runLaunchBroker(shell, unescapedBroker, folder)
+    assert.ok(unescaped.error, `${name} opened the folder unescaped, so escaping it no longer matches what PowerShell does`)
+    // The broker's catch wrote the cause, not PowerShell: no error view in CLIXML. A CLIXML
+    // header alone may still come first, when the host reported progress before the catch ran.
+    assert.ok(!unescaped.stderr.includes('<S S="Error">'), `${name} reported the failure itself: ${unescaped.stderr}`)
+    assert.match(unescaped.stderr, /wildcard|通配符/i, `${name}: ${unescaped.stderr}`)
+    assert.ok(unescaped.stderr.includes('作'), `${name} did not report the folder's name as UTF-8: ${unescaped.stderr}`)
+    // What the error dialog would say, given what execFileAsync hands launchCliPowerShell.
+    const dialog = describeWindowsCliLaunchError(Object.assign(unescaped.error, { stdout: unescaped.stdout, stderr: unescaped.stderr }))
+    assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
+    assert.doesNotMatch(dialog, /Command failed|EncodedCommand|CLIXML|<S /, `${name}: ${dialog}`)
+
+    // Printed only: whether this runner would garble the same cause without the switch.
+    const withoutSwitch = await runLaunchBroker(shell, unescapedBroker.slice(unescapedBroker.indexOf('Import-Module')), folder)
+    const header = unescaped.stderr.startsWith('#< CLIXML') ? 'after a CLIXML header' : 'as plain text'
+    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped the cause came back ${header} and the dialog would read ${JSON.stringify(dialog)}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
+  }
+}])
+
+// The Codex debugging port owner lookup reads the TCP table with netstat.exe
+// now, not PowerShell, so it is checked against a port whose owners are known
+// rather than an empty one. This process listens on the port, and its end
+// closes one connection first, which leaves a TIME_WAIT row with PID 0 on the
+// port, the way Codex's end of a closed request does. A second process then
+// connects out from 127.0.0.2 with the same port number, which must not count,
+// and a third listens on it over IPv6, which must. Every lookup is held to the
+// limit the app gives it.
+function listenOn(server, options) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(options, () => {
+      server.off('error', reject)
+      resolve(server.address().port)
+    })
+  })
+}
+
+function connectUntilClosed(port) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: '127.0.0.1', port })
+    socket.once('error', reject)
+    socket.once('close', resolve)
+    socket.resume()
+  })
+}
+
+// Resolves with the helper's first line, which says what it managed to set up.
+function startPortHelper(source) {
+  const child = spawn(process.execPath, ['-e', source], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
+  const ready = new Promise((resolve, reject) => {
+    let output = ''
+    const timer = setTimeout(() => reject(new Error(`port helper said nothing within 30000ms: ${output}`)), 30_000)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      output += chunk
+      if (output.includes('\n')) {
+        clearTimeout(timer)
+        resolve(output.split('\n')[0].trim())
+      }
+    })
+    child.once('error', (error) => { clearTimeout(timer); reject(error) })
+    child.once('close', (code) => { clearTimeout(timer); reject(new Error(`port helper exited with ${code} before it reported: ${output}`)) })
+  })
+  return { child, ready }
+}
+
+async function lookUpPortOwners(port, situation) {
+  const startedAt = Date.now()
+  const owners = await resolveCodexDesktopCdpPortOwners(port)
+  const elapsed = Date.now() - startedAt
+  console.log(`info Codex debugging port owner lookup, ${situation}: ${owners.length ? owners.join(', ') : 'no listener'} (${elapsed}ms of ${codexDesktopCdpCommandTimeoutMs}ms)`)
+  assert.ok(elapsed < codexDesktopCdpCommandTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopCdpCommandTimeoutMs}ms`)
+  return owners
+}
+
+checks.push(['Codex debugging port owner lookup names the real listeners inside its own limit', async () => {
+  assert.deepEqual(await lookUpPortOwners(1, 'nothing listening'), [])
+  const sockets = new Set()
+  let endNextConnection = true
+  const server = net.createServer((socket) => {
+    sockets.add(socket)
+    socket.on('error', () => {})
+    socket.once('close', () => sockets.delete(socket))
+    if (endNextConnection) {
+      endNextConnection = false
+      socket.end()
+    }
+  })
+  const helpers = []
+  try {
+    const port = await listenOn(server, { host: '127.0.0.1', port: 0 })
+    await connectUntilClosed(port)
+    assert.deepEqual(await lookUpPortOwners(port, 'this process listening'), [process.pid])
+
+    const outgoing = startPortHelper(`
+      const socket = require('node:net').connect({ host: '127.0.0.1', port: ${port}, localAddress: '127.0.0.2', localPort: ${port} })
+      socket.on('connect', () => console.log('connected'))
+      socket.on('error', (error) => console.log('unavailable ' + error.code))
+      setInterval(() => {}, 60_000)
+    `)
+    helpers.push(outgoing.child)
+    const outgoingState = await outgoing.ready
+    if (outgoingState === 'connected') {
+      assert.deepEqual(await lookUpPortOwners(port, 'another process connected out from the same port number'), [process.pid])
+    } else {
+      console.log(`info Codex debugging port owner lookup: no connection from 127.0.0.2 on this runner (${outgoingState})`)
+    }
+
+    const listener = startPortHelper(`
+      const server = require('node:net').createServer()
+      server.on('error', (error) => { console.log('unavailable ' + error.code); setInterval(() => {}, 60_000) })
+      server.listen({ host: '::1', port: ${port} }, () => console.log('listening'))
+    `)
+    helpers.push(listener.child)
+    const listenerState = await listener.ready
+    if (listenerState === 'listening') {
+      const owners = await lookUpPortOwners(port, 'another process listening over IPv6')
+      assert.deepEqual([...owners].sort((a, b) => a - b), [process.pid, listener.child.pid].sort((a, b) => a - b))
+    } else {
+      console.log(`info Codex debugging port owner lookup: no IPv6 loopback listener on this runner (${listenerState})`)
+    }
+  } finally {
+    for (const child of helpers) child.kill()
+    for (const socket of sockets) socket.destroy()
+    await new Promise((resolve) => server.close(() => resolve()))
+  }
+}])
+
+// What the app falls back to when the in-memory script fails, say on a machine
+// whose antivirus refuses it: the script 0.2.14 ran, which compiles WinInet with
+// Add-Type. Nothing on this runner refuses anything (Defender's script scanning
+// is off), so this only proves the two read the same proxy. The fallback starts
+// csc.exe in a cold process, the cost the main script dropped, so its time is
+// printed rather than held to the 15 s limit.
+checks.push(['the compiled fallback reads the system proxy exactly as the in-memory script does', async () => {
+  const env = trustedEnv({ XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest })
+  const startedAt = Date.now()
+  const fallback = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyCompiledScript)], env)).trim())
+  const elapsed = Date.now() - startedAt
+  const primary = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], env)).trim())
+  assert.deepEqual(parseWindowsProxySnapshot(fallback.snapshot), parseWindowsProxySnapshot(primary.snapshot))
+  console.log(`info system proxy reading through the compiled fallback: flags=${parseWindowsProxySnapshot(fallback.snapshot).flags} (${elapsed}ms; the app gives a call ${windowsSystemProxyCommandTimeoutMs}ms)`)
+}])
+
 // The same probes with autoloading switched off right after their imports, so
 // a forgotten module is named instead of costing the whole scan. Printed only.
 // The two ACL probes are left out: they call Microsoft.PowerShell.Security\Get-Acl
@@ -407,8 +752,11 @@ const trustedProbeScripts = [
   ['uninstall desktop account', uninstallAccountProbeScript, {}],
   ['Claude desktop manifest', buildClaudeDesktopManifestInspectionScript(manifestPath, '1.0.0.0', 'x64'), {}],
   ['Claude desktop policy', claudeDesktopPolicyReadScript, {}],
+  ['Claude desktop package inspection', buildClaudeDesktopPackageInspectionScript(claudePackagePath), {}],
   ['proxy settings', buildReadProxyScopesScript(), {}],
   ['system proxy owner lookup', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }],
+  ['system proxy reading', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }],
+  ['system proxy reading, compiled fallback', windowsSystemProxyCompiledScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyReadRequest }],
   ['pending restart', windowsRestartStatusScript, {}],
   ['App Installer package', appInstallerQueryScript, {}],
   ['Node.js installer signature', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: process.execPath }],
@@ -432,22 +780,15 @@ async function reportTrustedProbesWithoutAutoloading() {
 
 // The shipped functions, in the environment the app gives them. Under
 // trustedCommandEnvironment() command autoloading used to cost about 22 s per
-// process on this runner (#714): the account probe ran past its own 10 s limit
-// and the home screen silently lost the "this account cannot open store apps"
-// warning, and the Codex merged probe took 23~29 s of its 24 s budget, so a
-// scan on a slow machine reported Codex desktop as unreadable. Both are real
-// checks at their shipped limits; store availability only prints its timing.
-checks.push(['store app launch probe answers inside its own limit under the trusted environment', async () => {
-  const context = await inspectWindowsStoreAppLaunchContext()
-  assert.match(context.userSid ?? '', /^S-1-5-/)
-}])
-
+// process on this runner (#714): the Codex merged probe took 23~29 s of its
+// 24 s budget, so a scan on a slow machine reported Codex desktop as
+// unreadable. It is a real check at its shipped limit; store availability only
+// prints its timing.
 checks.push(['Codex merged probe answers inside its own limit under the trusted environment', async () => {
   const startedAt = Date.now()
   const output = await runPowerShell(['-Command', buildCodexDesktopCombinedProbeScript()], trustedCommandEnvironment())
   const elapsed = Date.now() - startedAt
   const parsed = JSON.parse(output.trim())
-  assert.match(String(parsed.storeAppLaunch?.sid ?? ''), /^S-1-\d+(?:-\d+)+$/)
   console.log(`info Codex merged probe under the trusted environment: package=${parsed.package?.packages?.length ? 'yes' : 'none'}, startAppsError=${parsed.startAppsError ?? 'none'}, processesError=${parsed.processesError ?? 'none'}, packageError=${parsed.packageError ?? 'none'} (${elapsed}ms)`)
   assert.ok(elapsed < codexDesktopCombinedProbeTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopCombinedProbeTimeoutMs}ms`)
 }])
@@ -471,6 +812,32 @@ async function reportUnimportedCommands() {
   }
 }
 
+// The in-memory WinInet declaration is the kind of script an antivirus may
+// refuse, and the app falls back when one does, but this runner cannot show it:
+// GitHub's Windows images switch Defender's scanning off. Printed only, so the
+// log says so outright rather than every check here passing as if it had been
+// scanned.
+async function reportDefenderOnThisRunner() {
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  $status = Get-MpComputerStatus
+  $preference = Get-MpPreference
+  [ordered]@{
+    mode = [string]$status.AMRunningMode
+    antivirus = $status.AntivirusEnabled
+    realTime = $status.RealTimeProtectionEnabled
+    behaviour = $status.BehaviorMonitorEnabled
+    scriptScanning = -not $preference.DisableScriptScanning
+    excludedPaths = @($preference.ExclusionPath | Where-Object { $_ }).Count
+    detections = @(Get-MpThreatDetection -ErrorAction SilentlyContinue).Count
+  } | ConvertTo-Json -Compress
+} catch { @{ unavailable = $_.Exception.GetType().Name } | ConvertTo-Json -Compress }
+`
+  try { console.log(`info Defender on this runner: ${(await runEncoded(script)).trim()}`) }
+  catch (error) { console.log(`info Defender on this runner: not readable (${String(error?.message ?? error).split('\n')[0]})`) }
+}
+
 async function reportTrustedEnvironmentTimings() {
   const availabilityStartedAt = Date.now()
   const available = await inspectWindowsStoreAvailability({ timeoutMs: probeBudgetMs })
@@ -492,6 +859,7 @@ for (const [name, check] of checks) {
 await reportTrustedEnvironmentTimings()
 await reportCodexSingleProbesWithoutAutoloading()
 await reportTrustedProbesWithoutAutoloading()
+await reportDefenderOnThisRunner()
 fs.rmSync(scratch, { recursive: true, force: true })
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)

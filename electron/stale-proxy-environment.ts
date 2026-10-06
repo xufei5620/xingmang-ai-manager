@@ -15,6 +15,9 @@ const execFileAsync = promisify(execFile)
  * 这里只认三个名字：Claude Code / Codex / Gemini 读 HTTPS_PROXY 与 HTTP_PROXY（按各家
  * 公开说明，推测，未逐一核实），npm 的 @npmcli/agent 读 https_proxy / http_proxy，
  * ALL_PROXY 是 curl 一系的通用写法。NO_PROXY 只会让请求少走代理，不会把人卡住，不管。
+ *
+ * macOS 上代理写在 ~/.zshrc 里，本软件看不到，由启动脚本里的几行 zsh 照这套规则现判
+ * （macos-platform.ts 的 buildMacosClosedProxyGuard，第三十四批 B）；改这里的规则时那边一起改。
  */
 export const staleProxyVariableNames = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'] as const
 

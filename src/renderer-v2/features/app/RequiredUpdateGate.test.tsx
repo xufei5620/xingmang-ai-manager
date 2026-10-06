@@ -45,6 +45,15 @@ describe('RequiredUpdateGate', () => {
     expect(html).not.toContain('required-update-download-page')
   })
 
+  it('tells Linux users the app closes and the system installer asks for the login password', () => {
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installMethod: 'system-installer' })} windows={false} actions={actions} />)
+    expect(html).toContain('data-testid="required-update-system-installer"')
+    expect(html).toContain('输入开机密码')
+    expect(html).not.toContain('中间会重启一次')
+    expect(html).not.toContain('是否允许更改')
+    expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)).not.toContain('required-update-system-installer')
+  })
+
   it('shows how much has downloaded, how fast, and how long is left under the progress bar', () => {
     const progress = { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 150 }
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloading', progress })} windows actions={actions} />)
@@ -70,6 +79,17 @@ describe('RequiredUpdateGate', () => {
     // 门里没有「查看日志」，也到不了更新页。
     expect(html).not.toContain('查看日志')
     expect(html).not.toContain('「更新」页')
+  })
+
+  it('leaves only the download page when a Mac rejected the update signature', () => {
+    const message = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message } })} windows={false} actions={actions} />)
+    expect(html).toContain(`安装更新失败。</strong>${message}`)
+    expect(html).toContain('data-testid="required-update-download-page"')
+    expect(html).not.toContain('required-update-start')
+    expect(html).not.toContain('重新安装')
+    // 原因句已经叫他点「打开下载页」，门自己那句不再说第二遍。
+    expect(html).not.toContain('试了还是不行')
   })
 
   it('tells the user the disk is full, how much to free, and offers a retry and a download-anyway', () => {

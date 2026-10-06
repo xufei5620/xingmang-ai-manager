@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { CommandRunnerError, runCommand, type CommandSpec, type CommandErrorDetails } from './command-runner'
+import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import type { ExternalClientInstallProgress } from './external-client-contract'
 import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
+import { isInstallCancelledError } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
 import * as pathIdentity from './path-identity'
 import * as safeLocalData from './safe-local-data'
@@ -47,6 +48,12 @@ function deferred<T = void>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
+/** A download that only ends when the customer presses cancel. */
+function untilAborted(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+}
 function fixture(overrides: ExternalClientRuntimeOptions = {}) {
   let inventory: { clients: Record<string, unknown>[]; errors: Record<string, string> } = { clients: [], errors: {} }
   const execute = vi.fn<typeof runCommand>(async (spec) => commandResult(spec, spec.executable === powershell ? JSON.stringify(inventory) : ''))
@@ -79,6 +86,64 @@ describe('external desktop client lifecycle', () => {
     expect(statuses[0].detectionError).toContain('部分软件安装记录')
     await expect(f.runtime.install('workbuddy')).rejects.toThrow('不能确认')
     expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
+  })
+
+  // 第四十四批 A：首页只说「部分软件安装记录无法读取」，是哪几条、为什么只进运行日志。
+  it('logs which uninstall keys could not be read, once for each distinct list', async () => {
+    const registryIncomplete = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
+    const castFailure = { entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }
+    const onRegistryIncomplete = vi.fn<NonNullable<ExternalClientRuntimeOptions['onRegistryIncomplete']>>()
+    let failures: unknown = [castFailure]
+    const f = fixture({ onRegistryIncomplete })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify({
+      clients: [], errors: { workbuddy: registryIncomplete, claudeDesktop: registryIncomplete, opencode: registryIncomplete },
+      ...(failures === undefined ? {} : { registryFailures: failures }),
+    })))
+    expect((await f.runtime.scan())[0].detectionError).toBe(registryIncomplete)
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete.mock.calls).toEqual([[[castFailure]]])
+    // Another list is logged again, flattened to one line.
+    const root = 'Registry::HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+    const rootFailures = [{ entry: root, reason: 'Requested registry\r\naccess is not allowed.' }]
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenLastCalledWith([{ entry: root, reason: 'Requested registry access is not allowed.' }])
+    // A scan that read everything, or printed nothing about it, forgets the last
+    // list: the very same list coming back afterwards is logged again.
+    failures = []
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(2)
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(3)
+    failures = undefined
+    await f.runtime.scan({ force: true })
+    failures = rootFailures
+    await f.runtime.scan({ force: true })
+    expect(onRegistryIncomplete).toHaveBeenCalledTimes(4)
+  })
+
+  it('passes at most ten unreadable keys on, each bounded, whatever the script printed', async () => {
+    const onRegistryIncomplete = vi.fn<NonNullable<ExternalClientRuntimeOptions['onRegistryIncomplete']>>()
+    const f = fixture({ onRegistryIncomplete })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify({
+      clients: [candidate('workbuddy')], errors: {},
+      registryFailures: Array.from({ length: 12 }, (_, index) => ({ entry: `entry-${index}`, reason: 'x'.repeat(2_000) })),
+    })))
+    expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, detectionError: null })
+    const logged = onRegistryIncomplete.mock.calls[0][0]
+    expect(logged).toHaveLength(10)
+    expect(logged[0]).toEqual({ entry: 'entry-0', reason: 'x'.repeat(500) })
+  })
+
+  it('reads just the matched values again from an uninstall key Get-ItemProperty cannot convert', () => {
+    // The Windows packaging job runs this against a real key with a malformed
+    // value (e2e/windows-powershell-probes-smoke.mjs); here only what it reads.
+    const script = windowsExternalClientInventoryScript()
+    expect(script).toContain("foreach ($name in @('DisplayName', 'InstallLocation', 'DisplayIcon', 'DisplayVersion'))")
+    expect(script).toContain('try { $registry.Add((Read-UninstallValues $key)) }')
+    expect(script).toContain('$registryFailures.Count -lt 10')
+    expect(script).toContain('registryFailures=@($registryFailures.ToArray())')
   })
 
   it('detects signed installed desktop applications and current-user Claude Store without executing their binaries', async () => {
@@ -161,6 +226,84 @@ describe('external desktop client lifecycle', () => {
     expect(firstEvents.at(-1)?.phase).toBe('completed')
     expect(secondEvents.at(-1)?.phase).toBe('completed')
     expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels an install still waiting in the queue at once, before it touches anything, and installs again afterwards', async () => {
+    const queue = new InstallationQueue()
+    const blocker = deferred()
+    const ahead = queue.enqueue('existing-runtime-install', () => blocker.promise)
+    const f = fixture({ installationQueue: queue })
+    const progress: ExternalClientInstallProgress[] = []
+    const install = f.runtime.install('opencode', (event) => progress.push(event))
+    const settled = install.then(() => 'installed', (cause: unknown) => cause)
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+    // 再点一次仍是同一个「取消中」。
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    // 前面那项还没装完，排着队的这一项已经出队、结束了，不用等它。
+    const error = await Promise.race([settled, Promise.resolve('still waiting for the install ahead')])
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('OpenCode 安装已取消')
+    expect(progress.map((event) => event.phase)).toEqual(['queued', 'error'])
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'OpenCode 安装已取消' })
+    expect(queue.snapshot()).toEqual({ activeKey: 'existing-runtime-install', pendingKeys: [] })
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })
+    blocker.resolve()
+    await ahead
+    f.setInventory([candidate('opencode')])
+    await expect(f.runtime.install('opencode')).resolves.toMatchObject({ installed: true })
+  })
+
+  it('refuses to cancel while winget runs, because ending it ends the installer it started', async () => {
+    const f = fixture()
+    const wingetRunning = deferred()
+    const finishWinget = deferred()
+    const inventoryCommand = f.execute.getMockImplementation()!
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable !== winget) return inventoryCommand(spec, options)
+      wingetRunning.resolve()
+      await finishWinget.promise
+      f.setInventory([candidate('opencode')])
+      return commandResult(spec)
+    })
+    const install = f.runtime.install('opencode')
+    await wingetRunning.promise
+    expect(f.runtime.cancelInstall('opencode')).toEqual({
+      cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。',
+    })
+    finishWinget.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true })
+    expect(f.execute.mock.calls.find(([spec]) => spec.executable === winget)?.[1]?.signal).toBeUndefined()
+  })
+
+  it('stops the Tencent download on cancel but not the Tencent installer once it runs', async () => {
+    const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
+    const downloading = deferred()
+    f.officialInstaller.mockImplementationOnce(async (options) => {
+      downloading.resolve()
+      await untilAborted(options?.signal)
+    })
+    const cancelled = f.runtime.install('workbuddy')
+    await downloading.promise
+    expect(f.runtime.cancelInstall('workbuddy')).toEqual({ cancelled: true, reason: null })
+    await expect(cancelled).rejects.toThrow('WorkBuddy 安装已取消')
+
+    const installing = deferred()
+    const finish = deferred()
+    f.officialInstaller.mockImplementationOnce(async (options) => {
+      options?.onInstallStarting?.()
+      installing.resolve()
+      await finish.promise
+      f.setInventory([candidate('workbuddy')])
+    })
+    const install = f.runtime.install('workbuddy')
+    await installing.promise
+    expect(f.runtime.cancelInstall('workbuddy')).toEqual({
+      cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。',
+    })
+    finish.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true })
   })
 
   it('isolates failing progress observers', async () => {
@@ -317,11 +460,9 @@ describe('external desktop client lifecycle', () => {
       onWingetUnavailable, now: () => clock,
     })
     const statuses = await f.runtime.scan()
-    for (const tool of [statuses[1], statuses[2]]) {
-      expect(tool.installHint).toBe(externalClientWingetUnavailableHint)
-      expect(tool.installHint).not.toMatch(/winget|ENOENT|App Installer/i)
-    }
-    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, 'https://claude.com/download', 'https://opencode.ai/download'])
+    expect(statuses[2].installHint).toBe(externalClientWingetUnavailableHint)
+    expect(statuses[2].installHint).not.toMatch(/winget|ENOENT|App Installer/i)
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, null, 'https://opencode.ai/download'])
     clock += 10 * 60_000
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls).toEqual([[reason]])
@@ -346,6 +487,49 @@ describe('external desktop client lifecycle', () => {
     expect(progress.some((event) => event.percent === 42)).toBe(true)
     expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
     expect(progress.some((event) => event.phase === 'error')).toBe(false)
+  })
+
+  // 第四十四批 B：winget 自己的软件源坏了（源数据没有、对不上）也发生在动手之前，同连不上一样换腾讯官方。
+  it.each([0x8a15000f, 0x8a15000f | 0, 0x8a15003f])('recovers WorkBuddy through its official installer when the winget source itself is broken (%s)', async (exitCode) => {
+    const f = fixture()
+    const progress: ExternalClientInstallProgress[] = []
+    f.execute.mockImplementation(async (spec) => {
+      if (spec.executable === winget) {
+        throw wingetError({
+          exitCode,
+          stdout: "Failed when opening source(s); try the 'source reset' command if the problem persists.\r\nAn unexpected error occurred while executing the command:\r\n0x8a15000f : Data required by the source is missing\r\n",
+        })
+      }
+      return commandResult(spec, JSON.stringify({ clients: f.officialInstaller.mock.calls.length ? [candidate('workbuddy')] : [], errors: {} }))
+    })
+    f.officialInstaller.mockResolvedValue(undefined)
+    await expect(f.runtime.install('workbuddy', (event) => progress.push(event))).resolves.toMatchObject({ installed: true })
+    expect(f.officialInstaller).toHaveBeenCalledOnce()
+    expect(progress.map((event) => event.message)).toContain('连不上微软的软件下载源，正在切换到腾讯官方下载')
+    expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
+  })
+
+  it('leaves WorkBuddy to winget once its installer started, even when winget then reports missing source data', async () => {
+    const f = fixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) {
+        options?.onOutput?.({ stream: 'stdout', text: 'Starting package install...' })
+        throw wingetError({ exitCode: 0x8a15000f })
+      }
+      return commandResult(spec, '{"clients":[],"errors":{}}')
+    })
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('安装没有完成（错误码 0x8a15000f）')
+    expect(f.officialInstaller).not.toHaveBeenCalled()
+  })
+
+  it('still reports a broken winget source for OpenCode, which has no other route', async () => {
+    const f = fixture()
+    f.execute.mockImplementation(async (spec) => {
+      if (spec.executable === winget) throw wingetError({ exitCode: 0x8a15000f })
+      return commandResult(spec, '{"clients":[],"errors":{}}')
+    })
+    await expect(f.runtime.install('opencode')).rejects.toThrow('安装没有完成（错误码 0x8a15000f），请查看运行日志中的安装器输出。')
+    expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 
   it('uses the official WorkBuddy installer when trusted winget is unavailable', async () => {
@@ -506,6 +690,203 @@ describe('external desktop client lifecycle', () => {
   })
 })
 
+describe('Windows Claude Desktop official package route', () => {
+  /** 官网那一路装好后，下一次盘点就能看到当前用户注册的 Claude 包。 */
+  function claudeFixture(overrides: ExternalClientRuntimeOptions = {}) {
+    const claudeOfficial = vi.fn<NonNullable<ExternalClientRuntimeOptions['installClaudeDesktopFromOfficial']>>()
+    const routed: string[] = []
+    const assertDiskSpace = vi.fn(async (_subject: string) => undefined)
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const f = fixture({
+      installClaudeDesktopFromOfficial: claudeOfficial, assertDiskSpace, fetch,
+      withDownloadRoute: async (operation) => { routed.push('start'); try { return await operation() } finally { routed.push('end') } },
+      ...overrides,
+    })
+    claudeOfficial.mockImplementation(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在从 Claude 官网下载离线安装包（42%）', percent: 42 })
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    const inventoryCommand = f.execute.getMockImplementation()!
+    function failWinget(failure: unknown) {
+      f.execute.mockImplementation(async (spec, options) => {
+        if (spec.executable === winget) throw failure
+        return inventoryCommand(spec, options)
+      })
+    }
+    return { ...f, claudeOfficial, routed, assertDiskSpace, fetch, inventoryCommand, failWinget }
+  }
+  const noWinget = { resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) }
+
+  it('offers one-click installation without winget and installs from the Claude website inside the download route', async () => {
+    const f = claudeFixture({ ...noWinget, windowsExecutionMode: 'same-user' })
+    expect((await f.runtime.scan())[1]).toMatchObject({ installSupported: true, installHint: null, officialDownloadUrl: null })
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).resolves.toMatchObject({ installed: true, version: '2.110.1.0' })
+    expect(f.claudeOfficial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      architecture: 'x64', wingetTried: false, windowsExecutionMode: 'same-user', runCommand: f.execute, fetch: f.fetch,
+      env: expect.objectContaining({ NODE_OPTIONS: '--require evil.cjs' }),
+    }))
+    expect(f.assertDiskSpace).toHaveBeenCalledWith('Claude Desktop 安装失败')
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
+    expect(progress.map((event) => event.message)).toEqual([
+      'Claude Desktop 已加入安装队列', '正在检测 Claude Desktop', '正在从 Claude 官网下载离线安装包（0%）',
+      '正在从 Claude 官网下载离线安装包（42%）', '正在验证安装结果', 'Claude Desktop 安装完成',
+    ])
+    expect(progress.find((event) => event.percent === 42)).toMatchObject({ tool: 'claudeDesktop', phase: 'downloading' })
+  })
+
+  it.each([
+    ['without winget', noWinget, null],
+    ['after winget failed', {}, wingetError()],
+  ] as const)('stops the Claude website download when the customer cancels %s, and installs again afterwards', async (_label, overrides, wingetFailure) => {
+    const f = claudeFixture(overrides)
+    if (wingetFailure) f.failWinget(wingetFailure)
+    const downloading = deferred()
+    f.claudeOfficial.mockImplementationOnce(async (options) => {
+      downloading.resolve()
+      return untilAborted(options.signal)
+    })
+    const progress: ExternalClientInstallProgress[] = []
+    const install = f.runtime.install('claudeDesktop', (event) => progress.push(event))
+    await downloading.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({ cancelled: true, reason: null })
+    const error = await install.catch((cause: unknown) => cause)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('Claude Desktop 安装已取消')
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'Claude Desktop 安装已取消' })
+    expect(f.routed).toEqual(['start', 'end'])
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+  })
+
+  it('refuses to cancel once the downloaded package is handed to Windows', async () => {
+    const f = claudeFixture(noWinget)
+    const installing = deferred()
+    const finish = deferred()
+    f.claudeOfficial.mockImplementationOnce(async (options) => {
+      options.onInstallStarting?.()
+      installing.resolve()
+      await finish.promise
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    const install = f.runtime.install('claudeDesktop')
+    await installing.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({
+      cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+    })
+    finish.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true, version: '2.110.1.0' })
+  })
+
+  it('installs the arm64 package on arm64 computers and defaults to trusted-only checks', async () => {
+    const f = claudeFixture({ ...noWinget, architecture: 'arm64' })
+    expect((await f.runtime.scan())[1]).toMatchObject({ installSupported: true, installHint: null })
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64', windowsExecutionMode: 'trusted-only' }))
+  })
+
+  it.each([
+    ['a source connection failure', {}],
+    ['a timeout', { code: 'TIMED_OUT' }],
+    ['an installer failure', { exitCode: 1 }],
+    ['a terminated installer', { signal: 'SIGTERM' }],
+  ] satisfies Array<[string, Partial<CommandErrorDetails>]>)('falls back to the Claude website after %s', async (_label, details) => {
+    const f = claudeFixture()
+    f.failWinget(wingetError(details))
+    const progress: string[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event.message))).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wingetTried: true }))
+    expect(progress).toContain('系统自带的安装组件这次没装上，正在从 Claude 官网下载离线安装包（0%）')
+    expect(progress.at(-1)).toBe('Claude Desktop 安装完成')
+  })
+
+  it('falls back even after winget reported that the installer had started', async () => {
+    const f = claudeFixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) {
+        options?.onOutput?.({ stream: 'stdout', text: 'Starting package install...' })
+        throw wingetError({ exitCode: 0x80073cf3 })
+      }
+      return f.inventoryCommand(spec, options)
+    })
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledOnce()
+  })
+
+  it.each([{ code: 'ABORTED' }, { exitCode: 1223 }, { exitCode: 0x800704c7 }] satisfies Partial<CommandErrorDetails>[])('never replaces a cancelled winget installation: %j', async (details) => {
+    const f = claudeFixture()
+    f.failWinget(wingetError(details))
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('安装已取消。')
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+  })
+
+  it.each(['installed', 'unknown'] as const)('rechecks Claude Desktop after a winget failure and avoids the fallback when status is %s', async (state) => {
+    const f = claudeFixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) {
+        f.setInventory(state === 'installed' ? [appx()] : [], state === 'unknown' ? { claudeDesktop: '无法读取当前用户 Claude 桌面端的 AppX 注册信息' } : {})
+        throw wingetError({ exitCode: 1 })
+      }
+      return f.inventoryCommand(spec, options)
+    })
+    if (state === 'installed') await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    else await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('无法确认当前安装状态：无法读取当前用户 Claude 桌面端的 AppX 注册信息')
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+  })
+
+  it('words a failed fallback in one plain sentence, keeps both raw causes for the log and permits a retry', async () => {
+    const f = claudeFixture()
+    const network = wingetError()
+    const official = new Error('Claude 官网返回 HTTP 503')
+    f.failWinget(network)
+    f.claudeOfficial.mockRejectedValue(official)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(f.runtime.install('claudeDesktop')).rejects.toMatchObject({
+        message: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。',
+        originalError: { winget: network, official },
+      })
+    }
+    expect(f.claudeOfficial).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves the system installer out of the sentence when the computer never had one', async () => {
+    const f = claudeFixture(noWinget)
+    const official = new Error('Claude 官网的安装包缺少有效的 Anthropic 签名')
+    f.claudeOfficial.mockRejectedValue(official)
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).rejects.toMatchObject({
+      message: 'Claude Desktop 没装上：下载下来的安装包不完整或不是官方原版，已经删掉了。',
+      originalError: official,
+    })
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'Claude Desktop 没装上：下载下来的安装包不完整或不是官方原版，已经删掉了。' })
+  })
+
+  it.each([
+    '已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。',
+    '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。',
+  ])('passes a sentence that already says what to do through unchanged: %s', async (message) => {
+    const f = claudeFixture(noWinget)
+    f.claudeOfficial.mockRejectedValue(new Error(message))
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow(message)
+    await expect(f.runtime.install('claudeDesktop')).rejects.not.toThrow('没装上')
+  })
+
+  it('checks the disk before anything is downloaded', async () => {
+    const f = claudeFixture({ ...noWinget, assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试`) } })
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试')
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.routed).toEqual([])
+  })
+
+  it('does not mistake a finished official installation for a verified installed client', async () => {
+    const f = claudeFixture(noWinget)
+    f.claudeOfficial.mockResolvedValue({ version: '2.110.1.0' })
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('未检测到客户端')
+  })
+})
+
 describe('macOS external desktop lifecycle', () => {
   function macFixture(extra: ExternalClientRuntimeOptions = {}) {
     const execute = vi.fn<typeof runCommand>(async (spec) => {
@@ -516,8 +897,113 @@ describe('macOS external desktop lifecycle', () => {
       if (candidate.startsWith('/Applications/WorkBuddy.app')) return candidate
       throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     })
-    return { execute, runtime: createExternalClientRuntime({ platform: 'darwin', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501, ...extra }) }
+    return { execute, runtime: createExternalClientRuntime({ platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501, ...extra }) }
   }
+  /** OpenCode 还没装、装完才出现在「应用程序」里的那台 Mac。 */
+  function macInstallFixture(extra: ExternalClientRuntimeOptions = {}) {
+    let placed = false
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: 'ai.opencode.desktop', CFBundleShortVersionString: '1.18.34' }))
+      return commandResult(spec)
+    })
+    const verifyPath = vi.fn(async (candidate: string) => {
+      if (placed && candidate.startsWith('/Applications/OpenCode.app')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    const installMacosDesktopApp = vi.fn<NonNullable<ExternalClientRuntimeOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 OpenCode 1.18.34', percent: 40 })
+      await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      placed = true
+      return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+    })
+    const assertDiskSpace = vi.fn(async (_subject: string) => undefined)
+    const routed: string[] = []
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501,
+      installMacosDesktopApp, assertDiskSpace, fetch: vi.fn<typeof fetch>(),
+      withDownloadRoute: async (operation) => { routed.push('start'); try { return await operation() } finally { routed.push('end') } },
+      ...extra,
+    })
+    return { execute, runtime, installMacosDesktopApp, assertDiskSpace, routed }
+  }
+  it('offers one-click installation only for clients whose official Mac package has been verified', async () => {
+    const f = macInstallFixture()
+    const statuses = await f.runtime.scan()
+    expect(statuses.map((status) => [status.tool, status.installSupported])).toEqual([['workbuddy', false], ['claudeDesktop', true], ['opencode', true]])
+    expect(statuses[1].installHint).toBeNull()
+    expect(statuses[2].installHint).toBeNull()
+    expect(statuses[0].installHint).toContain('官网下载')
+    // A bundle installed as root would belong to root, and the customer could never update it.
+    const root = macInstallFixture({ getuid: () => 0 })
+    expect((await root.runtime.scan()).map((status) => status.installSupported)).toEqual([false, false, false])
+    await expect(root.runtime.install('opencode')).rejects.toThrow('官网下载')
+    await expect(root.runtime.install('claudeDesktop')).rejects.toThrow('官网下载')
+    expect(root.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+  it('installs Claude Desktop through the same verified installer and detects it afterwards', async () => {
+    let placed = false
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: 'com.anthropic.claudefordesktop', CFBundleShortVersionString: '2.19675.0' }))
+      return commandResult(spec)
+    })
+    const verifyPath = vi.fn(async (candidate: string) => {
+      if (placed && candidate.startsWith('/Applications/Claude.app')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    const installMacosDesktopApp = vi.fn<NonNullable<ExternalClientRuntimeOptions['installMacosDesktopApp']>>(async () => {
+      placed = true
+      return { version: '2.19675.0', path: '/Applications/Claude.app' }
+    })
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'x64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501,
+      installMacosDesktopApp, assertDiskSpace: async () => undefined, fetch: vi.fn<typeof fetch>(),
+    })
+    const status = await runtime.install('claudeDesktop')
+    expect(status).toMatchObject({ tool: 'claudeDesktop', installed: true, version: '2.19675.0', path: '/Applications/Claude.app' })
+    expect(installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claudeDesktop', architecture: 'x64', userHome: '/Users/tester' }))
+  })
+  it('installs OpenCode from its official package inside the download route, then verifies it like any detected app', async () => {
+    const f = macInstallFixture()
+    const progress: string[] = []
+    const status = await f.runtime.install('opencode', (event) => progress.push(event.message))
+    expect(status).toMatchObject({ tool: 'opencode', installed: true, version: '1.18.34', path: '/Applications/OpenCode.app' })
+    expect(f.assertDiskSpace).toHaveBeenCalledWith('OpenCode 安装失败')
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'opencode', architecture: 'arm64', userHome: '/Users/tester' }))
+    expect(progress).toEqual([
+      'OpenCode 已加入安装队列', '正在检测 OpenCode', '正在下载 OpenCode 1.18.34', '正在放进「应用程序」',
+      '正在验证安装结果', 'OpenCode 安装完成',
+    ])
+    // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
+    expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/codesign', argv: ['--verify'] }, expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000 }))
+    for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/usr/sbin/spctl' && spec.argv.at(-1) === '/Applications/OpenCode.app')).toBe(true)
+  })
+  it('stops a Mac install at any step when the customer cancels, even while the app is being moved into place', async () => {
+    const placing = deferred()
+    const f = macInstallFixture({ installMacosDesktopApp: async (options) => {
+      await options.runProcess({ executable: '/usr/bin/sw_vers', argv: ['-productVersion'], timeoutMs: 1_000 })
+      // 放进「应用程序」是整个改名，停在哪一步都不会留下半个应用，所以这一步也接受取消。
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      placing.resolve()
+      return untilAborted(options.signal)
+    } })
+    const install = f.runtime.install('opencode')
+    await placing.promise
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+    await expect(install).rejects.toThrow('OpenCode 安装已取消')
+    // The installer's own processes listen to the same cancel.
+    expect(f.execute.mock.calls.find(([spec]) => spec.executable === '/usr/bin/sw_vers')?.[1]?.signal?.aborted).toBe(true)
+  })
+  it('checks the disk before anything is downloaded and passes the installer failure on unchanged', async () => {
+    const short = macInstallFixture({ assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足`) } })
+    await expect(short.runtime.install('opencode')).rejects.toThrow('OpenCode 安装失败：安装目录所在磁盘空间不足')
+    expect(short.installMacosDesktopApp).not.toHaveBeenCalled()
+    const failure = Object.assign(new Error('OpenCode 没下载下来，请检查网络后再点一次「安装」。'), { detail: 'fetch failed' })
+    const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
+    await expect(failing.runtime.install('opencode')).rejects.toBe(failure)
+  })
   it('validates installed bundles with Gatekeeper and the verified WorkBuddy team, then launches through open', async () => {
     const f = macFixture()
     expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, version: '5.5.6', running: true, installSupported: false, launchSupported: true })
@@ -533,10 +1019,11 @@ describe('macOS external desktop lifecycle', () => {
     for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
   })
   it('reports missing apps without inventing an automatic macOS installer', async () => {
-    const f = macFixture()
-    const status = (await f.runtime.scan())[1]
-    expect(status).toMatchObject({ installed: false, detectionError: null, installSupported: false })
-    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('官网下载')
+    // WorkBuddy is the one client without a Mac package the toolbox could verify.
+    const f = macFixture({ verifyPath: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) } })
+    const status = (await f.runtime.scan())[0]
+    expect(status).toMatchObject({ tool: 'workbuddy', installed: false, detectionError: null, installSupported: false })
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('官网下载')
   })
   it('refuses root launch and reports invalid signatures as failed detection', async () => {
     const root = macFixture({ getuid: () => 0 })
@@ -548,5 +1035,211 @@ describe('macOS external desktop lifecycle', () => {
       throw new Error('signature rejected')
     })
     expect((await invalid.runtime.scan())[0]).toMatchObject({ installed: false, detectionError: 'signature rejected' })
+  })
+})
+
+// 第三十一批 C：打开只现验要开的那一个；展示用的检测认几分钟内验过、包没变的结果（同 Windows 的 knownSignatures）。
+describe('macOS external client signature checks', () => {
+  const bundles: Record<ExternalToolId, string> = { workbuddy: '/Applications/WorkBuddy.app', claudeDesktop: '/Applications/Claude.app', opencode: '/Applications/OpenCode.app' }
+  const bundleIds: Record<ExternalToolId, string> = { workbuddy: 'com.tencent.workbuddy.mac', claudeDesktop: 'com.anthropic.claudefordesktop', opencode: 'ai.opencode.desktop' }
+  const tools = Object.keys(bundles) as ExternalToolId[]
+  /** 三家都装着的 Mac。rejected 里的包 spctl 不放行；touch 改一个文件的修改时间。 */
+  function allInstalled(extra: ExternalClientRuntimeOptions = {}) {
+    let clock = 1_000
+    let executableName: string | undefined = 'Main'
+    const rejected = new Set<string>()
+    const mtimes = new Map<string, number>()
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      const target = tools.find((tool) => spec.argv.some((arg) => arg.startsWith(bundles[tool])))
+      if (spec.executable === '/usr/bin/plutil') {
+        return commandResult(spec, JSON.stringify({ CFBundleIdentifier: bundleIds[target!], CFBundleShortVersionString: '1.0.0', CFBundleExecutable: executableName }))
+      }
+      if (spec.executable === '/usr/sbin/spctl' && target && rejected.has(bundles[target])) throw new Error('rejected by Gatekeeper')
+      return commandResult(spec)
+    })
+    const lstatPath = vi.fn(async (candidate: string) => ({
+      dev: 1, ino: candidate.length, mtimeMs: mtimes.get(candidate) ?? 100, size: 10, isFile: () => candidate.includes('/Contents/'),
+    }))
+    // 三家都装在 /Applications，~/Applications 下没有：某家在 /Applications 验不过时，不会再从那边读出另一种错。
+    const verifyPath = async (candidate: string) => {
+      if (candidate.startsWith('/Applications/')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    }
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute,
+      verifyPath, lstatPath, getuid: () => 501, now: () => clock, ...extra,
+    })
+    /** 这个客户端从上次清零以来跑过的签名核对（spctl、codesign），按先后。 */
+    function checks(tool: ExternalToolId): string[] {
+      return execute.mock.calls
+        .filter(([spec]) => (spec.executable === '/usr/sbin/spctl' || spec.executable === '/usr/bin/codesign') && spec.argv.includes(bundles[tool]))
+        .map(([spec]) => spec.executable)
+    }
+    return {
+      execute, runtime, checks, rejected,
+      advance(ms: number) { clock += ms },
+      touch(file: string) { mtimes.set(file, (mtimes.get(file) ?? 100) + 1) },
+      dropExecutableName() { executableName = undefined },
+    }
+  }
+
+  it('verifies only the client it opens, in full', async () => {
+    const f = allInstalled()
+    await f.runtime.launch('claudeDesktop')
+    expect(f.checks('claudeDesktop')).toEqual(['/usr/sbin/spctl'])
+    expect(f.checks('workbuddy')).toEqual([])
+    expect(f.checks('opencode')).toEqual([])
+    expect(f.execute.mock.calls.filter(([spec]) => spec.executable === '/usr/bin/plutil').map(([spec]) => spec.argv.at(-1)))
+      .toEqual(['/Applications/Claude.app/Contents/Info.plist'])
+    expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/open', argv: ['-a', '/Applications/Claude.app'] }, expect.any(Object))
+
+    f.execute.mockClear()
+    await f.runtime.launch('workbuddy')
+    // WorkBuddy 照旧加一次整包深验。
+    expect(f.checks('workbuddy')).toEqual(['/usr/sbin/spctl', '/usr/bin/codesign'])
+    expect(f.checks('claudeDesktop')).toEqual([])
+  })
+
+  it('never lets opening or installing reuse an earlier verification', async () => {
+    const f = allInstalled()
+    await f.runtime.scan()
+    f.execute.mockClear()
+    await f.runtime.launch('workbuddy')
+    expect(f.checks('workbuddy')).toEqual(['/usr/sbin/spctl', '/usr/bin/codesign'])
+    f.execute.mockClear()
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+
+  it('lets a display scan reuse a verification from the last few minutes while the bundle is unchanged', async () => {
+    const f = allInstalled()
+    expect((await f.runtime.scan()).map((status) => status.installed)).toEqual([true, true, true])
+    f.execute.mockClear()
+    const statuses = await f.runtime.scan({ force: true })
+    expect(statuses.map((status) => [status.installed, status.detectionError])).toEqual([[true, null], [true, null], [true, null]])
+    for (const tool of tools) expect(f.checks(tool), tool).toEqual([])
+    // 应用标识和「运行中」照旧每次现读。
+    expect(f.execute.mock.calls.filter(([spec]) => spec.executable === '/usr/bin/plutil')).toHaveLength(3)
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/bin/ps')).toBe(true)
+  })
+
+  it('remembers the verification made when opening, so the scan after it skips that deep check', async () => {
+    const f = allInstalled()
+    await f.runtime.launch('workbuddy')
+    f.execute.mockClear()
+    await f.runtime.scan()
+    expect(f.checks('workbuddy')).toEqual([])
+    // 另两家这之前没验过，照旧现验。
+    expect(f.checks('claudeDesktop')).toEqual(['/usr/sbin/spctl'])
+    expect(f.checks('opencode')).toEqual(['/usr/sbin/spctl'])
+  })
+
+  it('verifies again once the bundle changes or the few minutes are up', async () => {
+    const f = allInstalled()
+    await f.runtime.scan()
+    f.touch('/Applications/WorkBuddy.app/Contents/MacOS/Main')
+    f.execute.mockClear()
+    await f.runtime.scan({ force: true })
+    expect(f.checks('workbuddy')).toEqual(['/usr/sbin/spctl', '/usr/bin/codesign'])
+    expect(f.checks('opencode')).toEqual([])
+
+    f.advance(5 * 60_000)
+    f.execute.mockClear()
+    await f.runtime.scan({ force: true })
+    for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+
+  it('forgets an earlier pass as soon as a fresh verification fails', async () => {
+    const f = allInstalled()
+    await f.runtime.scan()
+    f.rejected.add('/Applications/OpenCode.app')
+    await expect(f.runtime.launch('opencode')).rejects.toThrow('rejected by Gatekeeper')
+    f.execute.mockClear()
+    const statuses = await f.runtime.scan({ force: true })
+    expect(statuses[2]).toMatchObject({ tool: 'opencode', installed: false, detectionError: 'rejected by Gatekeeper' })
+    expect(f.checks('opencode')).toEqual(['/usr/sbin/spctl'])
+    f.rejected.clear()
+    f.execute.mockClear()
+    expect((await f.runtime.scan({ force: true }))[2].installed).toBe(true)
+    expect(f.checks('opencode')).toEqual(['/usr/sbin/spctl'])
+  })
+
+  it('verifies every time when the bundle names no main program to fingerprint', async () => {
+    const f = allInstalled()
+    f.dropExecutableName()
+    await f.runtime.scan()
+    f.execute.mockClear()
+    await f.runtime.scan({ force: true })
+    for (const tool of tools) expect(f.checks(tool).length, tool).toBeGreaterThan(0)
+  })
+
+  // 第四十四批 D：苹果明说不放行时，首页那一行说的和 Windows 上签名不对时同一句；苹果的原话只进运行日志。
+  const signatureMismatch = '客户端数字签名无效或签名发布者与官方发布者不一致'
+  /** runCommand 报一条外部命令没跑成时抛的就是它；stderr 是命令自己写的原话。 */
+  function commandFailure(executable: string, code: CommandErrorCode, exitCode: number | null, stderr = '') {
+    const name = executable.split('/').pop()
+    return new CommandRunnerError(code === 'TIMED_OUT' ? `命令执行时间过长，已中止：${name}` : `命令执行失败（退出码 ${exitCode}）：${name}`, {
+      code, executable, argv: [], exitCode, signal: null, stdout: '', stderr, outputBytes: stderr.length, maxOutputBytes: 262_144, durationMs: 5,
+    })
+  }
+  /** 三家都装着的 Mac，其中一个包的某道核对按 fail() 给的失败；fail(null) 恢复放行。 */
+  function oneRefused(bundle: string) {
+    const onMacVerificationFailed = vi.fn<NonNullable<ExternalClientRuntimeOptions['onMacVerificationFailed']>>()
+    const f = allInstalled({ onMacVerificationFailed })
+    const allowed = f.execute.getMockImplementation()!
+    let failure: CommandRunnerError | null = null
+    f.execute.mockImplementation(async (spec, options) => {
+      if (failure && spec.executable === failure.executable && spec.argv.includes(bundle)) throw failure
+      return allowed(spec, options)
+    })
+    return { ...f, onMacVerificationFailed, fail(next: CommandRunnerError | null) { failure = next } }
+  }
+
+  it('says the signature sentence when Gatekeeper refuses a client and logs what spctl said, once', async () => {
+    const f = oneRefused(bundles.claudeDesktop)
+    const said = '/Applications/Claude.app: rejected\nsource=Unnotarized Developer ID'
+    f.fail(commandFailure('/usr/sbin/spctl', 'EXIT_NON_ZERO', 3, `${said}\n`))
+    const statuses = await f.runtime.scan()
+    expect(statuses[1]).toMatchObject({ tool: 'claudeDesktop', installed: false, launchSupported: false, detectionError: signatureMismatch })
+    expect(statuses[0]).toMatchObject({ installed: true, detectionError: null })
+    expect(f.onMacVerificationFailed.mock.calls).toEqual([[
+      { tool: 'claudeDesktop', path: bundles.claudeDesktop, command: 'spctl', code: 'EXIT_NON_ZERO', exitCode: 3, output: said },
+    ]])
+    // Rescanning and opening meet the same refusal: the same sentence, no second log line.
+    expect((await f.runtime.scan({ force: true }))[1].detectionError).toBe(signatureMismatch)
+    await expect(f.runtime.launch('claudeDesktop')).rejects.toThrow(signatureMismatch)
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/usr/bin/open')).toBe(false)
+    expect(f.onMacVerificationFailed).toHaveBeenCalledOnce()
+    // Once it passes, a later refusal is news again.
+    f.fail(null)
+    expect((await f.runtime.scan({ force: true }))[1].installed).toBe(true)
+    f.advance(5 * 60_000)
+    f.fail(commandFailure('/usr/sbin/spctl', 'EXIT_NON_ZERO', 3, `${said}\n`))
+    expect((await f.runtime.scan({ force: true }))[1].detectionError).toBe(signatureMismatch)
+    expect(f.onMacVerificationFailed).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    [1, '/Applications/WorkBuddy.app: a sealed resource is missing or invalid'],
+    [3, 'test-requirement: code failed to satisfy specified code requirement(s)'],
+  ] as const)('says the same sentence when codesign refuses WorkBuddy with exit code %s', async (exitCode, said) => {
+    const f = oneRefused(bundles.workbuddy)
+    f.fail(commandFailure('/usr/bin/codesign', 'EXIT_NON_ZERO', exitCode, said))
+    expect((await f.runtime.scan())[0]).toMatchObject({ tool: 'workbuddy', installed: false, detectionError: signatureMismatch })
+    expect(f.onMacVerificationFailed).toHaveBeenCalledExactlyOnceWith({
+      tool: 'workbuddy', path: bundles.workbuddy, command: 'codesign', code: 'EXIT_NON_ZERO', exitCode, output: said,
+    })
+  })
+
+  it.each([
+    ['a timeout', commandFailure('/usr/sbin/spctl', 'TIMED_OUT', null), '命令执行时间过长，已中止：spctl'],
+    ['any other exit code', commandFailure('/usr/sbin/spctl', 'EXIT_NON_ZERO', 1, 'spctl: internal error'), '命令执行失败（退出码 1）：spctl'],
+  ] as const)('keeps %s as it was on screen, and still logs it', async (_case, failure, shown) => {
+    const f = oneRefused(bundles.opencode)
+    f.fail(failure)
+    expect((await f.runtime.scan())[2]).toMatchObject({ tool: 'opencode', installed: false, detectionError: shown })
+    expect(f.onMacVerificationFailed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      tool: 'opencode', command: 'spctl', code: failure.code, exitCode: failure.exitCode, output: failure.stderr,
+    }))
   })
 })

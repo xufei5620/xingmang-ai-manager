@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, ExternalToolId, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
 import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
@@ -15,6 +15,8 @@ export interface ToolJob {
   cancellable?: boolean
   /** 取消已经发出去，还在等主进程收尾。 */
   cancelling?: boolean
+  /** 卸载也挂在工具编号下：别处据此分清是在装还是在卸；缺省 = 安装、更新这类（旧行为）。 */
+  kind?: 'uninstall'
 }
 
 export interface ToolJobOptions {
@@ -22,6 +24,8 @@ export interface ToolJobOptions {
   cancel?: () => Promise<InstallCancelResult>
   /** 装好、更新好或没装上时发一条系统通知（设置里「安装 / 更新结果」管着）；缺省不发。 */
   notice?: InstallNoticePlan
+  /** 见 ToolJob.kind。 */
+  kind?: ToolJob['kind']
 }
 
 /** 让长任务在运行途中改写工具行上那句话（安装完成后还要同步 Key、重新检测）。 */
@@ -37,6 +41,15 @@ export const installedToolSyncLabel = '安装完成，正在同步账号 Key 并
  */
 export function planConfigRefresh(input: { hasSnapshot: boolean; scansInFlight: boolean }): 'config-only' | 'rescan' {
   return input.hasSnapshot || input.scansInFlight ? 'config-only' : 'rescan'
+}
+
+/**
+ * 刚打开的那个客户端先写成「运行中」：后台那次悄悄重扫回来之前，那一行就该是这样（第三十一批 C）。
+ * 别的行原样不动，已经是「运行中」的不换新数组。
+ */
+export function withExternalRunning(statuses: ExternalClientStatus[], tool: ExternalToolId): ExternalClientStatus[] {
+  if (!statuses.some((entry) => entry.tool === tool && !entry.running)) return statuses
+  return statuses.map((entry) => entry.tool === tool ? { ...entry, running: true } : entry)
 }
 
 /**
@@ -87,21 +100,34 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     externalRequest.current++
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
-  const refreshExternal = useCallback(async (force = false) => {
+  // quiet 只给打开客户端之后那一次：重扫换来的只是那一行的「运行中」，不该让三行按钮一起变灰、
+  // 右上角转圈。没读到就留着上次的结果，不出红条（第三十一批 C）。
+  const refreshExternal = useCallback(async (force = false, options: { quiet?: boolean } = {}) => {
     if (!bridge || currentScope.current !== scope) return
     const id = ++externalRequest.current
-    setExternalLoading(true); setExternalError('')
+    if (!options.quiet) { setExternalLoading(true); setExternalError('') }
     try {
       const statuses = await createToolsApi(bridge).readExternal(force)
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalClients(statuses)
+      if (active.current && currentScope.current === scope && id === externalRequest.current) {
+        setExternalClients(statuses)
+        if (options.quiet) setExternalError('')
+      }
     } catch (cause) {
+      if (options.quiet) return
       if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
+  // 打开客户端以后：先把那一行写成「运行中」，再在后台悄悄核一次（主进程打开后已作废缓存）。
+  const noteExternalLaunched = useCallback((tool: ExternalToolId) => {
+    if (currentScope.current !== scope) return
+    setExternalClients((current) => withExternalRunning(current, tool))
+    void refreshExternal(false, { quiet: true })
+  }, [refreshExternal, scope])
   // acceptCached 只在开机首屏那一次为真：主进程先回上次落盘的检测结果，这里先把它
-  // 画出来（loading 保持为真，按钮照旧不可点），紧接着在同一个请求号下再读一次真的
-  // ——它接的是主进程开窗前就起好的那一轮，不会多扫一遍。
+  // 画出来（loading 保持为真；首页这时只放开「打开」「接着聊」，见 Home 的
+  // launchReadyBeforeScan），紧接着在同一个请求号下再读一次真的——它接的是主进程
+  // 开窗前就起好的那一轮，不会多扫一遍。
   const load = useCallback(async (force: boolean, acceptCached: boolean) => {
     if (!bridge) return
     // Login completion can retain this callback from the preceding render.
@@ -220,7 +246,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     locks.current.add(key)
     cancelRequests.current.delete(key)
     if (options?.cancel) cancellers.current.set(key, options.cancel)
-    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel) } }))
+    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel), ...(options?.kind ? { kind: options.kind } : {}) } }))
     const report: ToolJobReport = (next, percent) => {
       if (!active.current) return
       setJobs((current) => {
@@ -276,5 +302,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     return outcome
   }, [markCancelling])
-  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, noteExternalLaunched, jobs, run, cancel, setSnapshot }
 }

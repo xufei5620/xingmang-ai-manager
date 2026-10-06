@@ -2,11 +2,16 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { gunzipSync } = require('node:zlib')
-const YAML = require('yaml')
 const {
   ARCHITECTURES: MACOS_ARCHITECTURES,
   releaseArtifactNames,
 } = require('./macos-artifact-names.cjs')
+const {
+  ARCHITECTURES: LINUX_ARCHITECTURES,
+  debFileName,
+  manifestArchitecture: linuxManifestArchitecture,
+  updateManifestName: linuxUpdateManifestName,
+} = require('./linux-artifact-names.cjs')
 
 const LEGACY_UPDATE_URL = 'https://updates.shenfengwl.fun/xingmang-manager/'
 const NEW_UPDATE_URL = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
@@ -19,6 +24,15 @@ const MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 const MAX_BLOCKMAP_BYTES = 16 * 1024 * 1024
 const MAX_BLOCKMAP_DECOMPRESSED_BYTES = 64 * 1024 * 1024
 const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308])
+// 每个平台的更新清单。发布前检查、清单备份、回滚和发布后复核都只认这里列出的名字，
+// 新加平台只改这一处，不会有哪个脚本悄悄漏掉它。Linux 每个架构一份
+// （electron-updater 按 process.arch 找），Mac 两个架构合在一份里。
+const UPDATE_MANIFESTS = Object.freeze({
+  windows: Object.freeze(['latest.yml']),
+  macos: Object.freeze(['latest-mac.yml']),
+  linux: Object.freeze(LINUX_ARCHITECTURES.map(linuxUpdateManifestName)),
+})
+const UPDATE_MANIFEST_NAMES = Object.freeze(Object.values(UPDATE_MANIFESTS).flat())
 
 class ReleaseValidationError extends Error {
   constructor(code, message) {
@@ -226,7 +240,7 @@ function validSha512(value, fieldName) {
 }
 
 function parseLatestMetadata(text, metadataFile = 'latest.yml') {
-  const label = metadataFile === 'latest-mac.yml' ? 'latest-mac.yml' : 'latest.yml'
+  const label = UPDATE_MANIFEST_NAMES.includes(metadataFile) ? metadataFile : 'latest.yml'
   if (typeof text !== 'string' || !text.trim()) {
     throw validationError('METADATA_EMPTY', `${label} 为空`)
   }
@@ -241,6 +255,9 @@ function parseLatestMetadata(text, metadataFile = 'latest.yml') {
     )
   }
 
+  // yaml 到用时才加载：publish-release 占 tag 的作业不装任何依赖，也要用这个模块里的版本
+  // 比较和更新地址。放在 try 外面，缺依赖时报的是缺依赖，不是「清单不是 YAML」。
+  const YAML = require('yaml')
   let value
   try {
     value = YAML.parse(text, { maxAliasCount: 0, uniqueKeys: true })
@@ -329,6 +346,30 @@ function assertMacosUpdateArchitectureInventory(metadata) {
   }
 }
 
+// 一份 Linux 清单只能列它自己那个架构、这个版本的一个 deb：x64 机器装 arm64 的包
+// dpkg 直接拒绝，而 electron-updater 不看架构，清单给什么就下什么。
+function assertLinuxUpdateArchitectureInventory(metadata, metadataFile) {
+  const arch = linuxManifestArchitecture(metadataFile)
+  if (!arch) throw validationError('VERIFY_PLATFORM_INVALID', `不认识的 Linux 更新清单：${metadataFile}`)
+  const expectedPath = debFileName(metadata.version, arch)
+  if (metadata.files.length !== 1
+    || metadata.files[0].relativePath !== expectedPath
+    || metadata.primaryPath !== expectedPath) {
+    throw validationError(
+      'LINUX_UPDATE_INVENTORY_INVALID',
+      `${metadataFile} 必须且只能列出当前版本的 ${arch} 安装包 ${expectedPath}`,
+    )
+  }
+  if (metadata.files[0].size === null) {
+    throw validationError('LINUX_UPDATE_SIZE_MISSING', `${metadataFile} 没有写 ${expectedPath} 的大小`)
+  }
+}
+
+function assertUpdateManifestInventory(metadata, metadataFile) {
+  if (metadataFile === 'latest-mac.yml') assertMacosUpdateArchitectureInventory(metadata)
+  if (UPDATE_MANIFESTS.linux.includes(metadataFile)) assertLinuxUpdateArchitectureInventory(metadata, metadataFile)
+}
+
 async function sha512File(filePath) {
   const hash = createHash('sha512')
   for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk)
@@ -410,6 +451,52 @@ async function validateLocalRelease(directory, { expectedVersion = null } = {}) 
   )
 
   return { releaseDirectory, metadata, metadataPath, blockmapPath }
+}
+
+// 本地出包目录里的 Linux 清单要和旁边那个 deb 对得上：发布时清单与 deb 一起上传，
+// 清单里的大小或 SHA-512 一旦和 deb 不符，客户端下完就校验失败，一个也装不上。
+async function validateLocalLinuxRelease(directory, { arch, expectedVersion = null } = {}) {
+  const metadataFile = linuxUpdateManifestName(arch)
+  const releaseDirectory = path.resolve(directory)
+  const metadataPath = path.join(releaseDirectory, metadataFile)
+  let text
+  try {
+    text = await fs.promises.readFile(metadataPath, 'utf8')
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw validationError('LOCAL_METADATA_MISSING', `未找到 ${metadataPath}`)
+    }
+    throw error
+  }
+  const metadata = parseLatestMetadata(text, metadataFile)
+  if (expectedVersion !== null && metadata.version !== expectedVersion) {
+    throw validationError(
+      'LOCAL_VERSION_MISMATCH',
+      `${metadataFile} 版本 ${metadata.version} 与当前 package.json 版本 ${expectedVersion} 不一致`,
+    )
+  }
+  assertLinuxUpdateArchitectureInventory(metadata, metadataFile)
+  const [deb] = metadata.files
+  const debPath = path.join(releaseDirectory, deb.relativePath)
+  let stat
+  try {
+    stat = await fs.promises.lstat(debPath)
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw validationError('LOCAL_ARTIFACT_MISSING', `更新文件不存在：${deb.relativePath}`)
+    }
+    throw error
+  }
+  if (!stat.isFile() || stat.size === 0) {
+    throw validationError('LOCAL_ARTIFACT_EMPTY', `更新文件为空或不是普通文件：${deb.relativePath}`)
+  }
+  if (deb.size !== stat.size) {
+    throw validationError('LOCAL_ARTIFACT_SIZE_MISMATCH', `更新文件大小不匹配：${deb.relativePath}`)
+  }
+  if (await sha512File(debPath) !== deb.sha512) {
+    throw validationError('LOCAL_ARTIFACT_HASH_MISMATCH', `更新文件 SHA-512 不匹配：${deb.relativePath}`)
+  }
+  return { releaseDirectory, metadata, metadataPath, debPath }
 }
 
 async function cancelResponseBody(response) {
@@ -683,7 +770,7 @@ async function verifyRemoteChannel({
     metadataFile,
   )).toString('utf8')
   const metadata = parseLatestMetadata(metadataText, metadataFile)
-  if (metadataFile === 'latest-mac.yml') assertMacosUpdateArchitectureInventory(metadata)
+  assertUpdateManifestInventory(metadata, metadataFile)
 
   if (verifyAssets) {
     await verifyRemoteArtifacts({ normalizedBaseUrl, metadata, metadataFile, requireBlockmap, timeoutMs })
@@ -702,20 +789,28 @@ async function verifyManifestArtifacts({
   allowLocalHttp = false,
   timeoutMs = 30_000,
 }) {
-  if (!['latest.yml', 'latest-mac.yml'].includes(metadataFile)) {
+  if (!UPDATE_MANIFEST_NAMES.includes(metadataFile)) {
     throw validationError('VERIFY_PLATFORM_INVALID', `不认识的更新清单：${metadataFile}`)
   }
   const normalizedBaseUrl = normalizeUpdateBaseUrl(baseUrl, { allowLocalHttp })
   const metadata = parseLatestMetadata(metadataText, metadataFile)
-  if (metadataFile === 'latest-mac.yml') assertMacosUpdateArchitectureInventory(metadata)
+  assertUpdateManifestInventory(metadata, metadataFile)
   await verifyRemoteArtifacts({
     normalizedBaseUrl,
     metadata,
     metadataFile,
-    requireBlockmap: metadataFile === 'latest.yml' ? true : 'all-zips',
+    requireBlockmap: manifestBlockmapPolicy(metadataFile),
     timeoutMs,
   })
   return metadata
+}
+
+// Windows 的安装程序旁边有一个 .blockmap；Mac 每个 ZIP 各有一个；deb 根本没有
+// （electron-builder 的 FpmTarget 只写 sha512 与大小），差分下载在 Linux 上不存在。
+function manifestBlockmapPolicy(metadataFile) {
+  if (metadataFile === 'latest.yml') return true
+  if (metadataFile === 'latest-mac.yml') return 'all-zips'
+  return false
 }
 
 async function verifyRemoteFeed({
@@ -726,10 +821,34 @@ async function verifyRemoteFeed({
   timeoutMs = 30_000,
   platform = 'all',
 }) {
-  if (!['all', 'windows', 'macos'].includes(platform)) {
+  if (!['all', 'windows', 'macos', 'linux'].includes(platform)) {
     throw validationError('VERIFY_PLATFORM_INVALID', `不支持的更新通道：${platform}`)
   }
   const normalizedBaseUrl = normalizeUpdateBaseUrl(baseUrl, { allowLocalHttp })
+  // Linux 单独查，而且两个架构一起查：它们同一次发布、同一次回滚，只查一个的话，
+  // 另一个架构的客户拿到半发布的清单要等他们点更新才暴露。「all」仍只指 Windows
+  // 与 macOS，Linux 还没对外发的时候，不带参数的复核不能因为它 404 而报红。
+  if (platform === 'linux') {
+    const linux = {}
+    for (const arch of LINUX_ARCHITECTURES) {
+      linux[arch] = await verifyRemoteChannel({
+        normalizedBaseUrl,
+        metadataFile: linuxUpdateManifestName(arch),
+        allowMissing,
+        verifyAssets,
+        requireBlockmap: false,
+        timeoutMs,
+      })
+    }
+    return {
+      baseUrl: normalizedBaseUrl,
+      skipped: true,
+      missing: true,
+      metadata: null,
+      mac: { skipped: true, missing: true, metadata: null },
+      linux,
+    }
+  }
   const windows = platform === 'macos'
     ? { skipped: true, missing: true, metadata: null }
     : await verifyRemoteChannel({
@@ -751,6 +870,16 @@ async function verifyRemoteFeed({
         timeoutMs,
       })
   return { baseUrl: normalizedBaseUrl, ...windows, mac }
+}
+
+// 发布前置检查用：只读一份清单，不下载安装包。Linux 出包作业每个架构只关心自己
+// 那一份，用不着把别的平台也读一遍。
+async function readRemoteManifest({ baseUrl, metadataFile, allowLocalHttp = false, allowMissing = false, timeoutMs = 30_000 }) {
+  if (!UPDATE_MANIFEST_NAMES.includes(metadataFile)) {
+    throw validationError('VERIFY_PLATFORM_INVALID', `不认识的更新清单：${metadataFile}`)
+  }
+  const normalizedBaseUrl = normalizeUpdateBaseUrl(baseUrl, { allowLocalHttp })
+  return verifyRemoteChannel({ normalizedBaseUrl, metadataFile, allowMissing, verifyAssets: false, timeoutMs })
 }
 
 function validateReleaseEnvironment(env = process.env, packageVersion = null) {
@@ -862,15 +991,20 @@ module.exports = {
   MAX_BLOCKMAP_BYTES,
   MAX_METADATA_BYTES,
   ReleaseValidationError,
+  UPDATE_MANIFESTS,
+  UPDATE_MANIFEST_NAMES,
   assertBlockmap,
+  assertLinuxUpdateArchitectureInventory,
   assertRemoteReleaseIsOlder,
   compareReleaseVersions,
   normalizeUpdateBaseUrl,
   parseLatestMetadata,
+  readRemoteManifest,
   safeRelativeArtifactPath,
   resolveEmptyReleaseOutputDirectory,
   resolveUpdateUrlForVersion,
   sha512File,
+  validateLocalLinuxRelease,
   validateLocalRelease,
   validateReleaseEnvironment,
   verifyManifestArtifacts,

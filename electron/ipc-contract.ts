@@ -101,6 +101,7 @@ import type {
   AppConfigSummary as MainAppConfigSummary,
   CliLaunchResult as MainCliLaunchResult,
   CliStatus as MainCliStatus,
+  CliUninstallOptions as MainCliUninstallOptions,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
   CodexDesktopLaunchResult as MainCodexDesktopLaunchResult,
   CodexReadinessStatus as MainCodexReadinessStatus,
@@ -139,7 +140,6 @@ import type {
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
-import type { StoreAppLaunchBlock as MainStoreAppLaunchBlock } from './windows-store-app-launch'
 import type {
   NewApiAccountKey,
   NewApiAccountKeyCreateInput,
@@ -197,11 +197,16 @@ export {
   defaultRelaySiteId,
   privacyPolicyUrl,
   relaySites,
+  relaySiteEndpointChoices,
+  relaySiteEndpointIdForBaseUrl,
+  relayProviderBaseUrls,
+  relayProviderBaseUrlMatches,
   resolveRelaySite,
   resolveSupportServiceUrl,
   supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
+export type { RelayEndpoint, RelayEndpointId, RelayEndpointSelections } from './relay-sites'
 
 export type ProviderId = CatalogProviderId
 export type { RelaySite } from './relay-sites'
@@ -223,6 +228,8 @@ export interface WindowCapabilities {
   unexpectedExit?: UnexpectedExitNotice
   // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
   claudeDesktopRepaired?: true
+  // Linux 发行版名字（「Ubuntu 24.04.1 LTS」），给「复制给客服」那一行用。只有 Linux 有，读不到也缺省。
+  systemLabel?: string
 }
 export interface UnexpectedExitNotice {
   /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
@@ -250,7 +257,16 @@ export interface SettingsSaveIssue {
   drive?: string
 }
 export type { ExternalDeepLink } from './external-deep-links'
-export interface FeedbackReportPreview { id: string; text: string; entries: number }
+export interface FeedbackReportPreview {
+  id: string
+  text: string
+  entries: number
+  /**
+   * false = 这份报告里还没有任何检查结果，界面在报告上面提醒客户先去「检查」页查一次。
+   * 缺省 = 不知道，不提醒。
+   */
+  selfChecked?: boolean
+}
 // Present only when the previewed report had expired or been superseded and
 // the main process captured a fresh one; the renderer swaps its dialog text.
 export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
@@ -289,6 +305,7 @@ export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
+export type CliUninstallOptions = MainCliUninstallOptions
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
 export type SavedAccount = SavedAccountSummary
@@ -343,7 +360,6 @@ export type PythonRuntimeInstallResult = MainPythonRuntimeInstallResult
 export type GitRuntimeInstallProgress = MainGitRuntimeInstallProgress
 export type GitRuntimeInstallResult = MainGitRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
-export type StoreAppLaunchBlock = MainStoreAppLaunchBlock
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
 export type AccountSiteId = 'solov' | 'solov-api'
@@ -366,6 +382,11 @@ export interface AccountContextMetadata {
   siteId?: AccountSiteId
   realmId?: 'xm-account' | 'api-account'
   capabilities?: import('./relay-backend').RelayBackendCapabilities
+  /**
+   * 只在 Linux 上没有可用的系统密码保管时出现：照常能登录，但登录只留在主进程内存里，
+   * 软件关掉就没了，界面据此不给「记住密码」。缺省 = 登录会记住（旧行为）。
+   */
+  sessionOnly?: true
 }
 /**
  * 开机账号恢复超过启动画面的等待上限时，会话先按「未登录、正在恢复」作答。
@@ -735,6 +756,8 @@ export interface XingmangInvokeContract {
   >
   scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
+  /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
+  cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
    * 切回官方订阅账号；merge 恢复对应来源配置，reset 重建初始配置。
@@ -777,9 +800,10 @@ export interface XingmangInvokeContract {
   checkToolModels: IpcInvokeDefinition<'tools:check-models', [provider: ProviderId], ToolModelCheck>
   /**
    * 开机恢复账号后，给当前账号写过、但模板版本落后的工具配置补缺省项（用户写过的值不动）。
-   * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。
+   * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。工具可能正开着、这次没动的
+   * 在 pending 里，渲染层隔一阵带 retry = true 再要一次，主进程只补那几样（第二十六批 E）。
    */
-  fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [], ToolTemplateFillResult>
+  fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [retry?: boolean], ToolTemplateFillResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
@@ -794,7 +818,8 @@ export interface XingmangInvokeContract {
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId, version?: string], void>
   /** 中止正在进行的安装或更新;已经走到写入工具目录那一步时会被拒绝并给出原因。 */
   cancelCliInstall: IpcInvokeDefinition<'cli:cancel-install', [provider: ProviderId], InstallCancelResult>
-  uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
+  /** options 省略 = 只卸载；reinstall = 「换成星芒装的」那一次，主进程先看盘够不够装回来再动手。 */
+  uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId, options?: CliUninstallOptions], ToolUninstallResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
   installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>
@@ -1243,6 +1268,11 @@ export interface XingmangEventContract {
     AccountPaymentWindowTerminalEvent
   >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
+  /**
+   * 星芒替用户绕开连不上的代理、整个改了直连以后，代理软件又连得上了，已经改回跟随系统代理
+   * （electron/proxy-bypass.ts）。载荷为空：界面只拿它收起「已经改为直接联网」那条提示。
+   */
+  onProxyBypassEnded: IpcEventDefinition<'network:proxy-bypass-ended', undefined>
 }
 
 export type XingmangApi = {
@@ -1268,6 +1298,7 @@ export const ipcInvokeChannels = {
   configureExternalTool: 'config:configure-external-tool',
   scanExternalClients: 'external-clients:scan',
   installExternalClient: 'external-clients:install',
+  cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
@@ -1472,6 +1503,7 @@ export const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onProxyBypassEnded: 'network:proxy-bypass-ended',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

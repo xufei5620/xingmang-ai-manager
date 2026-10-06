@@ -8,6 +8,8 @@ import type {
 import {
   KeyRewriteSkippedError,
   accountBootstrapPlan,
+  accountKeyChangeInProgress,
+  accountKeyChangePending,
   bootstrapAccountTools,
   configurationFailure,
   configurationFailureMessages,
@@ -15,9 +17,12 @@ import {
   describeAccountBootstrapResult,
   skippedNamedProviders,
   type AccountBootstrapBridge,
+  type AccountBootstrapProgress,
   type AccountBootstrapResult,
 } from './account-bootstrap'
 import { networkFailureMessages } from '../../../../electron/network-failure'
+import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
+import type { RunningToolsReport } from '../../../../electron/running-tools'
 import {
   readManualSourceMarker,
   sourceMarkerWriteWarning,
@@ -654,6 +659,249 @@ describe('account managed Key bootstrap', () => {
     await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
     expect(sync).not.toHaveBeenCalled()
     expect(configure).not.toHaveBeenCalled()
+  })
+})
+
+// 第三十一批 A：开机检测没跑完时首页按这一轮账号会不会换 Key，决定哪几行能先「打开」。
+describe('account key changes before the startup scan finishes', () => {
+  const connected = () => ({
+    exists: true,
+    hasApiKey: true,
+    matchesRelay: true,
+    configurationOwnership: 'account' as const,
+    baseUrl: 'https://xm.solov.cc/v1',
+    actualBaseUrl: 'https://xm.solov.cc/v1',
+    model: 'fixture-model',
+    apiKeyPreview: 'sk-***',
+    dataDirectory: 'C:\\home',
+    dataDirectoryExists: true,
+    files: [],
+    updatedAt: null,
+  })
+  const syncing = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15 }
+
+  it('cannot tell yet for a signed-in or restoring account whose key sync has not started', () => {
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: null }, 'claude')).toBe(true)
+    expect(accountKeyChangePending({ signedIn: false, restoring: true, bootstrap: null }, 'claude')).toBe(true)
+  })
+
+  it('has nothing to wait for without an account', () => {
+    expect(accountKeyChangePending({ signedIn: false, restoring: false, bootstrap: null }, 'claude')).toBe(false)
+  })
+
+  it('waits while the key sync has not said which connected tools change', () => {
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: syncing }, 'codex')).toBe(true)
+  })
+
+  it('waits only for the connected tools whose key changes this round', () => {
+    const bootstrap = { phase: 'inspecting' as const, label: '正在检查已安装工具和连接来源', percent: 40, connectedKeyChanges: ['claude' as ProviderId] }
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap }, 'claude')).toBe(true)
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap }, 'codex')).toBe(false)
+  })
+
+  it('stops waiting once the round has finished or failed', () => {
+    const finished = { ...syncing, result: { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false } }
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: finished }, 'claude')).toBe(false)
+    expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: { ...syncing, error: '账号 Key 初始化没有完成' } }, 'claude')).toBe(false)
+  })
+
+  it('after the scan waits only while a key sync round is actually running', () => {
+    // Switching saved accounts skips the round, and a restore that cannot reach the
+    // account service keeps retrying without one: neither may lock tools until a relaunch.
+    expect(accountKeyChangeInProgress(null, 'claude')).toBe(false)
+    expect(accountKeyChangeInProgress(syncing, 'claude')).toBe(true)
+    const bootstrap = { phase: 'configuring' as const, label: '正在为 1 个已安装工具写入 Key', percent: 65, connectedKeyChanges: ['claude' as ProviderId] }
+    expect(accountKeyChangeInProgress(bootstrap, 'claude')).toBe(true)
+    expect(accountKeyChangeInProgress(bootstrap, 'codex')).toBe(false)
+    expect(accountKeyChangeInProgress({ ...bootstrap, result: { readyKeys: [], configured: ['claude'], failed: [], skipped: [], warnings: [], networkBlocked: false } }, 'claude')).toBe(false)
+    expect(accountKeyChangeInProgress({ ...bootstrap, error: '账号 Key 初始化没有完成' }, 'claude')).toBe(false)
+  })
+
+  it('names the regrouped connected tools before it waits for the scan on a restore', async () => {
+    const current = config()
+    current.providers.claude = connected()
+    current.providers.codex = connected()
+    const order: string[] = []
+    const progress: AccountBootstrapProgress[] = []
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [], regrouped: ['claude' as ProviderId] })),
+      scanSystem: vi.fn(async () => { order.push('scan'); return system(['claude', 'codex']) }),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: ['claude' as ProviderId], failed: [] })),
+    }
+
+    await bootstrapAccountTools(api, 17, (entry) => { order.push(entry.phase); progress.push(entry) }, 'restore', undefined, memoryStorage())
+
+    expect(order.indexOf('inspecting')).toBeLessThan(order.indexOf('scan'))
+    expect(progress.filter((entry) => entry.phase !== 'syncing').map((entry) => entry.connectedKeyChanges)).toEqual([['claude'], ['claude'], ['claude']])
+    // 换了分组的那一家这一轮确实要重写，没换的照旧不动。
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'] }))
+  })
+
+  it('names no tool when nothing was regrouped, so every connected tool can open', async () => {
+    const current = config()
+    current.providers.claude = connected()
+    const progress: AccountBootstrapProgress[] = []
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, memoryStorage())
+
+    expect(progress.find((entry) => entry.phase === 'inspecting')?.connectedKeyChanges).toEqual([])
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+  })
+
+  it('leaves the answer open on a login, which rewrites connected tools too', async () => {
+    const current = config()
+    current.providers.claude = connected()
+    const progress: AccountBootstrapProgress[] = []
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: ['claude' as ProviderId], failed: [] })),
+    }
+
+    await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'login', undefined, memoryStorage())
+
+    expect(progress.every((entry) => !('connectedKeyChanges' in entry))).toBe(true)
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'] }))
+  })
+})
+
+describe('explicit applied connection routes on restore', () => {
+  const primary = relayProviderBaseUrls('solov', 'primary')
+  const direct = relayProviderBaseUrls('solov', 'direct')
+  const applied: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+  function routedConfig(provider: ProviderId = 'codex'): AppConfigSummary {
+    const current = config()
+    current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true,
+      baseUrl: direct[provider], actualBaseUrl: primary[provider], model: 'kept-model', configurationOwnership: 'account',
+      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) }
+    return current
+  }
+  function fixture() {
+    const current = routedConfig()
+    const stopped: RunningToolsReport = { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true }
+    const api = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, siteId: 'solov' as const, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['codex'])),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      getSettings: vi.fn(async () => applied),
+      inspectRunningTools: vi.fn(async () => stopped),
+      configureManagedCliKeys: vi.fn(async () => {
+        current.providers.codex.actualBaseUrl = current.providers.codex.baseUrl
+        return { configured: ['codex' as ProviderId], failed: [] }
+      }),
+    }
+    return { current, api }
+  }
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] as const)('plans an owned %s config for the explicitly applied route and keeps its model', (provider) => {
+    expect(accountBootstrapPlan(system([provider]), routedConfig(provider), applied, 'restore', null)).toMatchObject({
+      targets: [provider], preferredModels: { [provider]: 'kept-model' },
+    })
+  })
+
+  it('migrates the historical DNS alias even though its endpoint id is also direct', () => {
+    const current = routedConfig()
+    current.providers.codex.actualBaseUrl = 'https://xm-direct.solov.cc/v1'
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual(['codex'])
+    current.providers.codex.actualBaseUrl = `${direct.codex}/`
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+  })
+
+  it('migrates back only after an explicit primary choice was applied at startup', () => {
+    const current = routedConfig()
+    current.providers.codex = { ...current.providers.codex, baseUrl: primary.codex, actualBaseUrl: direct.codex }
+    const restoredPrimary: AppSettingsV2 = { ...applied, relayEndpointIds: { solov: 'primary' }, activeRelayEndpointIds: { solov: 'primary' } }
+    expect(accountBootstrapPlan(system(['codex']), current, restoredPrimary, 'restore', null).targets).toEqual(['codex'])
+  })
+
+  it.each([
+    ['no explicit selection', { ...applied, relayEndpointIds: undefined }],
+    ['only a pending selection', { ...applied, activeRelayEndpointIds: { solov: 'primary' as const } }],
+    ['no startup route snapshot', { ...applied, activeRelayEndpointIds: undefined }],
+  ])('keeps a compatible old route with %s', (_name, preferences) => {
+    expect(accountBootstrapPlan(system(['codex']), routedConfig(), preferences, 'restore', null).targets).toEqual([])
+  })
+
+  it.each(['manual', 'changed', 'unknown'] as const)('does not use route selection to take over %s ownership', (ownership) => {
+    const current = routedConfig()
+    current.providers.codex = { ...current.providers.codex, configurationOwnership: ownership, configurationAccountMatched: true }
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+  })
+
+  it('does not migrate foreign sites or a summary whose expected route disagrees with the active selection', () => {
+    const current = routedConfig()
+    current.providers.codex.actualBaseUrl = 'https://api.solov.cc/v1'
+    current.providers.codex.matchesRelay = false
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+    current.providers.codex = { ...routedConfig().providers.codex, baseUrl: primary.codex, actualBaseUrl: direct.codex }
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+    expect(accountBootstrapPlan(system(['codex']), routedConfig(), { ...applied, officialProviders: ['codex'] }, 'restore', null).targets).toEqual([])
+  })
+
+  it('uses ordinary automatic configure after the running check and holds launch while the scan is pending', async () => {
+    const { current, api } = fixture()
+    const progress: AccountBootstrapProgress[] = []
+    api.scanSystem.mockImplementation(async () => {
+      expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: progress.at(-1)! }, 'codex')).toBe(true)
+      return system(['codex'])
+    })
+    const result = await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, null)
+    expect(api.inspectRunningTools).toHaveBeenCalledWith(['codex'])
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({ providers: ['codex'], preferredModels: { codex: 'kept-model' } })
+    expect(api.inspectRunningTools.mock.invocationCallOrder[0]).toBeLessThan(api.configureManagedCliKeys.mock.invocationCallOrder[0])
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result).toMatchObject({ configured: ['codex'], failed: [] })
+  })
+
+  it.each([
+    { running: ['codex' as ProviderId], unknown: [], codexDesktopRunning: false },
+    { running: [], unknown: ['codex' as ProviderId], codexDesktopRunning: false },
+    { running: [], unknown: [], codexDesktopRunning: true },
+    { running: [], unknown: [], codexDesktopRunning: null },
+  ])('defers a route change when the tool may still be running: %j', async (report) => {
+    const { current, api } = fixture()
+    api.inspectRunningTools.mockResolvedValue({ ...report, canRestartCodexDesktop: true })
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
+    expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('关闭') })])
+  })
+
+  it('keeps the old route when process inspection fails and rejects a reported success that did not migrate it', async () => {
+    const { current, api } = fixture()
+    api.inspectRunningTools.mockRejectedValueOnce(new Error('process access denied'))
+    const deferred = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(deferred.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
+    api.configureManagedCliKeys.mockImplementation(async () => ({ configured: ['codex' as ProviderId], failed: [] }))
+    const unverified = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
+    expect(unverified.configured).toEqual([])
+    expect(unverified.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('线路') })])
+  })
+
+  it('does not write a route when the running-tools capability is missing', async () => {
+    const { current, api } = fixture()
+    const { inspectRunningTools: _unused, ...withoutInspection } = api
+    const result = await bootstrapAccountTools(withoutInspection, 17, undefined, 'restore', undefined, null)
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
+    expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
   })
 })
 

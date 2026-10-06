@@ -2,12 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { claudeDesktopPowerShellModules, buildClaudeDesktopManifestInspectionScript } from './claude-desktop-manifest'
 import { claudeDesktopPolicyReadScript } from './claude-desktop-policy'
 import { buildWindowsCliProcessProbeScript, windowsCliProcessProbeModules } from './cli-process-probe'
-import {
-  codexDesktopActivationModules,
-  codexDesktopActivationScript,
-  codexDesktopCdpPortOwnerModules,
-  codexDesktopCdpPortOwnerScript,
-} from './codex-desktop-cdp'
+import { codexDesktopActivationModules, codexDesktopActivationScript } from './codex-desktop-cdp'
 import { buildClearProviderOverridesScript } from './diagnostic-fixes'
 import { buildDiagnosticsCodexDesktopProbeScript, diagnosticsCodexDesktopProbeModules } from './diagnostics'
 import { windowsExternalClientInventoryModules, windowsExternalClientInventoryScript } from './external-client-runtime'
@@ -19,7 +14,7 @@ import {
   windowsRestartStatusModules,
   windowsRestartStatusScript,
 } from './node-runtime'
-import { windowsSystemProxyModules, windowsSystemProxyScript } from './platform/windows-system-proxy'
+import { windowsSystemProxyCompiledScript, windowsSystemProxyModules, windowsSystemProxyScript } from './platform/windows-system-proxy'
 import {
   authenticodeSignatureModules,
   buildPowerShellModuleImportStatement,
@@ -74,7 +69,6 @@ const cliTerminalScript = Buffer.from(/'-EncodedCommand', '([A-Za-z0-9+/=]+)'/.e
 const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> = [
   ['running CLI process probe', buildWindowsCliProcessProbeScript(), windowsCliProcessProbeModules, 'by-name'],
   ['check page Codex desktop probe', buildDiagnosticsCodexDesktopProbeScript(), diagnosticsCodexDesktopProbeModules, 'by-name'],
-  ['Codex desktop debugging port owner probe', codexDesktopCdpPortOwnerScript, codexDesktopCdpPortOwnerModules, 'by-name'],
   ['Codex desktop activation', codexDesktopActivationScript, codexDesktopActivationModules, 'by-name'],
   ['external client inventory', windowsExternalClientInventoryScript(), windowsExternalClientInventoryModules, 'by-name'],
   ['external client inventory with remembered signatures', windowsExternalClientInventoryScript([
@@ -87,6 +81,7 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['Claude desktop policy reader', claudeDesktopPolicyReadScript, claudeDesktopPowerShellModules, 'by-name'],
   ['proxy settings reader', buildReadProxyScopesScript(), readProxyScopesModules, 'by-name'],
   ['system proxy switch', windowsSystemProxyScript, windowsSystemProxyModules, 'by-name'],
+  ['system proxy switch, compiled fallback', windowsSystemProxyCompiledScript, windowsSystemProxyModules, 'by-name'],
   ['pending restart probe', windowsRestartStatusScript, windowsRestartStatusModules, 'by-name'],
   ['App Installer package probe', appInstallerQueryScript, appInstallerQueryModules, 'by-name'],
   ['Node.js installer signature check', nodeInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],

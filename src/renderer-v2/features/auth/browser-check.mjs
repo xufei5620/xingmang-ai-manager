@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
-import { createFixtureServer } from '../../../../e2e/harness.mjs'
-import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
+import { createFixtureServer, observeFixtureBootstrap } from '../../../../e2e/harness.mjs'
+import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-auth-v2')
@@ -25,14 +26,57 @@ async function open(query = '', app = false) {
     if (url.hostname !== '127.0.0.1') return route.abort()
     await route.continue()
   })
-  await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
-  // Vite transforms the module graph on demand, so first paint can take seconds on
-  // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
-  // so a test whose first statement is one of them reads an empty page and fails on
-  // the value rather than on a timeout. Wait for the mount before handing the page over.
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
-  return page
+  const bootstrap = observeFixtureBootstrap(page, server)
+  try {
+    // Vite transforms the module graph on demand, so first paint can take seconds on
+    // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
+    // so a test whose first statement is one of them reads an empty page and fails on
+    // the value rather than on a timeout. Wait for the mount before handing the page over.
+    //
+    // Quality run 37146053083 (#806) lost this open outright: the request for
+    // Splash.tsx failed with net::ERR_NO_BUFFER_SPACE, nothing mounted, and the one
+    // navigation spent the whole budget on an empty page while the next login case
+    // passed in a second. openFixturePage spends the same budget as up to three
+    // navigations instead.
+    await openFixturePage(page, `${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`,
+      (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label: 'auth fixture' })
+    return page
+  } catch (error) {
+    const evidence = await bootstrap.snapshot().catch(() => ({ diagnosticsUnavailable: true }))
+    try { process.stderr.write(`[fixture-bootstrap] auth ${JSON.stringify(evidence)}\n`) } catch {}
+    await page.close().catch(() => {})
+    throw error
+  } finally { try { bootstrap.dispose() } catch {} }
 }
+
+test('bootstrap diagnostics capture failed modules without fixture secrets or filesystem details', async () => {
+  class DiagnosticPage extends EventEmitter {
+    mainFrame() { return null }
+    async evaluate() { return { readyState: 'complete', rootChildren: 0 } }
+  }
+  const page = new DiagnosticPage()
+  const bootstrap = observeFixtureBootstrap(page, { environments: { client: { depsOptimizer: { metadata: { optimized: {}, discovered: {} } } } } })
+  const privateValue = 'do-not-record-fixture-details'
+  const request = { resourceType: () => 'script', url: () => `http://127.0.0.1:1234/node_modules/.vite/deps/react.js?private=${privateValue}`, failure: () => ({ errorText: `net::ERR_ABORTED ${privateValue}` }) }
+  page.emit('request', request)
+  page.emit('response', { request: () => request, status: () => 504, url: request.url, statusText: () => 'Outdated Optimize Dep' })
+  page.emit('requestfailed', request)
+  page.emit('pageerror', new TypeError(privateValue))
+  page.emit('console', { type: () => 'error', text: () => `Failed to load module script ${privateValue}`, location: () => ({ url: `http://127.0.0.1:1234/@fs/${privateValue}` }) })
+  const socket = new EventEmitter()
+  page.emit('websocket', socket)
+  socket.emit('framereceived', { payload: JSON.stringify({ type: 'full-reload', private: privateValue }) })
+  const evidence = await bootstrap.snapshot()
+  assert.equal(evidence.failedResponses, 1)
+  assert.equal(evidence.requestFailures, 1)
+  assert.equal(evidence.pageErrors, 1)
+  assert.equal(evidence.fullReloads, 1)
+  assert.equal(evidence.events.find(event => event.kind === 'module-http-error').outdatedOptimizeDep, true)
+  assert.equal(JSON.stringify(evidence).includes(privateValue), false)
+  bootstrap.dispose()
+  assert.equal(page.listenerCount('response'), 0)
+  assert.equal(socket.listenerCount('framereceived'), 0)
+})
 // 「账号来源」默认收起：星芒账号不用点，历史账号先点底部那行（它会顺手选中历史账号）。
 async function chooseAccountSource(page, label) {
   const segment = page.getByTestId('auth-source')
@@ -925,7 +969,7 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       assert.ok(await page.locator('.auth-orbit-ring').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationPlayState === 'paused')))
       const geometry = await page.evaluate(() => ({ width: document.querySelector('.auth-welcome').getBoundingClientRect().width, logo: document.querySelector('.auth-welcome-brand img').getBoundingClientRect().height, footer: document.querySelector('.auth-welcome-foot').getBoundingClientRect().bottom, hud: document.querySelector('.auth-orbit-hud').getBoundingClientRect().right }))
       assert.equal(geometry.width, 1280)
-      assert.equal(geometry.logo, 128)
+      assert.equal(geometry.logo, 64)
       assert.ok(geometry.footer <= 900, 'welcome feature strip remains visible')
       assert.ok(geometry.hud <= 1280, 'orbit status labels remain inside the viewport')
       const titlebar = await page.getByTestId('window-titlebar').evaluate((element) => ({ height: element.getBoundingClientRect().height, drag: getComputedStyle(element).getPropertyValue('-webkit-app-region') }))
@@ -934,6 +978,76 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }
   }
+})
+
+// 品牌和侧栏同一套（标志加「星芒 AI」字样），标志下面不再有一排和星轨重复的四个工具。
+test('welcome shows the sidebar brand without the row of tools under it', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    const sources = await page.locator('.auth-welcome-brand img').evaluateAll((images) => images.map((image) => image.getAttribute('src')))
+    assert.equal(sources.length, 2)
+    assert.match(sources[0], /symbol/)
+    assert.match(sources[1], /wordmark/)
+    assert.equal(await page.locator('.auth-welcome img[src*="horizontal"]').count(), 0)
+    assert.equal(await page.locator('.auth-welcome-brands').count(), 0)
+    assert.equal(await page.locator('.auth-welcome-copy').getByText('Claude Code').count(), 0)
+  } finally { await page.close() }
+})
+
+// 四个工具在同一条轨道上等距、同向公转：转到哪个角度都不会叠在一起。
+test('welcome keeps the four tools evenly spaced on one orbit so they never overlap', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await page.locator('.auth-orbit-ring').count(), 1)
+    for (let spin = 0; spin < 90; spin += 5) {
+      const boxes = await page.evaluate((angle) => {
+        const ring = document.querySelector('.auth-orbit-ring')
+        ring.style.setProperty('--auth-spin', `${angle}deg`)
+        const center = ring.getBoundingClientRect()
+        const cx = center.left + center.width / 2, cy = center.top + center.height / 2
+        return [...ring.querySelectorAll('.auth-orbit-satellite')].map((item) => {
+          const rect = item.getBoundingClientRect()
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, distance: Math.hypot(rect.left + rect.width / 2 - cx, rect.top + rect.height / 2 - cy) }
+        })
+      }, spin)
+      assert.equal(boxes.length, 4)
+      for (const box of boxes) assert.ok(Math.abs(box.distance - boxes[0].distance) < 1, `every tool is on the same orbit at ${spin}deg`)
+      for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
+        const apart = boxes[a].right <= boxes[b].left || boxes[b].right <= boxes[a].left || boxes[a].bottom <= boxes[b].top || boxes[b].bottom <= boxes[a].top
+        assert.ok(apart, `tools ${a} and ${b} do not overlap at ${spin}deg`)
+      }
+    }
+  } finally { await page.close() }
+})
+
+// 不再定死最少 700 高：1280×690 一屏放得下；更矮的窗口外面那层能滚到客服二维码。
+test('welcome fits a 1280 by 690 window and scrolls to the support code in a 560 one', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    await page.setViewportSize({ width: 1280, height: 690 })
+    const fit = await page.evaluate(() => {
+      const content = document.querySelector('.auth-window-content')
+      return { scroll: content.scrollHeight - content.clientHeight, support: document.querySelector('[data-testid="welcome-support"]').getBoundingClientRect().bottom, hud: document.querySelector('.auth-orbit-hud').getBoundingClientRect().bottom, scene: document.querySelector('.auth-orbit-scene').getBoundingClientRect().bottom }
+    })
+    assert.ok(fit.scroll <= 0, `nothing to scroll at 690: ${JSON.stringify(fit)}`)
+    assert.ok(fit.support <= 690, `the support card is on the first screen at 690: ${JSON.stringify(fit)}`)
+    assert.ok(fit.hud <= fit.scene, 'the orbit labels stay inside the orbit scene')
+    await page.setViewportSize({ width: 1280, height: 560 })
+    const support = page.getByTestId('welcome-support')
+    await support.scrollIntoViewIfNeeded()
+    const box = await support.boundingBox()
+    // 滚到底时卡片下沿可能落在半个像素上。
+    assert.ok(box.y >= 0 && box.y + box.height <= 561, `the support card can be scrolled into view at 560: ${JSON.stringify(box)}`)
+    const overlap = await page.evaluate(() => {
+      const copy = document.querySelector('.auth-welcome-copy').getBoundingClientRect()
+      const foot = document.querySelector('.auth-welcome-foot').getBoundingClientRect()
+      return copy.bottom - foot.top
+    })
+    assert.ok(overlap <= 0, 'the hero never runs into the cards below it')
+  } finally { await page.close() }
 })
 
 test('welcome stops every animation when motion is reduced, and on a low-end computer', async () => {

@@ -3,9 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
-import { providerBaseUrls, providerIds } from './catalog'
+import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
 import { codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, relayTemplateRevision, saveProviderConfig } from './config-files'
 import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership } from './system-service'
+import type { RunningToolsReport } from './running-tools'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 
 const directories: string[] = []
@@ -469,38 +470,156 @@ describe('filling template defaults into older account configs at startup', () =
 })
 
 describe('filling template defaults while a tool may be running', () => {
+  const closed = { running: [], unknown: [], codexDesktopRunning: false }
+
+  async function savedWhile(report: Omit<RunningToolsReport, 'canRestartCodexDesktop'>) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-ownership-'))
+    directories.push(root)
+    const roots = { userHome: root, codexHome: path.join(root, '.codex') }
+    const data = path.join(root, 'manager')
+    const state = { report, owner: JSON.stringify(['solov', 36]) as string | null }
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({ data: [{ id: 'fixture-model' }] }), { status: 200 }))
+    const running = vi.fn(async (_providers: readonly ProviderId[]): Promise<RunningToolsReport> => ({ ...state.report, canRestartCodexDesktop: false }))
+    const service = createSystemService(new AppSettingsStore(path.join(data, 'settings.json'), root), {
+      providerRoots: roots, managerDataDirectory: data, relayFetch: fetch,
+      getExternalClientAccountId: () => state.owner,
+      inspectRunningToolsForTemplateFill: running,
+    })
+    await service.saveConfig({ provider: 'codex', apiKey: 'sk-fixture-user-secret', model: 'fixture-model', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const ownerDirectory = path.join(data, 'tool-config-ownership')
+    const ownerFile = path.join(ownerDirectory, fs.readdirSync(ownerDirectory)[0])
+    const configPath = codexConfigSnapshotPaths(roots).active
+    function makeOlder(): string {
+      const record = JSON.parse(fs.readFileSync(ownerFile, 'utf8'))
+      delete record.templateRevision
+      fs.writeFileSync(ownerFile, JSON.stringify(record), 'utf8')
+      fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('check_for_update_on_startup = false\n', ''), 'utf8')
+      return fs.readFileSync(configPath, 'utf8')
+    }
+    function revision(): unknown {
+      return JSON.parse(fs.readFileSync(ownerFile, 'utf8')).templateRevision
+    }
+    return { state, service, running, configPath, makeOlder, revision }
+  }
+
   it.each([
     ['running', { running: ['codex' as const], unknown: [], codexDesktopRunning: false }],
     ['undetectable', { running: [], unknown: ['codex' as const], codexDesktopRunning: false }],
     ['open as the desktop app', { running: [], unknown: [], codexDesktopRunning: true }],
     ['possibly open as the desktop app', { running: [], unknown: [], codexDesktopRunning: null }],
-  ])('leaves a %s tool for the next start', async (_label, report) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-ownership-'))
-    directories.push(root)
-    const roots = { userHome: root, codexHome: path.join(root, '.codex') }
-    const data = path.join(root, 'manager')
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({ data: [{ id: 'fixture-model' }] }), { status: 200 }))
-    const service = createSystemService(new AppSettingsStore(path.join(data, 'settings.json'), root), {
-      providerRoots: roots, managerDataDirectory: data, relayFetch: fetch,
-      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
-      inspectRunningToolsForTemplateFill: async () => ({ ...report, canRestartCodexDesktop: false }),
-    })
-    await service.saveConfig({ provider: 'codex', apiKey: 'sk-fixture-user-secret', model: 'fixture-model', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
-    const ownerDirectory = path.join(data, 'tool-config-ownership')
-    const ownerFile = path.join(ownerDirectory, fs.readdirSync(ownerDirectory)[0])
-    const record = JSON.parse(fs.readFileSync(ownerFile, 'utf8'))
-    delete record.templateRevision
-    fs.writeFileSync(ownerFile, JSON.stringify(record), 'utf8')
-    const configPath = codexConfigSnapshotPaths(roots).active
-    fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('check_for_update_on_startup = false\n', ''), 'utf8')
-    const before = fs.readFileSync(configPath, 'utf8')
+  ])('leaves a %s tool for a later try and reports it as still pending', async (_label, report) => {
+    const f = await savedWhile(report)
+    const before = f.makeOlder()
     const backups: string[] = []
 
-    expect(await service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [] })
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [], pending: ['codex'] })
 
     expect(backups).toEqual([])
-    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
-    expect(JSON.parse(fs.readFileSync(ownerFile, 'utf8')).templateRevision).toBeUndefined()
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+    expect(f.revision()).toBeUndefined()
+  })
+
+  it('fills a tool it had to skip on a later try once the tool has been closed', async () => {
+    const f = await savedWhile({ running: [], unknown: [], codexDesktopRunning: true })
+    const before = f.makeOlder()
+    const backups: string[] = []
+    await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) }, true)).toEqual({ filled: [], pending: ['codex'] })
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+    f.state.report = closed
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) }, true)).toEqual({ filled: ['codex'] })
+
+    expect(backups).toEqual(['codex'])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toContain('check_for_update_on_startup = false')
+    expect(f.revision()).toBe(relayTemplateRevision)
+    // 补完就不欠了：再来要什么都不做，也不再起进程看它开没开。
+    const probes = f.running.mock.calls.length
+    expect(await f.service.fillToolTemplateDefaults!(() => { backups.push('again') }, true)).toEqual({ filled: [] })
+    expect(f.running.mock.calls.length).toBe(probes)
+    expect(backups).toEqual(['codex'])
+  })
+
+  it('stops waiting for the running-tools check once an account change begins, and fills on a later try', async () => {
+    const f = await savedWhile(closed)
+    const before = f.makeOlder()
+    const backups: string[] = []
+    // 安全软件拖住了 PowerShell：看工具开没开这一下迟迟没有回音。
+    f.running.mockImplementationOnce(() => new Promise<never>(() => undefined))
+
+    const startup = f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+    const resume = f.service.stopTemplateFillWaits!()
+
+    expect(await startup).toEqual({ filled: [], pending: ['codex'] })
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+    expect(f.revision()).toBeUndefined()
+    // 换账号那段等完了、没换成，还是这个账号：再来要时照常看、照常补。
+    resume()
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) }, true)).toEqual({ filled: ['codex'] })
+    expect(backups).toEqual(['codex'])
+    expect(f.revision()).toBe(relayTemplateRevision)
+  })
+
+  it('does not wait on a round that only gets going while an account change is still waiting', async () => {
+    const f = await savedWhile(closed)
+    const before = f.makeOlder()
+    const backups: string[] = []
+    // 进门以后先读备份用的账号信息，晚一步才走到看工具这里：叫停还管着，起都不起。
+    const resume = f.service.stopTemplateFillWaits!()
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).not.toHaveBeenCalled()
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+
+    resume()
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: ['codex'] })
+    expect(f.running).toHaveBeenCalledTimes(1)
+    expect(backups).toEqual(['codex'])
+  })
+
+  it('keeps waits stopped until every overlapping account change has finished waiting', async () => {
+    const f = await savedWhile(closed)
+    f.makeOlder()
+    // 上一次换账号超时了还在等，又来一次：先等完的那次放开（重复放开也只算一次），后来那次还管着。
+    const first = f.service.stopTemplateFillWaits!()
+    const second = f.service.stopTemplateFillWaits!()
+    first()
+    first()
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [], pending: ['codex'] })
+    expect(f.running).not.toHaveBeenCalled()
+
+    second()
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: ['codex'] })
+    expect(f.running).toHaveBeenCalledTimes(1)
+  })
+
+  it('only retries what the startup round had to leave behind', async () => {
+    const f = await savedWhile(closed)
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    const before = f.makeOlder()
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined, true)).toEqual({ filled: [] })
+
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
+    expect(f.revision()).toBeUndefined()
+  })
+
+  it('drops what it owed once another account is signed in', async () => {
+    const f = await savedWhile({ running: ['codex'], unknown: [], codexDesktopRunning: false })
+    const before = f.makeOlder()
+    await f.service.fillToolTemplateDefaults!(() => undefined)
+    f.state.report = closed
+    f.state.owner = JSON.stringify(['solov', 37])
+    const probes = f.running.mock.calls.length
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined, true)).toEqual({ filled: [] })
+
+    expect(f.running.mock.calls.length).toBe(probes)
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before)
   })
 })
 

@@ -5,7 +5,7 @@ import './tutorial-illustration.css'
 
 const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; description: string; hint: string }> = {
   'desktop-home': { title: '点「打开」，进入 Codex 桌面端', description: '在星芒工具箱首页找到 Codex 桌面端这一行，点击打开。随后会出现独立的 Codex 桌面窗口，在新窗口里输入问题即可。', hint: '打开后，去新出现的 Codex 窗口里提问。' },
-  'desktop-install': { title: '认准「Codex 桌面端」这一行', description: 'Windows 在星芒工具箱首页找到 Codex 桌面端，未安装时点击安装。Mac 在工具箱外完成安装后返回检测。已经安装过的用户先点击首页重新检测。', hint: '图示为 Windows 安装；Mac 在工具箱外安装后，回来重新检测。' },
+  'desktop-install': { title: '认准「Codex 桌面端」这一行', description: '在星芒工具箱首页找到 Codex 桌面端，未安装时点击安装，Windows 和 Mac 都一样。已经安装过的用户先点击首页重新检测。', hint: '图示为 Windows 安装；Mac 上同样点「安装」，装好后在「应用程序」里叫 ChatGPT。' },
   'desktop-config': { title: '用默认选择，保存配置', description: '在 Codex 桌面端配置中选择使用星芒账号，访问密钥选择自动准备，默认模型保留自动选择的结果，然后点击保存配置。', hint: '保存只改账号、密钥和模型，其他设置会留着。' },
   'desktop-message': { title: '先发一句话，看看它的回复', description: '在独立的 Codex 桌面窗口里输入一个简单的中文问题，例如请用中文告诉我你能帮我做什么，再发送并等待回复。简单提问不用先选项目文件夹。图中回复仅为示意。', hint: '能收到回复，就可以开始问自己的问题了。' },
   'desktop-project': { title: '处理文件时，选择本地项目', description: '需要处理本地文件时，在 Codex 桌面端里选择项目文件夹，再输入具体任务，等待并阅读回复。简单提问可以直接新建对话。示例问题要求先说明项目内容，不修改文件；图中回复仅为示意。', hint: '先用练习项目熟悉操作；允许改文件前，先看清它准备做什么。' },

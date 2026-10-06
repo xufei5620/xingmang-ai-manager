@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationPhase, AccelerationState } from './acceleration-contract'
 import {
   codexDesktopAccelerationDecision,
+  codexDesktopNeedsAccelerationOnlyAtStartup,
   createCodexDesktopAccelerationCoordinator,
 } from './codex-desktop-acceleration'
 
@@ -157,25 +158,34 @@ describe('codex desktop acceleration exit watch', () => {
   function watchSetup(options: {
     running: Array<boolean | null>
     connected?: AccelerationState
+    /** 给了就等它落定才连上：模拟「打开」等不及、连接在后台才连完的慢电脑。 */
+    connectGate?: Promise<void>
+    timeoutMs?: number
+    onlyNeededAtStartup?: () => boolean | Promise<boolean>
+    disconnected?: AccelerationState
   }) {
     const timers: Array<() => void> = []
     const delays: number[] = []
     const answers = [...options.running]
     const isDesktopRunning = vi.fn(async () => (answers.length > 1 ? answers.shift()! : answers[0]))
-    const disconnect = vi.fn(async () => stateOf('idle'))
+    const disconnect = vi.fn(async (_scope: string, _connectedAt: string) => options.disconnected ?? stateOf('idle'))
     // 第一次读状态是「打开」前那一次，之后每一次都是定时检查读到的。
     let current: AccelerationState = stateOf('idle')
     const readState = vi.fn(async () => current)
     const log = vi.fn()
+    let accountScope: string | null = scope
     const coordinator = createCodexDesktopAccelerationCoordinator({
-      getAccountScope: () => scope,
+      getAccountScope: () => accountScope,
       readState,
       connect: async () => {
+        await options.connectGate
         current = options.connected ?? automatic
         return current
       },
       isDesktopRunning,
       disconnect,
+      ...(options.onlyNeededAtStartup ? { onlyNeededAtStartup: options.onlyNeededAtStartup } : {}),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       schedule: (callback, milliseconds) => {
         timers.push(callback)
         delays.push(milliseconds)
@@ -194,8 +204,9 @@ describe('codex desktop acceleration exit watch', () => {
       return isDesktopRunning.mock.calls.length > probes
     }
     return {
-      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log,
+      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log, readState,
       setState: (state: AccelerationState) => { current = state },
+      setAccountScope: (next: string | null) => { accountScope = next },
     }
   }
 
@@ -207,11 +218,84 @@ describe('codex desktop acceleration exit watch', () => {
     await h.tick()
     expect(h.disconnect).not.toHaveBeenCalled()
     await h.tick()
-    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
     expect(h.timers).toHaveLength(0)
     await vi.waitFor(() => {
       expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), { cause: 'desktop-exited' })
     })
+  })
+
+  // yoyo 2026-10-02：自动连的加速用完就断。用星芒 Key 的桌面端只在启动时要它。
+  it('disconnects once a desktop app on a Xingmang key has been seen running twice', async () => {
+    const onlyNeededAtStartup = vi.fn(() => true)
+    const h = watchSetup({ running: [true, true], onlyNeededAtStartup })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    expect(onlyNeededAtStartup).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
+    expect(h.timers).toHaveLength(0)
+    expect(h.delays).toEqual([60_000, 60_000])
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.stringContaining('已经打开好了'), { cause: 'desktop-started' })
+    })
+  })
+
+  it('keeps the session until exit when the desktop app needs it throughout, and asks again each time', async () => {
+    // ChatGPT 账号一直要连 chatgpt.com；读不出配置也按这种算。中途改成星芒 Key 的，下一次检查就断。
+    const answers: Array<boolean | Error> = [false, new Error('unreadable'), false, true]
+    const onlyNeededAtStartup = vi.fn(async () => {
+      const answer = answers.shift()!
+      if (answer instanceof Error) throw answer
+      return answer
+    })
+    const h = watchSetup({ running: [true], onlyNeededAtStartup })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 4; index += 1) await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    expect(onlyNeededAtStartup).toHaveBeenCalledTimes(3)
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+  })
+
+  it('needs two running checks in a row before treating the desktop app as started', async () => {
+    const onlyNeededAtStartup = vi.fn(() => true)
+    const h = watchSetup({ running: [true, null, true, false, false], onlyNeededAtStartup })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 3; index += 1) await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), { cause: 'desktop-exited' })
+    })
+  })
+
+  it('starts counting the startup again when the desktop app is opened again on the same session', async () => {
+    // 「帮我重开」切中文、关了马上再开：桌面端又要在启动时拉一次中文界面那份配置。
+    const h = watchSetup({ running: [true], onlyNeededAtStartup: () => true })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'already-connected' })
+    expect(h.timers).toHaveLength(1)
+    await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+  })
+
+  it('says so when the user had already made the connection their own', async () => {
+    // 到点要断的那一刻他刚点了「开始加速」：服务按 connectedAt 认，不断他的。
+    const h = watchSetup({ running: [true, true], onlyNeededAtStartup: () => true,
+      disconnected: { ...stateOf('active'), connectedAt: '2026-09-22T11:01:00.000Z' } })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.handed-over', expect.any(String), { cause: 'desktop-started' })
+    })
+    expect(h.log).not.toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), expect.anything())
   })
 
   it('keeps the session while the desktop app runs and forgives a single miss', async () => {
@@ -245,7 +329,7 @@ describe('codex desktop acceleration exit watch', () => {
     const h = watchSetup({ running: [true, true, true, false, false] })
     await h.coordinator.ensureConnected()
     for (let index = 0; index < 5; index += 1) await h.tick()
-    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
     expect(h.delays).toEqual([60_000, 60_000, 60_000, 180_000, 60_000])
   })
 
@@ -274,5 +358,85 @@ describe('codex desktop acceleration exit watch', () => {
     const h = watchSetup({ running: [false], connected: stateOf('active') })
     await h.coordinator.ensureConnected()
     expect(h.timers).toHaveLength(0)
+  })
+
+  it('still disconnects a connection that finished after the launch stopped waiting for it', async () => {
+    // 2026-10-02 A014：连接超过 15 秒，「打开」按超时照常往下走，连接却在后台连完了，
+    // 之后没人盯，一条不扣时长的线路一直开到退出星芒。
+    let release!: () => void
+    const connectGate = new Promise<void>((resolve) => { release = resolve })
+    const h = watchSetup({ running: [false, false], connectGate, timeoutMs: 5 })
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'skipped', reason: 'timeout' })
+    expect(h.timers).toHaveLength(0)
+    release()
+    await vi.waitFor(() => { expect(h.timers).toHaveLength(1) })
+    expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), { late: true })
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
+  })
+
+  it('leaves a late connection alone when it is not the automatic one', async () => {
+    let release!: () => void
+    const connectGate = new Promise<void>((resolve) => { release = resolve })
+    const h = watchSetup({ running: [false], connected: stateOf('active'), connectGate, timeoutMs: 5 })
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'skipped', reason: 'timeout' })
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(h.timers).toHaveLength(0)
+    expect(h.log).not.toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), { late: true })
+  })
+
+  it('picks up an automatic session it sees in a state update even without an open click', async () => {
+    const h = watchSetup({ running: [false, false] })
+    h.setState(automatic)
+    h.coordinator.observe(automatic)
+    expect(h.timers).toHaveLength(1)
+    // 同一次会话反复路过只盯一份。
+    h.coordinator.observe({ ...automatic, measuredAt: '2026-09-22T11:05:00.000Z' })
+    expect(h.timers).toHaveLength(1)
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
+  })
+
+  it('stops watching once the account has changed instead of retrying the old account forever', async () => {
+    // 换账号后加速服务对旧账号的读状态一律拒绝；原来落进 catch 每分钟重排一次，停不下来。
+    const h = watchSetup({ running: [true] })
+    await h.coordinator.ensureConnected()
+    expect(h.timers).toHaveLength(1)
+    h.setAccountScope('xm-account:8')
+    const reads = h.readState.mock.calls.length
+    h.timers.shift()!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(h.readState.mock.calls.length).toBe(reads)
+    expect(h.timers).toHaveLength(0)
+    expect(h.isDesktopRunning).not.toHaveBeenCalled()
+    expect(h.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('ignores state updates that are not an unattended automatic session of this account', () => {
+    const h = watchSetup({ running: [false] })
+    h.coordinator.observe(stateOf('active'))
+    h.coordinator.observe({ ...automatic, scope: 'xm-account:8' })
+    h.coordinator.observe({ ...stateOf('idle'), connectedAt: null })
+    expect(h.timers).toHaveLength(0)
+    h.coordinator.dispose()
+    h.coordinator.observe(automatic)
+    expect(h.timers).toHaveLength(0)
+  })
+})
+
+describe('codexDesktopNeedsAccelerationOnlyAtStartup', () => {
+  it('lets go after startup only for a desktop app on this site\'s key', () => {
+    const relayKey = { matchesRelay: true, codexAuthMode: 'apikey' as const, codexProviderShadowed: false }
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup(relayKey)).toBe(true)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexProviderShadowed: undefined })).toBe(true)
+    // ChatGPT 登录、没登录、指向别处、连接名被官方保留名顶掉：都要一直连着。
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: 'chatgpt' })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: null })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: undefined })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, matchesRelay: false })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexProviderShadowed: true })).toBe(false)
   })
 })

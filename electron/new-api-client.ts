@@ -122,9 +122,11 @@ export interface NewApiClientOptions {
   onCredentialRotation?: (persistable: NewApiPersistableSession) => void | Promise<void>
   // Main process only. Asked once after a request fails at the network layer
   // (timeout, proxy, connection failure): resolve true when the host has just
-  // taken the session off a system proxy that stopped forwarding, so the same
-  // request is worth one more try. The host owns the proxy decision; this
-  // client only decides which failures may be replayed safely.
+  // taken this client's requests off a system proxy that stopped forwarding,
+  // or found that a proxy which refused the request was only restarting and
+  // answers again, so the same request is worth one more try. The host owns
+  // the proxy decision (and which session the next request goes through);
+  // this client only decides which failures may be replayed safely.
   retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
 }
 
@@ -1054,6 +1056,11 @@ interface PerformRequestInit {
   headers?: Record<string, string>
   body?: unknown
   maxResponseBytes?: number
+  // 缺省按 method 算：GET 发两次和发一次一样，其余不算。发验证码、发重置邮件虽然是
+  // GET，服务端每收到一次就记一个新码、寄一封信，新码顶掉上一封的（rc.24 的
+  // common/verification.go 按邮箱只留最后一个），所以这两个标 false。不标的话，经
+  // 代理超时后会自动直连再发一次，客户收到两封，填了先到的那封却报验证码不对。
+  idempotent?: boolean
 }
 
 interface NewApiRawResponse {
@@ -1139,14 +1146,15 @@ function buildAuthHeaders(session: InternalSession): Record<string, string> {
 // 而 tls 那一类更不能拿换线路去「绕」。
 const proxyRetryReasons: ReadonlySet<NetworkFailureReason> = new Set(['timeout', 'proxy', 'refused'])
 
-// A GET can always be replayed. Anything else is replayed only when the proxy
-// itself refused the tunnel, i.e. the request provably never reached the
-// service: after a timeout or a reset mid-flight a login, a key creation or a
-// payment may already have happened, and sending it again could do it twice.
-// Those still flip the session to direct, so the user's next attempt goes
+// A plain read can always be replayed. Anything that does something -- a
+// login, a key creation, a payment, or one of the GETs that sends an email --
+// is replayed only when the proxy itself refused the tunnel, i.e. the request
+// provably never reached the service: after a timeout or a reset mid-flight it
+// may already have happened, and sending it again could do it twice. Those
+// still take the requests off the proxy, so the user's next attempt goes
 // through.
-function mayReplayOffProxy(method: PerformRequestInit['method'], reason: NetworkFailureReason): boolean {
-  return method === 'GET' || reason === 'proxy'
+function mayReplayOffProxy(init: PerformRequestInit, reason: NetworkFailureReason): boolean {
+  return (init.idempotent ?? init.method === 'GET') || reason === 'proxy'
 }
 
 async function performRequest(
@@ -1162,7 +1170,7 @@ async function performRequest(
     if (!ctx.retryOffProxy || !(error instanceof NewApiNetworkError) || !proxyRetryReasons.has(error.reason)) throw error
     const reason = error.reason
     const direct = await ctx.retryOffProxy({ reason, method: init.method, startedAt }).catch(() => false)
-    if (!direct || !mayReplayOffProxy(init.method, reason)) throw error
+    if (!direct || !mayReplayOffProxy(init, reason)) throw error
     return performRequestOnce(ctx, pathName, init, label)
   }
 }
@@ -2781,7 +2789,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const raw = await performRequest(
       ctx,
       `${verificationPath}?email=${encodeURIComponent(trimmed)}`,
-      { method: 'GET' },
+      { method: 'GET', idempotent: false },
       '发送邮箱验证码',
     )
     unwrapEnvelope(raw, '发送邮箱验证码', [])
@@ -2806,7 +2814,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const raw = await performRequest(
       ctx,
       `${resetPasswordEmailPath}?email=${encodeURIComponent(trimmed)}`,
-      { method: 'GET' },
+      { method: 'GET', idempotent: false },
       '发送密码重置邮件',
     )
     unwrapEnvelope(raw, '发送密码重置邮件', [])

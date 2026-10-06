@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CommandRunnerError } from './command-runner'
 import {
   buildNodeRuntimeElevatedInstallScript,
   buildNodeRuntimeInstallPlan,
@@ -662,5 +663,165 @@ describe('Node.js package download after a dropped connection', () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+// winget 自己下载、不走下载专用线路：Windows 上只在退到下安装包时才借线路，借到以后再定先走哪个源（第二十八批 D）。
+describe('Node.js installer and the download route on Windows', () => {
+  it.runIf(process.platform === 'win32')('neither borrows the route nor settles the source order when winget installs Node.js', async () => {
+    let routeCalls = 0
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeCalls += 1
+      return operation()
+    }
+    const networkRegion = vi.fn(async () => 'mainland-china' as const)
+
+    await expect(installNodeRuntime({
+      networkRegion,
+      withDownloadRoute,
+      dependencies: {
+        resolveWingetExecutable: async () => ({
+          executable: 'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+          reason: null,
+        }),
+        runProcess: vi.fn(successfulCommand),
+        inspectInstalledNodeRuntime: async () => ({
+          executable: 'D:\\Program Files\\nodejs\\node.exe',
+          version: 'v22.17.0',
+          signature: {
+            status: 'Valid',
+            subject: 'CN=OpenJS Foundation, O=OpenJS Foundation, C=US',
+          },
+        }),
+        fetch: vi.fn() as unknown as typeof fetch,
+        createTemporaryDirectory: async () => 'unused',
+        removeTemporaryDirectory: async () => undefined,
+      },
+    })).resolves.toMatchObject({ method: 'winget' })
+
+    expect(routeCalls).toBe(0)
+    expect(networkRegion).not.toHaveBeenCalled()
+  })
+
+  it('borrows the route once winget is out and settles the source order inside it', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    let routeHeld = false
+    let routeCalls = 0
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeCalls += 1
+      routeHeld = true
+      try {
+        return await operation()
+      } finally {
+        routeHeld = false
+      }
+    }
+    const events: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      events.push(`${routeHeld ? 'route' : 'direct'} ${String(input)}`)
+      throw new Error('offline')
+    }) as unknown as typeof fetch
+
+    await expect(installNodeRuntime({
+      networkRegion: async () => {
+        events.push(`${routeHeld ? 'route' : 'direct'} region`)
+        return 'outside-mainland-china'
+      },
+      temporaryDirectoryMode: 'same-user',
+      withDownloadRoute,
+      dependencies: {
+        resolveWingetExecutable: async () => {
+          events.push(`${routeHeld ? 'route' : 'direct'} winget`)
+          return { executable: null, reason: 'Microsoft App Installer 包身份或安装目录校验失败' }
+        },
+        fetch: fetchMock,
+      },
+    })).rejects.toThrow('Node.js LTS 自动安装失败')
+
+    expect(routeCalls).toBe(1)
+    expect(events.slice(0, 3)).toEqual([
+      'direct winget',
+      'route region',
+      'route https://nodejs.org/dist/index.json',
+    ])
+    expect(events.slice(2).every((event) => event.startsWith('route https://'))).toBe(true)
+  })
+})
+
+// Windows 同一时间只让装一个安装包：别的程序正在装时 msiexec 以 1618 退出，跟从哪儿下载无关（第三十五批 D）。
+describe('Node.js MSI install while Windows Installer is busy with another install', () => {
+  const installerBusy = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
+  const msiBytes = Buffer.alloc(2 * 1024 * 1024, 7)
+  const msiSha256 = createHash('sha256').update(msiBytes).digest('hex')
+
+  async function installWhileMsiExitsWith(exitCode: number) {
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      requested.push(url)
+      if (url.endsWith('/index.json')) {
+        return new Response(JSON.stringify([{ version: 'v22.17.0', lts: 'Jod', files: ['win-x64-msi'] }]))
+      }
+      if (url.endsWith('/SHASUMS256.txt')) return new Response(`${msiSha256}  node-v22.17.0-x64.msi\n`)
+      if (url.endsWith('/node-v22.17.0-x64.msi')) {
+        return new Response(msiBytes, { headers: { 'content-length': String(msiBytes.byteLength) } })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+    const msiRuns: NodeRuntimeProcessPlan[] = []
+    const runProcess = vi.fn(async (plan: NodeRuntimeProcessPlan) => {
+      if (plan.elevation !== 'uac') {
+        return {
+          ...await successfulCommand(plan),
+          stdout: JSON.stringify({ status: 'Valid', subject: 'CN=OpenJS Foundation, O=OpenJS Foundation, C=US' }),
+        }
+      }
+      msiRuns.push(plan)
+      // 授权代理把 msiexec 的退出码原样带回来；1618、1603 都不是它自己的码，runCommand 的错误照原样抛出。
+      throw new CommandRunnerError(`命令执行失败（退出码 ${exitCode}）：powershell.exe`, {
+        code: 'EXIT_NON_ZERO',
+        executable: systemPowerShell,
+        argv: [],
+        exitCode,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        outputBytes: 0,
+        maxOutputBytes: 2 * 1024 * 1024,
+        durationMs: 1,
+      })
+    })
+    const progress: string[] = []
+    const failure = await installNodeRuntime({
+      networkRegion: 'mainland-china',
+      architecture: 'x64',
+      preferWinget: false,
+      temporaryDirectoryMode: 'same-user',
+      onProgress: (event) => progress.push(`${event.phase}:${event.message}`),
+      dependencies: { fetch: fetchMock, runProcess },
+    }).then(() => null, (error: unknown) => error)
+    return { failure, requested, msiRuns, progress }
+  }
+
+  it.runIf(process.platform === 'win32')('stops at the first download source instead of downloading the package again', async () => {
+    const { failure, requested, msiRuns, progress } = await installWhileMsiExitsWith(1618)
+    const message = `Node.js LTS 自动安装失败。国内镜像：${installerBusy}`
+
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error ? failure.message : null).toBe(message)
+    expect(msiRuns).toHaveLength(1)
+    expect(requested.length).toBeGreaterThan(0)
+    expect(requested.every((url) => url.startsWith('https://npmmirror.com/'))).toBe(true)
+    expect(progress.some((entry) => entry.includes('正在尝试备用下载源'))).toBe(false)
+    expect(progress.at(-1)).toBe(`error:${message}`)
+  })
+
+  it.runIf(process.platform === 'win32')('still moves on to the backup source when the installer fails for another reason', async () => {
+    const { failure, requested, msiRuns } = await installWhileMsiExitsWith(1603)
+
+    expect(msiRuns).toHaveLength(2)
+    expect(requested.some((url) => url.startsWith('https://nodejs.org/'))).toBe(true)
+    expect(failure instanceof Error ? failure.message : null)
+      .toContain('；Node.js 官方源：Windows Installer 安装失败（错误 1603）')
   })
 })

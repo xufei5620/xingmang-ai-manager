@@ -364,4 +364,24 @@ describe('external tool configuration', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe('{"concurrent":true}')
     expect(fs.readdirSync(path.dirname(target)).some((name) => name.endsWith('.tmp'))).toBe(false)
   })
+
+  it('does not clobber a change saved while the configuration was held', async () => {
+    const { home, target } = existingConfig('workbuddy', '{}')
+    const originalRename = fs.renameSync.bind(fs)
+    let held = false
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (!held && path.resolve(String(to)) === path.resolve(target)) {
+        held = true
+        fs.writeFileSync(target, '{"concurrent":true}', 'utf8')
+        throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+      }
+      originalRename(from, to)
+    })
+
+    await expect(saveExternalToolConfig('workbuddy', platform, { userHome: home }))
+      .rejects.toThrow('在保存前已变化')
+    expect(held).toBe(true)
+    expect(fs.readFileSync(target, 'utf8')).toBe('{"concurrent":true}')
+    expect(fs.readdirSync(path.dirname(target)).some((name) => name.endsWith('.tmp'))).toBe(false)
+  })
 })

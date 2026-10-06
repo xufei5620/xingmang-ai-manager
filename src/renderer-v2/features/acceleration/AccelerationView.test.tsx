@@ -81,9 +81,28 @@ describe('acceleration conflict notice', () => {
   })
 
   it('leaves an ordinary failure with its own strip and no override button', () => {
-    const markup = render(state({ phase: 'error', error: '加速没能打开：这条线路现在连不通。点「选择加速线路」换一条线路试试。' }))
+    const markup = render(state({ phase: 'error', error: '加速没能打开：这条线路现在连不通。点「换线路」换一条线路试试。' }))
     expect(markup).toContain('acceleration-error')
     expect(markup).not.toContain('data-testid="acceleration-conflict"')
+  })
+
+  // 窗口矮的时候工作台下面在第一屏外，提示条放在那里等于没说。
+  it('puts every strip between the heading and the workbench', () => {
+    const workbench = (markup: string) => markup.indexOf('class="acceleration-workbench"')
+    const failed = render(state({ phase: 'error', error: '加速没能打开：加速组件刚要运行就被拦下了。' }))
+    expect(failed.indexOf('data-testid="acceleration-error"')).toBeGreaterThan(-1)
+    expect(failed.indexOf('data-testid="acceleration-error"')).toBeLessThan(workbench(failed))
+    const conflict = render(state({ phase: 'error', error: accelerationConflictNotice, conflicts: ['system-proxy'] }))
+    expect(conflict.indexOf('data-testid="acceleration-conflict"')).toBeLessThan(workbench(conflict))
+    const damaged = render(state({ phase: 'unavailable', remainingSeconds: null, line: null, unavailableReason: 'bundle-damaged' }))
+    expect(damaged.indexOf('data-testid="acceleration-bundle-damaged"')).toBeLessThan(workbench(damaged))
+  })
+
+  it('marks a failure with an alert sign rather than a question mark', () => {
+    const markup = render(state({ phase: 'error', error: '加速没能打开：加速组件刚要运行就被拦下了。' }))
+    const strip = markup.slice(markup.indexOf('data-testid="acceleration-error"'))
+    expect(strip).toContain('lucide-circle-alert')
+    expect(strip.slice(0, strip.indexOf('</div>'))).not.toContain('lucide-circle-help')
   })
 
   it('shows nothing extra on a machine with no conflict', () => {
@@ -160,23 +179,6 @@ describe('acceleration line list keys', () => {
   })
 })
 
-describe('acceleration started by the app', () => {
-  const connected = { phase: 'active' as const, connectedAt: '2026-09-20T00:00:00Z', remainingSeconds: 900, line: rememberedLine }
-
-  it('says the connection was made automatically for Codex Desktop and how to stop it', () => {
-    const markup = render(state({ ...connected, autoStartedBy: 'codex-desktop' }))
-    expect(markup).toContain('data-testid="acceleration-auto-started"')
-    expect(markup).toContain('打开 Codex 桌面端时自动连上的')
-    expect(markup).toContain('停止加速')
-  })
-
-  it('keeps the usual line for a connection the user made', () => {
-    const markup = render(state(connected))
-    expect(markup).not.toContain('acceleration-auto-started')
-    expect(markup).toContain('加速连接已就绪')
-  })
-})
-
 describe('acceleration bundle damaged', () => {
   const damaged = () => state({ phase: 'unavailable', remainingSeconds: null, line: null, unavailableReason: 'bundle-damaged' })
 
@@ -191,6 +193,15 @@ describe('acceleration bundle damaged', () => {
     expect(markup).not.toContain('刷新线路状态')
     // 安装器是否保留聊天记录没实测过，不许承诺。
     expect(markup).not.toContain('聊天记录')
+  })
+
+  // 出错条上那颗「重新检查」重读的是加速状态，这颗查的是文件，名字分开。
+  it('names the file check after what it checks', () => {
+    const markup = render(damaged())
+    expect(markup).toMatch(/data-testid="acceleration-bundle-recheck"[^>]*>.*?检查加速文件/)
+    expect(markup).toContain('然后点「检查加速文件」')
+    expect(markup).toContain('照下面的办法处理后点「检查加速文件」')
+    expect(markup).not.toContain('点「重新检查」')
   })
 
   it('keeps the plain waiting copy when no reason is given', () => {
@@ -209,5 +220,39 @@ describe('acceleration bundle damaged', () => {
   it('says the files are still wrong after a failed recheck', () => {
     expect(bundleDamagedNotice('damaged').title).toBe('加速文件还是不对。请先在杀毒软件里恢复，或者重新安装一次星芒。')
     expect(bundleDamagedNotice(null).title).toBe('加速用的文件被删掉或改动了，现在开不了加速。')
+  })
+})
+
+describe('acceleration line switch', () => {
+  it('offers 换线路 in the line row before connecting', () => {
+    const markup = render(state())
+    expect(markup).toMatch(/data-testid="acceleration-line-picker-toggle"[^>]*>.*?换线路/)
+    expect(markup).not.toContain('选择加速线路')
+    const row = markup.slice(markup.indexOf('class="acceleration-route-info"'), markup.indexOf('class="acceleration-stage-bottom"'))
+    expect(row).toContain('data-testid="acceleration-line-picker-toggle"')
+  })
+
+  it('takes the switch away once connected', () => {
+    expect(render(state({ phase: 'active', connectedAt: '2026-09-22T00:00:00Z', line: rememberedLine }))).not.toContain('acceleration-line-picker-toggle')
+  })
+})
+
+describe('acceleration trial used up', () => {
+  const exhausted = () => state({ phase: 'exhausted', remainingSeconds: 0 })
+
+  it('turns the main button into contacting support', () => {
+    const markup = render(exhausted())
+    expect(markup).toMatch(/data-testid="acceleration-contact-support"[^>]*>.*?联系客服/)
+    expect(markup).not.toContain('data-testid="acceleration-session-start"')
+    expect(markup).not.toContain('免费体验已用完')
+    expect(markup).toContain('免费体验已经用完，后续服务请联系客服')
+    expect(markup).toContain('额度已用完')
+  })
+
+  it('drops the line switch and the small help button under the globe', () => {
+    const markup = render(exhausted())
+    expect(markup).not.toContain('acceleration-line-picker-toggle')
+    expect(markup).not.toContain('acceleration-status-refresh')
+    expect(markup).not.toContain('帮助与客服')
   })
 })

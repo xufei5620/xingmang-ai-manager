@@ -45,6 +45,8 @@ describe('requiredUpdateGate', () => {
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }))).toMatchObject({ progressDetail: null })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }))).toMatchObject({ action: 'install', label: '立即更新' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }), true)).toMatchObject({ action: null, label: '正在重启安装…' })
+    // Linux only opens the system installer window; the app does not restart itself.
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', installMethod: 'system-installer' }), true)).toMatchObject({ action: null, label: '正在打开安装窗口…' })
   })
 
   it('turns a failure into a retry with the reason', () => {
@@ -52,6 +54,14 @@ describe('requiredUpdateGate', () => {
       .toMatchObject({ action: 'check', label: '重新下载', failure: '网络断了', failureTitle: '下载更新失败' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'X', message: '没能启动安装' } }), true))
       .toMatchObject({ action: 'install', label: '重新安装', failure: '没能启动安装', failureTitle: '安装更新失败' })
+  })
+
+  it('drops the reinstall action when a Mac rejected the update signature', () => {
+    const message = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message } })))
+      .toMatchObject({ action: null, manualReinstall: true, failure: message, failureTitle: '安装更新失败' })
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'X', message: '没能启动安装' } })))
+      .toMatchObject({ action: 'install', manualReinstall: false })
   })
 
   it('titles and labels a failure exactly like the updates page and the home bubble', () => {

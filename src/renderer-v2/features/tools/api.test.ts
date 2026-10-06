@@ -112,6 +112,23 @@ describe('CLI install version passthrough', () => {
   })
 })
 
+describe('CLI uninstall options passthrough', () => {
+  it('hands the reinstall request to the CLI uninstall and keeps a plain uninstall plain', async () => {
+    const uninstallCli = vi.fn(async () => ({ outcome: 'uninstalled', previousVersion: '2.1.276' }))
+    const uninstallCodexDesktop = vi.fn(async () => ({ outcome: 'uninstalled', previousVersion: null }))
+    const api = createToolsApi({ uninstallCli, uninstallCodexDesktop } as unknown as XingmangApi)
+
+    await api.uninstall('claude', { reinstall: true })
+    expect(uninstallCli).toHaveBeenCalledWith('claude', { reinstall: true })
+
+    await api.uninstall('claude')
+    expect(uninstallCli).toHaveBeenLastCalledWith('claude', undefined)
+
+    await api.uninstall('codexDesktop', { reinstall: true })
+    expect(uninstallCodexDesktop).toHaveBeenCalledWith()
+  })
+})
+
 describe('CLI install cancellation routing', () => {
   it('forwards a CLI cancel to the main process', async () => {
     const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
@@ -136,6 +153,17 @@ describe('CLI install cancellation routing', () => {
 
     await expect(api.cancelInstall('codexDesktop')).resolves.toEqual({ cancelled: true, reason: null })
     expect(cancelCodexDesktopInstall).toHaveBeenCalledWith()
+    expect(cancelCliInstall).not.toHaveBeenCalled()
+  })
+
+  it('sends a desktop client cancel to its own channel', async () => {
+    const refusal = { cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' }
+    const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const cancelExternalClientInstall = vi.fn(async () => refusal)
+    const api = createToolsApi({ cancelCliInstall, cancelExternalClientInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelExternalInstall('claudeDesktop')).resolves.toEqual(refusal)
+    expect(cancelExternalClientInstall).toHaveBeenCalledWith('claudeDesktop')
     expect(cancelCliInstall).not.toHaveBeenCalled()
   })
 

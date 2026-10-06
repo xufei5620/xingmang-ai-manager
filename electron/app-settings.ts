@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { relaySites } from './relay-sites'
+import { relaySites, type RelayEndpointSelections } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
@@ -11,6 +11,7 @@ import {
   ensureSafeDataDirectory,
   readSafeUtf8FileSync,
   removeSafeDataFile,
+  renameWithTransientRetry,
 } from './safe-local-data'
 
 export type AppTheme = 'light' | 'dark'
@@ -53,6 +54,10 @@ export interface AppSettings {
    * crashing.
    */
   relaySiteId?: string
+  /** Absent uses the primary line; entries record an explicit choice for each account site. */
+  relayEndpointIds?: RelayEndpointSelections
+  /** IPC runtime snapshot only: the lines applied at startup, never persisted by settings writes. */
+  readonly activeRelayEndpointIds?: RelayEndpointSelections
   /**
    * Pinned download-source order. Absent = 'auto' (probe the region, the
    * entire install base's behavior pre-2.4). Unknown values degrade to
@@ -158,6 +163,7 @@ export interface AppSettingsUpdate {
   runDiagnosticsOnStartup?: boolean
   sidebarMoreExpanded?: boolean
   relaySiteId?: string
+  relayEndpointIds?: RelayEndpointSelections
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
@@ -230,6 +236,15 @@ function parseRelaySiteId(value: unknown): string | undefined {
     : undefined
 }
 
+/** Stored selections cannot supply a URL or borrow another account site's line. */
+export function parseRelayEndpointSelections(value: unknown): RelayEndpointSelections | undefined {
+  if (!isRecord(value)) return undefined
+  const selections: RelayEndpointSelections = {}
+  if (value.solov === 'primary' || value.solov === 'direct') selections.solov = value.solov
+  if (value['solov-api'] === 'primary') selections['solov-api'] = 'primary'
+  return Object.keys(selections).length ? selections : undefined
+}
+
 function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
   return value === 'mirror-first' || value === 'official-first' ? value : undefined
 }
@@ -290,6 +305,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   // check would silently swallow a (pathological but type-legal) empty-string
   // site id, and calling the parser twice invites the two results drifting.
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
+  const relayEndpointIds = parseRelayEndpointSelections(value.relayEndpointIds)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
   const codexDesktopChineseRuntimePatch = parseChineseRuntimePatch(value.codexDesktopChineseRuntimePatch)
@@ -316,6 +332,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // than failing the whole read, matching every other optional field here.
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(relayEndpointIds !== undefined ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
@@ -398,12 +415,15 @@ async function performAtomicSettingsWrite(
       assertSafeDataFile(filePath, '应用设置文件')
       assertSafeDataFile(backupPath, '应用设置备份')
       await fsPromises.copyFile(filePath, backupTemporaryPath, fs.constants.COPYFILE_EXCL)
-      await fsPromises.rename(backupTemporaryPath, backupPath)
+      await renameWithTransientRetry(backupTemporaryPath, backupPath, () => {
+        assertSafeDataFile(backupPath, '应用设置备份')
+      })
     }
 
-    await hooks.beforeReplace?.(filePath)
-    assertSafeDataFile(filePath, '应用设置文件')
-    await fsPromises.rename(temporaryPath, filePath)
+    await renameWithTransientRetry(temporaryPath, filePath, async () => {
+      await hooks.beforeReplace?.(filePath)
+      assertSafeDataFile(filePath, '应用设置文件')
+    })
   } finally {
     await Promise.allSettled([
       removeIfPresent(temporaryPath),
@@ -435,6 +455,10 @@ export function writeAppSettings(
 export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): AppSettings {
   const sidebarMoreExpanded = update.sidebarMoreExpanded ?? base.sidebarMoreExpanded ?? false
   const relaySiteId = update.relaySiteId ?? base.relaySiteId
+  const relayEndpointIds = {
+    ...parseRelayEndpointSelections(base.relayEndpointIds),
+    ...parseRelayEndpointSelections(update.relayEndpointIds),
+  }
   const mirrorPolicy = update.mirrorPolicy === 'auto'
     ? undefined
     : update.mirrorPolicy ?? base.mirrorPolicy
@@ -472,6 +496,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     runDiagnosticsOnStartup: update.runDiagnosticsOnStartup ?? base.runDiagnosticsOnStartup,
     ...(sidebarMoreExpanded ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(Object.keys(relayEndpointIds).length ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),

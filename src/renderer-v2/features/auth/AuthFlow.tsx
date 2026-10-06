@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 're
 import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Eye, EyeOff, Headset, KeyRound, LogIn, Mail, RefreshCw, ShieldCheck, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
+import { sessionOnlyLoginNotice } from '../app/remembered-login'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
@@ -42,11 +43,15 @@ export interface AuthFlowProps {
   onAuthenticated: (result: AccountLoginResult, options?: { rememberError?: string; notice?: string }) => void
   onClose: () => void
   onHelp?: () => void
+  /** Local connection settings remain reachable before the first successful login. */
+  connectionSettings?: (onBusyChange: (busy: boolean) => void) => ReactNode
   /** 服务正在维护时的提示。登录框是模态的，会盖住角落里那条，所以在框里再放一份。 */
   notice?: ReactNode
+  /** 这台电脑没法安全保存登录（Linux 没有系统密码保管）：不给「记住密码」，改说一句会怎样。 */
+  sessionOnly?: boolean
 }
 
-export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, notice }: AuthFlowProps) {
+export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, connectionSettings, notice, sessionOnly = false }: AuthFlowProps) {
   const [api] = useState(() => providedApi ?? getAuthApi())
   const [mode, setMode] = useState<AuthMode>(initialMode)
   const [siteId, setSiteId] = useState<AccountSiteId>(initialMode === 'register' ? 'solov' : initialSiteId)
@@ -56,6 +61,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [sourceOpen, setSourceOpen] = useState(initialSiteId !== 'solov')
   const sourceVisible = sourceOpen || siteId !== 'solov'
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
+  const [routesOpen, setRoutesOpen] = useState(false)
+  const [routesBusy, setRoutesBusy] = useState(false)
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [statusError, setStatusError] = useState('')
   const [statusRevision, setStatusRevision] = useState(0)
@@ -107,7 +114,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const resetCooldown = useCooldown()
   useEffect(() => () => { epoch.current++; locked.current = false }, [])
   useEffect(() => {
-    if (legal) { focusedStep.current = ''; return }
+    if (legal || routesOpen) { focusedStep.current = ''; return }
     if (busy) return
     const stepKey = `${siteId}:${mode}:${mode === 'recovery' ? `${recoveryStep}${tempShown ? 'temp' : ''}` : ''}:${twoFactor ? twoFactor.backup ? 'backup' : 'code' : ''}`
     if (focusedStep.current === stepKey) return
@@ -117,7 +124,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       if (input instanceof HTMLInputElement && !input.disabled) { input.focus(); focusedStep.current = stepKey }
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [siteId, mode, recoveryStep, tempShown, legal, busy, identifier, twoFactor])
+  }, [siteId, mode, recoveryStep, tempShown, legal, routesOpen, busy, identifier, twoFactor])
   useEffect(() => {
     if (!focusTarget || busy) return
     const frame = window.requestAnimationFrame(() => {
@@ -251,8 +258,12 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       notice = '密码已改好，已经登录'
     }
     let rememberError: string | undefined
-    try { await api.setRemembered(login.remember ? { identifier: login.username, password } : null, login.siteId) }
-    catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
+    // 没法安全保存时，本机以前记住的那份密码读不到也写不进，但别顺手把它删了：
+    // 系统密码保管恢复以后它还能用。
+    if (!sessionOnly) {
+      try { await api.setRemembered(login.remember ? { identifier: login.username, password } : null, login.siteId) }
+      catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
+    }
     if (current()) { setPassword(''); leaveTwoFactor(); clearRecoveredPassword(); onAuthenticated(result, { rememberError, notice }) }
   }
   const submitTwoFactor = () => {
@@ -431,6 +442,9 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   </> : null
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
+  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重启星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
+    {connectionSettings(setRoutesBusy)}
+  </Dialog>
   const agreement = (checked: boolean, onChange: (checked: boolean) => void) => <div className="auth-agreement"><label><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} data-testid="auth-agree" disabled={busy} />我已阅读并同意</label><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('user-agreement')} testId="auth-terms">用户协议</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('privacy-policy')} testId="auth-privacy">隐私政策</Button></div>
   const emailSuggestion = emailChecked ? suggestEmailCorrection(registration.email) : null
   const field = (label: string, id: string, value: string, onChange: (value: string) => void, options: { type?: string; autoComplete?: string; placeholder?: string; error?: string; password?: boolean; maxLength?: number; onBlur?: (event: FocusEvent<HTMLInputElement>) => void } = {}) => <div className="auth-field" key={id}><Input id={id} label={label} testId={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={busy} aria-label={label} {...options} /></div>
@@ -474,7 +488,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {mode === 'login' && !twoFactor && <>
         {field(siteId === 'solov-api' ? '注册邮箱' : '用户名或邮箱', 'login-account', identifier, (value) => { loginTouched.current = true; setIdentifier(value) }, { autoComplete: 'username', placeholder: siteId === 'solov-api' ? '输入历史账号的注册邮箱' : '输入用户名或邮箱' })}
         {field('密码', 'login-password', password, (value) => { loginTouched.current = true; setPassword(value) }, { password: true, autoComplete: 'current-password', placeholder: '输入密码' })}
-        <label className="auth-checkbox"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} data-testid="login-remember" />记住密码</label>
+        {sessionOnly ? <p className="auth-hint" data-testid="login-session-only">{sessionOnlyLoginNotice}</p>
+          : <label className="auth-checkbox"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} data-testid="login-remember" />记住密码</label>}
         {agreement(agreed, setAgreed)}
       </>}
       {mode === 'register' && <>
@@ -500,7 +515,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
           <p className="auth-hint" data-testid="forgot-set-hint">重置码没问题。设一个你自己记得住的新密码，设好直接登录。</p>
           {field('新密码', 'forgot-set-password', chosen.password, (value) => updateChosen('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: chosenErrors.password })}
           {field('再输一次', 'forgot-set-confirm', chosen.confirm, (value) => updateChosen('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '再次输入新密码', maxLength: 20, error: chosenErrors.confirm })}
-          <label className="auth-checkbox"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} data-testid="forgot-remember" />记住密码</label>
+          {sessionOnly ? <p className="auth-hint" data-testid="forgot-session-only">{sessionOnlyLoginNotice}</p>
+            : <label className="auth-checkbox"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} data-testid="forgot-remember" />记住密码</label>}
           <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={showTempPassword} testId="forgot-use-temp">先不设，用系统给的临时密码</Button></div>
         </>}
         {recoveryStep === 3 && tempShown && <><div className="auth-reset-success"><Check size={22} aria-hidden="true" /><strong>密码已重置</strong></div><div className="auth-field"><label htmlFor="forgot-new-password">临时密码</label><div className="auth-password-result"><Input id="forgot-new-password" testId="forgot-new-password" readOnly type={reveal ? 'text' : 'password'} value={newPassword} aria-label="临时密码" mono /><Button variant="ghost" icon={reveal ? EyeOff : Eye} onClick={() => setReveal(!reveal)} testId="forgot-show-password">{reveal ? '隐藏' : '显示'}</Button><Button icon={Copy} onClick={copyPassword} disabled={busy} testId="forgot-copy-password">复制</Button></div>{copyFallback && <p className="auth-hint">选中临时密码后使用系统复制操作，再返回登录。</p>}</div></>}
@@ -509,6 +525,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
       {exits && <div className="auth-form-actions auth-exits" data-testid="auth-exits">{exits}</div>}
+      {connectionSettings && !twoFactor && !(mode === 'recovery' && recoveryStep === 3) && <Button size="xs" variant="ghost" disabled={busy} onClick={() => setRoutesOpen(true)} testId="auth-connection-settings">切换连接线路</Button>}
       {browserAuthentication && <Button variant="ghost" icon={ExternalLink} onClick={openAccountWebsite} disabled={busy} testId="auth-open-website">前往{source.label}官网</Button>}
       {mode !== 'recovery' && status?.turnstileCheckEnabled && onHelp && !exitsVisible && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
     </div>

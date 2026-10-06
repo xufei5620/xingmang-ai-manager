@@ -111,6 +111,18 @@
 .v2-usage-price-table tbody th small { display: block; margin-top: 6px; color: var(--text-2); font-weight: 400; }
 .v2-usage-price-table td { white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .v2-usage-price-table .is-matched { background: var(--ok-soft); }
+/* 只有摘要的记录：正文的位置说一句原文已经不在了。 */
+.v2-transcript-missing {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+/* 记录列表里没有「接着聊」的行：占着同样宽的一格，按钮和左边的信息上下对齐。 */
+.v2-row-action-placeholder {
+  display: inline-flex;
+  visibility: hidden;
+}
 .v2-transcript-message {
   border-top: 1px solid var(--line);
   padding: 16px 0;
@@ -122,13 +134,14 @@
 }
 .v2-business-backup-grid {
   display: grid;
-  grid-template-columns: 690px 292px;
+  /* 正文 1000 宽时左栏正好 690；窗口窄到正文不足 1000 时左栏先让，不撑出横向滚动。 */
+  grid-template-columns: minmax(0, 690px) 292px;
   align-items: start;
   gap: 18px;
 }
 .v2-business-settings-grid {
   display: grid;
-  grid-template-columns: 160px 816px;
+  grid-template-columns: 160px minmax(0, 1fr);
   gap: 24px;
   align-items: start;
 }
@@ -136,6 +149,9 @@
   display: grid;
   align-content: start;
   gap: 2px;
+  /* 右边内容长时往下滚，左边组名停在原处。 */
+  position: sticky;
+  top: 16px;
 }
 .v2-business-subnav button {
   min-height: 32px;
@@ -161,6 +177,43 @@
   font-size: var(--font-body);
   font-weight: 600;
 }
+/* 组名右边挂「正在保存更改…」，不单独占一行，保存时页面不往下跳。 */
+.v2-settings-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 22px;
+  margin: 0 0 8px 2px;
+}
+.v2-business-settings-grid .v2-settings-panel-head h2 {
+  margin: 0;
+}
+.v2-settings-panel-head [role='status'] {
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+}
+/* 同一张卡里分段的小标题（通知的「提醒哪些事」）。 */
+.v2-settings-section {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 16px 16px 4px;
+  border-top: 1px solid var(--line);
+}
+.v2-settings-section h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-body);
+  font-weight: 600;
+}
+.v2-settings-section span {
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+}
+.v2-settings-section + .xm-setting-row {
+  border-top: 0;
+}
 .v2-business-control {
   display: flex;
   gap: 8px;
@@ -185,23 +238,74 @@
 }
 .v2-business-stat-grid .xm-card-body { display: grid; gap: 4px; align-content: start; }
 .v2-business-stat-grid .xm-card-body small { display: block; color: var(--text-3); line-height: 1.5; }
+/* 和下面的卡片空 16（分页本身的 gap），不再自带下边距叠成 34。 */
 .v2-business-recharge-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   align-items: start;
-  gap: 18px;
-  margin-bottom: 18px;
+  gap: 16px;
 }
-.v2-business-account-panel {
+.v2-business-stat-grid.is-four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.v2-business-stat-grid.is-four .v2-business-amount {
+  font-size: 22px;
+}
+/* 个人中心：左边分组的子导航 160 宽、不跟着滚，右边和设置页一样宽。 */
+.v2-business-account-layout {
   display: grid;
-  gap: 18px;
-  padding-top: 18px;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.v2-business-account-panels {
+  min-width: 0;
+}
+.v2-business-account-panel,
+.v2-business-account-loading {
+  display: grid;
+  gap: 16px;
 }
 .v2-business-account-panel[hidden] {
   display: none;
 }
-.v2-business-account .xm-tabs {
-  white-space: nowrap;
+.v2-business-account-panel > .v2-business-stat-grid,
+.v2-business-account-loading > .v2-business-stat-grid {
+  margin: 0;
+}
+.v2-account-subnav {
+  gap: 14px;
+}
+.v2-account-subnav-group > div {
+  display: grid;
+  gap: 2px;
+}
+.v2-account-subnav-label {
+  display: block;
+  margin: 0 0 4px 10px;
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+}
+/* 顶部搜索「切换账号」翻到页头这颗按钮时亮的那一圈，比按钮大一点。 */
+.v2-account-switch-anchor {
+  display: inline-flex;
+  margin: -3px;
+  padding: 3px;
+  border-radius: calc(var(--radius-input) + 3px);
+}
+/* 读取中的灰色占位条（大数字、页头那句、实付）：和骨架屏一样闪，读到了原地换成字。 */
+.v2-business-placeholder {
+  display: inline-block;
+  width: 6em;
+  max-width: 100%;
+  height: 0.9em;
+  border-radius: 4px;
+  background: var(--panel-2);
+  vertical-align: middle;
+  animation: xm-pulse 1.2s ease-in-out infinite alternate;
+}
+:is([data-reduce-motion='1'], [data-reduced-motion='true'], [data-system-reduced-motion='true']) .v2-business-placeholder {
+  animation: none;
 }
 .v2-business-code,
 .v2-business-legal {
@@ -229,37 +333,61 @@
 }
 .v2-business-profile-aside {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 .v2-business-profile-avatar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 24px;
+  gap: 14px;
+  margin-bottom: 16px;
 }
-.v2-business-profile-avatar > span {
+.v2-business-profile-avatar > div {
   display: grid;
-  place-items: center;
-  width: 72px;
-  height: 72px;
-  border-radius: 22px;
-  background: var(--xm-navy);
-  color: var(--xm-gold);
-  flex: none;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
 }
-.v2-business-profile-avatar p {
-  margin: 4px 0 8px;
-  color: var(--text-2);
-}
-.v2-business-profile-avatar small {
-  display: block;
-  color: var(--text-3);
-  font-size: var(--font-small-compact);
-  margin-top: 6px;
+.v2-business-profile-avatar strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .v2-business-profile-fields {
   display: grid;
-  gap: 0;
+  gap: 16px;
+}
+/* 「显示名称」输入框和「保存」放一行；用户名、邮箱、密码是只读的一行字：左边标签，右边值。 */
+.v2-business-profile-name {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.v2-business-profile-name > .xm-field {
+  flex: 1;
+}
+.v2-business-profile-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 12px;
+}
+.v2-business-profile-row > span {
+  color: var(--text-2);
+  font-size: var(--font-small);
+}
+.v2-business-profile-row > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.v2-business-profile-row > small {
+  grid-column: 2;
+  color: var(--text-3);
+  font-size: var(--font-micro);
+}
+.v2-business-profile-row > .xm-btn {
+  justify-self: start;
 }
 .v2-business-profile-fields .xm-field > label {
   font-size: var(--font-small);
@@ -282,24 +410,6 @@
   flex: 1;
   min-width: 0;
 }
-.v2-business-account-identity {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  text-align: left;
-}
-.v2-business-account-identity strong {
-  font-size: var(--font-body);
-  font-weight: 600;
-}
-.v2-business-account-identity small {
-  display: block;
-  margin-top: 3px;
-  font-size: var(--font-micro-compact);
-  font-weight: 400;
-  color: var(--text-2);
-  line-height: 1.6;
-}
 .v2-local-avatar {
   display: inline-grid;
   place-items: center;
@@ -315,6 +425,12 @@
   height: 36px;
   border-radius: 11px;
   font-size: var(--font-body-l);
+}
+.v2-local-avatar-56 {
+  width: 56px;
+  height: 56px;
+  border-radius: 17px;
+  font-size: 21px;
 }
 .v2-local-avatar-72 {
   width: 72px;
@@ -382,15 +498,116 @@
   font-size: 12px;
   border-bottom: 1px solid var(--line);
 }
+/* 表头放进带内边距的卡片时和下面的行一样通到两边，表头自带下边线，紧跟的那一行不再叠一道。 */
+.xm-card-md > .xm-card-body > .v2-business-table-head:first-child { margin: -14px -16px 0; }
+.v2-business-table-head + :is(.xm-list-row, .xm-tool-row) { border-top: 0; }
 .v2-business-help { color: var(--text-3); line-height: 1.6; }
 .v2-business-table-row { display: grid; grid-template-columns: 1fr 240px 200px; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
 .v2-business-table-row:last-child { border-bottom: 0; }
+/*
+ * 安装卸载页：表头和每行同一套三栏——工具约四成（图标单独一格，名字和厂商上下两行）、
+ * 版本与状态约三成、操作约两成半（主按钮在左，「…」贴最右）。有百分比时整行底下一道细进度条。
+ */
+.v2-maintenance-table > :is(.v2-business-table-head, .v2-maintenance-row) {
+  display: grid;
+  /* 操作那一格最窄也要放得下「重新安装」「正在停止」「…」三颗（约 238 宽，开「大字」再宽一点），窗口窄时先让前两栏。 */
+  grid-template-columns: 32px minmax(0, 8fr) minmax(0, 6fr) minmax(248px, 5fr);
+  column-gap: 12px;
+}
+.v2-maintenance-table > .v2-business-table-head > :first-child { grid-column: span 2; }
+.v2-maintenance-table > .v2-maintenance-row:first-child { border-top: 0; }
+.v2-maintenance-row > .xm-row-actions > .xm-menu { margin-left: auto; }
+.v2-maintenance-row-progress { grid-column: 2 / -1; margin-top: -4px; }
+.v2-tool-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.v2-tool-status-reason { display: block; margin-top: 3px; }
+/* 安装日志最高约八行，多了在卡里滚。 */
+.v2-maintenance-log { max-height: calc(1.65em * 8); }
+/* 反馈页「报告会自动脱敏」：一行细条，不再是一大块提示。 */
+.v2-feedback-privacy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: var(--font-small);
+  line-height: 1.5;
+}
+.v2-feedback-privacy > svg { flex: none; color: var(--accent-2); }
+.v2-feedback-privacy > span { flex: 1; min-width: 0; }
+/*
+ * 运行日志一条一行：时间、固定宽的级别字、内容（太长打省略号）、来源、「详情 ›」，整行点开详情。
+ * 时间那一格按「10月12日 18:02:54」留宽，来源那一格按最长的四个字留宽，各行才对得齐。
+ */
+.v2-feedback-log {
+  display: grid;
+  grid-template-columns: 112px 28px minmax(0, 1fr) 56px auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-small);
+  text-align: left;
+  cursor: pointer;
+}
+.v2-feedback-log.has-year { grid-template-columns: 152px 28px minmax(0, 1fr) 56px auto; }
+.v2-feedback-log:first-child { border-top: 0; }
+.v2-feedback-log:hover { background: var(--panel-hover); }
+.v2-feedback-log:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.v2-feedback-log > time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.v2-feedback-log-level { font-size: 11px; font-weight: 600; color: var(--text-3); }
+.v2-feedback-log-level.is-error { color: var(--bad); }
+.v2-feedback-log-level.is-warn { color: var(--warn); }
+.v2-feedback-log-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-feedback-log-source { text-align: right; }
+.v2-feedback-log-source,
+.v2-feedback-log-more { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.v2-feedback-log-next {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--font-small);
+  cursor: pointer;
+}
+.v2-feedback-log-next:hover { background: var(--panel-hover); }
+.v2-feedback-log-next:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .v2-business-chart {
   display: flex;
   align-items: flex-end;
   gap: 8px;
   height: 180px;
   padding: 8px 0 26px;
+}
+.v2-business-chart-empty {
+  flex: 1;
+  align-self: stretch;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--text-2);
+}
+.v2-business-chart-empty p {
+  margin: 0;
 }
 .v2-business-chart-column {
   flex: 1;
@@ -450,10 +667,10 @@
   margin: 0;
   accent-color: var(--accent);
 }
+/* 只在个人中心的分页里用：和下面表格的 16 由分页本身的 gap 给，不再自带下边距叠成 32。 */
 .v2-business-filters {
   display: grid;
   gap: 12px;
-  margin-bottom: 16px;
 }
 .v2-business-filters > div:first-child {
   display: grid;
@@ -462,6 +679,97 @@
 }
 .v2-business-filters .xm-field > label {
   font-size: var(--font-small-compact);
+}
+/* 调用明细、异步任务：第一行只放常用的三个框和「查询」「展开筛选」，其余展开才出。 */
+.v2-business-filters.is-collapsible > .v2-business-filters-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.v2-business-filters-main > .xm-field {
+  flex: 1 1 160px;
+}
+.v2-business-filters-main > .v2-business-control {
+  flex: none;
+}
+.v2-business-filters-more {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+/* 「消耗 · RPM · TPM」挂在「调用明细」表格标题那一行右边。 */
+.v2-business-usage-stats {
+  color: var(--text-2);
+  font-size: var(--font-small-compact);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 表格下面一行：翻页，和「20 条 / 页」。 */
+.v2-business-table-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-height: 56px;
+}
+.v2-business-table-foot > .xm-field {
+  width: 120px;
+}
+/* 「各工具累计用量」：总数那句在表格上面；「未启用」和工具名之间空 8。 */
+.v2-tool-usage-headline {
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--font-small);
+}
+.v2-tool-usage-off {
+  margin-left: 8px;
+}
+/* 「每个工具的额度上限」：一把工具密钥都还没有时整张卡收成一行灰字；有一部分没配时卡底一行。 */
+.v2-business-key-limits-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--font-small);
+}
+.v2-business-key-limits-missing {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: var(--font-small);
+}
+/* 没有别的账号时「已保存的账号」卡只剩两句话和一颗按钮（六-11 不点头的那一版）。 */
+.v2-business-saved-alone p {
+  margin: 0 0 4px;
+}
+.v2-business-saved-alone .xm-btn {
+  margin-top: 10px;
+}
+/* 充值：没有支付渠道时档位、金额和「充值」整块变灰。 */
+.v2-business-recharge-form {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.v2-business-recharge-form:disabled {
+  opacity: 0.5;
+}
+.v2-business-recharge-form:disabled .v2-business-tier {
+  cursor: not-allowed;
+}
+/* 「兑换」挪到充值码输入框右边同一行；邀请链接框右边是「复制链接」。 */
+.v2-business-redeem,
+.v2-business-invite-link {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.v2-business-redeem > .xm-field,
+.v2-business-invite-link > .xm-field {
+  flex: 1;
 }
 .v2-business-account-sync {
   margin: 0 16px 16px;
@@ -524,11 +832,21 @@
 .v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-connection-note > summary { cursor: pointer; }
 .v2-update-progress-detail { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
-.v2-curated-lead {
-  margin: 0;
-  padding: 14px 16px 0;
+/* 更新页的版本号用正文的大小和颜色，不再是行尾最不显眼的那一小格。 */
+.xm-row-meta > .v2-update-version { font-size: var(--font-body); color: var(--text); font-variant-numeric: tabular-nums; }
+/* 「安装前需要知道」不折叠：更新说明下面一道细线、一行小标题，下面直接写。 */
+.v2-update-install-note { padding-top: 12px; border-top: 1px solid var(--line); }
+.v2-update-install-note h3 { margin: 0 0 4px; font-size: var(--font-small); font-weight: 600; color: var(--text-2); }
+.v2-update-install-note p { margin: 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.65; }
+/* 技能页选到不能在这里导入的工具：工具条下面平平的一行字加「看怎么放」，不做成浮起来的提示框。 */
+.v2-skill-import-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
   color: var(--text-2);
   font-size: 13px;
+  line-height: 1.6;
 }
 .v2-curated-tags {
   display: flex;
@@ -587,10 +905,8 @@
 .v2-business-tier-bonus {
   overflow-wrap: anywhere;
 }
-.v2-business-tier-bonus {
-  color: var(--text-3);
-}
-.v2-business-tier-bonus.has-bonus,
+/* 只有真有赠送才写「送 X%」，没有赠送不写字。 */
+.v2-business-tier-bonus,
 .v2-business-tier-note .has-bonus {
   color: var(--ok);
   font-weight: 500;
@@ -606,3 +922,7 @@
 .v2-business-tier-note strong {
   color: var(--text);
 }
+/* 检查页「Codex 干活检查」：开关和「开始检查」并成一行，按钮靠右。 */
+.v2-health-consent { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.v2-health-consent > .xm-switch-wrap { min-width: 0; }
+.v2-health-consent > .xm-btn { flex: none; }

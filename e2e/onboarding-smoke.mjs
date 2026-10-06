@@ -3,6 +3,7 @@ import { _electron as electron } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { replayCollectedPromise } from './fixture-readiness.mjs'
+import { verifySignedOutSmokeIsolation, withSignedOutSmokeIsolation } from './signed-out-smoke-isolation.mjs'
 
 const artifactDir = path.resolve('artifacts')
 const testRoot = path.join(artifactDir, '.e2e-onboarding-user-data')
@@ -11,7 +12,7 @@ await fs.mkdir(artifactDir, { recursive: true })
 await fs.rm(testRoot, { recursive: true, force: true })
 await fs.mkdir(path.join(testHome, '.codex'), { recursive: true })
 
-const application = await electron.launch({
+const application = await electron.launch(await withSignedOutSmokeIsolation({
   args: ['.', `--user-data-dir=${path.join(testRoot, 'user-data')}`],
   env: {
     ...process.env,
@@ -21,7 +22,7 @@ const application = await electron.launch({
     XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
     XINGMANG_ONBOARDING_PREVIEW: '1',
   },
-})
+}, testRoot))
 // Same Windows-runner failure as electron-ci-smoke.mjs: V8 can collect the
 // inspector's promise wrapper while the main process is busy. The only call
 // routed through here reads window geometry, so replaying it changes nothing.
@@ -51,8 +52,8 @@ async function screenshot(name) {
 try {
   await page.getByRole('heading', { name: '选一种开始方式' }).waitFor()
   // 第十一批 1：新来的用户第一步默认选中推荐的 Codex 桌面端，一路「下一步」就能走；
-  // Linux 上没有桌面端，不替他选。
-  const recommended = process.platform === 'linux' ? '' : 'codexDesktop'
+  // Linux 上没有桌面端，推荐 Codex CLI（Linux 版拆分 ⑩）。
+  const recommended = process.platform === 'linux' ? 'codex' : 'codexDesktop'
   assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), recommended)
   assert.equal(await page.getByRole('radio', { checked: true }).count(), recommended ? 1 : 0)
   assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 5 : 6)
@@ -101,8 +102,9 @@ try {
   assert.ok(result.bounds.x >= result.workArea.x - windowFrameTolerance && result.bounds.y >= result.workArea.y - windowFrameTolerance)
   assert.ok(result.bounds.width <= result.workArea.width + windowFrameTolerance && result.bounds.height <= result.workArea.height + windowFrameTolerance)
   recordPass('window-stays-inside-work-area')
+  const networkIsolation = await verifySignedOutSmokeIsolation(application)
   await fs.writeFile(path.join(artifactDir, 'onboarding-smoke-result.json'), JSON.stringify({
-    ...result, pageErrors, horizontalOverflow: overflow, passedAssertions,
+    ...result, pageErrors, horizontalOverflow: overflow, passedAssertions, networkIsolation,
   }, null, 2) + '\n', 'utf8')
 } finally {
   await application.close()

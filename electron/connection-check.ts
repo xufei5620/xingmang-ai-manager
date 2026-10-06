@@ -55,6 +55,9 @@ export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, s
  *
  * `anthropic-messages` is Claude Code's: one `max_tokens: 1` generation,
  * unchanged since #143 so that tool's behaviour is exactly what it was.
+ * Claude Desktop's gateway check speaks it too, in the desktop's own Bearer
+ * form (gatewayMessagesShape), because that is the request its sign-in
+ * banner is decided by.
  *
  * `openai-models` is the read-only model catalogue the relay exposes at
  * `/v1/models`, and it is what the other three CLIs are probed with. It
@@ -197,6 +200,34 @@ function modelCatalogShape(path: string): ProbeShape {
       accept: 'application/json',
     }),
     body: () => null,
+  }
+}
+
+/**
+ * Claude Desktop 网关自己的启动检查，原样照抄：它每次启动、每次点「Check
+ * again」都拿配置里的密钥，按配置的 Bearer 方式向 `/v1/messages` 发一条内容
+ * 为「.」、`max_tokens: 1` 的消息，中转回 401 或 403 都弹「Couldn't sign in to
+ * Gateway / The provider rejected your credentials」（2.9939.4 安装包里的网关
+ * 探测）。只读模型清单答不出这一层：new-api 查清单不走计费，账号余额不足时清单
+ * 照样 200，发消息却是 403，于是本软件说「正常」、客户端说「凭据被拒」。所以
+ * 这里花客户端同样的一个字，问它同样的问题。
+ */
+function gatewayMessagesShape(): ProbeShape {
+  return {
+    protocol: 'anthropic-messages',
+    method: 'POST',
+    path: 'v1/messages',
+    headers: (apiKey) => ({
+      authorization: `Bearer ${apiKey}`,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      accept: 'application/json',
+    }),
+    body: (model) => ({
+      model,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: '.' }],
+    }),
   }
 }
 
@@ -387,6 +418,16 @@ export function buildModelCatalogProbe(
   apiKey: string,
 ): ConnectionProbeBuild {
   return planProbe(name, baseUrl, modelCatalogShape(relativePath), model, apiKey)
+}
+
+/** Claude Desktop 网关启动检查的同款请求（gatewayMessagesShape），地址是站点的 claude 裸域。 */
+export function buildGatewayMessagesProbe(
+  name: string,
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+): ConnectionProbeBuild {
+  return planProbe(name, baseUrl, gatewayMessagesShape(), model, apiKey)
 }
 
 export function sanitizeUpstreamDetail(value: string, secrets: readonly string[]): string {

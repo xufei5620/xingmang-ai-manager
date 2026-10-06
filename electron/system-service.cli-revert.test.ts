@@ -26,33 +26,37 @@ function recommendedCodexVersion(): string {
 }
 
 /**
- * 一台 Linux 机器上，Codex 已经装在用户自己的 npm 目录里（package.json 写着
- * installedVersion）。假 npm 装完就把 package.json 改成装上的那个版本，
- * 检测读的也是这份文件，所以前后两次检测看到的版本号和真机一致。
+ * 一台 Linux 机器上，Codex 已经装在本软件的托管目录里（package.json 写着
+ * installedVersion；Linux 版拆分 ② 起 Linux 和 macOS 一样装进托管目录）。假 npm
+ * 把包写进它拿到的暂存前缀，本软件核对后整体换进托管目录，检测读的也是那份
+ * package.json，所以前后两次检测看到的版本号和真机一致。
  */
 function createFixture(installedVersion: string | null) {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cli-revert-'))
   temporaryDirectories.push(temporaryRoot)
   const root = fs.realpathSync(temporaryRoot)
   const homeDirectory = path.join(root, 'home')
-  const userPrefix = path.join(root, 'npm-global')
+  const managedPrefix = path.join(homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm')
   const runtimeBin = path.join(root, 'runtime-bin')
   fs.mkdirSync(homeDirectory, { recursive: true })
-  fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
   fs.mkdirSync(runtimeBin, { recursive: true })
-  fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `prefix=${userPrefix}\n`)
   const npmExecutable = path.join(runtimeBin, 'npm')
   fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
   fs.chmodSync(npmExecutable, 0o700)
   vi.stubEnv('HOME', homeDirectory)
-  vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
+  vi.stubEnv('XDG_DATA_HOME', undefined)
+  vi.stubEnv('PATH', runtimeBin)
   vi.stubEnv('npm_config_prefix', undefined)
   vi.stubEnv('npm_config_userconfig', undefined)
 
-  const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
+  const packageRoot = path.join(managedPrefix, 'lib', 'node_modules', '@openai', 'codex')
+  function writePackage(prefix: string, version: string) {
+    const directory = path.join(prefix, 'lib', 'node_modules', '@openai', 'codex')
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: '@openai/codex', version }))
+  }
   function writeInstalledVersion(version: string) {
-    fs.mkdirSync(packageRoot, { recursive: true })
-    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@openai/codex', version }))
+    writePackage(managedPrefix, version)
   }
   function readInstalledVersion(): string | null {
     try {
@@ -98,7 +102,9 @@ function createFixture(installedVersion: string | null) {
         packages: { '': { dependencies: manifest.dependencies }, [`node_modules/${packageName}`]: { version, integrity } },
       }))
     } else if (spec.argv[0] === 'install' && spec.argv.includes('--global') && pendingVersion) {
-      writeInstalledVersion(pendingVersion)
+      const prefix = spec.argv.find((argument) => argument.startsWith('--prefix='))?.slice('--prefix='.length)
+      if (!prefix) throw new Error('Managed install omitted --prefix')
+      writePackage(prefix, pendingVersion)
     }
     return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout: '', stderr: '', outputBytes: 0, durationMs: 1 }
   })
@@ -106,10 +112,10 @@ function createFixture(installedVersion: string | null) {
     const version = readInstalledVersion()
     return version
       ? {
-          commandPath: path.join(userPrefix, 'bin', 'codex'),
+          commandPath: path.join(managedPrefix, 'bin', 'codex'),
           installDirectory: packageRoot,
           packageRoot,
-          npmPrefix: userPrefix,
+          npmPrefix: managedPrefix,
           packageVersion: version,
           source: 'npm',
         }

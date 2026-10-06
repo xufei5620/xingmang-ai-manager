@@ -1,4 +1,5 @@
 import {
+  buildGatewayMessagesProbe,
   buildModelCatalogProbe,
   runConnectionProbe,
   type ConnectionProbeBuild,
@@ -16,15 +17,18 @@ import type { ExternalToolId } from './external-tool-config'
  * 看到的只有一句「已配好」，客服除了让他删掉重配一遍之外没有别的线索。
  *
  * 这里补上的是**能验证的那一半**：把客户端自己的配置文件回读一遍，用里面真正
- * 写着的那把密钥，向该客户端真正会打的那个星芒地址核对一次当前账号的模型清单。
- * 清单是按令牌分组过滤的，所以密钥、分组、模型三层一次问完，并且不花额度
- * （与 Codex / Grok / Gemini 三个 CLI 的自检同一种探测，connection-check.ts）。
+ * 写着的那把密钥，向该客户端真正会打的那个星芒地址问一次。WorkBuddy 与
+ * OpenCode 核对当前账号的模型清单：清单是按令牌分组过滤的，所以密钥、分组、
+ * 模型三层一次问完，并且不花额度（与 Codex / Grok / Gemini 三个 CLI 的自检同一
+ * 种探测，connection-check.ts）。Claude Desktop 不一样：它自己每次启动都会发一
+ * 条一个字的检查消息，那条被拒就弹「凭据被拒」，而清单答不出余额这一层，所以
+ * 照它的样子发同一条（gatewayMessagesShape），花它同样的一个字。
  *
- * **不验证的那一半照实说**：客户端自己构造的那次对话请求（WorkBuddy 的
- * `/chat/completions`、OpenCode 的 `/responses`、Claude Desktop 网关的
- * `/v1/messages`）本机发不出来 —— 那是客户端进程在跑，不是本软件。所以成功
- * 结论的 evidence 里写明「客户端里实际发起的对话本机测不到」，不写成「全都
- * 正常」。宁可少说，也不假绿。
+ * **不验证的那一半照实说**：客户端里真正聊天时的那些请求（WorkBuddy 的
+ * `/chat/completions`、OpenCode 的 `/responses`、Claude Desktop 的会话）本机
+ * 发不出来 —— 那是客户端进程在跑，不是本软件。所以成功结论的 evidence 里写明
+ * 「客户端里实际发起的对话本机测不到」，不写成「全都正常」。宁可少说，也不
+ * 假绿。
  */
 
 export interface ExternalClientCheckResult extends ConnectionProbeReport {
@@ -57,20 +61,33 @@ export interface ExternalClientProbeInput {
 }
 
 /**
- * 模型清单的相对路径。**无 default 分支 + 非 void 返回类型 = 穷尽性保障**
+ * 每个客户端问哪一句。**无 default 分支 + 非 void 返回类型 = 穷尽性保障**
  * （AGENTS.md T2）：加第四个客户端时漏在这里是编译错。
  *
- * Claude Desktop 的网关地址是站点的 claude 裸域，另外两个写的是自带 `/v1`
- * 后缀的 codex 地址，所以两种拼法都落到同一个已实测过的 `/v1/models`。
+ * WorkBuddy 与 OpenCode 写的是自带 `/v1` 后缀的 codex 地址，拼上 `models` 落到
+ * 已实测过的 `/v1/models`。Claude Desktop 的网关地址是站点的 claude 裸域，照它
+ * 自己的启动检查发 `/v1/messages`：它弹不弹「凭据被拒」就看这一条。
  */
-function modelCatalogPath(tool: ExternalToolId): string {
+function probeFor(tool: ExternalToolId, name: string, baseUrl: string, model: string, apiKey: string): ConnectionProbeBuild {
   switch (tool) {
     case 'claudeDesktop':
-      return 'v1/models'
+      return buildGatewayMessagesProbe(name, baseUrl, model, apiKey)
     case 'workbuddy':
-      return 'models'
+      return buildModelCatalogProbe(name, baseUrl, 'models', model, apiKey)
     case 'opencode':
-      return 'models'
+      return buildModelCatalogProbe(name, baseUrl, 'models', model, apiKey)
+  }
+}
+
+/** 成功时本机确实问过的那一句，与 probeFor 一一对应。 */
+function verifiedWording(tool: ExternalToolId, name: string, model: string): string {
+  switch (tool) {
+    case 'claudeDesktop':
+      return `已照 ${name} 启动时的检查，用它配置里的密钥向 ${model} 发过一条一个字的测试消息，服务正常回复`
+    case 'workbuddy':
+      return `已用 ${name} 配置里的密钥核对当前账号的可用模型清单，${model} 在其中`
+    case 'opencode':
+      return `已用 ${name} 配置里的密钥核对当前账号的可用模型清单，${model} 在其中`
   }
 }
 
@@ -115,7 +132,7 @@ export function buildExternalClientProbe(input: ExternalClientProbeInput): Conne
     return blocked('config', `${name} 的配置里读不到可用的密钥或模型`,
       '在首页给这个客户端重新配置一次，保存后会自动再测一遍', model)
   }
-  return buildModelCatalogProbe(name, input.baseUrl, modelCatalogPath(input.tool), model, input.apiKey)
+  return probeFor(input.tool, name, input.baseUrl, model, input.apiKey)
 }
 
 /**
@@ -123,11 +140,11 @@ export function buildExternalClientProbe(input: ExternalClientProbeInput): Conne
  * 本软件管不着其请求路径的第三方客户端是过头话。这里只说本机确实问出来的那
  * 几层，剩下的一句写明没验证。
  */
-function describeSuccess(name: string, model: string | null): { summary: string; evidence: string } {
+function describeSuccess(tool: ExternalToolId, model: string | null): { summary: string; evidence: string } {
   const label = model ?? '所选模型'
   return {
     summary: `当前账号的密钥和模型 ${label} 都可用`,
-    evidence: `已用 ${name} 配置里的密钥核对当前账号的可用模型清单，${label} 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到`,
+    evidence: `${verifiedWording(tool, externalClientNames[tool], label)}；客户端里实际发起的对话由客户端自己发出，本机测不到`,
   }
 }
 
@@ -137,7 +154,7 @@ export async function runExternalClientCheck(
   dependencies: ConnectionProbeDependencies = {},
 ): Promise<ExternalClientCheckResult> {
   const report = await runConnectionProbe(buildExternalClientProbe(input), dependencies)
-  const success = report.ok ? describeSuccess(externalClientNames[input.tool], report.model) : null
+  const success = report.ok ? describeSuccess(input.tool, report.model) : null
   return {
     tool: input.tool,
     siteId,

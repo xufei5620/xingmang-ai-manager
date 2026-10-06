@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   gitHostPlatform,
   gitInstallGuidance,
+  gitLinuxInstallCommand,
   gitMissingFirstRunHint,
   gitMissingHomeNotice,
   gitMissingImpact,
@@ -24,7 +25,13 @@ describe('git-runtime shared copy', () => {
     expect(gitInstallGuidance('darwin')).toContain('「安装 Git」')
     expect(gitInstallGuidance('darwin')).toContain('苹果自己的安装窗口')
     expect(gitInstallGuidance('darwin')).not.toMatch(/终端|xcode-select|brew/)
-    expect(gitInstallGuidance('linux')).toContain('包管理器')
+  })
+
+  it('gives Linux customers the one apt command that installs Git on every system the deb runs on', () => {
+    expect(gitInstallGuidance('linux')).toContain(gitLinuxInstallCommand)
+    expect(gitInstallGuidance('linux')).toContain('开机密码')
+    expect(gitInstallGuidance('linux')).not.toContain('包管理器')
+    expect(gitLinuxInstallCommand).toBe('sudo apt install -y git')
   })
 
   it('keeps shell jargon out of the customer-facing copy', () => {
@@ -49,10 +56,9 @@ describe('git-runtime shared copy', () => {
   })
 
   it('tells Windows and macOS home-card readers to press the Install Git button', () => {
-    expect(gitMissingHomeNotice('win32')).toContain('点下面的「安装 Git」')
+    expect(gitMissingHomeNotice('win32')).toBe('没有 Git 的话，Claude Code 的部分功能和一些技能、插件会用不了。点「安装 Git」自动装好，不用管理员权限。')
     expect(gitMissingHomeNotice('win32')).not.toMatch(/PowerShell|bash|PATH|git-scm/)
-    expect(gitMissingHomeNotice('darwin')).toContain('点「安装 Git」')
-    expect(gitMissingHomeNotice('darwin')).toContain('这台 Mac')
+    expect(gitMissingHomeNotice('darwin')).toBe('没有 Git 的话，装官方插件市场和部分技能、插件会用不了。点「安装 Git」，在苹果弹出的窗口里点“安装”。')
     expect(gitMissingHomeNotice('darwin')).not.toMatch(/终端|xcode-select|brew|PowerShell|bash|PATH/)
     expect(gitMissingHomeNotice('linux')).toBe(gitMissingNotice('linux'))
   })

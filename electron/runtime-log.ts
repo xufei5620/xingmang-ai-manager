@@ -138,11 +138,20 @@ function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
         .slice(0, MAX_DETAIL_ITEMS)
         .map(([name, entry]) => [name, sanitizeValue(entry, depth + 1, name)]),
     )
+    // `new Error(message, { cause })` defines cause as non-enumerable, so the
+    // entries above never reach it, and a wrapped failure would be logged as
+    // the translated outer sentence only: the errno, exit code and stderr that
+    // explain it live on the cause. An error that assigns `this.cause` itself
+    // (RealmAccountError) already has it among the entries.
+    const cause = value.cause === undefined || 'cause' in metadata
+      ? {}
+      : { cause: sanitizeValue(value.cause, depth + 1, 'cause') }
     return {
       ...metadata,
       name: safeText(value.name),
       message: safeText(value.message),
       stack: value.stack ? safeText(value.stack) : null,
+      ...cause,
     }
   }
   if (Array.isArray(value)) {
@@ -187,6 +196,12 @@ function validEntry(value: unknown): value is RuntimeLogEntry {
  */
 export interface RuntimeLogFileSummary {
   entries: RuntimeLogEntry[]
+  /**
+   * 同样只留尾部，但只留调试级以外的，给不附调试级的反馈报告用。要是从上面那段里
+   * 再筛，调试级一多（公告、订阅轮询每几分钟一条），尾部 2000 条里剩不下 600 条能附的，
+   * 报告就短了、看得也近了（第二十六批 B）。
+   */
+  nonDebugEntries: RuntimeLogEntry[]
   total: number
   counts: Record<RuntimeLogLevel, number>
   sources: string[]
@@ -194,7 +209,7 @@ export interface RuntimeLogFileSummary {
 }
 
 function emptySummary(): RuntimeLogFileSummary {
-  return { entries: [], total: 0, counts: emptyCounts(), sources: [], sizeBytes: 0 }
+  return { entries: [], nonDebugEntries: [], total: 0, counts: emptyCounts(), sources: [], sizeBytes: 0 }
 }
 
 function normalizeEntry(value: RuntimeLogEntry): RuntimeLogEntry {
@@ -218,6 +233,7 @@ export function summarizeRuntimeLogFile(content: string): RuntimeLogFileSummary 
   const counts = emptyCounts()
   const sources = new Set<string>()
   const recent: RuntimeLogEntry[] = []
+  const recentNonDebug: RuntimeLogEntry[] = []
   let total = 0
   for (const line of content.split(/\r?\n/)) {
     if (!line.trim()) continue
@@ -234,9 +250,23 @@ export function summarizeRuntimeLogFile(content: string): RuntimeLogFileSummary 
     sources.add(safeText(value.source).slice(0, 80))
     recent.push(value)
     if (recent.length >= MAX_SNAPSHOT_LIMIT * 2) recent.splice(0, recent.length - MAX_SNAPSHOT_LIMIT)
+    if (value.level !== 'debug') {
+      recentNonDebug.push(value)
+      if (recentNonDebug.length >= MAX_SNAPSHOT_LIMIT * 2) recentNonDebug.splice(0, recentNonDebug.length - MAX_SNAPSHOT_LIMIT)
+    }
+  }
+  // 两段尾部大多是同一批条目，脱敏一次、共用同一个对象。
+  const normalized = new Map<RuntimeLogEntry, RuntimeLogEntry>()
+  const normalize = (entry: RuntimeLogEntry) => {
+    const existing = normalized.get(entry)
+    if (existing) return existing
+    const next = normalizeEntry(entry)
+    normalized.set(entry, next)
+    return next
   }
   return {
-    entries: recent.slice(-MAX_SNAPSHOT_LIMIT).map(normalizeEntry),
+    entries: recent.slice(-MAX_SNAPSHOT_LIMIT).map(normalize),
+    nonDebugEntries: recentNonDebug.slice(-MAX_SNAPSHOT_LIMIT).map(normalize),
     total,
     counts,
     sources: [...sources],
@@ -248,8 +278,10 @@ function mergeSummaries(parts: readonly RuntimeLogFileSummary[]): RuntimeLogFile
   const merged = emptySummary()
   const sources = new Set<string>()
   const entries: RuntimeLogEntry[] = []
+  const nonDebugEntries: RuntimeLogEntry[] = []
   for (const part of parts) {
     entries.push(...part.entries)
+    nonDebugEntries.push(...part.nonDebugEntries)
     merged.total += part.total
     merged.sizeBytes += part.sizeBytes
     for (const level of Object.keys(merged.counts) as RuntimeLogLevel[]) {
@@ -258,6 +290,7 @@ function mergeSummaries(parts: readonly RuntimeLogFileSummary[]): RuntimeLogFile
     for (const source of part.sources) sources.add(source)
   }
   merged.entries = entries.slice(-MAX_SNAPSHOT_LIMIT)
+  merged.nonDebugEntries = nonDebugEntries.slice(-MAX_SNAPSHOT_LIMIT)
   merged.sources = [...sources]
   return merged
 }
@@ -438,6 +471,7 @@ export class RuntimeLogStore {
       sources.add(entry.source)
     }
     summary.entries = [...this.unsavedEntries]
+    summary.nonDebugEntries = this.unsavedEntries.filter((entry) => entry.level !== 'debug')
     summary.total = this.unsavedEntries.length
     summary.sources = [...sources]
     return summary
@@ -546,6 +580,7 @@ export class RuntimeLogStore {
           }
           parts.push({
             entries: [entry],
+            nonDebugEntries: [entry],
             total: 1,
             counts: { ...emptyCounts(), warn: 1 },
             sources: [entry.source],
@@ -558,6 +593,7 @@ export class RuntimeLogStore {
       const merged = mergeSummaries([...parts, unsaved])
       // 写失败可能时好时坏，内存里这几条要按时间插回去，不能一律排在最后。
       merged.entries.sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+      merged.nonDebugEntries.sort((left, right) => left.timestamp.localeCompare(right.timestamp))
       return merged
     })
   }
@@ -569,9 +605,7 @@ export class RuntimeLogStore {
   async snapshot(limit = 1_000, options: { excludeDebug?: boolean } = {}): Promise<RuntimeLogSnapshot> {
     const safeLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_SNAPSHOT_LIMIT) : 1_000
     const summary = await this.readSummary()
-    const candidates = options.excludeDebug
-      ? summary.entries.filter((entry) => entry.level !== 'debug')
-      : summary.entries
+    const candidates = options.excludeDebug ? summary.nonDebugEntries : summary.entries
     const selected = candidates.slice(-safeLimit).reverse()
     return {
       generatedAt: this.now().toISOString(),

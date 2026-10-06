@@ -3,9 +3,17 @@ import { Trash2 } from 'lucide-react'
 import type { AppUninstallLeftover, AppUninstallResult } from '../../../../electron/ipc-contract'
 import { ResultNotice, useOperation } from '../../business-common'
 import type { V2Bridge } from '../../types'
+import { settingsItemLabel } from '../../registry/business'
 import { Button, Dialog, Input, SettingRow } from '../../ui'
 
 export const appUninstallRowDescription = 'Mac 上删掉星芒之前先点这里：会收回星芒写进 Claude Code、Codex、Gemini CLI、Grok 里的提醒设置，再把星芒移到废纸篓。密钥和工具设置都留着，工具照样能用。'
+
+/** Windows 和 Linux 那一行：工具到安装卸载页卸，星芒本身走系统自己的卸载，各说各的地方。 */
+export function toolUninstallRowDescription(isLinux: boolean): string {
+  return isLinux
+    ? 'AI 工具到「安装卸载」页卸，配置默认留着。要卸载星芒本身，用系统的软件管理器'
+    : 'AI 工具到「安装卸载」页卸，配置默认留着。要卸载星芒本身：打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载'
+}
 
 const leftoverLabels: Record<AppUninstallLeftover, string> = {
   'cli-hooks': '有工具里的提醒设置没收回来',
@@ -30,6 +38,7 @@ export function AppUninstallDialog({
   removeTools,
   busy,
   error,
+  detail,
   message,
   onClearRecords,
   onRemoveTools,
@@ -41,6 +50,8 @@ export function AppUninstallDialog({
   removeTools: boolean
   busy: boolean
   error: string
+  /** 被兜底句换掉的原话，只拿来认类别（同 ResultNotice 的 detail）。 */
+  detail?: string
   message: string
   onClearRecords: (checked: boolean) => void
   onRemoveTools: (checked: boolean) => void
@@ -88,23 +99,26 @@ export function AppUninstallDialog({
         testId="app-uninstall-remove-tools"
         onChange={(event) => onRemoveTools(event.target.checked)}
       />
-      <ResultNotice error={error} message={message} />
+      <ResultNotice error={error} detail={detail} message={message} />
     </Dialog>
   )
 }
 
 /**
- * 设置 → 隐私与数据「卸载」那一行。Mac 没有卸载程序，拖进废纸篓以后工具里的提醒设置
+ * 设置 → 更新与关于「卸载」那一行。Mac 没有卸载程序，拖进废纸篓以后工具里的提醒设置
  * 还指着已经不在的星芒，所以 Mac 上给一颗真正的「卸载星芒」；其它电脑照旧去工具的
  * 安装卸载页，卸星芒走系统自己的卸载。
  */
 export function AppUninstallRow({
   api,
   isMac,
+  isLinux = false,
   openMaintenance,
 }: {
   api: Pick<V2Bridge, 'uninstallApp'>
   isMac: boolean
+  /** Linux 上没有 Windows 的「设置 → 应用」，卸星芒本身那半句换成系统的软件管理器。 */
+  isLinux?: boolean
   openMaintenance: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -114,11 +128,12 @@ export function AppUninstallRow({
   if (!isMac) {
     return (
       <SettingRow
-        title="卸载"
-        description="可选择卸载工具并保留配置"
+        title={settingsItemLabel('uninstall')}
+        anchor="uninstall"
+        description={toolUninstallRowDescription(isLinux)}
         control={
           <Button size="sm" icon={Trash2} onClick={openMaintenance}>
-            查看安装卸载
+            去安装卸载
           </Button>
         }
       />
@@ -134,7 +149,8 @@ export function AppUninstallRow({
   return (
     <>
       <SettingRow
-        title="卸载星芒"
+        title={settingsItemLabel('uninstall-app')}
+        anchor="uninstall-app"
         description={appUninstallRowDescription}
         testId="settings-app-uninstall"
         control={
@@ -149,6 +165,7 @@ export function AppUninstallRow({
         removeTools={removeTools}
         busy={operation.busy === 'uninstall-app'}
         error={operation.error}
+        detail={operation.detail}
         message={operation.message}
         onClearRecords={setClearRecords}
         onRemoveTools={setRemoveTools}

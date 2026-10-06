@@ -21,26 +21,53 @@ function errorDetail(error: unknown): string {
     : typeof value === 'string' ? value : '').filter(Boolean).join('\n')
 }
 
+/**
+ * 用这套装法的桌面端：name 进给客户看的句子，slug 只用来给提权副本的目录和文件起名。
+ * Codex 和 Claude 的 MSIX 都带着要管理员才能注册的后台服务，所以共用同一条
+ * 「先按当前用户装，Windows 说要管理员再走一次授权」的路。
+ */
+export interface WindowsAppxProduct {
+  name: string
+  slug: string
+}
+
+export const codexAppxProduct: WindowsAppxProduct = { name: 'Codex 桌面端', slug: 'Codex' }
+export const claudeAppxProduct: WindowsAppxProduct = { name: 'Claude Desktop', slug: 'Claude' }
+
+// slug 会拼进提权脚本里的单引号字面量和文件名，只收字母，免得哪天传进来的值变成代码。
+function productSlug(product: WindowsAppxProduct): string {
+  if (!/^[A-Za-z]{1,32}$/.test(product.slug)) throw new Error('MSIX 安装对象标识无效')
+  return product.slug
+}
+
+// 名字以英文结尾时，后面接中文要空一格（「Claude Desktop 安装未开始」）。
+function subjectBeforeChinese(product: WindowsAppxProduct): string {
+  return /[A-Za-z0-9]$/.test(product.name) ? `${product.name} ` : product.name
+}
+
 /** 0x80073CF6 is generic; only the inner packaged-service elevation error qualifies. */
 export function requiresCodexAppxElevation(error: unknown): boolean {
   return Boolean(error && typeof error === 'object') && /\b0x80073d28\b/i.test(errorDetail(error))
 }
 
-function validatePackagePath(packagePath: string): void {
+function validatePackagePath(packagePath: string, product: WindowsAppxProduct): void {
   if (typeof packagePath !== 'string' || !/^[a-z]:[\\/]/i.test(packagePath)
     || /[\u0000-\u001f\u007f<>"|?*]/.test(packagePath) || packagePath.slice(2).includes(':')
     || path.win32.extname(packagePath).toLowerCase() !== '.msix') {
-    throw new Error('Codex MSIX 安装包路径无效')
+    throw new Error(`${productSlug(product)} MSIX 安装包路径无效`)
   }
 }
 
 /** Called only after the download's hash, product, publisher, version and architecture checks. */
-export function buildCodexAppxElevationScript(packagePath: string, sha256Base64: string, contentLength?: number): string {
-  validatePackagePath(packagePath)
+export function buildCodexAppxElevationScript(
+  packagePath: string, sha256Base64: string, contentLength?: number, product: WindowsAppxProduct = codexAppxProduct,
+): string {
+  validatePackagePath(packagePath, product)
+  const slug = productSlug(product)
   if (typeof sha256Base64 !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(sha256Base64)
-    || Buffer.from(sha256Base64, 'base64').toString('base64') !== sha256Base64) throw new Error('Codex MSIX 安装包校验值无效')
+    || Buffer.from(sha256Base64, 'base64').toString('base64') !== sha256Base64) throw new Error(`${slug} MSIX 安装包校验值无效`)
   const maximumBytes = 1500 * 1024 * 1024
-  if (contentLength !== undefined && (!Number.isSafeInteger(contentLength) || contentLength < 1 || contentLength > maximumBytes)) throw new Error('Codex MSIX 安装包长度无效')
+  if (contentLength !== undefined && (!Number.isSafeInteger(contentLength) || contentLength < 1 || contentLength > maximumBytes)) throw new Error(`${slug} MSIX 安装包长度无效`)
   return [
     "$ErrorActionPreference = 'Stop'",
     "$ProgressPreference = 'SilentlyContinue'",
@@ -57,7 +84,7 @@ export function buildCodexAppxElevationScript(packagePath: string, sha256Base64:
     // installs the user's temp path after waiting on a UAC prompt.
     "  $root = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)",
     "  if (-not [IO.Path]::IsPathRooted($root)) { throw 'Invalid protected installation root' }",
-    "  $cache = Join-Path $root ('Xingmang-Codex-Install-' + [Guid]::NewGuid().ToString('N'))",
+    `  $cache = Join-Path $root ('Xingmang-${slug}-Install-' + [Guid]::NewGuid().ToString('N'))`,
     '  $acl = [System.Security.AccessControl.DirectorySecurity]::new()',
     '  $acl.SetAccessRuleProtection($true, $false)',
     "  $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')",
@@ -68,7 +95,7 @@ export function buildCodexAppxElevationScript(packagePath: string, sha256Base64:
     '  }',
     '  [void][System.IO.Directory]::CreateDirectory($cache, $acl)',
     '  $created = $true',
-    "  $payload = Join-Path $cache 'Codex.msix'",
+    `  $payload = Join-Path $cache '${slug}.msix'`,
     `  $source = [System.IO.File]::Open(${powerShellLiteral(packagePath)}, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)`,
     `  if ($source.Length -le 0 -or $source.Length -gt ${maximumBytes}${contentLength === undefined ? '' : ` -or $source.Length -ne ${contentLength}`}) { $result = 13; throw 'MSIX size mismatch' }`,
     '  $held = [System.IO.File]::Open($payload, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read)',
@@ -98,9 +125,11 @@ export function buildCodexAppxElevationScript(packagePath: string, sha256Base64:
   ].join('\n')
 }
 
-export function buildCodexAppxUacBrokerScript(powershell: string, packagePath: string, sha256Base64: string, contentLength?: number): string {
-  if (!path.win32.isAbsolute(powershell) || !/[\\/]powershell\.exe$/i.test(powershell)) throw new Error('Codex UAC 需要系统 Windows PowerShell')
-  const installer = buildCodexAppxElevationScript(packagePath, sha256Base64, contentLength)
+export function buildCodexAppxUacBrokerScript(
+  powershell: string, packagePath: string, sha256Base64: string, contentLength?: number, product: WindowsAppxProduct = codexAppxProduct,
+): string {
+  if (!path.win32.isAbsolute(powershell) || !/[\\/]powershell\.exe$/i.test(powershell)) throw new Error(`${productSlug(product)} UAC 需要系统 Windows PowerShell`)
+  const installer = buildCodexAppxElevationScript(packagePath, sha256Base64, contentLength, product)
   return [
     "$ErrorActionPreference = 'Stop'",
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
@@ -126,6 +155,7 @@ export function buildCodexAppxUacBrokerScript(powershell: string, packagePath: s
 }
 
 interface CodexAppxInstallOptions { sha256Base64: string; contentLength?: number; onElevationRequired?: () => void }
+interface WindowsAppxInstallOptions extends CodexAppxInstallOptions { product: WindowsAppxProduct }
 interface CodexAppxInstallDependencies {
   resolvePowerShell: () => string
   run: (executable: string, argv: string[]) => Promise<void>
@@ -149,9 +179,17 @@ const defaultDependencies: CodexAppxInstallDependencies = {
 export async function addCodexDesktopPackage(
   packagePath: string, options: CodexAppxInstallOptions, dependencies: CodexAppxInstallDependencies = defaultDependencies,
 ): Promise<void> {
-  validatePackagePath(packagePath)
+  await addWindowsDesktopAppxPackage(packagePath, { ...options, product: codexAppxProduct }, dependencies)
+}
+
+/** Called only after the download's hash, product, publisher, version and architecture checks. */
+export async function addWindowsDesktopAppxPackage(
+  packagePath: string, options: WindowsAppxInstallOptions, dependencies: CodexAppxInstallDependencies = defaultDependencies,
+): Promise<void> {
+  const { product } = options
+  validatePackagePath(packagePath, product)
   const powershell = dependencies.resolvePowerShell()
-  const broker = buildCodexAppxUacBrokerScript(powershell, packagePath, options.sha256Base64, options.contentLength)
+  const broker = buildCodexAppxUacBrokerScript(powershell, packagePath, options.sha256Base64, options.contentLength, product)
   const script = [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     "$ErrorActionPreference = 'Stop'",
@@ -174,10 +212,10 @@ export async function addCodexDesktopPackage(
     const capability = cancelled || code === 740
       ? await (dependencies.inspectElevationCapability ?? inspectWindowsElevationCapability)()
       : 'unknown'
-    const message = codexDesktopElevationFailureMessage(cancelled ? 1223 : code, capability)
+    const message = codexDesktopElevationFailureMessage(cancelled ? 1223 : code, capability, product)
     if (message) throw new Error(message)
     const detail = errorDetail(error).trim().slice(0, 1200)
-    throw new Error(`Codex 桌面端管理员安装失败${Number.isFinite(code) ? `（退出码 ${code}）` : ''}，请检查 Windows 应用部署事件日志后重试。${detail ? ` ${detail}` : ''}`)
+    throw new Error(`${subjectBeforeChinese(product)}管理员安装失败${Number.isFinite(code) ? `（退出码 ${code}）` : ''}，请检查 Windows 应用部署事件日志后重试。${detail ? ` ${detail}` : ''}`)
   }
 }
 
@@ -188,16 +226,17 @@ export async function addCodexDesktopPackage(
 export function codexDesktopElevationFailureMessage(
   exitCode: number,
   capability: WindowsElevationCapability = 'unknown',
+  product: WindowsAppxProduct = codexAppxProduct,
 ): string | null {
   switch (exitCode) {
     case 1223:
-      return windowsElevationCancelledMessage('Codex 桌面端', capability)
+      return windowsElevationCancelledMessage(subjectBeforeChinese(product), capability)
     case 2225:
       return '授权使用了不同的 Windows 账号，已停止安装以免注册到其他用户。请由当前 Windows 账号的管理员会话完成安装。'
     case 13:
-      return '授权期间 Codex 安装包发生变化，已停止安装，请重新下载。'
+      return `授权期间 ${productSlug(product)} 安装包发生变化，已停止安装，请重新下载。`
     case 740:
-      return windowsElevationDeniedMessage('Codex 桌面端', capability)
+      return windowsElevationDeniedMessage(subjectBeforeChinese(product), capability)
     default:
       return null
   }

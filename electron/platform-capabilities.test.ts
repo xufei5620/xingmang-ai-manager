@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { platformCapabilitiesFor } from './platform-capabilities'
 
 describe('platformCapabilitiesFor', () => {
-  it('returns the exact managed Windows policy', () => {
+  it('returns the exact managed Windows policy, with no Python for Gemini', () => {
     expect(platformCapabilitiesFor('win32', 'x64')).toEqual({
       platform: 'windows',
       architecture: 'x64',
@@ -21,6 +21,13 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: false,
       },
+      acceleration: true,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
+      },
       codexDesktop: {
         install: 'managed',
         launch: true,
@@ -30,7 +37,7 @@ describe('platformCapabilitiesFor', () => {
     })
   })
 
-  it('returns the exact managed macOS policy', () => {
+  it('returns the exact managed macOS policy, with no Python for Gemini', () => {
     const capabilities = platformCapabilitiesFor('darwin', 'arm64')
 
     expect(capabilities).toEqual({
@@ -51,8 +58,15 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
+      acceleration: true,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
+      },
       codexDesktop: {
-        install: 'external',
+        install: 'managed',
         launch: true,
         uninstall: false,
         windowsStore: false,
@@ -63,24 +77,36 @@ describe('platformCapabilitiesFor', () => {
     expect(Object.isFrozen(capabilities.codexDesktop)).toBe(true)
   })
 
-  it('returns the exact externally managed Linux policy', () => {
+  it('installs the Codex desktop app on both Mac architectures and sends any other one to the guide', () => {
+    expect(platformCapabilitiesFor('darwin', 'x64').codexDesktop.install).toBe('managed')
+    expect(platformCapabilitiesFor('darwin', 'ia32').codexDesktop.install).toBe('external')
+  })
+
+  it('returns the exact Linux policy, with Node.js prepared by the app, Grok from npm and no Python for Gemini', () => {
     expect(platformCapabilitiesFor('linux', 'x64')).toEqual({
       platform: 'linux',
       architecture: 'x64',
       isMac: false,
-      nodeRuntimeInstall: 'external',
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
         gemini: 'managed',
-        grok: 'external',
+        grok: 'managed',
       },
       cliNeedsNodeRuntime: {
         claude: true,
         codex: true,
         gemini: true,
         grok: true,
+      },
+      acceleration: false,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
       },
       codexDesktop: {
         install: 'external',
@@ -91,24 +117,33 @@ describe('platformCapabilitiesFor', () => {
     })
   })
 
-  it('normalizes an unknown Node platform to the fail-closed Linux policy', () => {
+  it('normalizes an unknown Node platform to the Linux policy', () => {
     expect(platformCapabilitiesFor('plan9', 'riscv64')).toEqual({
       platform: 'linux',
       architecture: 'riscv64',
       isMac: false,
-      nodeRuntimeInstall: 'external',
+      // The installer itself refuses chips Node.js has no official build for
+      // (linux-node-runtime.ts), with a sentence that says so.
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
         gemini: 'managed',
-        grok: 'external',
+        grok: 'managed',
       },
       cliNeedsNodeRuntime: {
         claude: true,
         codex: true,
         gemini: true,
         grok: true,
+      },
+      acceleration: false,
+      cliNeedsPythonRuntime: {
+        claude: false,
+        codex: false,
+        gemini: false,
+        grok: false,
       },
       codexDesktop: {
         install: 'external',

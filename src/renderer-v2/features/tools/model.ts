@@ -1,7 +1,8 @@
 import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
-import { snapshotErrorMessage } from '../../business-common'
+import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
+import { relayProviderBaseUrlMatches } from '../../../../electron/relay-sites'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -74,7 +75,7 @@ export function toolAvailability(
   if (status?.detectionFailed === true) {
     return {
       state: 'detectionFailed', label: '检测失败', tone: 'bad', versionFallback: '版本未读到',
-      reason: snapshotErrorMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
+      reason: detectionFailureMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
     }
   }
   if (statusUnknown) {
@@ -110,9 +111,9 @@ export function toolInstallDirectory(snapshot: ToolboxSnapshot | null, tool: Too
 }
 
 /**
- * 这台机器上这个工具的安装归不归本程序管。macOS 上 Codex 桌面端是 'external'：
- * 官方在 Mac 上只给自己下载的安装包，按钮点下去只能把人带到教程那一章，所以
- * 按钮不能再写「安装」，点完也不算一次失败（第七批 3）。
+ * 这台机器上这个工具的安装归不归本程序管。'external' 的（认不出芯片的 Mac 上的
+ * Codex 桌面端）按钮点下去只能把人带到教程那一章，所以按钮不能写「安装」，点完
+ * 也不算一次失败（第七批 3）。
  */
 export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolId): boolean {
   if (!snapshot) return false
@@ -124,8 +125,8 @@ export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolI
 
 /**
  * 原生安装器或 PATH 上其他来源装的 CLI，本工具的 npm 安装/回滚通道不该碰它：跑一次
- * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。对这类安装隐藏
- * 「更新」「回到推荐版本」按钮，改用一句被动提示。
+ * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。界面上给不给
+ * 「更新」「回到推荐版本」按钮看 updatesOutsideApp（能先卸再装的那一种照样给）。
  */
 export function isExternallyManagedInstall(
   status: Pick<ToolStatus, 'installed' | 'installSource'> | null | undefined,
@@ -133,6 +134,31 @@ export function isExternallyManagedInstall(
   return status?.installed === true
     && status.installSource != null
     && status.installSource !== 'npm'
+}
+
+/**
+ * 官方安装器装的 Claude Code 能换成星芒装的（第三十一批 B）：星芒写配置时关了它自己的
+ * 自动更新，又不在它旁边另装一份（#481），不给出路它就永远停在原来的版本。客户点过头，
+ * 星芒先用那条核对过的卸载把它卸掉（uninstall.available），再用自己的通道装回来。
+ * 别的方式装的、星芒卸不掉的（Codex 官方那份）不在此列。
+ */
+export function canSwitchToManagedInstall(
+  id: ToolId,
+  status: Pick<ToolStatus, 'installed' | 'installSource' | 'uninstall'> | null | undefined,
+): boolean {
+  return id === 'claude' && status?.installed === true && status.installSource === 'native'
+    && status.uninstall?.available === true
+}
+
+/**
+ * 只能用它自己的方式更新：外部来源装的，能换成星芒装的那一种除外。首页、新手引导、
+ * 安装卸载页对它只给被动提示、不给按钮，系统通知也不为它把人叫回来。
+ */
+export function updatesOutsideApp(
+  id: ToolId,
+  status: Pick<ToolStatus, 'installed' | 'installSource' | 'uninstall'> | null | undefined,
+): boolean {
+  return isExternallyManagedInstall(status) && !canSwitchToManagedInstall(id, status)
 }
 
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
@@ -181,7 +207,7 @@ export function sourceFor(
   // 当前账号服务的 config.toml：令牌被发给服务，每次请求都 401。这不是官方账号，
   // 是一份被改成半截的配置，按「被改过」提示，首页给出修复与切回官方两条路。
   if (provider === 'codex' && config.codexAuthMode === 'chatgpt') {
-    return config.actualBaseUrl && sameServiceUrl(config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
+    return config.actualBaseUrl && relayProviderBaseUrlMatches(provider, config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
   }
   if (provider === 'gemini' && config.authType === 'oauth-personal') return 'official'
   if (config.hasApiKey && config.matchesRelay) {
@@ -199,10 +225,6 @@ export function sourceFor(
   // 只有 ~/.grok/auth.json 里真有一份登录，才算在用 Grok 账号。
   if (provider === 'grok' && config.exists && !config.hasApiKey && config.grokLoginMode) return 'official'
   return 'missing'
-}
-
-function sameServiceUrl(left: string, right: string): boolean {
-  return left.trim().replace(/\/+$/, '').toLowerCase() === right.trim().replace(/\/+$/, '').toLowerCase()
 }
 
 /**
@@ -376,7 +398,7 @@ export function presentTools(
       configDirectoryReady: config.dataDirectoryExists === true,
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice, revertVersion,
-      error: status.detectionFailed ? snapshotErrorMessage(status.detectionError) ?? '工具检测没有完成' : null })
+      error: status.detectionFailed ? detectionFailureMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
 }
@@ -459,7 +481,7 @@ export interface ToolUpdateOffer {
   newer: boolean
   /** 装着的版本落在名单的不兼容区间里。 */
   knownIssue: boolean
-  /** 不是本工具装的：只给这句提示，不给按钮（与首页同一条规矩）。 */
+  /** 只能用它自己的方式更新（updatesOutsideApp）：只给这句提示，不给按钮（与首页同一条规矩）。 */
   manualHint: string | null
 }
 
@@ -479,7 +501,7 @@ export function toolUpdateOffer(
   const advice = tool.versionAdvice
   const knownIssue = Boolean(advice?.blockedReason)
   const recommended = rollbackVersion(tool)
-  const manualHint = isExternallyManagedInstall(tool.status) ? externalInstallHint(tool.status.installSource) : null
+  const manualHint = updatesOutsideApp(tool.id, tool.status) ? externalInstallHint(tool.status.installSource) : null
   if (recommended && (advice?.recommendedIsNewer || knownIssue)) {
     return { version: recommended, target: recommended, newer: advice?.recommendedIsNewer === true, knownIssue, manualHint }
   }

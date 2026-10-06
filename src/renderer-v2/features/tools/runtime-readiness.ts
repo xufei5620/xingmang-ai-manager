@@ -1,5 +1,6 @@
 import type { PlatformCapabilities, ProviderId, SystemSnapshot } from '../../../../electron/ipc-contract'
 import { minimumSupportedNodeVersion } from '../../../../electron/versions'
+import { rawErrorMessage } from '../../business-common'
 
 type RuntimeSnapshot = SystemSnapshot['runtime']
 type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
@@ -48,6 +49,15 @@ export function cliNeedsNodeRuntime(platform: Pick<PlatformCapabilities, 'cliNee
   return platform?.cliNeedsNodeRuntime?.[provider] ?? true
 }
 
+/**
+ * Gemini 要 Python 只为没有预编译包时现场编译一个可选组件，缺了它照样能装能用。主进程按平台
+ * 报这张表：Linux 先去掉（Linux 版拆分 ③），Windows、Mac 跟着去掉（第二十八批 C），现在四家
+ * 都不要。没报（旧版本）时按注册表的 requires 判断，就是原来的行为。
+ */
+export function cliNeedsPythonRuntime(platform: Pick<PlatformCapabilities, 'cliNeedsPythonRuntime'> | null | undefined, provider: ProviderId, requiresPython: boolean): boolean {
+  return platform?.cliNeedsPythonRuntime?.[provider] ?? requiresPython
+}
+
 export interface CliInstallPlan {
   /** 装工具之前要先代装的运行环境，按顺序跑。 */
   prepare: InstallRuntimeId[]
@@ -91,8 +101,10 @@ export function cliInstallStageLabel(stage: InstallRuntimeId | 'tool', index: nu
 /**
  * 运行环境那一段失败时，前缀要让人一眼分清「环境没装上」还是「工具没装上」；
  * 主进程原话留在后面，错误分类（下载超时、磁盘满……）照旧认得出来。
+ * 原话要先剥掉 Electron 那层「Error invoking remote method '…': Error:」再接上：
+ * 拼进句子中间以后，上屏前的 errorMessage 只剥开头，这串英文就原样进了错误框。
  */
-export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, detail: string): string {
+export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, cause: unknown): string {
   const name = runtime === 'node' ? 'Node.js' : 'Python'
-  return `${name} 运行环境没装上，${toolName} 还没开始安装。${detail}`.trim()
+  return `${name} 运行环境没装上，${toolName} 还没开始安装。${rawErrorMessage(cause)}`.trim()
 }

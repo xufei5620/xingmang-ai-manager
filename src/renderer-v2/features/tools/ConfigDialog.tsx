@@ -8,9 +8,10 @@ import { foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, t
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
-import { describeChineseLocale, describeChineseLocaleResult } from './locale-status'
+import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
 import { codexModelChoices, codexModelFilterSaveIssue, type CodexModelFilter } from './model-filter'
 import { errorMessage } from '../../business-common'
+import { currentWindowOs } from '../app/window-os'
 
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
@@ -67,6 +68,8 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
   const metadataRequest = useRef(0)
   const lastKeyRefresh = useRef(0)
   const modelFilterStatusId = useId()
+  // 只用来分 Mac 的说法：Mac 上星芒不会替人重开 Codex，也不开那条本机通道。
+  const os = currentWindowOs()
   const provider = providerFor(tab)
   const native = config.providers[provider]
   const definition = tools.find((item) => item.id === tab)!
@@ -358,12 +361,12 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         </>}
       </>}
       <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button></div>
-      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary><p>已设置中文但仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
-        <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p><div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value)) })}>检查中文界面</Button>
-        <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result)) } })}>启用中文界面</Button>
-        <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result)) })}>跟随系统语言</Button>
+      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary>{os === 'mac' ? <p>{macLocaleNote}</p> : <><p>中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
+        <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p></>}<div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value, os)) })}>检查中文界面</Button>
+        <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result, os)) } })}>启用中文界面</Button>
+        <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result, os)) })}>跟随系统语言</Button>
         <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`文件夹：${result.workspace}，${result.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹' : result.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'}`) })}>查看文件夹权限</Button>
-        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { await api.trustWorkspace(); if (active.current) setLocaleText('文件夹信任已保存') })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
+        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { const result = await api.trustWorkspace(); if (active.current) setLocaleText(describeWorkspaceTrustResult(result.changed, os)) })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
       <details data-testid="tool-config-advanced"><summary>高级</summary>
         <p>点「保存配置」只改账号、密钥和模型，你在工具里做的其他设置都会留着；改之前会先自动备份。</p>
         {!manualVisible && <Button size="sm" variant="ghost" icon={KeyRound} onClick={() => change({ source: 'manual' })} testId="tool-manual-key">自己填写密钥</Button>}

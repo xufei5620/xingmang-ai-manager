@@ -39,11 +39,14 @@ import {
 } from './ui'
 import {
   displayDate,
+  RelativeTime,
+  relativeTimeText,
   errorMessage,
   ListState,
   Pagination,
   ResultNotice,
   useOperation,
+  useReloadWhenShown,
   useResource,
 } from './business-common'
 import { scopeOptions } from './registry/business'
@@ -58,6 +61,7 @@ import {
   curatedRuntimeLabels,
   type CuratedExtension,
 } from './registry/curated-extensions'
+import { skillImportTutorialExtra } from './registry/tutorials'
 import { tools } from './registry/tools'
 import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice } from './features/tools/recent-workspaces'
 import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
@@ -645,13 +649,10 @@ export function CuratedShelf({
   return (
     <Card
       title="星芒精选"
-      meta={`${items.length} 项`}
+      meta="我们挑过的，装之前会先给你看它要什么权限"
       padding="none"
       testId="curated-shelf"
     >
-      <p className="v2-curated-lead">
-        这几项是我们挑过的，都写清了它能让 AI 多做什么、要拿到什么权限。点「安装」会先让你确认一次。
-      </p>
       {items.map((item) => {
         // 已经装上的还给一个「安装」按钮，点下去只会换来一句 CLI 的英文报错。
         const installed = (installedIds ?? []).includes(curatedInstallTarget(item))
@@ -678,7 +679,7 @@ export function CuratedShelf({
               </>
             }
             desc={item.summary}
-            meta={curatedNetworkLabels[item.network] ?? undefined}
+            // 要不要联网只在点「安装」后的确认框里说：每行都写一遍会把说明挤成两行。
             actions={
               installed ? (
                 <Pill>已在列表里</Pill>
@@ -701,9 +702,14 @@ export function CuratedShelf({
     </Card>
   )
 }
+// 记录页显示着、窗口回到前面时，离上次读不到这么久就不再读（同 useNetworkLocation 的 focusRefreshIntervalMs）。
+const recordsForegroundReloadMs = 30_000
 export function SessionsPage({
   api,
   onSessionsChanged,
+  onOpenTools,
+  beforeResume,
+  active,
 }: {
   api: V2Bridge
   /**
@@ -711,6 +717,19 @@ export function SessionsPage({
    * 省略 = 不通知（旧行为）。
    */
   onSessionsChanged?: () => void
+  /** 一条记录都没有时「去打开工具」：回首页「你的工具」。省略 = 不放这颗按钮。 */
+  onOpenTools?: () => void
+  /**
+   * 「接着聊」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
+   * Codex 老配置先修。过不了的原因照常抛出来，挂在页顶；返回 false = 不往下走（问话框里
+   * 关掉了，或者中途换了账号）。省略 = 不检查（旧行为）。
+   */
+  beforeResume?: (provider: Session['provider']) => Promise<boolean>
+  /**
+   * 外壳说的「现在显示的是这一页」（同 BusinessActions.active）：再显示时、显示着窗口又回到前面时重读；
+   * 缺省 = 只在第一次进来时读（旧行为）。
+   */
+  active?: boolean
 }) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -735,15 +754,43 @@ export function SessionsPage({
   )
   const operation = useOperation()
   const [selected, setSelected] = useState<Session | null>(null)
+  // 只有摘要的记录原文已经不在这台电脑上，不去读；详情里照样看工具、文件夹和模型。
   const detailLoad = useCallback(
     () =>
-      selected
+      selected?.detailAvailable
         ? api.getProviderSessionDetail(selected.id)
         : Promise.resolve(null),
-    [api, selected?.id],
+    [api, selected?.id, selected?.detailAvailable],
   )
   const detailResource = useResource(detailLoad)
   const detail = detailResource.data
+  // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「接着聊」还挂在
+  // 同一文件夹更早那条上；Claude Code、Gemini CLI、Grok CLI 按文件夹接最近一条（#292），点下去接上的是刚聊的
+  // 那条。所以再显示时、显示着窗口又回到前面时，两份列表连同开着的详情一起重读，先摆着旧的、读回来再换。
+  // 窗口那一下离上次读不到 30 秒就不读；本页「接着聊」打开了终端就清零，回来头一次切回窗口一定重读。
+  const lastRead = useRef(Number.NEGATIVE_INFINITY)
+  const reloadRecords = () => {
+    lastRead.current = performance.now()
+    void Promise.all([resource.reload(), latestResource.reload(), ...(selected ? [detailResource.reload()] : [])])
+  }
+  useReloadWhenShown(active, reloadRecords)
+  const latestReloadRecords = useRef(reloadRecords)
+  useEffect(() => { latestReloadRecords.current = reloadRecords })
+  useEffect(() => {
+    if (!active) return
+    // 进页、再显示的这一下本来就在读，从这里起算。
+    lastRead.current = performance.now()
+    function foreground() {
+      if (document.visibilityState === 'hidden' || performance.now() - lastRead.current < recordsForegroundReloadMs) return
+      latestReloadRecords.current()
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+    }
+  }, [active])
   const view = (session: Session) => {
     setSelected(session)
   }
@@ -807,13 +854,20 @@ export function SessionsPage({
     void operation.execute(
       'resume',
       async () => {
+        // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
+        // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
+        if (beforeResume && !(await beforeResume(session.provider))) return null
         try {
           const choice = resumeLaunchChoice(session)
           const result = await (typeof choice === 'object'
             ? api.launchCli(session.provider, session.cwd, 'resumeLast', choice.resumeSessionId)
             : api.launchCli(session.provider, session.cwd, 'resumeLast'))
           // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
-          if (!launchDeclined(result)) onSessionsChanged?.()
+          if (!launchDeclined(result)) {
+            onSessionsChanged?.()
+            // 终端里这就要多出新的对话，从终端回来头一次切回窗口不管隔了多久都重读。
+            lastRead.current = Number.NEGATIVE_INFINITY
+          }
           return result
         } catch (cause) {
           // 列表出来之后目录才被删掉的那一瞬间:按钮还亮着,但已经接不上了。
@@ -826,7 +880,10 @@ export function SessionsPage({
         }
       },
       // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
-      (result) => resumeSessionNotice(result, providerName(session.provider), session.cwd),
+      (result) =>
+        result === null
+          ? null
+          : resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
   /**
@@ -878,6 +935,8 @@ export function SessionsPage({
             onChange={(value) => {
               setProvider(value)
               setPage(1)
+              // 上一个工具的红条不跟到下一个工具上。
+              operation.clear()
             }}
           />
         }
@@ -892,7 +951,8 @@ export function SessionsPage({
             testId="sessions-search"
           />
         }
-        right={<span>{resource.data?.total ?? 0} 条记录</span>}
+        // 没读到时不写「0 条记录」，免得像是真没有；读不到的原因在下面的列表里说。
+        right={resource.data && !resource.error ? <span>{resource.data.total} 条记录</span> : null}
       />
       <ResultNotice
         {...operation}
@@ -905,18 +965,29 @@ export function SessionsPage({
           {...resource}
           error={resource.error}
           count={resource.data?.items.length ?? 0}
+          query={query}
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
+          action={
+            onOpenTools && (
+              <Button size="sm" onClick={onOpenTools} testId="sessions-empty-open-tools">
+                去打开工具
+              </Button>
+            )
+          }
         >
           {resource.data?.items.map((session) => {
             // 文件夹被删掉或搬走之后,CLI 按目录找回对话这条路就断了。按钮留在
             // 原位但按不动,旁边说一句为什么——把它藏起来的话,用户只会觉得
             // 「昨天还有的按钮今天没了」。
             const missingWorkspace = session.cwdExists === false
+            const canResume = resumable.has(session.id) && !session.archived
             return (
               <ListRow
                 key={session.id}
+                onOpen={() => view(session)}
+                openTestId={`sessions-view-${session.id}`}
                 title={
                   <>
                     <BrandIcon tool={session.provider} size={24} />
@@ -939,12 +1010,12 @@ export function SessionsPage({
                   <span>
                     {session.model || '未记录模型'} ·{' '}
                     {session.messageCount ?? '未知'} 条 ·{' '}
-                    {displayDate(session.updatedAt)}
+                    <RelativeTime value={session.updatedAt} />
                   </span>
                 }
                 actions={
                   <>
-                    {resumable.has(session.id) && !session.archived && (
+                    {canResume ? (
                       <Button
                         size="sm"
                         icon={Play}
@@ -959,6 +1030,13 @@ export function SessionsPage({
                       >
                         接着聊
                       </Button>
+                    ) : (
+                      // 没有「接着聊」的行也占着这一格，后面的按钮和左边的信息上下对齐。
+                      <span className="v2-row-action-placeholder" aria-hidden="true">
+                        <Button size="sm" icon={Play} tabIndex={-1}>
+                          接着聊
+                        </Button>
+                      </span>
                     )}
                     {Boolean(session.cwd) && (
                       <Button
@@ -977,20 +1055,6 @@ export function SessionsPage({
                         打开文件夹
                       </Button>
                     )}
-                    <Button
-                      size="sm"
-                      icon={History}
-                      disabled={!session.detailAvailable}
-                      onClick={() => view(session)}
-                      title={
-                        session.detailAvailable
-                          ? undefined
-                          : '这条记录只有摘要，对话原文已经不在这台电脑上了，看不了全文'
-                      }
-                      testId={`sessions-view-${session.id}`}
-                    >
-                      查看记录
-                    </Button>
                   </>
                 }
                 testId={`sessions-row-${session.id}`}
@@ -1002,6 +1066,7 @@ export function SessionsPage({
       <Pagination
         page={page}
         total={resource.data?.total ?? 0}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
       <Drawer
@@ -1014,10 +1079,30 @@ export function SessionsPage({
         testId="session-detail-drawer"
         footer={
           <>
+            {selected && resumable.has(selected.id) && !selected.archived && (
+              <Button
+                variant="primary"
+                icon={Play}
+                disabled={
+                  Boolean(operation.busy) || selected.cwdExists === false
+                }
+                onClick={() => resume(selected)}
+                title={
+                  selected.cwdExists === false
+                    ? '这条记录的文件夹已经不在了，接不上上次的对话'
+                    : '接着这个文件夹里最近一次对话'
+                }
+                testId="session-detail-resume"
+              >
+                接着聊
+              </Button>
+            )}
             <Button
               icon={Download}
+              title="导出成 Markdown 文件"
               disabled={
                 !capability?.operations.exportMarkdown ||
+                !selected?.detailAvailable ||
                 Boolean(operation.busy)
               }
               onClick={() =>
@@ -1034,26 +1119,10 @@ export function SessionsPage({
                       : null,
                 )
               }
+              testId="session-detail-export"
             >
-              导出 Markdown
+              导出
             </Button>
-            {selected && resumable.has(selected.id) && !selected.archived && (
-              <Button
-                icon={Play}
-                disabled={
-                  Boolean(operation.busy) || selected.cwdExists === false
-                }
-                onClick={() => resume(selected)}
-                title={
-                  selected.cwdExists === false
-                    ? '这条记录的文件夹已经不在了，接不上上次的对话'
-                    : '接着这个文件夹里最近一次对话'
-                }
-                testId="session-detail-resume"
-              >
-                接着上次对话
-              </Button>
-            )}
             {capability?.operations[
               selected?.archived ? 'restore' : 'archive'
             ] && (
@@ -1062,7 +1131,7 @@ export function SessionsPage({
                 disabled={Boolean(operation.busy)}
                 onClick={archive}
               >
-                {selected?.archived ? '恢复记录' : '归档记录'}
+                {selected?.archived ? '恢复' : '归档'}
               </Button>
             )}
             {capability?.operations.delete && (
@@ -1093,7 +1162,12 @@ export function SessionsPage({
             <dd>{selected.model || '未记录'}</dd>
           </dl>
         )}
-        <ResultNotice error={detailResource.error} />
+        {selected && !selected.detailAvailable && (
+          <p className="v2-transcript-missing" data-testid="session-detail-summary-only">
+            这条记录只有摘要，对话原文已经不在这台电脑上了
+          </p>
+        )}
+        <ResultNotice error={detailResource.error} detail={detailResource.detail} />
         {detailResource.error && (
           <Button
             size="sm"
@@ -1104,7 +1178,8 @@ export function SessionsPage({
             重试读取
           </Button>
         )}
-        {detailResource.loading ? (
+        {/* 回到窗口时连详情一起重读：正读着的对话先摆着、读回来再换，不闪成「正在读取」，翻到的位置也不丢。 */}
+        {detailResource.loading && !detail ? (
           <p role="status">正在读取对话…</p>
         ) : (
           detail?.messages.map((message, i) => (
@@ -1136,7 +1211,7 @@ export function SessionsPage({
             <p>
               会把这条对话从这台电脑上删掉，里面粘贴过的代码、密码和聊天内容会一起消失，删了就找不回来。
             </p>
-            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出 Markdown」。</p>
+            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出」。</p>
           </>
         }
         okLabel="彻底删除"
@@ -1199,13 +1274,22 @@ export function ExtensionsPage({
   api,
   kind,
   onOpenHelp,
+  onOpenTutorial,
   installedProviders,
+  onSystemChanged,
 }: {
   api: V2Bridge
   kind: ExtensionKind
   onOpenHelp?: () => void
+  /** 打开教程某一篇；section 写法同外壳 navigate('tutorial', section)。省略 = 不放「看怎么放」。 */
+  onOpenTutorial?: (section: string) => void
   /** 这台电脑上装好的命令行工具；缺省 = 不知道，默认选 Claude（旧行为）。 */
   installedProviders?: readonly string[]
+  /**
+   * 「自动安装 Python」装好以后叫一声，由 App 重新检测，首页「运行环境」跟着变（同 BusinessActions.onSystemChanged）。
+   * 缺省 = 只刷新本页（旧行为）。
+   */
+  onSystemChanged?: () => void
 }) {
   const page =
     kind === 'skill' ? 'skills' : kind === 'plugin' ? 'plugins' : 'mcp'
@@ -1260,6 +1344,14 @@ export function ExtensionsPage({
   const [curatedForm, setCuratedForm] = useState<CuratedExtension | null>(null)
   const [curatedValues, setCuratedValues] = useState<Record<string, string>>({})
   const curatedItems = useMemo(() => curatedItemsFor(kind, provider), [kind, provider])
+  // 搜索时精选也按同一个词筛；一条都不匹配，整张卡就不出来（CuratedShelf 遇到空列表不画）。
+  const curatedQuery = query.trim().toLowerCase()
+  const shownCurated = curatedQuery
+    ? curatedItems.filter((item) =>
+        `${item.name} ${item.summary}`.toLowerCase().includes(curatedQuery),
+      )
+    : curatedItems
+  const toolName = providerName(provider)
   const snapshot = resource.data?.snapshot
   const all = extensionItemsForView(
     snapshot?.items ?? [],
@@ -1290,6 +1382,9 @@ export function ExtensionsPage({
       'python',
       async () => {
         await api.installPythonRuntime()
+        // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
+        // 本页那次读接上 App 刚起的那一轮检测（同「安装卸载」页）。
+        onSystemChanged?.()
         await resource.reload()
       },
       'Python 已经装好了，可以继续添加这条连接',
@@ -1347,13 +1442,34 @@ export function ExtensionsPage({
     }
     setCuratedForm(item)
   }
-  // 空列表里的「看看精选」把焦点交给精选卡的第一个「安装」，键盘用户不用自己找上去。
+  // 空列表里的「看看精选」把焦点交给精选卡的第一个「安装」，键盘用户不用自己找上去；
+  // 精选都装过了就只滚到那张卡。
   const focusCuratedShelf = () => {
-    const target = document.querySelector<HTMLElement>(
+    const button = document.querySelector<HTMLElement>(
       '[data-testid="curated-shelf"] [data-testid^="curated-install-"]',
     )
+    const target = button ?? document.querySelector<HTMLElement>('[data-testid="curated-shelf"]')
     target?.scrollIntoView({ block: 'center' })
-    target?.focus()
+    button?.focus()
+  }
+  // 精选只摆在插件页「已安装」那一侧：在「市场」页签点「看看精选」，先切过去，画出来以后再滚。
+  const [curatedFocusPending, setCuratedFocusPending] = useState(false)
+  useEffect(() => {
+    if (!curatedFocusPending || view !== 'installed') return
+    setCuratedFocusPending(false)
+    focusCuratedShelf()
+  }, [curatedFocusPending, view])
+  const showInstalledView = () => {
+    setView('installed')
+    operation.clear()
+  }
+  const seeCurated = () => {
+    if (kind === 'plugin' && view === 'market') {
+      showInstalledView()
+      setCuratedFocusPending(true)
+      return
+    }
+    focusCuratedShelf()
   }
   // 插件精选走的是页面上「添加插件」那条出口：主进程会先保证官方市场在册，再执行
   // `plugin install <插件名>@<市场名>`。精选不另开通道，校验与手填来源完全同一套。
@@ -1435,6 +1551,7 @@ export function ExtensionsPage({
       variant="primary"
       icon={Plus}
       disabled={!supportsInstall || capability?.list === false || Boolean(operation.busy)}
+      title={supportsInstall ? undefined : `${toolName} 不支持在这里导入`}
       onClick={showForm}
       testId={`${page}-add`}
     >
@@ -1446,16 +1563,29 @@ export function ExtensionsPage({
     kind === 'plugin' &&
     view === 'market' &&
     (provider === 'claude' || provider === 'codex')
-  const addOfficialMarketplace = () =>
+  const noMarket = kind === 'plugin' && view === 'market' && !officialMarketplacePage
+  // 检测命令跑起来了却没跑完才算「没检测成」；工具本来就不报连接状态的不算，「上次检测」照旧。
+  const healthFailed = Boolean(
+    health.report?.supported && health.report.reason && !health.checking,
+  )
+  // 「重新检测」先把列表重新读一遍：在别处加过、删过的连接要先出现在列表里，检测才有对象。
+  const recheck = async () => {
+    await resource.reload()
+    await health.check()
+  }
+  // 进页面时替用户自动下的那一次不另弹「已下载」：列表直接出来就是结果。自己点的照旧提示。
+  const addOfficialMarketplace = (automatic = false) =>
     void operation.execute(
       'marketplace-ensure',
       async () => {
         await api.ensureProviderMarketplace(provider)
         await resource.reload()
       },
-      provider === 'codex'
-        ? '插件目录已下载，下面就是可以安装的插件。'
-        : '官方插件市场已添加，下面就是可以安装的插件。',
+      automatic
+        ? () => null
+        : provider === 'codex'
+          ? '插件目录已下载，下面就是可以安装的插件。'
+          : '官方插件市场已添加，下面就是可以安装的插件。',
     )
   // Codex 的目录缺了就直接替用户下载，不让他先看一句「还没下载」再去点。每次进到
   // 这一页只自动下一次；失败了留着按钮，由用户换网或开加速后自己再点。
@@ -1467,7 +1597,7 @@ export function ExtensionsPage({
   useEffect(() => {
     if (!codexCatalogMissing || codexCatalogAutoTried.current || operation.busy) return
     codexCatalogAutoTried.current = true
-    addOfficialMarketplace()
+    addOfficialMarketplace(true)
   })
   const officialMarketplaceButton = (
     <Button
@@ -1475,7 +1605,7 @@ export function ExtensionsPage({
       icon={Plus}
       loading={operation.busy === 'marketplace-ensure'}
       disabled={Boolean(operation.busy)}
-      onClick={addOfficialMarketplace}
+      onClick={() => addOfficialMarketplace()}
       testId="plugins-official-marketplace-add"
     >
       {marketplace?.actionLabel ?? '添加官方市场'}
@@ -1500,6 +1630,17 @@ export function ExtensionsPage({
     ) : addButton
   const markets = resource.data?.codex?.plugins.marketplaces ?? []
   const filteredMarkets = filterExtensionMarkets(markets, query)
+  // 列表真的空着时这一页自己的那句话；插件页没有精选的工具、市场页签照旧用通用的那句。
+  const emptyDescription =
+    kind === 'mcp'
+      ? '装下面「星芒精选」里的，或点右上角「添加连接」接你自己的。'
+      : kind === 'skill'
+        ? supportsInstall
+          ? '点「导入技能」，选一个技能文件夹。'
+          : `按 ${toolName} 自己的方式放好技能，回来点「重新加载」就能看到。`
+        : view === 'installed' && curatedItems.length > 0
+          ? '装下面「星芒精选」里的，或到「市场」页签挑。'
+          : undefined
   return (
     <section
       className="v2-page"
@@ -1527,6 +1668,7 @@ export function ExtensionsPage({
           onChange={(next) => {
             setView(next)
             if (next === 'market') setScope('all')
+            operation.clear()
           }}
           testId="plugins-tabs"
         />
@@ -1541,46 +1683,85 @@ export function ExtensionsPage({
                 setProvider(value)
                 setQuery('')
                 setScope('all')
+                // 上一个工具的红条不跟到下一个工具上。
+                operation.clear()
               }
             }}
           />
         }
+        // 没有插件市场的工具在「市场」页签里没什么可搜、可数的，只留选工具。
         search={
-          <SearchInput
-            value={query}
-            onChange={setQuery}
-            placeholder={kind === 'mcp' ? '搜索名称或地址' : '搜索名称或说明'}
-            testId={`${page}-search`}
-          />
+          noMarket ? undefined : (
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder={kind === 'mcp' ? '搜索名称或地址' : '搜索名称或说明'}
+              testId={`${page}-search`}
+            />
+          )
         }
         right={
-          <>
-            <span>
-              {kind === 'plugin' && view === 'market' && !officialMarketplacePage
-                ? filteredMarkets.length
-                : list.length}{' '}
-              {kind === 'mcp' ? '个连接' : '项'}
-            </span>
-            {kind === 'mcp' && (
-              <>
-                {health.report?.checkedAt && !health.checking && (
-                  <span>上次检测 {displayDate(health.report.checkedAt)}</span>
-                )}
+          noMarket ? undefined : (
+            <>
+              {resource.data && !resource.error && (
+                <span>
+                  {list.length} {kind === 'mcp' ? '个连接' : '项'}
+                </span>
+              )}
+              {kind === 'mcp' ? (
+                <>
+                  {healthFailed ? (
+                    <span data-testid="mcp-health-failed">这次没检测成</span>
+                  ) : (
+                    health.report?.checkedAt &&
+                    !health.checking && (
+                      <span>上次检测 <RelativeTime value={health.report.checkedAt} /></span>
+                    )
+                  )}
+                  <Button
+                    size="sm"
+                    icon={RefreshCw}
+                    loading={health.checking || resource.loading}
+                    disabled={health.checking || resource.loading}
+                    onClick={() => void recheck()}
+                    testId="mcp-health-recheck"
+                  >
+                    重新检测
+                  </Button>
+                </>
+              ) : (
                 <Button
                   size="sm"
                   icon={RefreshCw}
-                  loading={health.checking}
-                  disabled={health.checking}
-                  onClick={() => void health.check()}
-                  testId="mcp-health-recheck"
+                  loading={resource.loading}
+                  disabled={resource.loading}
+                  onClick={() => void resource.reload()}
+                  testId={`${page}-reload`}
                 >
-                  重新检测
+                  重新加载
                 </Button>
-              </>
-            )}
-          </>
+              )}
+            </>
+          )
         }
       />
+      {kind === 'skill' && !supportsInstall && (
+        <div className="v2-skill-import-note" data-testid="skills-import-unsupported">
+          <span>
+            {toolName} 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。
+          </span>
+          {onOpenTutorial && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onOpenTutorial(`skills#${skillImportTutorialExtra}`)}
+              testId="skills-import-guide"
+            >
+              看怎么放
+            </Button>
+          )}
+        </div>
+      )}
       {kind !== 'mcp' && !(kind === 'plugin' && view === 'market') && (
         <Segment
           options={scopeOptions}
@@ -1606,22 +1787,6 @@ export function ExtensionsPage({
           testId={`${page}-readonly`}
         />
       )}
-      {kind === 'skill' && !supportsInstall && (
-        <Notice
-          tone="neutral"
-          title="当前工具未提供技能导入能力"
-          body="请在该工具中管理技能，或切换到 Codex CLI / Gemini CLI。"
-        />
-      )}
-      {/* 插件页的「市场」页签本身就是一整份可装清单，精选只放在「已安装」那一侧。 */}
-      {(kind === 'mcp' || (kind === 'plugin' && view === 'installed')) && (
-        <CuratedShelf
-          items={curatedItems}
-          disabled={capability?.list === false || Boolean(operation.busy)}
-          installedIds={installedIds}
-          onPick={setCurated}
-        />
-      )}
       {officialMarketplacePage && marketplace && (
         <Notice
           tone={marketplace.tone}
@@ -1631,36 +1796,55 @@ export function ExtensionsPage({
           testId="plugins-official-marketplace"
         />
       )}
-      {view === 'market' && kind === 'plugin' && !officialMarketplacePage ? (
+      {noMarket ? (
         <Card padding="none">
           <Notice
             tone="neutral"
-            title="当前工具未提供市场管理接口"
-            body="已安装插件仍可在上一页管理。"
+            title={`${toolName} 没有插件市场`}
+            body="它的插件装好后在「已安装」里管理。"
+            actions={
+              <Button size="sm" onClick={showInstalledView} testId="plugins-market-go-installed">
+                去已安装
+              </Button>
+            }
+            testId="plugins-market-unavailable"
           />
         </Card>
       ) : (
-        <Card padding="none">
+        <Card padding="none" title={kind === 'mcp' ? '已添加' : undefined} testId={`${page}-list`}>
           <ListState
             page={page}
             noun={title}
             loading={resource.loading}
             error={resource.error}
             count={list.length}
+            query={query}
             filtered={Boolean(query || scope !== 'all')}
             retry={() => void resource.reload()}
             clear={() => {
               setQuery('')
               setScope('all')
             }}
+            emptyTitle={kind === 'mcp' ? '还没有添加连接' : undefined}
+            emptyDescription={emptyDescription}
             action={
-              curatedItems.length > 0 ? (
+              kind === 'skill' && !supportsInstall ? (
+                <Button
+                  size="sm"
+                  icon={RefreshCw}
+                  loading={resource.loading}
+                  onClick={() => void resource.reload()}
+                  testId={`${page}-empty-reload`}
+                >
+                  重新加载
+                </Button>
+              ) : curatedItems.length > 0 ? (
                 <>
                   {addButton}
+                  {/* 和旁边的添加按钮一样大。 */}
                   <Button
-                    size="sm"
                     icon={Sparkles}
-                    onClick={focusCuratedShelf}
+                    onClick={seeCurated}
                     testId={`${page}-see-curated`}
                   >
                     看看精选
@@ -1746,6 +1930,22 @@ export function ExtensionsPage({
                   testId={`${page}-row-${item.id}`}
                   actions={
                     <>
+                      {/* 行上写着「可更新」，更新就放在行上，不用再去「…」里找；菜单里那项照留。 */}
+                      {kind !== 'mcp' &&
+                        item.installed &&
+                        rowState.canUpdate &&
+                        item.update.state === 'update-available' && (
+                          <Button
+                            size="sm"
+                            icon={RefreshCw}
+                            loading={operation.busy === 'update'}
+                            disabled={Boolean(operation.busy)}
+                            onClick={() => act(item, 'update')}
+                            testId={`${page}-update-${item.id}`}
+                          >
+                            更新
+                          </Button>
+                        )}
                       {!item.installed && item.operations.install ? (
                         <Button
                           size="sm"
@@ -1849,6 +2049,7 @@ export function ExtensionsPage({
             loading={resource.loading}
             error={resource.error}
             count={filteredMarkets.length}
+            query={query}
             filtered={Boolean(query)}
             retry={() => void resource.reload()}
             clear={() => setQuery('')}
@@ -1904,16 +2105,26 @@ export function ExtensionsPage({
           </ListState>
         </Card>
       )}
+      {/* 推荐区放在自己的列表下面：读取中、读不到、搜不到都在上面那张卡里，第一屏就看得到。
+          插件页的「市场」页签本身就是一整份可装清单，精选只放在「已安装」那一侧。 */}
+      {(kind === 'mcp' || (kind === 'plugin' && view === 'installed')) && (
+        <CuratedShelf
+          items={shownCurated}
+          disabled={capability?.list === false || Boolean(operation.busy)}
+          installedIds={installedIds}
+          onPick={setCurated}
+        />
+      )}
       <Dialog
         open={Boolean(form)}
         title={
           form === 'market'
             ? '添加插件市场'
             : kind === 'mcp'
-              ? '添加连接'
+              ? `给 ${toolName} 添加连接`
               : kind === 'skill'
-                ? '导入技能'
-                : '添加插件'
+                ? `给 ${toolName} 导入技能`
+                : `给 ${toolName} 添加插件`
         }
         onClose={() => {
           if (!operation.busy) setForm(null)
@@ -1939,7 +2150,7 @@ export function ExtensionsPage({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         {curatedForm?.inputs.map((input) => (
           <Notice
             key={input.key}
@@ -1991,14 +2202,19 @@ export function ExtensionsPage({
               onChange={(event) => setFormName(event.target.value)}
               testId="mcp-name"
             />
-            <Segment
-              options={[
-                { value: 'http', label: '网络服务' },
-                { value: 'stdio', label: '本地程序' },
-              ]}
-              value={transport}
-              onChange={setTransport}
-            />
+            <div className="xm-field">
+              {/* 读屏从按钮组自己的名字读到它，这里只给眼睛看。 */}
+              <label aria-hidden="true">连接方式</label>
+              <Segment
+                label="连接方式"
+                options={[
+                  { value: 'http', label: '网络服务' },
+                  { value: 'stdio', label: '本地程序' },
+                ]}
+                value={transport}
+                onChange={setTransport}
+              />
+            </div>
           </>
         )}
         <Input
@@ -2057,8 +2273,10 @@ export function ExtensionsPage({
           </details>
         )}
         {form !== 'market' && (
+          // 外接工具的弹框照清单加小标题「装到哪里」；技能、插件的弹框只改了标题，下拉照旧不带字。
           <Select
-            aria-label="添加范围"
+            label={kind === 'mcp' ? '装到哪里' : undefined}
+            aria-label={kind === 'mcp' ? undefined : '添加范围'}
             options={[
               { value: 'user', label: '我的（全局）' },
               ...(provider === 'codex' && kind !== 'skill'
@@ -2129,7 +2347,7 @@ export function ExtensionsPage({
             ) : undefined}
           />
         )}
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
@@ -2166,7 +2384,7 @@ export function ExtensionsPage({
         }
       >
         <p>此操作会从当前工具中移除该项。需要时可从原来源重新添加。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Drawer
         open={Boolean(selected)}
@@ -2200,7 +2418,7 @@ function RestoreCheckNotice({
   navigate,
 }: {
   check: RestoreCheck
-  navigate?: (page: V2Page) => void
+  navigate?: (page: V2Page, section?: string) => void
 }) {
   const name = providerName(check.provider)
   if (!check.result) {
@@ -2215,6 +2433,7 @@ function RestoreCheckNotice({
   }
   const view = connectionCheckView(check.result)
   const target = view.target
+  const section = view.section ?? undefined
   return (
     <Notice
       tone={view.tone}
@@ -2229,7 +2448,7 @@ function RestoreCheckNotice({
         target && navigate ? (
           <Button
             size="sm"
-            onClick={() => navigate(target)}
+            onClick={() => navigate(target, section)}
             testId="backups-restore-check-fix"
           >
             去处理
@@ -2239,6 +2458,16 @@ function RestoreCheckNotice({
       testId="backups-restore-check"
     />
   )
+}
+
+/**
+ * 备份按列表上看到的日期搜：「今天 14:20」「10月2日」照着写就搜得到，鼠标停上去看到的
+ * 完整时间也算。备份编号列表上看不到，不再拿它比。
+ */
+export function backupMatchesQuery(createdAt: string | null | undefined, query: string, now: number): boolean {
+  const words = query.trim().toLowerCase()
+  if (!words) return true
+  return `${relativeTimeText(createdAt, now)} ${displayDate(createdAt)}`.toLowerCase().includes(words)
 }
 
 function BackupKeyPill({ backup }: { backup: Backup }) {
@@ -2255,14 +2484,21 @@ export function BackupsPage({
   api,
   onRestored,
   navigate,
+  active,
 }: {
   api: V2Bridge
   /** 恢复成功后回调，用来让首页重读配置。 */
   onRestored?: (provider: Provider) => void
-  navigate?: (page: V2Page) => void
+  /** section：连接测试结论是「网络」时落到设置的「网络」组；缺省 = 只跳页。 */
+  navigate?: (page: V2Page, section?: string) => void
+  /** 外壳说的「现在显示的是这一页」：再显示时重读一次列表（同 BusinessActions.active）；缺省 = 不重读（旧行为）。 */
+  active?: boolean
 }) {
   const load = useCallback(() => api.listBackups(), [api])
   const resource = useResource(load)
+  // 改配置、改用账号前都会自动留一份，改用失败的错误框还叫人「到「备份」里恢复改用之前的那一份」：
+  // 去过这一页的话，回来时列表里得有它。
+  useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [backupProvider, setBackupProvider] = useState<Provider>('claude')
@@ -2273,6 +2509,8 @@ export function BackupsPage({
   const [restoreCheck, setRestoreCheck] = useState<RestoreCheck | null>(null)
   const checkSequence = useRef(0)
   const previewKey = preview ? backupKeyView(preview) : null
+  // 列表上的「今天 14:20」和搜索比的是同一个时刻算出来的字。
+  const now = Date.now()
   // 连着恢复两份时只认最后一次的结论（T6）。
   const checkRestored = async (restored: Provider) => {
     const sequence = ++checkSequence.current
@@ -2285,17 +2523,12 @@ export function BackupsPage({
     }
     if (checkSequence.current === sequence) setRestoreCheck(next)
   }
-  const list = useMemo(
-    () =>
-      resource.data?.filter(
-        (item) =>
-          (provider === 'all' || item.provider === provider) &&
-          `${item.id} ${item.createdAt}`
-            .toLowerCase()
-            .includes(query.toLowerCase()),
-      ) ?? [],
-    [resource.data, provider, query],
-  )
+  const list =
+    resource.data?.filter(
+      (item) =>
+        (provider === 'all' || item.provider === provider) &&
+        backupMatchesQuery(item.createdAt, query, now),
+    ) ?? []
   const inspect = (backup: Backup) =>
     void operation.execute(
       'inspect',
@@ -2304,11 +2537,11 @@ export function BackupsPage({
       },
       '',
     )
-  const create = () =>
+  const create = (target: Provider) =>
     void operation.execute(
       'create',
       async () => {
-        await api.createBackup(backupProvider)
+        await api.createBackup(target)
         await resource.reload()
       },
       '备份已保存到本机',
@@ -2333,16 +2566,21 @@ export function BackupsPage({
         }
       />
       <Toolbar
-        left={<ProviderFilter value={provider} all onChange={setProvider} />}
+        left={<ProviderFilter value={provider} all onChange={(value) => {
+          setProvider(value)
+          // 右边「马上备份」的下拉跟着上面的筛选走；选「全部工具」时不动。
+          if (value !== 'all') setBackupProvider(value)
+          operation.clear()
+        }} />}
         search={
           <SearchInput
             value={query}
             onChange={setQuery}
-            placeholder="搜索日期或备份编号"
+            placeholder="搜索日期"
             testId="backups-search"
           />
         }
-        right={<span>{list.length} 份备份</span>}
+        right={resource.data && !resource.error ? <span>{list.length} 份备份</span> : null}
       />
       <ResultNotice {...operation} />
       {restoreCheck && (
@@ -2356,11 +2594,15 @@ export function BackupsPage({
             loading={resource.loading}
             error={resource.error}
             count={list.length}
+            query={query}
             filtered={Boolean(query)}
             retry={() => void resource.reload()}
             clear={() => setQuery('')}
+            emptyTitle={provider === 'all' ? '还没有备份' : `${providerName(provider)} 还没有备份`}
+            emptyDescription="改工具配置前会自动留一份。想现在就留一份，点下面的按钮。"
             action={
-              <Button icon={Archive} onClick={create}>
+              // 上面筛选选了哪个工具就备份哪个；「全部工具」时用右边下拉里的。
+              <Button icon={Archive} onClick={() => create(provider === 'all' ? backupProvider : provider)}>
                 创建第一份备份
               </Button>
             }
@@ -2368,15 +2610,13 @@ export function BackupsPage({
             {list.map((backup) => (
               <ListRow
                 key={backup.id}
+                leading={<BrandIcon tool={backup.provider ?? ''} size={18} />}
                 title={
-                  <>
-                    <BrandIcon tool={backup.provider ?? ''} size={24} />
-                    {backup.provider
-                      ? providerName(backup.provider)
-                      : '无法识别的备份'}
-                  </>
+                  backup.provider
+                    ? providerName(backup.provider)
+                    : '无法识别的备份'
                 }
-                desc={displayDate(backup.createdAt)}
+                desc={<RelativeTime value={backup.createdAt} now={now} />}
                 badge={
                   <>
                     <Pill tone={backup.valid ? 'neutral' : 'bad'}>
@@ -2431,12 +2671,12 @@ export function BackupsPage({
                   setBackupProvider(event.target.value)
               }}
             />
-            <p>备份保存在本机，可能包含配置凭据。请妥善保管。</p>
+            <p>备份在本机，可能含凭据，请妥善保管。</p>
             <Button
               variant="primary"
               icon={Archive}
               loading={operation.busy === 'create'}
-              onClick={create}
+              onClick={() => create(backupProvider)}
               testId="backups-create"
             >
               创建备份
@@ -2535,7 +2775,7 @@ export function BackupsPage({
             testId="backups-restore-key-warning"
           />
         )}
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
@@ -2567,7 +2807,7 @@ export function BackupsPage({
         }
       >
         <p>当前工具配置不受影响。这份备份删除后无法恢复。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </section>
   )

@@ -2,12 +2,15 @@ import type { UserWideCertificateTrustResult } from '../../../../electron/ipc-co
 
 type DetailValue = boolean | number | string | null
 
+/** 检查结果里「安全证书」那一项的代号；设置里「企业证书」的「去检查页」直接翻到这一项。 */
+export const certificateDiagnosticCode = 'CERTIFICATE_TRUST'
+
 /**
  * 检查页「安全证书」一项：主进程查出公司证书、且当前 Windows 账号还没设过那一条时，
  * 才给「让这台电脑上所有终端都信任」按钮（第十八批 7）。
  */
 export function canTrustCertificatesUserWide(item: { code: string; details?: Record<string, DetailValue> }): boolean {
-  return item.code === 'CERTIFICATE_TRUST' && item.details?.userWide === 'available'
+  return item.code === certificateDiagnosticCode && item.details?.userWide === 'available'
 }
 
 export const certificateTrustConfirmTitle = '让这台电脑上所有终端都信任？'

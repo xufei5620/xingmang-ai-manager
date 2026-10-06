@@ -9,6 +9,7 @@ import {
   runtimeLogAreaLabel,
   runtimeLogDisplayMessage,
   runtimeLogSourceOptions,
+  runtimeLogTimeText,
   runtimeLogWriteNotice,
   type RuntimeLogEntry,
   type RuntimeLogFilter,
@@ -216,5 +217,19 @@ describe('runtimeLogWriteNotice', () => {
     expect(notice?.body).toContain('导出反馈报告时也会带上')
     // 面向小白：不出现路径里的技术名词。
     expect(notice?.body).not.toMatch(/AppData|junction|联接|符号链接/)
+  })
+})
+
+describe('runtimeLogTimeText', () => {
+  const now = new Date(2026, 9, 4, 20, 30).getTime()
+
+  it('writes only the clock for today and adds the day for earlier entries', () => {
+    expect(runtimeLogTimeText(new Date(2026, 9, 4, 20, 2, 54).toISOString(), now)).toBe('20:02:54')
+    expect(runtimeLogTimeText(new Date(2026, 9, 2, 18, 2, 54).toISOString(), now)).toBe('10月2日 18:02:54')
+    expect(runtimeLogTimeText(new Date(2025, 11, 31, 8, 0, 5).toISOString(), now)).toBe('2025年12月31日 08:00:05')
+  })
+
+  it('says the time is unreadable instead of printing Invalid Date', () => {
+    expect(runtimeLogTimeText('not a date', now)).toBe('时间不可用')
   })
 })

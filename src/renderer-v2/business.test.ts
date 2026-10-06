@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createSettingsQueue, diagnosticHasFix, diagnosticTarget } from './pages-maintenance'
 import {
+  accountHeadLead,
+  accountTabNeeds,
   buildAccountInviteLink,
   buildSubscriptionPaymentInput,
   passwordFormDirty,
@@ -19,7 +21,7 @@ import {
   parseEnvironmentVariables,
   readCodexExtensionMetadata,
 } from './pages-management'
-import { accountTimeRange } from './AccountFilters'
+import { accountTimeRange, hiddenFilterCount } from './AccountFilters'
 import {
   beginBusinessOperation,
   errorMessage,
@@ -111,8 +113,38 @@ describe('v2 business boundaries', () => {
     })
     expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
-      tone: 'warn', body: expect.stringContaining('重新写入 Key'),
+      tone: 'warn', body: expect.stringContaining('重新写入 Key'), action: 'health',
     })
+    expect(subscriptionToolsNotice({ followsPreference: true }).action).toBeUndefined()
+  })
+
+  it('lets each account page wait only for the reads it actually shows', () => {
+    expect(accountTabNeeds('overview')).toEqual({ profile: true, balance: true })
+    expect(accountTabNeeds('invite')).toEqual({ profile: true, balance: true })
+    for (const tab of ['recharge', 'orders', 'devices'] as const) {
+      expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: false })
+    }
+    for (const tab of ['dashboard', 'usage', 'tasks', 'keys'] as const) {
+      expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: true })
+    }
+  })
+
+  it('names the current account in the page head and says plainly when its profile was not read', () => {
+    expect(accountHeadLead({ username: 'alice', email: 'a@example.test' })).toBe('当前账号：alice（a@example.test）')
+    expect(accountHeadLead({ username: 'alice', email: '' })).toBe('当前账号：alice')
+    expect(accountHeadLead(null)).toBe('当前账号的资料暂时没有读到')
+  })
+
+  it('counts only the folded filters that a query actually applied', () => {
+    const fields = [
+      { key: 'start', label: '开始时间' },
+      { key: 'modelName', label: '模型名称' },
+      { key: 'group', label: '分组' },
+      { key: 'tokenName', label: '令牌名称' },
+    ]
+    expect(hiddenFilterCount(fields, ['start', 'modelName'], {})).toBe(0)
+    expect(hiddenFilterCount(fields, ['start', 'modelName'], { start: '2026-10-01T00:00', modelName: 'gpt' })).toBe(0)
+    expect(hiddenFilterCount(fields, ['start', 'modelName'], { group: 'vip', tokenName: '', modelName: 'gpt' })).toBe(1)
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
@@ -329,9 +361,9 @@ describe('v2 business boundaries', () => {
     )
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试或查看反馈日志。',
+      '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试或查看反馈日志。')
+    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

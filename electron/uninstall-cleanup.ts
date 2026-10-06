@@ -12,6 +12,7 @@ import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
+import { configureRelocatedFolderAccess } from './relocated-folders'
 import { assertNoReparseComponents, removeSafeDataFile } from './safe-local-data'
 import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -39,13 +40,15 @@ export const uninstallCleanupExitCodes = {
   cliHooksRemain: 64,
 } as const
 
-// 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动，第一次编译
-// WinInet 互操作代码在 CI runner 上实测超过辅助进程用的 15 秒，45 秒也被撞穿过
-// （同一份清理有一次整段 55 秒通过，另一次第一条命令就超过 45 秒）。慢机器上
-// 这里超时的代价是整台电脑断网，比卸载界面多停一会儿重得多。
+// 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动。以前每条命令还要
+// 先现编 WinInet 互操作代码，在 CI runner 上实测超过辅助进程用的 15 秒，45 秒也被
+// 撞穿过（同一份清理有一次整段 55 秒通过，另一次第一条命令就超过 45 秒）；现在只有
+// 内存里声明失败（比如被杀毒软件拦下）才退回去现编（见 platform/windows-system-proxy.ts），
+// 上限照旧留着。慢机器上这里超时的代价是整台电脑断网，比卸载界面多停一会儿重得多。
 const proxyCommandTimeoutMs = 90_000
-// 还原最多是：等系统代理锁 12 秒，再加三次 PowerShell。正常一分钟以内；
-// 这个上限只防卸载界面一直停在「正在清理」。
+// 还原最多是：等系统代理锁 12 秒，再加三次 PowerShell（内存声明失败、退回现编时
+// 前面多一次，被拦的那次通常几秒内就结束）。正常一分钟以内；这个上限只防卸载界面
+// 一直停在「正在清理」。
 const defaultTimeoutMs = 300_000
 
 // 没有记录就说明这台电脑上本程序从没接管过系统代理（或者已经还原干净），
@@ -109,54 +112,63 @@ export async function clearLoginRecords(dataDirectory: string, report?: (line: s
 // 存储里另有几样界面偏好一起没了，卸载时无所谓。名字与 main.ts 里的写法、
 // Chromium 的目录名对应，uninstall-cleanup.test.ts 钉住。
 export const chatHistoryDirectoryNames = ['chat-history', 'Local Storage']
-// chat-history 是两层，Local Storage 是 leveldb 下一层；再深就不是我们写的东西。
-const maxChatHistoryDepth = 6
 
-function reportCleanup(report: ((line: string) => void) | undefined, error: unknown): void {
-  try { report?.(`chat history: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+// 卸载时整个删掉的一个目录：report 是报告行的前缀（只给排查的人看），label 进错误里的
+// 中文，maxDepth 以内才往下删——再深就不是我们写的东西。
+interface OwnedTree {
+  report: string
+  label: string
+  maxDepth: number
+}
+
+// chat-history 是两层，Local Storage 是 leveldb 下一层。
+const chatHistoryTree: OwnedTree = { report: 'chat history', label: '聊天记录', maxDepth: 6 }
+
+function reportTreeFailure(tree: OwnedTree, report: ((line: string) => void) | undefined, error: unknown): void {
+  try { report?.(`${tree.report}: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
 }
 
 // Nothing here is followed: a link or junction anywhere in the tree, or a file
 // that has another hard link, is refused and left in place (I8) while the rest
 // is still removed. The elevated uninstaller must never delete through a
 // redirect into files that are not ours.
-async function removeChatHistoryTree(directory: string, depth: number, report?: (line: string) => void): Promise<boolean> {
+async function removeOwnedTree(directory: string, depth: number, tree: OwnedTree, report?: (line: string) => void): Promise<boolean> {
   let stats: fs.Stats
   try {
     stats = fs.lstatSync(directory)
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return true
-    reportCleanup(report, error)
+    reportTreeFailure(tree, report, error)
     return false
   }
   try {
-    assertNoReparseComponents(directory, '聊天记录')
-    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('聊天记录必须是普通目录')
-    if (depth > maxChatHistoryDepth) throw new Error('聊天记录目录层级超出预期')
+    assertNoReparseComponents(directory, tree.label)
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`${tree.label}必须是普通目录`)
+    if (depth > tree.maxDepth) throw new Error(`${tree.label}目录层级超出预期`)
   } catch (error) {
-    reportCleanup(report, error)
+    reportTreeFailure(tree, report, error)
     return false
   }
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true })
   } catch (error) {
-    reportCleanup(report, error)
+    reportTreeFailure(tree, report, error)
     return false
   }
   let cleared = true
   for (const entry of entries) {
     const child = path.join(directory, entry.name)
     if (entry.isDirectory()) {
-      if (!await removeChatHistoryTree(child, depth + 1, report)) cleared = false
+      if (!await removeOwnedTree(child, depth + 1, tree, report)) cleared = false
       continue
     }
     try {
       // Refuses links (not a regular file) and hard-linked files alike.
-      await removeSafeDataFile(child, '聊天记录')
+      await removeSafeDataFile(child, tree.label)
     } catch (error) {
       cleared = false
-      reportCleanup(report, error)
+      reportTreeFailure(tree, report, error)
     }
   }
   if (!cleared) return false
@@ -164,7 +176,7 @@ async function removeChatHistoryTree(directory: string, depth: number, report?: 
     fs.rmdirSync(directory)
     return true
   } catch (error) {
-    reportCleanup(report, error)
+    reportTreeFailure(tree, report, error)
     return false
   }
 }
@@ -172,7 +184,7 @@ async function removeChatHistoryTree(directory: string, depth: number, report?: 
 export async function clearChatHistory(dataDirectory: string, report?: (line: string) => void): Promise<boolean> {
   let cleared = true
   for (const name of chatHistoryDirectoryNames) {
-    if (!await removeChatHistoryTree(path.join(dataDirectory, name), 0, report)) cleared = false
+    if (!await removeOwnedTree(path.join(dataDirectory, name), 0, chatHistoryTree, report)) cleared = false
   }
   return cleared
 }
@@ -182,6 +194,59 @@ export async function clearLoginAndChatRecords(dataDirectory: string, report?: (
   const login = await clearLoginRecords(dataDirectory, report)
   const chat = await clearChatHistory(dataDirectory, report)
   return login && chat
+}
+
+// 自动更新的缓存目录：Windows 上每次安装（自动更新也算）安装程序都把自己整份拷进来一份
+// （installer.exe，下次增量更新拿它当底），应用内更新把下好的新版放在 pending 里；Mac 上
+// 是下好的新版和留作增量底的 update.zip。每份都是整个安装包那么大，软件卸掉以后再没有
+// 程序去删。不看勾选框：这里只有星芒自己的安装包，没有工具、Key 和客户的数据。
+//
+// 名字是 electron-builder 按 package.json 的 name 算的（app-builder-lib 的
+// updaterCacheDirName：转小写再加 -updater），写进 app-update.yml；位置照 electron-updater
+// 的 getAppCacheDir。uninstall-cleanup.test.ts 钉住名字和 package.json 对得上。
+export const updaterCacheDirectoryName = 'xingmang-ai-manager-updater'
+
+// 里面只有 pending 一层，多留一层余地。
+const updaterCacheTree: OwnedTree = { report: 'update cache', label: '更新安装包', maxDepth: 2 }
+
+// 系统登记的这个账号的用户目录：os.userInfo 走 GetUserProfileDirectory，读的是只有管理员
+// 改得了的 ProfileList；os.homedir 先读 USERPROFILE，那是普通权限就能改的环境变量。
+function registeredProfileDirectory(): string | null {
+  try {
+    return os.userInfo().homedir
+  } catch {
+    return null
+  }
+}
+
+export function resolveUpdaterCacheDirectory(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string | null = platform === 'win32' ? registeredProfileDirectory() : os.homedir(),
+): string | null {
+  if (platform === 'win32') {
+    if (!home || !/^[A-Za-z]:[\\/]/.test(home)) return null
+    const localAppData = path.win32.join(home, 'AppData', 'Local')
+    // electron-updater 按 LOCALAPPDATA 放。它和系统登记的用户目录对不上（搬过家，或者被普通
+    // 权限的程序改过）就不删：卸载这一支带着管理员身份，跟不读 CODEX_HOME 一个道理，不能由
+    // 环境变量决定去哪里删东西。没删的只占地方。
+    const fromEnvironment = env.LOCALAPPDATA
+    if (fromEnvironment && path.win32.resolve(fromEnvironment).toLowerCase() !== localAppData.toLowerCase()) return null
+    return path.win32.join(localAppData, updaterCacheDirectoryName)
+  }
+  if (platform === 'darwin') {
+    return home && path.posix.isAbsolute(home) ? path.posix.join(home, 'Library', 'Caches', updaterCacheDirectoryName) : null
+  }
+  return null
+}
+
+// 删法和聊天记录一样一级一级来，碰到链接、目录联接和多链接文件就留在原地（I8）。
+export async function clearUpdaterCache(directory: string | null, report?: (line: string) => void): Promise<boolean> {
+  if (directory === null) {
+    try { report?.('update cache: location unknown; left in place') } catch { /* Reporting must not change the result. */ }
+    return false
+  }
+  return removeOwnedTree(directory, 0, updaterCacheTree, report)
 }
 
 // 卸载程序是整机安装的，一定带着管理员身份跑。普通账号卸载时要输别的管理员的
@@ -299,6 +364,8 @@ export interface UninstallCleanupDependencies {
   removeCliHooks?: () => boolean
   // 只有卸载页勾了「同时清除登录记录和聊天记录」才给；缺省 = 两样都保留，跟以前一样。
   clearLoginRecords?: () => Promise<boolean>
+  // 删掉自动更新留下的安装包；缺省 = 不动（旧行为，测试里用）。
+  removeUpdaterCache?: () => Promise<boolean>
   proxyRecordsExist?: (journalPath: string) => boolean
   timeoutMs?: number
   // 卸载程序不接 stderr，客户机上这里没人看；接上它的只有 CI 冒烟和客服手工排查。
@@ -358,6 +425,15 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
       try { dependencies.report?.(`login records: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
     }
   }
+  // 同样排在代理还原前面。没删掉的安装包只占地方，不值得让卸载界面多出一句「有几项
+  // 没清掉」，所以不占退出码，原因只写进报告。
+  if (dependencies.removeUpdaterCache) {
+    try {
+      await dependencies.removeUpdaterCache()
+    } catch (error) {
+      try { dependencies.report?.(`update cache: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    }
+  }
   const journalPath = accelerationProxyJournalPath(dependencies.dataDirectory)
   if (!(dependencies.proxyRecordsExist ?? hasProxyRecoveryRecords)(journalPath)) return code
   // recover() is the same compare-and-swap the worker replays after a crash:
@@ -389,6 +465,8 @@ export function startUninstallCleanup(
   inspectAccount: () => Promise<UninstallAccountMatch> = () => inspectUninstallAccount(process.platform, report),
   // 测试替换成临时目录，免得改到跑测试这台电脑上真实的工具配置。
   removeCliHooks: () => boolean = () => removeCliHooksFromConfigs(uninstallProviderConfigRoots(), report),
+  // 同上，免得删到跑测试这台电脑上真的更新缓存。
+  removeUpdaterCache: () => Promise<boolean> = () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
 ): void {
   // A development build shares the login item's name with the installed app,
   // so running this from a checkout would switch off the real one's autostart.
@@ -396,6 +474,9 @@ export function startUninstallCleanup(
     exit(uninstallCleanupExitCodes.unsupported)
     return
   }
+  // This branch runs elevated and deletes inside the user's profile: no
+  // relocated-folder link may ever be followed here (I8), whatever loaded first.
+  configureRelocatedFolderAccess('trusted-only')
   app.setAppUserModelId(windowsAppUserModelId)
   // The same default the desktop process reads (main.ts managerDataDirectory);
   // neither process renames the app or passes a profile switch.
@@ -407,6 +488,7 @@ export function startUninstallCleanup(
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
     removeCliHooks,
     clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginAndChatRecords(dataDirectory, report) : undefined,
+    removeUpdaterCache,
     report,
   }).then(exit, () => exit(uninstallCleanupExitCodes.proxyNotRestored))
 }

@@ -4,7 +4,9 @@ import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { promisify } from 'node:util'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
+import { isLinuxForeignWritablePath } from './linux-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
+import { linuxCommandPathCandidates } from './linux-platform'
 import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import { redactSecretPatterns } from './redaction-patterns'
@@ -198,7 +200,9 @@ function isPotentialWindowsExecutionPath(
  * macOS has no such boundary — the app never elevates — so it asks instead whether a
  * principal other than root or the invoking user can reach the path; see
  * darwin-path-trust.ts for why that is the faithful analogue rather than a weaker one.
- * Linux keeps the historical constant, which command-runner.test.ts pins.
+ * Linux asks the same question with its own answer for group-writable directories; see
+ * linux-path-trust.ts. Every platform that is neither win32 nor darwin is Linux here,
+ * the same family split platform-capabilities.ts makes.
  */
 export function isUserWritablePath(
   filePath: string,
@@ -207,9 +211,10 @@ export function isUserWritablePath(
 ): boolean {
   // Must precede the guard below. That guard maps a non-absolute path to false, i.e.
   // "trusted", which is a fail-open Windows defuses by checking absoluteness first in
-  // isTrustedHighIntegrityExecutable. On darwin a relative path has to answer true.
+  // isTrustedHighIntegrityExecutable. On darwin and Linux a relative path has to answer true.
   if (process.platform === 'darwin') return isDarwinForeignWritablePath(filePath)
-  if (process.platform !== 'win32' || !filePath || !path.isAbsolute(filePath)) return false
+  if (process.platform !== 'win32') return isLinuxForeignWritablePath(filePath)
+  if (!filePath || !path.isAbsolute(filePath)) return false
   try {
     return !isTrustedWindowsExecutionPath(filePath, machinePaths ?? resolveWindowsMachinePaths())
   } catch {
@@ -338,6 +343,63 @@ export function trustedCommandEnvironment(
     // DYLD_ROOT_PATH and DYLD_IMAGE_SUFFIX, each able to substitute a library at load.
     'dyld_',
   ]
+  // Linux-only additions. Each one makes a glibc or desktop-library child load code or
+  // data from a path the variable names before the requested command runs. They are
+  // gated to Linux so the Windows and macOS environments stay byte-for-byte what they
+  // were; most of them mean nothing there anyway.
+  const linuxUnsafeKeys = new Set([
+    // glibc's own UNSECURE_ENVVARS list, which ld.so strips for setuid programs. TMPDIR
+    // is the one entry left out: dropping it would push temporary files into the shared
+    // /tmp, which is the squattable place, not the safer one.
+    'gconv_path',
+    'getconf_dir',
+    'glibc_tunables',
+    'hostaliases',
+    'localdomain',
+    'locpath',
+    'malloc_trace',
+    'nis_path',
+    'nlspath',
+    'resolv_host_conf',
+    'res_options',
+    'tzdir',
+    // SHELLOPTS=xtrace with a PS4 holding $(...) runs that command inside any bash
+    // script a CLI starts, before the script's first line.
+    'shellopts',
+    'bashopts',
+    'ps4',
+    // Module loaders of GTK, GIO, GStreamer, gdk-pixbuf and Qt: each names a directory
+    // or file of shared objects the library dlopens on its own.
+    'gtk_modules',
+    'gtk3_modules',
+    'gtk_path',
+    'gtk_exe_prefix',
+    'gio_module_dir',
+    'gio_extra_modules',
+    'gst_plugin_path',
+    'gst_plugin_path_1_0',
+    'gst_plugin_system_path',
+    'gst_plugin_system_path_1_0',
+    'gdk_pixbuf_module_file',
+    'gdk_pixbuf_moduledir',
+    'qt_plugin_path',
+    'qt_qpa_platform_plugin_path',
+    // Interpreter start-up hooks the existing table does not already cover.
+    'tcllibpath',
+    'phprc',
+    'php_ini_scan_dir',
+  ])
+  const linuxUnsafePrefixes = [
+    // ld.so honours a dozen LD_* variables beyond the two explicit keys above, among
+    // them LD_AUDIT and LD_PROFILE, each able to load a library into the child.
+    'ld_',
+    // Exported bash functions (BASH_FUNC_name%%) are imported by every bash child.
+    'bash_func_',
+    // LUA_INIT runs code at interpreter start; LUA_PATH and LUA_CPATH, and their
+    // versioned LUA_*_5_4 forms, choose which modules require() loads.
+    'lua_',
+  ]
+  const linux = platform !== 'win32' && platform !== 'darwin'
   const safeGitOverrides = new Map<string, Set<string>>([
     ['git_config_nosystem', new Set(['1'])],
     ['git_config_global', new Set(['NUL', '/dev/null'])],
@@ -360,6 +422,10 @@ export function trustedCommandEnvironment(
       || normalizedKey === 'ssh_askpass'
     ) && !safeGitOverride
     const runtimeInjection = unsafePrefixes.some((prefix) => normalizedKey.startsWith(prefix))
+      || (linux && (
+        linuxUnsafeKeys.has(normalizedKey)
+        || linuxUnsafePrefixes.some((prefix) => normalizedKey.startsWith(prefix))
+      ))
     if (
       normalizedKey !== 'path'
       && !unsafeKeys.has(normalizedKey)
@@ -404,8 +470,35 @@ export function trustedCommandEnvironment(
     result.PYTHONSAFEPATH = '1'
     return result
   }
-  if (platform !== 'win32') {
-    result.PATH = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
+  if (linux) {
+    // The darwin rebuild above, with Linux's machine directories and its own trust
+    // predicate. /usr/local comes before /usr because that is where a Node.js the
+    // customer unpacked from nodejs.org lives, and the predicate still has to accept it.
+    const inheritedPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
+    let managedBin: string | null = null
+    let managedNodeBin: string | null = null
+    try {
+      managedBin = managedNpmBinDirectory(baseEnv, 'linux')
+      managedNodeBin = managedNodeRuntimeBinDirectory(baseEnv, 'linux')
+    } catch {
+      // No usable data directory. The fixed system directories below still give a working PATH.
+    }
+    const machineEntries = [managedBin, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin']
+    const trustedEntries: string[] = []
+    const seenEntries = new Set<string>()
+    // As on darwin, the app-downloaded Node.js goes last so a runtime the user installed
+    // themselves always wins.
+    for (const candidate of [...machineEntries, ...inheritedPath.split(path.posix.delimiter), managedNodeBin]) {
+      const entry = candidate?.trim()
+      if (!entry || !path.posix.isAbsolute(entry)) continue
+      // resolve, unlike normalize, also folds a trailing slash, so /usr/bin/ is /usr/bin.
+      const key = path.posix.resolve(entry)
+      if (seenEntries.has(key)) continue
+      seenEntries.add(key)
+      if (isLinuxForeignWritablePath(entry)) continue
+      trustedEntries.push(entry)
+    }
+    result.PATH = trustedEntries.join(path.posix.delimiter)
     result.PYTHONNOUSERSITE = '1'
     result.PYTHONSAFEPATH = '1'
     return result
@@ -542,12 +635,14 @@ export function commandEnvironment(
   const existingPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
   const candidates = process.platform === 'darwin'
     ? darwinCommandPathCandidates(baseEnv, additionalPaths)
-    : [
-        ...additionalPaths,
-        ...defaultCommandPaths(baseEnv),
-        ...existingPath.split(path.delimiter),
-        ...fallbackCommandPaths(baseEnv),
-      ]
+    : process.platform !== 'win32'
+      ? linuxCommandPathCandidates(baseEnv, additionalPaths)
+      : [
+          ...additionalPaths,
+          ...defaultCommandPaths(baseEnv),
+          ...existingPath.split(path.delimiter),
+          ...fallbackCommandPaths(baseEnv),
+        ]
   const seen = new Set<string>()
   const entries: string[] = []
   for (const candidate of candidates) {
@@ -704,8 +799,8 @@ export function isUserWritableResolvedPathSync(
  * The two platforms gate different things. On Windows the tool being user-scoped is
  * itself disqualifying, because execution may cross an elevation boundary. On macOS
  * every managed CLI is user-scoped by construction, so the gate instead rejects tools
- * a third principal could have tampered with. Linux still answers true unconditionally,
- * which is asserted in command-runner.test.ts rather than merely inherited.
+ * a third principal could have tampered with. Linux asks the macOS question with its own
+ * group rule (linux-path-trust.ts).
  */
 export function isTrustedHighIntegrityExecutable(
   filePath: string,
@@ -718,7 +813,7 @@ export function isTrustedHighIntegrityExecutable(
     // isUserWritableResolvedPathSync would only add a redundant second realpath.
     return path.posix.isAbsolute(filePath) && !isDarwinForeignWritablePath(filePath)
   }
-  if (platform !== 'win32') return true
+  if (platform !== 'win32') return path.posix.isAbsolute(filePath) && !isLinuxForeignWritablePath(filePath)
   return path.win32.isAbsolute(filePath) && !isUserWritableResolvedPathSync(filePath, env, machinePaths)
 }
 
@@ -963,6 +1058,81 @@ function replaceCanonicalTrustedPath(
     : argument
 }
 
+/**
+ * The POSIX shapes of a path argument: a standalone absolute path, or one after the
+ * first `=` of an option. `@file` response files and `/opt:` switches are Windows
+ * conventions and have no POSIX counterpart worth guessing at.
+ */
+function posixCommandArgumentPath(argument: string): CommandArgumentPathReference | null {
+  if (argument.startsWith('/')) return { value: argument, start: 0, end: argument.length }
+  const equals = argument.indexOf('=')
+  if (equals <= 0 || !argument.startsWith('-')) return null
+  const start = equals + 1
+  return argument.startsWith('/', start) ? { value: argument.slice(start), start, end: argument.length } : null
+}
+
+async function linuxTrustedRealPath(candidate: string): Promise<string | null> {
+  if (!path.posix.isAbsolute(candidate) || isLinuxForeignWritablePath(candidate)) return null
+  try {
+    const realPath = await fs.promises.realpath(candidate)
+    // Re-judged after resolving so a swap between the two calls fails closed.
+    return isLinuxForeignWritablePath(realPath) ? null : realPath
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Linux counterpart of the win32 block in runCommand: resolve the executable from the
+ * trusted PATH only, require it, every path argument and every trustedPaths entry to
+ * pass the Linux predicate, and spawn the canonical paths that passed. Without this,
+ * trustedOnly on Linux would only swap the environment, which is the gap the macOS
+ * rules file still records for darwin.
+ *
+ * The canonical binary keeps the name it was found by as argv[0]. Multi-call binaries
+ * (busybox, the uutils coreutils Ubuntu now ships, dash behind /bin/sh) choose what to
+ * be from that name, and the realpath would turn `ls` into a bare `coreutils`.
+ */
+async function resolveTrustedLinuxSpec(
+  spec: CommandSpec,
+  env: NodeJS.ProcessEnv,
+  options: RunCommandOptions,
+): Promise<{ spec: CommandSpec; argv0: string }> {
+  const located = path.posix.isAbsolute(spec.executable)
+    ? spec.executable
+    : spec.executable.includes('/')
+      ? null
+      : await findExecutable(spec.executable, { env, trustedOnly: true })
+  const executable = located ? await linuxTrustedRealPath(located) : null
+  let rejectedPath: string | null = executable ? null : located ?? spec.executable
+  const argv: string[] = []
+  for (const argument of spec.argv) {
+    const reference = posixCommandArgumentPath(argument)
+    if (!reference) {
+      argv.push(argument)
+      continue
+    }
+    const realArgument = await linuxTrustedRealPath(reference.value)
+    if (!realArgument) {
+      rejectedPath ??= reference.value
+      break
+    }
+    argv.push(`${argument.slice(0, reference.start)}${realArgument}${argument.slice(reference.end)}`)
+  }
+  for (const trustedPath of options.trustedPaths ?? []) {
+    if (!await linuxTrustedRealPath(trustedPath)) rejectedPath ??= trustedPath
+  }
+  if (rejectedPath || !executable) {
+    throw immediateError(
+      'UNSAFE_COMMAND',
+      spec,
+      options,
+      `受信任命令的目标或输入文件可被本机其他账号改动，或者不存在，已阻止执行：${rejectedPath ?? spec.executable}`,
+    )
+  }
+  return { spec: { ...spec, executable, argv }, argv0: located ?? executable }
+}
+
 function positiveInteger(value: number, name: string, allowZero = false): number {
   if (!Number.isInteger(value) || value < (allowZero ? 0 : 1)) {
     throw new TypeError(`${name} must be ${allowZero ? 'a non-negative' : 'a positive'} integer`)
@@ -1055,6 +1225,14 @@ export async function runCommand(
     }
   }
 
+  // Set only for a trusted-only Linux command; every other spawn passes no argv0, as before.
+  let launchName: string | undefined
+  if (options.trustedOnly && process.platform !== 'win32' && process.platform !== 'darwin') {
+    const trusted = await resolveTrustedLinuxSpec(resolvedSpec, env, options)
+    resolvedSpec = trusted.spec
+    launchName = trusted.argv0
+  }
+
   const acceptedExitCodes = new Set(options.acceptedExitCodes ?? [0])
   const sensitiveValues = options.sensitiveValues ?? []
   const startedAt = Date.now()
@@ -1070,6 +1248,7 @@ export async function runCommand(
         shell: false,
         windowsHide: options.windowsHide ?? true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...(launchName ? { argv0: launchName } : {}),
       })
     } catch {
       reject(immediateError('SPAWN_FAILED', spec, options))

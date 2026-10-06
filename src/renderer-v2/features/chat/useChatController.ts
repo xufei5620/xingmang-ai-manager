@@ -22,7 +22,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const [preparations, setPreparations] = useState<Record<string, GroupPreparation>>({})
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。当前会话暂未启用保存。` : '')
+  const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
   const [attaching, setAttaching] = useState(false)
   const attachingRef = useRef(false)
   const stateRef = useRef(state)
@@ -313,7 +313,9 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话' })) }
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
-  return { attaching, pickImages, pasteImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, continueInNew, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
+  const historyUnreadable = Boolean(initial.warning)
+  return { attaching, pickImages, pasteImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, continueInNew, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {

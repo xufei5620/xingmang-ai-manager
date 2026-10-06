@@ -841,6 +841,44 @@ async function isDeletableDirectory(realRoot: string, directory: string): Promis
 }
 
 /**
+ * 和一条 Claude Code 记录并排、同名的那个文件夹。删记录时它跟着一起删，列记录时
+ * 它里面的 .jsonl 也就不另算一条：两处都从这里取，口径才对得上。
+ */
+function claudeCompanionDirectory(transcript: string): string {
+  return path.join(path.dirname(transcript), path.basename(transcript, path.extname(transcript)))
+}
+
+/**
+ * Claude Code 自己认对话，只认项目文件夹里按会话 id（UUID）起名的 .jsonl。一次对话
+ * 派出去的子任务另存一份过程：2.0 到 2.1 初期叫 agent-<id>.jsonl，和记录并排放在项目
+ * 文件夹里；之后挪进与记录同名的文件夹（<记录id>/subagents/agent-<id>.jsonl）。它们不是
+ * 客户的另一次对话，单列出来标题一般是 AI 交代给子任务的话，还会把首页「最近」挤满。在发现
+ * 这一步按名字跳过，连探测都省掉，也不占会话文件上限的名额。
+ */
+function isClaudeTranscriptFile(file: string): boolean {
+  return file.toLowerCase().endsWith('.jsonl') && !/^agent-/i.test(path.basename(file))
+}
+
+function insideAnyDirectory(file: string, directories: ReadonlySet<string>): boolean {
+  let current = path.dirname(file)
+  for (;;) {
+    if (directories.has(normalizePath(current))) return true
+    const parent = path.dirname(current)
+    if (parent === current) return false
+    current = parent
+  }
+}
+
+/**
+ * 同名文件夹里不叫 agent- 的 .jsonl（Claude Code 往里放的别种过程记录）同样属于那一次
+ * 对话，不另算一条。
+ */
+function claudeConversationFiles(files: readonly string[]): string[] {
+  const companions = new Set(files.map((file) => normalizePath(claudeCompanionDirectory(file))))
+  return files.filter((file) => !insideAnyDirectory(file, companions))
+}
+
+/**
  * 一条记录在硬盘上都有哪些文件。Claude Code 把子任务和大段工具输出放在与
  * 记录同名的文件夹里，Grok 一条记录就是一个文件夹；这些都是这条对话的内容，
  * 只删主文件就谈不上「彻底」。Gemini 一条记录只有一个文件。
@@ -871,10 +909,7 @@ async function deletionTargets(
   await assertDeletableFile(realRoot, candidate.sourcePath)
   const targets: DeletionTarget[] = [{ kind: 'file', path: candidate.sourcePath }]
   if (candidate.provider === 'claude') {
-    const companion = path.join(
-      path.dirname(candidate.sourcePath),
-      path.basename(candidate.sourcePath, path.extname(candidate.sourcePath)),
-    )
+    const companion = claudeCompanionDirectory(candidate.sourcePath)
     if (await isDeletableDirectory(realRoot, companion)) targets.push({ kind: 'directory', path: companion })
   }
   return targets
@@ -1231,8 +1266,8 @@ export class ProviderSessionsService {
   ): Promise<SourceCandidate[]> {
     const root = this.roots[provider]
     if (provider === 'claude') {
-      const discovery = await discoverFiles(root, (file) => file.toLowerCase().endsWith('.jsonl'), this.maxFilesPerProvider)
-      return discovery.files.map((sourcePath) => ({ provider, keyPath: sourcePath, sourcePath }))
+      const discovery = await discoverFiles(root, isClaudeTranscriptFile, this.maxFilesPerProvider)
+      return claudeConversationFiles(discovery.files).map((sourcePath) => ({ provider, keyPath: sourcePath, sourcePath }))
     }
     if (provider === 'gemini') {
       const discovery = await discoverFiles(

@@ -1,10 +1,12 @@
+import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopDownload'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -27,8 +29,8 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
   // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
-  // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
-  // 下面的 permission 抢走、把客户送去看安装目录。
+  // 这里只给按钮；排在前面，是为了主进程写好的这整句不被下面更泛的规则（比如
+  // permission）抢走、把客户送去看安装目录。
   // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
   // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
   { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
@@ -42,6 +44,16 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'codexDesktopTooOld', match: (message) => isCodexDesktopUnsupportedInstallFailure(message) },
   { key: 'codexDesktopInstallNoStore', match: (message) => isCodexDesktopNoStoreInstallFailure(message) },
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
+  // Windows 上 Claude Desktop 一键安装没装上（系统自带的安装组件、Claude 官网的离线安装包，
+  // 主进程 claude-desktop-install-failure.ts 写好的整句）。同 Codex 那一类，那句话会说
+  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「去官网下载」。
+  { key: 'claudeDesktopInstallFailed', match: (message) => isClaudeDesktopInstallFailureMessage(message) },
+  // Mac 上一键装桌面端没装成（主进程 macos-desktop-install-failure.ts 写好的整句，认法也
+  // 取那边的）。那句话已经说了下一步，这里配「看安装指南」：照教程自己从官网下载安装
+  // 这条老路一直走得通。排在前面是因为它会说「检查网络」，不能被下面的 timeout 抢走。
+  // 系统太旧那一句重试救不了，自己下载也一样装不上，单独一类。
+  { key: 'macDesktopTooOld', match: (message) => isMacosDesktopSystemTooOld(message) },
+  { key: 'macDesktopInstallFailed', match: (message) => isMacosDesktopInstallFailure(message) },
   // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
@@ -63,9 +75,9 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // previous version to fall back to, so an integrity mismatch there keeps the
   // raw wording rather than borrowing a reassurance that would be false.
   { key: 'updateIntegrity', match: (message) => /更新|升级/.test(message) && /(SHA-512|完整性|校验)[^。；]{0,12}(失败|不一致|无效)/.test(message) },
-  // safe-storage-backend.ts 的「当前系统没有可用的密钥环，安全存储只能以明文保存」。
-  // 这不是权限问题：目录写得进去，是这台机器没有可用的凭据服务。
-  { key: 'unsafeStorage', match: (message) => /密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
+  // safe-storage-backend.ts 的「这台电脑没法安全保存密码，已拒绝写入……」（旧版本说「密钥环」「明文」）。
+  // 这不是权限问题：目录写得进去，是这台机器没有可用的系统密码保管。
+  { key: 'unsafeStorage', match: (message) => /没法安全保存密码|密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
   // 更新和回滚要替换整个托管目录。Windows 上正在跑的 CLI 把自己的文件锁住，那是
   // 文件占用，不是杀毒拦截也不是权限不够——归到 installBlocked 会把用户送去关杀毒，
   // 方向全错。主进程在那一步会把话说成「文件被占用，……正在运行」
@@ -168,6 +180,10 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   '重置 Codex': 'resetCodexDesktop',
   // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
   '改用 Codex 命令行版': 'useCodexCli',
+  // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
+  看安装指南: 'installGuide',
+  // 只有 Windows 上 Claude Desktop 没装上那一类会出这颗：打开 Claude 官网的下载页。
+  去官网下载: 'claudeDesktopDownload',
 }
 
 /**
@@ -222,17 +238,6 @@ export function operationLogPage(failure: { message: string; detail?: string | u
   return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
-/**
- * 系统自带的 Administrator 账户、关掉了「用户账户控制」的电脑，是 Windows 不让打开
- * 商店装的软件（主进程 describeCodexDesktopLaunchFailure 的前两种说法），重置 Codex
- * 自己的数据改变不了这一点，所以这两种不给「重置 Codex」。
- */
-function codexDesktopBlockedByAccount(message: string): boolean {
-  return /Administrator|用户账户控制/.test(message)
-}
-
-const codexDesktopBlockedBody = '先照下面这句话做；还不行就点「找客服」，把这句话发给客服。'
-
 export function presentOperationError(message: string): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
@@ -244,9 +249,6 @@ export function presentOperationError(message: string): OperationErrorHint | nul
   // account layer reuses this wording). Repeating it as a heading above the
   // very same line reads as a bug, so leave those untouched.
   if (text.includes(entry.title)) return null
-  if (key === 'codexDesktopNotStarted' && codexDesktopBlockedByAccount(text)) {
-    return { key, title: entry.title, body: codexDesktopBlockedBody, actions: honourableActions(entry.actions).filter((action) => action.id !== 'resetCodexDesktop') }
-  }
   const actions = honourableActions(entry.actions)
   return {
     key,

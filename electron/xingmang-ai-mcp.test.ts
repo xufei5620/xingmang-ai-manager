@@ -98,6 +98,108 @@ describe('xingmang-ai-mcp', () => {
     expect(entry.enabled).toBe(false)
   })
 
+  it('keeps every choice the user made in its own Codex entry and only repoints the launch', () => {
+    const oldSkillDirectory = path.resolve(os.tmpdir(), 'old-home', '.agents', 'skills', '星芒AI')
+    const userEntry = {
+      command: '/old/node',
+      args: [path.join(oldSkillDirectory, 'scripts', 'mcp-server.mjs')],
+      enabled: false,
+      tool_timeout_sec: 120,
+      startup_timeout_sec: 20,
+      disabled_tools: ['other_tool'],
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: path.join(oldSkillDirectory, 'config.json'), NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
+      tools: { generate_image: { approval_mode: 'prompt', output_token_limit: 2000 } },
+    }
+    const parsed: Record<string, unknown> = { mcp_servers: { [XINGMANG_IMAGE_MCP_NAME]: structuredClone(userEntry) } }
+    expect(applyXingmangImageMcpToToml(parsed, invocation, 'codex')).toBe(true)
+    expect(asRecord(parsed.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toEqual({
+      ...userEntry,
+      command: nodeExecutable,
+      args: [invocation.scriptPath],
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath, NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
+    })
+    expect(applyXingmangImageMcpToToml(parsed, invocation, 'codex')).toBe(false)
+  })
+
+  it('does not bring back defaults the user deleted from its own entry', () => {
+    const toml: Record<string, unknown> = {
+      mcp_servers: {
+        [XINGMANG_IMAGE_MCP_NAME]: {
+          command: nodeExecutable,
+          args: [invocation.scriptPath],
+          env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
+        },
+      },
+    }
+    const json: Record<string, unknown> = {
+      mcpServers: {
+        [XINGMANG_IMAGE_MCP_NAME]: {
+          command: nodeExecutable,
+          args: [invocation.scriptPath],
+          env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
+        },
+      },
+    }
+    expect(applyXingmangImageMcpToToml(toml, invocation, 'codex')).toBe(false)
+    expect(applyXingmangImageMcpToJson(json, invocation, 'gemini')).toBe(false)
+    expect(Object.keys(asRecord(asRecord(toml.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]))).toEqual(['command', 'args', 'env'])
+    expect(Object.keys(asRecord(asRecord(json.mcpServers)[XINGMANG_IMAGE_MCP_NAME]))).toEqual(['command', 'args', 'env'])
+  })
+
+  it('keeps a Gemini user who turned trust off or narrowed the tools', () => {
+    const userEntry = {
+      command: '/old/node',
+      args: [invocation.scriptPath],
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
+      timeout: 60_000,
+      trust: false,
+      excludeTools: ['generate_image'],
+    }
+    const parsed: Record<string, unknown> = { mcpServers: { [XINGMANG_IMAGE_MCP_NAME]: structuredClone(userEntry) } }
+    expect(applyXingmangImageMcpToJson(parsed, invocation, 'gemini')).toBe(true)
+    expect(asRecord(parsed.mcpServers)[XINGMANG_IMAGE_MCP_NAME]).toEqual({ ...userEntry, command: nodeExecutable })
+  })
+
+  it('keeps what the user added to its own Claude entry', () => {
+    const parsed: Record<string, unknown> = {
+      mcpServers: {
+        [XINGMANG_IMAGE_MCP_NAME]: {
+          type: 'stdio',
+          command: '/old/node',
+          args: [invocation.scriptPath],
+          env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath, NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
+        },
+      },
+    }
+    expect(applyXingmangImageMcpToJson(parsed, invocation, 'claude')).toBe(true)
+    expect(asRecord(parsed.mcpServers)[XINGMANG_IMAGE_MCP_NAME]).toEqual({
+      type: 'stdio',
+      command: nodeExecutable,
+      args: [invocation.scriptPath],
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath, NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem' },
+    })
+  })
+
+  it('still rewrites what it needs to launch the script when the user broke it', () => {
+    const toml: Record<string, unknown> = {
+      mcp_servers: { [XINGMANG_IMAGE_MCP_NAME]: { command: nodeExecutable, args: [invocation.scriptPath], env: 'oops' } },
+    }
+    const json: Record<string, unknown> = {
+      mcpServers: { [XINGMANG_IMAGE_MCP_NAME]: { type: 'sse', command: nodeExecutable, args: [invocation.scriptPath] } },
+    }
+    expect(applyXingmangImageMcpToToml(toml, invocation, 'grok')).toBe(true)
+    expect(applyXingmangImageMcpToJson(json, invocation, 'claude')).toBe(true)
+    expect(asRecord(asRecord(toml.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).env).toEqual({
+      [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath,
+    })
+    expect(asRecord(asRecord(json.mcpServers)[XINGMANG_IMAGE_MCP_NAME])).toEqual({
+      type: 'stdio',
+      command: nodeExecutable,
+      args: [invocation.scriptPath],
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
+    })
+  })
+
   it('writes Claude and Gemini entries in their own shapes', () => {
     const claude: Record<string, unknown> = {}
     const gemini: Record<string, unknown> = {}
@@ -155,6 +257,49 @@ describe('syncXingmangImageMcpConfigs', () => {
     expect(asRecord(grok.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({ command: nodeExecutable })
 
     expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true }).changed).toEqual([])
+  })
+
+  it('leaves a user who wants to be asked before each picture alone on every later sync', () => {
+    const home = temporaryHome()
+    const codexPath = path.join(home, '.codex', 'config.toml')
+    const geminiPath = path.join(home, '.gemini', 'settings.json')
+    fs.mkdirSync(path.join(home, '.codex'))
+    fs.writeFileSync(codexPath, 'model = "gpt-5.5"\n')
+    fs.mkdirSync(path.join(home, '.gemini'))
+    expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true }).changed).toEqual(['codex', 'gemini'])
+
+    const codex = TOML.parse(fs.readFileSync(codexPath, 'utf8'))
+    Object.assign(asRecord(asRecord(codex.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]), {
+      startup_timeout_sec: 20,
+      tools: { generate_image: { approval_mode: 'prompt' } },
+    })
+    fs.writeFileSync(codexPath, TOML.stringify(codex))
+    const gemini = JSON.parse(fs.readFileSync(geminiPath, 'utf8')) as Record<string, unknown>
+    Object.assign(asRecord(asRecord(gemini.mcpServers)[XINGMANG_IMAGE_MCP_NAME]), { trust: false, excludeTools: ['other_tool'] })
+    fs.writeFileSync(geminiPath, `${JSON.stringify(gemini, null, 2)}\n`)
+    const codexBefore = fs.readFileSync(codexPath, 'utf8')
+    const geminiBefore = fs.readFileSync(geminiPath, 'utf8')
+
+    expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true })).toEqual({ changed: [], warnings: [] })
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexBefore)
+    expect(fs.readFileSync(geminiPath, 'utf8')).toBe(geminiBefore)
+
+    const movedNode = path.resolve(os.tmpdir(), 'nodejs-moved', 'node')
+    const moved = buildXingmangImageMcpInvocation(movedNode, skillDirectory)
+    expect(syncXingmangImageMcpConfigs(roots(home), moved, { codex: true }).changed).toEqual(['codex', 'gemini'])
+    const codexAfter = TOML.parse(fs.readFileSync(codexPath, 'utf8'))
+    expect(asRecord(codexAfter.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({
+      command: movedNode,
+      tool_timeout_sec: XINGMANG_IMAGE_TOOL_TIMEOUT_SEC,
+      startup_timeout_sec: 20,
+      tools: { generate_image: { approval_mode: 'prompt' } },
+    })
+    const geminiAfter = JSON.parse(fs.readFileSync(geminiPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(geminiAfter.mcpServers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({
+      command: movedNode,
+      trust: false,
+      excludeTools: ['other_tool'],
+    })
   })
 
   it('creates nothing for tools that were never installed and skips Codex on an official login', () => {

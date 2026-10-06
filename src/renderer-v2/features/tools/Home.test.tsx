@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Home, lowBalanceText, type HomeProps } from './Home'
-import type { ToolboxSnapshot } from './model'
+import { describe, expect, it } from 'vitest'
+import { Home, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { presentTools, type ToolboxSnapshot } from './model'
+import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
@@ -137,7 +138,7 @@ describe('renderer-v2 home install cancellation', () => {
   it('reports that the cancel request is still being handled', () => {
     const markup = render({ claude: { label: '正在安装', log: [], cancellable: true, cancelling: true } })
     expect(markup).toContain('data-testid="tool-claude-cancel"')
-    expect(markup).toContain('取消中')
+    expect(markup).toContain('正在停止')
   })
 
   it('leaves an install that cannot be cancelled without the button', () => {
@@ -162,52 +163,105 @@ describe('renderer-v2 home install cancellation', () => {
     const markup = render({ 'launch:claude': { label: '正在打开工具', log: [], cancellable: true } })
     expect(markup).not.toContain('data-testid="tool-claude-cancel"')
   })
+
+  const claudeDesktop = {
+    tool: 'claudeDesktop', installed: false, version: null, path: null, installDirectory: null, running: false,
+    installSupported: true, launchSupported: false, detectionError: null, installHint: null,
+  } as unknown as HomeProps['externalClients'][number]
+
+  it('offers 取消 on a desktop client row while its install can still be stopped', () => {
+    const noop = () => undefined
+    const markup = render({ claudeDesktop: { label: '正在从 Claude 官网下载离线安装包（42%）', log: [], cancellable: true } }, undefined, {
+      externalClients: [claudeDesktop], onCancelInstallExternal: noop,
+    })
+    expect(markup).toContain('data-testid="tool-claudeDesktop-cancel"')
+    const cancelling = render({ claudeDesktop: { label: '正在安装', log: [], cancellable: true, cancelling: true } }, undefined, {
+      externalClients: [claudeDesktop], onCancelInstallExternal: noop,
+    })
+    expect(cancelling).toContain('正在停止')
+  })
+
+  it('leaves the desktop client row without 取消 when the host gives no cancel channel or the client is idle', () => {
+    const job = { claudeDesktop: { label: '正在安装', log: [], cancellable: true } }
+    expect(render(job, undefined, { externalClients: [claudeDesktop] })).not.toContain('data-testid="tool-claudeDesktop-cancel"')
+    expect(render({}, undefined, { externalClients: [claudeDesktop], onCancelInstallExternal: () => undefined })).not.toContain('data-testid="tool-claudeDesktop-cancel"')
+    expect(render({ 'launch:claudeDesktop': { label: '正在打开客户端', log: [], cancellable: true } }, undefined, {
+      externalClients: [claudeDesktop], onCancelInstallExternal: () => undefined,
+    })).not.toContain('data-testid="tool-claudeDesktop-cancel"')
+  })
 })
 
 describe('renderer-v2 home first-run suggestion', () => {
-  afterEach(() => { vi.unstubAllGlobals() })
-
-  function dismissedStorage(value: string) {
-    return { localStorage: { getItem: () => value, setItem: () => undefined, removeItem: () => undefined } }
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const noRecords = new Set<ProviderId>()
+  function installedTools(clis: Record<string, unknown> = allTools, from = snapshot(clis)) {
+    return presentTools(from, null).filter((tool) => tool.status.installed)
   }
 
-  it('offers the first command and prompt once a tool is installed and connected', () => {
-    const markup = render({})
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).toContain('试试第一条命令')
-    expect(markup).toContain('data-testid="home-first-run-steps-command"')
-    expect(markup).toContain('>claude<')
-    expect(markup).toContain('data-testid="home-first-run-steps-copy-command"')
-    expect(markup).toContain('data-testid="home-first-run-steps-copy-prompt"')
-    expect(markup).toContain('data-testid="home-first-run-dismiss"')
+  // 记录还没读回来就先给卡，读完发现早就用过又收走，老用户会看到它一闪而过。
+  it('waits for the records before offering the card', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], null)).toBeUndefined()
+    expect(render({})).not.toContain('data-testid="home-first-run"')
+  })
+
+  it('offers the first command once a tool is installed and connected', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], noRecords)?.id).toBe('claude')
   })
 
   it('moves on to the next tool once its card has been closed', () => {
-    vi.stubGlobal('window', dismissedStorage('["claude"]'))
-    const markup = render({})
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).toContain('Codex CLI')
-    expect(markup).toContain('>codex<')
-    expect(markup).not.toContain('>claude<')
+    expect(pickFirstRunTool(installedTools(), {}, ['claude'], noRecords)?.id).toBe('codex')
   })
 
   it('stays gone once every tool has been closed', () => {
-    vi.stubGlobal('window', dismissedStorage('["claude","codex","gemini","grok"]'))
-    expect(render({})).not.toContain('data-testid="home-first-run"')
+    expect(pickFirstRunTool(installedTools(), {}, ['claude', 'codex', 'gemini', 'grok'], noRecords)).toBeUndefined()
   })
 
   // 还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
   it('waits until the tool is actually connected', () => {
-    const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus },
-      { snapshot: unreadableConfig(), failures: configFailure })
-    expect(markup).not.toContain('data-testid="home-first-run"')
+    expect(pickFirstRunTool(installedTools(allTools, unreadableConfig()), {}, [], noRecords)).toBeUndefined()
   })
 
   it('keeps the card off a tool that is still installing', () => {
-    const markup = render({ claude: { label: '正在安装', log: [] } })
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).not.toContain('>claude<')
-    expect(markup).toContain('>codex<')
+    expect(pickFirstRunTool(installedTools(), { claude: { label: '正在安装', log: [] } as unknown as ToolJob }, [], noRecords)?.id).toBe('codex')
+  })
+
+  // 「最近」里已经有它的记录，说明早就用起来了。
+  it('skips a tool that already shows up in the records', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], new Set<ProviderId>(['claude', 'codex']))?.id).toBe('grok')
+  })
+})
+
+// 「最近」卡在静态渲染里还没读到记录，按钮本身由 app-check.mjs 的浏览器用例盯着；这里只盯判断。
+describe('renderer-v2 home recent resume for tools that are not installed (第四十一批 A)', () => {
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const missing = { ...cliStatus, installed: false, version: null, path: null }
+
+  it('offers it for an installed tool', () => {
+    expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'claude')).toBe(true)
+  })
+
+  // 点下去走的是同一个「打开」，只会弹「工具尚未安装，请先完成准备。」。
+  it('drops it for a tool that is not installed', () => {
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: missing }), null), 'claude')).toBe(false)
+  })
+
+  // 只装了 Codex 桌面端：记录在 Codex 名下，接着聊开的却是 Codex CLI。
+  it('looks at Codex CLI rather than the desktop app for a Codex record', () => {
+    const desktopOnly = { ...snapshot({ ...allTools, codex: missing }), platform: { codexDesktop: { launch: true } } } as unknown as ToolboxSnapshot
+    const tools = presentTools(desktopOnly, null)
+    expect(tools.find((tool) => tool.id === 'codexDesktop')?.status.installed).toBe(true)
+    expect(recentResumeOffered(tools, 'codex')).toBe(false)
+  })
+
+  // 检测失败不当没装（A4）：按钮照旧给，点了说检测失败的原因。
+  it('keeps it when detection failed instead of calling the tool missing', () => {
+    const failed = { ...missing, detectionFailed: true, detectionError: 'npm 查询超时' }
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: failed }), null), 'claude')).toBe(true)
+  })
+
+  // 检测结果还没回来：照旧摆着、灰着等，回来是没装的再收走。
+  it('keeps it while the scan has not come back yet', () => {
+    expect(recentResumeOffered([], 'claude')).toBe(true)
   })
 })
 
@@ -247,17 +301,188 @@ describe('renderer-v2 home launch button with a folder picked earlier', () => {
   })
 })
 
+// 第三十一批 A：开机先摆的是上次的检测结果（cachedAt），真结果还在路上。这时只放开
+// 「打开」这一类：点下去配置现读、工具由主进程现找；别的按钮照旧等真结果。
+describe('renderer-v2 home before the startup scan finishes', () => {
+  const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } as HomeProps['account']
+  function cached(base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })): ToolboxSnapshot {
+    return { ...base, system: { ...base.system, cachedAt: '2026-09-21T10:00:00.000Z' } } as ToolboxSnapshot
+  }
+  /** 带这个 testid 的那颗按钮（或这个 testid 下面的第一颗）的开始标签。 */
+  function buttonTag(markup: string, testId: string): string {
+    const index = markup.indexOf(`data-testid="${testId}"`)
+    expect(index, `没有渲染出 ${testId}`).toBeGreaterThan(-1)
+    const opening = markup.lastIndexOf('<', index)
+    const start = markup.startsWith('<button', opening) ? opening : markup.indexOf('<button', index)
+    return markup.slice(start, markup.indexOf('>', start) + 1)
+  }
+  function disabled(markup: string, testId: string): boolean {
+    return buttonTag(markup, testId).includes(' disabled=""')
+  }
+  function whileChecking(overrides: Partial<HomeProps> = {}): string {
+    return render({}, undefined, { snapshot: cached(), loading: true, ...overrides })
+  }
+
+  it('opens a connected tool from the last saved scan', () => {
+    const markup = whileChecking()
+    expect(markup).toContain('data-testid="home-cached-scan"')
+    expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+  })
+
+  it('keeps every button waiting during an ordinary rescan', () => {
+    const markup = render({}, undefined, { loading: true })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(true)
+  })
+
+  it('keeps install, retry and connect waiting for the real result', () => {
+    const missing = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
+    const failed = { ...cliStatus, detectionFailed: true, detectionError: '命令入口无法安全执行' }
+    const base = snapshot({ claude: cliStatus, codex: failed, grok: missing, gemini: cliStatus })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const markup = render({}, undefined, { snapshot: cached({ ...base, platform } as ToolboxSnapshot), loading: true })
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*安装/)
+    expect(disabled(markup, 'tool-grok-primary')).toBe(true)
+    expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*重新检测/)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(true)
+    // 夹具里的 Gemini 没配 API Key 模式，算没连上：「连接账号」照旧等。
+    expect(markup).toMatch(/data-testid="tool-gemini-primary"[^>]*>(?:<[^>]+>)*连接账号/)
+    expect(disabled(markup, 'tool-gemini-primary')).toBe(true)
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+  })
+
+  it('keeps 重新配置 waiting when the configuration could not be read', () => {
+    const markup = render({}, undefined, { snapshot: cached(unreadableConfig()), loading: true, failures: configFailure })
+    expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*重新配置/)
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+  })
+
+  it('lets the folder dropdown open next to an enabled 打开', () => {
+    const base = cached()
+    const markup = whileChecking({ snapshot: { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } } as ToolboxSnapshot })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it('keeps 打开 waiting while another tool is being opened', () => {
+    const markup = whileChecking({ jobs: { 'launch:codex': { label: '正在打开', log: [] } } })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+  })
+
+  it('waits while the saved login is still being restored', () => {
+    expect(disabled(whileChecking({ accountRestoring: true }), 'tool-claude-primary')).toBe(true)
+  })
+
+  it('waits while the account key sync has not said which tools change their key', () => {
+    expect(disabled(whileChecking({ account }), 'tool-claude-primary')).toBe(true)
+    const syncing = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    expect(disabled(whileChecking({ account, bootstrap: syncing }), 'tool-claude-primary')).toBe(true)
+  })
+
+  it('waits only on the tool whose account key changes this startup', () => {
+    const bootstrap = { phase: 'inspecting' as const, label: '正在检查已安装工具和连接来源', percent: 40, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const markup = whileChecking({ account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+  })
+
+  it.each(['configuring', 'verifying'] as const)('keeps only the changing tool and its workspace menu waiting after the scan while %s', (phase) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const bootstrap = { phase, label: '正在更新连接', percent: 65, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+    expect(disabled(markup, 'tool-codex-workspaces')).toBe(false)
+  })
+
+  it.each(['official', 'manual'] as const)('keeps an existing %s connection openable during another account sync after the scan', (source) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project', providers: {
+      ...base.config.providers,
+      claude: { ...base.config.providers.claude, ...(source === 'official'
+        ? { hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
+        : { configurationOwnership: 'manual' as const }) },
+    } } }
+    const bootstrap = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it.each([
+    ['after switching saved accounts', { account }],
+    ['while a startup restore keeps retrying', { accountRestoring: true }],
+  ] as const)('keeps account tools openable after the scan with no key sync running %s', (_case, state) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const markup = render({}, undefined, { snapshot: current, loading: false, bootstrap: null, ...state })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it('releases the migrated tool and its workspace menu after verification finishes', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const bootstrap = {
+      phase: 'verifying' as const, label: '连接已更新', percent: 100, scope: 'scope', connectedKeyChanges: ['claude' as const],
+      result: { readyKeys: [], configured: ['claude' as const], failed: [], skipped: [], warnings: [], networkBlocked: false },
+    }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it('opens once the account key round has finished', () => {
+    const bootstrap = {
+      phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope',
+      result: { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false },
+    }
+    expect(disabled(whileChecking({ account, bootstrap }), 'tool-claude-primary')).toBe(false)
+  })
+})
+
 // 官方安装器/其他来源装的 CLI：如实标源，且不给 npm 更新按钮，改用被动提示。
+// 官方安装器装的 Claude Code 例外：星芒卸得掉，按钮照给，点了先问再换成星芒装的。
 describe('renderer-v2 home native install source', () => {
   const nativeClaude = { ...cliStatus, installSource: 'native', updateAvailable: true, latestVersion: '9.9.9' }
   const npmClaude = { ...cliStatus, installSource: 'npm', updateAvailable: true, latestVersion: '9.9.9' }
+  const nativeCodex = { ...nativeClaude, uninstall: { available: false, reason: '请用它原来的方式卸载', manualCommand: null } }
 
-  it('replaces the npm 更新 button with a passive hint for a native install', () => {
-    const markup = render({}, { claude: nativeClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
-    expect(markup).toContain('data-testid="tool-claude-external-managed"')
+  it('replaces the npm 更新 button with a passive hint for a native install the app cannot uninstall', () => {
+    const markup = render({}, { claude: cliStatus, codex: nativeCodex, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-codex-external-managed"')
     expect(markup).toContain('该版本由官方安装器管理，请用它自己的方式更新')
     // 那条 external-managed 提示顶掉了 npm 更新按钮。
     expect(markup).not.toContain('>更新<')
+  })
+
+  it('keeps the passive hint for a Claude Code installed some other way', () => {
+    const markup = render({}, { claude: { ...nativeClaude, installSource: 'path' }, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-claude-external-managed"')
+    expect(markup).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+    expect(markup).not.toContain('>更新<')
+  })
+
+  it('gives the official-installer Claude Code the same update button instead of the hint', () => {
+    const markup = render({}, { claude: nativeClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('>更新<')
+    expect(markup).not.toContain('data-testid="tool-claude-external-managed"')
+    expect(markup).not.toContain('该版本由官方安装器管理')
+  })
+
+  it('offers a known-problem official-installer Claude Code the recommended version', () => {
+    const blockedReason = '这个版本每次提问都会失败，换到推荐版本就好'
+    const markup = render({}, { claude: { ...nativeClaude, version: '2.1.276', latestVersion: '2.1.288',
+      versionAdvice: { recommendedVersion: '2.1.277', blockedReason, onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true } },
+    codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-claude-rollback"')
+    expect(markup).toContain('>更新到推荐版本<')
+    expect(markup).toContain(`title="${blockedReason}"`)
+    expect(markup).not.toContain('data-testid="tool-claude-external-managed"')
   })
 
   it('still offers the npm 更新 button for an npm install', () => {
@@ -366,9 +591,9 @@ describe('renderer-v2 home account key bootstrap notice', () => {
  * 沙箱里只能靠注入平台能力来演，这里演的是渲染层拿到这组能力后的表现，不是真机行为。
  */
 describe('renderer-v2 home missing runtime guidance on macOS', () => {
-  function runtimeSnapshot(platform: 'windows' | 'macos', missing: { node?: boolean; python?: boolean }): ToolboxSnapshot {
+  function runtimeSnapshot(platform: 'windows' | 'macos' | 'linux', missing: { node?: boolean; python?: boolean }): ToolboxSnapshot {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
-    const python = platform === 'macos' ? 'external' : 'managed'
+    const python = platform === 'windows' ? 'managed' : 'external'
     return {
       ...base,
       platform: { ...base.platform, platform, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: python },
@@ -394,6 +619,18 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('brew install node')
     expect(markup).not.toContain('去官网下载 Node.js')
     // Mac 上不提权，Windows 那句管理员授权不能出现。
+    expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
+  })
+
+  // Linux 版拆分 ②：原来这里是「去官网下载 Node.js」加一段「用系统自带的包管理器装上」。
+  it('lets a Linux customer prepare Node.js with one button instead of a website', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { node: true }) })
+    expect(markup).toContain('data-testid="home-runtime-node-managed"')
+    expect(markup).toContain('这台电脑上还没有能用的 Node.js')
+    expect(markup).toContain('准备 Node.js')
+    expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+    expect(markup).not.toContain('去官网下载 Node.js')
+    expect(markup).not.toContain('包管理器')
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
   })
 
@@ -424,7 +661,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: gitMissingOn('macos') })
     expect(markup).toContain('data-testid="home-runtime-git"')
     const hint = markup.slice(markup.indexOf('data-testid="home-runtime-git-hint"'))
-    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('苹果自己的安装窗口')
+    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('在苹果弹出的窗口里点“安装”')
     expect(markup).not.toMatch(/xcode-select|brew install git/)
   })
 
@@ -439,14 +676,36 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(windows).not.toContain('data-testid="home-runtime-git-waiting"')
   })
 
-  it('gives Python its own block, including why the bundled one is not enough', () => {
+  // 第二十八批 C：四个命令行工具都不用 Python 了，这段改说「要装的话」，不再说 Gemini 要它、劝另装一份。
+  it('gives Python its own block, saying none of the four command-line tools needs it', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
     expect(markup).toContain('brew install python')
-    expect(markup).toContain('Gemini CLI')
+    expect(markup).toContain('四个命令行工具都用不到它，外接工具里个别要用它的才需要')
+    expect(markup).toContain('要装的话下面两种装法选一种就行')
+    expect(markup).not.toContain('Gemini CLI 需要它')
+    expect(markup).not.toContain('版本可能过旧')
     expect(markup).toContain('去官网下载 Python（可选环境）')
+    expect(markup).toContain('data-testid="home-runtime-python"')
+    expect(markup).toContain('data-testid="home-runtime-tutorial"')
+    expect(markup).toContain('装 Python 的完整步骤在教程里也有一份')
     // Node 没缺就不该多出一段 Node 的步骤。
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+  })
+
+  // Linux 版拆分 ③：Linux 上四个命令行工具都用不到 Python。原来这里写「Gemini CLI 需要它；macOS 自带的…」，
+  // 按钮把人送去 python.org（那里给 Linux 的只有源码包），「看教程」进的是 Mac 的章节。
+  it('tells a Linux customer Python is optional and never sends them to python.org or the Mac chapter', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { python: true }) })
+    expect(markup).toContain('data-testid="home-runtime-guide-python"')
+    expect(markup).toContain('四个命令行工具都用不到它')
+    expect(markup).toContain('sudo apt install python3')
+    expect(markup).not.toContain('data-testid="home-runtime-python"')
+    expect(markup).not.toContain('去官网下载 Python')
+    expect(markup).not.toContain('data-testid="home-runtime-tutorial"')
+    expect(markup).not.toContain('完整步骤在教程里')
+    expect(markup).not.toContain('Gemini CLI 需要它')
+    expect(markup).not.toContain('macOS')
   })
 
   it('leaves Windows exactly as it was: the app installs both, so no extra steps', () => {
@@ -481,23 +740,6 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('安装时需要管理员授权')
   })
 
-  it('tells a built-in Administrator account before install that store apps may not open', () => {
-    const base = runtimeSnapshot('windows', {})
-    const builtInAdministrator = {
-      ...base,
-      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
-      system: {
-        ...base.system,
-        desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null, storeAppLaunchBlock: 'builtInAdministrator' } },
-      },
-    } as unknown as ToolboxSnapshot
-    const markup = render({}, undefined, { snapshot: builtInAdministrator })
-    expect(markup).toContain('「Administrator」账户，装完可能打不开')
-    expect(markup).not.toContain('安装时需要管理员授权')
-    // 只提醒，不拦：「安装」照样在
-    expect(markup).toContain('data-testid="tool-codexDesktop-primary"')
-  })
-
   it('says on the Codex desktop row that the installed version is known not to start', () => {
     const base = runtimeSnapshot('windows', {})
     const brokenDesktop = {
@@ -528,8 +770,9 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: failed })
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
     expect(markup).not.toContain('data-testid="home-runtime-node-managed"')
-    // 按钮照旧在，想重新准备一次还是能点。
-    expect(markup).toContain('准备 Node.js')
+    // 检测失败给「重新检测」：说不准装没装，不先劝人去装。
+    expect(markup).toContain('data-testid="home-runtime-rescan"')
+    expect(markup).not.toContain('data-testid="home-runtime-node"')
   })
 
   it('says nothing about installing runtimes once both are present', () => {
@@ -810,14 +1053,15 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
 describe('renderer-v2 home manual desktop install on macOS', () => {
   const missingStatus = { installed: false, version: null, detectionFailed: false, uninstall: { available: false, reason: null, manualCommand: null } }
-  function macSnapshot(): ToolboxSnapshot {
+  /** 'external' 是主进程认不出芯片的那台 Mac；认得出的两种芯片都是 'managed'。 */
+  function macSnapshot(codexDesktopInstall: 'managed' | 'external' = 'external'): ToolboxSnapshot {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     return {
       ...base,
       platform: {
         platform: 'macos', isMac: true, nodeRuntimeInstall: 'external', pythonRuntimeInstall: 'external',
         cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
-        codexDesktop: { install: 'external', launch: true, uninstall: false, windowsStore: false },
+        codexDesktop: { install: codexDesktopInstall, launch: true, uninstall: false, windowsStore: false },
       },
       system: { ...base.system, desktopApps: { codex: missingStatus } },
     } as unknown as ToolboxSnapshot
@@ -838,9 +1082,22 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
   } as unknown as HomeProps['externalClients'][number]
 
   it('labels the Codex desktop button as a guide instead of promising an install', () => {
-    // macOS 上这颗按钮点下去只能把人带到教程，写「安装」是假的（第七批 3）。
+    // 主进程认不出芯片的 Mac 上这颗按钮点下去只能把人带到教程，写「安装」是假的（第七批 3）。
     const markup = render({}, undefined, { snapshot: macSnapshot() })
     expect(rowButton(markup, 'codexDesktop')).toContain('安装指南')
+  })
+
+  it('offers a real install of the Codex desktop app and Claude Desktop on a Mac the main process can install them on', () => {
+    const claudeDesktop = { ...macClient, tool: 'claudeDesktop', installSupported: true, installHint: null } as typeof macClient
+    const markup = render({}, undefined, { snapshot: macSnapshot('managed'), externalClients: [macClient, claudeDesktop] })
+    for (const tool of ['codexDesktop', 'claudeDesktop']) {
+      const button = rowButton(markup, tool)
+      expect(button, tool).toContain('安装')
+      expect(button, tool).not.toContain('安装指南')
+      expect(button, tool).not.toContain('disabled')
+    }
+    // WorkBuddy 还没有可核对的 Mac 官方包，照旧带去教程。
+    expect(clientButton(markup)).toContain('安装指南')
   })
 
   it('turns the dead 「暂不支持」 client button into a working guide link', () => {
@@ -849,6 +1106,17 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(button).toContain('安装指南')
     expect(button).not.toContain('disabled')
     expect(markup).not.toContain('暂不支持')
+  })
+
+  it('offers a real install on a Mac for a client whose official Mac package the main process can fetch', () => {
+    const opencode = { ...macClient, tool: 'opencode', installSupported: true, installHint: null } as typeof macClient
+    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [macClient, opencode] })
+    const button = rowButton(markup, 'opencode')
+    expect(button).toContain('安装')
+    expect(button).not.toContain('安装指南')
+    expect(button).not.toContain('disabled')
+    // 其余没有可核对官方包的，照旧带去教程。
+    expect(clientButton(markup)).toContain('安装指南')
   })
 
   it('keeps 「暂不支持」 where no guide can help, such as Windows arm64', () => {
@@ -951,6 +1219,108 @@ describe('renderer-v2 home runtime card', () => {
   })
 })
 
+/**
+ * 第二十七批 B（A014 截图）：只装了 Codex 桌面端的客户。桌面端自带运行环境，Node.js 和 Python、Git
+ * 一样只是可选；缺 Git 那段讲的是 Claude Code。装了或正在装命令行工具时照旧。
+ */
+describe('renderer-v2 home runtime card when only the Codex desktop app is in use', () => {
+  const missing = { installed: false, version: null, detectionFailed: false }
+  const notInstalled = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
+  const optionalElevation = 'Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+  const requiredElevation = '这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+
+  function machine(platform: 'windows' | 'macos', clis: Record<string, unknown> = {}): ToolboxSnapshot {
+    const base = snapshot({ claude: notInstalled, codex: notInstalled, grok: notInstalled, gemini: notInstalled, ...clis })
+    return {
+      ...base,
+      platform: {
+        ...base.platform, platform, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: platform === 'windows' ? 'managed' : 'external',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { launch: true, install: platform === 'windows' ? 'managed' : 'external' },
+      },
+      system: { ...base.system, runtime: { node: missing, npm: missing, python: missing, git: missing } },
+    } as unknown as ToolboxSnapshot
+  }
+
+  function opening(markup: string, testId: string, close: string): string {
+    const at = markup.indexOf(`data-testid="${testId}"`)
+    if (at < 0) return ''
+    const start = markup.lastIndexOf('<', at)
+    return markup.slice(start, markup.indexOf(close, at))
+  }
+
+  it('shows Node.js as optional and drops the Claude Code Git paragraph on a Windows desktop-only machine', () => {
+    const markup = render({}, undefined, { snapshot: machine('windows') })
+    const node = opening(markup, 'home-runtime-row-node', '</div>')
+    expect(node).toContain('可选 · 未装')
+    expect(node).not.toContain('is-warn')
+    expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
+    expect(markup).not.toContain('Claude Code 的部分功能')
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).toContain('is-quiet')
+    expect(elevation).toContain(optionalElevation)
+    expect(markup).not.toContain('这一步需要管理员授权')
+    // 按钮一颗不少：想先准备好的照样能点。
+    expect(markup).toContain('data-testid="home-runtime-node"')
+    expect(markup).toContain('data-testid="home-runtime-python"')
+    expect(markup).toContain('data-testid="home-runtime-git"')
+  })
+
+  it('keeps the warning and names the step by the home button once Claude Code is installed', () => {
+    const markup = render({}, undefined, { snapshot: machine('windows', { claude: cliStatus }) })
+    const node = opening(markup, 'home-runtime-row-node', '</div>')
+    expect(node).toContain('未安装')
+    expect(node).not.toContain('可选')
+    expect(node).toContain('is-warn')
+    expect(markup).toContain('data-testid="home-runtime-git-hint"')
+    expect(markup).toContain('Claude Code 的部分功能')
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).not.toContain('is-quiet')
+    expect(elevation).toContain(requiredElevation)
+    expect(markup).not.toContain('点「安装」后')
+  })
+
+  it('treats a tool that is still installing as in use, so the UAC sentence is orange when the prompt is about to appear', () => {
+    const job = { label: '正在准备 Node.js 运行环境（1/2）', log: [] } as unknown as ToolJob
+    const markup = render({ claude: job }, undefined, { snapshot: machine('windows') })
+    expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).not.toContain('is-quiet')
+    expect(elevation).toContain(requiredElevation)
+    expect(markup).toContain('data-testid="home-runtime-git-hint"')
+  })
+
+  it('keeps the Git paragraph for Claude Code only, but still warns about Node.js for any other command-line tool', () => {
+    const markup = render({}, undefined, { snapshot: machine('windows', { codex: cliStatus }) })
+    expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+    expect(opening(markup, 'home-runtime-node-elevation', '</p>')).toContain(requiredElevation)
+    expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
+  })
+
+  it('does not take a failed probe for an uninstalled tool (A4)', () => {
+    const failed = { ...notInstalled, detectionFailed: true, detectionError: '本地探针暂时不可用' }
+    const markup = render({}, undefined, { snapshot: machine('windows', { claude: failed }) })
+    expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+    expect(markup).toContain('data-testid="home-runtime-git-hint"')
+  })
+
+  it('greys out the Mac Node.js paragraph without changing a word when nothing needs it', () => {
+    const quiet = render({}, undefined, { snapshot: machine('macos') })
+    const managed = opening(quiet, 'home-runtime-node-managed', '</p>')
+    expect(managed).toContain('is-quiet')
+    expect(managed).toContain('这台 Mac 上还没有 Node.js')
+    expect(opening(quiet, 'home-runtime-row-node', '</div>')).toContain('可选 · 未装')
+    expect(quiet).not.toContain('data-testid="home-runtime-git-hint"')
+    expect(quiet).not.toContain('data-testid="home-runtime-node-elevation"')
+
+    const inUse = render({}, undefined, { snapshot: machine('macos', { claude: cliStatus }) })
+    const warned = opening(inUse, 'home-runtime-node-managed', '</p>')
+    expect(warned).not.toContain('is-quiet')
+    expect(warned).toContain('这台 Mac 上还没有 Node.js')
+    expect(inUse).toContain('data-testid="home-runtime-git-hint"')
+  })
+})
+
 describe('Home balance card while a saved login is being restored', () => {
   it('does not ask the user to sign in when the login is still on this computer', () => {
     // 开机恢复联不上时登录还在，「登录后查看用量」会让人以为掉线了要重新登录。
@@ -958,5 +1328,34 @@ describe('Home balance card while a saved login is being restored', () => {
     expect(restoring).toContain('登录恢复后自动显示用量')
     expect(restoring).not.toContain('登录后查看用量')
     expect(render({})).toContain('登录后查看用量')
+  })
+})
+
+describe('Home sections and balance labels', () => {
+  function section(markup: string, testId: string): string {
+    const at = markup.indexOf(`data-testid="${testId}"`)
+    if (at < 0) return ''
+    return markup.slice(markup.lastIndexOf('<', at), markup.indexOf('</section>', at))
+  }
+
+  it('keeps a tool whose detection failed under 你的工具 and says how many were not detected', () => {
+    // 主进程探测失败时回的就是 installed:false + detectionFailed（buildToolStatusFromSettled）。
+    const failed = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null, detectionFailed: true, detectionError: '命令入口无法安全执行' }
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: failed })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
+    const yours = section(markup, 'home-your-tools')
+    expect(yours).toContain('data-testid="tool-row-gemini"')
+    expect(yours).toMatch(/\d+ 个已装 · \d+ 个已连接 · 1 个没检测出来/)
+    expect(section(markup, 'home-available')).not.toContain('data-testid="tool-row-gemini"')
+  })
+
+  it('says what the balance card is waiting for instead of claiming nothing was read', () => {
+    const account = { id: 7, username: 'peaker', displayName: 'peaker', group: 'default', quota: 0, usedQuota: 0, requestCount: 0 } as unknown as HomeProps['account']
+    const reading = render({}, undefined, { account })
+    expect(section(reading, 'home-balance')).toContain('—')
+    expect(reading).toContain('正在读取余额')
+    expect(reading).not.toContain('暂时没有读到')
+    expect(render({}, undefined, { accountRestoring: true })).toContain('正在恢复登录')
   })
 })

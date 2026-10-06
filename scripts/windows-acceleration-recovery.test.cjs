@@ -7,13 +7,17 @@ const { test } = require('node:test')
 const recoveryPath = path.resolve(__dirname, 'windows-acceleration-recovery.ps1')
 const productProxyPath = path.resolve(__dirname, '..', 'electron', 'platform', 'windows-system-proxy.ts')
 
-function winInetTypeDefinition(file) {
+// The C# type definition, then Read-State through the end of Same-State, found after `from`.
+function compiledProxyHelpers(file, from = '') {
   // The .ps1 is checked out with CRLF (.gitattributes) and the .ts with the platform default.
   const source = fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n')
-  const start = source.indexOf("Add-Type -TypeDefinition @'")
+  const start = source.indexOf("Add-Type -TypeDefinition @'", source.indexOf(from))
   const end = source.indexOf("\n'@", start)
-  assert.ok(start >= 0 && end > start, 'WinInet type definition not found')
-  return source.slice(start, end)
+  const first = source.indexOf('\nfunction Read-State {', end)
+  const last = source.indexOf('\nfunction Same-State(', first)
+  const close = source.indexOf('\n}\n', last)
+  assert.ok(source.includes(from) && start >= 0 && end > start && first > end && last > first && close > last, 'WinInet helper not found')
+  return { typeDefinition: source.slice(start, end), stateFunctions: source.slice(first + 1, close + 2) }
 }
 
 test('customer recovery source is UTF-8 without BOM and remains readable in Windows PowerShell 5.1', () => {
@@ -27,11 +31,16 @@ test('customer recovery source is UTF-8 without BOM and remains readable in Wind
 // busy windows-latest runner the pair outlasted the 30-second budget (run 35885043224). The
 // helper is still compiled and driven against the real system proxy by
 // windows-uninstall-smoke.yml, which dot-sources this script and runs on every change to it or
-// to windows-system-proxy.ts; the app ships the same text, and this keeps the two in step.
-test('customer recovery carries the same WinInet helper the app itself compiles', () => {
-  const recovery = winInetTypeDefinition(recoveryPath)
-  assert.equal(recovery, winInetTypeDefinition(productProxyPath))
-  assert.match(recovery, /public static class XingmangWinInet/)
+// to windows-system-proxy.ts. The app falls back to the same text when its in-memory WinInet
+// declaration fails (windowsSystemProxyCompiledScript), and this keeps the two in step.
+test('customer recovery carries the same WinInet helper and state functions the app falls back to', () => {
+  const recovery = compiledProxyHelpers(recoveryPath)
+  const product = compiledProxyHelpers(productProxyPath, 'export const windowsSystemProxyCompiledScript')
+  assert.equal(recovery.typeDefinition, product.typeDefinition)
+  assert.equal(recovery.stateFunctions, product.stateFunctions)
+  assert.match(recovery.typeDefinition, /public static class XingmangWinInet/)
+  assert.match(recovery.stateFunctions, /^function Write-State\(\$state\) \{$/m)
+  assert.match(recovery.stateFunctions, /^function Same-State\(\$left,\$right\) \{$/m)
 })
 
 test('Windows recovery preserves bypass edits and refuses conflicting or unverified proxy writes', { skip: process.platform !== 'win32' }, () => {
