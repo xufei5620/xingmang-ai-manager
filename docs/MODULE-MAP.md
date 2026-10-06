@@ -10,6 +10,7 @@
 - `electron/macos-grok.ts` — Grok 的 macOS 安装
 - `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；失败的那几句话主进程与渲染层共用
 - `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
+- `electron/shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
 - `src/platform-presentation.ts` — 渲染层的平台差异表达
 
