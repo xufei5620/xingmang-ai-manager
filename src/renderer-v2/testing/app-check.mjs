@@ -6373,6 +6373,44 @@ test('an uninstall that hits a running tool offers 重试, which uninstalls agai
   } finally { await page.close() }
 })
 
+// 已知32：卸载其实做成了，紧接着的检测没读到。以前弹红色的「操作没有完成」、确认框也不关，
+// 客户以为没卸成又点一次。现在确认框照常关，出一条黄色提示；首页顶上检测自己的那句照旧。
+test('an uninstall that worked but whose rescan failed closes the dialog and says so instead of failing (known 32)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.evaluate(() => { window.v2Test.fail = 'scanSystem'; window.v2Test.failMessage = '检测没有完成，请重试。' })
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    await waitForToast(page, 'Grok CLI 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。')
+    await expect(page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true })).toHaveCount(0)
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    const scanFailure = page.locator('.v2-callout.is-bad', { hasText: '检测没有完成，请重试。' })
+    await scanFailure.waitFor()
+    // 照提示重新检测：读到了，Grok CLI 回到「还可以装」。
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await scanFailure.getByRole('button', { name: '重新检测', exact: true }).click()
+    await page.getByTestId('home-available').getByTestId('tool-row-grok').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli').map((entry) => entry.args[0])), ['grok'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知32 只管真卸掉了的：以管理员身份运行时转交给命令窗口的那种还没卸完，检测没读到照旧算没做完。
+test('a handed-off uninstall whose rescan failed still reports the failure (known 32)', async () => {
+  const page = await open('allInstalled=1&uninstallHandOff=1')
+  try {
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.evaluate(() => { window.v2Test.fail = 'scanSystem'; window.v2Test.failMessage = '检测没有完成，请重试。' })
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    await page.getByTestId('operation-error').getByText('检测没有完成，请重试。', { exact: true }).waitFor()
+    await assertNoToast(page, 'Grok CLI 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。')
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 功能 N2 扩展：自检原来只测 Claude Code，另外三个工具配错了只能自己猜。
 test('the connection self-check reports every CLI on its own, and an unconfigured tool is not a failure', async () => {
   const page = await open()

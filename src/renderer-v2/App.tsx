@@ -1349,6 +1349,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   function requestUninstall(id: ToolId) {
     const definition = tools.find((tool) => tool.id === id)!
     setConfirmation({ title: `卸载 ${definition.name}？`, body: '工具配置、账户数据和历史记录会保留。', label: '卸载工具', danger: true, tool: id, work: async () => {
+      let uninstalled = false
       await toolbox.run(id, '正在卸载', async () => {
         const result = await toolsApi.uninstall(id)
         if (result.outcome === 'manual-required') {
@@ -1358,8 +1359,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 管理员模式下卸载转交给普通窗口：是预料之中的一步，给中性提示，不当失败弹红框。
         const handedOff = uninstallHandOffNotice(result)
         if (handedOff && mounted.current) toast.show(handedOff, 'neutral')
+        uninstalled = result.outcome === 'uninstalled'
       }, { kind: 'uninstall' })
-      await toolbox.refresh(true)
+      // 真卸掉了、紧接着的检测没读到（已知32）：卸载本身做成了，不弹「操作没有完成」，确认框
+      // 照常关，免得客户以为没卸成又点一次「卸载工具」。首页顶上检测自己的那句照旧。转交给
+      // 命令窗口的、要自己手动卸的，照旧当没做完。
+      await toolbox.refresh(true).catch((cause: unknown) => {
+        if (!uninstalled) throw cause
+        if (mounted.current) toast.show(`${definition.name} 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。`, 'warn')
+      })
     } })
   }
   function requestRevert(id: ToolId, version: string) {
