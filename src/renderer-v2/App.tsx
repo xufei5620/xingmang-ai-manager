@@ -26,7 +26,7 @@ import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwap
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { brokenConfigRepairTarget, canSwitchToManagedInstall, codexNeedsRepair, configBrokenDetail, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { brokenConfigDetails, brokenConfigOf, brokenConfigRepairTarget, canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './features/tools/recent-workspaces'
@@ -560,19 +560,23 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     })
   }, [toast, toolbox.refreshConfig, toolbox.run, toolsApi])
   /**
-   * 首页「配置文件坏了」的「修好它」：Codex 自己都读不了 config.toml，桌面端停在「无法加载
-   * 组织设置」。做的就是配置里「高级」的「重置为初始状态」：主进程先备份、再按现在用的账号
-   * 整份重新生成。登录 ChatGPT 的照旧用官方账号，其余按当前账号；没登录就先去登录。
+   * 首页「配置文件坏了」的「修好它」：工具自己都读不了它的配置（Codex 的 config.toml、auth.json，
+   * Claude Code、Gemini CLI 的 settings.json）。做的就是配置里「高级」的「重置为初始状态」：主进程
+   * 先备份、再按现在用的账号整份重新生成。看得出原来用官方登录的照旧用官方账号，其余按当前账号
+   * （brokenConfigRepairTarget）；没登录就先去登录。
    */
   const repairBrokenToolConfig = useCallback(async (tool: ToolId): Promise<boolean> => {
     const provider = providerFor(tool)
     const config = toolbox.snapshot?.config.providers[provider]
     if (!config) throw new Error('请先完成工具检测')
-    const target = brokenConfigRepairTarget(config)
+    // 按钮只在坏了时给；这期间重新检测过、文件已经好了，就不用再重置一次。
+    const broken = brokenConfigOf(config, provider)
+    if (!broken) return false
+    const target = brokenConfigRepairTarget(broken, config)
     if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return false }
     let written = false
     // 按工具家族登记：两行 Codex 共用一份配置，一行在修时另一行也是「修复中」，不会两次重置叠着跑。
-    await toolbox.run(`repair-config:${provider}`, configBrokenDetail, async () => {
+    await toolbox.run(`repair-config:${provider}`, brokenConfigDetails[broken], async () => {
       try {
         if (target === 'official') await toolsApi.official(tool, 'reset')
         else {

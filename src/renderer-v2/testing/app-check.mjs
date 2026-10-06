@@ -4261,6 +4261,45 @@ test('a ChatGPT login whose Codex config cannot be read is reset on the official
   } finally { await page.close() }
 })
 
+// 已知44：Claude Code 读不了 settings.json、星芒也读不出 Key 时，原来首页写成「官方账号」，配置窗口也默认选官方账号。
+test('a Claude Code settings file it cannot read is reset on the current account instead of passing for the official account', async () => {
+  const page = await open('claudeBroken=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('配置文件坏了', { exact: true }).waitFor()
+    await row.getByText('Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留', { exact: true }).waitFor()
+    assert.equal(await row.getByText('官方账号', { exact: true }).count(), 0)
+    await openToolConfiguration(page, 'claude')
+    await page.getByTestId('tool-key-select').waitFor()
+    await page.getByTestId('config-dialog').getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
+    await page.getByTestId('tool-claude-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'reset', intent: 'explicit' }])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a Codex login file Codex cannot read is reset from either Codex row', async () => {
+  const page = await open('codexAuthBroken=1')
+  try {
+    for (const tool of ['codex', 'codexDesktop']) {
+      const row = page.getByTestId(`tool-row-${tool}`)
+      await row.getByText('配置文件坏了', { exact: true }).waitFor()
+      await row.getByText('Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留', { exact: true }).waitFor()
+    }
+    await page.getByTestId('tool-codex-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    for (const tool of ['codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the config dialog switches a foreign key in place without the old manual-key buttons', async () => {
   const page = await open('unknown=1')
   try {
