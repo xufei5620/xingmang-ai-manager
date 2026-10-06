@@ -308,10 +308,6 @@ export function extensionMutationScope(
 }
 
 /**
- * 列表行上的一次操作。项目里装的那一份必须带着它自己的 scope 回去，否则 CLI
- * 按缺省的 user 去找，项目里的删不掉，同名的全局那份反倒被改了（#488）。
- */
-/**
  * 扩展页的动作改的都是工具自己的配置（MCP、技能、插件、插件市场），没权限时说「写不进配置文件」
  * （已知29）。只有「安装 Python」装的是运行环境，照旧按原话认。
  */
@@ -319,6 +315,10 @@ export function extensionFailureTarget(failed: string): OperationTarget | undefi
   return failed && failed !== 'python' ? 'config' : undefined
 }
 
+/**
+ * 列表行上的一次操作。项目里装的那一份必须带着它自己的 scope 回去，否则 CLI
+ * 按缺省的 user 去找，项目里的删不掉，同名的全局那份反倒被改了（#488）。
+ */
 export async function runExtensionAction(
   api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill'>,
   item: ExtensionItem,
