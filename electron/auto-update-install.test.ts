@@ -20,6 +20,7 @@ import {
   parsePendingUpdateRecord,
   quitInstallPrompt,
   resolveDownloadedVersionToRecord,
+  resolveRecordToWriteAtLaunch,
   undoQuitInstallAttempt,
   type LaunchInstallInput,
   type LaunchInstallModeInput,
@@ -222,6 +223,51 @@ describe('resolveDownloadedVersionToRecord', () => {
     expect(resolveDownloadedVersionToRecord(snapshot(), { ...emptyPendingUpdateRecord })).toBe('0.2.12')
     expect(resolveDownloadedVersionToRecord(snapshot(), { downloadedVersion: '0.2.12', attemptedVersion: null })).toBeNull()
     expect(resolveDownloadedVersionToRecord(snapshot({ phase: 'available' }), { ...emptyPendingUpdateRecord })).toBeNull()
+  })
+})
+
+describe('resolveRecordToWriteAtLaunch', () => {
+  const backgroundInstall = { version: '0.2.12', startedAt: 1_760_000_000_000 }
+
+  it('forgets the version that is now running, so rolling back does not report it as a failed install', () => {
+    const installedOnQuit = { downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12', backgroundInstall: null }
+    const settled = resolveRecordToWriteAtLaunch(installedOnQuit, '0.2.12')
+    expect(settled).toEqual(emptyPendingUpdateRecord)
+    // Back on 0.2.11 the same version is downloaded again: no failure message,
+    // and the next quit installs it the way auto-update does for any new version.
+    const afterRollback = settled ?? installedOnQuit
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', afterRollback)).toBeNull()
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: afterRollback })).toBe('install')
+    expect(decideLaunchInstall(input({ recordAtLaunch: afterRollback }))).toBeNull()
+    // Forgetting only the attempt would put a still-cached package straight back
+    // at the first launch after rolling back.
+    expect(decideLaunchInstall(input({ recordAtLaunch: { ...installedOnQuit, quitAttemptedVersion: null } }))).toBe('0.2.12')
+    // Kept as it was, the old version took it for a failed install and stopped installing it.
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', installedOnQuit)).toBe('0.2.12')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: installedOnQuit })).toBe('ask')
+  })
+
+  it('also forgets a version installed at launch, along with the one-shot background install', () => {
+    expect(resolveRecordToWriteAtLaunch({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', backgroundInstall }, '0.2.12')).toEqual(emptyPendingUpdateRecord)
+    expect(resolveRecordToWriteAtLaunch({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' }, '0.2.12')).toEqual(emptyPendingUpdateRecord)
+  })
+
+  it('keeps a newer version that did not install, so the failure is still reported once', () => {
+    const failed = { downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', quitAttemptedVersion: '0.2.12', backgroundInstall: null }
+    expect(resolveRecordToWriteAtLaunch(failed, '0.2.11')).toBeNull()
+    expect(resolveRecordToWriteAtLaunch({ ...failed, backgroundInstall }, '0.2.11')).toEqual(failed)
+  })
+
+  it('keeps an older version a withdrawn release failed to go back to, so the consent window does not return on every quit', () => {
+    const failedGoingBack = { downloadedVersion: '0.2.11', attemptedVersion: null, quitAttemptedVersion: '0.2.11', backgroundInstall: null }
+    expect(resolveRecordToWriteAtLaunch(failedGoingBack, '0.2.12')).toBeNull()
+    expect(resolvePreviousAutoInstallFailure('0.2.11', '0.2.12', failedGoingBack)).toBe('0.2.11')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.11', record: failedGoingBack })).toBe('ask')
+  })
+
+  it('leaves a record with nothing to clear alone', () => {
+    expect(resolveRecordToWriteAtLaunch({ ...emptyPendingUpdateRecord }, '0.2.12')).toBeNull()
+    expect(resolveRecordToWriteAtLaunch({ downloadedVersion: '0.2.13', attemptedVersion: null }, '0.2.12')).toBeNull()
   })
 })
 
