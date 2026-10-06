@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -583,6 +583,42 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).toContain('账号 Key 初始化没有完成：星芒账号已变化，已停止本次 Key 配置')
     expect(markup).not.toContain(offline)
   })
+
+  // 已知12：「已完成 N 组…」只是说一声做完了，照右下角提示条的读完时长摆着就收起，不再整场挂着。
+  it('lets the all-done line go after the toast reading time', () => {
+    const done = { phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', result: bootstrapResult({ configured: ['claude', 'codex'] }) }
+    // 「已完成 2 组工具的 Key 配置。」去掉空格 14 个字：2400 + 2 × 200。
+    expect(bootstrapNoticeExpiresAt({ ...done, finishedAt: 1_000 })).toBe(1_000 + 2_800)
+    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() } })).toContain('已完成 2 组工具的 Key 配置。')
+    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() - 60_000 } })).not.toContain('已完成 2 组工具的 Key 配置。')
+    // 外壳没说什么时候做完的（旧调用方）就照旧一直摆着。
+    expect(bootstrapNoticeExpiresAt(done)).toBeNull()
+    expect(render({}, undefined, { bootstrap: done })).toContain('已完成 2 组工具的 Key 配置。')
+  })
+
+  it('keeps the line up while something still needs the user', () => {
+    const finishedAt = Date.now() - 60_000
+    const failed = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt,
+        result: bootstrapResult({ configured: ['claude'], failed: [{ provider: 'gemini', message: '当前分组未返回可用模型' }] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(failed).toContain('已完成 1 组工具的 Key 配置。')
+    expect(failed).toContain('当前分组未返回可用模型')
+    const warned = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', finishedAt,
+        result: bootstrapResult({ configured: ['claude'], warnings: ['Key 同步阶段：fixture'] }),
+      },
+    })
+    expect(warned).toContain('Key 同步阶段：fixture')
+    expect(bootstrapNoticeExpiresAt({
+      phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt,
+      result: bootstrapResult({ networkBlocked: true, configured: ['claude'] }),
+    })).toBeNull()
+  })
 })
 
 /**
@@ -759,6 +795,21 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
     expect(markup).not.toContain('这一步需要管理员授权')
+  })
+
+  it('keeps the elevation notices off a Windows app that already runs with administrator rights', () => {
+    // 已知19：自带 Administrator 之类，装 Node.js 和 Codex 桌面端都不弹授权窗口。
+    const base = runtimeSnapshot('windows', { node: true })
+    const elevated = {
+      ...base,
+      platform: { ...base.platform, processElevated: true, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: { ...base.system, desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null } } },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: elevated })
+    expect(markup).toContain('准备 Node.js')
+    expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
+    expect(markup).not.toContain('管理员授权')
+    expect(markup).not.toContain('授权窗口')
   })
 
   it('stays quiet when the probe failed, because then nobody knows whether it is installed', () => {

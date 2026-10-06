@@ -4,6 +4,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
+import { recordToasts, waitForToast } from './toast-recording.mjs'
 
 const business = createBrowserFixture({
   cacheDir: 'node_modules/.vite-v2-business-tests',
@@ -22,6 +23,7 @@ after(async () => {
 })
 const fixture = async (route) => {
   const page = await business.newPage()
+  await page.addInitScript(recordToasts)
   // First paint waits on Vite transforming the module graph on demand, which on a
   // cold Windows runner under Defender routinely takes longer than the 5s default
   // the assertions below rely on. Waiting for the mount separately keeps that
@@ -223,7 +225,7 @@ test('account exposes the exact nine tabs and keeps server orders and keys visib
     await page.getByRole('tab', { name: '密钥', exact: true }).click()
     await page.getByText('Test key').waitFor()
     await page.getByRole('button', { name: '复制', exact: true }).click()
-    await page.getByText('密钥已复制。为了安全，1 分钟后会从剪贴板里清掉', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已复制。为了安全，1 分钟后会从剪贴板里清掉')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'copy-key').args,
       1,
@@ -662,7 +664,7 @@ test('redeeming subscription and concurrency codes reports the committed result 
       await page.getByRole('button', { name: '兑换', exact: true }).click()
       const before = await calls(page)
       await page.getByRole('dialog', { name: '确认兑换到当前账号？' }).getByRole('button', { name: '确认兑换', exact: true }).click()
-      await page.getByText(message, { exact: true }).waitFor()
+      await waitForToast(page, message)
       await page.waitForFunction((previous) => {
         const current = JSON.parse(document.documentElement.dataset.calls || '[]')
         return ['get-profile', 'get-balance', 'get-subscriptions'].every((name) =>
@@ -693,7 +695,7 @@ test('revoking a key a tool is using warns first and puts a fresh key back witho
     const dialog = await revokeTestKey(page)
     assert.match(await dialog.innerText(), /Claude Code 正在用这把密钥。撤销后会马上自动换一把新的写进 Claude Code/)
     await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
-    await page.getByText('密钥已撤销，Claude Code 已自动换上新密钥', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已撤销，Claude Code 已自动换上新密钥')
     assert.equal(await page.getByTestId('account-key-replace-failed').count(), 0)
     const names = (await calls(page)).map((call) => [call.name, call.args])
     assert.deepEqual(names.filter(([name]) => name === 'revokeAccountKey' || name === 'rewriteKey'),
@@ -711,7 +713,7 @@ test('a failed key replacement after revoking says what to press and retries on 
     await page.getByTestId('account-key-replace-retry').click()
     await page.getByText('Claude Code 还是没换上新密钥，请检查网络后再点一次。', { exact: true }).waitFor()
     await page.getByTestId('account-key-replace-retry').click()
-    await page.getByText('Claude Code 已换上新密钥', { exact: true }).waitFor()
+    await waitForToast(page, 'Claude Code 已换上新密钥')
     assert.equal(await notice.count(), 0)
     assert.equal((await calls(page)).filter((call) => call.name === 'rewriteKey').length, 3)
   } finally { await page.close() }
@@ -724,7 +726,7 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
     await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
     const notice = page.getByTestId('account-key-replace-skipped')
     await notice.getByText('Claude Code 还在用刚撤销的密钥', { exact: true }).waitFor()
-    await page.getByText('密钥已撤销', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已撤销')
     assert.equal(await page.getByText(/已自动换上新密钥/).count(), 0)
     assert.equal(await page.getByTestId('account-key-replace-retry').count(), 0)
     await page.getByTestId('account-key-replace-configure').click()
@@ -780,7 +782,7 @@ test('revoking a key no tool is using keeps the old confirmation and never rewri
     const dialog = await revokeTestKey(page)
     assert.match(await dialog.innerText(), /使用这把密钥的工具会停止请求，需要重新配置有效密钥。/)
     await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
-    await page.getByText('密钥已撤销', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已撤销')
     assert.equal((await calls(page)).some((call) => call.name === 'rewriteKey'), false)
   } finally { await page.close() }
 })
@@ -849,7 +851,7 @@ test('refreshing key groups preserves the draft and requires a new choice when t
     assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
     await group.selectOption('group-C')
     await save.click()
-    await page.getByText('密钥已保存', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已保存')
     const created = (await calls(page)).find((call) => call.name === 'create-key').args
     assert.deepEqual({ name: created.name, group: created.group, remainQuota: created.remainQuota }, { name: 'draft key', group: 'group-C', remainQuota: 1234 })
   } finally { await page.close() }
@@ -880,7 +882,7 @@ test('pending or failed key group requests block saves and can be retried withou
     await page.getByTestId('account-key-groups-refresh').click()
     await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
     await save.click()
-    await page.getByText('密钥已保存', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已保存')
     assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 1)
     await page.evaluate(() => { window.keyGroupsHarness.setGroups(['outdated-group']); window.keyGroupsHarness.deferNext() })
     await page.getByTestId('account-key-add').click()
@@ -982,7 +984,7 @@ test('records page resumes the most recent conversation in the folder on the row
   const page = await fixture('page=sessions')
   try {
     await page.getByTestId('sessions-resume-codex:session-1').click()
-    await page.getByText('已打开Codex CLI，接着 C:/test-project 里最近的一条对话').waitFor()
+    await waitForToast(page, '已打开Codex CLI，接着 C:/test-project 里最近的一条对话')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'launch-cli').args,
       { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast', sessionId: 'codex:session-1' },
@@ -1397,6 +1399,50 @@ test('installed plugins come before the curated shelf and an update sits on the 
   }
 })
 
+// 已知2 跟进：详情里 local 写「当前项目」、扩展自带的技能写「我的（全局）」，「范围」筛选也按这个归类。
+test('the scope filter lists a plugin or skill under the scope its details name', async () => {
+  const plugins = await fixture('page=plugins&scopedExtensions')
+  try {
+    const scopes = plugins.getByTestId('plugins-scope')
+    const local = plugins.getByTestId('plugins-row-local-plugin')
+    const global = plugins.getByTestId('plugins-row-test-extension')
+    await local.waitFor()
+    await scopes.getByRole('button', { name: '当前项目', exact: true }).click()
+    await global.waitFor({ state: 'detached' })
+    await local.waitFor()
+    await local.getByRole('button', { name: /更多操作/ }).click()
+    await plugins.getByRole('menuitem', { name: '查看详情', exact: true }).click()
+    const drawer = plugins.getByTestId('resource-detail-drawer')
+    assert.equal(await drawer.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '当前项目')
+    await drawer.locator('[data-modal-close]').click()
+    await drawer.waitFor({ state: 'detached' })
+    await scopes.getByRole('button', { name: '我的（全局）', exact: true }).click()
+    await local.waitFor({ state: 'detached' })
+    await global.waitFor()
+  } finally {
+    await plugins.close()
+  }
+  const skills = await fixture('page=skills&scopedExtensions')
+  try {
+    await skills.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    const scopes = skills.getByTestId('skills-scope')
+    const bundled = skills.getByTestId('skills-row-extension-skill')
+    await bundled.waitFor()
+    await scopes.getByRole('button', { name: '我的（全局）', exact: true }).click()
+    await bundled.waitFor()
+    await bundled.getByRole('button', { name: /更多操作/ }).click()
+    await skills.getByRole('menuitem', { name: '查看详情', exact: true }).click()
+    const drawer = skills.getByTestId('resource-detail-drawer')
+    assert.equal(await drawer.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '我的（全局）')
+    await drawer.locator('[data-modal-close]').click()
+    await drawer.waitFor({ state: 'detached' })
+    await scopes.getByRole('button', { name: '当前项目', exact: true }).click()
+    await bundled.waitFor({ state: 'detached' })
+  } finally {
+    await skills.close()
+  }
+})
+
 test('an empty installed list points at the curated shelf and the market tab', async () => {
   const page = await fixture('page=plugins&empty')
   try {
@@ -1465,7 +1511,7 @@ test('backup restore requires preview and confirmation before touching files', a
     await page
       .getByRole('button', { name: '备份当前配置并恢复', exact: true })
       .click()
-    await page.getByText('配置已恢复，恢复前备份已保留').waitFor()
+    await waitForToast(page, '配置已恢复，恢复前备份已保留')
     assert.equal(
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
@@ -1563,7 +1609,7 @@ test('feedback narrows the log list by source and to this run, and copies one en
 
     await page.getByTestId('feedback-log-2026-09-07T01:00:00Z:4242:2').click()
     await page.getByRole('button', { name: '复制这一条', exact: true }).click()
-    await page.getByText('这一条已复制').first().waitFor()
+    await waitForToast(page, '这一条已复制')
     assert.deepEqual(
       (await calls(page))
         .filter((call) => call.name === 'copy-clipboard')
@@ -1813,7 +1859,7 @@ test('the updates page switches the startup check and automatic updates in place
     assert.equal(await check.getAttribute('aria-checked'), 'true')
     assert.equal(await automatic.getAttribute('aria-checked'), 'true')
     await check.click()
-    await page.locator('.xm-toast').getByText('已保存', { exact: true }).waitFor()
+    await waitForToast(page, '已保存')
     await page.waitForFunction(() => document.querySelector('[data-testid="updates-check-on-startup"] [role="switch"]')?.getAttribute('aria-checked') === 'false')
     await page.waitForFunction(() => document.querySelector('[data-testid="updates-auto-update"] [role="switch"]')?.disabled === false)
     await automatic.click()
@@ -2076,7 +2122,7 @@ test('a saved setting says so in a passing toast without pushing the page down',
     const control = page.getByRole('switch', { name: '减少动画', exact: true })
     const before = (await control.boundingBox()).y
     await control.click()
-    await page.locator('.xm-toast').getByText('已保存', { exact: true }).waitFor()
+    await waitForToast(page, '已保存')
     assert.equal(await control.getAttribute('aria-checked'), 'true')
     assert.equal((await control.boundingBox()).y, before, 'the switch stays where it was')
     assert.equal(await page.locator('.v2-business-notice').count(), 0, 'no banner is added above the groups')
@@ -2350,7 +2396,7 @@ test('desktop notifications start on, the master switch gates test notifications
       .getByRole('switch', { name: '余额不足通知', exact: true })
       .click()
     await testNotice.click()
-    await page.getByText('已请求显示测试通知', { exact: true }).waitFor()
+    await waitForToast(page, '已请求显示测试通知')
     await page.getByRole('tab', { name: '隐私与数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
       name: '崩溃自动上报',
@@ -2365,9 +2411,7 @@ test('desktop notifications start on, the master switch gates test notifications
     await page
       .getByRole('switch', { name: '匿名使用统计偏好', exact: true })
       .click()
-    await page
-      .getByText('偏好已保存在本机，没有上传使用记录', { exact: true })
-      .waitFor()
+    await waitForToast(page, '偏好已保存在本机，没有上传使用记录')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'platform-privacy').args,
       { kind: 'anonymousUsage', enabled: true },
@@ -2431,7 +2475,7 @@ test('an async task result is copied as a link instead of asking the host to ope
     await page
       .getByRole('button', { name: '复制结果链接', exact: true })
       .click()
-    await page.getByText('结果链接已复制', { exact: true }).waitFor()
+    await waitForToast(page, '结果链接已复制')
     const recorded = await calls(page)
     assert.equal(
       recorded.some((call) => call.name === 'openExternal'),

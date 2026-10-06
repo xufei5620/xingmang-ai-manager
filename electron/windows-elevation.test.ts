@@ -174,6 +174,34 @@ describe('Windows CLI launch', () => {
     }
   })
 
+  it('says whether the process runs at High integrity whenever the label was read', async () => {
+    // 已知19：自带 Administrator（默认令牌、High）照旧 same-user，但界面要知道装东西不会弹授权窗口。
+    const cases = [
+      { probeIntegrityRid: async () => 8192, highIntegrity: false },
+      { probeIntegrityRid: async () => 12288, highIntegrity: true },
+      { probeIntegrityRid: async () => 16384, highIntegrity: true },
+    ] as const
+    for (const { probeIntegrityRid, highIntegrity } of cases) {
+      await expect(resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'default',
+      })).resolves.toMatchObject({ mode: 'same-user', highIntegrity })
+      await expect(resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true,
+        platform: 'win32',
+        probeIntegrityRid,
+        probeElevationType: async () => { throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }) },
+      })).resolves.toMatchObject({ highIntegrity })
+    }
+    // Nothing read, nothing claimed: the renderer keeps the old sentence.
+    for (const probeIntegrityRid of [async () => null, async () => { throw new Error('whoami failed') }]) {
+      const resolution = await resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'full',
+      })
+      expect(resolution).not.toHaveProperty('highIntegrity')
+    }
+    expect(await resolveWindowsCliExecutionModeDetailed({ isPackaged: true, platform: 'darwin' })).not.toHaveProperty('highIntegrity')
+  })
+
   it.runIf(process.platform === 'win32')('reads the integrity label of the real process token', async () => {
     const rid = await inspectCurrentWindowsIntegrityRid()
     expect(rid).not.toBeNull()

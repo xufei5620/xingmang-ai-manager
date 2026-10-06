@@ -93,11 +93,11 @@ export function BusinessPage({
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} />
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} active={actions.active} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} installedProviders={installedProviders} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} installedProviders={installedProviders} active={actions.active} />
   if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
+    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} active={actions.active} />
   if (page === 'backups')
     return (
       <BackupsPage

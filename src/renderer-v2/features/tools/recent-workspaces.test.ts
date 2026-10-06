@@ -6,6 +6,8 @@ import {
   launchWorkspaces,
   recentWorkspaces,
   resumeLaunchChoice,
+  resumeNeedsRecheck,
+  resumeStillLatest,
   workspaceButtonLabel,
   workspaceChoices,
   workspaceName,
@@ -230,5 +232,48 @@ describe('resumeLaunchChoice', () => {
     expect(resumeLaunchChoice({ id: 'claude:1', provider: 'claude' })).toBe('resumeLast')
     expect(resumeLaunchChoice({ id: 'gemini:1', provider: 'gemini' })).toBe('resumeLast')
     expect(resumeLaunchChoice({ id: 'grok:1', provider: 'grok' })).toBe('resumeLast')
+  })
+})
+
+describe('resumeNeedsRecheck', () => {
+  // 按文件夹接最近一条的三家要先对一次；Codex 带着记录 id 接，点哪条接哪条。
+  it('rechecks only the tools that resume the latest record in the folder', () => {
+    expect(resumeNeedsRecheck({ id: 'claude:1', provider: 'claude' })).toBe(true)
+    expect(resumeNeedsRecheck({ id: 'gemini:1', provider: 'gemini' })).toBe(true)
+    expect(resumeNeedsRecheck({ id: 'grok:1', provider: 'grok' })).toBe(true)
+    expect(resumeNeedsRecheck({ id: 'codex:1', provider: 'codex' })).toBe(false)
+  })
+})
+
+describe('resumeStillLatest', () => {
+  it('opens the clicked record when it is still the latest one in its folder', () => {
+    const clicked = session({ id: 'claude:older', cwd: 'C:\\work\\alpha' })
+    expect(resumeStillLatest(clicked, [
+      session({ id: 'claude:other-folder', cwd: 'C:\\work\\beta' }),
+      clicked,
+    ])).toBe(true)
+  })
+
+  // 星芒在后面时又在终端里聊了一条：同一文件夹最近的换成了它，CLI 接上的会是它，不是点的这条。
+  it('holds back when a newer record from the same folder showed up', () => {
+    const clicked = session({ id: 'claude:older', cwd: 'C:\\work\\alpha' })
+    expect(resumeStillLatest(clicked, [
+      session({ id: 'claude:newer', cwd: 'c:\\WORK\\alpha' }),
+      clicked,
+    ])).toBe(false)
+  })
+
+  it('holds back when the clicked record was removed or archived meanwhile', () => {
+    const clicked = session({ id: 'claude:older', cwd: 'C:\\work\\alpha' })
+    expect(resumeStillLatest(clicked, [])).toBe(false)
+    expect(resumeStillLatest(clicked, [{ ...clicked, archived: true }])).toBe(false)
+  })
+
+  it('ignores newer records of another tool in the same folder', () => {
+    const clicked = session({ id: 'claude:older', cwd: 'C:\\work\\alpha' })
+    expect(resumeStillLatest(clicked, [
+      session({ id: 'gemini:newer', provider: 'gemini', cwd: 'C:\\work\\alpha' }),
+      clicked,
+    ])).toBe(true)
   })
 })

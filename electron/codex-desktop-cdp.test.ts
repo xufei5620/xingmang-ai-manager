@@ -1,6 +1,7 @@
 import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
+  activateCodexDesktopWithCdp,
   buildCodexDesktopCdpArguments,
   classifyCodexDesktopCdpPortOwnership,
   codexChineseRuntimeScript,
@@ -13,6 +14,7 @@ import {
   validateCodexDesktopAppUserModelId,
   validateCodexDesktopCdpPort,
   validateCodexDesktopCdpTarget,
+  withCodexDesktopCdpFailureReport,
   type CodexDesktopCdpTarget,
 } from './codex-desktop-cdp'
 
@@ -206,6 +208,41 @@ describe('Codex Desktop CDP trust boundary', () => {
     expect(validateCodexDesktopAppUserModelId('OpenAI.Codex_2p2nqsd0c76g0!App')).toBe('OpenAI.Codex_2p2nqsd0c76g0!App')
     expect(() => validateCodexDesktopAppUserModelId('Contoso.App!App')).toThrow('应用标识不可信')
     expect(() => validateCodexDesktopAppUserModelId('OpenAI.Codex_foo!App --evil')).toThrow('应用标识不可信')
+  })
+})
+
+describe('Codex Desktop CDP activation failures', () => {
+  it('keeps the activation failure as the cause of the Chinese launch error', async () => {
+    // Off Windows the activation refuses the platform, on Windows it refuses
+    // this identity; both happen before PowerShell would be started.
+    const error = await activateCodexDesktopWithCdp('Contoso.App!App', 9222).then(() => null, (reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    const cause = (error as Error).cause
+    expect(cause).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(`Codex Desktop 中文增强启动失败：${(cause as Error).message}`)
+  })
+
+  it('reports a failed activation and still rejects with the same error', async () => {
+    const failure = new Error('Codex Desktop 中文增强启动失败：激活被拒绝')
+    const reported: unknown[] = []
+    const activate = withCodexDesktopCdpFailureReport(async () => { throw failure }, (error) => { reported.push(error) })
+
+    await expect(activate('OpenAI.Codex_2p2nqsd0c76g0!App', 9222)).rejects.toBe(failure)
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toBe(failure)
+  })
+
+  it('passes a successful activation through without reporting anything', async () => {
+    const calls: unknown[][] = []
+    const environment = { SystemRoot: 'C:\\Windows' }
+    const activate = withCodexDesktopCdpFailureReport(async (appUserModelId, port, baseEnv) => {
+      calls.push([appUserModelId, port, baseEnv])
+      return 18420
+    }, () => { throw new Error('a successful activation has nothing to report') })
+
+    await expect(activate('OpenAI.Codex_2p2nqsd0c76g0!App', 9222, environment)).resolves.toBe(18420)
+    expect(calls).toEqual([['OpenAI.Codex_2p2nqsd0c76g0!App', 9222, environment]])
   })
 })
 
