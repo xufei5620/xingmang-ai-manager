@@ -4,7 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { createSystemService, type SystemServiceOptions } from './system-service'
-import type { ExternalClientRuntimeStatus } from './external-client-contract'
+import { externalToolIds, type ExternalClientRuntimeStatus } from './external-client-contract'
+import type { ExternalToolId } from './external-tool-config'
 
 const temporaryDirectories: string[] = []
 const selectedKey = 'sk-selected-external-client-key'
@@ -45,6 +46,7 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
     cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
     launch: vi.fn(async () => undefined),
   }
+  const runtimeLog = { log: vi.fn<NonNullable<SystemServiceOptions['runtimeLog']>['log']>() }
   const serviceOptions: SystemServiceOptions = {
     providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
     managerDataDirectory, relayFetch, getRelaySiteId: () => site, platform: options.platform ?? hostPlatform,
@@ -53,9 +55,10 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
     assertClaudeDesktopUnmanaged,
     inspectClaudeDesktopStoreVirtualization,
     externalClientRuntime: runtime,
+    runtimeLog,
   }
   return {
-    directory, userHome, managerDataDirectory, claudeProfileDirectory, store, relayFetch, assertClaudeDesktopUnmanaged, inspectClaudeDesktopStoreVirtualization, runtime, runtimeStatuses,
+    directory, userHome, managerDataDirectory, claudeProfileDirectory, store, relayFetch, assertClaudeDesktopUnmanaged, inspectClaudeDesktopStoreVirtualization, runtime, runtimeStatuses, runtimeLog,
     service: createSystemService(store, serviceOptions),
     restart: () => createSystemService(store, serviceOptions),
     setSite(next: string) { site = next },
@@ -584,5 +587,190 @@ describe('external client system-service integration', () => {
     await expect(f.service.configureExternalTool('opencode', { apiKey: selectedKey, model: selectedModel }, assertOwner)).rejects.toThrow('账号已切换')
     expect(f.relayFetch).not.toHaveBeenCalled()
     expect(targetFiles(f.directory)).toEqual([])
+  })
+})
+
+describe('external clients follow the connection route the user selected (batch 43 A)', () => {
+  const primaryOrigin = 'https://xm.solov.cc'
+  const directOrigin = 'https://38.147.105.28:8443'
+
+  // 首页「配置」那样，在当前生效的线路上给三家各存一次；三家都装着、都没开。
+  async function configureAll(f: ReturnType<typeof fixture>) {
+    for (const status of f.runtimeStatuses) status.installed = true
+    const files = new Map<ExternalToolId, string>()
+    for (const tool of externalToolIds) {
+      const result = await f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel, ...(tool === 'opencode' ? { protocol: 'chat-completions' as const } : {}) })
+      files.set(tool, result.path)
+    }
+    return { files, before: new Map([...files].map(([tool, file]) => [tool, fs.readFileSync(file, 'utf8')])) }
+  }
+
+  // 设置里选一条线路、点「现在重开」：选择存进设置，下一个进程才按它走。
+  async function restartOn(f: ReturnType<typeof fixture>, endpoint: 'primary' | 'direct') {
+    await f.store.update({ version: 2, relayEndpointIds: { solov: endpoint } })
+    return f.restart()
+  }
+
+  function backupsOf(file: string): string[] {
+    return fs.readdirSync(path.dirname(file)).filter((name) => name.startsWith(`${path.basename(file)}.bak.`))
+      .map((name) => fs.readFileSync(path.join(path.dirname(file), name), 'utf8'))
+  }
+
+  function routeLogs(f: ReturnType<typeof fixture>) {
+    return f.runtimeLog.log.mock.calls.filter(([, , event]) => event.startsWith('external-client.route.'))
+  }
+
+  it('moves each client the current account configured to the selected route after a restart, keeping key, model and protocol', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    f.relayFetch.mockClear()
+    const clients = await (await restartOn(f, 'direct')).scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      const client = clients.find((entry) => entry.tool === tool)
+      expect(client).toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+      expect(client?.routePending).toBeUndefined()
+      // 只换了地址：Key、模型、OpenCode 的 npm 包（也就是协议）都原样，改前那份留了备份。
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool)!.replaceAll(primaryOrigin, directOrigin))
+      expect(backupsOf(files.get(tool)!)).toContain(before.get(tool))
+      expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.followed', expect.any(String),
+        { tool, from: 'primary', to: 'direct', connectionVerified: true }])
+    }
+    // 模型清单和写完那次自检都走新线路；结果与日志里没有 Key，日志里也不记地址。
+    expect(f.relayFetch.mock.calls.map(([url]) => String(url)).filter((url) => !url.startsWith(directOrigin))).toEqual([])
+    expect(JSON.stringify(clients)).not.toContain(selectedKey)
+    expect(JSON.stringify(routeLogs(f))).not.toMatch(/sk-selected|solov\.cc|38\.147/)
+  })
+
+  it('moves them back when the user selects the default route again', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    await (await restartOn(f, 'direct')).scanExternalClients()
+    const clients = await (await restartOn(f, 'primary')).scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      expect(clients.find((entry) => entry.tool === tool)).toMatchObject({ configured: true, configurationSource: 'xingmang' })
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool))
+    }
+  })
+
+  it('leaves a running client alone, marks the route as pending, and moves it once the client has quit', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    const claude = f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!
+    claude.running = true
+    const pending = (await service.scanExternalClients()).find((client) => client.tool === 'claudeDesktop')
+
+    expect(pending).toMatchObject({ running: true, routePending: true, configured: false, configurationSource: 'other' })
+    expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop'))
+    expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.deferred', expect.any(String), { tool: 'claudeDesktop', from: 'primary', to: 'direct' }])
+
+    claude.running = false
+    const moved = (await service.scanExternalClients(true)).find((client) => client.tool === 'claudeDesktop')
+    expect(moved).toMatchObject({ running: false, configured: true, configurationSource: 'xingmang' })
+    expect(moved?.routePending).toBeUndefined()
+    expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop')!.replaceAll(primaryOrigin, directOrigin))
+  })
+
+  it('does not write a client that was opened while the model list was being fetched', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    // 缓存里那份还是没开着；拉清单那几秒里客户打开了 WorkBuddy，写之前那次强制盘点看到了。
+    vi.mocked(f.runtime.scan).mockImplementation(async (options) => structuredClone(f.runtimeStatuses)
+      .map((status) => options?.force && status.tool === 'workbuddy' ? { ...status, running: true } : status))
+    const client = (await service.scanExternalClients()).find((entry) => entry.tool === 'workbuddy')
+
+    expect(client).toMatchObject({ running: true, routePending: true, configurationSource: 'other' })
+    expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(before.get('workbuddy'))
+  })
+
+  it.each([
+    ['the user never selected a route', async (f: ReturnType<typeof fixture>) => f.restart()],
+    ['another account is signed in', async (f: ReturnType<typeof fixture>) => {
+      f.setUser(18)
+      return restartOn(f, 'direct')
+    }],
+    ['the user replaced the key by hand', async (f: ReturnType<typeof fixture>, files: Map<ExternalToolId, string>) => {
+      for (const [tool, file] of files) {
+        const config = JSON.parse(fs.readFileSync(file, 'utf8'))
+        if (tool === 'claudeDesktop') config.inferenceGatewayApiKey = 'sk-hand-edited'
+        else if (tool === 'workbuddy') config[0].apiKey = 'sk-hand-edited'
+        else config.provider.xingmang.options.apiKey = 'sk-hand-edited'
+        fs.writeFileSync(file, JSON.stringify(config), 'utf8')
+      }
+      return restartOn(f, 'direct')
+    }],
+  ])('leaves the clients alone when %s', async (_case, prepare) => {
+    const f = fixture()
+    const { files } = await configureAll(f)
+    const service = await prepare(f, files)
+    const snapshot = new Map([...files].map(([tool, file]) => [tool, fs.readFileSync(file, 'utf8')]))
+    f.relayFetch.mockClear()
+    const clients = await service.scanExternalClients()
+
+    for (const [tool, file] of files) expect(fs.readFileSync(file, 'utf8')).toBe(snapshot.get(tool))
+    expect(clients.some((client) => client.routePending)).toBe(false)
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    expect(routeLogs(f)).toEqual([])
+  })
+
+  it('leaves the history account alone, which has only one route', async () => {
+    const f = fixture({ site: 'solov-api' })
+    const { files, before } = await configureAll(f)
+    await f.store.update({ version: 2, relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } })
+    f.relayFetch.mockClear()
+    const clients = await f.restart().scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      expect(clients.find((entry) => entry.tool === tool)).toMatchObject({ configured: true, configurationSource: 'xingmang' })
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool))
+    }
+    expect(f.relayFetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the new route cannot be reached', async () => { throw new TypeError('fetch failed') }],
+    ['the model is no longer offered', async () => Response.json({ data: [{ id: 'gpt-5.4' }] })],
+  ])('keeps the old route and tries again on the next check when %s', async (_case, unavailable: () => Promise<Response>) => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    const answer = f.relayFetch.getMockImplementation()!
+    let broken = true
+    f.relayFetch.mockImplementation(async (...request) => broken ? unavailable() : answer(...request))
+    const failed = await service.scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      expect(failed.find((entry) => entry.tool === tool)).toMatchObject({ configured: false, configurationSource: 'other' })
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool))
+      expect(routeLogs(f)).toContainEqual(['warn', 'config', 'external-client.route.failed', expect.any(String),
+        expect.objectContaining({ tool, from: 'primary', to: 'direct' })])
+    }
+    broken = false
+    const moved = await service.scanExternalClients()
+    for (const tool of externalToolIds) {
+      expect(moved.find((entry) => entry.tool === tool)).toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+    }
+  })
+
+  it('does not move a client back and forth when its old configuration comes back, and logs that once', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    await service.scanExternalClients()
+    // 推测的情形：客户端退出时把它记着的旧配置写了回去。
+    fs.writeFileSync(files.get('workbuddy')!, before.get('workbuddy')!, 'utf8')
+    f.relayFetch.mockClear()
+    for (let check = 0; check < 2; check++) {
+      expect((await service.scanExternalClients()).find((client) => client.tool === 'workbuddy')).toMatchObject({ configured: false, configurationSource: 'other' })
+    }
+
+    expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(before.get('workbuddy'))
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    expect(routeLogs(f).filter(([, , event]) => event === 'external-client.route.reverted')).toEqual([
+      ['warn', 'config', 'external-client.route.reverted', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }],
+    ])
   })
 })

@@ -292,6 +292,38 @@ export function resolveExternalToolProbeCredential(
   return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
 }
 
+/**
+ * OpenCode 星芒那一段里这个模型现在用哪种协议，按 npm 包认（openCodeEdits 只写这两种）。
+ * 换线路时原样带过去：不带就落到保存时缺省的 responses，等于替客户换了协议。认不出来的
+ * 包回 null，调用方就不替客户动这一份。
+ */
+export function resolveOpenCodeProtocol(
+  platform: ExternalToolPlatform,
+  rootsInput: ExternalToolPathRoots,
+  model: string,
+): 'responses' | 'chat-completions' | null {
+  try {
+    const current = readOpenCodeConfig(externalToolConfigPath('opencode', platform, rootsInput))
+    if (!current) return null
+    const provider = optionalObject(optionalObject(current.provider, 'provider').xingmang, '星芒 provider')
+    const selected = optionalObject(optionalObject(provider.models, 'models')[model], '所选模型')
+    const npm = optionalObject(selected.provider, '所选模型 provider').npm ?? provider.npm
+    return npm === '@ai-sdk/openai' ? 'responses' : npm === '@ai-sdk/openai-compatible' ? 'chat-completions' : null
+  } catch {
+    return null
+  }
+}
+
+/** 按 config.json → opencode.json → opencode.jsonc 合并出生效的全局配置；一个都没有时为 null。 */
+function readOpenCodeConfig(defaultPath: string): JsonObject | null {
+  let current: JsonObject | null = null
+  for (const file of ['config.json', 'opencode.json', 'opencode.jsonc'].map((name) => path.join(path.dirname(defaultPath), name))) {
+    const content = readSafeUtf8FileSync(file, '外部客户端配置', MAX_EXTERNAL_CONFIG_BYTES)
+    if (content !== null) current = mergeObjects(current ?? {}, parseConfig('opencode', content))
+  }
+  return current
+}
+
 function inspectExternalTool(
   tool: 'workbuddy' | 'opencode',
   platform: ExternalToolPlatform,
@@ -316,14 +348,8 @@ function inspectExternalTool(
       return selected ? { ...missing, configured: true, model: String(selected.id), configurationSource: 'xingmang', apiKey: String(selected.apiKey) }
         : { ...missing, model: models.length ? String(models[0].id) : null, configurationSource: models.length ? 'other' : 'missing' }
     }
-    const files = ['config.json', 'opencode.json', 'opencode.jsonc'].map((name) => path.join(path.dirname(defaultPath), name))
-    let current: JsonObject = {}
-    let exists = false
-    for (const file of files) {
-      const content = readSafeUtf8FileSync(file, '外部客户端配置', MAX_EXTERNAL_CONFIG_BYTES)
-      if (content !== null) { exists = true; current = mergeObjects(current, parseConfig(tool, content)) }
-    }
-    if (!exists) return missing
+    const current = readOpenCodeConfig(defaultPath)
+    if (!current) return missing
     if (typeof current.model !== 'string' || !current.model) return missing
     const model = current.model.startsWith('xingmang/') ? current.model.slice('xingmang/'.length) : null
     if (!model) return { ...missing, configurationSource: 'other' }
