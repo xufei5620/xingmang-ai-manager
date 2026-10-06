@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { relaySites, type RelayEndpointSelections } from './relay-sites'
+import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
@@ -54,10 +54,15 @@ export interface AppSettings {
    * crashing.
    */
   relaySiteId?: string
-  /** Absent uses the primary line; entries record an explicit choice for each account site. */
-  relayEndpointIds?: RelayEndpointSelections
-  /** IPC runtime snapshot only: the lines applied at startup, never persisted by settings writes. */
-  readonly activeRelayEndpointIds?: RelayEndpointSelections
+  /**
+   * 每个账号站的连接线路：auto（「自动」）、direct（「只用直连」）、primary（「只用默认线路」）。
+   * 缺省（整个字段或某个站没写）算「自动」；#872 起存下的 direct / primary 原样当后两个。
+   */
+  relayEndpointIds?: RelayRoutePreferences
+  /** IPC runtime snapshot only: the preferences applied at startup, never persisted by settings writes. */
+  readonly activeRelayEndpointIds?: RelayRoutePreferences
+  /** IPC runtime snapshot only: the line each site uses right now ('auto' can move during a run). */
+  readonly relayRouteLines?: RelayRouteLines
   /**
    * Pinned download-source order. Absent = 'auto' (probe the region, the
    * entire install base's behavior pre-2.4). Unknown values degrade to
@@ -163,7 +168,7 @@ export interface AppSettingsUpdate {
   runDiagnosticsOnStartup?: boolean
   sidebarMoreExpanded?: boolean
   relaySiteId?: string
-  relayEndpointIds?: RelayEndpointSelections
+  relayEndpointIds?: RelayRoutePreferences
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
@@ -236,13 +241,15 @@ function parseRelaySiteId(value: unknown): string | undefined {
     : undefined
 }
 
-/** Stored selections cannot supply a URL or borrow another account site's line. */
-export function parseRelayEndpointSelections(value: unknown): RelayEndpointSelections | undefined {
+/** Stored preferences cannot supply a URL or borrow another account site's line. */
+export function parseRelayRoutePreferences(value: unknown): RelayRoutePreferences | undefined {
   if (!isRecord(value)) return undefined
-  const selections: RelayEndpointSelections = {}
-  if (value.solov === 'primary' || value.solov === 'direct') selections.solov = value.solov
-  if (value['solov-api'] === 'primary') selections['solov-api'] = 'primary'
-  return Object.keys(selections).length ? selections : undefined
+  const preferences: RelayRoutePreferences = {}
+  for (const siteId of relayRouteSiteIds) {
+    const preference = value[siteId]
+    if (relayRoutePreferenceAllowed(siteId, preference)) preferences[siteId] = preference
+  }
+  return Object.keys(preferences).length ? preferences : undefined
 }
 
 function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
@@ -305,7 +312,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   // check would silently swallow a (pathological but type-legal) empty-string
   // site id, and calling the parser twice invites the two results drifting.
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
-  const relayEndpointIds = parseRelayEndpointSelections(value.relayEndpointIds)
+  const relayEndpointIds = parseRelayRoutePreferences(value.relayEndpointIds)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
   const codexDesktopChineseRuntimePatch = parseChineseRuntimePatch(value.codexDesktopChineseRuntimePatch)
@@ -456,8 +463,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const sidebarMoreExpanded = update.sidebarMoreExpanded ?? base.sidebarMoreExpanded ?? false
   const relaySiteId = update.relaySiteId ?? base.relaySiteId
   const relayEndpointIds = {
-    ...parseRelayEndpointSelections(base.relayEndpointIds),
-    ...parseRelayEndpointSelections(update.relayEndpointIds),
+    ...parseRelayRoutePreferences(base.relayEndpointIds),
+    ...parseRelayRoutePreferences(update.relayEndpointIds),
   }
   const mirrorPolicy = update.mirrorPolicy === 'auto'
     ? undefined
