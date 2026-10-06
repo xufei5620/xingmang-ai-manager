@@ -1686,6 +1686,11 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   // 这个调用只是把安装交出去，真装没装上要等安装程序回话；写「完成」会让客服看反馈报告时
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
+  // 开机先摆的上次结果（已知13）只读了本机一个文件，没检测；写「检测完成」会让客服看反馈报告时
+  // 以为这次已经检测过了，真的那轮卡住或没跑完就分不出来。
+  if (readsCachedExternalClientsOnly(channel, args)) {
+    return count ? `已先显示上次的客户端检测结果，共 ${count} 项` : '没有可先显示的上次客户端检测结果'
+  }
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
   }

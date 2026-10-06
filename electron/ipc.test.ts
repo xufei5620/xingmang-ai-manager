@@ -2685,7 +2685,7 @@ describe('registerIpcHandlers', () => {
   })
 
   // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
-  it('answers the startup read of the last saved client rows without scanning, logging or waiting for the account', async () => {
+  it('answers the startup read of the last saved client rows without scanning or waiting for the account, and logs it as that read', async () => {
     const restored = new Promise<void>(() => undefined)
     const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { throw new Error('switching') } })
     const service = serviceStub()
@@ -2697,12 +2697,19 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toBe(cached)
     expect(service.scanExternalClients).not.toHaveBeenCalled()
     expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toEqual([])
+    // Nothing was detected, so the feedback report must not read 「外部客户端检测完成」 here.
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan')).toEqual([
+      ['info', 'ipc', 'external-clients:scan', '已先显示上次的客户端检测结果，共 1 项', expect.any(Object)],
+    ])
+    vi.mocked(service.cachedExternalClients).mockResolvedValueOnce([])
+    await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toEqual([])
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan').at(-1)?.[3]).toBe('没有可先显示的上次客户端检测结果')
     // A real scan still waits for the account to be restored.
     void Promise.resolve(handler(trustedEvent(), false)).catch(() => undefined)
     void Promise.resolve(handler(trustedEvent(), false, { cachedOnly: false })).catch(() => undefined)
     for (let tick = 0; tick < 5; tick++) await Promise.resolve()
     expect(service.scanExternalClients).not.toHaveBeenCalled()
-    expect(service.cachedExternalClients).toHaveBeenCalledTimes(1)
+    expect(service.cachedExternalClients).toHaveBeenCalledTimes(2)
   })
 
   it('rejects malformed client scan options', async () => {
