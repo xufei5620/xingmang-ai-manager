@@ -124,7 +124,7 @@ function normalizedOptions(tool: ExternalToolId, options: ExternalToolConfigOpti
   return { model, baseUrl, apiKey: options.apiKey?.trim(), protocol }
 }
 
-function applyConfigEdits(existing: string | null, edits: ConfigEdit[]): string {
+function applyConfigEdits(existing: string | null, edits: ConfigEdit[], keepEnding = false): string {
   let content = existing ?? '{}\n'
   const eol = content.includes('\r\n') ? '\r\n' : '\n'
   for (const edit of edits) {
@@ -132,7 +132,7 @@ function applyConfigEdits(existing: string | null, edits: ConfigEdit[]): string 
       formattingOptions: { insertSpaces: true, tabSize: 2, eol },
     }))
   }
-  return content.endsWith('\n') ? content : `${content}${eol}`
+  return keepEnding || content.endsWith('\n') ? content : `${content}${eol}`
 }
 
 function workBuddyModels(current: JsonConfig): JsonObject[] {
@@ -363,15 +363,16 @@ export async function saveExternalToolConfig(
   const files = readExternalToolFiles(tool, platform, rootsInput)
   const content = tool === 'workbuddy' ? mergeExternalToolConfig(tool, files.target.content, options)
     : applyConfigEdits(files.target.content, openCodeEdits(mergedOpenCodeConfig(files.snapshots), normalized))
-  return commitExternalToolFile(files, content, hooks)
+  return commitExternalToolFiles(files, [{ path: files.target.path, content }], hooks)
 }
 
 /**
- * 换线路（第四十三批 A）：只把星芒替当前账号写的那几处地址从 from 换成 to，别的一个字不动。
- * WorkBuddy 是地址为 from、Key 是这一把的每一条（星芒每存一个型号多一条，只换一条的话客户
- * 正在用的那条可能还留在旧线路上）；OpenCode 是星芒那一段里当前型号生效的地址，provider 和
- * 这个型号自己覆盖的那一处都换，npm 包（协议）、型号都不碰。写之前在这次读出来的内容上再认
- * 一遍，已经对不上（客户刚改过）就一个字不写。
+ * 换线路（第四十三批 A）：只把星芒替当前账号写的那几处地址从 from 换成 to，别的一个字不动，
+ * 连文件末尾有没有换行都照旧。WorkBuddy 是地址为 from、Key 是这一把的每一条（星芒每存一个型号
+ * 多一条，只换一条的话客户正在用的那条可能还留在旧线路上）；OpenCode 是星芒那一段里当前型号
+ * 生效的地址，provider 和这个型号自己覆盖的那一处都换，改的是定义它的那个文件，不往客户别的
+ * 文件里加字段；npm 包（协议）、型号都不碰。写之前在这次读出来的内容上再认一遍，已经对不上
+ * （客户刚改过）就一个字不写。
  */
 export async function followExternalToolRoute(
   tool: ExternalToolId,
@@ -391,7 +392,7 @@ export async function followExternalToolRoute(
       && record.url.replace(/\/+$/, '') === `${from}/chat/completions` && record.apiKey === apiKey
       ? [{ path: [...prefix, index, 'url'], value: `${to}/chat/completions` }] : [])
     if (!edits.length) configError('在换线路前已变化')
-    return commitExternalToolFile(files, applyConfigEdits(files.target.content, edits), hooks)
+    return commitExternalToolFiles(files, [{ path: files.target.path, content: applyConfigEdits(files.target.content, edits, true) }], hooks)
   }
   const current = mergedOpenCodeConfig(files.snapshots)
   const model = typeof current.model === 'string' && current.model.startsWith('xingmang/') ? current.model.slice('xingmang/'.length) : null
@@ -403,11 +404,30 @@ export async function followExternalToolRoute(
   const effective = { ...providerOptions, ...modelOptions }
   const atFrom = (value: unknown) => typeof value === 'string' && value.replace(/\/+$/, '') === from
   if (!atFrom(effective.baseURL) || effective.apiKey !== apiKey) configError('在换线路前已变化')
-  const prefix = ['provider', 'xingmang']
-  const edits: ConfigEdit[] = []
-  if (atFrom(providerOptions.baseURL)) edits.push({ path: [...prefix, 'options', 'baseURL'], value: to })
-  if (atFrom(modelOptions.baseURL)) edits.push({ path: [...prefix, 'models', model, 'options', 'baseURL'], value: to })
-  return commitExternalToolFile(files, applyConfigEdits(files.target.content, edits), hooks)
+  // 几个文件按顺序合并，后面的盖前面的：哪一处生效，就改最后定义它的那个文件。
+  const parsed = files.snapshots.map((snapshot) => snapshot.content === null ? null : parseConfig(tool, snapshot.content))
+  const edits = new Map<number, ConfigEdit[]>()
+  for (const [keys, value] of [[['options', 'baseURL'], providerOptions.baseURL], [['models', model, 'options', 'baseURL'], modelOptions.baseURL]] as const) {
+    if (!atFrom(value)) continue
+    const editPath = ['provider', 'xingmang', ...keys]
+    let index = parsed.length - 1
+    while (index >= 0 && valueAt(parsed[index], editPath) === undefined) index--
+    if (index < 0) configError('在换线路前已变化')
+    edits.set(index, [...edits.get(index) ?? [], { path: editPath, value: to }])
+  }
+  return commitExternalToolFiles(files, [...edits].sort(([left], [right]) => left - right).map(([index, fileEdits]) => ({
+    path: files.snapshots[index].path, content: applyConfigEdits(files.snapshots[index].content, fileEdits, true),
+  })), hooks)
+}
+
+/** 合并前单个文件里这一路径上的值；中间哪一层不是对象就当没写。 */
+function valueAt(config: JsonObject | null, keys: readonly string[]): unknown {
+  let value: unknown = config
+  for (const key of keys) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+    value = (value as JsonObject)[key]
+  }
+  return value
 }
 
 /** OpenCode 按 config.json → opencode.json → opencode.jsonc 读，写进最高优先级的现有文件；WorkBuddy 只有一个文件。 */
@@ -431,23 +451,26 @@ function mergedOpenCodeConfig(snapshots: readonly { content: string | null }[]):
   return current
 }
 
-function commitExternalToolFile(
+function commitExternalToolFiles(
   files: ReturnType<typeof readExternalToolFiles>,
-  content: string,
+  plans: { path: string; content: string }[],
   hooks: NativeConfigWriteHooks,
 ): ExternalToolConfigSaveResult {
-  if (Buffer.byteLength(content, 'utf8') > MAX_EXTERNAL_CONFIG_BYTES) configError('合并结果超过 2 MB 安全上限')
+  for (const plan of plans) if (Buffer.byteLength(plan.content, 'utf8') > MAX_EXTERNAL_CONFIG_BYTES) configError('合并结果超过 2 MB 安全上限')
   // 所有格式校验均先于目录创建及事务，拒绝配置时不产生文件副作用。
   ensureSafeDataDirectory(files.configRoot, '外部客户端配置目录')
-  const saved = executeFilePlans([{ path: files.target.path, content }], {
+  const saved = executeFilePlans(plans, {
     beforeReplace(filePath, index) {
       hooks.beforeReplace?.(filePath, index)
+      // 一次改两个文件时，排在前面的那个已经换成了这次写的内容，拿它比，不拿读出来时的。
+      const written = new Map(plans.slice(0, index).map((plan) => [plan.path, plan.content]))
       for (const snapshot of files.snapshots) {
-        if (readSafeUtf8FileSync(snapshot.path, '外部客户端配置', MAX_EXTERNAL_CONFIG_BYTES) !== snapshot.content) {
+        const expected = written.has(snapshot.path) ? written.get(snapshot.path) : snapshot.content
+        if (readSafeUtf8FileSync(snapshot.path, '外部客户端配置', MAX_EXTERNAL_CONFIG_BYTES) !== expected) {
           throw new Error('外部客户端配置在保存前已变化，未执行修改，请重试')
         }
       }
     },
   }, files.configRoot)
-  return { path: files.target.path, ...saved, supportsRelay: true }
+  return { path: plans[plans.length - 1].path, ...saved, supportsRelay: true }
 }

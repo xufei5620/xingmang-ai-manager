@@ -410,7 +410,7 @@ describe('followExternalToolRoute (batch 43 A)', () => {
     const result = await followExternalToolRoute('workbuddy', platform, { userHome: home }, { from, to, apiKey: 'sk-owned' })
 
     expect(result.path).toBe(target)
-    expect(fs.readFileSync(target, 'utf8')).toBe(`${workBuddy([`${to}/chat/completions`, `${to}/chat/completions`])}\n`)
+    expect(fs.readFileSync(target, 'utf8')).toBe(workBuddy([`${to}/chat/completions`, `${to}/chat/completions`]))
     expect(result.backups).toHaveLength(1)
     expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
   })
@@ -436,6 +436,29 @@ describe('followExternalToolRoute (batch 43 A)', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe(original.replace(`"baseURL": "${from}"`, `"baseURL": "${to}"`).replace(`"baseURL": "${from}/"`, `"baseURL": "${to}"`))
     expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
     expect(inspectExternalToolConnection('opencode', platform, { userHome: home }, to)).toMatchObject({ configured: true, model: 'selected' })
+  })
+
+  it('edits the OpenCode file that sets each address and adds nothing to the customer\'s other file', async () => {
+    // 星芒那段在 opencode.json；客户后来另加了 opencode.jsonc，一行写完的 provider，覆盖了这个型号的地址。
+    const lower = `{\n  "model": "xingmang/selected",\n  "provider": {\n    "xingmang": {\n      "options": { "baseURL": "${from}", "apiKey": "sk-owned" },\n      "models": { "selected": {} }\n    }\n  }\n}\n`
+    const upper = `{ // 客户自己的\n  "provider": { "xingmang": { "models": { "selected": { "options": { "baseURL": "${from}" } } } } }\n}`
+    const { home, target } = existingConfig('opencode', upper, 'opencode.jsonc')
+    const lowerPath = path.join(path.dirname(target), 'opencode.json')
+    fs.writeFileSync(lowerPath, lower, 'utf8')
+    const result = await followExternalToolRoute('opencode', platform, { userHome: home }, { from, to, apiKey: 'sk-owned' })
+
+    expect(fs.readFileSync(lowerPath, 'utf8')).toBe(lower.replace(from, to))
+    expect(fs.readFileSync(target, 'utf8')).toBe(upper.replace(from, to))
+    expect(result.files.sort()).toEqual([lowerPath, target].sort())
+    expect(inspectExternalToolConnection('opencode', platform, { userHome: home }, to)).toMatchObject({ configured: true, model: 'selected' })
+
+    // 只有星芒那份文件定义了地址时，客户那份一个字不动。
+    const second = existingConfig('opencode', '{ "share": "manual" }', 'opencode.jsonc')
+    const secondLower = path.join(path.dirname(second.target), 'opencode.json')
+    fs.writeFileSync(secondLower, lower, 'utf8')
+    await followExternalToolRoute('opencode', platform, { userHome: second.home }, { from, to, apiKey: 'sk-owned' })
+    expect(fs.readFileSync(second.target, 'utf8')).toBe('{ "share": "manual" }')
+    expect(fs.readFileSync(secondLower, 'utf8')).toBe(lower.replace(from, to))
   })
 
   it.each<[string, ExternalToolId, string]>([

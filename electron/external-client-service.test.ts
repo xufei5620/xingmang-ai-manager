@@ -4,7 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { createSystemService, type SystemServiceOptions } from './system-service'
-import { externalToolIds, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { externalClientNames, externalToolIds, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { ExternalClientOwnershipStore } from './external-client-ownership'
 import type { ExternalToolId } from './external-tool-config'
 
 const temporaryDirectories: string[] = []
@@ -690,7 +691,7 @@ describe('external clients follow the connection route the user selected (batch 
     // 只有拉完清单、动文件之前那次强制盘点看得到。
     let cached: ExternalClientRuntimeStatus[] | null = null
     vi.mocked(f.runtime.scan).mockImplementation(async (options) => {
-      if (options?.force || !cached) cached = structuredClone(f.runtimeStatuses)
+      if (options?.force || options?.fresh || !cached) cached = structuredClone(f.runtimeStatuses)
       return structuredClone(cached)
     })
     const answer = f.relayFetch.getMockImplementation()!
@@ -703,6 +704,28 @@ describe('external clients follow the connection route the user selected (batch 
     expect(client).toMatchObject({ running: true, routePending: true, configurationSource: 'other' })
     expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(before.get('workbuddy'))
     expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.deferred', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }])
+  })
+
+  it.each<[string, Partial<ExternalClientRuntimeStatus>]>([
+    ['cannot tell whether it is installed', { detectionError: '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测' }],
+    ['no longer finds it installed', { installed: false }],
+  ])('writes nothing when the check right before writing %s', async (_case, recheck) => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    // 检测时三家都好好的；动文件之前那次盘点认不准了，就当这次没看清，不写。
+    vi.mocked(f.runtime.scan).mockImplementation(async (options) => structuredClone(f.runtimeStatuses)
+      .map((status) => options?.fresh ? { ...status, ...recheck } : status))
+    const clients = await service.scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      const client = clients.find((entry) => entry.tool === tool)
+      expect(client).toMatchObject({ configurationSource: 'other', ...recheck })
+      expect(client?.routePending).toBeUndefined()
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool))
+      expect(routeLogs(f)).toContainEqual(['warn', 'config', 'external-client.route.failed', `${externalClientNames[tool]} 的连接线路这次没换成，下次检测再试`,
+        { tool, from: 'primary', to: 'direct', reason: `${externalClientNames[tool]} 这次没认出来开没开，已保留原配置` }])
+    }
   })
 
   it('writes nothing when the customer changes a client while the model list is being fetched', async () => {
@@ -729,6 +752,27 @@ describe('external clients follow the connection route the user selected (batch 
     expect(routeLogs(f).map(([, , event]) => event)).not.toContain('external-client.route.followed')
   })
 
+  it.each<[string, (f: ReturnType<typeof fixture>) => void]>([
+    ['another account signs in', (f) => f.setUser(18)],
+    ['the user switches to the history account', (f) => f.setSite('solov-api')],
+  ])('writes nothing when %s while the model list is being fetched', async (_case, change) => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    const answer = f.relayFetch.getMockImplementation()!
+    f.relayFetch.mockClear().mockImplementation(async (...request) => {
+      change(f)
+      return answer(...request)
+    })
+    await service.scanExternalClients()
+
+    for (const tool of externalToolIds) expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool))
+    // 第一家查完清单就发现换了账号，不写；后面两家已经不是新账号的，连清单也不查。
+    expect(f.relayFetch).toHaveBeenCalledTimes(1)
+    expect(routeLogs(f)).toEqual([['warn', 'config', 'external-client.route.failed', expect.any(String),
+      { tool: externalToolIds[0], from: 'primary', to: 'direct', reason: '账号已变化，这次不换线路' }]])
+  })
+
   it('keeps what the customer changed inside the clients and moves only the addresses', async () => {
     const f = fixture()
     const { files } = await configureAll(f)
@@ -753,6 +797,22 @@ describe('external clients follow the connection route the user selected (batch 
     expect(JSON.parse(fs.readFileSync(workbuddy, 'utf8')).map((entry: { url: string }) => entry.url)).toEqual([
       `${directOrigin}/v1/chat/completions`, `${directOrigin}/v1/chat/completions`, 'https://api.deepseek.com/chat/completions',
     ])
+  })
+
+  it('moves Claude Desktop when it was left to fetch the model list by itself', async () => {
+    const f = fixture()
+    const { files } = await configureAll(f)
+    // 客户在 Claude Desktop 里把型号清单清空了，由它自己到网关上取：新线路认这把 Key 就换。
+    const claude = files.get('claudeDesktop')!
+    const gateway = JSON.parse(fs.readFileSync(claude, 'utf8'))
+    delete gateway.inferenceModels
+    fs.writeFileSync(claude, `${JSON.stringify(gateway, null, 2)}\n`, 'utf8')
+    const before = fs.readFileSync(claude, 'utf8')
+    const client = (await (await restartOn(f, 'direct')).scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')
+
+    expect(client).toMatchObject({ configured: true, configurationSource: 'xingmang', model: null })
+    expect(fs.readFileSync(claude, 'utf8')).toBe(before.replaceAll(primaryOrigin, directOrigin))
+    expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.followed', expect.any(String), { tool: 'claudeDesktop', from: 'primary', to: 'direct' }])
   })
 
   it('leaves Claude Desktop alone when the customer applied a copy of the profile', async () => {
@@ -854,5 +914,32 @@ describe('external clients follow the connection route the user selected (batch 
     expect(routeLogs(f).filter(([, , event]) => event === 'external-client.route.reverted')).toEqual([
       ['warn', 'config', 'external-client.route.reverted', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }],
     ])
+  })
+
+  it('records ownership on the next check when the address was moved but recording it failed', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    const moved = before.get('workbuddy')!.replaceAll(primaryOrigin, directOrigin)
+    // WorkBuddy 排第一个换：地址换好了，记归属那一步没写进去。
+    const write = vi.spyOn(ExternalClientOwnershipStore.prototype, 'write').mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+    try {
+      const first = (await service.scanExternalClients()).find((client) => client.tool === 'workbuddy')
+      expect(first).toMatchObject({ configured: false, configurationSource: 'other' })
+      expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(moved)
+      expect(routeLogs(f)).toContainEqual(['warn', 'config', 'external-client.route.failed', 'WorkBuddy 已换到当前连接线路，归属没记上，下次检测补记',
+        expect.objectContaining({ tool: 'workbuddy', from: 'primary', to: 'direct' })])
+
+      // 下次检测：地址已经在当前线路上，只补记归属，不再查清单、不再写客户端配置。
+      f.relayFetch.mockClear()
+      const second = (await service.scanExternalClients()).find((client) => client.tool === 'workbuddy')
+      expect(second).toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+      expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(moved)
+      expect(backupsOf(files.get('workbuddy')!)).toHaveLength(1)
+      expect(f.relayFetch).not.toHaveBeenCalled()
+      expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.recorded', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }])
+    } finally {
+      write.mockRestore()
+    }
   })
 })

@@ -2880,6 +2880,11 @@ export function buildExternalClientMacVerificationLogDetail(failure: ExternalCli
   return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
 }
 
+/** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
+function sameRouteUrl(left: string, right: string): boolean {
+  return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -6275,8 +6280,14 @@ export function createSystemService(
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     if (owner === null) return null
     const followedKey = JSON.stringify([tool, owner])
-    const previous = await externalClientPreviousRoute(status, activeSite, owner)
-    if (!previous) {
+    const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
+    const assertContext = () => {
+      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
+        throw new Error('账号已变化，这次不换线路')
+      }
+    }
+    const found = await externalClientRouteCredential(status, activeSite, owner)
+    if (!found) {
       // 换过的又回到原来那份：归属已经记在新地址上，不会再换，只在日志里说一次。
       const followed = externalRoutesFollowed.get(followedKey)
       if (!followed) return null
@@ -6286,31 +6297,38 @@ export function createSystemService(
       }
       return null
     }
-    const detail = { tool, from: previous.from, to }
+    const detail = { tool, from: found.from, to }
+    if (found.baseUrl === baseUrl) {
+      // 地址已经在当前线路上，归属还记在原来那条：上回换完没记上（记归属那一步失败，或者星芒
+      // 正好在两步之间退出）。客户端那份不用再动，补记归属就行。
+      assertContext()
+      await externalOwnership.write(tool, owner, baseUrl, found.apiKey)
+      runtimeLog?.log('info', 'config', 'external-client.route.recorded', `${name} 已在当前连接线路上，补记归属`, detail)
+      return await describeExternalClient(status)
+    }
     if (status.running) {
       runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
       return { ...client, routePending: true }
     }
-    const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
-    const assertContext = () => {
-      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
-        throw new Error('账号已变化，这次不换线路')
-      }
-    }
-    const latest = { status }
+    const latest = { status, moved: false }
     try {
-      // 新线路上认这把 Key、型号也还在才换，不替客户换型号（同 #872）。
-      const models = await fetchAvailableModels(previous.apiKey, { bypassCache: true })
+      // 新线路上认这把 Key、型号也还在才换，不替客户换型号（同 #872）；Claude Desktop 没写型号
+      // （由它自动获取）的那份，新线路认这把 Key 就够了。
+      const models = await fetchAvailableModels(found.apiKey, { bypassCache: true, site: activeSite })
       assertContext()
-      if (!models.includes(previous.model)) throw new Error('当前密钥不支持所选模型，请重新检测')
-      // 拉完清单、动文件之前再盘点一次：客户端可能是在拉清单那几秒里打开的（同 #872）。
-      latest.status = (await externalClientRuntime.scan({ force: true })).find((entry) => entry.tool === tool) ?? { ...status, installed: false }
-      if (latest.status.running) throw new Error(`${name} 还开着，已保留原配置`)
-      if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
-      assertContext()
-      await moveExternalClientRoute(latest.status, { from: previous.baseUrl, to: baseUrl, apiKey: previous.apiKey }, assertContext)
-      await externalOwnership.write(tool, owner, baseUrl, previous.apiKey)
-      externalRoutesFollowed.set(followedKey, { from: previous.from, baseUrl: previous.baseUrl, apiKey: previous.apiKey })
+      if (found.model !== null && !models.includes(found.model)) throw new Error('当前密钥不支持所选模型，请重新检测')
+      // 动文件之前再盘点一次客户端开没开，放在写之前最后一步异步里（同 #872）。要的是这之后才
+      // 开始的那一轮：客户端可能是在拉清单那几秒里打开的，而那时正在跑的盘点可能比它早。
+      const recheck = async () => {
+        latest.status = (await externalClientRuntime.scan({ fresh: true })).find((entry) => entry.tool === tool) ?? { ...status, installed: false }
+        if (latest.status.running) throw new Error(`${name} 还开着，已保留原配置`)
+        if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
+        assertContext()
+      }
+      await moveExternalClientRoute(status, { from: found.baseUrl, to: baseUrl, apiKey: found.apiKey }, assertContext, recheck)
+      latest.moved = true
+      externalRoutesFollowed.set(followedKey, { from: found.from, baseUrl: found.baseUrl, apiKey: found.apiKey })
+      await externalOwnership.write(tool, owner, baseUrl, found.apiKey)
       runtimeLog?.log('info', 'config', 'external-client.route.followed', `已把 ${name} 换到当前连接线路`, detail)
       return await describeExternalClient(latest.status)
     } catch (error) {
@@ -6319,45 +6337,66 @@ export function createSystemService(
         return { ...client, ...latest.status, routePending: true }
       }
       // 拉不到模型清单、型号不在了、写之前客户刚改过配置也走这里：这次不动，下次检测再试。
-      runtimeLog?.log('warn', 'config', 'external-client.route.failed', `${name} 的连接线路这次没换成，下次检测再试`, { ...detail, reason: credentialFailureReason(error) })
+      // 地址已经换好、只是归属没记上的，下次检测补记（上面 recorded 那一支）。
+      runtimeLog?.log('warn', 'config', 'external-client.route.failed', latest.moved
+        ? `${name} 已换到当前连接线路，归属没记上，下次检测补记` : `${name} 的连接线路这次没换成，下次检测再试`,
+      { ...detail, reason: credentialFailureReason(error) })
       return { ...client, ...latest.status }
     }
   }
   /**
-   * 星芒替当前账号写在这个站另一条线路上的那一份：地址是这个站登记过的别的线路、归属对得上，
-   * 才交出 Key 和型号；Claude Desktop 还要正在用的就是星芒那份。只认登记的主地址：星芒保存时
-   * 只写它，别名不会有归属记录。主进程内部专用，密钥永不跨 IPC（I3）。
+   * 星芒替当前账号写的那一份在这个站的哪条线路上：from 是归属记在哪条线路，baseUrl 是那份配置
+   * 现在指着的地址，Key 和型号原样交出（Claude Desktop 没写型号时 model 为 null）。baseUrl 是另一条
+   * 线路的，跟着换；已经是当前线路的（上回地址换好了、归属没记上），补记归属。归属对不上、不是
+   * 这个站登记过的线路，回 null。只认登记的主地址：星芒保存时只写它，别名不会有归属记录。
+   * 主进程内部专用，密钥永不跨 IPC（I3）。
    */
-  async function externalClientPreviousRoute(
+  async function externalClientRouteCredential(
     status: ExternalClientRuntimeStatus,
     activeSite: RelaySite,
     owner: string,
-  ): Promise<(ExternalToolProbeCredential & { from: RelayEndpointId; baseUrl: string }) | null> {
+  ): Promise<{ from: RelayEndpointId; baseUrl: string; apiKey: string; model: string | null } | null> {
     const provider = status.tool === 'claudeDesktop' ? 'claude' : 'codex'
-    for (const endpoint of relaySiteEndpointChoices(activeSite.id)) {
-      const baseUrl = relayProviderBaseUrls(activeSite.id, endpoint.id)[provider]
-      if (baseUrl === activeSite.providerBaseUrls[provider]) continue
-      const belongs = (apiKey: string) => serviceOptions.getExternalClientAccountId?.() === owner
-        && activeRelaySite().id === activeSite.id && externalOwnership.matches(status.tool, owner, baseUrl, apiKey)
-      const credential = status.tool === 'claudeDesktop'
-        ? await claudeDesktopConfig(status).then((gateway) => gateway.inspectRouteCredential(baseUrl, belongs)).catch(() => null)
-        : await externalClientProbeCredential(status, baseUrl, belongs)
-      if (credential) return { ...credential, from: endpoint.id, baseUrl }
+    const current = activeSite.providerBaseUrls[provider]
+    const routes = relaySiteEndpointChoices(activeSite.id)
+      .map((endpoint) => ({ from: endpoint.id, baseUrl: relayProviderBaseUrls(activeSite.id, endpoint.id)[provider] }))
+      .filter((route) => route.baseUrl !== current)
+    const unchanged = () => serviceOptions.getExternalClientAccountId?.() === owner && activeRelaySite().id === activeSite.id
+    const ownedRoute = (apiKey: string) => unchanged() ? routes.find((route) => externalOwnership.matches(status.tool, owner, route.baseUrl, apiKey)) : undefined
+    if (status.tool === 'claudeDesktop') {
+      // 一次读出地址再比：Windows 上每读一次都要起 PowerShell 查管理策略。
+      const gateway = await claudeDesktopConfig(status).then((service) => service.inspectOwnedRoute()).catch(() => null)
+      const route = gateway ? ownedRoute(gateway.apiKey) : undefined
+      if (!gateway || !route) return null
+      const at = sameRouteUrl(gateway.baseUrl, current) ? current : sameRouteUrl(gateway.baseUrl, route.baseUrl) ? route.baseUrl : null
+      return at ? { ...gateway, from: route.from, baseUrl: at } : null
     }
-    return null
+    for (const route of routes) {
+      const credential = await externalClientProbeCredential(status, route.baseUrl, (apiKey) => ownedRoute(apiKey) === route)
+      if (credential) return { ...credential, from: route.from, baseUrl: route.baseUrl }
+    }
+    const credential = await externalClientProbeCredential(status, current, (apiKey) => ownedRoute(apiKey) !== undefined)
+    const route = credential ? ownedRoute(credential.apiKey) : undefined
+    return credential && route ? { ...credential, from: route.from, baseUrl: current } : null
   }
-  /** 只改地址的那一笔写：Claude Desktop 改网关地址，WorkBuddy、OpenCode 改星芒那几条的地址。 */
+  /**
+   * 只改地址的那一笔写：Claude Desktop 改网关地址，WorkBuddy、OpenCode 改星芒那几条的地址。
+   * recheck 是写之前最后看一眼客户端开没开，放在最后一步异步之后：Claude Desktop 那边商店版目录、
+   * 管理策略都要起 PowerShell，所以交给 followRoute 在那之后调。
+   */
   async function moveExternalClientRoute(
     status: ExternalClientRuntimeStatus,
     route: { from: string; to: string; apiKey: string },
     assertContext: () => void,
+    recheck: () => Promise<void>,
   ): Promise<void> {
     if (status.tool === 'claudeDesktop') {
-      await (await claudeDesktopConfig(status, assertContext)).followRoute(route.from, route.to, route.apiKey)
+      await (await claudeDesktopConfig(status, assertContext)).followRoute(route.from, route.to, route.apiKey, recheck)
       return
     }
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
     if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
+    await recheck()
     await followExternalToolRoute(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
       userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
     }, route, { beforeReplace: assertContext })

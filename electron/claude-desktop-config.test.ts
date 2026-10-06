@@ -616,7 +616,7 @@ describe('Claude Desktop connection route follow (batch 43 A)', () => {
     write(saved.path, { ...read(saved.path), inferenceModels: ['claude-opus-5', { name: 'claude-sonnet-5', displayName: 'Sonnet' }], custom: { preserved: true } })
     const before = fs.readFileSync(saved.path, 'utf8')
     const others = snapshot([f.metadataPath, f.configPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json'), path.join(f.developerDirectory, 'developer_settings.json')])
-    expect(await f.service.inspectRouteCredential(from, belongs)).toEqual({ apiKey: input.apiKey, model: 'claude-opus-5' })
+    expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl: from, apiKey: input.apiKey, model: 'claude-opus-5' })
 
     const result = await f.service.followRoute(from, to, input.apiKey)
     expect(result.path).toBe(saved.path)
@@ -626,6 +626,37 @@ describe('Claude Desktop connection route follow (batch 43 A)', () => {
     expectSnapshot(others)
     expect(JSON.stringify(result)).not.toContain(input.apiKey)
     expect(await f.service.inspectConnection(to, belongs)).toMatchObject({ configured: true, configurationReady: true, model: 'claude-opus-5' })
+  })
+
+  it('keeps the layout Claude Desktop wrote the profile in and a profile that lets Claude Desktop discover models', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    // Claude Desktop 自己重写过这份：四个空格缩进、CRLF、没有末尾换行、型号清单删了（自动获取）。
+    const { inferenceModels: _models, ...gateway } = read(saved.path)
+    const before = JSON.stringify(gateway, null, 4).replaceAll('\n', '\r\n')
+    fs.writeFileSync(saved.path, before, 'utf8')
+    expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl: from, apiKey: input.apiKey, model: null })
+
+    await f.service.followRoute(from, to, input.apiKey)
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${from}"`, `"${to}"`))
+  })
+
+  it('checks the policy before the caller looks at the client a last time, and writes nothing when that look says no', async () => {
+    const order: string[] = []
+    const assertUnmanaged = vi.fn(async () => { order.push('policy') })
+    const f = fixture({ assertUnmanaged })
+    const saved = await f.service.saveGateway(input)
+    const previous = snapshot([saved.path])
+    order.length = 0
+    await expect(f.service.followRoute(from, to, input.apiKey, async () => {
+      order.push('recheck')
+      throw new Error('Claude Desktop 还开着，已保留原配置')
+    })).rejects.toThrow('还开着')
+    expect(order).toEqual(['policy', 'recheck'])
+    expectSnapshot(previous)
+
+    await f.service.followRoute(from, to, input.apiKey, async () => { order.push('recheck') })
+    expect(read(saved.path).inferenceGatewayBaseUrl).toBe(to)
   })
 
   it('does not take over a copy the customer applied in Claude Desktop, even with the same address and key', async () => {
@@ -638,7 +669,7 @@ describe('Claude Desktop connection route follow (batch 43 A)', () => {
     const previous = snapshot([saved.path, copyPath, f.metadataPath, f.configPath])
     // 连接自检照旧认它（地址、Key 都对得上），换线路不认：那份不是星芒的。
     expect(await f.service.inspectGatewayCredential(from, belongs)).not.toBeNull()
-    expect(await f.service.inspectRouteCredential(from, belongs)).toBeNull()
+    expect(await f.service.inspectOwnedRoute()).toBeNull()
     await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('在换线路前已变化')
     expectSnapshot(previous)
   })
