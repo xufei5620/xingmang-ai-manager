@@ -138,7 +138,7 @@ describe('renderer-v2 home install cancellation', () => {
   it('reports that the cancel request is still being handled', () => {
     const markup = render({ claude: { label: '正在安装', log: [], cancellable: true, cancelling: true } })
     expect(markup).toContain('data-testid="tool-claude-cancel"')
-    expect(markup).toContain('取消中')
+    expect(markup).toContain('正在停止')
   })
 
   it('leaves an install that cannot be cancelled without the button', () => {
