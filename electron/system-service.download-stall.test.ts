@@ -3,17 +3,22 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { installProgressLabel } from '../src/renderer-v2/features/tools/install-stage-text'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { AppSettingsStore } from './app-settings'
 import { CommandRunnerError } from './command-runner'
+import type { InstallProgress } from './ipc-contract'
 import {
   createNpmDownloadStallWatch,
   createSystemService,
   measureDirectoryBytes,
   npmDownloadCeilingMs,
+  npmDownloadHeartbeatMessage,
+  npmDownloadHeartbeatMs,
   npmDownloadProgressCheckMs,
   npmDownloadStallTimeoutMs,
   npmDownloadTimeoutMs,
+  npmResolutionHeartbeatMs,
   npmResolutionTimeoutMs,
   type SystemServiceOptions,
 } from './system-service'
@@ -112,6 +117,19 @@ describe('npm download stall constants', () => {
     expect(npmDownloadProgressCheckMs).toBe(15_000)
     // One quiet check never decides alone; it takes a dozen in a row.
     expect(npmDownloadStallTimeoutMs / npmDownloadProgressCheckMs).toBeGreaterThanOrEqual(10)
+  })
+})
+
+describe('npm download heartbeat', () => {
+  it('says which registry it is still downloading from and for how long, in the approved words', () => {
+    expect(npmDownloadHeartbeatMessage(mirrorRegistry, 185_000)).toBe('仍在从国内 npm 镜像下载…（已用时 3 分 05 秒）')
+    expect(npmDownloadHeartbeatMessage(officialRegistry, 185_000)).toBe('仍在从 npm 官方源下载…（已用时 3 分 05 秒）')
+    expect(npmDownloadHeartbeatMessage(mirrorRegistry, 15_000)).toBe('仍在从国内 npm 镜像下载…（已用时 15 秒）')
+  })
+
+  it('beats every fifteen seconds, like the resolution step before it', () => {
+    expect(npmDownloadHeartbeatMs).toBe(15_000)
+    expect(npmDownloadHeartbeatMs).toBe(npmResolutionHeartbeatMs)
   })
 })
 
@@ -449,6 +467,17 @@ async function advanceUntilAborted(attempt: DownloadAttempt, limitMs: number): P
   }
 }
 
+/** 发给界面的安装进度里，下载那一步的心跳（解析那一步的心跳是另一句，不算）。 */
+function downloadHeartbeats(target: { send: { mock: { calls: unknown[][] } } }): InstallProgress[] {
+  const heartbeats: InstallProgress[] = []
+  for (const [channel, event] of target.send.mock.calls) {
+    if (channel !== 'cli:install-progress') continue
+    const progress = event as InstallProgress
+    if (progress.message.startsWith('仍在从')) heartbeats.push(progress)
+  }
+  return heartbeats
+}
+
 // 这几条模拟 Linux 的安装会在 HOME 下建本软件的托管 npm 目录；Windows 主机上的 HOME 不是
 // POSIX 路径，建不出来，所以只在 macOS / Linux 主机上跑（同 install-cancel）。
 describe('a CLI download that stops moving', () => {
@@ -524,11 +553,53 @@ describe('a CLI download that stops moving', () => {
     expect(fixture.downloads).toHaveLength(2)
   })
 
+  it.runIf(process.platform !== 'win32')('says every fifteen seconds how long it has been downloading, and stops once the download ends', async () => {
+    useWatchClock()
+    const fixture = createDownloadFixture('hang')
+    const install = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+
+    await fixture.downloadStarted(1)
+    for (let check = 0; check < 4; check += 1) await advanceOneCheck()
+    const official = downloadHeartbeats(fixture.target)
+    expect(official).toEqual([15_000, 30_000, 45_000, 60_000].map((elapsedMs) => ({
+      provider: 'claude',
+      state: 'output',
+      message: npmDownloadHeartbeatMessage(officialRegistry, elapsedMs),
+      stage: 'download',
+      elapsedMs,
+    })))
+    // The progress line keeps its existing plain sentence; the approved words go to the install log.
+    expect(installProgressLabel(official[0])).toBe('还在下载，已经等了 15 秒。网慢时会久一点，不用管它。')
+    // A beat every fifteen seconds for up to half an hour stays out of the runtime log.
+    expect(fixture.runtimeLog.log.mock.calls.some(([, , , message]) => String(message).startsWith('仍在从'))).toBe(false)
+
+    // The stuck registry is dropped: its clock stops, and the next registry's starts from zero.
+    await advanceUntilAborted(fixture.downloads[0], 2 * npmDownloadStallTimeoutMs)
+    await fixture.downloadStarted(2)
+    const beforeMirror = downloadHeartbeats(fixture.target).length
+    await advanceOneCheck()
+    await advanceOneCheck()
+    expect(downloadHeartbeats(fixture.target).slice(beforeMirror).map((event) => event.message)).toEqual([
+      npmDownloadHeartbeatMessage(mirrorRegistry, 15_000),
+      npmDownloadHeartbeatMessage(mirrorRegistry, 30_000),
+    ])
+
+    // Cancelling ends it too: nothing more once the install has stopped.
+    expect(fixture.service.cancelCliInstall('claude')).toEqual({ cancelled: true, reason: null })
+    expect(((await install) as Error).message).toBe('Claude Code 安装已取消')
+    const afterCancel = downloadHeartbeats(fixture.target).length
+    await advanceOneCheck()
+    await advanceOneCheck()
+    expect(downloadHeartbeats(fixture.target)).toHaveLength(afterCancel)
+  })
+
   it.runIf(process.platform !== 'win32')('keeps the five-minute budget for the offline install from the verified cache', async () => {
     const fixture = createDownloadFixture('succeed')
 
     const error = await fixture.service.installCli('claude', fixture.target).catch((failure: unknown) => failure)
     expect(error).toBeInstanceOf(Error)
+    // A download that is over at once has nothing to report.
+    expect(downloadHeartbeats(fixture.target)).toEqual([])
     expect(fixture.downloads.map((attempt) => attempt.timeoutMs)).toEqual([npmDownloadCeilingMs, npmDownloadCeilingMs])
     expect(fixture.offlineInstalls.map((options) => options.timeoutMs)).toEqual([npmDownloadTimeoutMs, npmDownloadTimeoutMs])
     const resolutions = fixture.runCommand.mock.calls

@@ -89,7 +89,7 @@ describe('decideLaunchInstall', () => {
 
 describe('resolveLaunchInstallMode', () => {
   function modeInput(patch: Partial<LaunchInstallModeInput> = {}): LaunchInstallModeInput {
-    return { launchedAtLogin: true, windowShown: false, accelerationActive: false, unattended: true, ...patch }
+    return { platform: 'darwin', launchedAtLogin: true, windowShown: false, accelerationActive: false, unattended: true, ...patch }
   }
 
   it('keeps the announced install for a normal launch or once the window has been shown', () => {
@@ -97,6 +97,8 @@ describe('resolveLaunchInstallMode', () => {
     expect(resolveLaunchInstallMode(modeInput({ launchedAtLogin: false, accelerationActive: true, unattended: false }))).toBe('notice')
     expect(resolveLaunchInstallMode(modeInput({ windowShown: true }))).toBe('notice')
     expect(resolveLaunchInstallMode(modeInput({ windowShown: true, unattended: false }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', launchedAtLogin: false, unattended: false }))).toBe('notice')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', windowShown: true, unattended: false }))).toBe('notice')
   })
 
   it('installs in the background after a login launch whose window was never opened', () => {
@@ -106,12 +108,18 @@ describe('resolveLaunchInstallMode', () => {
   it('leaves the version for the quit when installing would pop up a prompt or cut off acceleration', () => {
     expect(resolveLaunchInstallMode(modeInput({ unattended: false }))).toBe('skip')
     expect(resolveLaunchInstallMode(modeInput({ accelerationActive: true }))).toBe('skip')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'linux', unattended: false }))).toBe('skip')
+  })
+
+  it('waits on Windows for the first time the window is opened, since every install asks for permission there', () => {
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', unattended: false }))).toBe('window')
+    expect(resolveLaunchInstallMode(modeInput({ platform: 'win32', unattended: false, accelerationActive: true }))).toBe('window')
   })
 })
 
 describe('shouldStillInstallAtLaunch', () => {
   function recheck(patch: Partial<LaunchInstallRecheckInput> = {}): LaunchInstallRecheckInput {
-    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, background: false, windowShown: false, accelerationActive: false, ...patch }
+    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, mode: 'notice', windowShown: false, accelerationActive: false, ...patch }
   }
 
   it('goes ahead when nothing changed while the notice was up', () => {
@@ -120,16 +128,23 @@ describe('shouldStillInstallAtLaunch', () => {
   })
 
   it('backs off when auto-update was turned off, a tool install started or the version is no longer installable', () => {
-    expect(shouldStillInstallAtLaunch(recheck({ autoUpdate: false }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ busy: true }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+    for (const mode of ['notice', 'background', 'window'] as const) {
+      expect(shouldStillInstallAtLaunch(recheck({ mode, autoUpdate: false }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, busy: true }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+    }
   })
 
   it('backs off a background install once the window was opened or acceleration was turned on', () => {
-    expect(shouldStillInstallAtLaunch(recheck({ background: true }))).toBe(true)
-    expect(shouldStillInstallAtLaunch(recheck({ background: true, windowShown: true }))).toBe(false)
-    expect(shouldStillInstallAtLaunch(recheck({ background: true, accelerationActive: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'background' }))).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'background', windowShown: true }))).toBe(false)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'background', accelerationActive: true }))).toBe(false)
+  })
+
+  it('installs on the first window open unless acceleration is connected by then', () => {
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'window', windowShown: true }))).toBe(true)
+    expect(shouldStillInstallAtLaunch(recheck({ mode: 'window', windowShown: true, accelerationActive: true }))).toBe(false)
   })
 })
 

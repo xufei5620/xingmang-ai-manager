@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CommandRunnerError } from './command-runner'
 import {
   buildFeedbackAccountLine,
   describeRuntimeLogWriteFailure,
@@ -256,6 +257,64 @@ describe('RuntimeLogStore', () => {
     expect(report.text).toContain('retry failed')
     expect(report.text).toContain('[TRUNCATED]')
     expect(report.text).not.toContain('private-error-credential')
+  })
+
+  it('records the cause a translated error wraps, redacted like the rest of the entry', async () => {
+    const store = createStore()
+    const projectFolder = path.join(os.homedir(), 'project')
+    const cause = new CommandRunnerError('命令执行失败（退出码 1）：open', {
+      code: 'EXIT_NON_ZERO',
+      executable: '/usr/bin/open',
+      argv: ['-a', 'Terminal', '/private/var/folders/xm/T/launch.zsh'],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: `LSOpenURLsWithRole() failed for ${projectFolder} with sk-private-cause-value`,
+      outputBytes: 64,
+      maxOutputBytes: 1024,
+      durationMs: 4,
+    })
+    store.exception('ipc', 'cli:launch', new Error('未能打开 Claude Code：命令执行失败（退出码 1）：open', { cause }))
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(entry.detail).toMatchObject({
+      error: {
+        message: '未能打开 Claude Code：命令执行失败（退出码 1）：open',
+        cause: {
+          name: 'CommandRunnerError',
+          code: 'EXIT_NON_ZERO',
+          executable: '/usr/bin/open',
+          exitCode: 1,
+          stderr: expect.stringContaining('LSOpenURLsWithRole() failed'),
+        },
+      },
+    })
+    expect(JSON.stringify(entry)).not.toContain('sk-private-cause-value')
+    const report = await store.captureFeedbackReport()
+    expect(report.text).toContain('LSOpenURLsWithRole() failed')
+    expect(report.text).not.toContain(projectFolder)
+  })
+
+  it('bounds a cause chain that loops back on itself', async () => {
+    const store = createStore()
+    const error = new Error('loop')
+    // Same shape `new Error(message, { cause })` gives the property: not enumerable.
+    Object.defineProperty(error, 'cause', { value: error, writable: true, configurable: true, enumerable: false })
+    expect(() => store.exception('main', 'cyclic-cause', error)).not.toThrow()
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(entry.detail?.error).toMatchObject({
+      message: 'loop',
+      cause: { message: 'loop', cause: { message: 'loop', cause: { message: 'loop', cause: '[TRUNCATED]' } } },
+    })
+  })
+
+  it('adds nothing to an error that wraps no cause', async () => {
+    const store = createStore()
+    store.exception('main', 'plain', Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(Object.keys(entry.detail?.error ?? {})).toEqual(['code', 'name', 'message', 'stack'])
   })
 
   it('puts the tool and configuration summary ahead of the log lines', async () => {
