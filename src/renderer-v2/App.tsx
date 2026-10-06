@@ -1538,7 +1538,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   onSessionsChanged={refreshRecent}
                   beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
