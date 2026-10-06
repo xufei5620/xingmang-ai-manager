@@ -1073,7 +1073,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '「已配好」说明设置保存了，还要点「打开」启动 Codex。',
         bullets: ['提示已运行时选「打开窗口」。', '刚改过配置时先保存任务，再选「重启 Codex」（Mac 上先按 Command + Q 退出 Codex，再点「打开」）。', '其他错误记下原文，不要连续重复点击。'],
         expected: '看到 Codex 窗口，或取得明确启动错误。',
-        extra: [{ title: '能打开，但还是英文？', detail: '在桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
+        extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
         action: '回首页检查 Codex 打开结果',
         page: 'home',
       },
