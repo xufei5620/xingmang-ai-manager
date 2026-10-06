@@ -619,6 +619,67 @@ describe('renderer-v2 home account key bootstrap notice', () => {
       result: bootstrapResult({ networkBlocked: true, configured: ['claude'] }),
     })).toBeNull()
   })
+
+  // 直连适配第六节第 4 条：「自动」退回默认线路、还有工具开着没迁时，上方说一句总的，横幅里不再逐个工具说。
+  const fallbackNotice = '直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换'
+  const codexDeferred = { provider: 'codex' as const, message: 'Codex CLI 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步' }
+
+  it('says once that the tools follow the default line after they quit, instead of naming each tool', () => {
+    const markup = render({}, undefined, {
+      relayFallback: true,
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [codexDeferred], routeDeferred: ['codex'] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('data-testid="home-relay-fallback"')
+    expect(markup).toContain(fallbackNotice)
+    expect(markup).not.toContain('连接线路暂未改动')
+    // 只剩开着的工具没迁时，横幅没有别的要说，也不给「重新同步」。
+    expect(markup).not.toContain('>重新同步<')
+  })
+
+  it('keeps the other failures in the banner next to the fallback notice', () => {
+    const markup = render({}, undefined, {
+      relayFallback: true,
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [codexDeferred, { provider: 'claude', message: '当前分组未返回可用模型' }], routeDeferred: ['codex'] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain(fallbackNotice)
+    expect(markup).toContain('当前分组未返回可用模型')
+    expect(markup).not.toContain('连接线路暂未改动')
+    expect(markup).toContain('>重新同步<')
+  })
+
+  it('lets the all-done line go when only the tools waiting to follow the fallback are left', () => {
+    const markup = render({}, undefined, {
+      relayFallback: true,
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt: Date.now() - 60_000,
+        result: bootstrapResult({ configured: ['claude'], failed: [codexDeferred], routeDeferred: ['codex'] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain(fallbackNotice)
+    expect(markup).not.toContain('已完成 1 组工具的 Key 配置。')
+  })
+
+  it('names each deferred tool as before when no fallback is going on', () => {
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [codexDeferred], routeDeferred: ['codex'] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).not.toContain(fallbackNotice)
+    expect(markup).not.toContain('home-relay-fallback')
+    expect(markup).toContain('连接线路暂未改动')
+  })
 })
 
 /**

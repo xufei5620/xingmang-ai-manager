@@ -345,28 +345,39 @@ describe('buildFeedbackRuntimeLines', () => {
 })
 
 describe('resolveFeedbackRelayRoute', () => {
-  it('names the route the account site uses in this run with the label from the route picker', () => {
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('备用直连')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('默认线路')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('默认线路')
+  // 直连适配方案第六节第 5 条的四句原话。
+  it('names the option the account site runs with, and under auto the line it is on right now', () => {
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('只用直连')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('只用默认线路')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('自动（这次用的是默认线路）')
+    let line: 'primary' | 'direct' = 'direct'
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'auto' }, () => ({ solov: { line, settled: true } }))
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是直连）')
+    line = 'primary'
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是默认线路）')
   })
 
   it('follows the account site, not the other site the settings chose a route for', () => {
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov-api')).toBe('默认线路')
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' }, () => ({ 'solov-api': { line: 'direct', settled: true } }))
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是直连）')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct', 'solov-api': 'primary' }), 'solov-api')).toBe('只用默认线路')
   })
 
   it('resolves a missing or retired site id the way the rest of the app does', () => {
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
 
-    expect(resolveFeedbackRelayRoute(routing, null)).toBe('备用直连')
-    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('备用直连')
+    expect(resolveFeedbackRelayRoute(routing, null)).toBe('只用直连')
+    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('只用直连')
   })
 
   it('never carries an address into the report', () => {
-    const route = resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov') ?? ''
+    const routes = [
+      resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov'),
+      resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'auto' }, () => ({ solov: { line: 'direct', settled: true } })), 'solov'),
+    ].join(' ')
 
     for (const fragment of ['http', '38.147', 'solov', ':8443']) {
-      expect(route).not.toContain(fragment)
+      expect(routes).not.toContain(fragment)
     }
   })
 })

@@ -11,7 +11,7 @@ import { InstallationQueue } from './installation-queue'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
-import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls, type RelayEndpointRoutingSnapshot } from './relay-sites'
 import type { RunningToolsReport } from './running-tools'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
@@ -501,7 +501,8 @@ describe('createSystemService', () => {
     const service = createService()
     const initial = service.readStoredConfig()
     expect(initial).toEqual({ ...defaultAppSettings(initial.workspace),
-      activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' } })
+      activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'auto' },
+      relayRouteLines: { solov: { line: 'primary', settled: false }, 'solov-api': { line: 'primary', settled: false } } })
 
     const merged = await service.updateStoredConfig({ version: 2, theme: 'light' })
 
@@ -532,10 +533,32 @@ describe('createSystemService', () => {
     const service = createService({ relayFetch })
     const saved = await service.updateStoredConfig({ version: 2, relayEndpointIds: { solov: 'direct' } })
     expect(saved.relayEndpointIds).toEqual({ solov: 'direct' })
-    expect(saved.activeRelayEndpointIds).toEqual({ solov: 'primary', 'solov-api': 'primary' })
+    expect(saved.activeRelayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'auto' })
     expect(service.readStoredConfig().activeRelayEndpointIds).toEqual(saved.activeRelayEndpointIds)
     await service.fetchAvailableModels('sk-fixture')
     expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
+  })
+
+  it('reports the line auto is on right now next to the preferences frozen at startup', async () => {
+    let line: 'primary' | 'direct' = 'direct'
+    const service = createService({ relayEndpointRouting: createRelayEndpointRoutingSnapshot({ 'solov-api': 'primary' },
+      () => ({ solov: { line, settled: true } })) })
+    expect(service.readStoredConfig()).toMatchObject({ activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'primary' },
+      relayRouteLines: { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: true } } })
+    line = 'primary'
+    expect((await service.updateStoredConfig({ version: 2, theme: 'light' })).relayRouteLines?.solov).toEqual({ line: 'primary', settled: true })
+    expect(service.readStoredConfig().relayRouteLines?.solov).toEqual({ line: 'primary', settled: true })
+  })
+
+  it('checks models for a tool on the line the tool will use and for the AI workspace through the routed fetch', async () => {
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'tool-model' }] }))
+    const relayRoutedFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'workspace-model' }] }))
+    const service = createService({ relayFetch, relayRoutedFetch,
+      relayEndpointRouting: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'direct', settled: true } })) })
+    await expect(service.fetchAvailableModels('sk-fixture', { bypassCache: true })).resolves.toEqual(['tool-model'])
+    await expect(service.fetchAvailableModels('sk-fixture', { bypassCache: true, routed: true })).resolves.toEqual(['workspace-model'])
+    expect(relayFetch.mock.calls.map((call) => call[0])).toEqual(['https://xm-direct.solov.cc/v1/models'])
+    expect(relayRoutedFetch.mock.calls.map((call) => call[0])).toEqual(['https://xm-direct.solov.cc/v1/models'])
   })
 
   it.each(['claude', 'codex', 'gemini', 'grok'] satisfies ProviderId[])(
@@ -589,6 +612,7 @@ describe('createSystemService', () => {
     source?: 'primary' | 'direct' | 'historical'
     explicit?: boolean
     report?: RunningToolsReport | Error
+    routing?: RelayEndpointRoutingSnapshot
   } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-route-migration-'))
     temporaryDirectories.push(root)
@@ -615,7 +639,7 @@ describe('createSystemService', () => {
     })
     const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
       managerDataDirectory: root, providerRoots: roots, getExternalClientAccountId: () => account.owner,
-      relayEndpointRouting: createRelayEndpointRoutingSnapshot(options.explicit === false ? {} : { solov: 'direct' }),
+      relayEndpointRouting: options.routing ?? createRelayEndpointRoutingSnapshot(options.explicit === false ? {} : { solov: 'direct' }),
       relayFetch, inspectRunningToolsForTemplateFill: inspectRunning,
       resolveCliInstallation: async () => null,
       inspectCodexDesktopForModelCatalog: async () => ({ installed: false, version: null }),
@@ -663,6 +687,28 @@ describe('createSystemService', () => {
       expect(f.service.getConfig(false).providers[provider].configurationOwnership).toBe('account')
     },
   )
+
+  it('migrates a CLI once auto has settled on a line, through the same closed-tool gate', async () => {
+    const f = await automaticRouteFixture({ routing: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'direct', settled: true } })) })
+    await f.save()
+    expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('moves a CLI back to the default line after auto falls back, and keeps it while the tool is open', async () => {
+    const fallback = () => createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'primary', settled: true } }))
+    const open = await automaticRouteFixture({ source: 'direct', routing: fallback(), report: {
+      running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false,
+    } })
+    const before = open.files()
+    await expect(open.save()).rejects.toThrow('已保留原配置')
+    expect(open.files()).toEqual(before)
+    const closed = await automaticRouteFixture({ source: 'direct', routing: fallback() })
+    await closed.save()
+    expect(closed.inspectRunning).toHaveBeenCalledWith(['codex'])
+    expect(closed.service.getConfig(false).providers.codex.actualBaseUrl).toBe(providerBaseUrls.codex)
+  })
 
   it('moves a CLI still on the retired IP test entry to the direct domain', async () => {
     const f = await automaticRouteFixture({ source: 'historical' })
