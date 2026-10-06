@@ -56,11 +56,11 @@ import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
-import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -70,7 +70,7 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
-import { providerIds, type ProviderId } from './catalog'
+import { cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -153,7 +153,7 @@ import {
   type DiagnosticsRunOptions,
 } from './diagnostics'
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
-import { clearUserProviderOverrides, setAsideCodexDotenv, type DiagnosticFixKind } from './diagnostic-fixes'
+import { clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions, type DiagnosticFixKind } from './diagnostic-fixes'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
@@ -1544,6 +1544,8 @@ if (!hasSingleInstanceLock) {
           // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
           // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
           resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
+          // 代理不转发星芒、账号和 AI 对话已经自己改了直连时，这一项照实说，不叫人去退代理软件。
+          siteDirectActive: () => proxyBypass.siteDirect(),
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
@@ -1553,10 +1555,11 @@ if (!hasSingleInstanceLock) {
         })
         return latestDiagnostics
       },
-      // 检查页两颗一键处理。要删哪几项在点的那一刻按当前环境和当前站点重算，
+      // 检查页的一键处理。要删哪几项、挪哪个文件在点的那一刻按当前环境和当前站点重算，
       // 不信渲染层给的任何名字或路径（I5）。
       fix: async (kind: DiagnosticFixKind) => {
         if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
+        if (kind === 'set-aside-home-agents-md') return setAsideHomeProjectInstructions(codexContext.userHome)
         const siteId = systemService.readStoredConfig().relaySiteId
         // 和检查页那一项同一套「指向当前账号」：「自动」走直连时指着默认线路的不删。
         const accountBaseUrls = environmentAccountBaseUrls(relayRouting.resolve(siteId), diagnosticsRelayRoute(siteId))
@@ -1676,6 +1679,8 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    // 更新页「确认重启安装」、托盘「重启并安装」前问那一句（主窗口建好后接上）；true = 照常装。
+    let confirmUpdateInstall: (() => Promise<boolean>) | null = null
     let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
@@ -1892,6 +1897,8 @@ if (!hasSingleInstanceLock) {
     const cliKeepAwake = createCliKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+      // 托盘那行「暂不让电脑自动睡眠」跟着换（已知35）。
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     const cliHookEvents = createCliHookEventMonitor({
       directory: cliHookEventsDirectory(managerDataDirectory),
@@ -1904,6 +1911,7 @@ if (!hasSingleInstanceLock) {
     const installKeepAwake = createInstallKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'main', event, message, detail),
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     const unsubscribeInstallKeepAwakeQueue = systemService.onInstallationQueueChange((snapshot) => installKeepAwake.observeQueue(snapshot))
     installKeepAwake.observeQueue(systemService.inspectInstallationQueue())
@@ -3062,7 +3070,7 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
-    attachProxyBypassState(() => proxyBypass.active())
+    attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
@@ -3126,6 +3134,7 @@ if (!hasSingleInstanceLock) {
         ...(linuxSystemLabel ? { systemLabel: linuxSystemLabel } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
@@ -3295,6 +3304,31 @@ if (!hasSingleInstanceLock) {
       mainWindow.show()
       mainWindow.focus()
     }
+    // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
+    const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
+      // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+      if (!mainWindow.isVisible()) showMainWindow()
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+        detail: task.count > 1
+          ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
+          : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+        buttons: ['继续安装', '仍然退出'],
+        defaultId: 0, cancelId: 0,
+      })
+      return result.response === 1
+    }
+    // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句。
+    // 点「继续安装」这次就不装，新版本留着，以后再点或下次退出时照常装（已知31）。
+    confirmUpdateInstall = async () => {
+      if (mainWindow.isDestroyed()) return true
+      const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
+      if (!task) return true
+      runtimeLog.log('info', 'updater', 'install.install-in-progress', `重启安装更新前确认：${task.key}`)
+      const proceed = await confirmInterruptingInstall(task)
+      if (!proceed) runtimeLog.log('info', 'updater', 'install.postponed', '还有工具在装，这次不装新版本，新版本留着')
+      return proceed
+    }
     receiveDeepLink = (raw) => {
       if (!deepLinkInbox.accept(raw)) return
       showMainWindow()
@@ -3347,18 +3381,8 @@ if (!hasSingleInstanceLock) {
         const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
         if (task) {
           runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
-          // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
-          if (!mainWindow.isVisible()) showMainWindow()
-          const result = await dialog.showMessageBox(mainWindow, {
-            type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
-            detail: task.count > 1
-              ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
-              : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
-            buttons: ['继续安装', '仍然退出'],
-            defaultId: 0, cancelId: 0,
-          })
           // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
-          return result.response === 1 ? 'quit' : 'cancel'
+          return await confirmInterruptingInstall(task) ? 'quit' : 'cancel'
         }
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
@@ -3624,14 +3648,19 @@ if (!hasSingleInstanceLock) {
           ],
           update: resolveTrayUpdateEntry(updaterService.getState()),
           acceleration: trayAcceleration?.entry() ?? null,
+          keepAwakeLabel: trayKeepAwakeLabel({
+            tools: cliKeepAwake.tools().map((tool) => isProviderId(tool) ? cliCatalog[tool].name : tool),
+            installing: installKeepAwake.reasons().includes('install'),
+            downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
+          }),
         }
       },
       onOpen: showMainWindow,
       onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
       onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
       onAccelerationToggle: () => trayAcceleration?.toggle(),
-      // 与更新页「确认重启安装」、IPC update:install 同一条路，退出交接与安装闸都在 install() 里。
-      onInstallUpdate: () => { updaterService.install() },
+      // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
+      onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },
       // 主窗口缩到托盘之后渲染层那边的加速轮询是停的，菜单弹出来这一刻是唯一
       // 能把剩余时长读新的时机；读一次，不起定时器。
       onMenuOpen: () => { trayAcceleration?.refresh() },

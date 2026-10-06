@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectProviderConfig, providerAccountMode, type NativeConfigInspection } from './config-files'
+import { inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -34,6 +34,7 @@ import {
 import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
 import { resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { managedCliRoot } from './managed-cli-paths'
+import { hasUntouchedHomeProjectInstructions } from './project-instructions'
 import { classifyNetworkFailure, isJsonContentType, networkFailureCode, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import {
   buildNodeTlsProbeScript,
@@ -206,6 +207,12 @@ export interface DiagnosticsDependencies {
    * 缺省 = 不看（旧行为）。
    */
   resolveAppProxy?: (url: string) => Promise<string>
+  /**
+   * 代理开着、只是不转发星芒时，连星芒的请求（账号、AI 对话）是不是已经改走直连会话
+   * （proxy-bypass.ts 的 siteDirect）。那时默认会话照旧跟着系统代理，resolveAppProxy 还是
+   * 答「走代理」，结论得照实说已经改了直连。缺省 = 没改（旧行为）。
+   */
+  siteDirectActive?: () => boolean
   /**
    * 「安全证书」一项用电脑上的 Node.js 做一次 TLS 握手（certificate-trust-probe.ts）。
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
@@ -989,18 +996,25 @@ export async function inspectAppProxyRoute(
 export function withAppProxyRoute(
   outcome: Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>,
   route: AppProxyRoute | null,
+  siteDirect = false,
 ): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
   if (!route) return outcome
-  const sentence = route.reach === 'remote'
-    ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
-    : route.reach === 'closed'
-      ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
-      : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
+  // 代理开着、只是不转发星芒时，账号和 AI 对话已经自己改走直连：再叫客户退出代理软件
+  // 是白折腾，这半也不再标黄；另外设过代理的那半照旧（已知30）。代理没开的那种照旧说，
+  // 装工具这些还跟着系统代理走。
+  const bypassed = siteDirect && route.reach !== 'closed'
+  const sentence = bypassed
+    ? `电脑里开着代理（${route.reach === 'remote' ? '用的是别的机器上的代理' : `本机 ${route.port} 端口`}）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。`
+    : route.reach === 'remote'
+      ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
+      : route.reach === 'closed'
+        ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
+        : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
   const details = outcome.details ?? {}
   const variablesFound = Object.keys(details).length > 0
   return {
     ...outcome,
-    state: outcome.state === 'pass' ? 'warn' : outcome.state,
+    state: outcome.state === 'pass' && !bypassed ? 'warn' : outcome.state,
     summary: variablesFound ? `${sentence}另外，${outcome.summary}` : sentence,
     details: {
       ...details,
@@ -1927,6 +1941,46 @@ export function documentsWritabilityOutcome(
   }
 }
 
+// 「工具名照实写」：Codex 那一份 config.toml 命令行和桌面端共用，所以只写 Codex。
+const homeFolderTrustNames: Readonly<Record<HomeFolderTrustProvider, string>> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini CLI',
+}
+
+/**
+ * 「个人文件夹里早先留下的设置」（已知36）。#321 以前客户选个人文件夹打开工具时，星芒往
+ * 那里放过一份 AGENTS.md、替工具记过「信任整个个人文件夹」，之后不再放也不再记，已经留下
+ * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「挪开这份说明」；信任只
+ * 说一声、不给按钮，同「Claude 跑命令前要不要先问你」那项的口径。两样都有时两段连着说。
+ * 「有的工具会连它一起读」「可能不会先问」是推测（只有 Gemini CLI 在不是 git 仓库的项目里
+ * 一路往上读到个人文件夹这一点有把握），所以字里留着「有的」「可能」。
+ */
+export function homeFolderLeftoversOutcome(input: {
+  untouchedInstructions: boolean
+  trustedBy: readonly HomeFolderTrustProvider[]
+}): CheckOutcome {
+  const parts: string[] = []
+  if (input.untouchedInstructions) {
+    parts.push('个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+      + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。')
+  }
+  if (input.trustedBy.length) {
+    const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
+    const pronoun = input.trustedBy.length > 1 ? '它们' : '它'
+    parts.push(`${names} 记着“信任整个个人文件夹”：个人文件夹下的项目，${pronoun}打开时可能不会先问一句信不信得过。`)
+  }
+  const details: Record<string, boolean | number | string | null> = {
+    untouchedInstructions: input.untouchedInstructions,
+    trustedBy: input.trustedBy.join(',') || null,
+  }
+  // 「挪开这份说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
+  if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
+  return parts.length
+    ? { state: 'warn', summary: parts.join(''), details }
+    : { state: 'pass', summary: '没有早先留下的项目说明和信任设置', details }
+}
+
 /**
  * 「电脑芯片」一项的结论。面向小白：只说「ARM 芯片」「ARM 版」「普通电脑用的版本」，
  * 不出现 arm64 / x64 / 模拟层这些词。
@@ -2697,7 +2751,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             : otherProxySettingsOutcome(await inspectProxy(signal)),
           inspectAppProxyRouteUnlessAccelerating(),
         ])
-        return withAppProxyRoute(variables, route)
+        return withAppProxyRoute(variables, route, dependencies.siteDirectActive?.() ?? false)
       },
     },
     {
@@ -2756,6 +2810,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'CLAUDE_BYPASS_PERMISSIONS',
       title: 'Claude Code 跑命令前要不要先问你',
       run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
+    },
+    {
+      code: 'HOME_FOLDER_LEFTOVERS',
+      title: '个人文件夹里早先留下的设置',
+      run: () => homeFolderLeftoversOutcome({
+        untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
+        trustedBy: inspectHomeFolderTrust(providerRoots),
+      }),
     },
   ]
 

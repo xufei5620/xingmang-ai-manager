@@ -1455,12 +1455,93 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  // 已知40：首页第一次点「打开」先替用户建，建不成说完接着弹选择器，不让他再点一次又撞上同一个错。
+  it.runIf(process.platform !== 'win32')('opens the picker right after explaining a failed first-time starter folder', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-project-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(project)
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        message: '没能替你新建项目文件夹。',
+        detail: expect.stringContaining('接下来会重新打开文件夹选择窗口'),
+      }))
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('creates a first-time starter folder without ever showing the picker when that works', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(expected)
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  // 已知40：上一次建好、记下了，只是没打开成（终端没起来）。渲染层那份快照还不知道，再点「打开」
+  // 或错误框里的「重试」还会带着 firstOpen 来，这时用回它，不再建 my-project-2。
+  it('reuses the folder a failed first open already remembered instead of making another', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const remembered = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-remembered-')))
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: remembered })
+      const handler = electronMocks.handlers.get('workspace:choose')!
+
+      await expect(handler(trustedEvent(), { createStarter: true, firstOpen: true })).resolves.toBe(remembered)
+      expect(fs.readdirSync(documents)).toEqual([])
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+
+      // 记着的文件夹被删掉了就当没有，照旧新建。
+      fs.rmSync(remembered, { recursive: true, force: true })
+      await expect(handler(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(path.join(documents, 'XingmangProjects', 'my-project'))
+      // 「新建项目文件夹并打开」本来就是要一个新的，不看记着的。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: path.join(documents, 'XingmangProjects', 'my-project') })
+      await expect(handler(trustedEvent(), { createStarter: true }))
+        .resolves.toBe(path.join(documents, 'XingmangProjects', 'my-project-2'))
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(remembered, { recursive: true, force: true })
+    }
+  })
+
   it('rejects workspace options it does not know, including a renderer-supplied path', async () => {
     register()
     const handler = electronMocks.handlers.get('workspace:choose')!
 
     await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, firstOpen: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择工作目录的参数无效')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })
@@ -1960,6 +2041,36 @@ describe('registerIpcHandlers', () => {
     await expect(Promise.resolve(electronMocks.handlers.get('update:install')!(trustedEvent()))).resolves.toEqual({ accepted: true })
     const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
     expect(logged).toEqual([['info', 'ipc', 'update:install', '已把新版本交给安装程序，装没装上看下一条更新状态', expect.any(Object)]])
+  })
+
+  it('keeps the downloaded update when the user chooses to let a tool finish installing', async () => {
+    // 已知31：更新页带着 askIfInstalling 来，还有工具在装时先问一句，点了「继续安装」就这次不装，新版本留着。
+    const updaterService = updaterStub()
+    const confirmUpdateInstall = vi.fn(async () => false)
+    const { runtimeLog } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, confirmUpdateInstall })
+    const install = electronMocks.handlers.get('update:install')!
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true }))).resolves.toEqual({ accepted: true, postponed: true })
+    expect(updaterService.install).not.toHaveBeenCalled()
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
+    expect(logged).toEqual([['info', 'ipc', 'update:install', '还有工具在装，这次没装新版本', expect.any(Object)]])
+    // 点了「仍然退出」（或者根本没在装）照常交给安装程序。
+    confirmUpdateInstall.mockResolvedValueOnce(true)
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true }))).resolves.toEqual({ accepted: true })
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
+  })
+
+  it('installs without asking when the caller does not ask, as the required-update gate and the rollback UI do', async () => {
+    // 「必须更新」那层提示等着的就是这次安装，问了点「继续安装」它会一直转圈；旧回滚界面也不认 postponed。
+    const updaterService = updaterStub()
+    const confirmUpdateInstall = vi.fn(async () => false)
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, confirmUpdateInstall })
+    const install = electronMocks.handlers.get('update:install')!
+    await expect(Promise.resolve(install(trustedEvent()))).resolves.toEqual({ accepted: true })
+    expect(confirmUpdateInstall).not.toHaveBeenCalled()
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: 'yes' }))).rejects.toThrow('安装参数格式错误')
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true, force: true }))).rejects.toThrow('安装参数格式错误')
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
   })
 
   it('refreshes only the network location through trusted IPC', async () => {

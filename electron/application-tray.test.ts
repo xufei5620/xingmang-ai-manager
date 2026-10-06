@@ -6,6 +6,7 @@ import {
   createApplicationTray,
   resolveTrayUpdateEntry,
   trayBalanceLabel,
+  trayKeepAwakeLabel,
   traySubscriptionLabel,
   type ApplicationTrayOptions,
   type ApplicationTrayRuntime,
@@ -339,5 +340,32 @@ describe('application tray subscription line', () => {
     const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
     expect(labels('剩余 USD 9.00 · 10 月 3 日到期').slice(3, 5)).toEqual(['余额：USD 0.00', '订阅：剩余 USD 9.00 · 10 月 3 日到期'])
     expect(labels()).not.toContainEqual(expect.stringContaining('订阅'))
+  })
+})
+
+describe('application tray keep-awake line', () => {
+  it('says one thing at a time, with the tools working in a terminal first', () => {
+    const idle = { tools: [], installing: false, downloadingUpdate: false }
+    expect(trayKeepAwakeLabel(idle)).toBeNull()
+    expect(trayKeepAwakeLabel({ tools: ['Grok CLI'], installing: true, downloadingUpdate: true })).toBe('Grok CLI 正在干活，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code', 'Gemini CLI'], installing: true })).toBe('AI 工具正在干活，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, installing: true, downloadingUpdate: true })).toBe('正在安装，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, downloadingUpdate: true })).toBe('正在下载星芒新版本，暂不让电脑自动睡眠')
+  })
+
+  it('shows a greyed-out line under the open entry and at the end of the tooltip, and drops both once sleep is given back', () => {
+    const { controller, runtime, handle } = fixture()
+    const line = 'Claude Code 正在干活，暂不让电脑自动睡眠'
+    controller.updateSnapshot({ installedTools: [], balanceUsd: 8, subscriptionLabel: '剩余 USD 9.00 · 10 月 3 日到期', keepAwakeLabel: line })
+    const menu = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
+    expect(menu[0].label).toBe('打开星芒AI管理工具')
+    expect(menu[1]).toEqual({ label: line, enabled: false })
+    expect(menu[2].type).toBe('separator')
+    expect(handle.setToolTip).toHaveBeenLastCalledWith(`星芒AI管理工具\n余额：USD 8.00\n订阅：剩余 USD 9.00 · 10 月 3 日到期\n${line}`)
+    controller.updateSnapshot({ installedTools: [], balanceUsd: 8, keepAwakeLabel: null })
+    const after = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
+    expect(after[1].type).toBe('separator')
+    expect(after.some((entry) => entry.label?.includes('暂不让电脑自动睡眠'))).toBe(false)
+    expect(handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：USD 8.00')
   })
 })

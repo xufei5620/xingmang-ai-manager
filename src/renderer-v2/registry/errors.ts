@@ -18,6 +18,7 @@ export const errors = {
   toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
+  configPermission: { title: '写不进配置文件', body: '常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。', actions: ['重试', '查看日志', '找客服'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },
   paymentClosed: { title: '支付窗口已手动关闭', body: '订单没有取消。', actions: ['看订单'] },
   paymentTimeout: { title: '订单已超时', body: '查询订单状态后可重新支付。', actions: ['重新支付'] },

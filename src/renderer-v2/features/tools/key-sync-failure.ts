@@ -20,7 +20,8 @@ const unavailableGroupPatterns: readonly RegExp[] = [
 export function keySyncFailureReason(message: string): string {
   const safe = userFacingErrorMessage(message).replace(/[。；;.\s]+$/, '')
   if (isAccountNotEnabledFailure(safe)) return '当前账号还不能用，需要的话请联系客服开通'
-  const hint = presentOperationError(safe)
+  // 写 Key 就是写工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
+  const hint = presentOperationError(safe, 'config')
   if (hint) return hint.title
   if (speaksChinese(safe)) return redactSecretPatterns(safe)
   return 'Key 没有写进去，点「重新同步」再试'

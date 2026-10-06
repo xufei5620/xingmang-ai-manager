@@ -8,8 +8,10 @@ import {
   isDiagnosticFixKind,
   parseClearProviderOverridesOutput,
   setAsideCodexDotenv,
+  setAsideHomeProjectInstructions,
 } from './diagnostic-fixes'
 import { clearableEnvironmentOverrides } from './diagnostics'
+import { readProjectInstructionsTemplate } from './project-instructions'
 
 const temporary: string[] = []
 function codexHome() {
@@ -22,10 +24,11 @@ afterEach(() => {
 })
 
 describe('diagnostic fix kinds', () => {
-  it('accepts only the two known fixes from the renderer', () => {
+  it('accepts only the known fixes from the renderer', () => {
     expect(isDiagnosticFixKind('set-aside-codex-dotenv')).toBe(true)
     expect(isDiagnosticFixKind('clear-user-overrides')).toBe(true)
-    for (const value of ['clear-user-proxy', '../.env', '', null, 1]) expect(isDiagnosticFixKind(value)).toBe(false)
+    expect(isDiagnosticFixKind('set-aside-home-agents-md')).toBe(true)
+    for (const value of ['clear-user-proxy', '../.env', '../AGENTS.md', '', null, 1]) expect(isDiagnosticFixKind(value)).toBe(false)
   })
 })
 
@@ -60,6 +63,52 @@ describe('setAsideCodexDotenv', () => {
     fs.linkSync(outside, path.join(home, '.env'))
     expect(() => setAsideCodexDotenv(home)).toThrow()
     expect(fs.existsSync(path.join(home, '.env'))).toBe(true)
+  })
+})
+
+describe('setAsideHomeProjectInstructions', () => {
+  const template = readProjectInstructionsTemplate(
+    path.join(__dirname, '..', 'bundled-catalog', 'project-instructions', 'AGENTS.zh-CN.md'),
+  )
+
+  it('renames the AGENTS.md this app left in the home folder instead of deleting it', () => {
+    const home = codexHome()
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), template, 'utf8')
+    const result = setAsideHomeProjectInstructions(home, new Date(2026, 9, 6, 19, 30, 5))
+    expect(result).toEqual({ kind: 'set-aside-home-agents-md', fixed: 1, machineRemaining: false })
+    expect(fs.existsSync(path.join(home, 'AGENTS.md'))).toBe(false)
+    expect(fs.readFileSync(path.join(home, 'AGENTS.md.xingmang-20261006-193005.bak'), 'utf8')).toBe(template)
+  })
+
+  it('never overwrites an earlier set-aside copy', () => {
+    const home = codexHome()
+    const now = new Date(2026, 9, 6, 19, 30, 5)
+    fs.writeFileSync(path.join(home, 'AGENTS.md.xingmang-20261006-193005.bak'), 'first\n')
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), template, 'utf8')
+    setAsideHomeProjectInstructions(home, now)
+    expect(fs.readFileSync(path.join(home, 'AGENTS.md.xingmang-20261006-193005.bak'), 'utf8')).toBe('first\n')
+    expect(fs.readFileSync(path.join(home, 'AGENTS.md.xingmang-20261006-193005.bak.2'), 'utf8')).toBe(template)
+  })
+
+  it('leaves a copy the customer edited since the check where it is, and says there is nothing to move', () => {
+    const home = codexHome()
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), `${template}- 我自己的规矩\n`, 'utf8')
+    expect(setAsideHomeProjectInstructions(home)).toEqual({ kind: 'set-aside-home-agents-md', fixed: 0, machineRemaining: false })
+    expect(fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8')).toBe(`${template}- 我自己的规矩\n`)
+    expect(fs.readdirSync(home)).toEqual(['AGENTS.md'])
+  })
+
+  it('reports nothing to do when the file is already gone', () => {
+    expect(setAsideHomeProjectInstructions(codexHome())).toEqual({ kind: 'set-aside-home-agents-md', fixed: 0, machineRemaining: false })
+  })
+
+  it.runIf(process.platform !== 'win32')('does not move a hard-linked copy, which could redirect the rename', () => {
+    const home = codexHome()
+    const outside = path.join(codexHome(), 'template.md')
+    fs.writeFileSync(outside, template, 'utf8')
+    fs.linkSync(outside, path.join(home, 'AGENTS.md'))
+    expect(setAsideHomeProjectInstructions(home).fixed).toBe(0)
+    expect(fs.existsSync(path.join(home, 'AGENTS.md'))).toBe(true)
   })
 })
 

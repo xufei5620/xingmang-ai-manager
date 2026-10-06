@@ -156,6 +156,13 @@ const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责�
 const adHocSigningMode = !ephemeralMacSigningMode && !freeMacReleaseMode && !releaseMode
 const selfSignedMacSigningMode = adHocSigningMode || ephemeralMacSigningMode || freeMacReleaseMode
 const macEntitlementsPrefix = selfSignedMacSigningMode ? 'build/entitlements.mac.adhoc' : 'build/entitlements.mac'
+const macPrivacyUsageDescriptions = {
+  NSDocumentsFolderUsageDescription: '星芒把 AI 画的图、做的视频存进“文稿”里的 XingmangAI 文件夹；你放在“文稿”里的项目，也要读得到才能帮你打开。',
+  NSDesktopFolderUsageDescription: '你放在桌面上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  NSDownloadsFolderUsageDescription: '你放在“下载”里的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  NSRemovableVolumesUsageDescription: '你放在 U 盘、移动硬盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  NSNetworkVolumesUsageDescription: '你放在共享盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+}
 
 module.exports = {
   appId: 'com.xingmang.ai.manager',
@@ -295,6 +302,9 @@ module.exports = {
     entitlements: `${macEntitlementsPrefix}.plist`,
     entitlementsInherit: `${macEntitlementsPrefix}.inherit.plist`,
     icon: 'assets/brand/v3/app-icon.icns',
+    // macOS 第一次碰「文稿」「桌面」「下载」、U 盘、共享盘时弹的隐私询问框，标题是系统写的，
+    // 下面那行说明取这几项；不写就只有「不允许」「好」两个按钮，客户不知道为什么要给（已知34）。
+    extendInfo: macPrivacyUsageDescriptions,
     // Local packages need an ad-hoc signature after Electron fuses are changed,
     // otherwise macOS rejects the invalidated upstream seal. This is not a
     // distributable Developer ID signature; release mode discovers that identity.
