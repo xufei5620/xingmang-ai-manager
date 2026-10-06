@@ -16,6 +16,7 @@ import {
   subscriptionPaymentMethods,
 } from './pages-account'
 import {
+  extensionInScope,
   extensionItemsForView,
   extensionScopeLabel,
   filterExtensionMarkets,
@@ -241,6 +242,24 @@ describe('v2 business boundaries', () => {
     expect(extensionScopeLabel('extension')).toBe('我的（全局）')
     expect(extensionScopeLabel(null)).toBe('未提供')
     expect(extensionScopeLabel(undefined)).toBe('未提供')
+  })
+
+  it('files each item under the same scope filter its details name', () => {
+    // 详情写「当前项目」的，选「当前项目」就列出来；写「我的（全局）」的同理。
+    expect(extensionInScope('local', 'project')).toBe(true)
+    expect(extensionInScope('extension', 'user')).toBe(true)
+    expect(extensionInScope('project', 'project')).toBe(true)
+    expect(extensionInScope('user', 'user')).toBe(true)
+    expect(extensionInScope('workspace', 'workspace')).toBe(true)
+    expect(extensionInScope('builtin', 'builtin')).toBe(true)
+    expect(extensionInScope('local', 'user')).toBe(false)
+    expect(extensionInScope('extension', 'project')).toBe(false)
+    expect(extensionInScope('user', 'project')).toBe(false)
+    // 没带 scope 的只在「全部范围」里。
+    expect(extensionInScope(null, 'user')).toBe(false)
+    expect(extensionInScope(undefined, 'project')).toBe(false)
+    for (const scope of ['user', 'project', 'local', 'workspace', 'builtin', 'extension', null] as const)
+      expect(extensionInScope(scope, 'all')).toBe(true)
   })
 
   it('filters plugin markets by both display name and root path', () => {

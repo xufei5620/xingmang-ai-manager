@@ -1397,6 +1397,50 @@ test('installed plugins come before the curated shelf and an update sits on the 
   }
 })
 
+// 已知2 跟进：详情里 local 写「当前项目」、扩展自带的技能写「我的（全局）」，「范围」筛选也按这个归类。
+test('the scope filter lists a plugin or skill under the scope its details name', async () => {
+  const plugins = await fixture('page=plugins&scopedExtensions')
+  try {
+    const scopes = plugins.getByTestId('plugins-scope')
+    const local = plugins.getByTestId('plugins-row-local-plugin')
+    const global = plugins.getByTestId('plugins-row-test-extension')
+    await local.waitFor()
+    await scopes.getByRole('button', { name: '当前项目', exact: true }).click()
+    await global.waitFor({ state: 'detached' })
+    await local.waitFor()
+    await local.getByRole('button', { name: /更多操作/ }).click()
+    await plugins.getByRole('menuitem', { name: '查看详情', exact: true }).click()
+    const drawer = plugins.getByTestId('resource-detail-drawer')
+    assert.equal(await drawer.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '当前项目')
+    await drawer.locator('[data-modal-close]').click()
+    await drawer.waitFor({ state: 'detached' })
+    await scopes.getByRole('button', { name: '我的（全局）', exact: true }).click()
+    await local.waitFor({ state: 'detached' })
+    await global.waitFor()
+  } finally {
+    await plugins.close()
+  }
+  const skills = await fixture('page=skills&scopedExtensions')
+  try {
+    await skills.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    const scopes = skills.getByTestId('skills-scope')
+    const bundled = skills.getByTestId('skills-row-extension-skill')
+    await bundled.waitFor()
+    await scopes.getByRole('button', { name: '我的（全局）', exact: true }).click()
+    await bundled.waitFor()
+    await bundled.getByRole('button', { name: /更多操作/ }).click()
+    await skills.getByRole('menuitem', { name: '查看详情', exact: true }).click()
+    const drawer = skills.getByTestId('resource-detail-drawer')
+    assert.equal(await drawer.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '我的（全局）')
+    await drawer.locator('[data-modal-close]').click()
+    await drawer.waitFor({ state: 'detached' })
+    await scopes.getByRole('button', { name: '当前项目', exact: true }).click()
+    await bundled.waitFor({ state: 'detached' })
+  } finally {
+    await skills.close()
+  }
+})
+
 test('an empty installed list points at the curated shelf and the market tab', async () => {
   const page = await fixture('page=plugins&empty')
   try {
