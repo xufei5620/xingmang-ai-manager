@@ -231,6 +231,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
   async function inspectGateway(
     expectedBaseUrl: string,
     belongsToCurrentAccount?: (apiKey: string) => boolean,
+    ownedProfileOnly = false,
   ): Promise<ExternalClientConnectionStatus & { apiKey: string | null }> {
     try {
       await options.assertUnmanaged?.()
@@ -250,7 +251,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const configured = configurationReady
         && typeof baseUrl === 'string' && sameBaseUrl(baseUrl, expectedBaseUrl)
         && typeof apiKey === 'string' && Boolean(apiKey.trim())
-        && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
+        && (owner?.id === metadata.appliedId || (!ownedProfileOnly && Boolean(belongsToCurrentAccount)))
         && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
       return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null,
         apiKey: configured && typeof apiKey === 'string' ? apiKey : null }
@@ -314,6 +315,51 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const result = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
       return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
     },
+    /**
+     * 换线路用（第四十三批 A）：和 inspectGatewayCredential 一样交出 Key 和型号，只多要求正在用的
+     * 就是星芒标记的那一份。客户在 Claude Desktop 里复制出来的那份哪怕地址、Key 都一样也不认：
+     * 换线路不该替他把正在用的切回星芒那份。
+     */
+    inspectRouteCredential: async (
+      baseUrl: string,
+      belongsToCurrentAccount: (apiKey: string) => boolean,
+    ): Promise<{ apiKey: string; model: string } | null> => {
+      const result = await inspectGateway(baseUrl, belongsToCurrentAccount, true)
+      return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
+    },
+    /**
+     * 换线路（第四十三批 A）：只把星芒那份的网关地址从 from 换成 to。型号清单、认证方式这些客户
+     * 可能在 Claude Desktop 里自己改过的字段原样留着，也不碰别的文件；不走 saveGateway，那条会
+     * 把型号收成一个、认证方式改回 bearer。写之前重读一遍：已经不是星芒那份在用、地址不是 from、
+     * Key 不是这一把，一个字不写。
+     */
+    followRoute: (from: string, to: string, apiKey: string): Promise<{ path: string; backups: string[] }> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const desktop = parseObject(capture(configPath))
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      const gatewayPath = owner ? path.join(libraryDirectory, `${owner.id}.json`) : null
+      const gateway = gatewayPath ? parseObject(capture(gatewayPath)) : {}
+      if (!owner || !gatewayPath || metadata.appliedId !== owner.id || metadata.hybridPointer
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p') || !gatewayConfigurationReady(gateway)
+        || typeof gateway.inferenceGatewayBaseUrl !== 'string' || !sameBaseUrl(gateway.inferenceGatewayBaseUrl, from)
+        || gateway.inferenceGatewayApiKey !== apiKey) {
+        throw new Error(`${label}在换线路前已变化，未执行修改`)
+      }
+      const { inferenceGatewayBaseUrl } = buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey })
+      const content = json({ ...gateway, inferenceGatewayBaseUrl })
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
+      return { path: gatewayPath, backups: saved.backups }
+    }),
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)
       assertContext()
