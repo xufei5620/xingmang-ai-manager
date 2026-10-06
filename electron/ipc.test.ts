@@ -1562,6 +1562,90 @@ describe('registerIpcHandlers', () => {
     }))
   })
 
+  // 已知39：首页「打开」用的是从会话记录推出来的目录，不经过选择器。客户自己在主目录开终端
+  // 用过 claude，按钮就写「打开 张三」，以前点了不问一句就在整个主目录开新对话。
+  it('asks before starting a new conversation in the home folder that skipped the picker', async () => {
+    const home = os.homedir()
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service, runtimeLog } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      title: '这个文件夹范围太大',
+      buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+      defaultId: 0,
+      cancelId: 1,
+    }))
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', home, 'new')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'workspace.guard.accepted', expect.any(String), { kind: 'home', policy: 'once' })
+
+    // 主目录不算记住（resolveRememberedWorkspace），下一次从首页「打开」照样问。
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a declined launch when the home folder question ends without a folder', async () => {
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const { service, runtimeLog } = register()
+
+    await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', os.homedir()))
+      .resolves.toEqual({ declined: true })
+    expect(service.launchProvider).not.toHaveBeenCalled()
+    expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.guard.declined', expect.any(String), { kind: 'home' })
+  })
+
+  it('checks that a folder picked instead of the home folder can be written to', async () => {
+    const project = path.join(os.homedir(), 'project')
+    const probe = vi.fn(async () => undefined)
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      workspaceWriteCheck: { platform: 'win32', probe },
+    })
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', os.homedir())
+    expect(probe).toHaveBeenCalledWith(project)
+    expect(service.launchProvider).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', project, 'new')
+    expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+  })
+
+  it('resumes a conversation in the home folder without asking', async () => {
+    const home = os.homedir()
+    const { service } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home, 'resumeLast')
+    expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', home, 'resumeLast')
+  })
+
+  it('does not ask twice when the picker just confirmed the desktop, then still checks it can be written to', async () => {
+    const desktop = path.join(os.homedir(), 'Desktop')
+    const probe = vi.fn(async () => undefined)
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [desktop] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      workspaceWriteCheck: { platform: 'win32', probe },
+    })
+
+    await electronMocks.handlers.get('workspace:choose')!(trustedEvent())
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', desktop)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(probe).toHaveBeenCalledWith(desktop)
+    expect(service.launchProvider).toHaveBeenCalledWith('gemini', desktop, 'new')
+
+    // 下一次从首页「打开」、托盘或快捷键再进桌面，照样问；点了「仍然打开」照旧先试写。
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', desktop)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(service.launchProvider).toHaveBeenCalledTimes(2)
+  })
+
   describe('write check before launching', () => {
     function denied(): Promise<void> {
       return Promise.reject(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }))

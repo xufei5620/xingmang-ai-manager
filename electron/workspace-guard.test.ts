@@ -4,6 +4,7 @@ import {
   buildSensitiveWorkspacePrompt,
   classifyWorkspace,
   resolveRememberedWorkspace,
+  sensitiveWorkspaceAsksAtLaunch,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
@@ -218,6 +219,17 @@ describe('buildSensitiveWorkspacePrompt', () => {
     expect(prompt.buttons[prompt.continueIndex]).toBe('仍然打开')
     expect(prompt.createIndex).toBeNull()
     expect(prompt.detail).not.toContain('新建一个项目文件夹')
+  })
+})
+
+// 已知39：首页「打开」从记录推出来的目录不经过选择器，主目录、桌面这类开新对话前也要先问。
+describe('sensitiveWorkspaceAsksAtLaunch', () => {
+  it('asks before every new conversation in any sensitive folder', () => {
+    expect(allKinds.filter((kind) => !sensitiveWorkspaceAsksAtLaunch(kind, false))).toEqual([])
+  })
+
+  it('only asks before resuming in the folders it warns about every time', () => {
+    expect(allKinds.filter((kind) => sensitiveWorkspaceAsksAtLaunch(kind, true))).toEqual(['system', 'provider-config'])
   })
 })
 
