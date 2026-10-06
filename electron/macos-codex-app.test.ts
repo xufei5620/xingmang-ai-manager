@@ -466,7 +466,7 @@ describe('inspectMacosCodexApp', () => {
       throw new Error(`unexpected command: ${executable}`)
     })
     await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
-      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: failure === 'metadata' ? 'invalid bundle metadata' : expect.stringContaining('Mach-O'), rejected: true })
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: failure === 'metadata' ? 'invalid bundle metadata' : expect.stringContaining('Mach-O'), rejectedPaths: [fs.realpathSync(app)] })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
   })
 
@@ -480,7 +480,7 @@ describe('inspectMacosCodexApp', () => {
       throw new Error(`unexpected command: ${executable}`)
     })
     await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
-      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '已找到 Codex，但应用的可执行文件类型或权限无效', rejected: true })
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '已找到 Codex，但应用的可执行文件类型或权限无效', rejectedPaths: [fs.realpathSync(path.join(systemApplicationsDirectory, 'Codex.app'))] })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
   })
 
@@ -512,7 +512,7 @@ describe('inspectMacosCodexApp', () => {
       app: null,
       detectionFailed: true,
       detectionError: '已找到 Codex，但应用架构与此 Mac 不兼容',
-      rejected: true,
+      rejectedPaths: [fs.realpathSync(app)],
     })
   })
 
@@ -550,7 +550,7 @@ describe('inspectMacosCodexApp', () => {
       app: null,
       detectionFailed: true,
       detectionError: '命令执行失败（退出码 1）：codesign',
-      rejected: true,
+      rejectedPaths: [fs.realpathSync(app)],
     })
   })
 
@@ -600,7 +600,36 @@ describe('inspectMacosCodexApp', () => {
       app: null,
       detectionFailed: true,
       detectionError: expect.any(String),
-      ...(rejected ? { rejected: true } : {}),
+      ...(rejected ? { rejectedPaths: [fs.realpathSync(app)] } : {}),
+    })
+  })
+
+  it('lists only the copies that were turned down, not one whose check never finished', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const installed = path.join(systemApplicationsDirectory, 'ChatGPT.app')
+    const downloaded = path.join(root, 'Downloads', 'ChatGPT.app')
+    const installedInfo = createApp(installed)
+    const downloadedInfo = createApp(downloaded)
+    const runSystemCommand = async (executable: string, argv: readonly string[]): Promise<string> => {
+      if (executable === '/usr/bin/plutil' && (argv.at(-1) === installedInfo || argv.at(-1) === downloadedInfo)) {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/codesign') {
+        if (argv.at(-1) === fs.realpathSync(installed)) throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：codesign')
+        throw commandRunnerError('EXIT_NON_ZERO', '命令执行失败（退出码 1）：codesign')
+      }
+      if (executable === '/usr/bin/mdfind') return `${downloaded}\n`
+      throw new Error(`unexpected command: ${executable}`)
+    }
+
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand })).resolves.toEqual({
+      app: null,
+      detectionFailed: true,
+      detectionError: '命令执行时间过长，已中止：codesign；命令执行失败（退出码 1）：codesign',
+      rejectedPaths: [fs.realpathSync(downloaded)],
     })
   })
 

@@ -2128,23 +2128,37 @@ describe('Codex Desktop install on macOS', () => {
   // 叫客户移到废纸篓。安装那一步用真的，只把「应用程序」换成临时目录。
   it.skipIf(process.platform === 'win32')('says the detection did not finish when neither detection could check the ChatGPT already in Applications', async () => {
     const detectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
+    const applications = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-applications-'))
+    temporaryDirectories.push(applications)
+    fs.mkdirSync(path.join(applications, 'ChatGPT.app', 'Contents'), { recursive: true })
+    const installed = fs.realpathSync(path.join(applications, 'ChatGPT.app'))
     const unfinished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' })
     const broken = async (): Promise<MacosCodexAppInspection> => { throw new Error('plutil 没有起来') }
     const finished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: false, detectionError: null })
-    const rejected = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: true, detectionError: '命令执行失败（退出码 1）：codesign', rejected: true })
+    const rejectedElsewhere = async (): Promise<MacosCodexAppInspection> => ({
+      app: null,
+      detectionFailed: true,
+      detectionError: '核对 ChatGPT.app 的签名超时；已找到 Codex，但应用架构与此 Mac 不兼容',
+      rejectedPaths: ['/Users/tester/Downloads/ChatGPT.app'],
+    })
+    const rejectedHere = async (): Promise<MacosCodexAppInspection> => ({
+      app: null,
+      detectionFailed: true,
+      detectionError: '命令执行失败（退出码 1）：codesign',
+      rejectedPaths: [installed],
+    })
     const cases: Array<[Array<() => Promise<MacosCodexAppInspection>>, string]> = [
       [[unfinished, unfinished], detectionUnfinishedMessage],
       [[broken, broken], detectionUnfinishedMessage],
+      // A copy elsewhere that was turned down says nothing about this one.
+      [[rejectedElsewhere, rejectedElsewhere], detectionUnfinishedMessage],
       // A detection that finished and still did not find it has turned that app down,
-      // and so has one that checked it and found it is not the official app.
+      // and so has one that checked this very copy and found it is not the official app.
       [[finished], macosDesktopNameTakenMessage('ChatGPT')],
       [[unfinished, finished], macosDesktopNameTakenMessage('ChatGPT')],
-      [[rejected, rejected], macosDesktopNameTakenMessage('ChatGPT')],
+      [[rejectedHere, rejectedHere], macosDesktopNameTakenMessage('ChatGPT')],
     ]
     for (const [attempts, message] of cases) {
-      const applications = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-applications-'))
-      temporaryDirectories.push(applications)
-      fs.mkdirSync(path.join(applications, 'ChatGPT.app', 'Contents'), { recursive: true })
       const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
       for (const attempt of attempts) detectMacosCodexApp.mockImplementationOnce(attempt)
       const f = macInstallFixture({

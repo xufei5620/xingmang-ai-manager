@@ -100,13 +100,13 @@ export interface MacosCodexAppInspection {
   detectionFailed: boolean
   detectionError: string | null
   /**
-   * Set when a bundle that identified itself as Codex was conclusively turned
-   * down (see isBundleRejection) rather than left unchecked, which
-   * `detectionFailed` alone cannot tell apart. Checking again gives the same
-   * answer, so a caller must not describe it as a detection that merely did
-   * not finish.
+   * Canonical paths of the bundles that identified themselves as Codex and were
+   * conclusively turned down (see isBundleRejection), as opposed to left
+   * unchecked; `detectionFailed` alone cannot tell the two apart. Checking
+   * again gives the same answer, so a caller must not describe one of these as
+   * a detection that merely did not finish. Absent when there are none.
    */
-  rejected?: boolean
+  rejectedPaths?: string[]
 }
 
 export interface MacosCodexAppInspectionOptions {
@@ -296,7 +296,7 @@ interface CandidateInspection {
   app: { path: string, version: string | null } | null
   detectionFailed: boolean
   detectionError: string | null
-  rejected?: boolean
+  rejectedPath?: string
 }
 
 /** Shared by every early "this candidate is not a match" exit below. */
@@ -336,7 +336,8 @@ async function inspectCandidate(
   supportsArchitecture: (architectures: readonly string[]) => Promise<boolean>,
   reportUnidentifiedFailure = true,
 ): Promise<CandidateInspection> {
-  let matchesIdentity = false
+  // The canonical bundle path, once the bundle has identified itself as Codex.
+  let identified: string | null = null
   try {
     const canonical = await canonicalAppCandidate(candidate)
     if (!canonical || inspectedPaths.has(canonical)) return notAMatch
@@ -352,7 +353,7 @@ async function inspectCandidate(
       infoPath,
     ]))
     if (identifier !== bundleIdentifier) return notAMatch
-    matchesIdentity = true
+    identified = canonical
 
     const executableName = propertyValue(await command('/usr/bin/plutil', [
       '-extract',
@@ -412,12 +413,12 @@ async function inspectCandidate(
     }
     return { app: { path: canonical, version }, detectionFailed: false, detectionError: null }
   } catch (error) {
-    if (!matchesIdentity && !reportUnidentifiedFailure) return notAMatch
+    if (identified === null && !reportUnidentifiedFailure) return notAMatch
     return {
       app: null,
       detectionFailed: true,
       detectionError: describeProbeFailure(error),
-      ...(matchesIdentity && isBundleRejection(error) ? { rejected: true } : {}),
+      ...(identified !== null && isBundleRejection(error) ? { rejectedPath: identified } : {}),
     }
   }
 }
@@ -468,7 +469,7 @@ export async function inspectMacosCodexApp(
   // found later still wins outright, while an inconclusive scan reports every
   // check that never produced an answer instead of only the last one.
   const failures = new Set<string>()
-  let rejected = false
+  const rejectedPaths: string[] = []
 
   for (const candidate of standardCandidates) {
     if (!candidate) continue
@@ -481,7 +482,7 @@ export async function inspectMacosCodexApp(
       }
     }
     if (inspected.detectionError) failures.add(inspected.detectionError)
-    if (inspected.rejected) rejected = true
+    if (inspected.rejectedPath) rejectedPaths.push(inspected.rejectedPath)
   }
 
   let spotlightOutput = ''
@@ -505,7 +506,7 @@ export async function inspectMacosCodexApp(
       }
     }
     if (inspected.detectionError) failures.add(inspected.detectionError)
-    if (inspected.rejected) rejected = true
+    if (inspected.rejectedPath) rejectedPaths.push(inspected.rejectedPath)
   }
 
   // This fallback walks metadata only, without entering bundles or recursing.
@@ -529,7 +530,7 @@ export async function inspectMacosCodexApp(
           }
         }
         if (inspected.detectionError) failures.add(inspected.detectionError)
-        if (inspected.rejected) rejected = true
+        if (inspected.rejectedPath) rejectedPaths.push(inspected.rejectedPath)
       }
     } catch (error) {
       failures.add(describeProbeFailure(error))
@@ -540,6 +541,6 @@ export async function inspectMacosCodexApp(
     app: null,
     detectionFailed: failures.size > 0,
     detectionError: failures.size > 0 ? [...failures].join('；') : null,
-    ...(rejected ? { rejected: true } : {}),
+    ...(rejectedPaths.length > 0 ? { rejectedPaths } : {}),
   }
 }
