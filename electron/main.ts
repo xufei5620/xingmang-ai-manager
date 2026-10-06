@@ -142,6 +142,7 @@ import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   clearableEnvironmentOverrides,
   createDiagnosticsExport,
+  environmentAccountBaseUrls,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
   relaySiteStatusProbeUrls,
@@ -1556,9 +1557,11 @@ if (!hasSingleInstanceLock) {
       // 不信渲染层给的任何名字或路径（I5）。
       fix: async (kind: DiagnosticFixKind) => {
         if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
-        const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
+        const siteId = systemService.readStoredConfig().relaySiteId
+        // 和检查页那一项同一套「指向当前账号」：「自动」走直连时指着默认线路的不删。
+        const accountBaseUrls = environmentAccountBaseUrls(relayRouting.resolve(siteId), diagnosticsRelayRoute(siteId))
         return clearUserProviderOverrides({
-          names: clearableEnvironmentOverrides(process.env, site.providerBaseUrls, codexContext.userHome),
+          names: clearableEnvironmentOverrides(process.env, accountBaseUrls, codexContext.userHome),
         })
       },
       // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——

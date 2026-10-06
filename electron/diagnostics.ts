@@ -179,6 +179,8 @@ export interface DiagnosticsDependencies {
    * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
    * 用的是直连还是默认线路；选「自动」、这会儿走直连却没连上时，改查同一个站的默认线路，查通了
    * 算能连上、说清已经自动改走默认线路，并把直连的失败报给线路那边。缺省 = 不提线路（旧行为）。
+   * 「电脑里另外设过的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
+   * （environmentAccountBaseUrls）。缺省 = 只认 relaySite 那一份。
    */
   relayRoute?: DiagnosticsRelayRoute
   /**
@@ -1092,9 +1094,24 @@ function sameHostAs(value: string, expected: string): boolean {
   }
 }
 
+/**
+ * 工具地址变量指到哪几份地址算「已指向当前账号」（直连适配第二步）。这会儿用的那条线路一直算。
+ * 选「自动」时默认线路也一直算：它是客户照旧教程设得最多的地址，「自动」走直连并不说明它不通，
+ * 报它只会教人删一个没问题的变量。直连只在这会儿真走直连时才算：「自动」退回了默认线路，说明直连
+ * 在这台电脑上连不上，指着直连的变量会让工具跟着连不上。写死「只用直连」的照旧只认直连，多半是
+ * 默认线路在他那儿不通才这么选。
+ */
+export function environmentAccountBaseUrls(
+  relaySite: RelaySite,
+  relayRoute: Pick<DiagnosticsRelayRoute, 'automatic' | 'primarySite'> | undefined,
+): ReadonlyArray<RelaySite['providerBaseUrls']> {
+  if (!relayRoute?.automatic) return [relaySite.providerBaseUrls]
+  return [relaySite.providerBaseUrls, relayRoute.primarySite.providerBaseUrls]
+}
+
 function collectEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): EnvironmentOverrideMatch[] {
   const matches: EnvironmentOverrideMatch[] = []
@@ -1108,9 +1125,10 @@ function collectEnvironmentOverrides(
       const fallback = path.join(userHome, providerConfigDirectoryNames[variable.provider])
       if (normalizedPathKey(value) === normalizedPathKey(fallback)) continue
     }
-    // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
+    // 指向当前账号的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
     // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
-    const overriding = !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider]))
+    const overriding = !(variable.kind === 'baseUrl'
+      && accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider])))
     matches.push({
       name: variable.name,
       provider: variable.provider,
@@ -1129,10 +1147,10 @@ function collectEnvironmentOverrides(
  */
 export function clearableEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): string[] {
-  return collectEnvironmentOverrides(env, providerBaseUrls, userHome)
+  return collectEnvironmentOverrides(env, accountBaseUrls, userHome)
     .filter((match) => match.overriding && match.kind !== 'directory')
     .map((match) => match.name)
 }
@@ -1795,6 +1813,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectProvider = dependencies.inspectProvider
     ?? ((provider, roots) => inspectProviderConfig(provider, roots))
   const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
+  const accountBaseUrls = environmentAccountBaseUrls(relaySite, dependencies.relayRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
@@ -2534,8 +2553,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '电脑里另外设过的工具地址或密钥',
       run: () => withIgnoredCodexHome(
         withEnvironmentOverrideFix(
-          environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
-          platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
+          environmentOverrideOutcome(collectEnvironmentOverrides(env, accountBaseUrls, userHome)),
+          platform === 'win32' && clearableEnvironmentOverrides(env, accountBaseUrls, userHome).length > 0,
         ),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
