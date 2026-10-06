@@ -254,6 +254,56 @@ describe('native CLI configuration files', () => {
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
   })
 
+  it('tells the home page when Codex itself cannot read config.toml', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const configPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    // A duplicate key written by another tool stops Codex Desktop at
+    // 「无法加载组织设置」 before anything else loads.
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots).codexConfigBroken).toBe(true)
+    // A Chinese comment saved as GBK: this app still reads the file, Codex does not.
+    fs.writeFileSync(configPath, Buffer.concat([Buffer.from('# '), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from('\nmodel = "a"\n')]))
+    expect(inspectProviderConfig('codex', roots).model).toBe('a')
+    expect(inspectProviderConfig('codex', roots).codexConfigBroken).toBe(true)
+    // TOML 1.1 that Codex reads fine is not broken, although this app cannot parse it.
+    fs.writeFileSync(configPath, 'model = "a"\nxm = {\n  b = 1,\n}\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    fs.writeFileSync(configPath, 'model = "a"\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    const grokPath = providerConfigPaths('grok', roots)[0]
+    fs.mkdirSync(path.dirname(grokPath), { recursive: true })
+    fs.writeFileSync(grokPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    expect(inspectProviderConfig('grok', roots)).not.toHaveProperty('codexConfigBroken')
+  })
+
+  it('resets an unreadable Codex config.toml for a ChatGPT login and keeps the login', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
+    }), 'utf8')
+
+    // 首页「修好它」对登录 ChatGPT 的客户走的就是这条：以前坏文件在这里直接报错，修不了。
+    const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens: { access_token: string } }
+    expect(auth.tokens.access_token).toBe('access-token')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexConfigBroken')
+    const backup = saved.backups.find((entry) => entry.startsWith(`${configPath}.bak.`))
+    expect(backup).toBeDefined()
+    expect(fs.readFileSync(String(backup), 'utf8')).toBe('model = "a"\nmodel = "b"\n')
+    // An unreadable file is never kept as the 星芒 snapshot to switch back to.
+    expect(fs.existsSync(codexConfigSnapshotPaths(roots).relay)).toBe(false)
+  })
+
   it('points the customer at the reset when a save cannot read the existing config', () => {
     // 以前只说「现有 … 无法解析，未执行修改」，客户不知道「重置为初始状态」能救，只能反复重试（第三十批 C）。
     const userHome = temporaryHome()

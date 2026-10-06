@@ -2167,6 +2167,31 @@ describe('registerIpcHandlers', () => {
     expect(service.saveConfig).not.toHaveBeenCalled()
   })
 
+  // 首页「配置文件坏了」的「修好它」和配置里「重置为初始状态」选官方账号都走这条：
+  // 答应过先备份，备份页里就得找得回来（以前只留配置旁边会被挤掉的 .bak）。
+  it('keeps a restorable backup before an official reset and refuses to reset without one', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-to-official-account')!
+
+    await handler(trustedEvent(), 'codex', 'merge')
+    await handler(trustedEvent(), 'codex')
+    expect(create).not.toHaveBeenCalled()
+
+    await handler(trustedEvent(), 'codex', 'reset')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'reset')
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[2])
+
+    vi.mocked(service.switchToOfficialAccount).mockClear()
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
+  })
+
   it('validates and forwards the official save mode while accepting legacy calls', async () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('config:switch-to-official-account')!
@@ -6892,6 +6917,35 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
     })
 
+    it('keeps a restorable backup before an account-key reset and refuses to reset without one', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.revealKey).mockResolvedValue('sk-selected-account-key')
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const create = vi.fn(() => ({ id: 'backup-1' }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, {
+        backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      })
+      const handler = electronMocks.handlers.get('account:configure-cli-with-key')!
+      const input = { provider: 'codex', keyId: 88, model: 'gpt-5.6-sol' }
+
+      await handler(trustedEvent(), { ...input, mode: 'merge' })
+      expect(create).not.toHaveBeenCalled()
+
+      await handler(trustedEvent(), { ...input, mode: 'reset' })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+      vi.mocked(service.saveConfig).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
     it('rejects stale or malformed account-key CLI configuration before writing', async () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
@@ -6964,6 +7018,41 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         mode: mode ?? 'merge',
       }, false, expect.any(Function), { source: 'account', automatic: true })
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
+    })
+
+    it('keeps a restorable backup before a managed-key reset and refuses to reset without one', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const create = vi.fn(() => ({ id: 'backup-1' }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, {
+        backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      })
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+      const input = { providers: ['codex'], preferredModels: {}, intent: 'explicit' }
+
+      await handler(trustedEvent(), { ...input, mode: 'merge' })
+      expect(create).not.toHaveBeenCalled()
+
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).resolves.toEqual({ configured: ['codex'], failed: [] })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+      vi.mocked(service.saveConfig).mockClear()
+      vi.mocked(accountService.provisionCliKey).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
     it('rejects unknown save modes before provisioning or writing config', () => {

@@ -126,6 +126,8 @@ const pendingKeyMetadata = new Map<ProviderId, () => void>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
 if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
+// ?codexBroken：Codex 自己读不了 config.toml（主进程 codexConfigBroken），重置之后才好。
+if (query.has('codexBroken')) config.providers.codex.codexConfigBroken = true
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
   config.providers.claude = { ...configValue, configurationOwnership: 'manual' }
@@ -637,10 +639,11 @@ const methods = {
     config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
     return { backups: [], files: [] }
   },
-  switchToOfficialAccount: async (provider: ProviderId) => {
+  switchToOfficialAccount: async (provider: ProviderId, mode?: 'merge' | 'reset') => {
     // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
-      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}) }
+      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}),
+      ...(provider === 'codex' && mode === 'reset' ? { codexConfigBroken: false } : {}) }
     return { backups: [], files: [] }
   },
   switchAccountSource: async (provider: ProviderId, target: 'account' | 'official') => {
@@ -706,7 +709,7 @@ const methods = {
         continue
       }
       keyRewritten.add(provider)
-      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(provider === 'codex' && input.mode === 'reset' ? { codexConfigBroken: false } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'

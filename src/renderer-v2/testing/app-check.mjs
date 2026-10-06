@@ -3936,6 +3936,43 @@ test('a key from another site is named for the account and switched from the row
   } finally { await page.close() }
 })
 
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」就是配置里的
+// 「重置为初始状态」，按现在用的账号重新生成，不换来源。
+test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
+  const page = await open('codexBroken=1')
+  try {
+    for (const tool of ['codex', 'codexDesktop']) {
+      const row = page.getByTestId(`tool-row-${tool}`)
+      await row.getByText('配置文件坏了', { exact: true }).waitFor()
+      await row.getByText('Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留', { exact: true }).waitFor()
+      assert.equal(await page.getByTestId(`tool-${tool}-repair-config`).getAttribute('title'), '改之前会先备份原来的设置')
+    }
+    assert.equal(await page.getByText('还没配 Key', { exact: true }).count(), 0)
+    await page.getByTestId('tool-codexDesktop-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    for (const tool of ['codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a ChatGPT login whose Codex config cannot be read is reset on the official account', async () => {
+  const page = await open('codexBroken=1&official=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.getByText('配置文件坏了', { exact: true }).waitFor()
+    await page.getByTestId('tool-codex-repair-config').click()
+    await waitForToast(page, '配置保存成功')
+    await row.locator('.xm-tool-status').getByText('官方账号', { exact: true }).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchToOfficialAccount').map((entry) => entry.args))
+    assert.deepEqual(resets, [['codex', 'reset']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the config dialog switches a foreign key in place without the old manual-key buttons', async () => {
   const page = await open('unknown=1')
   try {
