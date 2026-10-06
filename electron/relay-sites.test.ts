@@ -7,12 +7,14 @@ import {
   relayApiProbeBaseUrl,
   relayDirectHosts,
   relayDirectIps,
+  relayEndpointAliasOrigins,
   relayProviderBaseUrlMatches,
   relayProviderBaseUrls,
   relaySiteEndpointChoices,
   relaySiteEndpointIdForBaseUrl,
   relaySiteForProviderBaseUrl,
   relaySiteExternalUrls,
+  relaySiteProviderBaseUrlVariants,
   relaySites,
   resolveRelaySite,
   resolveSupportServiceUrl,
@@ -191,7 +193,8 @@ describe('relay site registry', () => {
   it('lists every host a relay site sends account or CLI traffic to, once each', () => {
     const hosts = relayDirectHosts()
     expect(hosts).toEqual(['xm.solov.cc', 'xm-direct.solov.cc', 'api.solov.cc'])
-    expect(relayDirectIps()).toEqual(['38.147.105.28'])
+    // 旧的 IP 测试入口只当别名认旧配置，服务端要关掉它，加速规则里不再带。
+    expect(relayDirectIps()).toEqual([])
     for (const site of relaySites) {
       for (const url of [...Object.values(site.providerBaseUrls), site.accountBaseUrl, site.websiteUrl, site.keysPageUrl]) {
         if (url) expect(hosts).toContain(new URL(url).hostname)
@@ -225,9 +228,37 @@ describe('relay site registry', () => {
     expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', `${direct.codex}/`)).toBe('direct')
     expect(relaySiteEndpointIdForBaseUrl('solov-api', 'codex', direct.codex)).toBeNull()
     expect(relaySiteForProviderBaseUrl('solov', 'codex', direct.codex)?.providerBaseUrls).toEqual(direct)
-    expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', 'https://xm-direct.solov.cc/v1')).toBe('direct')
-    expect(relaySiteForProviderBaseUrl('solov', 'codex', 'https://xm-direct.solov.cc/v1')?.providerBaseUrls.codex)
-      .toBe('https://xm-direct.solov.cc/v1')
+    // 旧的 IP 测试入口认作直连，认出来的那份按它原样的地址交出，迁不迁照选没选过线路定。
+    expect(direct.codex).toBe('https://xm-direct.solov.cc/v1')
+    expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', 'https://38.147.105.28:8443/v1')).toBe('direct')
+    expect(relayProviderBaseUrlMatches('codex', 'https://38.147.105.28:8443/v1', providerBaseUrls.codex)).toBe(true)
+    expect(relaySiteForProviderBaseUrl('solov', 'codex', 'https://38.147.105.28:8443/v1')?.providerBaseUrls.codex)
+      .toBe('https://38.147.105.28:8443/v1')
+    for (const actual of ['https://38.147.105.28/v1', 'https://38.147.105.28:8444/v1', 'http://38.147.105.28:8443/v1']) {
+      expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', actual)).toBeNull()
+    }
+  })
+
+  it('lists every address a provider is known by on each line without writing an alias', () => {
+    expect(relaySiteProviderBaseUrlVariants('solov', 'codex')).toEqual([
+      { endpointId: 'primary', baseUrl: 'https://xm.solov.cc/v1' },
+      { endpointId: 'direct', baseUrl: 'https://xm-direct.solov.cc/v1' },
+      { endpointId: 'direct', baseUrl: 'https://38.147.105.28:8443/v1' },
+    ])
+    expect(relaySiteProviderBaseUrlVariants('solov', 'claude').map((variant) => variant.baseUrl))
+      .toEqual(['https://xm.solov.cc', 'https://xm-direct.solov.cc', 'https://38.147.105.28:8443'])
+    expect(relaySiteProviderBaseUrlVariants('solov-api', 'codex')).toEqual([{ endpointId: 'primary', baseUrl: 'https://api.solov.cc/v1' }])
+    expect(relaySiteProviderBaseUrlVariants('https://xm.solov.cc', 'codex')).toEqual([])
+    // 写进配置、发请求只用各条线路自己的地址。
+    const direct = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).require('solov')
+    expect(JSON.stringify([direct, relayProviderBaseUrls('solov', 'direct')])).not.toContain('38.147.105.28')
+  })
+
+  it('names the retired addresses of a line only by the exact origin of that line', () => {
+    expect(relayEndpointAliasOrigins('https://xm-direct.solov.cc')).toEqual(['https://38.147.105.28:8443'])
+    for (const origin of ['https://xm.solov.cc', 'https://api.solov.cc', 'https://38.147.105.28:8443', 'https://xm-direct.solov.cc/', 'https://other.example']) {
+      expect(relayEndpointAliasOrigins(origin)).toEqual([])
+    }
   })
 
   it('freezes active transport independently of pending settings and canonical site identity', () => {
@@ -235,7 +266,7 @@ describe('relay site registry', () => {
     const routing = createRelayEndpointRoutingSnapshot(preferences)
     Object.assign(preferences, { solov: 'primary' })
     expect(routing.activeEndpointIds).toEqual({ solov: 'direct', 'solov-api': 'primary' })
-    expect(routing.require('solov').accountBaseUrl).toBe('https://38.147.105.28:8443')
+    expect(routing.require('solov').accountBaseUrl).toBe('https://xm-direct.solov.cc')
     expect(routing.require('solov').providerBaseUrls).toEqual(relayProviderBaseUrls('solov', 'direct'))
     expect(routing.require('solov').websiteUrl).toBe('https://xm.solov.cc')
     expect(routing.require('solov-api').accountBaseUrl).toBe('https://api.solov.cc')

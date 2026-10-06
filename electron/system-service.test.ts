@@ -595,8 +595,8 @@ describe('createSystemService', () => {
     const provider = options.provider ?? 'codex'
     const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
     const sourceUrls = options.source === 'historical'
-      ? { claude: 'https://xm-direct.solov.cc', codex: 'https://xm-direct.solov.cc/v1',
-        gemini: 'https://xm-direct.solov.cc', grok: 'https://xm-direct.solov.cc/v1' }
+      ? { claude: 'https://38.147.105.28:8443', codex: 'https://38.147.105.28:8443/v1',
+        gemini: 'https://38.147.105.28:8443', grok: 'https://38.147.105.28:8443/v1' }
       : relayProviderBaseUrls('solov', options.source ?? 'primary')
     saveProviderConfig(provider, 'sk-migration-fixture', 'fixture-model', 'reset', roots, {}, sourceUrls)
     const owner = JSON.stringify(['solov', 9])
@@ -664,7 +664,15 @@ describe('createSystemService', () => {
     },
   )
 
-  it('protects a historical backup alias before changing it to the fixed IP endpoint', async () => {
+  it('moves a CLI still on the retired IP test entry to the direct domain', async () => {
+    const f = await automaticRouteFixture({ source: 'historical' })
+    await f.save()
+    expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('protects the retired IP test entry before changing it to the direct domain', async () => {
     const f = await automaticRouteFixture({ source: 'historical', report: {
       running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false,
     } })

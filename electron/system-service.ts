@@ -238,7 +238,7 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrls, relaySiteEndpointChoices, relaySiteForProviderBaseUrl,
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants,
   type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
@@ -6528,8 +6528,8 @@ export function createSystemService(
    * 星芒替当前账号写的那一份在这个站的哪条线路上：from 是归属记在哪条线路，baseUrl 是那份配置
    * 现在指着的地址，Key 和型号原样交出（Claude Desktop 没写型号时 model 为 null）。baseUrl 是另一条
    * 线路的，跟着换；已经是当前线路的（上回地址换好了、归属没记上），补记归属。归属对不上、不是
-   * 这个站登记过的线路，回 null。只认登记的主地址：星芒保存时只写它，别名不会有归属记录。
-   * 主进程内部专用，密钥永不跨 IPC（I3）。
+   * 这个站登记过的线路，回 null。别名也认：直连原来的地址是 IP 测试入口，那时存的那份归属记在
+   * IP 上，现在 IP 退成别名、要关掉，得跟着换到域名。主进程内部专用，密钥永不跨 IPC（I3）。
    */
   async function externalClientRouteCredential(
     status: ExternalClientRuntimeStatus,
@@ -6538,8 +6538,8 @@ export function createSystemService(
   ): Promise<{ from: RelayEndpointId; baseUrl: string; apiKey: string; model: string | null } | null> {
     const provider = status.tool === 'claudeDesktop' ? 'claude' : 'codex'
     const current = activeSite.providerBaseUrls[provider]
-    const routes = relaySiteEndpointChoices(activeSite.id)
-      .map((endpoint) => ({ from: endpoint.id, baseUrl: relayProviderBaseUrls(activeSite.id, endpoint.id)[provider] }))
+    const routes = relaySiteProviderBaseUrlVariants(activeSite.id, provider)
+      .map((variant) => ({ from: variant.endpointId, baseUrl: variant.baseUrl }))
       .filter((route) => route.baseUrl !== current)
     const unchanged = () => serviceOptions.getExternalClientAccountId?.() === owner && activeRelaySite().id === activeSite.id
     const ownedRoute = (apiKey: string) => unchanged() ? routes.find((route) => externalOwnership.matches(status.tool, owner, route.baseUrl, apiKey)) : undefined

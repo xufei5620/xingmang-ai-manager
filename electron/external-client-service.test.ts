@@ -637,7 +637,8 @@ describe('external client system-service integration', () => {
 
 describe('external clients follow the connection route the user selected (batch 43 A)', () => {
   const primaryOrigin = 'https://xm.solov.cc'
-  const directOrigin = 'https://38.147.105.28:8443'
+  const directOrigin = 'https://xm-direct.solov.cc'
+  const retiredDirectOrigin = 'https://38.147.105.28:8443'
 
   // 首页「配置」那样，在当前生效的线路上给三家各存一次；三家都装着、都没开。
   async function configureAll(f: ReturnType<typeof fixture>) {
@@ -694,6 +695,27 @@ describe('external clients follow the connection route the user selected (batch 
     expect(f.relayFetch.mock.calls.map(([url]) => String(url))).toEqual(externalToolIds.map(() => `${directOrigin}/v1/models`))
     expect(JSON.stringify(clients)).not.toContain(selectedKey)
     expect(JSON.stringify(routeLogs(f))).not.toMatch(/sk-selected|solov\.cc|38\.147/)
+  })
+
+  it('moves clients saved on the retired direct IP entry to the direct domain', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    // 装过直连还是 IP 那一版、选了备用直连的客户：三家存在 IP 测试入口上，归属也记在那个地址上。
+    const ownership = new ExternalClientOwnershipStore(path.join(f.managerDataDirectory, 'external-client-ownership'))
+    for (const tool of externalToolIds) {
+      fs.writeFileSync(files.get(tool)!, before.get(tool)!.replaceAll(primaryOrigin, retiredDirectOrigin), 'utf8')
+      await ownership.write(tool, JSON.stringify(['solov', 17]), tool === 'claudeDesktop' ? retiredDirectOrigin : `${retiredDirectOrigin}/v1`, selectedKey)
+    }
+    f.relayFetch.mockClear()
+    const clients = await (await restartOn(f, 'direct')).scanExternalClients()
+
+    for (const tool of externalToolIds) {
+      expect(clients.find((entry) => entry.tool === tool)).toMatchObject({ configured: true, configurationSource: 'xingmang' })
+      expect(fs.readFileSync(files.get(tool)!, 'utf8')).toBe(before.get(tool)!.replaceAll(primaryOrigin, directOrigin))
+      expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.followed', expect.any(String),
+        { tool, from: 'direct', to: 'direct' }])
+    }
+    expect(f.relayFetch.mock.calls.map(([url]) => String(url))).toEqual(externalToolIds.map(() => `${directOrigin}/v1/models`))
   })
 
   it('moves them back when the user selects the default route again', async () => {

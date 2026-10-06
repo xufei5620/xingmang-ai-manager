@@ -110,9 +110,8 @@ function ok() {
   return { status: 200, body: { data: [{ b64_json: fixture }] } }
 }
 
-test('MCP server accepts only the registered HTTPS origins and preserves the fixed IP port', async () => {
-  for (const baseUrl of ['https://xm.solov.cc', 'https://api.solov.cc',
-    'https://xm-direct.solov.cc', 'https://38.147.105.28:8443']) {
+test('MCP server accepts only the registered HTTPS origins', async () => {
+  for (const baseUrl of ['https://xm.solov.cc', 'https://api.solov.cc', 'https://xm-direct.solov.cc']) {
     await withServer({ apiKey: 'sk-fixture-not-real', baseUrl }, ok, async ({ call, requests }) => {
       const result = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'fixture' } })
       assert.equal(result.result.isError, undefined, baseUrl)
@@ -124,7 +123,8 @@ test('MCP server accepts only the registered HTTPS origins and preserves the fix
 })
 
 test('MCP server refuses unregistered scheme host port credentials and URL suffixes before sending a key', async () => {
-  for (const baseUrl of ['http://xm.solov.cc', 'https://xm.solov.cc:8443',
+  // 38.147.105.28:8443 是服务端关掉的临时测试入口，直连改走 xm-direct.solov.cc 以后也不再放行。
+  for (const baseUrl of ['https://38.147.105.28:8443', 'http://xm.solov.cc', 'https://xm.solov.cc:8443',
     'https://api.solov.cc:8443', 'https://xm-direct.solov.cc:8443',
     'https://38.147.105.28', 'https://38.147.105.28:8444', 'http://38.147.105.28:8443',
     'https://38.147.105.29:8443', 'https://xm.solov.cc.evil.example', 'https://anything.solov.cc',
