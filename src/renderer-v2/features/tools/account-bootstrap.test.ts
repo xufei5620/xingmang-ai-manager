@@ -15,6 +15,7 @@ import {
   configurationFailureMessages,
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
+  routeDeferredMessage,
   skippedNamedProviders,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
@@ -880,6 +881,34 @@ describe('explicit applied connection routes on restore', () => {
     expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
     expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
     expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('关闭') })])
+  })
+
+  it('tells a Mac user to quit the Codex desktop app with Command + Q when only it holds the route back', async () => {
+    const { current, api } = fixture()
+    api.inspectRunningTools.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
+    expect(result.failed).toEqual([{ provider: 'codex', message: 'Codex 桌面端还开着，连接线路暂未改动；只关窗口不算，要在它的窗口里按 Command + Q 完全退出，再点「重新同步」' }])
+    expect(result.networkBlocked).toBe(false)
+  })
+
+  const desktopDeferred = 'Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
+  const cliDeferred = 'Codex CLI 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
+  it.each([
+    ['the desktop app when it runs where it can be restarted', { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }, desktopDeferred],
+    ['the desktop app when a Mac cannot tell whether it runs', { running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false }, desktopDeferred],
+    ['the CLI when it runs next to the Mac desktop app', { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }, cliDeferred],
+    ['the CLI when it cannot be told apart', { running: [], unknown: ['codex'], codexDesktopRunning: false, canRestartCodexDesktop: false }, cliDeferred],
+    ['the CLI when process inspection failed', null, cliDeferred],
+    ['the CLI when the running-tools capability is missing', undefined, cliDeferred],
+  ] as Array<[string, RunningToolsReport | null | undefined, string]>)('keeps the closing wording and names %s', (_name, report, message) => {
+    expect(routeDeferredMessage('codex', report)).toBe(message)
+  })
+
+  it('leaves the deferral wording of the other tools alone', () => {
+    expect(routeDeferredMessage('claude', { running: ['claude'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }))
+      .toBe('Claude Code 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步')
   })
 
   it('keeps the old route when process inspection fails and rejects a reported success that did not migrate it', async () => {

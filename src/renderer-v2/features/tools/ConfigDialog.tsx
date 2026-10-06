@@ -48,6 +48,8 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
   const [keys, setKeys] = useState<AccountKey[]>([])
   const [models, setModels] = useState<string[]>([])
   const [modelsDetected, setModelsDetected] = useState(false)
+  // 打开时自动读的那一次的编号，0 = 没在读。按编号清：先发的那次晚到时，关不掉后发那次的转圈。
+  const [autoDetectId, setAutoDetectId] = useState(0)
   const [modelFilter, setModelFilter] = useState<CodexModelFilter>(initialModelFilter)
   const [keyError, setKeyError] = useState('')
   const [keyRevision, setKeyRevision] = useState(0)
@@ -141,8 +143,26 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     request.current++
     setModels([])
     setModelsDetected(false)
+    setAutoDetectId(0)
     setError('')
   }, [tab, draft.source, draft.keyId, draft.secret])
+  // 下拉框里只有已选的那一个型号时，客户会以为只能用它（「为什么没有 6.1 Sol」）。
+  // 工具里已经是当前账号的 Key，就在打开窗口、换到另一个工具时替他读一次：只把读到的
+  // 放进下拉框，选中的型号不动、也不算改动（关窗口不会问要不要放弃）；不锁窗口；
+  // 读不到不出红字，「检测模型」还在，点了照旧说清原因。没登录不读（这时账号相关的
+  // 选项都是灰的），也免得没登录跑的 Mac 界面检查拿占位 Key 去请求正式服务。
+  useEffect(() => {
+    if (!signedIn || draft.source !== 'account' || !usingCurrentKey || !native.hasApiKey || !native.matchesRelay) return
+    const id = ++request.current
+    setAutoDetectId(id)
+    void api.configuredModels(tab).then((result) => {
+      if (!active.current || id !== request.current) return
+      setModels(result)
+      setModelsDetected(true)
+    }).catch(() => undefined).finally(() => {
+      if (active.current) setAutoDetectId((current) => current === id ? 0 : current)
+    })
+  }, [tab])
   useEffect(() => { setWarning(''); setNotice('') }, [tab])
   async function detectModels() {
     if (locked.current) return
@@ -353,7 +373,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
             <Select label="默认模型" testId="tool-default-model" value={draft.model} options={[...(!draft.model ? [{ value: '', label: activeModelFilter === 'non-gpt' ? '请选择别家模型' : '请先检测模型', disabled: true }] : []), ...modelChoices.options]} onChange={(event) => change({ model: event.target.value })} />
             {draft.source === 'account' && usingAutomaticKey
               ? <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-save-detect-models" loading={busy === '保存并检测'} onClick={() => void saveAndDetectModels()} disabled={activeModelFilter !== 'all' || !metadata || Boolean(metadataLoading[provider]) || Boolean(metadataErrors[provider])}>保存并检测模型</Button>
-              : <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-detect-models" loading={busy === '检测模型'} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>检测模型</Button>}
+              : <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-detect-models" loading={busy === '检测模型' || autoDetectId !== 0} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>检测模型</Button>}
             {provider === 'codex' && <p>列表里的模型来自当前账号，不是每个都能在 Codex 里用，拿不准就选默认的。</p>}
             {nonGptSaveIssue && <p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p>}
             {draft.source === 'account' && usingAutomaticKey && activeModelFilter === 'all' && <p>点「保存并检测模型」会先把密钥准备好、保存，再列出能用的模型。</p>}

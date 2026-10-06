@@ -38,6 +38,11 @@ export interface ExternalClientConnectionStatus {
   model: string | null
   configurationSource: 'xingmang' | 'other' | 'missing' | 'unknown'
   configurationError: string | null
+  /**
+   * 用户换了线路以后，星芒替当前账号写的那份还在这个站的另一条线路上，客户端开着所以这次没换
+   * （第四十三批 A）。缺省 = 没有要换的。
+   */
+  routePending?: boolean
 }
 
 export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {}
