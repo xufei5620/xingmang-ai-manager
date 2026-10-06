@@ -323,7 +323,9 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
   if (options.officialCodex) {
     // 已经关着、也记过切回星芒时开不开，就什么都不动。
     if (turnedOff && offByXingmang !== null) return { changed: false, enabled: false }
-    const reopenOnReturn = !await relaySnapshotHasSkillOff(codexHome, skillPath)
+    // 已经记着要打开的不改：上次在星芒下没打开成（config.toml 写不进去），离开时那个关会被
+    // 原样存进那份星芒配置，看那份就会把它当成客户的。
+    const reopenOnReturn = offByXingmang === true || !await relaySnapshotHasSkillOff(codexHome, skillPath)
     if (turnedOff) {
       // 以前的版本关的，没有记录，补上。
       await writeXingmangAiSkillOffRecord(statePath, reopenOnReturn)

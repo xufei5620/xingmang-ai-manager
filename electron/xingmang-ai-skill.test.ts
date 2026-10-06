@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -728,6 +729,51 @@ describe('xingmang-ai-skill across Codex account switches', () => {
     await expect(accounts.toXingmang()).resolves.toEqual({ changed: true, enabled: true })
     expect(await accounts.skillOff()).toBe(false)
     expect(await accounts.skillOff(accounts.paths.relay)).toBe(false)
+  })
+
+  async function failToTurnOnConfigToml(accounts: Awaited<ReturnType<typeof codexAccounts>>) {
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.sync(true)
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'merge', accounts.roots, {}, providerBaseUrls)
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    const rename = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.basename(String(to)) === 'config.toml') {
+        throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' })
+      }
+      return originalRename(from, to)
+    })
+    await expect(accounts.sync(false)).rejects.toThrow()
+    rename.mockRestore()
+    expect(await accounts.skillOff()).toBe(true)
+    expect(await accounts.skillOff(accounts.paths.relay)).toBe(false)
+  }
+
+  it('turns its own off back on at the next sync after config.toml could not be written', async () => {
+    const accounts = await codexAccounts()
+    await failToTurnOnConfigToml(accounts)
+
+    await expect(accounts.sync(false)).resolves.toEqual({ changed: true, enabled: true })
+    expect(await accounts.skillOff()).toBe(false)
+  })
+
+  it('still turns its own off back on after config.toml could not be written and the ChatGPT config was reset', async () => {
+    const accounts = await codexAccounts()
+    await failToTurnOnConfigToml(accounts)
+
+    // Leaving Xingmang stores the config with that off still in it.
+    await expect(accounts.toChatGpt('reset')).resolves.toEqual({ changed: true, enabled: false })
+    expect(await accounts.skillOff(accounts.paths.relay)).toBe(true)
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: true, enabled: true })
+    expect(await accounts.skillOff()).toBe(false)
+  })
+
+  it('treats an unreadable stored Xingmang config as holding the user\'s off', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await writeFile(accounts.paths.relay, '[[skills.config]\nbroken', 'utf8')
+
+    await expect(accounts.sync(true)).resolves.toEqual({ changed: true, enabled: false })
+    expect(JSON.parse(await readFile(accounts.statePath, 'utf8'))).toEqual({ version: 1, offByXingmang: false })
   })
 
   it('keeps the user\'s off when an older version left no record on the ChatGPT account', async () => {

@@ -7265,6 +7265,17 @@ export function createSystemService(
 
   async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
     await serializeConfigWrite(async () => {
+      // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
+      // 放在登记来源前面：那一步失败时这里也要做完。
+      if (provider === 'gemini') {
+        try {
+          forgetStaleGeminiUsageStatisticsRecord(providerRoots)
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const restored = inspectNativeProviderConfig(provider)
       const source = planRestoredConfigOwnership({
@@ -7275,15 +7286,6 @@ export function createSystemService(
         isAccountKey: restored.hasApiKey && isAccountKey(restored.apiKey),
       })
       if (source) await configOwnership.write(provider, restored, source, owner)
-      if (provider !== 'gemini') return
-      // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
-      try {
-        forgetStaleGeminiUsageStatisticsRecord(providerRoots)
-      } catch (error) {
-        runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
-          reason: credentialFailureReason(error),
-        })
-      }
     })
   }
 

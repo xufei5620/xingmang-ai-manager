@@ -370,6 +370,20 @@ describe('durable tool configuration ownership', () => {
     await f.makeService().adoptRestoredConfig('gemini', () => false)
     expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
   })
+
+  it('forgets that Gemini record even when the restored config cannot be registered', async () => {
+    const f = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', f.roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    saveProviderConfig('gemini', 'sk-fixture-user-secret', 'gemini-3.5-flash', 'reset', f.roots, {}, providerBaseUrls)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, privacy: {} }), 'utf8')
+    fs.mkdirSync(f.data, { recursive: true })
+    fs.writeFileSync(path.join(f.data, 'tool-config-ownership'), 'blocked', 'utf8')
+
+    await expect(f.makeService().adoptRestoredConfig('gemini', () => false)).rejects.toThrow()
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+  })
 })
 
 describe('planRestoredConfigOwnership', () => {
