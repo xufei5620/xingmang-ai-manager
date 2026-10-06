@@ -126,7 +126,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
-import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
@@ -1117,6 +1117,12 @@ if (!hasSingleInstanceLock) {
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
     const relayRouting = createRelayEndpointRoutingSnapshot(settingsStore.read().relayEndpointIds)
+    // 线路开机时定下，这次运行里不再变（设置里改了要重启才生效）。客服要从日志看出这次走的是
+    // 哪条：只记线路 id，不记地址。
+    runtimeLog.log('info', 'config', 'relay.route.active', '本次运行用的连接线路', {
+      active: relayRouting.activeEndpointIds,
+      selected: relayRouting.selections,
+    })
     let settingsSaveIssue: SettingsSaveIssue | undefined
     // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
     // 记录，而 settings.json 会整份交给渲染层，没必要把机器上每个账号的记录都
@@ -1846,6 +1852,7 @@ if (!hasSingleInstanceLock) {
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
+        relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
