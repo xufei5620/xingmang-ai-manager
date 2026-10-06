@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectHomeFolderTrust, inspectProviderConfig, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
+import { inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -50,7 +50,8 @@ import {
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayLineFailureAnswer, relayLineFailureReason } from './relay-line-fetch'
 import { relayApiProbeBaseUrl, relayEndpointForUrl, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite, type RelayEndpointId, type RelayRouteLines, type RelaySite } from './relay-sites'
-import { findReparseComponent, type ReparseComponent } from './safe-local-data'
+import { findReparseComponent, readSafeUtf8File, type ReparseComponent } from './safe-local-data'
+import { parseShellStartupExports, type ShellStartupDialect, type ShellStartupExport } from './shell-startup-exports'
 import { resolveRelocatedPath } from './relocated-folders'
 import { inspectDocumentsWritability, type DocumentsWritability } from './documents-fallback'
 import type { StarterWorkspaceLocationContext } from './starter-workspace'
@@ -1042,6 +1043,8 @@ interface EnvironmentOverrideMatch {
   overriding: boolean
   /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
   breaking: boolean
+  /** Mac 上从哪个终端设置文件读到的（`~/.zshrc` 这样，不带用户名）；缺省 = 星芒自己的进程环境里。 */
+  shellFile?: string
 }
 
 /**
@@ -1069,10 +1072,11 @@ interface EnvironmentOverrideMatch {
  *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
  *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
  *
- * Mac 上这些多半写在 ~/.zshrc 里，本程序看不到。从星芒打开工具时由启动脚本去掉（system-service.ts 的
- * macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里（diagnostics.test.ts 钉着），
- * 其中 Claude 的两个只在用星芒账号时去掉；Gemini 照 providerCommandEnvironment 去掉五个，breaksAccount 为
- * false 的三个也在内。
+ * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
+ * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
+ * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉；Gemini 照 providerCommandEnvironment
+ * 去掉五个，breaksAccount 为 false 的三个也在内。检查页在 Mac 上另去读那几个终端设置文件，只找 breaksAccount
+ * 的这四个（collectMacosShellOverrides）。
  * 改这里的取值时那边一起看。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
@@ -1106,6 +1110,11 @@ function sameHostAs(value: string, expected: string): boolean {
   }
 }
 
+/** 本程序替这个工具写配置的那个目录：变量指的就是它，等于没设。 */
+function isProviderConfigDirectory(provider: ProviderId, value: string, userHome: string): boolean {
+  return normalizedPathKey(value) === normalizedPathKey(path.join(userHome, providerConfigDirectoryNames[provider]))
+}
+
 function collectEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
   providerBaseUrls: RelaySite['providerBaseUrls'],
@@ -1118,10 +1127,7 @@ function collectEnvironmentOverrides(
     // CODEX_HOME 是本程序自己解析出来再注入进 codexEnv 的（codex-home.ts），所以
     // 诊断拿到的 env 里它永远有值。指到默认位置就是本程序自己写的那份，报它等于
     // 每次检查都给一条假警报；只有指到别处才是用户真的改过。
-    if (variable.kind === 'directory') {
-      const fallback = path.join(userHome, providerConfigDirectoryNames[variable.provider])
-      if (normalizedPathKey(value) === normalizedPathKey(fallback)) continue
-    }
+    if (variable.kind === 'directory' && isProviderConfigDirectory(variable.provider, value, userHome)) continue
     // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
     // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
     const overriding = !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider]))
@@ -1134,6 +1140,128 @@ function collectEnvironmentOverrides(
     })
   }
   return matches
+}
+
+interface ShellSettingsFile {
+  /** 相对用户主目录。 */
+  path: string
+  dialect: ShellStartupDialect
+}
+
+/**
+ * Mac 上「终端」开新窗口时登录 shell 会读的启动文件（已知45）。照别家中转教程配的 Key 多半在 ~/.zshrc，
+ * 它排第一；bash、fish 的也看，换过 shell 的电脑上旧文件里常留着。
+ */
+const macosShellSettingsFiles: readonly ShellSettingsFile[] = [
+  { path: '.zshrc', dialect: 'posix' },
+  { path: '.zprofile', dialect: 'posix' },
+  { path: '.zshenv', dialect: 'posix' },
+  { path: '.zlogin', dialect: 'posix' },
+  { path: '.bash_profile', dialect: 'posix' },
+  { path: '.bash_login', dialect: 'posix' },
+  { path: '.profile', dialect: 'posix' },
+  { path: '.bashrc', dialect: 'posix' },
+  { path: '.config/fish/config.fish', dialect: 'fish' },
+]
+
+// 手写的启动文件不会有几百 KB（同 macos-shell-profile.ts）；再大就不是该去读的文件了。
+const maximumShellSettingsBytes = 512 * 1024
+
+interface ShellSettingsExports {
+  /** `~/.zshrc` 这样写：进报告的只有它，不带用户名。 */
+  file: string
+  exports: ShellStartupExport[]
+}
+
+async function readMacosShellSettings(
+  userHome: string,
+  names: readonly string[],
+  skipped: (file: string, error: unknown) => void,
+): Promise<ShellSettingsExports[]> {
+  const found: ShellSettingsExports[] = []
+  for (const settings of macosShellSettingsFiles) {
+    const file = `~/${settings.path}`
+    let text: string | null
+    try {
+      text = await readSafeUtf8File(path.join(userHome, ...settings.path.split('/')), '终端设置文件', maximumShellSettingsBytes)
+    } catch (error) {
+      // dotfiles 仓库常把 ~/.zshrc 做成指向别处的链接。I8 只放行单链接普通文件，这一项只是提醒，不为它放宽。
+      skipped(file, error)
+      continue
+    }
+    if (text === null) continue
+    const exports = parseShellStartupExports(text, settings.dialect, names, userHome)
+    if (exports.length) found.push({ file, exports })
+  }
+  return found
+}
+
+/**
+ * 值同进程环境那边判：空的不算，指向当前账号的地址、指向本程序写的配置目录的不算，看不出值的照报。
+ * 不去首尾空白：终端原样交给工具的就是这个字符串。
+ */
+function overridesFromShellSettings(
+  variable: EnvironmentOverrideVariable,
+  value: string | null,
+  providerBaseUrls: RelaySite['providerBaseUrls'],
+  userHome: string,
+): boolean {
+  if (value === null) return true
+  if (value === '') return false
+  if (variable.kind === 'directory') return !isProviderConfigDirectory(variable.provider, value, userHome)
+  if (variable.kind === 'baseUrl') return !sameHostAs(value, providerBaseUrls[variable.provider])
+  return true
+}
+
+/**
+ * Mac 上终端设置文件里导出的、会让工具绕开当前账号的那几个（已知45）。只看用星芒账号的工具：Claude Code
+ * 用客户自己的账号时，那几行多半就是他自己的 Key，从星芒打开也照旧带上（system-service.ts 的
+ * macosShellOverrideVariables）；Gemini CLI 不用星芒账号时这几个变量起什么作用没实测过，按 T12 宁缺勿猜。
+ * 同一个名字在几个文件里都有，就各报一条，客户照着逐个去删。
+ */
+async function collectMacosShellOverrides(
+  userHome: string,
+  relayProviders: ReadonlySet<ProviderId>,
+  providerBaseUrls: RelaySite['providerBaseUrls'],
+  skipped: (file: string, error: unknown) => void,
+): Promise<EnvironmentOverrideMatch[]> {
+  const variables = ENVIRONMENT_OVERRIDE_VARIABLES
+    .filter((variable) => variable.breaksAccount && relayProviders.has(variable.provider))
+  if (!variables.length) return []
+  const found = await readMacosShellSettings(userHome, variables.map((variable) => variable.name), skipped)
+  return variables.flatMap((variable) => found
+    .filter((settings) => settings.exports.some((exported) => exported.name === variable.name
+      && overridesFromShellSettings(variable, exported.value, providerBaseUrls, userHome)))
+    .map((settings) => ({
+      name: variable.name,
+      provider: variable.provider,
+      kind: variable.kind,
+      overriding: true,
+      breaking: true,
+      shellFile: settings.file,
+    })))
+}
+
+/**
+ * 星芒是从终端里打开的时候，进程环境里也带着终端设置文件里的那几个：同一个名字只留指明了文件的那几条。
+ * 顺序照变量表排，同一个工具的挨在一起。
+ */
+function withShellSettingsOverrides(
+  environment: readonly EnvironmentOverrideMatch[],
+  shell: readonly EnvironmentOverrideMatch[],
+): EnvironmentOverrideMatch[] {
+  const named = new Set(shell.map((match) => match.name))
+  const combined = [...environment.filter((match) => !named.has(match.name)), ...shell]
+  return ENVIRONMENT_OVERRIDE_VARIABLES.flatMap((variable) => combined.filter((match) => match.name === variable.name))
+}
+
+/**
+ * Mac 上从星芒打开这个工具时，启动脚本会不会先把它的这几个变量去掉（system-service.ts 的
+ * macosShellOverrideVariables）：Claude Code 只在用星芒账号时去掉，Gemini CLI 不论哪种账号都去掉。
+ * 只拿来问 breaksAccount 的那四个；两边对不上时 diagnostics.test.ts 会红。
+ */
+function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySet<ProviderId>): boolean {
+  return provider === 'gemini' || (provider === 'claude' && relayProviders.has(provider))
 }
 
 /**
@@ -1160,17 +1288,32 @@ function withEnvironmentOverrideFix(outcome: CheckOutcome, clearable: boolean): 
   return { ...outcome, details: { ...outcome.details, fix: 'clear-user-overrides' } }
 }
 
+// Mac 上同一个名字可能写在几个终端设置文件里，结论里只说一次。
 function namesOf(matches: readonly EnvironmentOverrideMatch[]): string {
-  const listed = matches.slice(0, 3).map((match) => match.name).join('、')
-  return matches.length > 3 ? `${listed}等 ${matches.length} 项` : listed
+  const names = [...new Set(matches.map((match) => match.name))]
+  const listed = names.slice(0, 3).join('、')
+  return names.length > 3 ? `${listed}等 ${names.length} 项` : listed
 }
 
-function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
+function toolsOf(matches: readonly EnvironmentOverrideMatch[]): string {
+  return [...new Set(matches.map((match) => cliCatalog[match.provider].name))].join('、')
+}
+
+/**
+ * droppedByLauncher：从星芒打开时启动脚本会不会先去掉这一个（只在 Mac 上可能为 true）。
+ * 缺省 = 都会带给工具，Windows、Linux 就是这样。
+ */
+function environmentOverrideOutcome(
+  matches: readonly EnvironmentOverrideMatch[],
+  droppedByLauncher: (match: EnvironmentOverrideMatch) => boolean = () => false,
+): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = { count: matches.length }
   matches.forEach((match, index) => {
     // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
     // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
-    const note = !match.overriding ? '，已指向当前账号' : match.breaking ? '，会绕开当前账号' : ''
+    const note = !match.overriding
+      ? '，已指向当前账号'
+      : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，会绕开当前账号' : ''
     details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const overriding = matches.filter((match) => match.overriding)
@@ -1184,13 +1327,22 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
     }
   }
   const breaking = overriding.filter((match) => match.breaking)
-  if (breaking.length) {
-    const tools = [...new Set(breaking.map((match) => cliCatalog[match.provider].name))].join('、')
+  const reachingTools = breaking.filter((match) => !droppedByLauncher(match))
+  if (reachingTools.length) {
     return {
       // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
       // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
       state: 'fail',
-      summary: `电脑里另外设了 ${namesOf(breaking)}，会让 ${tools} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
+      summary: `电脑里另外设了 ${namesOf(reachingTools)}，会让 ${toolsOf(reachingTools)} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
+      details,
+    }
+  }
+  if (breaking.length) {
+    return {
+      // Mac 上从星芒打开工具时启动脚本已经去掉了这几个（已知45），只有客户自己开终端直接用工具时才绕开
+      // 当前账号，所以是「需留意」，开机提示不数它。
+      state: 'warn',
+      summary: `终端设置里另外设了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自己开终端直接用 ${toolsOf(breaking)} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉`,
       details,
     }
   }
@@ -2586,13 +2738,33 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '电脑里另外设过的工具地址或密钥',
-      run: () => withIgnoredCodexHome(
-        withEnvironmentOverrideFix(
-          environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
-          platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
-        ),
-        inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
-      ),
+      run: async () => {
+        const relayProviders = new Set(providerIds.filter((provider) => {
+          const inspection = providerInspections.get(provider)
+          return inspection !== undefined && providerAccountMode(inspection) === 'relay'
+        }))
+        const environment = collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)
+        // 读不了是哪个文件、为什么，只进日志不进报告；原文里可能带着用户名，先脱敏。
+        const skipped = (file: string, error: unknown): void => {
+          log?.('info', 'diagnostics.shell-settings.skipped', '终端设置文件没读', { file, raw: sanitize(errorChainText(error)) })
+        }
+        const matches = platform === 'darwin'
+          ? withShellSettingsOverrides(
+            environment,
+            await collectMacosShellOverrides(userHome, relayProviders, relaySite.providerBaseUrls, skipped),
+          )
+          : environment
+        return withIgnoredCodexHome(
+          withEnvironmentOverrideFix(
+            environmentOverrideOutcome(
+              matches,
+              (match) => platform === 'darwin' && droppedByMacosLauncher(match.provider, relayProviders),
+            ),
+            platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
+          ),
+          inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
+        )
+      },
     },
     {
       code: 'WORKSPACE_CONFIG_OVERRIDE',
