@@ -154,7 +154,7 @@ import {
   type NodeRuntimeInstallResult,
   type WindowsRestartStatus,
 } from './node-runtime'
-import { installDarwinNodeRuntime } from './macos-node-runtime'
+import { installDarwinNodeRuntime, resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { installLinuxNodeRuntime } from './linux-node-runtime'
 import {
   inspectInstalledPythonRuntime,
@@ -2598,7 +2598,8 @@ export interface SystemServiceOptions {
    */
   ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
   /**
-   * Mac 上对应的那一步：往当前用户的 ~/.zprofile 补几行，让自己开的终端也能直接敲
+   * Mac 上对应的那一步：往当前用户登录 shell 读的启动文件补几行（zsh 的 ~/.zprofile、
+   * bash 的 ~/.bash_profile 或 ~/.profile、fish 的 conf.d 文件），让自己开的终端也能直接敲
    * 工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
    */
   ensureMacosShellProfile?: (reason: 'install' | 'startup') => Promise<MacosShellProfileOutcome>
@@ -3004,6 +3005,9 @@ export function createSystemService(
       buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
   })
   let nodeRuntimeInstalling = false
+  // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
+  // 同一阵子里的检测、装工具、开工具共用一次结果；强制重新检测、装完 Node.js 时重新判断。
+  let preferredNodeProbe: { at: number; directory: Promise<string | null> } | null = null
   let windowsProcessor: Promise<WindowsProcessorArchitecture | null> | null = null
   const inspectExecutableMachine = serviceOptions.inspectExecutableMachine ?? inspectWindowsExecutableMachine
   // 苹果的安装窗口一次只该弹一个：连点两下「安装 Git」拿到的是同一次等待。
@@ -3137,10 +3141,41 @@ export function createSystemService(
    * process still blocks version execution from user-writable paths.
    */
   async function findInstalledExecutable(command: string): Promise<string | null> {
+    const additionalPaths = await nodeCommandDirectories(command)
     return findExecutableForService(command, {
       env: commandEnvironment(),
       windowsPackageManagers: command.toLowerCase() === 'npm' ? ['npm'] : [],
+      ...(additionalPaths.length ? { additionalPaths } : {}),
     })
+  }
+
+  /**
+   * Mac 上客户自己那份 Node.js 太旧、代下的那份够新时，本软件自己找 node / npm、跑 npm
+   * 都把代下的那份排到最前（第三十四批 A，macos-node-runtime.ts）；别的平台、别的情况是空的，
+   * 顺序照旧。交给工具的终端 PATH 不经过这里，客户在工具里用的还是他自己那份。
+   */
+  function preferredNodeDirectories(): Promise<string[]> {
+    if (platform !== 'darwin') return Promise.resolve([])
+    const now = Date.now()
+    if (!preferredNodeProbe || now - preferredNodeProbe.at >= scanReuseMs) {
+      preferredNodeProbe = {
+        at: now,
+        directory: resolveDarwinPreferredNodeDirectory({
+          findNode: () => findExecutableForService('node', { env: commandEnvironment() }),
+          readVersion: (executable) => executeVersion(executable, ['--version']),
+        }).catch(() => null),
+      }
+    }
+    return preferredNodeProbe.directory.then((directory) => directory ? [directory] : [])
+  }
+
+  function nodeCommandDirectories(command: string): Promise<string[]> {
+    return ['node', 'npm', 'npx'].includes(command.toLowerCase()) ? preferredNodeDirectories() : Promise.resolve([])
+  }
+
+  /** `npm root --global` 也得用找 npm 时排在最前的那份 Node.js 跑，不然代下的 npm 会落到客户的旧 node 上。 */
+  async function resolveServiceNpmGlobalRoot(npmExecutable: string | null): Promise<string | null> {
+    return resolveNpmGlobalRoot(npmExecutable, commandEnvironment(), undefined, undefined, await preferredNodeDirectories())
   }
 
   async function executeVersion(
@@ -3148,13 +3183,14 @@ export function createSystemService(
     args: string[],
     windowsPackageManager?: WindowsPackageManager,
     baseEnv: NodeJS.ProcessEnv = process.env,
+    additionalPaths: readonly string[] = [],
   ): Promise<string | null> {
     try {
       const trustedOnly = platform === 'win32' && windowsExecutionMode === 'trusted-only'
       if (trustedOnly) await primeTrustedHighIntegrityExecutable(executable, platform)
       if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
       const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
-        env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv),
+        env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv, additionalPaths),
         trustedOnly,
         timeoutMs: 8_000,
         maxOutputBytes: 1024 * 1024,
@@ -3181,6 +3217,8 @@ export function createSystemService(
       executable,
       args,
       command.toLowerCase() === 'npm' ? 'npm' : undefined,
+      process.env,
+      await nodeCommandDirectories(command),
     )
     if (!version && command.toLowerCase() === 'npm') {
       version = await readNpmPackageVersion(executable)
@@ -3561,7 +3599,7 @@ export function createSystemService(
     function locateNpm() {
       npmLocation ??= (async () => {
         const npmExecutable = await findInstalledExecutable('npm')
-        return { npmExecutable, npmGlobalRoot: await resolveNpmGlobalRoot(npmExecutable, commandEnvironment()) }
+        return { npmExecutable, npmGlobalRoot: await resolveServiceNpmGlobalRoot(npmExecutable) }
       })()
       return npmLocation
     }
@@ -3599,7 +3637,7 @@ export function createSystemService(
     // 同「打开」那条路（launchProviderOperation）：检查更新只用得上 npm 在哪，
     // 用不上它的版本号，别为此多起一次 `npm --version`。路径照旧每次现查，不缓存。
     const npmPath = await findInstalledExecutable('npm')
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
     const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
     const networkRegion = cliLatestVersionSource(provider, platform) === 'npm' && status.installed
       ? await inspectNetworkRegion()
@@ -3685,6 +3723,7 @@ export function createSystemService(
       npmLatestCache.clear()
       grokLatestInFlight.clear()
       officialChatGptCache = null
+      preferredNodeProbe = null
     }
     const [nodeResult, npmResult, pythonResult, gitResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
       limitedProbe(inspectNode),
@@ -3702,7 +3741,7 @@ export function createSystemService(
     const git = buildToolStatusFromSettled(gitResult)
     const codexDesktop = buildDesktopAppStatusFromSettled(codexDesktopResult)
     const network = buildNetworkLocationStatusFromSettled(networkResult)
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npm.path)
     // 单个 CLI 探测异常不能伪装成“未安装”，否则维护页会自动勾选并重装。
     const cliProbes = await Promise.allSettled(
       providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
@@ -3783,7 +3822,7 @@ export function createSystemService(
     const node = buildToolStatusFromSettled(nodeResult)
     const npm = buildToolStatusFromSettled(npmResult)
     const desktop = buildDesktopAppStatusFromSettled(desktopResult)
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npm.path)
     // CLI 探测依赖上面 npm 探测的结果，只能顺序执行、无法并入 allSettled；
     // 同样降级为「检测失败」而非「未安装」，避免向导误判并对已在正常工作的 CLI 触发重装
     const [cliSettled] = await Promise.allSettled([inspectCliTool('codex', npm.path, npmGlobalRoot)])
@@ -3889,6 +3928,8 @@ export function createSystemService(
           if (!target.isDestroyed()) target.send('runtime:node-install-progress', progress)
         },
       })
+      // Mac 上客户自己那份太旧时，刚下好的这份当场就用上，后面装工具不再去下（第三十四批 A）。
+      preferredNodeProbe = null
       if (replaceForCertificates) await assertNodeReplacedForCertificates()
       return result
     } finally {
@@ -4155,11 +4196,13 @@ export function createSystemService(
   async function findNpmForCliInstall(
     provider: ProviderId,
     target: RendererMessageTarget,
+    nodeDirectories: readonly string[],
   ): Promise<string | null> {
     if (process.platform !== 'win32') {
       return findExecutableForService('npm', {
         env: commandEnvironment(),
         windowsPackageManagers: ['npm'],
+        ...(nodeDirectories.length ? { additionalPaths: nodeDirectories } : {}),
       })
     }
 
@@ -4279,7 +4322,7 @@ export function createSystemService(
     try {
       // 同 inspectCliUpdate：这里只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
       const npmPath = await findInstalledExecutable('npm')
-      const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+      const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
       installSource = (await inspectCliTool(provider, npmPath, npmGlobalRoot)).status.installSource
     } catch {
       return
@@ -4439,7 +4482,10 @@ export function createSystemService(
         }
       }
 
-      const npmExecutable = await findNpmForCliInstall(provider, target)
+      // Mac 上客户自己那份 Node.js 太旧时用代下的那份装：npm 用它自带的，跑 npm 的环境也把它
+      // 排最前，npm 和工具的安装脚本都靠 `#!/usr/bin/env node` 找 node（第三十四批 A）。
+      const nodeDirectories = await preferredNodeDirectories()
+      const npmExecutable = await findNpmForCliInstall(provider, target, nodeDirectories)
       let installPrefix: string | null = null
       if (process.platform === 'win32' && windowsExecutionMode === 'trusted-only') {
         managedNpmLayout = await ensureManagedNpmLayout()
@@ -4484,7 +4530,7 @@ export function createSystemService(
             definition.packageName,
           )
         } else {
-          const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
+          const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmExecutable)
           occupancyProbeRoot = npmGlobalRoot
             ? cliPackageDirectoryFromNpmRoot(npmGlobalRoot, definition.packageName)
             : null
@@ -4580,7 +4626,7 @@ export function createSystemService(
         if (!npmBaseEnvironment) {
           // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
           // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
-          const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment())
+          const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment(process.env, nodeDirectories))
           npmBaseEnvironment = platform !== 'darwin' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
         }
         return npmBaseEnvironment
@@ -4984,7 +5030,7 @@ export function createSystemService(
           )
         }
       } else if (!grokPostInstallVerified) {
-        const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
+        const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmExecutable)
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)
         if (verification.installation?.source === 'npm' && verification.installation.packageRoot) {
           await assertCliNativePackageInstalled(verification.installation.packageRoot)
@@ -5256,7 +5302,7 @@ export function createSystemService(
     try {
       // 同 inspectCliUpdate：卸载只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
       const npmPath = await findInstalledExecutable('npm')
-      const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+      const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
       const initial = await inspectCliTool(provider, npmPath, npmGlobalRoot)
       if (!initial.status.installed || !initial.installation) {
         return { outcome: 'not-installed', previousVersion: null }
@@ -5676,7 +5722,7 @@ export function createSystemService(
     // （Windows 上是 .cmd 再套 node，还要过一遍杀毒），每点一次「打开」都白等那一下。
     // 路径照旧每次现查，不缓存，刚装 / 卸 / 换过 Node 也不会拿到旧答案。
     const npmPath = await findInstalledExecutable('npm')
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
     const { status: installedStatus, installation } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
     if (!installation) throw new Error(`未检测到 ${definition.name}，请先安装`)
 
@@ -5724,8 +5770,12 @@ export function createSystemService(
 
     if (platform === 'darwin') {
       try {
+        // 客户自己那份 Node.js 太旧时，要 node 才跑得起来的工具（比如 Gemini CLI）用代下的那份跑；
+        // 下面交给终端的环境照旧，客户在工具里跑 node 还是他自己那份（第三十四批 A）。
+        const nodeDirectories = await preferredNodeDirectories()
         const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode, {
           darwinStagingRetention: 'retained',
+          ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
         await launchMacosTerminal(buildDarwinCliLaunchPlan(
           {

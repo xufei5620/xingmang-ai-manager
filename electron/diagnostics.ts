@@ -32,6 +32,7 @@ import {
   xcodeLicensePendingNotice,
 } from './macos-command-line-tools'
 import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
+import { resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import {
@@ -329,8 +330,12 @@ interface CheckDefinition {
   code: string
   title: string
   run: (signal: AbortSignal) => Promise<CheckOutcome> | CheckOutcome
-  /** 只说明情况、不决定软件行为的项，超时给这句提醒，不亮红色的「检查超时」。 */
-  timeoutOutcome?: CheckOutcome
+  /**
+   * 超时就给这个结论，不给笼统的「检查超时」。只说明情况、不决定软件行为的项给一句不亮红的
+   * 提醒。给函数就在超时那一刻再看卡在哪一步，返回 undefined 照旧「检查超时」：「星芒 AI 网络」
+   * 只有一直等不到回话才算连不上。
+   */
+  timeoutOutcome?: CheckOutcome | (() => CheckOutcome | undefined)
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
@@ -605,6 +610,7 @@ async function versionForExecutable(
   tool: DiagnosticToolId,
   signal: AbortSignal,
   env: NodeJS.ProcessEnv,
+  additionalPaths: readonly string[] = [],
 ): Promise<string | null> {
   // 直接做同步校验，Program Files 下的路径会在主线程上起 PowerShell 读权限，
   // node / npm / git 各一次，普通用户点「重新检测」时窗口就卡住了。
@@ -619,13 +625,27 @@ async function versionForExecutable(
     argv: args,
     windowsPackageManager: tool === 'npm' ? 'npm' : undefined,
   }, {
-    env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env),
+    env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env, additionalPaths),
     trustedOnly: process.platform === 'win32',
     timeoutMs: 5_000,
     maxOutputBytes: 128 * 1024,
     signal,
   })
   return `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null
+}
+
+/**
+ * Mac 上客户自己那份 Node.js 太旧时，本软件自己用代下的那份（第三十四批 A，system-service.ts
+ * 的 preferredNodeDirectories）；检查页的 Node.js、npm 两项也报那一份，和首页对得上。
+ */
+async function preferredNodeDirectories(signal: AbortSignal, env: NodeJS.ProcessEnv): Promise<string[]> {
+  if (process.platform !== 'darwin') return []
+  const directory = await resolveDarwinPreferredNodeDirectory({
+    findNode: () => findExecutable('node', { env: commandEnvironment(env) }),
+    readVersion: (executable) => versionForExecutable(executable, 'node', signal, env),
+    environment: env,
+  }).catch(() => null)
+  return directory ? [directory] : []
 }
 
 async function defaultInspectTool(
@@ -676,12 +696,14 @@ async function defaultInspectTool(
     }
   }
   const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
+  const nodeDirectories = tool === 'node' || tool === 'npm' ? await preferredNodeDirectories(signal, env) : []
   let commandLineToolsShim = false
   let xcodeLicensePending = false
   for (const command of commands) {
     const executable = await findExecutable(command, {
       env: commandEnvironment(env),
       windowsPackageManagers: command === 'npm' ? ['npm'] : [],
+      ...(nodeDirectories.length ? { additionalPaths: nodeDirectories } : {}),
     }) ?? findWindowsShim(command, env)
     if (!executable) continue
     if (isMacOsCommandLineToolsShim(executable)) {
@@ -694,7 +716,7 @@ async function defaultInspectTool(
     }
     let version: string | null = null
     try {
-      version = await versionForExecutable(executable, tool, signal, env)
+      version = await versionForExecutable(executable, tool, signal, env, nodeDirectories)
     } catch {
       // Presence is still useful when a package-manager shim cannot be executed safely.
     }
@@ -1453,9 +1475,12 @@ async function runIsolatedCheck(
     }
   } catch (error) {
     const timedOut = error instanceof Error && error.name === 'DiagnosticTimeoutError'
-    if (timedOut && check.timeoutOutcome) {
+    const timeoutOutcome = timedOut
+      ? typeof check.timeoutOutcome === 'function' ? check.timeoutOutcome() : check.timeoutOutcome
+      : undefined
+    if (timeoutOutcome) {
       return {
-        ...check.timeoutOutcome,
+        ...timeoutOutcome,
         code: check.code,
         title: check.title,
         durationMs: Date.now() - startedAt,
@@ -1783,6 +1808,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const log = dependencies.log
   const now = dependencies.now ?? (() => new Date())
   const supportedPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux'
+  // 「星芒 AI 网络」那一次请求回完话没有，超时那一刻看它决定结论。
+  let relayAnswered = false
 
   const checks: CheckDefinition[] = [
     {
@@ -2034,6 +2061,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // （登录页用的是同一份文案），判断只用这里本来就要发的这一次请求。
       code: 'XINGMANG_NETWORK',
       title: '星芒 AI 网络',
+      // 一直等不到回话的，以前算成检查自己出错（「检查超时」）。可当地网络切断一条线路时
+      // 常常就是这样：请求发出去，没人回。所以按连不上算，结论用登录页同一句超时的话。
+      // 回完了话、卡在后面的（问加速开没开要排在正开关加速的后面）不算：网络是通的，照旧
+      // 「检查超时」，说成连不上会把人带去换线路。
+      timeoutOutcome: () => relayAnswered ? undefined : {
+        state: 'fail',
+        summary: networkFailureMessages.timeout,
+        details: { endpoint: relayStatusProbeUrl(relaySite), reason: 'timeout', siteId: relaySite.id },
+      },
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
         const endpoint = relayStatusProbeUrl(relaySite)
@@ -2060,8 +2096,11 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             reason,
             raw: sanitize(errorChainText(error)),
           })
-          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason } }
+          // 带上查的是哪个站：检查页据此认出「换一条线路」救不救得回来（第四十三批 B）。
+          // 新界面的「查看详情」不摆这个键（diagnostic-details.ts）。
+          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id } }
         }
+        relayAnswered = true
         // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
         // 这时没有异常可归类，只能从内容认出来：这个接口正常时一定回 JSON，
         // 拿到别的（网页、空白）就是中间有东西替服务器答了话。
