@@ -23,21 +23,19 @@ function dependencies(overrides: Partial<ProxyBypassDependencies> = {}) {
 
 // The app session as Chromium runs it: it follows the system proxy until it is switched to direct.
 // The proxy app the system proxy points at is either up or not running; when it is not, anything
-// through it is refused at once. Direct gets through unless a test says otherwise.
+// through it is refused at once. When it is up it may still not forward the service, and a probe
+// through it then gets nothing until it gives up. Direct gets through unless a test says otherwise.
 function proxyApp(overrides: Partial<ProxyBypassDependencies> = {}) {
-  const state = { mode: 'system' as 'direct' | 'system', up: false, direct: true }
+  const state = { mode: 'system' as 'direct' | 'system', up: false, forwards: true, direct: true }
   const modes: string[] = []
   const logs: string[] = []
   const refused = () => new Error('net::ERR_PROXY_CONNECTION_FAILED')
-  const probe = vi.fn(async (_url: string) => {
-    if (state.mode === 'direct') return state.direct
-    if (state.up) return true
-    throw refused()
-  })
-  const probeSystemProxy = vi.fn(async (_url: string) => {
-    if (state.up) return true
-    throw refused()
-  })
+  async function throughProxy(): Promise<boolean> {
+    if (!state.up) throw refused()
+    return state.forwards ? true : proxyDoesNotForward()
+  }
+  const probe = vi.fn(async (_url: string) => state.mode === 'direct' ? state.direct : throughProxy())
+  const probeSystemProxy = vi.fn(async (_url: string) => throughProxy())
   const deps: ProxyBypassDependencies = {
     probeUrl: () => probeUrl,
     resolveProxy: async () => state.mode === 'direct' ? 'DIRECT' : 'PROXY 127.0.0.1:7890',
@@ -1101,6 +1099,132 @@ describe('proxy bypass after the whole app went direct', () => {
     await vi.waitFor(() => expect(bypass.active()).toBe(false))
     expect(modes).toEqual(['direct', 'system', 'direct', 'system'])
   })
+
+  it.each([
+    ['still does not forward the service', proxyDoesNotForward],
+    ['cuts the connection to the service', async (): Promise<boolean> => { throw new Error('net::ERR_CONNECTION_CLOSED') }],
+    ['answers for the service with something else', async (): Promise<boolean> => false],
+  ] as const)('keeps only the service direct and takes the rest back to the system proxy once the proxy app is back but %s', async (_case, throughProxy) => {
+    const directEnded = vi.fn()
+    const probeSiteDirect = vi.fn(async () => true)
+    const { bypass, clock, modes, logs, probeSystemProxy } = await wentDirect({ directEnded, probeSiteDirect })
+    probeSystemProxy.mockImplementation(throughProxy)
+    clock.now += systemProxyCheckIntervalMs
+    expect(bypass.routeSiteRequest(siteUrl)).toBeNull()
+    await vi.waitFor(() => expect(bypass.active()).toBe(false))
+    expect(modes).toEqual(['direct', 'system'])
+    expect(probeSiteDirect).toHaveBeenCalledTimes(1)
+    expect(probeSiteDirect).toHaveBeenCalledWith(probeUrl)
+    expect(logs).toContain('proxy-bypass.direct-ended')
+    expect(directEnded).toHaveBeenCalledTimes(1)
+    // Requests to the service go on over the direct session; everything else follows the proxy app again.
+    expect(bypass.siteDirect()).toBe(true)
+    expect(bypass.routeSiteRequest(siteUrl)).not.toBeNull()
+  })
+
+  it.each([
+    ['does not answer', async (): Promise<boolean> => false],
+    ['finds no network', async (): Promise<boolean> => { throw new Error('net::ERR_INTERNET_DISCONNECTED') }],
+  ] as const)('stays direct when the proxy app is back without forwarding the service but direct to the service %s', async (_case, probeSiteDirect) => {
+    const directEnded = vi.fn()
+    const siteDirect = vi.fn(probeSiteDirect)
+    const { bypass, clock, modes, state, probeSystemProxy } = await wentDirect({ directEnded, probeSiteDirect: siteDirect })
+    state.up = true
+    state.forwards = false
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(siteDirect).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(bypass.active()).toBe(true)
+    expect(modes).toEqual(['direct'])
+    expect(directEnded).not.toHaveBeenCalled()
+    // Looks again five minutes on, not before.
+    clock.now += systemProxyCheckIntervalMs - 1
+    bypass.routeSiteRequest(siteUrl)
+    expect(probeSystemProxy).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['is refused because the proxy app is gone', 'net::ERR_PROXY_CONNECTION_FAILED'],
+    // The rest of the bypass counts this as the proxy being down, so switching back would only go direct again five minutes on.
+    ['is turned away by the proxy itself', 'net::ERR_TUNNEL_CONNECTION_FAILED'],
+    ['finds no network', 'net::ERR_INTERNET_DISCONNECTED'],
+    ['fails for a reason that says nothing about the proxy app', 'something unexpected'],
+  ])('stays direct when the look through the system proxy %s', async (_case, message) => {
+    const directEnded = vi.fn()
+    const probeSiteDirect = vi.fn(async () => true)
+    const { bypass, clock, modes, probeSystemProxy } = await wentDirect({ directEnded, probeSiteDirect })
+    probeSystemProxy.mockRejectedValue(new Error(message))
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(probeSystemProxy).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(bypass.active()).toBe(true)
+    expect(bypass.siteDirect()).toBe(false)
+    expect(probeSiteDirect).not.toHaveBeenCalled()
+    expect(modes).toEqual(['direct'])
+    expect(directEnded).not.toHaveBeenCalled()
+  })
+
+  it('stays direct while acceleration is running, even though the proxy app is back without forwarding the service', async () => {
+    const directEnded = vi.fn()
+    const { deps, bypass, clock, modes, state, probeSystemProxy } = await wentDirect({ directEnded })
+    deps.accelerationActive = async () => true
+    state.up = true
+    state.forwards = false
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(probeSystemProxy).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(bypass.active()).toBe(true)
+    expect(bypass.siteDirect()).toBe(false)
+    expect(modes).toEqual(['direct'])
+    expect(directEnded).not.toHaveBeenCalled()
+  })
+
+  it('stays direct when acceleration starts while direct to the service is being checked', async () => {
+    let accelerating = false
+    const probeSiteDirect = vi.fn(async () => {
+      accelerating = true
+      return true
+    })
+    const { bypass, clock, modes, state } = await wentDirect({ probeSiteDirect, accelerationActive: async () => accelerating })
+    state.up = true
+    state.forwards = false
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(probeSiteDirect).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(bypass.active()).toBe(true)
+    expect(bypass.siteDirect()).toBe(false)
+    expect(modes).toEqual(['direct'])
+  })
+
+  it('leaves the service direct while later checks find the proxy app still not forwarding it, and goes direct again once the proxy app is gone', async () => {
+    const { bypass, clock, modes, state, probe } = await wentDirect()
+    state.up = true
+    state.forwards = false
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(bypass.siteDirect()).toBe(true))
+    const route = bypass.routeSiteRequest(siteUrl)
+    expect(route).not.toBeNull()
+    probe.mockClear()
+    // Five minutes on, the check through the app session finds the proxy app up but still not forwarding the service.
+    clock.now += systemProxyCheckIntervalMs
+    expect(bypass.routeSiteRequest(siteUrl)).toBe(route)
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(modes).toEqual(['direct', 'system'])
+    expect(bypass.active()).toBe(false)
+    expect(bypass.siteDirect()).toBe(true)
+    // Then the proxy app goes away, and the next check switches the whole app to direct.
+    state.up = false
+    clock.now += systemProxyCheckIntervalMs
+    bypass.routeSiteRequest(siteUrl)
+    await vi.waitFor(() => expect(bypass.active()).toBe(true))
+    expect(modes).toEqual(['direct', 'system', 'direct'])
+  })
 })
 
 describe('site fetch', () => {
@@ -1349,5 +1473,24 @@ describe('site routing as main.ts wires it', () => {
     expect(modes).toEqual(['direct', 'system'])
     expect(sessionFetch).toHaveBeenCalledTimes(1)
     expect(siteDirectFetch).not.toHaveBeenCalled()
+  })
+
+  it('takes the app session back to the system proxy and keeps only the service on the direct session when the proxy app comes back without forwarding it', async () => {
+    let clock = 1_000
+    const { bypass, relayFetch, modes, sessionFetch, siteDirectFetch, systemProxyFetch } = routing({ now: () => clock })
+    expect(await bypass.tryBypass()).toBe('direct')
+    // The proxy app is back but still does not forward the service: the look through it runs out of time.
+    systemProxyFetch.mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+    clock += systemProxyCheckIntervalMs
+    expect(await (await relayFetch(siteUrl, { method: 'POST' })).text()).toBe('direct')
+    await vi.waitFor(() => expect(bypass.active()).toBe(false))
+    expect(modes).toEqual(['direct', 'system'])
+    // Direct to the service was checked over the session that only ever goes direct.
+    expect(siteDirectFetch).toHaveBeenCalledWith(probeUrl, expect.objectContaining({ method: 'GET', redirect: 'manual' }))
+    // The next AI request to the service goes over that session too, not the app session that follows the proxy app again.
+    sessionFetch.mockClear()
+    await relayFetch(siteUrl, { method: 'POST' })
+    expect(sessionFetch).not.toHaveBeenCalled()
+    expect(siteDirectFetch).toHaveBeenLastCalledWith(siteUrl, expect.objectContaining({ method: 'POST' }))
   })
 })
