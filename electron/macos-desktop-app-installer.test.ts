@@ -744,6 +744,39 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     }
   })
 
+  // 装之前的检测没做完时，自称就是 Codex 桌面端的那份多半是客户装好的正版，只是没来得及核对：
+  // 说它不是官方原版、叫客户移到废纸篓就错了。
+  it.skipIf(process.platform === 'win32')('says the detection did not finish when the caller could not check a ChatGPT that names itself the Codex app', async () => {
+    const detectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
+    const f = vendorSetup('codexDesktop', {}, { detectionUnfinishedMessage }, { existingBundleIdentifier: 'com.openai.codex' })
+    fs.mkdirSync(path.join(f.applications, 'ChatGPT.app', 'Contents'), { recursive: true })
+    const error = await failure(installMacosDesktopApp(f.options))
+    expect(error.message).toBe(detectionUnfinishedMessage)
+    expect(error.detail).toContain('com.openai.codex')
+    expect(f.plans.map((plan) => plan.argv)).toEqual([
+      ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.posix.join(f.applications, 'ChatGPT.app', 'Contents', 'Info.plist')],
+    ])
+    expect(f.requested).toEqual([])
+    expect(fs.readdirSync(path.join(f.applications, 'ChatGPT.app'))).toEqual(['Contents'])
+
+    // A detection that finished and still did not find it has turned that app down, so it keeps the
+    // general wording; and an unfinished detection changes nothing for the old chat app or for an
+    // identifier that is someone else's or cannot be read.
+    const others: Array<[Partial<InstallMacosDesktopAppOptions>, FakeProcessOptions, string]> = [
+      [{}, { existingBundleIdentifier: 'com.openai.codex' }, macosDesktopNameTakenMessage('ChatGPT')],
+      [{ detectionUnfinishedMessage }, { existingBundleIdentifier: 'com.openai.chat' }, macosLegacyChatgptMessage],
+      [{ detectionUnfinishedMessage }, { existingBundleIdentifier: 'com.example.chatgpt' }, macosDesktopNameTakenMessage('ChatGPT')],
+      [{ detectionUnfinishedMessage }, {}, macosDesktopNameTakenMessage('ChatGPT')],
+    ]
+    for (const [extra, processes, message] of others) {
+      const other = vendorSetup('codexDesktop', {}, extra, processes)
+      fs.mkdirSync(path.join(other.applications, 'ChatGPT.app'))
+      expect((await failure(installMacosDesktopApp(other.options))).message).toBe(message)
+      expect(other.requested).toEqual([])
+      expect(fs.readdirSync(other.applications)).toEqual(['ChatGPT.app'])
+    }
+  })
+
   it.skipIf(process.platform === 'win32')('stops when the customer cancels and hands back the cancellation itself, leaving nothing behind', async () => {
     const whileDownloading = new AbortController()
     const downloading = vendorSetup('codexDesktop', { onPackageRequest: () => whileDownloading.abort() }, { signal: whileDownloading.signal })
