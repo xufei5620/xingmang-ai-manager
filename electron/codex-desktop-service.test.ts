@@ -82,8 +82,8 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
-import { MacosDesktopInstallError } from './macos-desktop-app-installer'
-import { isMacosDesktopInstallFailure } from './macos-desktop-install-failure'
+import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
+import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const temporaryDirectories: string[] = []
@@ -2121,6 +2121,61 @@ describe('Codex Desktop install on macOS', () => {
         .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
       expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
       expect(f.installMacosDesktopApp).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  // 两次都没做完、「应用程序」里又是自称正版的 ChatGPT：照「检测未完成」说，不再说它不是官方原版、
+  // 叫客户移到废纸篓。安装那一步用真的，只把「应用程序」换成临时目录。
+  it.skipIf(process.platform === 'win32')('says the detection did not finish when neither detection could check the ChatGPT already in Applications', async () => {
+    const detectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
+    const applications = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-applications-'))
+    temporaryDirectories.push(applications)
+    fs.mkdirSync(path.join(applications, 'ChatGPT.app', 'Contents'), { recursive: true })
+    const installed = fs.realpathSync(path.join(applications, 'ChatGPT.app'))
+    const unfinished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' })
+    const broken = async (): Promise<MacosCodexAppInspection> => { throw new Error('plutil 没有起来') }
+    const finished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: false, detectionError: null })
+    const rejectedElsewhere = async (): Promise<MacosCodexAppInspection> => ({
+      app: null,
+      detectionFailed: true,
+      detectionError: '核对 ChatGPT.app 的签名超时；已找到 Codex，但应用架构与此 Mac 不兼容',
+      rejectedPaths: ['/Users/tester/Downloads/ChatGPT.app'],
+    })
+    const rejectedHere = async (): Promise<MacosCodexAppInspection> => ({
+      app: null,
+      detectionFailed: true,
+      detectionError: '命令执行失败（退出码 1）：codesign',
+      rejectedPaths: [installed],
+    })
+    const cases: Array<[Array<() => Promise<MacosCodexAppInspection>>, string]> = [
+      [[unfinished, unfinished], detectionUnfinishedMessage],
+      [[broken, broken], detectionUnfinishedMessage],
+      // A copy elsewhere that was turned down says nothing about this one.
+      [[rejectedElsewhere, rejectedElsewhere], detectionUnfinishedMessage],
+      // A detection that finished and still did not find it has turned that app down,
+      // and so has one that checked this very copy and found it is not the official app.
+      [[finished], macosDesktopNameTakenMessage('ChatGPT')],
+      [[unfinished, finished], macosDesktopNameTakenMessage('ChatGPT')],
+      [[rejectedHere, rejectedHere], macosDesktopNameTakenMessage('ChatGPT')],
+    ]
+    for (const [attempts, message] of cases) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+      for (const attempt of attempts) detectMacosCodexApp.mockImplementationOnce(attempt)
+      const f = macInstallFixture({
+        detectMacosCodexApp,
+        executeCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: spec.executable === '/usr/bin/plutil' ? 'com.openai.codex\n' : '', stderr: '', outputBytes: 0, durationMs: 1,
+        }),
+        installMacosDesktopApp: (options) => installMacosDesktopApp({ ...options, systemApplicationsDirectory: applications }),
+      })
+      const error = await f.service.installCodexDesktop(f.target).then(() => null, (reason: unknown) => reason)
+      expect(error).toBeInstanceOf(MacosDesktopInstallError)
+      expect((error as Error).message).toBe(message)
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(attempts.length)
+      expect(f.downloadFetch).not.toHaveBeenCalled()
+      expect(fs.readdirSync(path.join(applications, 'ChatGPT.app'))).toEqual(['Contents'])
+      expect(f.progress().at(-1)).toEqual(['error', null, message])
     }
   })
 

@@ -232,6 +232,7 @@ function updaterStub(): UpdaterService {
     install: vi.fn(() => ({ accepted: true as const })),
     setServiceStatus: vi.fn(),
     setLaunchInstallNotice: vi.fn(),
+    setInstallNeedsAdminPassword: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
   }
