@@ -7,7 +7,8 @@
  * - **下次打开软件时**：上一次运行就已经下好了，这次启动刚打开、用户还没开始用，装上。
  *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。开机自启的要等开机安静期过了才查
  *   更新（login-launch.ts），「刚打开」从那时算；窗口一直没打开过时没人在看，就不预告、
- *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装（resolveLaunchInstallMode）。
+ *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装。Windows 上那就等用户
+ *   第一次打开窗口，再照平常打开时那样先预告再装（resolveLaunchInstallMode）。
  *
  * 第二条最怕的是死循环：安装器每次都起不来，软件就会每次一打开就关掉。所以每个版本
  * 在启动时只试一次，先记下「试过了」再去装；没装成的版本退回到「退出时装」和更新页
@@ -131,9 +132,10 @@ export function decideLaunchInstall(input: LaunchInstallInput): string | null {
   return version
 }
 
-export type LaunchInstallMode = 'notice' | 'background' | 'skip'
+export type LaunchInstallMode = 'notice' | 'background' | 'window' | 'skip'
 
 export interface LaunchInstallModeInput {
+  platform: NodeJS.Platform
   /** 开机自启拉起的；后台装好新版后重新拉起的那一次也算。 */
   launchedAtLogin: boolean
   /** 这次运行里主窗口显示过。 */
@@ -148,11 +150,14 @@ export interface LaunchInstallModeInput {
  * 打开时装怎么装。照旧是先预告、几秒后关掉软件去装，装好打开窗口（'notice'）。开机自启、
  * 窗口一直没打开过时没人在看：预告没人看得到，装好也不该自己弹出窗口，就不预告、在后台装，
  * 装好照旧待在后台（'background'）。装的时候会弹出东西等人点（Windows 的授权窗口、Mac 要
- * 输开机密码），或者开机后已经从托盘开了加速，开机时就不装，留到退出时（'skip'）。
+ * 输开机密码），或者开机后已经从托盘开了加速，开机时就不装。Windows 上每次装都弹授权窗口，
+ * 开机自启、只关机不退出的人留到退出时就一直装不上，所以等用户第一次打开窗口、人在电脑前
+ * 了，再照平常打开时那样先预告再装（'window'）；其余留到退出时（'skip'）。
  */
 export function resolveLaunchInstallMode(input: LaunchInstallModeInput): LaunchInstallMode {
   if (!input.launchedAtLogin || input.windowShown) return 'notice'
-  return input.unattended && !input.accelerationActive ? 'background' : 'skip'
+  if (input.unattended && !input.accelerationActive) return 'background'
+  return input.platform === 'win32' ? 'window' : 'skip'
 }
 
 export interface LaunchInstallRecheckInput {
@@ -160,19 +165,23 @@ export interface LaunchInstallRecheckInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
   busy: boolean
-  background: boolean
+  mode: Exclude<LaunchInstallMode, 'skip'>
   windowShown: boolean
   accelerationActive: boolean
 }
 
 /**
  * 预告等完、或者后台装写完记录，真去装之前再看一眼：这几秒里用户可能关了自动更新、开始
- * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。
+ * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。等到第一次
+ * 打开窗口才装的，离开机可能已经过了几个小时，预告之前也先看这一眼：开着加速时不装，用户
+ * 这时多半正靠它连着别的工具，装的时候加速会断，装好也不会自己连回去，留到退出时再装。
  */
 export function shouldStillInstallAtLaunch(input: LaunchInstallRecheckInput): boolean {
   if (!input.autoUpdate || input.busy) return false
   if (resolveInstallableUpdateOnQuit(input.snapshot)?.version !== input.version) return false
-  return !input.background || (!input.windowShown && !input.accelerationActive)
+  if (input.mode === 'notice') return true
+  if (input.accelerationActive) return false
+  return input.mode === 'window' || !input.windowShown
 }
 
 /**
