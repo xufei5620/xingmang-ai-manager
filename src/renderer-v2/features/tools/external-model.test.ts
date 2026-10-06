@@ -52,9 +52,9 @@ describe('external client lifecycle presentation', () => {
       .toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。')
     expect(present({ installed: true, detectionError: '读取 C:\\Users\\yoyo\\AppData\\Local\\WorkBuddy 失败' }).detail)
       .toBe('读取 本地配置文件 失败')
-    // 现有脱敏以空白收尾，带空格的目录名只剥到空格为止；要紧的用户名这一段已经去掉。
+    // 带空格的文件夹名（Application Support）也整段换掉，以前只剥到空格为止。
     const configuration = present({ installed: true, configurationSource: 'unknown', configurationError: '读取 /Users/yoyo/Library/Application Support/config.json 失败' }).detail
-    expect(configuration).toBe('读取 本地配置文件 Support/config.json 失败')
+    expect(configuration).toBe('读取 本地配置文件 失败')
     expect(configuration).not.toContain('yoyo')
     // 脱敏后为空的错误字段不能把后面的版本、安装文案挡掉。
     expect(present({ installed: true, version: 'v2.0', detectionError: '  ' }).detail).toBe('v2.0')

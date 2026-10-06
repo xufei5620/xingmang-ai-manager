@@ -69,13 +69,20 @@ export function rawErrorMessage(error: unknown) {
  * process names the file it failed on (config-files.ts, backups.ts) and on
  * Windows that path carries the account name, so I13's redaction has to hold on
  * this side of the IPC boundary too.
+ *
+ * 空格后面还有分隔符，路径就没完：Windows 的账户名、Mac 的「Application Support」
+ * 都带空格，以前到第一个空格就停，账户名的后半截跟着上了屏
+ * （`本地配置文件 San\.claude\settings.json`）。文件夹名里不收 Windows 不许用在
+ * 文件名里的字符、引号和断句标点，所以不会一路吞进路径后面那句话或下一个带引号
+ * 的路径。最后一节照旧到空格为止：过了最后一个分隔符，分不出哪是文件名、哪是句子。
  */
 export function userFacingErrorMessage(error: unknown) {
   return rawErrorMessage(error)
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .trim()
-    .replace(/[A-Za-z]:\\(?:[^\s;；，。！？]+\\?)+/g, '本地配置文件')
-    .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
+    .replace(/[A-Za-z]:\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, '本地配置文件')
+    .replace(/\\\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, '本地配置文件')
+    .replace(/\/(?:Users|home)\/(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\/)*[^\s;；，。！？]*/g, '本地配置文件')
     .slice(0, 1_000)
 }
 
