@@ -82,7 +82,8 @@
     "start": "node scripts/copy-canvas-assets.mjs && electron ."
   },
   "overrides": {
-    "@electron/get": "5.0.0"
+    "@electron/get": "5.0.0",
+    "katex": "$katex"
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
@@ -102,7 +103,7 @@
     "electron": "^43.6.0",
     "electron-builder": "26.15.3",
     "esbuild": "^0.28.1",
-    "katex": "0.16.47",
+    "katex": "0.19.0",
     "lucide-react": "^0.468.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
