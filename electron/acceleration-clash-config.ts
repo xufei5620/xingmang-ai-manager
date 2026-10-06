@@ -46,6 +46,8 @@ export interface IsolatedMihomoOptions {
    * modules; the staging script loads it on its own.
    */
   directHosts?: readonly string[]
+  /** Fixed literal-IP endpoints use exact /32 or /128 routes, never imported CIDRs. */
+  directIps?: readonly string[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -212,6 +214,11 @@ export function buildIsolatedMihomoConfig(profile: AccelerationClashProfile, opt
     return host
   }))]
   if (directHosts.length > 32) throw new Error('加速直连地址过多')
+  const directIps = [...new Set((options.directIps ?? []).map((ip) => {
+    if (typeof ip !== 'string' || !isIP(ip)) throw new Error('加速直连 IP 地址无效')
+    return ip
+  }))]
+  if (directIps.length > 32) throw new Error('加速直连地址过多')
   if (selected.length > MAX_NODE_COUNT || new Set(selected.map((node) => node.id)).size !== selected.length) {
     throw new Error('加速线路列表无效')
   }
@@ -237,7 +244,9 @@ export function buildIsolatedMihomoConfig(profile: AccelerationClashProfile, opt
     'proxy-groups': [{ name: 'XINGMANG', type: 'select', proxies: proxies.map((proxy) => proxy.name) }],
     // 星芒自己的服务不绕加速线路：绕一圈只会更慢、出口也忽东忽西。Claude / Gemini 本来就不认
     // 系统代理，这样四个工具和本软件自己连中转都是同一条直连的路。
-    rules: [...directHosts.map((host) => `DOMAIN,${host},DIRECT`), 'MATCH,XINGMANG'],
+    rules: [...directHosts.map((host) => `DOMAIN,${host},DIRECT`),
+      ...directIps.map((ip) => `${isIP(ip) === 4 ? 'IP-CIDR' : 'IP-CIDR6'},${ip}/${isIP(ip) === 4 ? 32 : 128},DIRECT,no-resolve`),
+      'MATCH,XINGMANG'],
   }
   if (options.controllerPort !== undefined) {
     const controllerPort = requirePort(options.controllerPort, true)

@@ -1138,6 +1138,8 @@ describe('registerIpcHandlers', () => {
 
   it('installs the bundled 星芒AI skill on key sync without returning the image key', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({
       authenticated: true,
@@ -1159,7 +1161,7 @@ describe('registerIpcHandlers', () => {
       key: `sk-cached-${provider}-not-for-ipc`,
     }))
     register(
-      serviceStub(),
+      service,
       'C:\\app-data\\logs',
       undefined,
       accountService,
@@ -1190,6 +1192,8 @@ describe('registerIpcHandlers', () => {
 
   it('hands a plain-language notice to the renderer when the image tool could not be registered', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({
       authenticated: true,
@@ -1205,7 +1209,7 @@ describe('registerIpcHandlers', () => {
     }))
     const syncImageMcp = vi.fn(async () => [XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
     const { runtimeLog } = register(
-      serviceStub(),
+      service,
       'C:\\app-data\\logs',
       undefined,
       accountService,
@@ -1231,6 +1235,66 @@ describe('registerIpcHandlers', () => {
       expect(summary.imageMcpWarning).not.toContain('Node.js')
       expect(summary.imageSkillWarning).toBeUndefined()
       expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { active: 'primary' as const, pending: 'direct' as const, baseUrl: 'https://xm.solov.cc/v1', origin: 'https://xm.solov.cc' },
+    { active: 'direct' as const, pending: 'primary' as const, baseUrl: 'https://xm-direct.solov.cc/v1', origin: 'https://xm-direct.solov.cc' },
+  ])('binds Skill sync to the active main-process endpoint while ignoring pending and renderer URLs: $active', async ({ active, pending, baseUrl, origin }) => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.readStoredConfig).mockReturnValue({
+      ...stubStoredConfig, relayEndpointIds: { solov: pending }, activeRelayEndpointIds: { solov: active, 'solov-api': 'primary' },
+    })
+    vi.mocked(service.getConfig).mockReturnValue({
+      providers: { codex: { baseUrl, actualBaseUrl: 'https://attacker.invalid/v1' } },
+    } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7, name: input?.name ?? 'key', key: 'sk-ipc-fixture-only-skill-key',
+    }))
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      const result = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent(), {
+        baseUrl: 'https://attacker.invalid', relayEndpointIds: { solov: pending },
+      })
+      expect(result).not.toHaveProperty('imageSkillWarning')
+      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).baseUrl).toBe(origin)
+      expect(service.getConfig).toHaveBeenCalledWith(false)
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the image Skill out of the historical account realm', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm-direct.solov.cc/v1' } } } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov-api' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
+      expect(service.getConfig).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json'))).toBe(false)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
@@ -3192,6 +3256,104 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseSettingsUpdate (settings:save)', () => {
+    it.each([
+      { solov: 'primary' as const },
+      { solov: 'direct' as const },
+      { 'solov-api': 'primary' as const },
+    ])('accepts a registered endpoint selection: %j', async (relayEndpointIds) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds }))
+        .resolves.toMatchObject({ relayEndpointIds })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds })
+    })
+
+    it.each([
+      null,
+      [],
+      'https://xm-direct.solov.cc',
+      { unknown: 'primary' },
+      { solov: 'https://other.example/v1' },
+      { solov: 'DIRECT' },
+      { 'solov-api': 'direct' },
+    ])('rejects unsupported endpoint settings before persistence: %j', async (relayEndpointIds) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds })).rejects.toThrow(/连接线路/)
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('preserves the other site and the active startup lines when saving a pending choice', async () => {
+      const service = serviceStub()
+      const active: NonNullable<AppSettings['activeRelayEndpointIds']> = { solov: 'primary', 'solov-api': 'primary' }
+      const stored: AppSettings = { ...stubStoredConfig, relayEndpointIds: { 'solov-api': 'primary' }, activeRelayEndpointIds: active }
+      vi.mocked(service.readStoredConfig).mockReturnValue(stored)
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => ({
+        ...mergeAppSettings(stored, update), activeRelayEndpointIds: active,
+      }))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds: { solov: 'direct' } }))
+        .resolves.toMatchObject({
+          relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' }, activeRelayEndpointIds: active,
+        })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds: { solov: 'direct' } })
+    })
+
+    it('accepts an unchanged legacy runtime snapshot echo without persisting it', async () => {
+      const service = serviceStub()
+      const active: NonNullable<AppSettings['activeRelayEndpointIds']> = { solov: 'direct', 'solov-api': 'primary' }
+      const stored: AppSettings = { ...stubStoredConfig, activeRelayEndpointIds: active }
+      vi.mocked(service.readStoredConfig).mockReturnValue(stored)
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => ({
+        ...mergeAppSettings(stored, update), activeRelayEndpointIds: active,
+      }))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        ...stored, theme: 'light', activeRelayEndpointIds: { 'solov-api': 'primary', solov: 'direct' },
+      })).resolves.toMatchObject({ theme: 'light', activeRelayEndpointIds: active })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({
+        version: 2, workspace: stored.workspace, theme: 'light',
+        checkUpdatesOnStartup: true, runDiagnosticsOnStartup: false,
+      })
+    })
+
+    it.each([
+      null,
+      [],
+      'https://xm-direct.solov.cc',
+      { solov: 'direct', 'solov-api': 'primary' },
+      { solov: 'primary' },
+      { solov: 'primary', unknown: 'primary' },
+      { solov: 'https://other.example/v1', 'solov-api': 'primary' },
+      { solov: 'primary', 'solov-api': 'direct' },
+    ])('rejects a changed or malformed runtime endpoint snapshot: %j', async (activeRelayEndpointIds) => {
+      const service = serviceStub()
+      vi.mocked(service.readStoredConfig).mockReturnValue({
+        ...stubStoredConfig, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      })
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, activeRelayEndpointIds })).rejects.toThrow('当前连接线路只读')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('rejects a runtime endpoint echo when the service has no matching snapshot', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      })).rejects.toThrow('当前连接线路只读')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it('persists appearance updates without replacing unrelated settings', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!

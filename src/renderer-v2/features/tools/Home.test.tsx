@@ -354,6 +354,43 @@ describe('renderer-v2 home before the startup scan finishes', () => {
     expect(disabled(markup, 'tool-codex-primary')).toBe(false)
   })
 
+  it.each(['configuring', 'verifying'] as const)('keeps only the changing tool and its workspace menu waiting after the scan while %s', (phase) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const bootstrap = { phase, label: '正在更新连接', percent: 65, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+    expect(disabled(markup, 'tool-codex-workspaces')).toBe(false)
+  })
+
+  it.each(['official', 'manual'] as const)('keeps an existing %s connection openable during another account sync after the scan', (source) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project', providers: {
+      ...base.config.providers,
+      claude: { ...base.config.providers.claude, ...(source === 'official'
+        ? { hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
+        : { configurationOwnership: 'manual' as const }) },
+    } } }
+    const bootstrap = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it('releases the migrated tool and its workspace menu after verification finishes', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const bootstrap = {
+      phase: 'verifying' as const, label: '连接已更新', percent: 100, scope: 'scope', connectedKeyChanges: ['claude' as const],
+      result: { readyKeys: [], configured: ['claude' as const], failed: [], skipped: [], warnings: [], networkBlocked: false },
+    }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
   it('opens once the account key round has finished', () => {
     const bootstrap = {
       phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope',

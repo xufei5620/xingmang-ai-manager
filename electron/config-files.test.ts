@@ -56,6 +56,7 @@ import {
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { relayProviderBaseUrls } from './relay-sites'
 import type { CliHookInvocation } from './cli-hooks'
 import { renameWithTransientRetrySync } from './safe-local-data'
 
@@ -447,6 +448,23 @@ describe('native CLI configuration files', () => {
       .toThrow('2048 KB 安全上限')
     expect(fs.statSync(configPath).size).toBe(2 * 1024 * 1024 + 1)
   })
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] as ProviderId[])(
+    'recognizes both fixed and historical backup URLs for %s only within their account site', (provider) => {
+      const roots = providerRoots(temporaryHome())
+      const direct = relayProviderBaseUrls('solov', 'direct')
+      const historical = { claude: 'https://xm-direct.solov.cc', codex: 'https://xm-direct.solov.cc/v1',
+        gemini: 'https://xm-direct.solov.cc', grok: 'https://xm-direct.solov.cc/v1' }
+      for (const urls of [direct, historical]) {
+        saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, urls)
+        const inspection = inspectProviderConfig(provider, roots, providerBaseUrls)
+        expect(inspection.actualBaseUrl).toBe(urls[provider])
+        expect(inspection.matchesRelay).toBe(true)
+        expect(canLaunchManagedProvider(inspection)).toBe(true)
+        expect(inspectProviderConfig(provider, roots, relayProviderBaseUrls('solov-api')).matchesRelay).toBe(false)
+      }
+    },
+  )
 
   it.each(['claude', 'codex', 'gemini', 'grok'] as ProviderId[])(
     'creates and detects %s configuration',
@@ -1848,6 +1866,19 @@ describe('switching a provider back to the official subscription account', () =>
     expect(snapshot).not.toContain('https://xm.solov.cc/v1')
     expect(snapshot).not.toContain('https://api.solov.cc/v1')
   })
+
+  it.each(['https://38.147.105.28:8443/v1', 'https://xm-direct.solov.cc/v1'])(
+    'does not store the recognized backup %s as an official Codex snapshot', (baseUrl) => {
+      const roots = providerRoots(temporaryHome())
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {},
+        { ...providerBaseUrls, codex: baseUrl })
+      expect(classifyCodexConfigProfile(asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8'))) ?? {}, providerBaseUrls.codex)).toBe('relay')
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(configs.active, 'utf8')).not.toContain(baseUrl)
+      expect(fs.existsSync(configs.chatgpt)).toBe(false)
+    },
+  )
 
   it('repairs an already polluted official snapshot instead of restoring a relay route', () => {
     const home = temporaryHome()

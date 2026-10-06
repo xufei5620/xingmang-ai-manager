@@ -43,13 +43,15 @@ export interface AuthFlowProps {
   onAuthenticated: (result: AccountLoginResult, options?: { rememberError?: string; notice?: string }) => void
   onClose: () => void
   onHelp?: () => void
+  /** Local connection settings remain reachable before the first successful login. */
+  connectionSettings?: (onBusyChange: (busy: boolean) => void) => ReactNode
   /** 服务正在维护时的提示。登录框是模态的，会盖住角落里那条，所以在框里再放一份。 */
   notice?: ReactNode
   /** 这台电脑没法安全保存登录（Linux 没有系统密码保管）：不给「记住密码」，改说一句会怎样。 */
   sessionOnly?: boolean
 }
 
-export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, notice, sessionOnly = false }: AuthFlowProps) {
+export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, connectionSettings, notice, sessionOnly = false }: AuthFlowProps) {
   const [api] = useState(() => providedApi ?? getAuthApi())
   const [mode, setMode] = useState<AuthMode>(initialMode)
   const [siteId, setSiteId] = useState<AccountSiteId>(initialMode === 'register' ? 'solov' : initialSiteId)
@@ -59,6 +61,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [sourceOpen, setSourceOpen] = useState(initialSiteId !== 'solov')
   const sourceVisible = sourceOpen || siteId !== 'solov'
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
+  const [routesOpen, setRoutesOpen] = useState(false)
+  const [routesBusy, setRoutesBusy] = useState(false)
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [statusError, setStatusError] = useState('')
   const [statusRevision, setStatusRevision] = useState(0)
@@ -110,7 +114,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const resetCooldown = useCooldown()
   useEffect(() => () => { epoch.current++; locked.current = false }, [])
   useEffect(() => {
-    if (legal) { focusedStep.current = ''; return }
+    if (legal || routesOpen) { focusedStep.current = ''; return }
     if (busy) return
     const stepKey = `${siteId}:${mode}:${mode === 'recovery' ? `${recoveryStep}${tempShown ? 'temp' : ''}` : ''}:${twoFactor ? twoFactor.backup ? 'backup' : 'code' : ''}`
     if (focusedStep.current === stepKey) return
@@ -120,7 +124,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       if (input instanceof HTMLInputElement && !input.disabled) { input.focus(); focusedStep.current = stepKey }
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [siteId, mode, recoveryStep, tempShown, legal, busy, identifier, twoFactor])
+  }, [siteId, mode, recoveryStep, tempShown, legal, routesOpen, busy, identifier, twoFactor])
   useEffect(() => {
     if (!focusTarget || busy) return
     const frame = window.requestAnimationFrame(() => {
@@ -438,6 +442,9 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   </> : null
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
+  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重启星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
+    {connectionSettings(setRoutesBusy)}
+  </Dialog>
   const agreement = (checked: boolean, onChange: (checked: boolean) => void) => <div className="auth-agreement"><label><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} data-testid="auth-agree" disabled={busy} />我已阅读并同意</label><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('user-agreement')} testId="auth-terms">用户协议</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('privacy-policy')} testId="auth-privacy">隐私政策</Button></div>
   const emailSuggestion = emailChecked ? suggestEmailCorrection(registration.email) : null
   const field = (label: string, id: string, value: string, onChange: (value: string) => void, options: { type?: string; autoComplete?: string; placeholder?: string; error?: string; password?: boolean; maxLength?: number; onBlur?: (event: FocusEvent<HTMLInputElement>) => void } = {}) => <div className="auth-field" key={id}><Input id={id} label={label} testId={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={busy} aria-label={label} {...options} /></div>
@@ -518,6 +525,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
       {exits && <div className="auth-form-actions auth-exits" data-testid="auth-exits">{exits}</div>}
+      {connectionSettings && !twoFactor && !(mode === 'recovery' && recoveryStep === 3) && <Button size="xs" variant="ghost" disabled={busy} onClick={() => setRoutesOpen(true)} testId="auth-connection-settings">切换连接线路</Button>}
       {browserAuthentication && <Button variant="ghost" icon={ExternalLink} onClick={openAccountWebsite} disabled={busy} testId="auth-open-website">前往{source.label}官网</Button>}
       {mode !== 'recovery' && status?.turnstileCheckEnabled && onHelp && !exitsVisible && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
     </div>

@@ -27,7 +27,7 @@ import {
   shouldCheckWorkspaceWritable,
 } from './documents-fallback'
 import { usageDateRange } from './usage-date-range'
-import type { AppSettingsUpdate, AppTheme } from './app-settings'
+import { parseRelayEndpointSelections, type AppSettingsUpdate, type AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
@@ -48,7 +48,7 @@ import {
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
-import { relaySites, resolveRelaySite } from './relay-sites'
+import { relaySiteEndpointChoices, relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
   AddMcpInput,
@@ -421,6 +421,15 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     && relaySites.some((site) => site.id === value.relaySiteId)
     ? value.relaySiteId
     : undefined
+  if (value.relayEndpointIds !== undefined) {
+    if (!isRecord(value.relayEndpointIds)) throw new Error('连接线路设置格式错误')
+    for (const [siteId, endpointId] of Object.entries(value.relayEndpointIds)) {
+      if (!relaySiteEndpointChoices(siteId).some((endpoint) => endpoint.id === endpointId)) {
+        throw new Error('无法使用这条连接线路，请重新选择')
+      }
+    }
+  }
+  const relayEndpointIds = parseRelayEndpointSelections(value.relayEndpointIds)
   // Same degrade-don't-throw passthrough as relaySiteId above. 'auto' is the
   // explicit clear marker (absence means keep, so it can no longer express a
   // reset); unknown strings degrade to "keep the persisted policy".
@@ -462,6 +471,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(runDiagnosticsOnStartup !== undefined ? { runDiagnosticsOnStartup } : {}),
     ...(sidebarMoreExpanded !== undefined ? { sidebarMoreExpanded } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(relayEndpointIds !== undefined ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders !== undefined ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
@@ -2820,6 +2830,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
   registerTrustedHandler('settings:save', async (event, settings: unknown) => {
+    if (isRecord(settings) && settings.activeRelayEndpointIds !== undefined) {
+      const active = service.readStoredConfig().activeRelayEndpointIds
+      const echo = settings.activeRelayEndpointIds
+      // The frozen legacy renderer sends the full settings object back. An
+      // unchanged read-only echo is harmless; a renderer cannot choose the
+      // active route or make a pending preference look already effective.
+      if (!active || !isRecord(echo) || Object.keys(echo).length !== Object.keys(active).length
+        || Object.entries(echo).some(([siteId, endpointId]) => !Object.prototype.hasOwnProperty.call(active, siteId)
+          || active[siteId as keyof typeof active] !== endpointId)) {
+        throw new Error('当前连接线路只读，请保存线路选择后重开软件')
+      }
+    }
     const update = parseSettingsUpdate(settings)
     const next = await service.updateStoredConfig(update)
     // Side effects read the MERGED record, not the raw update: a narrow
@@ -3376,6 +3398,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         accountService,
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
+        // The expected endpoint comes from the active main-process route, not
+        // the editable native URL or a preference awaiting an app restart.
+        baseUrl: new URL(service.getConfig(false).providers.codex.baseUrl).origin,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
       })
