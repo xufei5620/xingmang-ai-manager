@@ -266,7 +266,7 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
       return { changed: false, enabled: false }
     }
     applyXingmangAiSkillEnabledFlag(parsed, skillPath, false)
-    // 先记再关：中途失败只多一笔记录，下次切回星芒时看见技能没关着就会把它改回来。
+    // 先记再关：中途失败只多一笔记录，下次在星芒下同步时看见技能没关着，就把这笔记录改回去。
     await writeXingmangAiSkillOffRecord(statePath, true)
     await writeCodexSkillConfig(configPath, parsed)
     return { changed: true, enabled: false }
