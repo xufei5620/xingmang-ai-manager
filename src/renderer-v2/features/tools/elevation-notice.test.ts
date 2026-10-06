@@ -34,9 +34,12 @@ describe('elevatedInstallNotice', () => {
       expect(elevatedInstallShortNotice(subject, 'windows', 'managed', true)).toBeNull()
       expect(elevatedInstallNotice(subject, 'windows', 'managed', false)).toContain('管理员授权')
     }
+    // The optional home paragraph loses only its consent half; "一般不用单独点" still answers whether to click.
+    expect(homeNodeElevationNotice('windows', 'managed', true, true)).toBe('Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。')
+    expect(homeNodeElevationNotice('windows', 'managed', false, true)).toBeNull()
     for (const optional of [true, false]) {
-      expect(homeNodeElevationNotice('windows', 'managed', optional, true)).toBeNull()
       expect(homeNodeElevationNotice('windows', 'managed', optional, false)).toContain('授权窗口')
+      expect(homeNodeElevationNotice('macos', 'managed', optional, true)).toBeNull()
     }
   })
 })

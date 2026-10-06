@@ -375,6 +375,20 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
 })
 
+// test:scripts is a hand-kept list, and a suite missing from it is not reported
+// anywhere: three of them (the installer directory guard and both macOS
+// artifact-name suites) sat in scripts/ for weeks with neither npm test nor CI
+// running them. Every suite has to be named by some npm script; the macOS-only
+// ones count through test:mac:free-signing.
+test('every script suite is run by some npm script', () => {
+  const named = new Set(Object.values(packageJson.scripts).flatMap((command) => command.split(/\s+/)))
+  const suites = fs.readdirSync(path.join(root, 'scripts'))
+    .filter((name) => /\.test\.[cm]?js$/.test(name))
+    .map((name) => `scripts/${name}`)
+  assert.ok(suites.length > 0, 'scripts/ must still hold its suites')
+  assert.deepEqual(suites.filter((suite) => !named.has(suite)), [])
+})
+
 // The shares above only add up to the whole file while the deal gives every
 // test to exactly one share, and a misspelt share has to stop the run rather
 // than quietly register everything or nothing.

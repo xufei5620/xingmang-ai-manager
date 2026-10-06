@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
 import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
+import { recordToasts, waitForToast } from '../../../../e2e/toast-recording.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-chat-v2')
@@ -18,6 +19,7 @@ before(async () => {
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '', stored = {}, init) {
   const page = await browser.newPage({ viewport: { width: 1064, height: 708 } })
+  await page.addInitScript(recordToasts)
   if (init) await page.addInitScript(init)
   if (Object.keys(stored).length) await page.addInitScript((records) => {
     if (sessionStorage.getItem('chat-storage-fixture-seeded')) return
@@ -248,7 +250,7 @@ test('web links in model output copy their address instead of opening, and other
     assert.equal(await mail.evaluate((element) => element.tagName), 'SPAN')
     assert.equal(await mail.getAttribute('title'), '链接不可直接打开：mailto:a@example.com')
     await link.click()
-    await page.getByText('网址已复制，粘贴到浏览器地址栏就能打开').waitFor()
+    await waitForToast(page, '网址已复制，粘贴到浏览器地址栏就能打开')
     assert.equal(await page.evaluate(() => window.__copied), 'https://example.com/guide')
   } finally { await page.close() }
 })
@@ -405,7 +407,7 @@ test('each code block copies only its own text and inline code gets no button', 
     await buttons.first().click()
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-code-copy]')?.textContent?.trim() === '已复制')
     assert.equal(await page.evaluate(() => window.__copied), 'npm install -g demo')
-    await page.getByTestId('chat-toasts').getByText('已复制').waitFor()
+    await waitForToast(page, '已复制')
     await buttons.nth(1).click()
     await page.waitForFunction(() => window.__copied === 'demo --version')
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-code-copy]')?.textContent?.trim() === '复制', undefined, { timeout: 5000 })

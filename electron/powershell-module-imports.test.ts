@@ -32,7 +32,7 @@ import { nativeCliSignatureScript } from './trusted-native-cli'
 import { buildProtectedDirectoryAclScript, protectedDirectoryAclModules } from './trusted-temp'
 import { uninstallAccountProbeModules, uninstallAccountProbeScript } from './uninstall-cleanup'
 import { buildSetUserCertificateTrustScript } from './user-certificate-trust'
-import { buildEnsureUserPathScript } from './windows-cli-shell-access'
+import { buildEnsureUserPathScript, buildRemoveUserPathScript } from './windows-cli-shell-access'
 import { buildCliLaunchPlan, cliLaunchBrokerModules, cliTerminalScriptModules } from './windows-elevation'
 import {
   buildProgramFilesAclProbe,
@@ -72,7 +72,7 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['Codex desktop activation', codexDesktopActivationScript, codexDesktopActivationModules, 'by-name'],
   ['external client inventory', windowsExternalClientInventoryScript(), windowsExternalClientInventoryModules, 'by-name'],
   ['external client inventory with remembered signatures', windowsExternalClientInventoryScript([
-    { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: 'CN=Tencent' },
+    { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: 'CN=Tencent', version: '1.2.3' },
   ]), windowsExternalClientInventoryModules, 'by-name'],
   ['uninstall desktop account probe', uninstallAccountProbeScript, uninstallAccountProbeModules, 'by-name'],
   ['Claude desktop manifest reader', buildClaudeDesktopManifestInspectionScript(
@@ -152,6 +152,7 @@ describe('PowerShell scripts under the trusted environment import their modules'
     ['user proxy clean-up', buildClearUserProxyScript()],
     ['provider override clean-up', buildClearProviderOverridesScript()],
     ['user PATH update', buildEnsureUserPathScript()],
+    ['user PATH removal', buildRemoveUserPathScript()],
     ['certificate trust switch', buildSetUserCertificateTrustScript()],
   ])('keeps the %s free of cmdlets that would be autoloaded', (_name, script) => {
     expect(unimportedCmdlets(script, [])).toEqual([])
