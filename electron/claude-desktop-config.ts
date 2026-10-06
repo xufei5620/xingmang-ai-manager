@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { getNodeValue, parseTree, type Node, type ParseError } from 'jsonc-parser'
+import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { readSafeUtf8FileSync } from './safe-local-data'
 import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
@@ -314,6 +314,67 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const result = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
       return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
     },
+    /**
+     * 换线路用（第四十三批 A）：正在用的就是星芒标记的那一份时，交出它的网关地址、Key 和第一个
+     * 型号（没写型号、由 Claude Desktop 自动获取时为 null），是哪条线路、归属对不对由调用方认。
+     * 客户复制出来再切过去用的那份哪怕地址、Key 都一样也不认：换线路不该替他把正在用的切回
+     * 星芒那份。主进程内部专用，永不跨 IPC（I3）。
+     */
+    inspectOwnedRoute: async (): Promise<{ baseUrl: string; apiKey: string; model: string | null } | null> => {
+      try {
+        await options.assertUnmanaged?.()
+        const desktop = parseObject(read(configPath))
+        const metadata = parseMetadata(read(metadataPath))
+        const owner = parseOwner(read(markerPath), profileDirectory)
+        if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer
+          || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p')) return null
+        const gateway = parseObject(read(path.join(libraryDirectory, `${owner.id}.json`)))
+        const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
+        if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || typeof apiKey !== 'string' || !apiKey.trim()) return null
+        return { baseUrl, apiKey, model: firstModel(gateway.inferenceModels) }
+      } catch {
+        return null
+      }
+    },
+    /**
+     * 换线路（第四十三批 A）：只把星芒那份的网关地址从 from 换成 to，文件里别的一个字不动（缩进、
+     * 字段顺序照 Claude Desktop 自己写的样子）。型号清单、认证方式这些客户可能在 Claude Desktop
+     * 里自己改过的字段原样留着，也不碰别的文件；不走 saveGateway，那条会把型号收成一个、认证方式
+     * 改回 bearer。管理策略要起 PowerShell，先查完再调 beforeCommit（调用方在那里最后看一眼客户端
+     * 开没开），之后到写完都是同步的。写之前重读一遍：已经不是星芒那份在用、地址不是 from、Key
+     * 不是这一把，一个字不写。
+     */
+    followRoute: (from: string, to: string, apiKey: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      await beforeCommit?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const desktop = parseObject(capture(configPath))
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      const gatewayPath = owner ? path.join(libraryDirectory, `${owner.id}.json`) : null
+      const original = gatewayPath ? capture(gatewayPath) : null
+      const gateway = parseObject(original)
+      if (!owner || !gatewayPath || original === null || metadata.appliedId !== owner.id || metadata.hybridPointer
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p') || !gatewayConfigurationReady(gateway)
+        || typeof gateway.inferenceGatewayBaseUrl !== 'string' || !sameBaseUrl(gateway.inferenceGatewayBaseUrl, from)
+        || gateway.inferenceGatewayApiKey !== apiKey) {
+        throw new Error(`${label}在换线路前已变化，未执行修改`)
+      }
+      const { inferenceGatewayBaseUrl } = buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey })
+      const content = applyEdits(original, modify(original, ['inferenceGatewayBaseUrl'], inferenceGatewayBaseUrl, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
+      return { path: gatewayPath, backups: saved.backups }
+    }),
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)
       assertContext()

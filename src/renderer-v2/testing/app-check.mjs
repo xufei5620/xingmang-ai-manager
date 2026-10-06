@@ -3529,6 +3529,36 @@ test('a stalled update download offers the download page next to downloading aga
   } finally { await page.close() }
 })
 
+// 检查更新 45 秒没动静被掐断：连更新清单都拿不回来的网络，再点「重试」多半一样。更新页在
+//「重试」旁边多给「打开下载页」；别的检查失败照旧只给「重试」。
+test('a stalled update check offers the download page next to retrying', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
+      error: { code: value.code, message: value.reason }, development: true,
+    }), { code, reason })
+    await emit('UPDATE_CHECK_STALLED')
+    const notice = updates.getByTestId('updates-failure-check')
+    await notice.getByText('检查更新失败', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    await notice.getByRole('button', { name: '打开下载页', exact: true }).click()
+    await expect.poll(opened).toEqual(['https://docs-new.solov.cc/guide/manager#download-installers'])
+
+    await emit('ENOTFOUND')
+    await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
+    await notice.getByRole('button', { name: '重试', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
 test('the updates page explains a full disk and still lets the user download', async () => {
