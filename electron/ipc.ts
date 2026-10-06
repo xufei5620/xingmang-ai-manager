@@ -14,6 +14,7 @@ import path from 'node:path'
 import {
   buildSensitiveWorkspacePrompt,
   classifyWorkspace,
+  sensitiveWorkspaceAsksAtLaunch,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
@@ -2376,13 +2377,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.runtimeLog.exception('config', 'workspace.starter.open-folder-failed', error)
     })
   }
-  // 选到「每次都提醒」的目录（系统目录、四家工具存密钥的目录）时，选择器里已经
-  // 问过一次；紧接着的那次打开不再重复问。只认同一个路径、只用一次、两分钟内有效，
-  // 之后从最近记录等别的入口再打开，照样会问。
-  let confirmedEveryTimeWorkspace: { workspace: string; expiresAt: number } | null = null
-  function consumeConfirmedEveryTimeWorkspace(workspace: string): boolean {
-    const confirmed = confirmedEveryTimeWorkspace
-    confirmedEveryTimeWorkspace = null
+  // 在选择器里选到敏感目录、点了「仍然打开」，紧接着的那次打开不再重复问。只认同一个
+  // 路径、只用一次、两分钟内有效，之后从最近记录等别的入口再打开，照样会问。
+  let confirmedSensitiveWorkspace: { workspace: string; expiresAt: number } | null = null
+  function consumeConfirmedSensitiveWorkspace(workspace: string): boolean {
+    const confirmed = confirmedSensitiveWorkspace
+    confirmedSensitiveWorkspace = null
     return confirmed !== null && confirmed.workspace === workspace && Date.now() <= confirmed.expiresAt
   }
   function classifyLocalWorkspace(workspace: string): SensitiveWorkspaceKind | null {
@@ -2436,9 +2436,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       if (!sensitivity) return selected
       const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, true)
       if (decision === 'continue') {
-        if (sensitiveWorkspacePolicy(sensitivity) === 'every-time') {
-          confirmedEveryTimeWorkspace = { workspace: selected, expiresAt: Date.now() + 120_000 }
-        }
+        confirmedSensitiveWorkspace = { workspace: selected, expiresAt: Date.now() + 120_000 }
         return selected
       }
       if (decision === 'create') {
@@ -2634,21 +2632,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     resumeSessionId: string | null,
   ) {
     const sensitivity = classifyLocalWorkspace(target)
-    if (!sensitivity || sensitiveWorkspacePolicy(sensitivity) !== 'every-time' || consumeConfirmedEveryTimeWorkspace(target)) {
-      const writeCheckPlatform = options.workspaceWriteCheck?.platform ?? process.platform
-      if (!shouldCheckWorkspaceWritable(sensitivity, writeCheckPlatform)) {
-        return launchProviderWith(provider, target, launchMode, resumeSessionId)
-      }
-      return launchIfWritable(event, provider, target, launchMode, resumeSessionId)
+    if (
+      !sensitivity
+      || !sensitiveWorkspaceAsksAtLaunch(sensitivity, launchMode === 'resumeLast')
+      || consumeConfirmedSensitiveWorkspace(target)
+    ) {
+      return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity)
     }
-    // 最近记录、记录页「接着上次对话」、老版本记住的目录都不经过选择器，
-    // 所以「每次都提醒」的目录在这里再问一次。续接对话换了目录就接不上，
-    // 那一问只给「先不打开」，不给「新建」和「换一个文件夹」。
+    // 首页「打开」从记录推出来的目录、最近记录、记录页「接着上次对话」、老版本记住的目录都
+    // 不经过选择器，所以在这里再问一次。续接对话换了目录就接不上，那一问只给「先不打开」，
+    // 不给「新建」和「换一个文件夹」。
     return (async () => {
       const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
       const allowChooseAnother = launchMode === 'new'
       const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, allowChooseAnother)
-      if (decision === 'continue') return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      if (decision === 'continue') return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity)
       let replacement: string | null = null
       if (decision === 'create') {
         replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
@@ -2662,10 +2660,28 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const declined: CliLaunchResult = { declined: true }
         return declined
       }
-      consumeConfirmedEveryTimeWorkspace(replacement)
+      consumeConfirmedSensitiveWorkspace(replacement)
       await rememberWorkspace(replacement)
-      return service.launchProvider(provider, replacement, launchMode)
+      // 换来的目录和从选择器直接选的一样先试写：首页「打开」进主目录那一问以后，换的多半是
+      // 文档里的项目文件夹，受控文件夹访问拦的正是那儿。
+      return launchUnlessUnwritable(event, provider, replacement, launchMode, null, classifyLocalWorkspace(replacement))
     })()
+  }
+  // 桌面、文档、下载问过「仍然打开」以后，照旧先试写一次（launchIfWritable）；
+  // 系统目录和存密钥的目录不试写，问完直接打开。
+  function launchUnlessUnwritable(
+    event: IpcMainInvokeEvent,
+    provider: ProviderId,
+    target: string,
+    launchMode: CliLaunchMode,
+    resumeSessionId: string | null,
+    sensitivity: SensitiveWorkspaceKind | null,
+  ) {
+    const writeCheckPlatform = options.workspaceWriteCheck?.platform ?? process.platform
+    if (!shouldCheckWorkspaceWritable(sensitivity, writeCheckPlatform)) {
+      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+    }
+    return launchIfWritable(event, provider, target, launchMode, resumeSessionId)
   }
   // 受控文件夹访问、安全软件的文档保护开着时，工具照样起得来，但 AI 一改文件就是一串
   // 英文 EPERM，客户只看到「说改了但文件没变」。以前写信任、生成 AGENTS.md 失败只记一条
@@ -2713,7 +2729,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const declined: CliLaunchResult = { declined: true }
       return declined
     }
-    consumeConfirmedEveryTimeWorkspace(replacement)
+    consumeConfirmedSensitiveWorkspace(replacement)
     await rememberWorkspace(replacement)
     return service.launchProvider(provider, replacement, launchMode)
   }
