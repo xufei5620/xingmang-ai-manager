@@ -639,9 +639,13 @@ function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   if (value === undefined) return {}
   if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
   const keys = Object.keys(value)
-  if (keys.some((key) => key !== 'createStarter')) throw new Error('选择工作目录的参数无效')
+  if (keys.some((key) => key !== 'createStarter' && key !== 'fallbackToPicker')) throw new Error('选择工作目录的参数无效')
   if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
-  return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
+  if (value.fallbackToPicker !== undefined && typeof value.fallbackToPicker !== 'boolean') throw new Error('选择工作目录的参数无效')
+  return {
+    ...(value.createStarter === undefined ? {} : { createStarter: value.createStarter }),
+    ...(value.fallbackToPicker === undefined ? {} : { fallbackToPicker: value.fallbackToPicker }),
+  }
 }
 
 export function parseNodeRuntimeInstallRequest(value: unknown): NodeRuntimeInstallRequest {
@@ -2429,11 +2433,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   }
   registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const chooseOptions = parseChooseWorkspaceOptions(rawOptions)
     // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
     // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
-    const workspace = parseChooseWorkspaceOptions(rawOptions).createStarter
-      ? await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
-      : await pickWorkspace(parentWindow)
+    // 首页第一次点「打开」（已知40）建不成时不让人再点一次：说完接着弹选择器。
+    const workspace = !chooseOptions.createStarter
+      ? await pickWorkspace(parentWindow)
+      : chooseOptions.fallbackToPicker
+        ? await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
+          ?? await pickWorkspace(parentWindow)
+        : await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
     if (workspace === null) return null
     await rememberWorkspace(workspace)
     return workspace

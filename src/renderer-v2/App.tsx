@@ -91,6 +91,11 @@ const AccelerationPage = lazy(() => import('./features/acceleration/Acceleration
 const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
 
 type AccountTab = typeof accountTabs[number]['value']
+/**
+ * 没有现成目录时怎么定：'choose' 弹选择器；'create' 替用户新建项目文件夹（下拉、引导里那一项）；
+ * 'createOrChoose' 是首页第一次点「打开」：先替用户新建，建不成说一句再弹选择器（已知40）。
+ */
+type LaunchFolder = 'choose' | 'create' | 'createOrChoose'
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
@@ -1184,15 +1189,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
    */
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, folder: LaunchFolder = 'choose', epoch = accountEpoch.current): Promise<boolean> {
     try {
       const prepared = await prepareToolLaunch(id, epoch)
       if (!prepared) return false
       const { current, config, tool } = prepared
       let workspace = config.workspace
       if (id !== 'codexDesktop') {
-        // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
-        const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(newFolder ? { createStarter: true } : undefined)
+        // 不弹选择器的两种：主进程在「文档」下替用户建一个空的项目文件夹；第一次点「打开」
+        // 时建不成再弹选择器（已知40）。
+        const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(folder === 'choose' ? undefined
+          : folder === 'create' ? { createStarter: true } : { createStarter: true, fallbackToPicker: true })
         if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
         workspace = selectedWorkspace
       }
@@ -1249,12 +1256,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!launchIsCurrent(epoch)) return
       setSettings(nextSettings)
       setChineseDialog(false)
-      await launch('codexDesktop', 'open', undefined, false, epoch)
+      await launch('codexDesktop', 'open', undefined, 'choose', epoch)
     } catch (cause) {
       if (launchIsCurrent(epoch)) throw cause
     }
   }
-  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', newFolder = false) {
+  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', folder: LaunchFolder = 'choose') {
     const request = { epoch: accountEpoch.current }
     if (launchRequest.current?.epoch === request.epoch) return
     launchRequest.current = request
@@ -1269,7 +1276,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           if (!launchIsCurrent(request.epoch) || asking) return
         }
         if (remembered) await launchRemembered(id, remembered, mode, request.epoch)
-        else await launch(id, mode, undefined, newFolder, request.epoch)
+        else await launch(id, mode, undefined, folder, request.epoch)
       } catch (cause) {
         if (launchIsCurrent(request.epoch)) throw cause
       }
@@ -1280,13 +1287,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
    */
   async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchChoice = 'new', epoch = accountEpoch.current): Promise<boolean> {
-    try { return await launch(id, mode, remembered, false, epoch) }
+    try { return await launch(id, mode, remembered, 'choose', epoch) }
     catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       if (!isMissingWorkspace(cause)) throw cause
       // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
       toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
-      return launch(id, 'open', undefined, false, epoch)
+      return launch(id, 'open', undefined, 'choose', epoch)
     }
   }
   /**
@@ -1520,7 +1527,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
-      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
+      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
@@ -1562,7 +1569,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
-              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, orChoose) => requestLaunch(id, undefined, 'new', orChoose ? 'createOrChoose' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}

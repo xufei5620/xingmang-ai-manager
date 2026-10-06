@@ -1454,12 +1454,61 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  // 已知40：首页第一次点「打开」先替用户建，建不成说完接着弹选择器，不让他再点一次又撞上同一个错。
+  it.runIf(process.platform !== 'win32')('opens the picker right after explaining a failed first-time starter folder', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-project-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, fallbackToPicker: true }))
+        .resolves.toBe(project)
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        message: '没能替你新建项目文件夹。',
+        detail: expect.stringContaining('接下来会重新打开文件夹选择窗口'),
+      }))
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('creates a first-time starter folder without ever showing the picker when that works', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, fallbackToPicker: true }))
+        .resolves.toBe(expected)
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
   it('rejects workspace options it does not know, including a renderer-supplied path', async () => {
     register()
     const handler = electronMocks.handlers.get('workspace:choose')!
 
     await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, fallbackToPicker: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择工作目录的参数无效')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })

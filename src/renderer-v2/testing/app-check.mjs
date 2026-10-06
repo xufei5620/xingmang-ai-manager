@@ -105,6 +105,16 @@ async function clean(page) {
   assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
 }
 
+// 首页「最近」读完之前说不准哪个工具聊过，第一次点「打开」照旧弹选择框；读完了、这个工具
+// 没聊过也没选过文件夹，「打开」才直接替用户建项目文件夹（已知40）。
+async function recentRead(page) {
+  await page.waitForFunction(() => {
+    const card = document.querySelector('[data-testid="home-recent-card"]')
+    return Boolean(card) && !card.textContent.includes('正在读取最近记录')
+  })
+}
+const starterFolder = 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project'
+
 const defaultSupportUrl = 'https://work.weixin.qq.com/kfid/kfc3ac7eece5344c034'
 const historicalSupportUrl = 'https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4'
 
@@ -788,6 +798,7 @@ test('launch and config actions use the original typed desktop and CLI endpoints
   const page = await open('allInstalled=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
     const providers = ['claude', 'codex', 'gemini', 'grok']
     for (const provider of providers) {
       const launchCount = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)
@@ -799,8 +810,9 @@ test('launch and config actions use the original typed desktop and CLI endpoints
     const calls = await page.evaluate(() => window.v2Test.calls)
     const choices = calls.filter((entry) => entry.method === 'chooseWorkspace')
     const launches = calls.filter((entry) => entry.method === 'launchCli')
-    assert.equal(choices.length, 4)
-    assert.deepEqual(launches.map((entry) => entry.args), providers.map((provider) => [provider, 'C:\\Selected Project']))
+    // 四个工具都没聊过、也没选过文件夹：「打开」替用户建项目文件夹，建不成才弹选择框（已知40）。
+    assert.deepEqual(choices.map((entry) => entry.args), providers.map(() => [{ createStarter: true, fallbackToPicker: true }]))
+    assert.deepEqual(launches.map((entry) => entry.args), providers.map((provider) => [provider, starterFolder]))
     for (let index = 0; index < launches.length; index += 1) {
       assert.ok(calls.indexOf(choices[index]) < calls.indexOf(launches[index]))
     }
@@ -1417,24 +1429,57 @@ test('deleting a session asks first, then removes it from the list and the home 
   } finally { await page.close() }
 })
 
-test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
+test('a new user opens a CLI in a folder the app creates and can still pick one from the menu (known 40)', async () => {
   const page = await open('allInstalled=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    // 没有最近目录时「打开」旁边没有下拉，入口在「更多操作」里。
+    await recentRead(page)
+    // 没有最近目录时「打开」旁边没有下拉，按钮还是「打开」。
     assert.equal(await page.getByTestId('tool-codex-workspaces').count(), 0)
+    assert.equal(await page.getByTestId('tool-codex-primary').innerText(), '打开')
+    // 「⋯」里的「新建项目文件夹并打开」换成「选择其他目录…」：「打开」已经替人新建了。
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
-    await page.getByTestId('tool-codex-new-workspace').click()
+    assert.equal(await page.getByTestId('tool-codex-new-workspace').count(), 0)
+    assert.equal(await page.getByTestId('tool-codex-choose-workspace').innerText(), '选择其他目录…')
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-codex-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const calls = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true }]])
-    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
-      [['codex', 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project']])
-    // Codex 桌面端自己管工作区，不给这个入口。
-    await page.keyboard.press('Escape')
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, fallbackToPicker: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['codex', starterFolder]])
+    // 想用自己的文件夹：从「⋯」选，弹的是原来的选择框。
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const picked = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(picked.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, fallbackToPicker: true }], []])
+    assert.deepEqual(picked.filter((entry) => entry.method === 'launchCli').at(-1).args, ['claude', 'C:\\Selected Project'])
+    // Codex 桌面端自己管工作区，这两个入口都不给。
     await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
     assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
+    assert.equal(await page.getByTestId('tool-codexDesktop-choose-workspace').count(), 0)
     await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('after the first open the button names the created folder and keeps the full dropdown (known 40)', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent === '打开 my-project')
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
+    await page.getByTestId('tool-codex-workspaces').getByRole('button', { name: '换一个目录' }).click()
+    assert.deepEqual(await page.getByRole('menuitem').allInnerTexts(), [starterFolder, '选择其他目录…', '新建项目文件夹并打开'])
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)), [['codex', starterFolder], ['claude', starterFolder]])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1442,7 +1487,11 @@ test('a new user can open a CLI in a folder the app creates, without the directo
 test('a folder picked for one CLI opens the others there without asking again', async () => {
   const page = await open('launchRemembers=1')
   try {
-    await page.getByTestId('tool-codex-primary').click()
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    // 第一次点「打开」会替人新建（已知40）；自己挑文件夹从「⋯」里选。
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const claude = page.getByTestId('tool-claude-primary')
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
@@ -1495,7 +1544,10 @@ test('a folder picked on home opens CLIs from the tray and shortcuts, even when 
   const page = await open('launchRemembers=1')
   const sessionReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderSessions').length)
   try {
-    await page.getByTestId('tool-codex-primary').click()
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-choose-workspace').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
     // 上一次打开收完尾再发托盘事件：还在打开时，requestLaunch 会把新来的请求直接丢掉。
     await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)

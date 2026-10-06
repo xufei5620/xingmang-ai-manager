@@ -16,7 +16,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
+import { chooseWorkspaceLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
@@ -68,8 +68,11 @@ export interface HomeProps {
    * { resumeSessionId } = Codex 接着这一条记录(见 resumeLaunchChoice)。
    */
   onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchChoice): void
-  /** 不选目录，替用户新建一个项目文件夹再打开；缺省 = 不给这个入口（旧行为）。 */
-  onLaunchInNewFolder?(tool: ToolId): void
+  /**
+   * 不选目录，替用户新建一个项目文件夹再打开；缺省 = 不给这个入口（旧行为）。
+   * orChoose：第一次点「打开」时走这条，建不成说一句再弹目录选择器（已知40）。
+   */
+  onLaunchInNewFolder?(tool: ToolId, orChoose?: boolean): void
   onConfigure(tool: ToolId): void
   /** 配置被改动过时按当前账号重写这一个工具的 Key；缺省 = 不给这颗按钮（旧行为）。 */
   onRewriteKey?(tool: ToolId): void
@@ -435,6 +438,10 @@ export function Home(props: HomeProps) {
     // 正在跑的那一行按钮写的是「打开中」「安装中」，这时不给下拉，但外面那层还在，
     // 按钮列的宽度就不会跟着一起跳。
     const lastWorkspace = job ? null : workspaces[0] ?? null
+    // 这个工具没聊过、也从没选过文件夹（已知40）：「打开」不弹选择框，直接替他建好
+    // 「文档\XingmangProjects\my-project」在里面打开，新手不会再选到桌面被拦。记录还没读到时
+    // 说不准聊没聊过，照旧弹选择框。
+    const startsFresh = opensWorkspace && workspaces.length === 0 && recent !== null && Boolean(props.onLaunchInNewFolder)
     // 归客户自己装的（认不出芯片的 Mac 上的 Codex 桌面端）这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
@@ -445,7 +452,8 @@ export function Home(props: HomeProps) {
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
       : openable ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
-      : openable ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
+      : !openable ? props.onConfigure(tool.id)
+      : startsFresh ? props.onLaunchInNewFolder?.(tool.id, true) : props.onLaunch(tool.id, lastWorkspace?.path)
     const rollback = job ? null : rollbackVersion(tool)
     const revert = job ? null : revertVersion(tool)
     const update = job ? null : toolUpdateOffer(tool)
@@ -512,8 +520,14 @@ export function Home(props: HomeProps) {
           }))} />}
       </span> : primaryButton}
       menu={tool.status.installed && !job ? [
-        // 还没有最近目录时「打开」旁边没有下拉，新建入口放进这个菜单，新手照样找得到。
-        ...(opensWorkspace && !lastWorkspace && props.onLaunchInNewFolder ? [{
+        // 还没有最近目录时「打开」旁边没有下拉。「打开」已经替人新建了，想用自己的文件夹从这里选
+        // （已知40）；记录还没读到、「打开」还是弹选择框的那一小会儿，这里照旧给新建入口。
+        ...(opensWorkspace && !lastWorkspace && props.onLaunchInNewFolder ? [startsFresh ? {
+          label: chooseWorkspaceLabel,
+          testId: `tool-${tool.id}-choose-workspace`,
+          disabled: waitingForScan || waitingForAccount || launchBusy,
+          onSelect: () => props.onLaunch(tool.id),
+        } : {
           label: newWorkspaceLabel,
           testId: `tool-${tool.id}-new-workspace`,
           disabled: waitingForScan || waitingForAccount || launchBusy,

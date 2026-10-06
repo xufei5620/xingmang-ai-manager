@@ -314,6 +314,11 @@ export type RepositoryContext = CodexRepositoryContext
 /** `workspace:choose` 的可选参数。渲染层只能说「要新建」，路径永远由主进程决定。 */
 export interface ChooseWorkspaceOptions {
   createStarter?: boolean
+  /**
+   * 和 createStarter 一起用：建不成时说一句，接着弹目录选择器。首页第一次点「打开」走这条
+   * （已知40），不然再点「打开」还是去建、还是建不成。
+   */
+  fallbackToPicker?: boolean
 }
 
 /**
@@ -806,7 +811,10 @@ export interface XingmangInvokeContract {
   fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [retry?: boolean], ToolTemplateFillResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
-  /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
+  /**
+   * options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹；
+   * 再带 fallbackToPicker = 建不成时接着弹选择器。
+   */
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
