@@ -71,8 +71,13 @@ interface LocatedClient {
 }
 interface Inspection { clients: LocatedClient[]; errors: Partial<Record<ExternalToolId, string>> }
 interface InspectionScope {
-  /** 只给展示用的检测：可以认几分钟内验过、文件没变的签名。装、打开从不传。 */
+  /** 只给展示用的检测：可以认之前验过、文件没变的签名（Mac 上只认几分钟内的）。装、打开从不传。 */
   reuseSignatures?: boolean
+  /**
+   * Windows 上打开之前那次检测（已知68）：只认之前验过并且通过、文件和版本都没变的签名，
+   * 没验过的、上次没通过的照旧现验。装从不传；Mac 上不看它，打开照旧现验。
+   */
+  reuseVerifiedSignatures?: boolean
   /** Mac 上只看这一个客户端（打开它之前）。Windows 的清点是一整段脚本，照旧全看。 */
   only?: ExternalToolId
 }
@@ -165,6 +170,8 @@ export interface KnownExternalClientSignature {
   stamp: string
   status: string
   subject: string
+  /** 验签那次卸载信息里登记的版本（DisplayVersion，没有就是空串）；对不上就现验。 */
+  version: string
 }
 
 function errorText(error: unknown): string {
@@ -293,11 +300,19 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 // Read registry metadata and current-user AppX registration only. Never execute a
 // discovered application's --version, uninstall string, or registry command line.
 //
-// `knownSignatures` lets a display-only scan skip Get-AuthenticodeSignature for an
-// executable whose size and timestamps are unchanged since it was last verified.
-// The list is passed as base64 JSON so no path or subject text ever becomes
-// PowerShell source. A same-user attacker can forge those timestamps, so install
-// and launch never pass this list: anything that acts on the file verifies anew.
+// `knownSignatures` lets a scan skip Get-AuthenticodeSignature for an executable
+// whose size, timestamps and registered version are unchanged since it was last
+// verified. The list is passed as base64 JSON so no path, subject or version text
+// ever becomes PowerShell source. A same-user attacker can forge those timestamps,
+// so install never passes this list: what it installs is verified anew.
+//
+// Launch passes only the entries that verified as Valid. This is a deliberate
+// relaxation (已知68, approved in writing by yoyo on 2026-10-06): every 「打开」
+// used to wait several seconds for a full signature check. It stays narrow: the
+// launch goes through Explorer, which starts the client as the signed-in user,
+// so a forged stamp runs nothing that user could not already run; the registry
+// and path checks still run on every launch, and the remembered subject must
+// still name the official publisher.
 //
 // The script runs under trustedCommandEnvironment(), where one cmdlet left to
 // autoloading costs the whole System32 module scan (20 s and more on the CI
@@ -313,7 +328,7 @@ export const windowsExternalClientInventoryModules = [
 export const externalClientSystemCommandTimeoutMs = 15_000
 
 export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = []): string {
-  const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject }) => ({ path: file, stamp, status, subject }))), 'utf8').toString('base64')
+  const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject, version }) => ({ path: file, stamp, status, subject, version }))), 'utf8').toString('base64')
   return String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModules)}
@@ -417,7 +432,7 @@ foreach ($product in $products) {
         $file = Get-Item -LiteralPath $exe -Force
         $stamp = '{0}:{1}:{2}' -f $file.Length, $file.LastWriteTimeUtc.Ticks, $file.CreationTimeUtc.Ticks
         $known = $knownSignatures[$exe]
-        if ($known -and [string]$known.stamp -ceq $stamp) {
+        if ($known -and [string]$known.stamp -ceq $stamp -and [string]$known.version -ceq [string]$entry.DisplayVersion) {
           $signatureStatus = [string]$known.status
           $signatureSubject = [string]$known.subject
         } else {
@@ -473,9 +488,10 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   let scanGeneration = 0
   const knownSignatures = new Map<string, KnownExternalClientSignature>()
   // The macOS half of knownSignatures: a Gatekeeper/codesign pass is remembered
-  // against the bundle fingerprint for a few minutes, passes only. As on Windows,
-  // a same-user attacker can forge those timestamps, so only display-only scans
-  // may reuse it; install and launch act on the bundle and always verify anew.
+  // against the bundle fingerprint for a few minutes, passes only. A same-user
+  // attacker can forge those timestamps, so only display-only scans may reuse it;
+  // install and launch act on the bundle and always verify anew (the Windows
+  // launch exception above does not extend to macOS).
   const verifiedBundles = new Map<string, { fingerprint: string; verifiedAt: number }>()
 
   const environment = () => trustedCommandEnvironment(options.env, platform === 'win32' ? resolveMachinePaths() : undefined, platform)
@@ -530,11 +546,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const stamp = textValue(item.signatureStamp)
     if (!file || !stamp || !/^\d{1,20}:\d{1,20}:\d{1,20}$/.test(stamp)) return
     if (knownSignatures.size >= maximumKnownSignatures) knownSignatures.clear()
-    knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '' })
+    // 版本原样记（不 trim）：脚本拿它和卸载信息里的 DisplayVersion 逐字比，差一个空格也现验。
+    const version = typeof item.version === 'string' && item.version.length <= 256 ? item.version : ''
+    knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '', version })
   }
 
-  async function inspectWindows(reuseSignatures: boolean): Promise<Inspection> {
-    const script = windowsExternalClientInventoryScript(reuseSignatures ? [...knownSignatures.values()] : [])
+  async function inspectWindows(scope: InspectionScope): Promise<Inspection> {
+    const remembered = [...knownSignatures.values()]
+    const script = windowsExternalClientInventoryScript(scope.reuseSignatures === true ? remembered
+      : scope.reuseVerifiedSignatures === true ? remembered.filter((entry) => entry.status === 'Valid') : [])
     const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, systemOptions())
     const data = record(JSON.parse(cleanCommandOutput(result.stdout).trim()) as unknown)
     if (!Array.isArray(data.clients)) throw new Error('客户端安装检测未返回有效列表')
@@ -651,7 +671,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   }
 
   async function inspect(scope: InspectionScope = {}): Promise<Inspection> {
-    try { return platform === 'win32' ? await inspectWindows(scope.reuseSignatures === true) : platform === 'darwin' ? await inspectMac(scope) : { clients: [], errors: {} } }
+    try { return platform === 'win32' ? await inspectWindows(scope) : platform === 'darwin' ? await inspectMac(scope) : { clients: [], errors: {} } }
     catch (error) { return { clients: [], errors: Object.fromEntries(tools.map((tool) => [tool, errorText(error)])) } }
   }
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
@@ -860,7 +880,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
     const launched = queue.enqueue(`external-client:launch:${tool}`, async () => {
       // 只现验要打开的这一个（Mac）：没点的那几家跟这次打开无关，不该让人多等它们的签名核对。
-      const inspection = await inspect({ only: tool })
+      // Windows 上验过并且通过、文件和版本都没变的不再现验（已知68，理由见 windowsExternalClientInventoryScript 上面）。
+      const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32' })
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       if (platform === 'win32') {

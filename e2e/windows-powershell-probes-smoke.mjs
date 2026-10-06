@@ -236,8 +236,8 @@ function Get-AppxPackage { @() }
   }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
-      { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: externalClientSubjects.workbuddy },
-      { path: "C:\\Users\\Tester\\AppData\\Local\\Open'Code\\OpenCode.exe", stamp: '4:5:6', status: 'Valid', subject: externalClientSubjects.opencode },
+      { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: externalClientSubjects.workbuddy, version: '1.0.0' },
+      { path: "C:\\Users\\Tester\\AppData\\Local\\Open'Code\\OpenCode.exe", stamp: '4:5:6', status: 'Valid', subject: externalClientSubjects.opencode, version: "1.0'0" },
     ]
     const output = await runEncoded(String.raw`
 function Test-Path { param([string]$LiteralPath) return $false }
@@ -246,6 +246,28 @@ function Get-AppxPackage { @() }
 ` + windowsExternalClientInventoryScript(known) + "\n'KNOWN:' + (@($knownSignatures.Keys | Sort-Object) -join '|')")
     const line = output.split(/\r?\n/).find((entry) => entry.startsWith('KNOWN:'))
     assert.equal(line, `KNOWN:${known.map((entry) => entry.path).sort().join('|')}`)
+  }],
+  // 已知68：打开之前那次认这份记住的结果，所以文件或卸载信息里的版本一变，就得真的再验一次。
+  ['external client inventory reuses a remembered signature only while the file and its registered version are unchanged', async () => {
+    const exe = 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe'
+    const mocks = String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' } }
+function Get-ItemProperty { param([string]$LiteralPath) [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
+function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=7; LastWriteTimeUtc=[datetime]::new(638000000000000000, [System.DateTimeKind]::Utc); CreationTimeUtc=[datetime]::new(637000000000000000, [System.DateTimeKind]::Utc) } }
+function Get-AuthenticodeSignature { param([string]$LiteralPath) throw 'verified anew' }
+function Get-Process { @() }
+function Get-AppxPackage { @() }
+`
+    const stamp = '7:638000000000000000:637000000000000000'
+    const remembered = { path: exe, stamp, status: 'Valid', subject: externalClientSubjects.workbuddy, version: '1.0.0' }
+    const reused = JSON.parse((await runEncoded(mocks + windowsExternalClientInventoryScript([remembered]))).trim())
+    assert.deepEqual(reused.clients.map((client) => [client.path, client.signatureStatus, client.signatureStamp]), [[exe, 'Valid', stamp]])
+    for (const changed of [{ version: '1.0.1' }, { version: '' }, { stamp: '8:638000000000000000:637000000000000000' }]) {
+      const fresh = JSON.parse((await runEncoded(mocks + windowsExternalClientInventoryScript([{ ...remembered, ...changed }]))).trim())
+      assert.deepEqual(fresh.clients, [], JSON.stringify(changed))
+      assert.deepEqual(fresh.errorDetails, { workbuddy: 'verified anew' }, JSON.stringify(changed))
+    }
   }],
 ]
 
