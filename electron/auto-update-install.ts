@@ -21,6 +21,10 @@
  * 装上了的版本，打开时就从记录里清掉（resolveRecordToWriteAtLaunch）：客户之后装回旧版，
  * 旧版再下好它时不能被当成上次没装上。
  *
+ * Windows 上账号不在管理员组的电脑（公司、学校配的，家里长辈的子账号）两个时机都不装：
+ * 授权窗口要输一个管理员账号的密码，他多半没有，自动装只会把软件关掉、再弹一个他填不了的
+ * 窗口。下好后由提示说清楚，等有管理员账号的人在更新页点「重启安装」（第二十四批 2）。
+ *
  * 记录读坏了一律当作没有记录：最多少装一次，绝不会多装。
  */
 import fs from 'node:fs'
@@ -143,11 +147,13 @@ export interface LaunchInstallInput {
   elapsedSinceLaunchMs: number
   /** 有安装任务在跑（装 CLI、装 Node 之类）时不打断。 */
   busy: boolean
+  /** Windows 上这个账号不在管理员组（windows-elevation.ts 问出来的 'standard'）。缺省＝不是，或者没问出来。 */
+  standardAccount?: boolean
 }
 
 /** 返回要在启动时装上的版本；不该装时返回 null。 */
 export function decideLaunchInstall(input: LaunchInstallInput): string | null {
-  if (!input.autoUpdate || input.busy) return null
+  if (!input.autoUpdate || input.busy || input.standardAccount) return null
   // 交给系统安装器的版本（Linux）从不自己装：一打开（常常是开机自启）就弹一个要开机密码
   // 的窗口，客户只会当成来路不明的东西点掉。
   if (input.snapshot.installMethod === 'system-installer') return null
@@ -280,6 +286,8 @@ export interface QuitInstallInput {
   installMethod?: UpdateInstallMethod | null
   /** 系统已经在关机、重启或注销。缺省＝没有。 */
   systemShuttingDown?: boolean
+  /** 见 LaunchInstallInput.standardAccount。 */
+  standardAccount?: boolean
 }
 
 /**
@@ -290,11 +298,16 @@ export interface QuitInstallInput {
  * 系统在关机、重启或注销时这次不装也不问（'later'）：安装器会被关机一起结束，问了也没人
  * 回答。也不记「退出时试过了」，记了下次打开就会被当成上次没装上；不记，下次打开照常
  * 自动装（decideLaunchInstall）。
+ *
+ * 账号不在管理员组的 Windows 电脑也是不装不问，直接退出（'leave'）：问了他多半点「安装
+ * 并退出」，软件关掉后弹出来的是要管理员密码的窗口，每次退出都这样白跑一趟。下好的版本
+ * 留着，等有管理员账号的人在更新页点。自动更新关着时照旧问，那是他自己要的。
  */
-export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 'later' {
+export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 'later' | 'leave' {
   if (input.systemShuttingDown) return 'later'
   const version = parseVersion(input.version)
   if (!input.autoUpdate || !version || input.installMethod === 'system-installer') return 'ask'
+  if (input.standardAccount) return 'leave'
   return input.record.quitAttemptedVersion === version ? 'ask' : 'install'
 }
 

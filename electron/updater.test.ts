@@ -3298,6 +3298,26 @@ describe('launch install notice', () => {
   })
 })
 
+describe('Windows account outside the administrators group', () => {
+  it('leaves the field out until the host finds a standard account, then keeps it across checks', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const seen: Array<boolean | undefined> = []
+    service.subscribe((state) => { seen.push(state.installNeedsAdminPassword) })
+    expect('installNeedsAdminPassword' in service.getState()).toBe(false)
+    service.setInstallNeedsAdminPassword(false)
+    expect(seen).toEqual([])
+
+    service.setInstallNeedsAdminPassword(true)
+    service.setInstallNeedsAdminPassword(true)
+    expect(seen).toEqual([true])
+    client.emit('checking-for-update')
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', installNeedsAdminPassword: true })
+    service.dispose()
+  })
+})
+
 describe('system installer channel (Linux .deb)', () => {
   const debFile = '/home/tester/.cache/xingmang-ai-manager-updater/pending/XingMang-AI-Manager-1.1.0-linux-amd64.deb'
   const debInfo = (version = '1.1.0') => ({
