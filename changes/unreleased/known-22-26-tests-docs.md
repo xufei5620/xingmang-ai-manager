@@ -8,8 +8,8 @@
   `scripts/rename-macos-chip-artifacts.test.cjs` 接进 `test:scripts`，以前 npm test 和 CI 都不跑；接上以后 19 条都过。
   `ci-workflow-config.test.cjs` 加一道门禁：`scripts/` 下每个测试文件都得有某条 npm 脚本点名（只在 Mac 上跑的经 `test:mac:free-signing`）。
 - 已知22：短提示 2.4 秒后自己消失，浏览器用例直接等它上屏的话，慢机器上会错过、卡满 30 秒。#198 只改了 app-check 的保存用例；
-  这次把那份提示记录挪进 `e2e/toast-recording.mjs` 共用，还在直接等提示的 20 处改成认记录：`e2e/v2-business.test.mjs` 16 处、
-  聊天的 `browser-check.mjs` 2 处、app-check 2 处，认的还是原来那句话（原来只写半句的补成整句）。找法写在那个文件开头：让短提示一出来就隐藏、1 毫秒后消失，
+  这次把那份提示记录挪进 `e2e/toast-recording.mjs` 共用，还在直接等提示的 21 处改成认记录：`e2e/v2-business.test.mjs` 16 处、
+  聊天的 `browser-check.mjs` 2 处、app-check 3 处，认的还是原来那句话（原来只写半句的补成整句）。找法写在那个文件开头：让短提示一出来就隐藏、1 毫秒后消失，
   跑新界面全部浏览器用例，只有测提示本身的两条该红。
 - 已知26：`docs/RELEASING.md` 改正 Mac 换签名证书以后的说法：不是「每 3 小时重试」，停在「已下载」时定时检查直接跳过，重装只是把
   下好的同一个包再交给 Squirrel。

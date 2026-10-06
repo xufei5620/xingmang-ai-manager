@@ -4800,7 +4800,7 @@ test('configuring a tool from the key page makes the home page re-read tool conf
     const reads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length)
     const before = await reads()
     await dialog.getByRole('button', { name: '保存配置', exact: true }).click()
-    await page.getByText('密钥已写入工具配置', { exact: true }).waitFor()
+    await waitForToast(page, '密钥已写入工具配置')
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length > count, before)
     const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.ok(calls.lastIndexOf('getConfig') > calls.indexOf('saveConfigWithAccountKey'))
