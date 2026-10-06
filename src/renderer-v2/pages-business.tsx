@@ -88,9 +88,9 @@ export function BusinessPage({
       />
     )
   if (page === 'sessions')
-    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} />
+    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} />
   if (page === 'skills')
     return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} installedProviders={installedProviders} />
   if (page === 'plugins')

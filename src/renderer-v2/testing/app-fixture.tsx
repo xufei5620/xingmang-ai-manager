@@ -169,6 +169,10 @@ if (query.has('detectionFailed')) {
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
 }
+// 缺 Python（可选环境）：首页那一行写「可选 · 未装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
+if (query.has('pythonMissing')) {
+  system.runtime.python = { ...status, installed: false, version: null, path: null }
+}
 // 运行环境自己的探针抛错：整块系统状态是读到的，只有 Node.js 这一行没有结论。
 if (query.has('runtimeDetectionFailed')) {
   system.runtime.node = { ...system.runtime.node, installed: false, version: null, path: null,
@@ -554,6 +558,11 @@ const methods = {
     if (query.has('gitCancel')) return { installed: false, action: 'cancelled' as const, source: null, version: null, architecture: 'arm64' as const, pathRefreshRequired: false, message: '没有装 Git。需要时再点一次「安装 Git」就行。' }
     system.runtime.git = { ...system.runtime.git, installed: true, version: '2.55.0', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Git\\cmd\\git.exe' }
     return { installed: true as const, action: 'installed' as const, source: 'npmmirror' as const, version: '2.55.0.5', architecture: 'x64' as const, pathRefreshRequired: true }
+  },
+  // Windows 上由主进程代装 Python，装完重新检测就能看到版本。
+  installPythonRuntime: async () => {
+    system.runtime.python = { ...system.runtime.python, installed: true, version: '3.13.7', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Python\\Python313\\python.exe' }
+    return { installed: true as const, action: 'installed' as const, method: 'exe' as const, source: 'python-org' as const, version: '3.13.7', architecture: 'x64' as const, pathRefreshRequired: true }
   },
   installCli: async (provider) => {
     // 停在半路，好看「安装中」那一行；releaseInstall 带一句话就当没装上（取消也是这样结束的）。
