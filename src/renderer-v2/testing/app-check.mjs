@@ -1109,6 +1109,70 @@ test('home reuses the recent list instead of rescanning session folders on every
   } finally { await page.close() }
 })
 
+// 首页一直开着就不会重新挂载。以前从这里打开工具、在终端里聊完再切回来，「最近」一直是打开前那份：
+// 刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，点下去接上的却是刚聊的那条（第四十一批 C）。
+test('home re-reads the recent list when the window comes back after a tool was opened', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  // 等一会儿再数：React 处理完这一下、该读的已经发出去了，才能说「没读」。
+  const focusWindow = () => page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'))
+    return new Promise((resolve) => setTimeout(resolve, 100))
+  })
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    assert.equal(await homeReads(), 1)
+    // 一分钟内、又没打开过工具：回到窗口还是那一份，不读盘。
+    await focusWindow()
+    assert.equal(await homeReads(), 1)
+
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    // 在终端里聊了一条，然后切回星芒。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 1)
+    await focusWindow()
+    await page.getByTestId('home-recent-resume-claude:6').waitFor()
+    assert.equal(await homeReads(), 2)
+    // 刚聊的排第一；my-app 里更早的 claude:1 不再挂「接着聊」，不会再有一颗接到别的对话上的按钮。
+    assert.equal(await page.locator('[data-testid^="home-recent-row-"]').first().getAttribute('data-testid'), 'home-recent-row-claude:6')
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('home re-reads the recent list when the window is shown again, so the open button names the folder just used', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  const visibility = (value) => page.evaluate((state) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    document.dispatchEvent(new Event('visibilitychange'))
+    return new Promise((resolve) => setTimeout(resolve, 100))
+  }, value)
+  try {
+    const button = page.getByTestId('tool-claude-primary')
+    await button.waitFor()
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 这次换了个文件夹：「换一个目录」→「选择其他目录…」，在那儿聊了一条。
+    await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\Selected Project', 500))
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 缩在托盘里、窗口看不见的时候不读。
+    await visibility('hidden')
+    assert.equal(await homeReads(), 1)
+    await visibility('visible')
+    await expect(button).toHaveAttribute('title', '在 C:\\Selected Project 打开')
+    assert.equal(await homeReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home shows the last usage right away instead of asking the account backend on every visit', async () => {
   const page = await open('allInstalled=1')
   const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
