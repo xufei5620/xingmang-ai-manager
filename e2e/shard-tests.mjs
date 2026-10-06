@@ -15,8 +15,15 @@ import { test as nodeTest } from 'node:test'
 // half the file as skipped. Each position belongs to exactly one shard, which
 // makes the shards add up to the whole file exactly once, as long as every one
 // of them is dispatched; scripts/ci-workflow-config.test.cjs pins that. The
-// file's before()/after() hooks still run in every shard. Unset, everything
-// registers, which is what a local run and the unsharded Linux job want.
+// file's before()/after() hooks still run in every shard.
+//
+// The wrapper has two costs, so it is only put in place when a shard is named.
+// node:test records whoever called test() as the test's location, so a sharded
+// run reports this file rather than the test's own line; the test name and the
+// error's stack still lead there. And every test() call is dealt, including one
+// made inside a running test, which can land in a shard that never runs its
+// parent, so subtests go through t.test(). Unset, test is node:test's own,
+// which is what a local run and the unsharded Linux job get.
 const shardVariable = 'XINGMANG_TEST_SHARD'
 
 /** 解析 `第几份/共几份`（例如 `2/2`）。没设 = 整份都跑；写错了直接报错，免得悄悄全跑或一条不跑。 */
@@ -46,4 +53,6 @@ export function createShardedTest(shard, register = nodeTest) {
   }
 }
 
-export const test = createShardedTest(parseTestShard(process.env[shardVariable]))
+const shard = parseTestShard(process.env[shardVariable])
+
+export const test = shard === null ? nodeTest : createShardedTest(shard)
