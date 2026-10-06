@@ -39,6 +39,12 @@ function windowsShardCommands() {
   return workflow.jobs['windows-test'].strategy.matrix.include.map((entry) => entry.command)
 }
 
+// The Linux fixture browser job is a matrix of its own, cut along the same
+// deal as the Windows shards; its one test step runs the matrix command.
+function linuxFixtureShardCommands() {
+  return workflow.jobs['linux-renderer-v2-browser'].strategy.matrix.include.map((entry) => entry.command)
+}
+
 function windowsCommands() {
   return [...windowsShardCommands(), ...runSteps('windows-package')]
 }
@@ -107,7 +113,7 @@ test('browser-backed tests install Chromium first on every job that runs them', 
     // Linux also needs Chromium's apt libraries; that half is its own bounded
     // step, pinned by the test below.
     ['linux-test', 'npm test', 'npx --no-install playwright install chromium'],
-    ['linux-renderer-v2-browser', 'npm run test:v2:browser:fixture', 'npx --no-install playwright install chromium'],
+    ['linux-renderer-v2-browser', '${{ matrix.command }}', 'npx --no-install playwright install chromium'],
   ]) {
     const commands = runSteps(jobName)
     const installIndex = commands.indexOf(installCommand)
@@ -148,7 +154,7 @@ test('the Linux jobs bound and retry the apt install of Chromium system librarie
   // Both Linux browser jobs install the libraries, so both carry the bound.
   for (const [jobName, firstBrowserCommand] of [
     ['linux-test', 'npm test'],
-    ['linux-renderer-v2-browser', 'npm run test:v2:browser:fixture'],
+    ['linux-renderer-v2-browser', '${{ matrix.command }}'],
   ]) {
     const job = workflow.jobs[jobName]
     const steps = job.steps
@@ -265,8 +271,8 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   // quality.yml runs test:v2:browser whole nowhere (the release gates still run
   // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
   // runner of their own; the configFile:false browser-checks are
-  // test:v2:browser:fixture, which Linux runs whole and Windows cuts into the
-  // numbered halves below.
+  // test:v2:browser:fixture, which Windows and Linux each cut into numbered
+  // shares of their own below.
   const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
   for (const script of ['test:v2:browser', 'test:v2:browser:fixture', 'test:v2:browser:e2e']) {
     assert.match(scripts[script], /^node --test --test-concurrency=1 /, `${script} must stay serialised`)
@@ -285,16 +291,15 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
       `${file} may only leave the fixture runners because it brings its own Vite cacheDir`)
   }
 
-  // The Windows fixture halves. app-check.mjs alone is two thirds of the
-  // fixture time, so it deals its tests to every half through
+  // The Windows fixture shares. app-check.mjs alone is two thirds of the
+  // fixture time, so it deals its tests to every share through
   // e2e/shard-tests.mjs and runs in all of them; every other file runs in
-  // exactly one. Each half names its own share, and every share must be
+  // exactly one. Each runner names its own share, and every share must be
   // dispatched, or the tests dealt to a missing one would run nowhere.
   const fixtureShards = Object.keys(scripts)
     .filter((name) => /^test:v2:browser:fixture:\d+$/.test(name))
     .sort((left, right) => Number(left.split(':').at(-1)) - Number(right.split(':').at(-1)))
-  const total = fixtureShards.length
-  assert.ok(total >= 2, 'the fixture browser-checks must be cut into at least two Windows runners')
+  assert.ok(fixtureShards.length >= 2, 'the fixture browser-checks must be cut into at least two Windows runners')
   const dealtImport = /import \{ test \} from '(?:\.\.\/)+e2e\/shard-tests\.mjs'/
   const dealt = fixture.filter((file) => dealtImport.test(fs.readFileSync(path.join(root, file), 'utf8')))
   assert.ok(dealt.includes('src/renderer-v2/testing/app-check.mjs'), 'app-check.mjs must deal its tests across the fixture runners')
@@ -310,23 +315,35 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
         `${file} must register every test through the deal, so it may only take hooks from node:test, not ${clause}`)
     }
   }
-  // A file listed twice in one half still runs there once (node --test drops
-  // the repeat), so each half counts once per file.
-  const placed = new Map(fixture.map((file) => [file, 0]))
-  fixtureShards.forEach((name, index) => {
-    assert.equal(name, `test:v2:browser:fixture:${index + 1}`, 'fixture halves must be numbered from 1 without gaps')
-    assert.ok(shardCommands.includes(`npm run ${name}`), `the matrix must dispatch ${name}`)
-    assert.ok(scripts[name].startsWith(`cross-env XINGMANG_TEST_SHARD=${index + 1}/${total} node --test --test-concurrency=1 `),
-      `${name} must stay serialised and select share ${index + 1} of ${total}`)
-    for (const file of new Set(suites(name))) {
-      assert.ok(placed.has(file), `${name} runs ${file}, which test:v2:browser:fixture does not`)
-      placed.set(file, placed.get(file) + 1)
+  // A file listed twice in one share still runs there once (node --test drops
+  // the repeat), so each share counts once per file. The Linux job deals the
+  // same files into shares of its own, cut by Linux's timings, under the same
+  // rules.
+  function assertFixtureShares(prefix, names, dispatched, where) {
+    const count = names.length
+    const placed = new Map(fixture.map((file) => [file, 0]))
+    names.forEach((name, index) => {
+      assert.equal(name, `${prefix}${index + 1}`, `${where} fixture shares must be numbered from 1 without gaps`)
+      assert.ok(dispatched.includes(`npm run ${name}`), `${where} must dispatch ${name}`)
+      assert.ok(scripts[name].startsWith(`cross-env XINGMANG_TEST_SHARD=${index + 1}/${count} node --test --test-concurrency=1 `),
+        `${name} must stay serialised and select share ${index + 1} of ${count}`)
+      for (const file of new Set(suites(name))) {
+        assert.ok(placed.has(file), `${name} runs ${file}, which test:v2:browser:fixture does not`)
+        placed.set(file, placed.get(file) + 1)
+      }
+    })
+    for (const [file, runs] of placed) {
+      assert.equal(runs, dealt.includes(file) ? count : 1,
+        dealt.includes(file) ? `${file} deals its tests, so every ${where} fixture share must run it` : `${file} must run in exactly one ${where} fixture share`)
     }
-  })
-  for (const [file, count] of placed) {
-    assert.equal(count, dealt.includes(file) ? total : 1,
-      dealt.includes(file) ? `${file} deals its tests, so every fixture half must run it` : `${file} must run in exactly one fixture half`)
   }
+  assertFixtureShares('test:v2:browser:fixture:', fixtureShards, shardCommands, 'Windows')
+  const linuxShares = Object.keys(scripts)
+    .filter((name) => /^test:v2:browser:fixture:linux:\d+$/.test(name))
+    .sort((left, right) => Number(left.split(':').at(-1)) - Number(right.split(':').at(-1)))
+  assert.ok(linuxShares.length >= 2, 'the Linux fixture browser job must be cut into at least two runners')
+  assertFixtureShares('test:v2:browser:fixture:linux:', linuxShares, linuxFixtureShardCommands(), 'Linux')
+  assert.equal(linuxFixtureShardCommands().length, linuxShares.length, 'the Linux matrix must dispatch each of its shares once')
 
   // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
   // leaf added later that no shard dispatches fails here instead of silently
@@ -358,10 +375,10 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
 })
 
-// The halves above only add up to the whole file while the deal gives every
+// The shares above only add up to the whole file while the deal gives every
 // test to exactly one share, and a misspelt share has to stop the run rather
 // than quietly register everything or nothing.
-test('dealing a file across the fixture halves runs each of its tests exactly once', async () => {
+test('dealing a file across the fixture shares runs each of its tests exactly once', async () => {
   const shard = await import(require('node:url').pathToFileURL(path.join(root, 'e2e', 'shard-tests.mjs')).href)
 
   assert.equal(shard.parseTestShard(undefined), null)
@@ -379,8 +396,9 @@ test('dealing a file across the fixture halves runs each of its tests exactly on
     return registered
   }
   assert.deepEqual(deal(undefined), names, 'an unsharded run must register every test')
-  // Unsharded, a file gets node:test's own test, so local and Linux runs still
-  // report each test at its own line rather than at the wrapper.
+  // Unsharded, a file gets node:test's own test, so local runs and the release
+  // gates' whole test:v2 still report each test at its own line rather than at
+  // the wrapper.
   assert.equal(shard.test === test, !process.env.XINGMANG_TEST_SHARD, 'only a named shard may wrap test')
   for (const total of [1, 2, 3]) {
     const shares = Array.from({ length: total }, (_, index) => deal(`${index + 1}/${total}`))
@@ -462,11 +480,11 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   // test:v2 itself is spread over two Linux jobs, because run back to back it
   // made linux-test the pipeline's wall clock. The fixture browser suites run
   // in linux-renderer-v2-browser along the seam the Windows matrix already
-  // uses; its parts have to add up to the whole, which the Windows split test
-  // above pins for the scripts themselves.
+  // uses, as shards of their own; the split test above pins that the shards
+  // add up to test:v2:browser:fixture.
   const placement = {
     'linux-test': ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2'],
-    'linux-renderer-v2-browser': ['npm run test:v2:browser:fixture'],
+    'linux-renderer-v2-browser': ['${{ matrix.command }}'],
   }
   for (const [jobName, expected] of Object.entries(placement)) {
     const steps = workflow.jobs[jobName].steps
@@ -489,8 +507,13 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   for (const whole of ['npm run test:v2', 'npm run test:v2:browser']) {
     assert.equal(linuxCommands.includes(whole), false, `${whole} must not also run whole on Linux`)
   }
-  for (const part of ['npm run test:v2:vitest', 'npm run test:v2:browser:fixture', 'npm run test:v2:browser:e2e']) {
+  for (const part of ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e']) {
     assert.equal(linuxCommands.filter((command) => command === part).length, 1, `Linux must run ${part} exactly once`)
+  }
+  assert.equal(linuxCommands.includes('npm run test:v2:browser:fixture'), false,
+    'test:v2:browser:fixture must not also run whole on Linux beside its shards')
+  for (const command of linuxFixtureShardCommands()) {
+    assert.match(command, /^npm run test:v2:browser:fixture:linux:\d+$/, 'each Linux fixture shard runs one share and nothing else')
   }
   const commands = runSteps('linux-test')
 

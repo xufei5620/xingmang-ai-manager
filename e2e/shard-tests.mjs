@@ -23,7 +23,7 @@ import { test as nodeTest } from 'node:test'
 // error's stack still lead there. And every test() call is dealt, including one
 // made inside a running test, which can land in a shard that never runs its
 // parent, so subtests go through t.test(). Unset, test is node:test's own,
-// which is what a local run and the unsharded Linux job get.
+// which is what a local run and the release gates' whole test:v2 get.
 const shardVariable = 'XINGMANG_TEST_SHARD'
 
 /** 解析 `第几份/共几份`（例如 `2/2`）。没设 = 整份都跑；写错了直接报错，免得悄悄全跑或一条不跑。 */
