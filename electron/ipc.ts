@@ -149,6 +149,7 @@ import type {
   RendererLogLevel,
   ToolModelCheck,
   ToolTemplateFillResult,
+  UpdateInstallOptions,
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
@@ -263,8 +264,8 @@ export interface IpcRegistrationOptions {
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
   relaunchApp?(): Promise<boolean>
   /**
-   * 「确认重启安装」前问一句有没有工具在装（已知31）：false = 客户点了「继续安装」，这次不装。
-   * 不传 = 不问（测试与旧调用方）。
+   * 更新页「确认重启安装」（带 askIfInstalling）前问一句有没有工具在装（已知31）：false = 客户点了
+   * 「继续安装」，这次不装。不传 = 不问（测试与旧调用方）。
    */
   confirmUpdateInstall?(): Promise<boolean>
   /**
@@ -388,6 +389,13 @@ export function parseUpdateDownloadOptions(value: unknown): UpdateDownloadOption
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'ignoreDiskSpace')
     || (value.ignoreDiskSpace !== undefined && typeof value.ignoreDiskSpace !== 'boolean')) throw new Error('下载参数格式错误')
   return value.ignoreDiskSpace === true ? { ignoreDiskSpace: true } : {}
+}
+
+export function parseUpdateInstallOptions(value: unknown): UpdateInstallOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'askIfInstalling')
+    || (value.askIfInstalling !== undefined && typeof value.askIfInstalling !== 'boolean')) throw new Error('安装参数格式错误')
+  return value.askIfInstalling === true ? { askIfInstalling: true } : {}
 }
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {
@@ -2809,9 +2817,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('update:download', (_event, downloadOptions: unknown) => (
     options.updaterService.download(parseUpdateDownloadOptions(downloadOptions))
   ))
-  registerTrustedHandler('update:install', async () => {
-    // 重启会打断正在装的工具：客户点了「继续安装」就这次不装，新版本留着（已知31）。
-    if (options.confirmUpdateInstall && !await options.confirmUpdateInstall()) return { accepted: true, postponed: true }
+  registerTrustedHandler('update:install', async (_event, rawOptions: unknown) => {
+    // 重启会打断正在装的工具：客户点了「继续安装」就这次不装，新版本留着（已知31）。只有
+    // 更新页「确认重启安装」要问；「必须更新」那层提示和旧回滚界面不带参数，照旧直接装。
+    const ask = parseUpdateInstallOptions(rawOptions).askIfInstalling === true
+    if (ask && options.confirmUpdateInstall && !await options.confirmUpdateInstall()) return { accepted: true, postponed: true }
     return options.updaterService.install()
   })
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (

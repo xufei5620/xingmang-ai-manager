@@ -316,7 +316,7 @@ const xingmangApi: XingmangApi = {
   runStartupUpdate: () => invoke('runStartupUpdate'),
   checkForUpdates: () => invoke('checkForUpdates'),
   downloadUpdate: () => invoke('downloadUpdate'),
-  installUpdate: () => invoke('installUpdate'),
+  installUpdate: (options) => options === undefined ? invoke('installUpdate') : invoke('installUpdate', options),
   listSessions: (query) => invoke('listSessions', query),
   getSessionDetail: (sessionId) => invoke('getSessionDetail', sessionId),
   exportSession: (sessionId) => invoke('exportSession', sessionId),

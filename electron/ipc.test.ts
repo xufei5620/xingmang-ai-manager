@@ -1928,18 +1928,32 @@ describe('registerIpcHandlers', () => {
   })
 
   it('keeps the downloaded update when the user chooses to let a tool finish installing', async () => {
-    // 已知31：还有工具在装时先问一句，点了「继续安装」就这次不装，新版本留着。
+    // 已知31：更新页带着 askIfInstalling 来，还有工具在装时先问一句，点了「继续安装」就这次不装，新版本留着。
     const updaterService = updaterStub()
     const confirmUpdateInstall = vi.fn(async () => false)
     const { runtimeLog } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, confirmUpdateInstall })
     const install = electronMocks.handlers.get('update:install')!
-    await expect(Promise.resolve(install(trustedEvent()))).resolves.toEqual({ accepted: true, postponed: true })
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true }))).resolves.toEqual({ accepted: true, postponed: true })
     expect(updaterService.install).not.toHaveBeenCalled()
     const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
     expect(logged).toEqual([['info', 'ipc', 'update:install', '还有工具在装，这次没装新版本', expect.any(Object)]])
     // 点了「仍然退出」（或者根本没在装）照常交给安装程序。
     confirmUpdateInstall.mockResolvedValueOnce(true)
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true }))).resolves.toEqual({ accepted: true })
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
+  })
+
+  it('installs without asking when the caller does not ask, as the required-update gate and the rollback UI do', async () => {
+    // 「必须更新」那层提示等着的就是这次安装，问了点「继续安装」它会一直转圈；旧回滚界面也不认 postponed。
+    const updaterService = updaterStub()
+    const confirmUpdateInstall = vi.fn(async () => false)
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, confirmUpdateInstall })
+    const install = electronMocks.handlers.get('update:install')!
     await expect(Promise.resolve(install(trustedEvent()))).resolves.toEqual({ accepted: true })
+    expect(confirmUpdateInstall).not.toHaveBeenCalled()
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: 'yes' }))).rejects.toThrow('安装参数格式错误')
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true, force: true }))).rejects.toThrow('安装参数格式错误')
     expect(updaterService.install).toHaveBeenCalledTimes(1)
   })
 

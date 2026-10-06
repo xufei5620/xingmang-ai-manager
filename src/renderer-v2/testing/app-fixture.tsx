@@ -368,6 +368,8 @@ const methods = {
     return { phase: 'idle' as const, currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
   },
   downloadUpdate: async () => ({ phase: 'downloading' as const, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }),
+  // 已知31：带 installPostponed 时当作还有工具在装、客户在主进程问的那一句里点了「继续安装」。
+  installUpdate: async () => ({ accepted: true as const, ...(query.has('installPostponed') ? { postponed: true as const } : {}) }),
   runDiagnostics: async () => {
     if (query.has('diagnosticsFail')) throw new Error('本机环境检查没有跑完')
     const fail = Number(query.get('diagnosticIssues') ?? 0)

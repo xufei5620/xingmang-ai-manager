@@ -1747,7 +1747,8 @@ export function UpdatesPage({
                 void operation.execute(
                   'install',
                   async () => {
-                    const result = await api.installUpdate()
+                    // 有工具在装或排着队时主进程先问一句再重启（已知31）。
+                    const result = await api.installUpdate({ askIfInstalling: true })
                     setConfirm(false)
                     return result
                   },

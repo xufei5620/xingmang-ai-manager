@@ -3504,6 +3504,35 @@ test('the update failure bubble retries the failed step without a detour', async
   } finally { await page.close() }
 })
 
+// 已知31：更新页「确认重启安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
+// 客户在那一句里点了「继续安装」：确认框关掉，不说「安装请求已提交」，新版本留着。
+test('the updates page asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
+  const page = await open('installPostponed=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const restart = updates.getByRole('button', { name: '重启安装', exact: true })
+    // 更新页进来先自己读一次状态（假数据里是没开自动更新），读回来之前推过去的会被它盖掉：推到按钮出来为止。
+    await expect.poll(async () => {
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, error: null, development: true,
+      }))
+      return restart.count()
+    }).toBe(1)
+    await restart.click()
+    const confirm = page.getByRole('dialog', { name: '重启并安装更新？' })
+    await confirm.getByRole('button', { name: '确认重启安装', exact: true }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
+    await restart.waitFor()
+    await assertNoToast(page, '安装请求已提交')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 开机和每 3 小时自己跑的检查没查成，客户什么都没点：首页不弹红框，更新页照常能看到
 // 这次失败和「重试」。客户自己点的检查没查成，照旧弹。
 test('an automatic update check that fails stays off the home bubble but shows on the updates page', async () => {

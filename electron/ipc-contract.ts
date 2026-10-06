@@ -275,6 +275,14 @@ export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
 export type UpdateDiskShortfall = MainUpdateDiskShortfall
 export type UpdateDownloadOptions = MainUpdateDownloadOptions
+/** `update:install` 的可选参数。缺省 = 旧行为：不问，直接交给安装程序。 */
+export interface UpdateInstallOptions {
+  /**
+   * 还有工具在装或排着队时，先问退出时那一句（已知31）。只有更新页「确认重启安装」带它；
+   * 「必须更新」那层提示和旧回滚界面不带，照旧直接装（托盘那条路在主进程里自己问）。
+   */
+  askIfInstalling?: boolean
+}
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -895,7 +903,7 @@ export interface XingmangInvokeContract {
    * postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装新版本（已知31）。
    * 缺省 = 已经交给安装程序（旧行为）。
    */
-  installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true; postponed?: true }>
+  installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
   listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
   getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
   exportSession: IpcInvokeDefinition<
