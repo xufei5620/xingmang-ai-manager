@@ -83,6 +83,7 @@ import {
 } from './codex-model-catalog'
 import {
   canLaunchManagedProvider,
+  claudeForeignModelEnvKeys,
   geminiCliCompatibleModel,
   ensureCodexPermissionDefaults,
   ensureGeminiProjectContextFiles,
@@ -2658,9 +2659,25 @@ export function providerCommandEnvironment(
 }
 
 /**
+ * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进）。用星芒账号时，客户自己设的 ANTHROPIC_MODEL 这类
+ * 选型号的变量会让 Claude Code 去要当前账号没有的型号；接账号时 settings.json 里的同名项已经挪开
+ * （config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。用自己的 Claude 账号时照旧带。
+ */
+export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  return provider === 'claude' && accountMode === 'relay' ? claudeForeignModelEnvKeys : []
+}
+
+/** 名字不分大小写：Windows 上 `anthropic_model` 和大写是同一个变量（同 providerCommandEnvironment）。 */
+export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
+  const excluded = new Set(names.map((name) => name.toUpperCase()))
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !excluded.has(key.toUpperCase())))
+}
+
+/**
  * Mac 上「终端」先起客户自己的登录 shell 读 ~/.zshrc 这些启动文件，再跑星芒的启动脚本，那里 export
  * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
- * 启动脚本先把这里列的 unset 掉，再写星芒自己的值：
+ * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
+ * 都在里面，另加 Mac 才要的：
  * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
  *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
  *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
@@ -2672,7 +2689,9 @@ export function providerCommandEnvironment(
 export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
   switch (provider) {
     case 'claude':
-      return accountMode === 'relay' ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'] : []
+      return accountMode === 'relay'
+        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...launchExcludedEnvironmentVariables(provider, accountMode)]
+        : []
     case 'gemini':
       return managedGeminiVariables
     case 'codex':
@@ -5761,11 +5780,16 @@ export function createSystemService(
       }
     }
     const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
+    const accountMode = providerAccountMode(nativeConfig)
+    const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
     // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
     // 只在不跨提权边界时补；trusted-only 的终端 PATH 由 trustedCommandEnvironment 重建，不收用户可写的目录（I2）。
-    const providerEnv = provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
-      ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
-      : providerEnvironment(provider)
+    const providerEnv = withoutEnvironmentVariables(
+      provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
+        ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
+        : providerEnvironment(provider),
+      excludedVariables,
+    )
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
       // and it never overwrites conflicting parent-process variables. Pass the
@@ -5841,7 +5865,7 @@ export function createSystemService(
           },
           workspace,
           withSystemCertificateTrust(providerEnv),
-          macosShellOverrideVariables(provider, providerAccountMode(nativeConfig)),
+          macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
@@ -5867,6 +5891,8 @@ export function createSystemService(
         workspace,
         title: `${definition.name} · 星芒AI`,
         env: environment,
+        // 交给已经开着的命令窗口程序时，工具拿到的是那个程序自己的环境，上面去掉的得在脚本里再去一次。
+        ...(excludedVariables.length ? { clearedEnvironmentKeys: excludedVariables } : {}),
       })
       runtimeLog?.log('info', 'system', 'terminal.opened', `${definition.name} 已在「${opened.terminal.label}」里打开`, {
         provider,
