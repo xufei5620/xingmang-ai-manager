@@ -5,6 +5,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import QRCode from 'qrcode'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
+import { networkFailureCode } from './network-failure'
 import type { PaymentOrderStatusReader } from './payment-status-reader'
 import { RealmAccountError } from './realm-account'
 
@@ -526,7 +527,10 @@ export function createPaymentWindowController(
       if (isCurrent()) stopMonitoring()
       if (!window.isDestroyed()) destroySilently(window)
       release(window)
-      throw new Error('支付页面打开失败，请稍后重试', { cause: error })
+      // 运行日志会记下 cause。Electron 加载失败的原错误把整个付款地址写在 message 和 url 上，
+      // 订单号、签名都在里面（二维码那一页连付款码图片也在），而付款这边的日志一向只记 origin。
+      // 所以原因只留错误码：证书、解析、被重置照样分得清，ipc 记失败时的 networkFailure 也还认得出。
+      throw new Error('支付页面打开失败，请稍后重试', { cause: { code: networkFailureCode(error) } })
     }
   }
 
