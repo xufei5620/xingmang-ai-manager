@@ -68,6 +68,7 @@ import { launchDeclined, resumeSessionNotice } from './features/tools/launch-not
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import { backupKeyView } from './features/tools/backup-key'
 import { connectionCheckView } from './features/tools/connection-check'
+import type { OperationTarget } from './operation-error'
 import type { V2Bridge, V2Page } from './types'
 type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
 type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
@@ -310,6 +311,14 @@ export function extensionMutationScope(
  * 列表行上的一次操作。项目里装的那一份必须带着它自己的 scope 回去，否则 CLI
  * 按缺省的 user 去找，项目里的删不掉，同名的全局那份反倒被改了（#488）。
  */
+/**
+ * 扩展页的动作改的都是工具自己的配置（MCP、技能、插件、插件市场），没权限时说「写不进配置文件」
+ * （已知29）。只有「安装 Python」装的是运行环境，照旧按原话认。
+ */
+export function extensionFailureTarget(failed: string): OperationTarget | undefined {
+  return failed && failed !== 'python' ? 'config' : undefined
+}
+
 export async function runExtensionAction(
   api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill'>,
   item: ExtensionItem,
@@ -1779,7 +1788,7 @@ export function ExtensionsPage({
           testId={`${page}-scope`}
         />
       )}
-      <ResultNotice {...operation} onSupport={onOpenHelp} />
+      <ResultNotice {...operation} onSupport={onOpenHelp} target={extensionFailureTarget(operation.failed)} />
       {snapshot?.warnings.map((warning) => (
         <Notice
           key={warning}
@@ -2159,7 +2168,7 @@ export function ExtensionsPage({
           </>
         }
       >
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
         {curatedForm?.inputs.map((input) => (
           <Notice
             key={input.key}
@@ -2356,7 +2365,7 @@ export function ExtensionsPage({
             ) : undefined}
           />
         )}
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
@@ -2393,7 +2402,7 @@ export function ExtensionsPage({
         }
       >
         <p>此操作会从当前工具中移除该项。需要时可从原来源重新添加。</p>
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Drawer
         open={Boolean(selected)}
@@ -2509,6 +2518,8 @@ export function BackupsPage({
   // 去过这一页的话，回来时列表里得有它。
   useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
+  // 恢复写的是工具的配置文件，没权限时说「写不进配置文件」（已知29）；建备份、删备份写的是星芒自己的备份文件夹，照旧。
+  const restoreFailureTarget = operation.failed === 'restore' ? 'config' : undefined
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [backupProvider, setBackupProvider] = useState<Provider>('claude')
   const [query, setQuery] = useState('')
@@ -2591,7 +2602,7 @@ export function BackupsPage({
         }
         right={resource.data && !resource.error ? <span>{list.length} 份备份</span> : null}
       />
-      <ResultNotice {...operation} />
+      <ResultNotice {...operation} target={restoreFailureTarget} />
       {restoreCheck && (
         <RestoreCheckNotice check={restoreCheck} navigate={navigate} />
       )}
@@ -2784,7 +2795,7 @@ export function BackupsPage({
             testId="backups-restore-key-warning"
           />
         )}
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice error={operation.error} detail={operation.detail} target={restoreFailureTarget} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}

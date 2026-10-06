@@ -341,7 +341,8 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     : metadataErrors[provider] ? '自动准备 · 账号信息暂时没读到' : '自动准备 · 正在读取账号信息'
   const keySummary = usingAutomaticKey ? '保存时自动准备好密钥，不用自己创建'
     : `${usingCurrentKey ? '继续用现在这把密钥' : '用你选的这把密钥'}：${keyDescription.name} · ${keyDescription.preview}`
-  const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} />
+  // 这个窗口里的动作改的都是工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
+  const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   return <>
     <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" icon={Settings} width={640}

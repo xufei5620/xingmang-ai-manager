@@ -35,7 +35,7 @@ import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './fea
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
-import { operationLogPage, type OperationActionId } from './operation-error'
+import { operationLogPage, operationTargetOf, type OperationActionId } from './operation-error'
 import { accountSwitchAnchor, accountTabs, macDesktopTutorialTopic, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
@@ -723,11 +723,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => native.onAccountVaultRecovered?.(() => noteStartupCheck(vaultRecoveredNotice())), [native, noteStartupCheck])
   // tool 只是把「这次失败关系到哪个工具」记下来；具体目录在渲染那一刻从当时的
   // 快照里取，装完又失败的第二次点击才不会拿到上一次的旧路径。
+  // 改用账号、重新写入 Key 这几件写的是配置文件，错误框按配置文件说（已知29）。
   const perform = useCallback(async function run(label: string, work: () => Promise<unknown>, tool?: ToolId): Promise<void> {
     setOperationError(null)
     try { await work() }
     catch (cause) {
-      setOperationError({ ...operationFailureFrom(cause, label), action: label, retry: () => void run(label, work, tool), ...(tool ? { tool } : {}) })
+      const target = operationTargetOf(label)
+      setOperationError({ ...operationFailureFrom(cause, label), action: label, retry: () => void run(label, work, tool), ...(tool ? { tool } : {}), ...(target ? { target } : {}) })
     }
   }, [])
   // 兼容显示提示里的二选一：两颗都写进设置，主进程据此清掉崩溃记录。「一直用」现在

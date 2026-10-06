@@ -7,6 +7,7 @@ import {
   curatedPlaceholderField,
   curatedRuntimeCommand,
   curatedVersionText,
+  extensionFailureTarget,
   extensionRowState,
   fillCuratedPlaceholders,
   findNativeSkill,
@@ -384,6 +385,16 @@ function extensionApi() {
     uninstallSkill: vi.fn().mockResolvedValue({ skills: [], trashPath: '' }),
   }
 }
+
+describe('extension failure wording', () => {
+  it('treats every extension change as a config write except installing Python', () => {
+    // 已知29：MCP、技能、插件改的都是工具自己的配置；「安装 Python」装的是运行环境。
+    for (const failed of ['enable', 'uninstall', 'curated', 'add', 'marketplace-ensure', 'market-update', 'market-delete', 'delete', 'auth'])
+      expect([failed, extensionFailureTarget(failed)]).toEqual([failed, 'config'])
+    expect(extensionFailureTarget('python')).toBeUndefined()
+    expect(extensionFailureTarget('')).toBeUndefined()
+  })
+})
 
 describe('extension row actions', () => {
   it('sends the scope a project copy was listed under, so the user copy is left alone', async () => {
