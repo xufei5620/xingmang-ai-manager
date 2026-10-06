@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createSettingsQueue, diagnosticHasFix, diagnosticTarget } from './pages-maintenance'
+import { createSettingsQueue, diagnosticHasFix, diagnosticSection, diagnosticTarget } from './pages-maintenance'
 import {
   accountHeadLead,
   accountTabNeeds,
@@ -309,6 +309,7 @@ describe('v2 business boundaries', () => {
       'WORKSPACE_CONFIG_OVERRIDE',
       'PROVIDER_ENVIRONMENT_OVERRIDE',
       // 以前跳「设置 → 网络」或首页，那里都没有能处理它们的东西，点了只会绕一圈。
+      // 网络那一项只有换线路救得回来时才翻到线路那一行（下一条），不带原因时照旧不给。
       'XINGMANG_NETWORK',
       'CLASH_VERGE_TUN',
       'CODEX_DOTENV',
@@ -324,6 +325,41 @@ describe('v2 business boundaries', () => {
       expect(diagnosticTarget(code)).toBeNull()
       expect(diagnosticHasFix(code)).toBe(false)
     }
+  })
+  // 第四十三批 B：#872 以后「设置 → 网络」最上面就是「星芒账号线路」，被当地网络切断的
+  // 那几种连不上，「去处理」翻到那一行，选「备用直连」再重开就换过去了。
+  it('sends a cut-off line of the signed-in account to its route setting', () => {
+    for (const reason of ['dns', 'refused', 'timeout']) {
+      const details = { endpoint: 'https://xm.solov.cc/api/status', reason, siteId: 'solov' }
+      expect(diagnosticTarget('XINGMANG_NETWORK', details, 'solov')).toBe('settings')
+      expect(diagnosticHasFix('XINGMANG_NETWORK', details, 'solov')).toBe(true)
+      expect(diagnosticSection('XINGMANG_NETWORK', details, 'solov')).toBe('relay-route-solov')
+    }
+  })
+  it('keeps the network row without a fix where switching lines cannot help', () => {
+    const cases: Array<[string, Record<string, string | number> | undefined, string | null]> = [
+      // 没网、代理、证书、上网认证、服务维护：换线路救不了。
+      ...['offline', 'proxy', 'tls', 'certDate', 'intercepted', 'serviceUnavailable'].map((reason): [string, Record<string, string>, string] => [reason, { reason, siteId: 'solov' }, 'solov']),
+      // 网络通了、服务回了错误码：不带原因。
+      ['http status', { status: 503, siteId: 'solov' }, 'solov'],
+      // 历史账号只有默认线路，那一行是灰的。
+      ['historical account', { reason: 'refused', siteId: 'solov-api' }, 'solov-api'],
+      // 访客。
+      ['guest', { reason: 'refused', siteId: 'solov' }, null],
+      // 开机恢复历史账号时查的是默认那个站；换过账号以后看的旧结果也一样，查的不是登着的这个。
+      ['another site', { reason: 'refused', siteId: 'solov' }, 'solov-api'],
+      // 旧版主进程给的结果不带站点。
+      ['no site', { reason: 'refused' }, 'solov'],
+      ['no details', undefined, 'solov'],
+    ]
+    for (const [label, details, accountSiteId] of cases) {
+      expect(diagnosticTarget('XINGMANG_NETWORK', details, accountSiteId), label).toBeNull()
+      expect(diagnosticHasFix('XINGMANG_NETWORK', details, accountSiteId), label).toBe(false)
+      expect(diagnosticSection('XINGMANG_NETWORK', details, accountSiteId), label).toBeUndefined()
+    }
+    // 代理软件那一项在设置里仍然没有能处理它的东西。
+    expect(diagnosticTarget('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeNull()
+    expect(diagnosticSection('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeUndefined()
   })
   it('sends only the outdated Node.js certificate verdict to the install page', () => {
     expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')

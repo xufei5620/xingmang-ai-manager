@@ -6371,7 +6371,8 @@ test('tutorial actions land on the account tab or settings group the step descri
 })
 
 // 检查页网络项以前的「去处理」跳到「设置 → 网络」，那里没有能处理它的东西、「去检查」又跳回来，
-// 等于绕一圈（新手引导梳理 9-25 第 2 条）。现在这一行只给结论，不再带人去设置页兜圈。
+// 等于绕一圈（新手引导梳理 9-25 第 2 条）。说不出换线路救不救得回来的（这里不带原因），
+// 这一行照旧只给结论，不带人去设置页兜圈。
 test('the health network row no longer sends the user around through settings', async () => {
   const page = await open()
   try {
@@ -6385,6 +6386,72 @@ test('the health network row no longer sends the user around through settings', 
     await expect(page.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
+})
+
+// 第四十三批 B：「星芒 AI 网络」被当地网络切断（连接被切断、解析不出、等不到回话），登着星芒账号的人
+// 在这一行拿到「去处理」，一点就到「设置 → 网络」里「星芒账号线路」那一行、亮一下，选「备用直连」再重开。
+async function stubCutOffNetwork(page, siteId) {
+  await stubHealthReport(page, [{ code: 'XINGMANG_NETWORK', title: '星芒 AI 网络', state: 'fail',
+    summary: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
+    details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'refused', siteId } }])
+}
+
+test('a cut-off network row takes a signed-in account to its route setting', async () => {
+  const page = await open()
+  try {
+    await stubCutOffNetwork(page, 'solov')
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    const settings = page.getByTestId('page-settings')
+    await expect(settings.getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await expect(page.getByTestId('settings-relay-route-solov')).toBeFocused()
+    await page.getByTestId('settings-relay-route-solov').selectOption('direct')
+    await page.getByTestId('settings-relay-relaunch').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 线路被切断时开机恢复登录多半也联不上：登录还在，照样给。
+test('the cut-off network row offers the route setting while the startup restore still holds the login', async () => {
+  const page = await open('restoring=1')
+  try {
+    await stubCutOffNetwork(page, 'solov')
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 历史账号只有默认线路，访客没有账号：都不给，这一行照旧只有结论。开机恢复历史账号时，
+// 主进程查的还是默认那个站，那条线路不是这个账号的，也不给。
+test('a historical account or a guest gets no route fix on the cut-off network row', async () => {
+  const historical = await open('sub2api=1')
+  try {
+    await stubCutOffNetwork(historical, 'solov-api')
+    await historical.getByTestId('nav-health').click()
+    await expect(historical.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(historical.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await historical.evaluate(() => window.v2Test.errors), [])
+  } finally { await historical.close() }
+  const restoring = await open('restoring=solov-api')
+  try {
+    await stubCutOffNetwork(restoring, 'solov')
+    await restoring.getByTestId('nav-health').click()
+    await expect(restoring.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(restoring.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await restoring.evaluate(() => window.v2Test.errors), [])
+  } finally { await restoring.close() }
+  const guest = await open('guest=1&existing=1')
+  try {
+    await enterWorkspaceWithoutAccount(guest)
+    await stubCutOffNetwork(guest, 'solov')
+    await guest.getByTestId('nav-health').click()
+    await expect(guest.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(guest.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
+    assert.deepEqual(await guest.evaluate(() => window.v2Test.errors), [])
+  } finally { await guest.close() }
 })
 
 // 顶部搜索能搜到设置里的每一行，靠的是每一行都带着注册表里的 id。这里把注册表和
