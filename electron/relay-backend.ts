@@ -84,8 +84,11 @@ import type {
 export interface RelayNotice {
   id: string
   text: string
-  /** Multiple user-visible notices with server-owned read state. */
-  entries?: Array<{ id: string; title: string; text: string; read: boolean }>
+  /**
+   * Multiple user-visible notices with server-owned read state. `publishedAt`
+   * is the ISO time an entry went live, shown as its date when present.
+   */
+  entries?: Array<{ id: string; title: string; text: string; read: boolean; publishedAt?: string }>
   /**
    * new-api's announcement timeline (「控制台 → 内容 → 公告」), delivered
    * with GET /api/status next to the system notice in `text`. Read state is
