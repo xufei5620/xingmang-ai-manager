@@ -5827,6 +5827,27 @@ test('a tool uninstalled from the home page reads as missing on a maintenance pa
   } finally { await page.close() }
 })
 
+// 已知10：卸载时工具还开着，错误框说「先关掉……再重试」，框里就得真有「重试」可点。
+// 卸载已经确认过，点「重试」直接再卸一次，不再问；卸成了确认框一起关掉。
+test('an uninstall that hits a running tool offers 重试, which uninstalls again without asking twice', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'uninstallCli'; window.v2Test.failMessage = 'Grok CLI 卸载失败：文件被占用，检测到 Grok CLI 正在运行（1 个进程），请关掉它的窗口再试。' })
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    const failure = page.getByTestId('operation-error')
+    await failure.getByText('文件被占用。先关掉正在使用这个工具的窗口，再重试。', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await page.getByTestId('operation-error-retry').click()
+    await page.getByTestId('home-available').getByTestId('tool-row-grok').waitFor()
+    assert.equal(await failure.count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli').map((entry) => entry.args[0])), ['grok', 'grok'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 功能 N2 扩展：自检原来只测 Claude Code，另外三个工具配错了只能自己猜。
 test('the connection self-check reports every CLI on its own, and an unconfigured tool is not a failure', async () => {
   const page = await open()

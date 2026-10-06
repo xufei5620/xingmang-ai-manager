@@ -1316,6 +1316,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }, id)
     } })
   }
+  // 确认过的事没做成时，错误框里的「重试」直接再做一遍，不再问一次。卸载时工具还开着，
+  // 错误框说「先关掉……再重试」，以前框里却没有「重试」可点。确认框一直开在错误框后面，
+  // 重试时它照样转圈，做成了一起关掉。
+  function runConfirmed(pending: PendingConfirmation) {
+    if (confirmationLock.current) return
+    confirmationLock.current = true; setConfirmBusy(true)
+    void pending.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ ...operationFailureFrom(cause), retry: () => runConfirmed(pending), ...(pending.tool ? { tool: pending.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
+  }
   useEffect(() => native.onUpdateState(setUpdate), [native])
   useEffect(() => {
     function receive() {
@@ -1668,11 +1676,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}
     {managedSwitch && <Confirm {...managedSwitchConfirmation(managedSwitch.version)} testId="managed-switch-confirm" onOk={() => managedSwitch.answer(true)} onClose={() => managedSwitch.answer(false)} />}
-    {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
-      if (confirmationLock.current) return
-      confirmationLock.current = true; setConfirmBusy(true)
-      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ ...operationFailureFrom(cause), ...(confirmation.tool ? { tool: confirmation.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
-    }} />}
+    {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => runConfirmed(confirmation)} />}
   </BalanceTierProvider></OnlineStatusContext.Provider></AccountBalanceContext.Provider>
 }
 
