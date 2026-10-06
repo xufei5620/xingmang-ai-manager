@@ -15,12 +15,13 @@ const execFileAsync = promisify(execFile)
 const maximumPowerShellShimBytes = 64 * 1024
 
 // Windows PowerShell starts cold in well over ten seconds on a slow disk with
-// Defender scanning; the step runs after the install already reported success,
-// so a generous budget costs the user nothing.
-const ensureUserPathTimeoutMs = 60_000
+// Defender scanning; both PATH steps run after the install or uninstall already
+// reported its result, so a generous budget costs the user nothing.
+const userPathTimeoutMs = 60_000
 
 export type PowerShellShimRemoval = 'removed' | 'absent' | 'kept'
 export type UserPathOutcome = 'added' | 'present'
+export type UserPathRemoval = 'removed' | 'absent'
 
 export interface RemoveNpmPowerShellShimOptions {
   /** npm's global bin directory; on Windows that is the prefix itself. */
@@ -174,7 +175,7 @@ async function runPowerShellScript(script: string, env: NodeJS.ProcessEnv): Prom
   ], {
     env,
     windowsHide: true,
-    timeout: ensureUserPathTimeoutMs,
+    timeout: userPathTimeoutMs,
     maxBuffer: 64 * 1024,
   })
   return stdout
@@ -200,6 +201,79 @@ export async function ensureDirectoryOnWindowsUserPath(
     XINGMANG_ADD_PATH: directory,
   })
   return parseEnsureUserPathOutput(stdout)
+}
+
+/**
+ * Takes `$env:XINGMANG_REMOVE_PATH` back out of the current user's PATH. Like
+ * buildEnsureUserPathScript it reads and writes the raw registry value and
+ * keeps its kind, so the entries that stay keep their `%USERPROFILE%\...` form;
+ * entries are expanded only to compare them, so the directory goes however it
+ * was written. Nothing is written when no entry matches, and the machine PATH
+ * is never touched.
+ */
+export function buildRemoveUserPathScript(): string {
+  return [
+    '$ErrorActionPreference = "Stop"',
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$target = [IO.Path]::GetFullPath($env:XINGMANG_REMOVE_PATH).TrimEnd("\\")',
+    'function Test-IsTarget([string]$entry) {',
+    '  if (-not $entry.Trim()) { return $false }',
+    '  try {',
+    '    $expanded = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim(\'"\'))',
+    '    return ([IO.Path]::GetFullPath($expanded).TrimEnd("\\") -ieq $target)',
+    '  } catch { return $false }',
+    '}',
+    '$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)',
+    'if ($null -eq $key) { "absent"; return }',
+    'try {',
+    '  if (-not ($key.GetValueNames() -contains "Path")) { "absent"; return }',
+    '  $raw = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)',
+    '  $kept = @()',
+    '  $removed = $false',
+    '  foreach ($entry in ($raw -split ";")) {',
+    '    if (Test-IsTarget $entry) { $removed = $true } else { $kept += $entry }',
+    '  }',
+    '  if (-not $removed) { "absent"; return }',
+    '  $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString',
+    '  if ($key.GetValueKind("Path") -eq [Microsoft.Win32.RegistryValueKind]::String) { $kind = [Microsoft.Win32.RegistryValueKind]::String }',
+    '  $key.SetValue("Path", ($kept -join ";"), $kind)',
+    '} finally {',
+    '  $key.Close()',
+    '}',
+    '[Environment]::SetEnvironmentVariable("XINGMANG_PATH_REFRESH", $null, "User")',
+    '"removed"',
+  ].join('\n')
+}
+
+export function parseRemoveUserPathOutput(stdout: string): UserPathRemoval {
+  const last = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1)
+  if (last === 'removed' || last === 'absent') return last
+  throw new Error('无法确认命令行工具目录是否已从当前用户的设置中去掉')
+}
+
+export interface RemoveUserPathOptions {
+  runPowerShell?: (script: string, env: NodeJS.ProcessEnv) => Promise<string>
+}
+
+/**
+ * After a CLI was uninstalled from `directory`, stops terminals the user opens
+ * later from looking there. The PATH this process inherited says nothing about
+ * the registry (the entry may have been added after launch), so PowerShell
+ * always runs; it writes only when an entry actually matches.
+ */
+export async function removeDirectoryFromWindowsUserPath(
+  directory: string,
+  options: RemoveUserPathOptions = {},
+): Promise<UserPathRemoval> {
+  if (!path.win32.isAbsolute(directory) || directory.includes('\0') || directory.includes(';')) {
+    throw new Error('命令行工具目录无效')
+  }
+  const run = options.runPowerShell ?? runPowerShellScript
+  const stdout = await run(buildRemoveUserPathScript(), {
+    ...trustedCommandEnvironment(),
+    XINGMANG_REMOVE_PATH: directory,
+  })
+  return parseRemoveUserPathOutput(stdout)
 }
 
 export interface CliTerminalAccessInput {
@@ -245,6 +319,8 @@ export interface CliTerminalAccessOptions {
   isManaged: (installation: CliTerminalAccessTarget['installation']) => boolean
   /** Absent = never touch PATH (tests and hosts other than the desktop app). */
   ensureUserPath?: (directory: string) => Promise<UserPathOutcome>
+  /** The way back for `forgetUserPath`. Absent = never touch PATH, as above. */
+  removeUserPath?: (directory: string) => Promise<UserPathRemoval>
   /**
    * macOS counterpart of `ensureUserPath`: makes the user's own terminal find
    * the CLIs. Absent = never touch the shell profile. The outcome string only
@@ -276,6 +352,11 @@ export interface CliTerminalAccess {
   sweepOnce(targets: readonly CliTerminalAccessTarget[]): Promise<void>
   /** After a CLI was uninstalled. Only Linux has anything to undo; never throws. */
   release(provider: ProviderId): Promise<void>
+  /**
+   * After an uninstall emptied `directory` on Windows, takes it back out of the
+   * user's PATH. Returns at once and never throws; the outcome only reaches the log.
+   */
+  forgetUserPath(provider: ProviderId, directory: string): void
 }
 
 /**
@@ -444,5 +525,23 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
     if (linux) syncTerminalCommands(provider, 'uninstall')
   }
 
-  return { prepare, sweepOnce, release }
+  // Not awaited, like ensureUserPath: the files are already gone, so the
+  // "uninstalled" message should not wait for a cold PowerShell start, and a
+  // failure only leaves an entry that points at an empty directory.
+  function forgetUserPath(provider: ProviderId, directory: string): void {
+    const removeUserPath = options.removeUserPath
+    if (options.platform !== 'win32' || !removeUserPath) return
+    void Promise.resolve().then(() => removeUserPath(directory)).then((outcome) => {
+      options.log?.('info', 'cli.user-path.removed', outcome === 'removed'
+        ? '工具目录已从当前用户的 PATH 中去掉'
+        : '工具目录不在当前用户的 PATH 中', { provider, outcome })
+    }, (error: unknown) => {
+      options.log?.('warn', 'cli.user-path.remove-failed', '工具目录没能从当前用户的 PATH 中去掉，不影响卸载结果', {
+        provider,
+        error: describe(error),
+      })
+    })
+  }
+
+  return { prepare, sweepOnce, release, forgetUserPath }
 }

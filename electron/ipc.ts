@@ -2559,6 +2559,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         provider,
         outcome: result.outcome,
         previousVersion: result.previousVersion,
+        // 要客户手动清理时，安全核对的英文原话不再上屏（已知48），记在这里给客服看。
+        ...(result.outcome === 'manual-required' ? { reason: result.error } : {}),
       })
       return result
     } catch (error) {

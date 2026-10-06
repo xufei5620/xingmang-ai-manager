@@ -22,13 +22,13 @@ const ALLOWED_MODELS = new Set([
   'gpt-image-2.5-sunburst',
 ])
 // This standalone script cannot import the desktop registry. Trust exact TLS
-// origins, including the fixed backup port, instead of permitting other services
-// on the same host to receive the account's keys.
+// origins instead of permitting other services on the same host to receive the
+// account's keys. The desktop app rewrites this skill's base URL to the active
+// line on every sync, so a retired test entry never needs to stay trusted here.
 const ALLOWED_RELAY_ORIGINS = new Set([
   'https://xm.solov.cc',
   'https://api.solov.cc',
   'https://xm-direct.solov.cc',
-  'https://38.147.105.28:8443',
 ])
 // 这几种状态换一把 Key 可能就过了（没这个分组、额度、限流、上游忙），与生图技能一致。
 const RETRYABLE_STATUSES = new Set([401, 403, 429, 503])

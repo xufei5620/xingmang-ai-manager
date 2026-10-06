@@ -203,7 +203,7 @@ import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, 
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
-import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
+import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
 import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
 import {
@@ -1333,7 +1333,10 @@ if (!hasSingleInstanceLock) {
       runtimeLog,
       sweepInstallLeftovers,
       ...(process.platform === 'win32'
-        ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
+        ? {
+            ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory),
+            removeWindowsUserPath: (directory: string) => removeDirectoryFromWindowsUserPath(directory),
+          }
         : {}),
       ...(process.platform === 'darwin'
         ? { ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({ reason }) }

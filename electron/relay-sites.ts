@@ -142,8 +142,11 @@ export const defaultRelaySiteId: string = relaySites[0].id
 const siteEndpoints = new Map<string, readonly RelayEndpoint[]>([
   ['solov', Object.freeze([
     Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://xm.solov.cc' }),
-    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://38.147.105.28:8443',
-      aliases: Object.freeze(['https://xm-direct.solov.cc']) }),
+    // 直连走自己的域名（证书是公共签发的，照常校验），服务器 IP 只在服务端 DNS 里，换 IP 不用发版。
+    // 38.147.105.28:8443 是服务端的临时测试入口，域名版发出去以后关掉：只留作别名，认得出、迁得走
+    // 按它写过的旧配置，新配置一律写域名，加速规则也不带它。
+    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://xm-direct.solov.cc',
+      aliases: Object.freeze(['https://38.147.105.28:8443']) }),
   ])],
   ['solov-api', Object.freeze([
     Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://api.solov.cc' }),
@@ -174,6 +177,28 @@ function providerUrlsForOrigin(origin: string): Record<ProviderId, string> {
 
 function knownEndpointOrigins(endpoint: RelayEndpoint): readonly string[] {
   return [endpoint.origin, ...endpoint.aliases ?? []]
+}
+
+/**
+ * The retired addresses of the line reached at exactly this origin. Recognition only, like
+ * knownEndpointOrigins: lets a record kept under an old address be found and moved.
+ */
+export function relayEndpointAliasOrigins(origin: string): readonly string[] {
+  for (const endpoints of siteEndpoints.values()) {
+    const endpoint = endpoints.find((candidate) => candidate.origin === origin)
+    if (endpoint) return endpoint.aliases ?? []
+  }
+  return []
+}
+
+/**
+ * Every address one provider of a site is known by, aliases included, with the
+ * line it belongs to. Recognition only: a configuration found on an alias moves
+ * to the line's own origin, nothing is ever written to an alias.
+ */
+export function relaySiteProviderBaseUrlVariants(siteId: unknown, provider: ProviderId): { endpointId: RelayEndpointId; baseUrl: string }[] {
+  return relaySiteEndpointChoices(siteId).flatMap((endpoint) => knownEndpointOrigins(endpoint)
+    .map((origin) => ({ endpointId: endpoint.id, baseUrl: providerUrlsForOrigin(origin)[provider] })))
 }
 
 function withRelayEndpoint(site: RelaySite, endpointId: unknown): RelaySite {
@@ -369,9 +394,8 @@ function relayDirectAddresses(sites: readonly RelaySite[]): string[] {
       const parsed = new URL(url)
       if (parsed.protocol === 'https:') hosts.add(parsed.hostname.toLowerCase())
     }
-    for (const endpoint of relaySiteEndpointChoices(site.id)) {
-      for (const origin of knownEndpointOrigins(endpoint)) hosts.add(new URL(origin).hostname.toLowerCase())
-    }
+    // 只带各条线路自己的地址：别名只用来认旧配置，旧的 IP 测试入口要关掉，不该还出现在加速规则里。
+    for (const endpoint of relaySiteEndpointChoices(site.id)) hosts.add(new URL(endpoint.origin).hostname.toLowerCase())
   }
   return [...hosts]
 }

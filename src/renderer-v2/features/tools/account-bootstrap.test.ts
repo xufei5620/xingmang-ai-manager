@@ -815,9 +815,9 @@ describe('explicit applied connection routes on restore', () => {
     })
   })
 
-  it('migrates the historical DNS alias even though its endpoint id is also direct', () => {
+  it('migrates the retired IP test entry even though its endpoint id is also direct', () => {
     const current = routedConfig()
-    current.providers.codex.actualBaseUrl = 'https://xm-direct.solov.cc/v1'
+    current.providers.codex.actualBaseUrl = 'https://38.147.105.28:8443/v1'
     expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual(['codex'])
     current.providers.codex.actualBaseUrl = `${direct.codex}/`
     expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
