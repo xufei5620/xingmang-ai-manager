@@ -46,7 +46,7 @@ describe('xm-only site runtime', () => {
     assert.equal(definition.siteId, 'solov')
     assert.equal(definition.realmId, 'xm-account')
     assert.equal(definition.backend, 'new-api')
-    assert.equal(definition.accountOrigin, 'https://38.147.105.28:8443')
+    assert.equal(definition.accountOrigin, 'https://xm-direct.solov.cc')
     assert.equal(definition.aiBaseUrl, definition.accountOrigin)
     assert.deepEqual(definition.providerBaseUrls, relayProviderBaseUrls('solov', 'direct'))
     assert.equal(requireRelaySite('solov').accountBaseUrl, 'https://xm.solov.cc')

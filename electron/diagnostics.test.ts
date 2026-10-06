@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ProviderId } from './catalog'
+import { providerIds, type ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
@@ -13,6 +13,7 @@ import {
   clockSyncGuidance,
   createDiagnosticsExport,
   describeRelocationTarget,
+  environmentOverrideNames,
   findRelocatedFolders,
   parseClashTunConfig,
   redactDiagnosticText,
@@ -30,6 +31,7 @@ import {
   type NodeTlsProbeInput,
 } from './diagnostics'
 import type { NodeTlsOutcome } from './certificate-trust-probe'
+import { macosShellOverrideVariables } from './system-service'
 
 const temporaryDirectories: string[] = []
 
@@ -414,7 +416,7 @@ describe('diagnostics', () => {
       const historical = relaySites.find((site) => site.accountBackend === 'sub2api')
       const cases = [
         { site: undefined, endpoint: 'https://xm.solov.cc/api/status', siteId: 'solov' },
-        { site: createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov'), endpoint: 'https://38.147.105.28:8443/api/status', siteId: 'solov' },
+        { site: createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov'), endpoint: 'https://xm-direct.solov.cc/api/status', siteId: 'solov' },
         { site: historical, endpoint: 'https://api.solov.cc/api/v1/settings/public', siteId: 'solov-api' },
       ]
       for (const { site, endpoint, siteId } of cases) {
@@ -816,6 +818,22 @@ describe('diagnostics', () => {
         details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
       })
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
+    })
+
+    // Mac 上这些多半写在 ~/.zshrc 里，检查页看不见，靠启动脚本在用星芒账号时去掉（已知45）。
+    // 以后哪个变量实测改成会绕开当前账号，那边的名单得一起加上。
+    it('leaves every variable that takes a CLI off the current account to the macOS launcher to drop', async () => {
+      const home = temporaryHome()
+      const dropped = new Set(providerIds.flatMap((provider) => macosShellOverrideVariables(provider, 'relay')))
+      const breaking: string[] = []
+      for (const name of environmentOverrideNames) {
+        const input = dependencies(home)
+        input.env = { [name]: 'https://must-not-leak.example.com/elsewhere' }
+        if (overrideItem(await runDiagnostics(input))?.state === 'fail') breaking.push(name)
+      }
+
+      expect(breaking.length).toBeGreaterThan(0)
+      expect(breaking.filter((name) => !dropped.has(name))).toEqual([])
     })
 
     // 这些实测盖不过写入的配置，或只换模型、不换账号：留在需留意，不在开机时打扰。

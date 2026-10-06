@@ -2566,6 +2566,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         provider,
         outcome: result.outcome,
         previousVersion: result.previousVersion,
+        // 要客户手动清理时，安全核对的英文原话不再上屏（已知48），记在这里给客服看。
+        ...(result.outcome === 'manual-required' ? { reason: result.error } : {}),
       })
       return result
     } catch (error) {
@@ -3057,7 +3059,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       try {
         await service.adoptRestoredConfig(result.provider, (apiKey) => (
           stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
-        ))
+        ), { fromBackupsPage: true })
       } catch (error) {
         options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但没能登记这份配置的来源', {
           provider: result.provider,

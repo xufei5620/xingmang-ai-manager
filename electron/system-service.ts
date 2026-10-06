@@ -55,6 +55,7 @@ import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
+import { isChineseSentence } from './chinese-sentence'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
@@ -84,12 +85,14 @@ import {
 } from './codex-model-catalog'
 import {
   canLaunchManagedProvider,
+  claudeForeignModelEnvKeys,
   geminiCliCompatibleModel,
   ensureCodexPermissionDefaults,
   ensureGeminiProjectContextFiles,
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
   claudeModelPickerNeedsRefresh,
+  classifyCodexConfigProfile,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogTargetUsable,
   inspectCodexModelCatalogOnDisk,
@@ -98,6 +101,7 @@ import {
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
+  providerAccountMode,
   readCodexAuthTokens,
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
@@ -115,6 +119,7 @@ import {
   type NativeConfigInspection,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
+  type ProviderAccountMode,
 } from './config-files'
 import {
   ProjectInstructionsStateStore,
@@ -203,7 +208,7 @@ import {
   inspectWindowsProcessorArchitecture,
   type WindowsProcessorArchitecture,
 } from './windows-processor'
-import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
+import { createCliTerminalAccess, type UserPathOutcome, type UserPathRemoval } from './windows-cli-shell-access'
 import type { MacosShellProfileOutcome } from './macos-shell-profile'
 import type { LinuxTerminalCommandsReason, LinuxTerminalCommandsResult } from './linux-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
@@ -234,7 +239,7 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrls, relaySiteEndpointChoices, relaySiteForProviderBaseUrl,
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants,
   type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
@@ -272,7 +277,7 @@ import {
   uninstallVerifiedClaudeNativeInstallation,
 } from './claude-native-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
-import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
+import { adoptRestoredXingmangAiSkillOff, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -481,12 +486,19 @@ export function buildDarwinCliLaunchPlan(
   command: { executable: string; argv: readonly string[] },
   workspace: string,
   env: NodeJS.ProcessEnv,
+  clearedEnvironmentKeys: readonly string[] = [],
 ): MacosTerminalLaunchPlan {
   if (!path.isAbsolute(command.executable)) {
     throw new Error('macOS CLI executable must be an absolute resolved path')
   }
   if (!path.isAbsolute(workspace)) throw new Error('macOS workspace must be an absolute path')
-  return { executable: command.executable, argv: [...command.argv], workspace, env }
+  return {
+    executable: command.executable,
+    argv: [...command.argv],
+    workspace,
+    env,
+    ...(clearedEnvironmentKeys.length ? { clearedEnvironmentKeys: [...clearedEnvironmentKeys] } : {}),
+  }
 }
 
 export type { OfficialChatGptAccount, OfficialChatGptWindow }
@@ -932,15 +944,18 @@ export function grokManualUninstallResult(
       },
     }
   }
+  const fallback = 'Grok CLI 自动卸载安全验证失败'
   const raw = error instanceof Error ? error.message : String(error)
   const message = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500)
-    || 'Grok CLI 自动卸载安全验证失败'
   return {
     outcome: 'manual-required',
     previousVersion,
-    error: message,
+    // 原话留在这里，卸载日志记的就是它。
+    error: message || fallback,
     manualHelp: {
-      reason: `自动卸载安全验证失败：${message}`,
+      // 安全核对里不少是英文原话（链接、目录不合规矩的那几句），Mac 上卸不了时整句英文上屏（已知48）。
+      // 英文只进日志，屏上换成现成的那句；中文原话照旧接在后面。
+      reason: message && isChineseSentence(message) ? `自动卸载安全验证失败：${message}` : fallback,
       manualCommand: null,
     },
   }
@@ -975,8 +990,11 @@ export interface SystemService {
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
    */
   autoRepairStaleCliHooks?(): Promise<ProviderId[]>
-  /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
-  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
+  /**
+   * 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。
+   * `fromBackupsPage`：客户在备份页挑的那一份；缺省 = 切换失败的回滚（恢复切换前那一刻）。
+   */
+  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean, options?: { fromBackupsPage?: boolean }): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
@@ -2534,6 +2552,8 @@ export interface SystemServiceOptions {
   launchLinuxTerminal?: typeof launchLinuxTerminal
   /** Test seam: the real one has a hidden PowerShell start the terminal and hand back its process id (windows-elevation.ts). */
   launchCliPowerShell?: typeof launchCliPowerShell
+  /** Test seam: the real one writes the zsh launcher and has `open -a Terminal` run it (macos-platform.ts). */
+  launchMacosTerminal?: typeof launchMacosTerminal
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
@@ -2609,6 +2629,11 @@ export interface SystemServiceOptions {
    */
   ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
   /**
+   * Windows 上卸掉 ~/.grok/bin 里的 Grok 后，把这个目录从当前用户的 PATH 里拿掉（官方安装脚本
+   * 加的那一段）。缺省 = 不改（测试里不起 PowerShell），只有 main.ts 接真实现。
+   */
+  removeWindowsUserPath?: (directory: string) => Promise<UserPathRemoval>
+  /**
    * Mac 上对应的那一步：往当前用户登录 shell 读的启动文件补几行（zsh 的 ~/.zprofile、
    * bash 的 ~/.bash_profile 或 ~/.profile、fish 的 conf.d 文件），让自己开的终端也能直接敲
    * 工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
@@ -2626,6 +2651,15 @@ export interface SystemServiceOptions {
   sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
 }
 
+// Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
+// already present. A shell-level stale gateway/key/model would otherwise
+// override the account configuration just written by the manager and send
+// requests to another relay (or select a model that is not in the group).
+const managedGeminiVariables = [
+  'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
+  'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
+] as const
+
 export function providerCommandEnvironment(
   provider: ProviderId,
   processEnv: NodeJS.ProcessEnv,
@@ -2633,19 +2667,54 @@ export function providerCommandEnvironment(
 ): NodeJS.ProcessEnv {
   const environment = commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
   if (provider === 'gemini') {
-    // Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
-    // already present. A shell-level stale gateway/key/model would otherwise
-    // override the account configuration just written by the manager and send
-    // requests to another relay (or select a model that is not in the group).
-    const managedGeminiVariables = new Set([
-      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
-      'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
-    ])
+    const managed = new Set<string>(managedGeminiVariables)
     for (const key of Object.keys(environment)) {
-      if (managedGeminiVariables.has(key.toUpperCase())) delete environment[key]
+      if (managed.has(key.toUpperCase())) delete environment[key]
     }
   }
   return environment
+}
+
+/**
+ * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进）。用星芒账号时，客户自己设的 ANTHROPIC_MODEL 这类
+ * 选型号的变量会让 Claude Code 去要当前账号没有的型号；接账号时 settings.json 里的同名项已经挪开
+ * （config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。用自己的 Claude 账号时照旧带。
+ */
+export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  return provider === 'claude' && accountMode === 'relay' ? claudeForeignModelEnvKeys : []
+}
+
+/** 名字不分大小写：Windows 上 `anthropic_model` 和大写是同一个变量（同 providerCommandEnvironment）。 */
+export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
+  const excluded = new Set(names.map((name) => name.toUpperCase()))
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !excluded.has(key.toUpperCase())))
+}
+
+/**
+ * Mac 上「终端」先起客户自己的登录 shell 读 ~/.zshrc 这些启动文件，再跑星芒的启动脚本，那里 export
+ * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
+ * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
+ * 都在里面，另加 Mac 才要的：
+ * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
+ *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
+ *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
+ *   不动。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，也不动。
+ * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
+ *   里的，要给的值启动时另给。
+ * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
+ */
+export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  switch (provider) {
+    case 'claude':
+      return accountMode === 'relay'
+        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...launchExcludedEnvironmentVariables(provider, accountMode)]
+        : []
+    case 'gemini':
+      return managedGeminiVariables
+    case 'codex':
+    case 'grok':
+      return []
+  }
 }
 
 /** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
@@ -2968,6 +3037,7 @@ export function createSystemService(
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
   const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
   const launchCliPowerShellForService = serviceOptions.launchCliPowerShell ?? launchCliPowerShell
+  const launchMacosTerminalForService = serviceOptions.launchMacosTerminal ?? launchMacosTerminal
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
@@ -5227,32 +5297,6 @@ export function createSystemService(
     return installCancellations.cancel(`cli:install:${provider}`)
   }
 
-  async function removeDirectoryFromUserPath(directory: string): Promise<void> {
-    if (process.platform !== 'win32') return
-    const script = [
-      '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-      '$target = [IO.Path]::GetFullPath($env:XINGMANG_REMOVE_PATH).TrimEnd("\\")',
-      '$current = [Environment]::GetEnvironmentVariable("Path", "User")',
-      '$next = @(($current -split ";") | Where-Object {',
-      '  if (-not $_) { return $false }',
-      '  try { [IO.Path]::GetFullPath($_).TrimEnd("\\") -ine $target } catch { $true }',
-      '}) -join ";"',
-      '[Environment]::SetEnvironmentVariable("Path", $next, "User")',
-    ].join('\n')
-    await execFileAsync(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      script,
-    ], {
-      env: { ...trustedCommandEnvironment(), XINGMANG_REMOVE_PATH: directory },
-      windowsHide: true,
-      timeout: 8_000,
-      maxBuffer: 1024 * 1024,
-    })
-  }
-
   /** 返回命令入口已经删掉、但没能删掉的程序文件（只有 Linux 会有）。 */
   async function uninstallNativeGrok(installation: CliInstallation): Promise<string[]> {
     const cliEnvironment = commandEnvironment()
@@ -5289,7 +5333,9 @@ export function createSystemService(
       label: 'Grok CLI',
       platform: process.platform,
     })
-    if (!managed) await removeDirectoryFromUserPath(result.directory)
+    // 官方安装脚本把 ~/.grok/bin 加进了当前用户的 PATH，卸完顺手拿掉。程序文件这时已经删完，所以不等它、
+    // 也不算进卸载结果：以前等着它、只给 8 秒，慢机器上 PowerShell 冷启动一超时就把卸完的说成失败（已知48）。
+    if (!managed) cliTerminalAccess.forgetUserPath('grok', result.directory)
     return []
   }
 
@@ -5320,6 +5366,7 @@ export function createSystemService(
     executionMode: windowsExecutionMode,
     isManaged: isManagedNpmInstallation,
     ensureUserPath: serviceOptions.ensureWindowsUserPath,
+    removeUserPath: serviceOptions.removeWindowsUserPath,
     ensureShellProfile: serviceOptions.ensureMacosShellProfile,
     syncTerminalCommands: serviceOptions.syncLinuxTerminalCommands,
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
@@ -5741,11 +5788,16 @@ export function createSystemService(
       }
     }
     const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
+    const accountMode = providerAccountMode(nativeConfig)
+    const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
     // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
     // 只在不跨提权边界时补；trusted-only 的终端 PATH 由 trustedCommandEnvironment 重建，不收用户可写的目录（I2）。
-    const providerEnv = provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
-      ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
-      : providerEnvironment(provider)
+    const providerEnv = withoutEnvironmentVariables(
+      provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
+        ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
+        : providerEnvironment(provider),
+      excludedVariables,
+    )
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
       // and it never overwrites conflicting parent-process variables. Pass the
@@ -5814,13 +5866,14 @@ export function createSystemService(
           darwinStagingRetention: 'retained',
           ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
-        await launchMacosTerminal(buildDarwinCliLaunchPlan(
+        await launchMacosTerminalForService(buildDarwinCliLaunchPlan(
           {
             ...command,
             argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),
           },
           workspace,
           withSystemCertificateTrust(providerEnv),
+          macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
@@ -5846,6 +5899,8 @@ export function createSystemService(
         workspace,
         title: `${definition.name} · 星芒AI`,
         env: environment,
+        // 交给已经开着的命令窗口程序时，工具拿到的是那个程序自己的环境，上面去掉的得在脚本里再去一次。
+        ...(excludedVariables.length ? { clearedEnvironmentKeys: excludedVariables } : {}),
       })
       runtimeLog?.log('info', 'system', 'terminal.opened', `${definition.name} 已在「${opened.terminal.label}」里打开`, {
         provider,
@@ -6477,8 +6532,8 @@ export function createSystemService(
    * 星芒替当前账号写的那一份在这个站的哪条线路上：from 是归属记在哪条线路，baseUrl 是那份配置
    * 现在指着的地址，Key 和型号原样交出（Claude Desktop 没写型号时 model 为 null）。baseUrl 是另一条
    * 线路的，跟着换；已经是当前线路的（上回地址换好了、归属没记上），补记归属。归属对不上、不是
-   * 这个站登记过的线路，回 null。只认登记的主地址：星芒保存时只写它，别名不会有归属记录。
-   * 主进程内部专用，密钥永不跨 IPC（I3）。
+   * 这个站登记过的线路，回 null。别名也认：直连原来的地址是 IP 测试入口，那时存的那份归属记在
+   * IP 上，现在 IP 退成别名、要关掉，得跟着换到域名。主进程内部专用，密钥永不跨 IPC（I3）。
    */
   async function externalClientRouteCredential(
     status: ExternalClientRuntimeStatus,
@@ -6487,8 +6542,8 @@ export function createSystemService(
   ): Promise<{ from: RelayEndpointId; baseUrl: string; apiKey: string; model: string | null } | null> {
     const provider = status.tool === 'claudeDesktop' ? 'claude' : 'codex'
     const current = activeSite.providerBaseUrls[provider]
-    const routes = relaySiteEndpointChoices(activeSite.id)
-      .map((endpoint) => ({ from: endpoint.id, baseUrl: relayProviderBaseUrls(activeSite.id, endpoint.id)[provider] }))
+    const routes = relaySiteProviderBaseUrlVariants(activeSite.id, provider)
+      .map((variant) => ({ from: variant.endpointId, baseUrl: variant.baseUrl }))
       .filter((route) => route.baseUrl !== current)
     const unchanged = () => serviceOptions.getExternalClientAccountId?.() === owner && activeRelaySite().id === activeSite.id
     const ownedRoute = (apiKey: string) => unchanged() ? routes.find((route) => externalOwnership.matches(status.tool, owner, route.baseUrl, apiKey)) : undefined
@@ -7341,7 +7396,11 @@ export function createSystemService(
     })
   }
 
-  async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
+  async function adoptRestoredConfig(
+    provider: ProviderId,
+    isAccountKey: (apiKey: string) => boolean,
+    options: { fromBackupsPage?: boolean } = {},
+  ): Promise<void> {
     await serializeConfigWrite(async () => {
       // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
       // 放在登记来源前面：那一步失败时这里也要做完。
@@ -7350,6 +7409,24 @@ export function createSystemService(
           forgetStaleGeminiUsageStatisticsRecord(providerRoots)
         } catch (error) {
           runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
+      // 星芒AI技能的记录也不跟着备份恢复：备份页恢复出来的星芒配置里技能关着，是客户自己关的
+      // （#834 F07），改用当前账号时不能打开。同样放在登记来源前面。
+      if (provider === 'codex' && options.fromBackupsPage) {
+        try {
+          const current = inspectNativeProviderConfig('codex')
+          const siteBaseUrl = providerRelaySite('codex', current).providerBaseUrls.codex
+          await adoptRestoredXingmangAiSkillOff({
+            userHome: providerRoots.userHome,
+            officialCodex: (store.read().officialProviders ?? []).includes('codex'),
+            configPath: path.join(providerRoots.codexHome, 'config.toml'),
+            isXingmangConfig: (config) => classifyCodexConfigProfile(config, siteBaseUrl) === 'relay',
+          })
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'codex.skill-record.adopt-failed', 'Codex 恢复备份后没能记下星芒AI技能是客户自己关的', {
             reason: credentialFailureReason(error),
           })
         }

@@ -1,4 +1,5 @@
 import type { ProviderId } from '../../../../electron/ipc-contract'
+import { relayEndpointAliasOrigins } from '../../../../electron/relay-sites'
 
 export type SourceMarkerStorage = Pick<
   Storage,
@@ -16,18 +17,35 @@ export function getSourceMarkerStorage(): SourceMarkerStorage | null {
   }
 }
 
+function markerOrigin(relayBaseUrl: string): string | null {
+  try {
+    const url = new URL(relayBaseUrl)
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : null
+  } catch {
+    return null
+  }
+}
+
+function markerKey(origin: string, provider: ProviderId): string {
+  return `${markerPrefix}:${encodeURIComponent(origin)}:${provider}`
+}
+
 /** Provider paths and relay-site aliases on one origin intentionally share a marker. */
 export function manualSourceMarkerKey(
   relayBaseUrl: string,
   provider: ProviderId,
 ): string | null {
-  try {
-    const url = new URL(relayBaseUrl)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
-    return `${markerPrefix}:${encodeURIComponent(url.origin)}:${provider}`
-  } catch {
-    return null
-  }
+  const origin = markerOrigin(relayBaseUrl)
+  return origin ? markerKey(origin, provider) : null
+}
+
+/**
+ * 线路换地址以前按旧地址存的那几份：直连还是 IP 测试入口那阵子，选了备用直连时按 IP 存。读的时候
+ * 一起认，写的时候顺手删掉，只留现在这个地址的那一份。
+ */
+function formerMarkerKeys(relayBaseUrl: string, provider: ProviderId): string[] {
+  const origin = markerOrigin(relayBaseUrl)
+  return origin ? relayEndpointAliasOrigins(origin).map((alias) => markerKey(alias, provider)) : []
 }
 
 export function readManualSourceMarker(
@@ -38,7 +56,7 @@ export function readManualSourceMarker(
   const key = manualSourceMarkerKey(relayBaseUrl, provider)
   if (!storage || !key) return false
   try {
-    return storage.getItem(key) === manualMarker
+    return [key, ...formerMarkerKeys(relayBaseUrl, provider)].some((candidate) => storage.getItem(candidate) === manualMarker)
   } catch {
     return false
   }
@@ -55,6 +73,7 @@ export function writeManualSourceMarker(
   try {
     if (manual) storage.setItem(key, manualMarker)
     else storage.removeItem(key)
+    for (const former of formerMarkerKeys(relayBaseUrl, provider)) storage.removeItem(former)
     return true
   } catch {
     return false

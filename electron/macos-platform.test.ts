@@ -758,3 +758,108 @@ describe('macOS terminal launcher with proxies left by the login shell', () => {
     expect(stderr).toBe('')
   })
 })
+
+describe('macOS terminal launcher with tool settings left by the login shell', () => {
+  const cleared = [
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CONFIG_DIR',
+    'GEMINI_API_KEY',
+    'GOOGLE_GEMINI_BASE_URL',
+    'GEMINI_MODEL',
+    'GOOGLE_GENAI_API_VERSION',
+    'GOOGLE_GEMINI_API_KEY',
+  ]
+
+  function scriptWith(clearedEnvironmentKeys?: readonly string[]): string[] {
+    return buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: { HOME: '/Users/tester', PATH: '/usr/bin', GEMINI_API_KEY: 'managed-key' },
+      ...(clearedEnvironmentKeys ? { clearedEnvironmentKeys } : {}),
+    }).split('\n')
+  }
+
+  it('clears the named variables after the folder checks and before writing its own values', () => {
+    const lines = scriptWith(cleared)
+    const unsetLine = lines.indexOf(`unset ${cleared.join(' ')}`)
+
+    expect(unsetLine).toBeGreaterThan(lines.indexOf('if ! /bin/ls -A -- . >/dev/null 2>&1; then'))
+    expect(unsetLine).toBeLessThan(lines.indexOf("export GEMINI_API_KEY='managed-key'"))
+    expect(unsetLine).toBeLessThan(lines.indexOf("export PATH='/usr/bin'"))
+  })
+
+  it('clears nothing when the plan names nothing', () => {
+    expect(scriptWith().filter((line) => line.startsWith('unset '))).toEqual([])
+    expect(scriptWith([]).filter((line) => line.startsWith('unset '))).toEqual([])
+  })
+
+  it.each([
+    ['A B'],
+    ['X;touch /tmp/nope'],
+    ['$(id)'],
+    [''],
+  ])('refuses %j as a variable name to clear', (name) => {
+    expect(() => scriptWith([name])).toThrow(TypeError)
+  })
+
+  it('carries the names to clear from the launch plan into the launcher it writes', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-cleared-env-'))
+    temporaryDirectories.push(directory)
+    let launcherContent = ''
+
+    await launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: directory,
+      env: { HOME: directory, PATH: '/usr/bin:/bin' },
+      clearedEnvironmentKeys: ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'],
+    }, async (spec) => {
+      temporaryDirectories.push(path.dirname(spec.argv[2]))
+      launcherContent = fs.readFileSync(spec.argv[2], 'utf8')
+    }, () => undefined)
+
+    expect(launcherContent.split('\n')).toContain('unset ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR')
+  })
+
+  it.runIf(zshAvailable)('keeps what the login shell exported away from the tool and puts the managed values back', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-tool-env-'))
+    temporaryDirectories.push(directory)
+    const output = path.join(directory, 'env.json')
+    const launcher = path.join(fs.mkdtempSync(path.join(directory, 'launcher-')), 'launcher.zsh')
+    fs.writeFileSync(launcher, buildMacosTerminalScript({
+      executable: process.execPath,
+      argv: ['-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', output],
+      workspace: directory,
+      launcherPath: launcher,
+      env: { HOME: directory, PATH: '/usr/bin:/bin', GEMINI_API_KEY: 'managed-key' },
+      clearedEnvironmentKeys: cleared,
+    }), { mode: 0o700 })
+
+    // What Terminal's login shell hands down after reading ~/.zshrc.
+    const { stderr } = await execFileAsync('/bin/zsh', ['-f', launcher], {
+      env: {
+        HOME: directory,
+        PATH: '/usr/bin:/bin',
+        LANG: 'en_US.UTF-8',
+        ANTHROPIC_API_KEY: 'sk-from-zshrc',
+        CLAUDE_CONFIG_DIR: path.join(directory, 'elsewhere'),
+        GEMINI_API_KEY: 'key-from-zshrc',
+        GOOGLE_GENAI_API_VERSION: 'v1alpha',
+        ANTHROPIC_BASE_URL: 'https://gateway.example.com',
+        KEEP_THIS: 'yes',
+      },
+    })
+
+    const env = JSON.parse(fs.readFileSync(output, 'utf8')) as NodeJS.ProcessEnv
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined()
+    expect(env.GOOGLE_GENAI_API_VERSION).toBeUndefined()
+    expect(env.GEMINI_API_KEY).toBe('managed-key')
+    // 名单外的照旧带上：ANTHROPIC_BASE_URL 盖不过 settings.json 的 env 段，不归这里管。
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://gateway.example.com')
+    expect(env.KEEP_THIS).toBe('yes')
+    expect(stderr).toBe('')
+  })
+})

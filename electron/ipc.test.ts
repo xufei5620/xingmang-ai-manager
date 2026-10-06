@@ -7466,10 +7466,12 @@ describe('backup handlers and account key ownership', () => {
     register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ provider: 'codex' })
     expect(backupStore.restore).toHaveBeenCalledWith('b1', expect.objectContaining({ accountName: 'account-a' }))
-    const [provider, isAccountKey] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
+    const [provider, isAccountKey, adoptOptions] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
     expect(provider).toBe('codex')
     expect(isAccountKey('sk-managed-codex')).toBe(true)
     expect(isAccountKey('sk-someone-else')).toBe(false)
+    // Only a backup the user picked here may turn the skill off it restores into theirs.
+    expect(adoptOptions).toEqual({ fromBackupsPage: true })
   })
 
   it('stops trusting the key cache when the account changes during a restore', async () => {
