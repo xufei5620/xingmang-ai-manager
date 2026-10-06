@@ -8,6 +8,7 @@ import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
 import { createFixtureServer } from '../../../e2e/harness.mjs'
 import { fixtureMountSliceMs, openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
+import { assertNoToast, recordToasts, waitForToast } from '../../../e2e/toast-recording.mjs'
 import { enterWorkspaceWithoutAccount } from './guest-workspace.mjs'
 
 let server, browser, origin
@@ -29,46 +30,6 @@ async function waitForFixtureReady(page, timeout = fixtureMountSliceMs()) {
       && Boolean(window.v2Test) && Boolean(window.xingmang)
       && (document.getElementById('root')?.childElementCount ?? 0) > 0,
   })
-}
-
-// Short toasts delete themselves 2400ms after they appear (toastDurationMs in
-// src/renderer-v2/ui/feedback.tsx), so a locator that only starts looking after that deadline waits
-// out its whole budget on an element that is never coming back. A slow Windows
-// runner hit exactly that between the save click and the toast assertion: the
-// grok configuration cases timed out at 30s while their faster siblings passed
-// in a couple of seconds. Record every toast as it is inserted and assert
-// against the recording, which cannot expire. A toast is only ever removed a
-// whole task later, so the observer callback always runs while the node is
-// still in the document.
-function recordToasts() {
-  const log = { entries: [], consumed: 0 }
-  const seen = new WeakSet()
-  window.__v2Toasts = log
-  function collect() {
-    for (const toast of document.querySelectorAll('.xm-toasts .xm-toast')) {
-      if (seen.has(toast)) continue
-      seen.add(toast)
-      log.entries.push({ text: toast.textContent ?? '', role: toast.getAttribute('role') ?? '' })
-    }
-  }
-  new MutationObserver(collect).observe(document, { childList: true, subtree: true })
-}
-
-// `consumed` marks how far the recording has been read, so a second save cannot
-// be satisfied by the toast the first save left behind.
-async function waitForToast(page, text) {
-  await page.waitForFunction((expected) => {
-    const log = window.__v2Toasts
-    const index = log.entries.findIndex((entry, position) => position >= log.consumed && entry.role === 'status' && entry.text === expected)
-    if (index < 0) return false
-    log.consumed = index + 1
-    return true
-  }, text)
-}
-
-async function assertNoToast(page, text) {
-  const shown = await page.evaluate((expected) => window.__v2Toasts.entries.slice(window.__v2Toasts.consumed).filter((entry) => entry.text === expected).length, text)
-  assert.equal(shown, 0, `不应出现「${text}」提示`)
 }
 
 before(async () => {
