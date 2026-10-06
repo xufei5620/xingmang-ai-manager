@@ -56,7 +56,7 @@ import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
@@ -1610,6 +1610,8 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    // 更新页「确认重启安装」、托盘「重启并安装」前问那一句（主窗口建好后接上）；true = 照常装。
+    let confirmUpdateInstall: (() => Promise<boolean>) | null = null
     let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
@@ -3035,6 +3037,7 @@ if (!hasSingleInstanceLock) {
         ...(linuxSystemLabel ? { systemLabel: linuxSystemLabel } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
@@ -3202,6 +3205,31 @@ if (!hasSingleInstanceLock) {
       mainWindow.show()
       mainWindow.focus()
     }
+    // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
+    const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
+      // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+      if (!mainWindow.isVisible()) showMainWindow()
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+        detail: task.count > 1
+          ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
+          : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+        buttons: ['继续安装', '仍然退出'],
+        defaultId: 0, cancelId: 0,
+      })
+      return result.response === 1
+    }
+    // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句。
+    // 点「继续安装」这次就不装，新版本留着，以后再点或下次退出时照常装（已知31）。
+    confirmUpdateInstall = async () => {
+      if (mainWindow.isDestroyed()) return true
+      const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
+      if (!task) return true
+      runtimeLog.log('info', 'updater', 'install.install-in-progress', `重启安装更新前确认：${task.key}`)
+      const proceed = await confirmInterruptingInstall(task)
+      if (!proceed) runtimeLog.log('info', 'updater', 'install.postponed', '还有工具在装，这次不装新版本，新版本留着')
+      return proceed
+    }
     receiveDeepLink = (raw) => {
       if (!deepLinkInbox.accept(raw)) return
       showMainWindow()
@@ -3254,18 +3282,8 @@ if (!hasSingleInstanceLock) {
         const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
         if (task) {
           runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
-          // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
-          if (!mainWindow.isVisible()) showMainWindow()
-          const result = await dialog.showMessageBox(mainWindow, {
-            type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
-            detail: task.count > 1
-              ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
-              : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
-            buttons: ['继续安装', '仍然退出'],
-            defaultId: 0, cancelId: 0,
-          })
           // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
-          return result.response === 1 ? 'quit' : 'cancel'
+          return await confirmInterruptingInstall(task) ? 'quit' : 'cancel'
         }
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
@@ -3537,8 +3555,8 @@ if (!hasSingleInstanceLock) {
       onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
       onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
       onAccelerationToggle: () => trayAcceleration?.toggle(),
-      // 与更新页「确认重启安装」、IPC update:install 同一条路，退出交接与安装闸都在 install() 里。
-      onInstallUpdate: () => { updaterService.install() },
+      // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
+      onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },
       // 主窗口缩到托盘之后渲染层那边的加速轮询是停的，菜单弹出来这一刻是唯一
       // 能把剩余时长读新的时机；读一次，不起定时器。
       onMenuOpen: () => { trayAcceleration?.refresh() },

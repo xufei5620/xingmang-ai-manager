@@ -1744,10 +1744,12 @@ export function UpdatesPage({
                 void operation.execute(
                   'install',
                   async () => {
-                    await api.installUpdate()
+                    const result = await api.installUpdate()
                     setConfirm(false)
+                    return result
                   },
-                  '安装请求已提交',
+                  // 还有工具在装、客户在问的那一句里点了「继续安装」：这次不装，回到原来的样子（已知31）。
+                  (result) => (result.postponed ? null : '安装请求已提交'),
                 )
               }
             >

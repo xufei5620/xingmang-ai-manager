@@ -883,7 +883,11 @@ export interface XingmangInvokeContract {
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
   checkForUpdates: IpcInvokeDefinition<'update:check', [], UpdateSnapshot>
   downloadUpdate: IpcInvokeDefinition<'update:download', [options?: UpdateDownloadOptions], UpdateSnapshot>
-  installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true }>
+  /**
+   * postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装新版本（已知31）。
+   * 缺省 = 已经交给安装程序（旧行为）。
+   */
+  installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true; postponed?: true }>
   listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
   getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
   exportSession: IpcInvokeDefinition<

@@ -258,6 +258,11 @@ export interface IpcRegistrationOptions {
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
   relaunchApp?(): Promise<boolean>
   /**
+   * 「确认重启安装」前问一句有没有工具在装（已知31）：false = 客户点了「继续安装」，这次不装。
+   * 不传 = 不问（测试与旧调用方）。
+   */
+  confirmUpdateInstall?(): Promise<boolean>
+  /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
    * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
    */
@@ -1670,6 +1675,7 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
   // 这个调用只是把安装交出去，真装没装上要等安装程序回话；写「完成」会让客服看反馈报告时
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
+  if (channel === 'update:install' && isRecord(result) && result.postponed === true) return '还有工具在装，这次没装新版本'
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
@@ -2765,7 +2771,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('update:download', (_event, downloadOptions: unknown) => (
     options.updaterService.download(parseUpdateDownloadOptions(downloadOptions))
   ))
-  registerTrustedHandler('update:install', () => options.updaterService.install())
+  registerTrustedHandler('update:install', async () => {
+    // 重启会打断正在装的工具：客户点了「继续安装」就这次不装，新版本留着（已知31）。
+    if (options.confirmUpdateInstall && !await options.confirmUpdateInstall()) return { accepted: true, postponed: true }
+    return options.updaterService.install()
+  })
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (
     options.sessionsService.list(parseSessionListQuery(query))
   ))
