@@ -1378,6 +1378,18 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(markup).toContain('data-testid="home-runtime-git"')
   })
 
+  it('keeps saying Node.js needs no separate click when the app already runs with administrator rights', () => {
+    // 已知19：不弹授权窗口，只去掉弹窗那半句。
+    const base = machine('windows')
+    const elevated = { ...base, platform: { ...base.platform, processElevated: true } } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: elevated })
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).toContain('is-quiet')
+    expect(elevation).toContain('Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。')
+    expect(markup).not.toContain('授权窗口')
+    expect(markup).not.toContain('管理员授权')
+  })
+
   it('keeps the warning and names the step by the home button once Claude Code is installed', () => {
     const markup = render({}, undefined, { snapshot: machine('windows', { claude: cliStatus }) })
     const node = opening(markup, 'home-runtime-row-node', '</div>')
