@@ -20,7 +20,9 @@
  * 跟随系统代理。
  */
 
-import { classifyNetworkFailure, networkFailureCode, type NetworkFailureReason } from './network-failure'
+import { readBoundedResponseText } from './bounded-response'
+import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, parsesAsJsonObject, type NetworkFailureReason } from './network-failure'
+import { watchResponseBody } from './response-body-watch'
 
 export type ProxyBypassOutcome =
   /** 直连通了：改成直连，代理软件又起来以后再改回去。 */
@@ -554,11 +556,17 @@ function requestUrl(input: string | URL | Request): string {
   return input instanceof URL ? input.href : input.url
 }
 
+// 回网页、回跳转的是半路上别人答的（公司网的拦截页、上网认证、网关的错误页），不是星芒的回话。
+function answeredBySomeoneElse(response: Response): boolean {
+  return response.type === 'opaqueredirect' || isHtmlContentType(response.headers.get('content-type'))
+}
+
 /**
  * 连星芒站点的请求用的 fetch：改直连期间，这个站点的请求走专用的直连会话，别的地址、
- * 别的时候照常走默认会话。直连那一路在拿到回话之前就失败了（没回话、被断、超时），
- * 报给 siteRouteFailed，由它再看一次决定交不交还给系统代理；服务回了话（哪怕是 5xx）
- * 说明直连是通的，不算失败。
+ * 别的时候照常走默认会话。直连那一路没走通就报给 siteRouteFailed，由它再看一次决定交不交还
+ * 给系统代理：拿到回话之前就失败了（没回话、被断、超时）；回的是网页、跳转（拦截页、门户认证），
+ * 不是星芒的回话；回了话以后正文读到一半断了、超时了（AI 回复写到一半）。服务自己回的 JSON
+ * （哪怕是 5xx）说明直连是通的，不算失败。以前只认头一种，后两种整轮一直直连到重开软件（已知57）。
  */
 export function createSiteFetch(
   bypass: Pick<ProxyBypass, 'routeSiteRequest' | 'siteRouteFailed'>,
@@ -569,12 +577,23 @@ export function createSiteFetch(
   return async (input, init) => {
     const route = bypass.routeSiteRequest(requestUrl(input))
     if (route === null) return viaSession(input, init)
-    try {
-      return await viaDirect(input, init)
-    } catch (error) {
+    // 调用方自己中止的（点了「停止」）不算直连不通，账号请求除外（见 SiteFetchOptions）。
+    const failed = (): void => {
       if (options.abortMeansUnreachable || !init?.signal?.aborted) bypass.siteRouteFailed(route)
+    }
+    let response: Response
+    try {
+      response = await viaDirect(input, init)
+    } catch (error) {
+      failed()
       throw error
     }
+    // 回应原样交给调用方，它自己会认出这不是星芒的回话；这里只管让这一路再看一次。
+    if (answeredBySomeoneElse(response)) {
+      bypass.siteRouteFailed(route)
+      return response
+    }
+    return watchResponseBody(response, failed)
   }
 }
 
@@ -614,10 +633,14 @@ export function createSiteRouting({ sessionFetch, siteDirectFetch, systemProxyFe
 }
 
 const probeTimeoutMs = 8_000
+// /api/status 回的 JSON 只有几百字节；拦截页、门户页可能很大，读到这么多还没完就不算。
+const probeMaxBytes = 64 * 1024
 
 /**
- * 只看服务回没回话，不读正文（I10 的响应体上限因此是 0）。重定向不跟：门户认证
- * 正是靠把请求拦到自己的登录页，跟过去就会把「被拦了」当成「通了」。
+ * 探的是星芒的 /api/status（历史账号是 /api/v1/settings/public），两个都是回 JSON 的公开接口：
+ * 回的是 JSON 才算星芒的服务回了话，状态码不管（维护时回的 503 JSON 也说明这条路连得到服务）。
+ * 公司网的拦截页、门户认证页、网关的错误页都是网页，以前回什么都算通，直连那一路被拦了也照样
+ * 分过去、交不回来（已知57）。重定向不跟：门户认证正是靠把请求拦到自己的登录页。
  */
 export async function probeDirectConnection(
   fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
@@ -628,11 +651,15 @@ export async function probeDirectConnection(
   const response = await fetchImpl(parsed.href, {
     method: 'GET',
     redirect: 'manual',
+    headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(probeTimeoutMs),
   })
-  await response.body?.cancel().catch(() => undefined)
-  if (response.type === 'opaqueredirect' || response.status === 0) return false
-  return response.status < 300 || response.status >= 400
+  const redirected = response.type === 'opaqueredirect' || response.status === 0 || (response.status >= 300 && response.status < 400)
+  if (redirected || !isJsonContentType(response.headers.get('content-type'))) {
+    await response.body?.cancel().catch(() => undefined)
+    return false
+  }
+  return parsesAsJsonObject(await readBoundedResponseText(response, probeMaxBytes, '连通检查'))
 }
 
 export type NetworkSettingsKind = 'proxy' | 'captive-portal'
