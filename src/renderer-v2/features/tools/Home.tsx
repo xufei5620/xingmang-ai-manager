@@ -355,7 +355,7 @@ export function Home(props: HomeProps) {
   // Windows 上 Node.js 是机器级 MSI，准备它必然弹一次 UAC。说在点之前，
   // 不是弹窗跳出来之后（Python 按当前用户装，没有这句）。
   const nodeElevationNotice = nodeMissing
-    ? homeNodeElevationNotice(snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall, nodeOptional)
+    ? homeNodeElevationNotice(snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall, nodeOptional, snapshot?.platform.processElevated)
     : null
   const runtimeHintClass = nodeOptional ? 'v2-runtime-hint is-quiet' : 'v2-runtime-hint'
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
@@ -443,7 +443,7 @@ export function Home(props: HomeProps) {
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
-      ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
+      ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install, snapshot?.platform.processElevated)
       : null
     const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : repairJob ? '修复中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'

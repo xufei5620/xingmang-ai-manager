@@ -347,9 +347,12 @@ export interface AutoInstallNotice {
 /**
  * 自动装之前的那句预告。Windows 的安装包装在「所有用户」目录下，装的时候会弹系统授权
  * 窗口；事先不说一声，用户看到的就是软件自己关了、又凭空冒出一个窗口问要不要允许。
+ *
+ * 星芒这次本身就带着管理员权限在跑时（`elevated`：自带 Administrator、关了 UAC、右键以管理员
+ * 身份运行，见 windows-elevation.ts 的 highIntegrity）不弹授权窗口，那句不说（已知19）。
  */
-export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform): AutoInstallNotice {
-  const consent = platform === 'win32' ? 'Windows 弹出授权窗口时请点「是」。' : ''
+export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform, elevated = false): AutoInstallNotice {
+  const consent = platform === 'win32' && !elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
   if (moment === 'quit') {
     return {
       title: '正在安装星芒AI新版本',

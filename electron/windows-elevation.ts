@@ -393,6 +393,12 @@ export interface WindowsCliExecutionModeResolution {
   elapsedMs: number
   /** 只有探测失败时才有；这时 mode 可能是 same-user，也可能是 trusted-only。 */
   probeFailure?: WindowsExecutionProbeFailure
+  /**
+   * 这个进程是不是 High 完整性：自带 Administrator（没开管理员批准模式）、关了 UAC、右键
+   * 「以管理员身份运行」都是。这时提权装 Node.js、Codex 桌面端、装更新都不会再弹授权窗口，
+   * 界面就不说会弹（已知19）。只有读出了完整性标签才有这一项。
+   */
+  highIntegrity?: boolean
 }
 
 const PROBE_FAILURE_DETAIL_LIMIT = 300
@@ -479,13 +485,14 @@ export async function resolveWindowsCliExecutionModeDetailed(
   const platform = options.platform ?? process.platform
   const now = options.now ?? Date.now
   const startedAt = now()
+  let integrityRid: number | null = null
   const settle = (mode: WindowsCliExecutionMode, probeFailure?: WindowsExecutionProbeFailure) => ({
     mode,
     elapsedMs: Math.max(0, now() - startedAt),
     ...(probeFailure ? { probeFailure } : {}),
+    ...(integrityRid === null ? {} : { highIntegrity: integrityRid >= highMandatoryIntegrityRid }),
   })
   if (platform !== 'win32') return settle('same-user')
-  let integrityRid: number | null = null
   try {
     // Below High integrity the token cannot be the elevated half of a split
     // admin token, which is the only case that answers trusted-only, so the

@@ -3731,6 +3731,42 @@ test('a Windows account outside the administrators group is told an administrato
   } finally { await page.close() }
 })
 
+// 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
+// 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、安装卸载页和重启安装确认框都不说
+// 会弹（已知19）。没带管理员权限的照旧说。
+test('an app already running with administrator rights does not promise a consent window', async () => {
+  for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
+    const page = await open(query)
+    try {
+      await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
+      await expect(page.getByTestId('home-runtime-node-elevation')).toHaveCount(elevated ? 0 : 1)
+
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-maintenance').click()
+      const node = page.getByTestId('maintenance-runtime-node')
+      // 这句只在读到平台以后才有，等它出来再看授权那句在不在。
+      await expect(node).toContainText('装工具时会自动准备')
+      if (elevated) assert.doesNotMatch(await node.innerText(), /管理员授权|授权窗口/, query)
+      else await expect(node).toContainText('这一步需要管理员授权：点「安装」后 Windows 会弹一次授权窗口')
+
+      // 「更多」进安装卸载页时已经展开，再点一下就收起来了。
+      await page.getByTestId('nav-updates').click()
+      const updates = page.getByTestId('page-updates')
+      await updates.waitFor()
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }))
+      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+      await dialog.waitFor()
+      if (!elevated) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), elevated ? 0 : 1, query)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
 // 确认框要先说清楚会弹安装窗口、要输开机密码。不是 .deb 装的那种根本没法自动更新，
 // 更新页给一条去下载页的路，而不是一颗永远点不动的「检查更新」。
