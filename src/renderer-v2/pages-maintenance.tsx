@@ -213,8 +213,9 @@ export type BusinessActions = {
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
   /**
    * 「安装卸载」页卸掉工具、装好或换了运行环境以后叫一声，由 App 重新检测，首页跟着变；
-   * 不叫的话首页还摆着卸掉的工具、还写 Node.js「未安装」。装工具照旧走 onToolsChanged
-   * （还要写 Key）。页面先叫它、再读本页：本页那次读接上 App 刚起的那一轮检测，不另起一轮。
+   * 不叫的话首页还摆着卸掉的工具、还写 Node.js「未安装」。装工具不用它：走 installTool
+   * （没接时走 onToolsChanged），装完还要写 Key。页面先叫它、再读本页：本页那次读接上 App
+   * 刚起的那一轮检测，不另起一轮。
    * 缺省 = 只刷新本页（旧行为）。
    */
   onSystemChanged?: () => void
