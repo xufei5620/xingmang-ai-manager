@@ -4,7 +4,14 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
-import { codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, relayTemplateRevision, saveProviderConfig } from './config-files'
+import {
+  codexConfigSnapshotPaths,
+  geminiUsageStatisticsRecordName,
+  inspectProviderConfig,
+  providerConfigPaths,
+  relayTemplateRevision,
+  saveProviderConfig,
+} from './config-files'
 import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership } from './system-service'
 import type { RunningToolsReport } from './running-tools'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
@@ -349,6 +356,19 @@ describe('durable tool configuration ownership', () => {
     const f = fixture()
     await f.makeService().adoptRestoredConfig('codex', () => true)
     expect(fs.existsSync(path.join(f.data, 'tool-config-ownership'))).toBe(false)
+  })
+
+  it('forgets the Gemini usage statistics record a restored settings.json no longer carries', async () => {
+    const f = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', f.roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    saveProviderConfig('gemini', 'sk-fixture-user-secret', 'gemini-3.5-flash', 'reset', f.roots, {}, providerBaseUrls)
+    expect(fs.readFileSync(recordPath, 'utf8')).not.toBe('')
+
+    // The backup from before the switch comes back without the switch Xingmang wrote.
+    fs.writeFileSync(settingsPath, JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }), 'utf8')
+    await f.makeService().adoptRestoredConfig('gemini', () => false)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
   })
 })
 

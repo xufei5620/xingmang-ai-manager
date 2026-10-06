@@ -154,7 +154,8 @@ function normalizedSkillPathKey(value: string): string {
  * Codex Desktop / CLI 只认 ~/.codex/config.toml 的 [[skills.config]]。
  * ChatGPT 账号下星芒 Key 无效，必须显式关掉；切回星芒中转时只打开星芒自己关的那一次
  * （谁关的见 syncXingmangAiSkillCodexAvailability 的记录）。
- * 默认无条目 = 开启，所以关掉时一定要写出 enabled = false。
+ * 默认无条目 = 开启，所以关掉时一定要写出 enabled = false。同一个技能写了好几条时一起改：
+ * 只改第一条，判断「关着没有」时看到的和改完的就对不上。
  */
 export function applyXingmangAiSkillEnabledFlag(
   config: Record<string, unknown>,
@@ -173,15 +174,19 @@ export function applyXingmangAiSkillEnabledFlag(
   config.skills = skills
   skills.config ??= []
   const entries = skills.config as unknown[]
-  const existing = entries.find((entry) => (
+  const existing = entries.filter((entry): entry is Record<string, unknown> => (
     isRecord(entry)
     && typeof entry.path === 'string'
     && normalizedSkillPathKey(entry.path) === key
   ))
-  if (isRecord(existing)) {
-    if (existing.enabled === enabled) return false
-    existing.enabled = enabled
-    return true
+  if (existing.length > 0) {
+    let changed = false
+    for (const entry of existing) {
+      if (entry.enabled === enabled) continue
+      entry.enabled = enabled
+      changed = true
+    }
+    return changed
   }
   if (enabled) return false
   entries.push({ path: resolvedPath, enabled })
@@ -200,13 +205,22 @@ function isXingmangAiSkillTurnedOff(config: Record<string, unknown>, skillPath: 
   ))
 }
 
+// 星芒存的那份星芒配置，就是 config-files.ts 的 codexRelayConfigSnapshotName。那边经
+// xingmang-ai-mcp.ts 引用了本文件，这里再引用回去会成环，所以抄一份名字；名字对不上时，
+// 测试里真切换的那几条会红。
+const CODEX_RELAY_CONFIG_SNAPSHOT_FILE = 'xingmang-config-relay.toml'
+const CODEX_RELAY_CONFIG_SNAPSHOT_LABEL = '已保存的星芒 Codex 配置'
+
 // 客户自己在 Codex 里关掉的技能，以前每次打开星芒、保存配置、切回星芒都被打开（#834 F07）：
-// 光看 config.toml 分不清这个「关」是谁的。所以星芒替 ChatGPT 账号关它时在旁边记一笔，切回
-// 星芒时只打开记着的那一个。三种状态：
-//   true  = 现在的关是星芒替 ChatGPT 账号关的，切回星芒时打开；
-//   false = 星芒没关过，config.toml 里的关都是客户自己的；
-//   null  = 还没有记录（以前的版本留下的配置）。以前的版本在 ChatGPT 账号下每次都强行关、
-//           在星芒下每次都强行开，所以这时 ChatGPT 账号下的关算星芒的，星芒下的关算客户的。
+// 光看 config.toml 分不清这个「关」是谁的。Codex 的星芒配置和 ChatGPT 配置是两份，切换时整份
+// 换回来（config-files.ts 的 createCodexRelayConfigPlans / createCodexOfficialConfigPlans）。
+// 星芒的关只写进 ChatGPT 配置，只有一种情况会跟到星芒这边：还没存过星芒配置，切回星芒时把
+// ChatGPT 配置整份带过去。所以在 ChatGPT 账号下关技能时记一笔「切回星芒时配置里的关是不是
+// 这里星芒关的」，切回星芒时只打开记着的那一个：
+//   true  = 是，切回星芒时打开；
+//   false = 不是，星芒配置里的关都是客户自己的，不动；
+//   null  = 还没有记录（以前的版本留下的配置）。以前的版本在星芒下每次都强行开，所以星芒下的
+//           关算客户的；ChatGPT 账号下的关和新关的一样，看存着的那份星芒配置来定。
 async function readXingmangAiSkillOffRecord(statePath: string): Promise<boolean | null> {
   const raw = await readSafeUtf8File(statePath, '星芒AI Skill 开关记录', 1024)
   if (!raw) return null
@@ -229,13 +243,58 @@ async function writeXingmangAiSkillOffRecord(statePath: string, offByXingmang: b
   )
 }
 
-async function writeCodexSkillConfig(configPath: string, parsed: Record<string, unknown>): Promise<void> {
-  ensureSafeDataDirectory(path.dirname(configPath), 'Codex 配置目录')
+async function writeCodexToml(filePath: string, parsed: Record<string, unknown>, label: string): Promise<void> {
+  ensureSafeDataDirectory(path.dirname(filePath), 'Codex 配置目录')
   await writeAtomicSafeUtf8File(
-    configPath,
+    filePath,
     `${TOML.stringify(parsed as Parameters<typeof TOML.stringify>[0])}\n`,
-    'Codex config.toml',
+    label,
   )
+}
+
+/**
+ * 切回星芒时拿回来的那份星芒配置里，技能是不是已经关着。那份是离开星芒时照原样存的，里面的
+ * 关只会是客户自己的。还没有这份时，切回星芒会把现在这份 ChatGPT 配置整份带过去，带过去的关
+ * 就是这里星芒关的。读不了、读不懂按「关着」算：宁可以后少打开一次，也不把客户的关打开。
+ */
+async function relaySnapshotHasSkillOff(codexHome: string, skillPath: string): Promise<boolean> {
+  let text: string | null
+  try {
+    text = await readSafeUtf8File(
+      path.join(codexHome, CODEX_RELAY_CONFIG_SNAPSHOT_FILE),
+      CODEX_RELAY_CONFIG_SNAPSHOT_LABEL,
+      MAX_CODEX_CONFIG_BYTES,
+    )
+  } catch {
+    return true
+  }
+  if (!text?.trim()) return false
+  try {
+    return isXingmangAiSkillTurnedOff(TOML.parse(text), skillPath)
+  } catch {
+    return true
+  }
+}
+
+/**
+ * 星芒配置刚从 ChatGPT 配置整份带过来时，存下的那份和 config.toml 一模一样，也带着星芒的关。
+ * 只开 config.toml 的话，切换没成功、回滚（只还原 config.toml）以后再切过来，拿回来的还是
+ * 那份带着关的，到那时就认不出它是星芒的了。
+ */
+async function turnOnSkillInRelaySnapshot(codexHome: string, skillPath: string): Promise<void> {
+  const snapshotPath = path.join(codexHome, CODEX_RELAY_CONFIG_SNAPSHOT_FILE)
+  const text = await readSafeUtf8File(snapshotPath, CODEX_RELAY_CONFIG_SNAPSHOT_LABEL, MAX_CODEX_CONFIG_BYTES)
+  if (!text?.trim()) return
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(text)
+  } catch {
+    // 读不懂的那份切回星芒时也用不上（会让客户重置），不替它改。
+    return
+  }
+  if (!isXingmangAiSkillTurnedOff(parsed, skillPath)) return
+  applyXingmangAiSkillEnabledFlag(parsed, skillPath, true)
+  await writeCodexToml(snapshotPath, parsed, CODEX_RELAY_CONFIG_SNAPSHOT_LABEL)
 }
 
 export async function syncXingmangAiSkillCodexAvailability(options: {
@@ -256,31 +315,36 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
       throw new Error('Codex config.toml 无法解析，未修改星芒AI Skill 开关')
     }
   }
-  const statePath = path.join(path.dirname(configPath), XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+  const codexHome = path.dirname(configPath)
+  const statePath = path.join(codexHome, XINGMANG_AI_CODEX_SKILL_STATE_FILE)
   const offByXingmang = await readXingmangAiSkillOffRecord(statePath)
   const turnedOff = isXingmangAiSkillTurnedOff(parsed, skillPath)
 
   if (options.officialCodex) {
+    // 已经关着、也记过切回星芒时开不开，就什么都不动。
+    if (turnedOff && offByXingmang !== null) return { changed: false, enabled: false }
+    const reopenOnReturn = !await relaySnapshotHasSkillOff(codexHome, skillPath)
     if (turnedOff) {
-      if (offByXingmang === null) await writeXingmangAiSkillOffRecord(statePath, true)
+      // 以前的版本关的，没有记录，补上。
+      await writeXingmangAiSkillOffRecord(statePath, reopenOnReturn)
       return { changed: false, enabled: false }
     }
     applyXingmangAiSkillEnabledFlag(parsed, skillPath, false)
-    // 先记再关：中途失败只多一笔记录，下次在星芒下同步时看见技能没关着，就把这笔记录改回去。
-    await writeXingmangAiSkillOffRecord(statePath, true)
-    await writeCodexSkillConfig(configPath, parsed)
+    await writeXingmangAiSkillOffRecord(statePath, reopenOnReturn)
+    await writeCodexToml(configPath, parsed, 'Codex config.toml')
     return { changed: true, enabled: false }
   }
 
   if (turnedOff && offByXingmang === true) {
     applyXingmangAiSkillEnabledFlag(parsed, skillPath, true)
-    // 先开再改记录：中途失败时记录还在，下次照样打开。
-    await writeCodexSkillConfig(configPath, parsed)
+    // 先开存着的那份、再开 config.toml、最后改记录：中途失败时 config.toml 还关着、记录还在，
+    // 下次照样两份都开。
+    await turnOnSkillInRelaySnapshot(codexHome, skillPath)
+    await writeCodexToml(configPath, parsed, 'Codex config.toml')
     await writeXingmangAiSkillOffRecord(statePath, false)
     return { changed: true, enabled: true }
   }
-  // 还关着就是客户自己关的，不动。记下「星芒没关过」：以后切到 ChatGPT 账号再切回来，
-  // 那边带过去的这个关也认得出是客户的。
+  // 其余的关都是客户自己的，不动。
   if (offByXingmang !== false) await writeXingmangAiSkillOffRecord(statePath, false)
   return { changed: false, enabled: !turnedOff }
 }

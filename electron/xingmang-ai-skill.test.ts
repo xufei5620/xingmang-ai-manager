@@ -5,7 +5,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
-import { managedCliKeyProfiles } from './catalog'
+import { managedCliKeyProfiles, providerBaseUrls } from './catalog'
+import { codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
 import type { RelayBackendClient } from './relay-backend'
 import {
   XINGMANG_AI_CODEX_SKILL_STATE_FILE,
@@ -542,47 +543,6 @@ describe('xingmang-ai-skill', () => {
       .toEqual({ version: 1, offByXingmang: false })
   })
 
-  it('turns back on only the off it wrote for the ChatGPT account across config swaps', async () => {
-    const userHome = await temporaryHome()
-    const configPath = path.join(userHome, '.codex', 'config.toml')
-    const relay = 'model = "relay-model"\n'
-    const userOff = `${relay}\n[[skills.config]]\npath = ${JSON.stringify(resolveXingmangAiCodexSkillPath(userHome))}\nenabled = false\n`
-    await mkdir(path.dirname(configPath), { recursive: true })
-    await writeFile(configPath, relay, 'utf8')
-    const sync = (officialCodex: boolean) => syncXingmangAiSkillCodexAvailability({ userHome, officialCodex, configPath })
-
-    // On the ChatGPT account Xingmang turns the skill off itself.
-    await expect(sync(true)).resolves.toEqual({ changed: true, enabled: false })
-    const chatgptWithOff = await readFile(configPath, 'utf8')
-    // Back on Xingmang the stored relay config returns without that off.
-    await writeFile(configPath, relay, 'utf8')
-    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: true })
-    // The user then turns it off on Xingmang.
-    await writeFile(configPath, userOff, 'utf8')
-    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
-    // ChatGPT again: the stored ChatGPT config already carries the earlier off.
-    await writeFile(configPath, chatgptWithOff, 'utf8')
-    await expect(sync(true)).resolves.toEqual({ changed: false, enabled: false })
-    // Back on Xingmang with the user's own off: it stays off.
-    await writeFile(configPath, userOff, 'utf8')
-    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
-    expect(await readFile(configPath, 'utf8')).toBe(userOff)
-  })
-
-  it('keeps the user\'s off when their relay config is carried into the first ChatGPT config', async () => {
-    const userHome = await temporaryHome()
-    const configPath = path.join(userHome, '.codex', 'config.toml')
-    const userOff = `[[skills.config]]\npath = ${JSON.stringify(resolveXingmangAiCodexSkillPath(userHome))}\nenabled = false\n`
-    await mkdir(path.dirname(configPath), { recursive: true })
-    await writeFile(configPath, userOff, 'utf8')
-    const sync = (officialCodex: boolean) => syncXingmangAiSkillCodexAvailability({ userHome, officialCodex, configPath })
-
-    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
-    await expect(sync(true)).resolves.toEqual({ changed: false, enabled: false })
-    await expect(sync(false)).resolves.toEqual({ changed: false, enabled: false })
-    expect(await readFile(configPath, 'utf8')).toBe(userOff)
-  })
-
   it('treats an off left on the ChatGPT account by an older version as its own', async () => {
     const userHome = await temporaryHome()
     const skillPath = resolveXingmangAiCodexSkillPath(userHome)
@@ -626,6 +586,160 @@ describe('xingmang-ai-skill', () => {
       { path: otherPath, enabled: true },
       { path: skillPath, enabled: false },
     ])
+  })
+
+  it('switches every entry written for the skill together', () => {
+    const skillPath = path.resolve('agents', '星芒AI', 'SKILL.md')
+    const config = {
+      skills: {
+        config: [{ path: skillPath, enabled: true }, { path: skillPath, enabled: false }],
+      },
+    }
+    expect(applyXingmangAiSkillEnabledFlag(config, skillPath, true)).toBe(true)
+    expect(config.skills.config).toEqual([{ path: skillPath, enabled: true }, { path: skillPath, enabled: true }])
+    expect(applyXingmangAiSkillEnabledFlag(config, skillPath, false)).toBe(true)
+    expect(config.skills.config).toEqual([{ path: skillPath, enabled: false }, { path: skillPath, enabled: false }])
+    expect(applyXingmangAiSkillEnabledFlag(config, skillPath, false)).toBe(false)
+  })
+})
+
+// These drive the real account switches in config-files.ts, which swap whole Codex configs
+// and keep the other side in xingmang-config-relay.toml / xingmang-config-chatgpt.toml, then
+// sync the skill the way system-service does right after each switch.
+describe('xingmang-ai-skill across Codex account switches', () => {
+  async function codexAccounts() {
+    const userHome = await temporaryHome()
+    const roots = { userHome, codexHome: path.join(userHome, '.codex') }
+    const paths = codexConfigSnapshotPaths(roots)
+    const statePath = path.join(roots.codexHome, XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+    const skillPath = resolveXingmangAiCodexSkillPath(userHome)
+    const sync = (officialCodex: boolean) => syncXingmangAiSkillCodexAvailability({
+      userHome,
+      officialCodex,
+      configPath: paths.active,
+    })
+    async function skillOff(file = paths.active): Promise<boolean> {
+      const parsed = TOML.parse(await readFile(file, 'utf8')) as { skills?: { config?: Array<{ path?: string, enabled?: boolean }> } }
+      return (parsed.skills?.config ?? []).some((entry) => (
+        path.resolve(entry.path ?? '') === skillPath && entry.enabled === false
+      ))
+    }
+    return {
+      roots,
+      paths,
+      statePath,
+      sync,
+      skillOff,
+      async useChatGptBeforeXingmang() {
+        await mkdir(roots.codexHome, { recursive: true })
+        await writeFile(paths.active, 'model = "gpt-5"\n', 'utf8')
+      },
+      async toXingmang(mode: 'merge' | 'reset' = 'merge') {
+        saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', mode, roots, {}, providerBaseUrls)
+        return sync(false)
+      },
+      async toChatGpt(mode: 'merge' | 'reset' = 'merge') {
+        switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, mode)
+        return sync(true)
+      },
+      async userTurnsSkillOff() {
+        const parsed = TOML.parse(await readFile(paths.active, 'utf8'))
+        applyXingmangAiSkillEnabledFlag(parsed, skillPath, false)
+        await writeFile(paths.active, TOML.stringify(parsed), 'utf8')
+      },
+    }
+  }
+
+  it('keeps the user\'s off through a switch to a stored ChatGPT config that never had it', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.toXingmang()
+    await accounts.userTurnsSkillOff()
+
+    for (let round = 0; round < 2; round += 1) {
+      await expect(accounts.toChatGpt()).resolves.toMatchObject({ enabled: false })
+      await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+      expect(await accounts.skillOff()).toBe(true)
+    }
+  })
+
+  it('keeps the user\'s off after the ChatGPT config is reset', async () => {
+    const accounts = await codexAccounts()
+    await accounts.toXingmang('reset')
+    await accounts.userTurnsSkillOff()
+
+    await expect(accounts.toChatGpt('reset')).resolves.toEqual({ changed: true, enabled: false })
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+    expect(await accounts.skillOff()).toBe(true)
+  })
+
+  it('keeps the user\'s off when their Xingmang config becomes the first ChatGPT config', async () => {
+    const accounts = await codexAccounts()
+    await accounts.toXingmang('reset')
+    await accounts.userTurnsSkillOff()
+
+    await expect(accounts.toChatGpt()).resolves.toEqual({ changed: false, enabled: false })
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+    expect(await accounts.skillOff()).toBe(true)
+  })
+
+  it('turns its own off back on in both copies when the ChatGPT config becomes the first Xingmang config', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await expect(accounts.sync(true)).resolves.toEqual({ changed: true, enabled: false })
+
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: true, enabled: true })
+    expect(await accounts.skillOff()).toBe(false)
+    expect(await accounts.skillOff(accounts.paths.relay)).toBe(false)
+    expect(await accounts.skillOff(accounts.paths.chatgpt)).toBe(true)
+
+    // Whatever the user turns off from here on is theirs.
+    await accounts.userTurnsSkillOff()
+    await expect(accounts.toChatGpt()).resolves.toEqual({ changed: false, enabled: false })
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+  })
+
+  it('turns its own off back on after the first switch to Xingmang is rolled back', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.sync(true)
+    const chatGptConfig = await readFile(accounts.paths.active, 'utf8')
+
+    await accounts.toXingmang()
+    // The connection check fails: the backup puts back config.toml only, then the
+    // account preference is restored and synced again.
+    await writeFile(accounts.paths.active, chatGptConfig, 'utf8')
+    await expect(accounts.sync(true)).resolves.toEqual({ changed: false, enabled: false })
+
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: true })
+    expect(await accounts.skillOff()).toBe(false)
+  })
+
+  it('still turns its own off back on when the sync after the first switch never ran', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.sync(true)
+    const chatGptConfig = await readFile(accounts.paths.active, 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'merge', accounts.roots, {}, providerBaseUrls)
+    await writeFile(accounts.paths.active, chatGptConfig, 'utf8')
+    await expect(accounts.sync(true)).resolves.toEqual({ changed: false, enabled: false })
+
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: true, enabled: true })
+    expect(await accounts.skillOff()).toBe(false)
+    expect(await accounts.skillOff(accounts.paths.relay)).toBe(false)
+  })
+
+  it('keeps the user\'s off when an older version left no record on the ChatGPT account', async () => {
+    const accounts = await codexAccounts()
+    await accounts.toXingmang('reset')
+    await accounts.userTurnsSkillOff()
+    switchProviderToOfficialAccount('codex', accounts.roots, {}, providerBaseUrls)
+    await rm(accounts.statePath, { force: true })
+
+    await expect(accounts.sync(true)).resolves.toEqual({ changed: false, enabled: false })
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+    expect(await accounts.skillOff()).toBe(true)
   })
 })
 

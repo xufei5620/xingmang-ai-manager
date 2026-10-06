@@ -153,7 +153,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
 | Grok 的钩子（提醒与防睡） | `~/.grok/config.toml` 的 `[compat.claude] hooks` 与 `[[hooks.*]]` | 兼容开：顺手跑 `~/.claude/settings.json` 的钩子；自己没有钩子 | 兼容关（用户写过就不动）；每轮开始 / 结束 / 出错 / 打断 / 等人 / 退出各挂一条起随包脚本的命令。Windows 上按 Grok 会挑的 shell 写 PowerShell 或 sh 写法，推不出来（`GROK_SHELL=cmd`）就不写 | Grok 不认 Claude 钩子的 `args`，兼容开着每轮报错；没有自己的钩子就没有中文提醒、也挡不住睡眠 |
-| Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份，凭同目录 `xingmang-gemini-usage-statistics.json` 的记录认，没有记录的不收回） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |
+| Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份，凭同目录 `xingmang-gemini-usage-statistics.json` 的记录认，没有记录的不收回；从备份恢复出来的 settings.json 里没有这一项时，记录随即作废） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |

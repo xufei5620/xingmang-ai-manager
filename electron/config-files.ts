@@ -756,6 +756,32 @@ function restoreGeminiUsageStatistics(parsed: Record<string, unknown>, writtenBy
   if (Object.keys(privacy).length === 0) delete parsed.privacy
 }
 
+/**
+ * 从备份恢复（切换没成功时的回滚、备份页里恢复）只还原 settings.json 和 .env，这笔记录不跟着
+ * 回去。恢复出来的 settings.json 里没有那个 false 了，记录就作废：留着的话，客户以后自己关掉
+ * 统计，切回 Google 时会被当成星芒写的收回去。返回是否改动了文件。
+ */
+export function forgetStaleGeminiUsageStatisticsRecord(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const record = readGeminiUsageStatisticsRecord(roots)
+  if (!record?.trim()) return false
+  const [settingsPath] = providerConfigPaths('gemini', roots)
+  let statistics: unknown
+  try {
+    assertSafeConfigPath(settingsPath, providerRoot, 'file')
+    statistics = geminiUsageStatisticsSetting(requireGeminiJson(settingsPath, '现有 Gemini settings.json').parsed)
+  } catch {
+    // 读不了就看不出那个 false 还在不在，按不在算：以后少收回一次，不会替客户打开统计。
+    statistics = undefined
+  }
+  if (statistics === false) return false
+  executeFilePlans(geminiUsageStatisticsRecordClearPlans(record, roots), {}, providerRoot)
+  return true
+}
+
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
 // {"language":"简体中文"} 之后，请求体里出现「# Language\nAlways respond in 简体中文.」），
 // 回复和会话标题都跟着变中文。本软件今天让 Claude 说中文靠的是 AGENTS.md 模板，而那份

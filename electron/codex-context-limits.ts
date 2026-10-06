@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 
 // 0.2.5 之前的模板写过这两项（#104 加、#124 撤），一次性清理只认值和当年模板一样的那一份。
-// 客户自己在 Codex 里设成别的数，是他的选择，留着（#834 F04）。
+// 客户自己在 Codex 里设成别的数，就是客户自己的设置，留着（#834 F04）。
 const legacyTemplateContextLimits: ReadonlyArray<readonly [string, number]> = [
   ['model_context_window', 1000000],
   ['model_auto_compact_token_limit', 900000],
@@ -10,7 +10,7 @@ const legacyTemplateContextLimits: ReadonlyArray<readonly [string, number]> = [
 
 /** Remove only root settings; text inside prompts and profile tables is unrelated. */
 export function removeCodexContextLimits(content: string): { content: string; changed: boolean } {
-  const source = content.replace(/^﻿/, '')
+  const source = content.replace(/^\uFEFF/, '')
   let expected: Record<string, unknown>
   try {
     expected = TOML.parse(source)
