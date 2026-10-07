@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { createBrowserFixture } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'app v3 fixture' })
+}
 
 const fixture = createBrowserFixture({ sameOriginOnly: true })
 before(async () => { await fixture.start() })
@@ -9,11 +17,10 @@ after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 
 async function open(query = '') {
   const page = await fixture.newPage()
-  await page.goto(`${fixture.baseUrl}/e2e/app-v3-fixture.html?${query}`)
   // Vite transforms the module graph on demand, so first paint can take seconds on
   // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
   // Wait for the mount before handing the page over.
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
+  await navigateFixture(page, `${fixture.baseUrl}/e2e/app-v3-fixture.html?${query}`)
   return page
 }
 async function clean(page) {

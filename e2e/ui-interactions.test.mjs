@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { createBrowserFixture, defaultViewport } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'ui fixture' })
+}
 
 const galleryViewport = { width: 960, height: 620 }
 const fixture = createBrowserFixture({ viewport: galleryViewport })
@@ -9,8 +17,7 @@ before(async () => { await fixture.start() })
 after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 async function gallery() {
   const page = await fixture.newPage()
-  await page.goto(`${fixture.baseUrl}/src/components/ui/gallery.html`)
-  await page.getByRole('heading', { name: '星芒 AI / 组件检阅' }).waitFor({ timeout: fixtureReadyTimeoutMs })
+  await navigateFixture(page, `${fixture.baseUrl}/src/components/ui/gallery.html`, (timeout) => page.getByRole('heading', { name: '星芒 AI / 组件检阅' }).waitFor({ timeout }))
   return page
 }
 
@@ -127,7 +134,7 @@ test('account tables expose column headers and keyboard detail actions without h
   const page = await fixture.newPage()
   try {
     for (const [section, label, columns] of [['usage', '调用明细', 6], ['tasks', '异步任务', 8], ['orders', '我的订单', 6], ['keys', 'API 密钥', 10]]) {
-      await page.goto(`${fixture.baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=${section}`)
+      await navigateFixture(page, `${fixture.baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=${section}`)
       const table = page.getByRole('table', { name: label, exact: true })
       await table.waitFor()
       assert.equal(await table.getByRole('columnheader').count(), columns)
@@ -150,7 +157,7 @@ test('account tables expose column headers and keyboard detail actions without h
 test('registration OTP preserves single-input paste and links its correctable validation error', async () => {
   const page = await fixture.newPage({ viewport: defaultViewport })
   try {
-    await page.goto(`${fixture.baseUrl}/e2e/app-v3-fixture.html?invite=XM-7K2Q`)
+    await navigateFixture(page, `${fixture.baseUrl}/e2e/app-v3-fixture.html?invite=XM-7K2Q`)
     const dialog = page.getByRole('dialog', { name: '注册', exact: true })
     await dialog.waitFor()
     await dialog.getByRole('button', { name: '创建账户', exact: true }).click()

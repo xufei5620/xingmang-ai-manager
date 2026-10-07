@@ -53,8 +53,21 @@ function shardStepIndex() {
   return workflow.jobs['windows-test'].steps.findIndex((step) => String(step.run || '').includes('matrix.command'))
 }
 
+// The npm scripts the Windows release build runs before it packages. They are
+// kept apart from windowsCommands(): several gates ask whether the release
+// build runs something the required CI job does not, and folding these in would
+// make every such question answer itself.
+function windowsReleaseGateCommands() {
+  const { buildReleaseSteps } = require('./run-release-build.cjs')
+  return buildReleaseSteps({ npmCli: 'npm-cli.js', releaseOutputDirectory: path.join(root, 'release-test'), unsignedReleaseMode: true })
+    .filter((step) => step.args[0] === 'npm-cli.js' && step.args[1] === 'run')
+    .map((step) => `npm run ${step.args[2]}`)
+}
+
 // The .mjs suites Windows actually runs: every file named by the commands
-// above, following `npm run` into package.json as far as it goes.
+// above, following `npm run` into package.json as far as it goes. The release
+// build counts too - test:ui runs on Windows only there, and that is where the
+// 0.2.17 build lost a single-navigation open to net::ERR_NO_BUFFER_SPACE.
 function windowsSuites() {
   const suites = new Set()
   const followed = new Set()
@@ -68,7 +81,7 @@ function windowsSuites() {
       for (const token of part.split(/\s+/)) if (/^(?:e2e|src)\/\S+\.mjs$/.test(token)) suites.add(token)
     }
   }
-  for (const command of windowsCommands()) visit(command)
+  for (const command of [...windowsCommands(), ...windowsReleaseGateCommands()]) visit(command)
   return [...suites].sort()
 }
 
@@ -1382,7 +1395,8 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
   // a Windows job runs that opens a browser page is now held to it.
   const pageSuites = windowsSuites().filter((suite) => /\.newPage\(/.test(fs.readFileSync(path.join(root, suite), 'utf8')))
   for (const expected of ['src/renderer-v2/testing/app-check.mjs', 'src/renderer-v2/features/auth/browser-check.mjs',
-    'e2e/v2-business.test.mjs', 'e2e/account-commerce-interactions.test.mjs']) {
+    'e2e/v2-business.test.mjs', 'e2e/account-commerce-interactions.test.mjs',
+    'e2e/maintenance-pages-interactions.test.mjs']) {
     assert.ok(pageSuites.includes(expected), `the Windows suite scan must still reach ${expected}`)
   }
   for (const suite of pageSuites) {

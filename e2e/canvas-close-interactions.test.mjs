@@ -2,12 +2,21 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { projectRoot as root, withBrowserFixture } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'canvas close fixture' })
+}
 
 async function withCanvas(run, search = '', openProject = true) {
   await withBrowserFixture({}, async (fixture) => {
     const page = await fixture.newPage()
-    await page.goto(`${fixture.baseUrl}/e2e/canvas-close-fixture.html${search}`)
+    await navigateFixture(page, `${fixture.baseUrl}/e2e/canvas-close-fixture.html${search}`)
     if (openProject) {
       await page.getByRole('button', { name: '打开项目：关闭保护验收' }).click()
       await page.locator('.react-flow__node[data-id="prompt-1"]').waitFor()
