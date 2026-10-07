@@ -633,7 +633,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
   // #941：四个命令行工具开着也照样跟着换线路，开着的要重开才走新地址，首页说给开着的那几个。
   const routeRestartBootstrap = (routeRestart: RunningToolsReport) => ({
     phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope',
-    result: bootstrapResult({ configured: ['codex'], routeRestart }),
+    result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'] }), routeRestart,
   })
 
   it('asks to restart only the tools still open after they followed the line', () => {
@@ -644,6 +644,17 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).toContain('连接线路换了，工具配置已经跟着改好。Codex CLI 还开着，要关掉重开才会换到新的连接线路。如果 Claude Code 还开着，也要关掉重开才会换到新的连接线路。')
     expect(markup).not.toContain('home-route-restart-codex-desktop')
     expect(markup).not.toContain('连接线路暂未改动')
+  })
+
+  it('keeps the restart prompt up while a later round is still syncing', () => {
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'syncing', label: '正在同步账号专属 Key', percent: 5, scope: 'scope',
+        routeRestart: { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true },
+      },
+    })
+    expect(markup).toContain('data-testid="home-route-restart"')
+    expect(markup).toContain('连接线路换了，工具配置已经跟着改好。Codex CLI 还开着，要关掉重开才会换到新的连接线路。')
   })
 
   it('says nothing about restarting once every followed tool is closed', () => {

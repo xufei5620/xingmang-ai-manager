@@ -130,6 +130,8 @@ export interface AccountBootstrapResult {
    * 只是开着的进程还拿着原来的地址，要重开才走新线路；首页据此提示。缺省 = 没有要重开的。
    */
   routeRestart?: RunningToolsReport
+  /** 这一轮跟着连接线路改了配置的工具，开没开都算；缺省 = 这一轮没改线路（nextRouteRestart 据此留着上一轮那句）。 */
+  routeFollowed?: ProviderId[]
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -165,26 +167,39 @@ async function inspectRouteRestart(
   return describeRunningTools(report, 'route') ? report : null
 }
 
-/** 首页那句「要重开」，客户点了「知道了」就收起。 */
-export function withoutRouteRestart(result: AccountBootstrapResult): AccountBootstrapResult {
-  const { routeRestart: _dismissed, ...rest } = result
-  return rest
+/** 合起来的名单照首页工具的顺序排，不然前后两轮拼起来会成「Codex CLI、Claude Code」。 */
+function inToolOrder(providers: readonly ProviderId[]): ProviderId[] {
+  const order = tools.map((tool) => tool.id)
+  return [...providers].sort((left, right) => order.indexOf(left) - order.indexOf(right))
 }
 
 /**
- * 后面几轮同步（联网后补跑、装完工具、重写 Key）不会再改线路，routeRestart 自然是空的：上一轮那句客户
- * 还没点「知道了」、工具也还开着拿着旧地址，就留着它，别让提示自己消失。
+ * 一轮同步做完以后首页该摆哪句「要重开」（#941）。这一轮跟着线路改了哪几个工具，就用这一轮问出来的
+ * 结果换掉它们在上一句里的说法（关了的不再点名）；这一轮没碰的照上一句留着：后面几轮（联网后补跑、
+ * 装完一个工具、重写 Key）往往只碰一两个、甚至一个不碰，上一句客户还没点「知道了」，那几个工具也还
+ * 开着拿着旧地址，别让它们从提示里消失。
  */
-export function carryRouteRestart(previous: AccountBootstrapResult | undefined, next: AccountBootstrapResult): AccountBootstrapResult {
-  if (next.routeRestart || !previous?.routeRestart) return next
-  return { ...next, routeRestart: previous.routeRestart }
+export function nextRouteRestart(previous: RunningToolsReport | undefined, result: AccountBootstrapResult): RunningToolsReport | undefined {
+  const followed = result.routeFollowed ?? []
+  if (!followed.length) return previous
+  const fresh = result.routeRestart
+  if (!previous) return fresh
+  const untouched = (providers: readonly ProviderId[]) => providers.filter((provider) => !followed.includes(provider))
+  const merged: RunningToolsReport = {
+    running: inToolOrder([...untouched(previous.running), ...(fresh?.running ?? [])]),
+    unknown: inToolOrder([...untouched(previous.unknown), ...(fresh?.unknown ?? [])]),
+    // 桌面端读的是 Codex 那份配置，跟着 Codex 走。
+    codexDesktopRunning: followed.includes('codex') ? fresh?.codexDesktopRunning ?? false : previous.codexDesktopRunning,
+    canRestartCodexDesktop: fresh?.canRestartCodexDesktop ?? previous.canRestartCodexDesktop,
+  }
+  return describeRunningTools(merged, 'route') ? merged : undefined
 }
 
 /** 替客户重开过 Codex 桌面端：它已经读到新地址，不再点它的名；别的都关了就整句收起。 */
-export function afterCodexDesktopRestart(result: AccountBootstrapResult): AccountBootstrapResult {
-  if (!result.routeRestart) return result
-  const routeRestart = { ...result.routeRestart, codexDesktopRunning: false }
-  return describeRunningTools(routeRestart, 'route') ? { ...result, routeRestart } : withoutRouteRestart(result)
+export function afterCodexDesktopRestart(report: RunningToolsReport | undefined): RunningToolsReport | undefined {
+  if (!report) return undefined
+  const restarted = { ...report, codexDesktopRunning: false }
+  return describeRunningTools(restarted, 'route') ? restarted : undefined
 }
 
 function installedState(system: SystemSnapshot, provider: ProviderId) {
@@ -583,6 +598,7 @@ export async function bootstrapAccountTools(
       ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
       : {}),
     ...(routeRestart ? { routeRestart } : {}),
+    ...(followed.length ? { routeFollowed: followed } : {}),
   }
 }
 

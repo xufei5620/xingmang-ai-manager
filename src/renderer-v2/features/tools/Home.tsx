@@ -105,8 +105,12 @@ export interface HomeProps {
   onRuntime(runtime: 'node' | 'python' | 'git'): void
   onNavigate(page: PageId, section?: string): void
   onGuide(): void
-  /** finishedAt 是 result 落下来的时刻（Date.now()），「已完成…」那句据此到点收起；缺省 = 一直摆着（旧行为）。 */
-  bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string }) | null
+  /**
+   * finishedAt 是 result 落下来的时刻（Date.now()），「已完成…」那句据此到点收起；缺省 = 一直摆着（旧行为）。
+   * routeRestart 是最近一次跟着换线路改了配置时还开着的工具（account-bootstrap.ts 的 nextRouteRestart），
+   * 不跟着 result 走：后面几轮同步进行中 result 是空的，那句「要重开」也得留着。缺省 = 没有要重开的。
+   */
+  bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string; routeRestart?: RunningToolsReport }) | null
   onBootstrapRetry?(): void
   /**
    * 「自动」退回了默认线路，还有另外三个客户端开着、停在直连上（account-bootstrap.ts 的 relayFallbackActive
@@ -116,7 +120,7 @@ export interface HomeProps {
   relayFallback?: boolean
   /** 跟着换了连接线路、还开着的工具，替客户重开 Codex 桌面端（只有能重开时才给）；缺省 = 不给这颗按钮。 */
   onRestartCodexDesktop?(): void
-  /** 「要重开」那句客户点了「知道了」；缺省 = 不给这颗按钮，那句一直摆到下一轮同步。 */
+  /** 「要重开」那句客户点了「知道了」；缺省 = 不给这颗按钮，那句一直摆到下次换线路。 */
   onDismissRouteRestart?(): void
 }
 
@@ -384,7 +388,7 @@ export function Home(props: HomeProps) {
   const subscriptionNotice = subscription ? subscriptionWarning(subscription, dollars) : null
   const bootstrapResult = props.bootstrap?.result
   const bootstrapFailed = bootstrapResult?.failed ?? []
-  const routeRestart = routeRestartNotice(bootstrapResult?.routeRestart)
+  const routeRestart = routeRestartNotice(props.bootstrap?.routeRestart)
   const subscriptionLine = subscription ? `订阅：${subscription.name ? `${subscription.name} · ` : ''}${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : null
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
   const remainingDays = usage && balance && usage.weekQuota > 0 ? Math.max(0, Math.floor(balance.quota / (usage.weekQuota / 7))) : null
@@ -692,7 +696,7 @@ export function Home(props: HomeProps) {
     </div>}
     {props.relayFallback && <div role="status" className="v2-callout is-warn" data-testid="home-relay-fallback"><span>{relayFallbackNotice}</span></div>}
     {routeRestart && <div role="status" className="v2-callout is-warn" data-testid="home-route-restart"><span>{routeRestart}</span>
-      {props.onRestartCodexDesktop && offersCodexDesktopRestart(bootstrapResult?.routeRestart) && <Button size="xs" loading={Boolean(jobs['launch:codexDesktop'])} disabled={launchBusy}
+      {props.onRestartCodexDesktop && offersCodexDesktopRestart(props.bootstrap?.routeRestart) && <Button size="xs" loading={Boolean(jobs['launch:codexDesktop'])} disabled={launchBusy}
         onClick={props.onRestartCodexDesktop} testId="home-route-restart-codex-desktop">帮我重开 Codex 桌面端</Button>}
       {props.onDismissRouteRestart && <Button size="xs" variant="ghost" onClick={props.onDismissRouteRestart} testId="home-route-restart-dismiss">知道了</Button>}
     </div>}

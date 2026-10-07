@@ -3486,26 +3486,34 @@ test('auto leaves the tools alone until its check settles, then moves the ones X
   } finally { await page.close() }
 })
 
-test('when auto falls back while tools are open, home says so once and the rescan moves them after they quit', async () => {
-  const page = await open('allInstalled=1&autoRelay=direct&runningTools=1')
+// #941：「自动」换了线路，开着的工具也照样跟着改好配置，首页说一句要关掉重开。后面几轮同步（这里是装完一个工具）
+// 不会让这句自己消失，客户点「知道了」才收起。
+test('when auto changes the line while tools are open, they follow it and home keeps asking to restart them until dismissed', async () => {
+  const page = await open('autoRelay=direct&runningTools=1')
   try {
     await settleStartupBootstrap(page)
-    await assertToolsOnTheirExpectedLine(page, 'https://xm-direct.solov.cc')
     await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'primary', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
-    const notice = page.getByTestId('home-relay-fallback')
-    await notice.getByText('直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换', { exact: true }).waitFor()
-    // 上面那句已经说了，横幅里不再逐个工具说一遍。
+    const notice = page.getByTestId('home-route-restart')
+    const restart = '连接线路换了，工具配置已经跟着改好。Claude Code、Codex CLI、Codex 桌面端 还开着，要关掉重开才会换到新的连接线路。'
+    await notice.getByText(restart, { exact: true }).waitFor()
+    const providers = await page.evaluate(async () => (await window.xingmang.getConfig()).providers)
+    for (const provider of ['claude', 'codex']) assert.equal(new URL(providers[provider].actualBaseUrl).origin, 'https://xm.solov.cc', provider)
+    assert.equal(await notice.getByTestId('home-route-restart-codex-desktop').count(), 1)
+    // 退回默认线路那句只说另外三个客户端；横幅里也不再说「连接线路暂未改动」。
+    assert.equal(await page.getByTestId('home-relay-fallback').count(), 0)
     assert.equal(await page.getByText('连接线路暂未改动').count(), 0)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '开着的工具先不改')
-    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'inspectRunningTools').length)
-    assert.ok(before > 0)
-    await page.screenshot({ path: path.join(artifacts, 'home-relay-fallback.png'), fullPage: true })
+    await page.screenshot({ path: path.join(artifacts, 'home-route-restart.png'), fullPage: true })
+    // 装完 Gemini 那一轮只碰 Gemini（它原来那份配置还在直连上，跟着挪过来，刚装好没开）：上面那句照旧点那几个的名。
     await page.evaluate(() => window.v2Test.setToolsRunning(false))
-    await page.getByTestId('home-rescan').click()
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
+    assert.deepEqual((await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))).at(-1).args[0].providers, ['gemini'])
+    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await settleStartupBootstrap(page)
+    await notice.getByText(restart, { exact: true }).waitFor()
+    await notice.getByTestId('home-route-restart-dismiss').click()
     await notice.waitFor({ state: 'detached' })
-    await expect.poll(async () => (await page.evaluate(async () => (await window.xingmang.getConfig()).providers.grok.actualBaseUrl))).toBe('https://xm.solov.cc/v1')
-    await assertToolsOnTheirExpectedLine(page, 'https://xm.solov.cc')
     await clean(page)
   } finally { await page.close() }
 })

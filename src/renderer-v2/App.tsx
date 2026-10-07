@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { RefreshCw } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, RunningToolsReport, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, afterCodexDesktopRestart, bootstrapAccountTools, carryRouteRestart, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, withoutRouteRestart, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, afterCodexDesktopRestart, bootstrapAccountTools, nextRouteRestart, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -104,6 +104,11 @@ interface AccountBootstrapView extends AccountBootstrapProgress {
   /** result 落下来的时刻，首页「已完成…」那句据此到点收起（已知12）。 */
   finishedAt?: number
   error?: string
+  /**
+   * 最近一次跟着换线路改了配置时还开着的工具，首页那句「要重开」（#941）。单放一格不放 result 里：
+   * 后面几轮同步一开始进度就把整格换掉，result 是空的，那句也得留着，等客户点「知道了」或下次换线路。
+   */
+  routeRestart?: RunningToolsReport
 }
 
 /**
@@ -409,7 +414,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const epoch = ++bootstrapEpoch.current
     const updateProgress = (progress: AccountBootstrapProgress) => {
       if (!mounted.current || epoch !== bootstrapEpoch.current) return
-      setAccountBootstrap({ ...progress, scope: bootstrapScope })
+      setAccountBootstrap((current) => ({
+        ...progress,
+        scope: bootstrapScope,
+        ...(current?.scope === bootstrapScope && current.routeRestart ? { routeRestart: current.routeRestart } : {}),
+      }))
     }
     updateProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 5 })
     // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
@@ -448,8 +457,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             phase: 'verifying',
             label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态',
             percent: 100,
+            result,
             // 这一轮没改线路时留着上一轮那句「要重开」：工具还开着拿着旧地址（#941）。
-            result: carryRouteRestart(current.result, result),
+            routeRestart: nextRouteRestart(current.routeRestart, result),
             finishedAt: Date.now(),
           }
           : current)
@@ -1631,9 +1641,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               relayFallback={session.authenticated && relayFallbackActive(settings) && toolbox.externalClients.some((client) => client.running && client.routePending)}
               onRestartCodexDesktop={() => void perform('重开 Codex 桌面端', async () => {
-                if (await launch('codexDesktop', 'restart')) setAccountBootstrap((current) => current?.result ? { ...current, result: afterCodexDesktopRestart(current.result) } : current)
+                if (await launch('codexDesktop', 'restart')) setAccountBootstrap((current) => current?.routeRestart ? { ...current, routeRestart: afterCodexDesktopRestart(current.routeRestart) } : current)
               })}
-              onDismissRouteRestart={() => setAccountBootstrap((current) => current?.result ? { ...current, result: withoutRouteRestart(current.result) } : current)}
+              onDismissRouteRestart={() => setAccountBootstrap((current) => current?.routeRestart ? { ...current, routeRestart: undefined } : current)}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => {
                 refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)

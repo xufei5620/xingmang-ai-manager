@@ -17,10 +17,9 @@ import {
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
   afterCodexDesktopRestart,
-  carryRouteRestart,
+  nextRouteRestart,
   relayFallbackActive,
   skippedNamedProviders,
-  withoutRouteRestart,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
   type AccountBootstrapResult,
@@ -871,7 +870,7 @@ describe('explicit applied connection routes on restore', () => {
     expect(api.inspectRunningTools).toHaveBeenCalledWith(['codex'])
     expect(api.configureManagedCliKeys.mock.invocationCallOrder[0]).toBeLessThan(api.inspectRunningTools.mock.invocationCallOrder[0])
     expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
-    expect(result).toMatchObject({ configured: ['codex'], failed: [] })
+    expect(result).toMatchObject({ configured: ['codex'], failed: [], routeFollowed: ['codex'] })
     expect(result).not.toHaveProperty('routeRestart')
   })
 
@@ -887,7 +886,7 @@ describe('explicit applied connection routes on restore', () => {
     const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
     expect(api.configureManagedCliKeys).toHaveBeenCalledWith({ providers: ['codex'], preferredModels: { codex: 'kept-model' } })
     expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
-    expect(result).toMatchObject({ configured: ['codex'], failed: [] })
+    expect(result).toMatchObject({ configured: ['codex'], failed: [], routeFollowed: ['codex'] })
     expect(result.routeRestart).toEqual({ ...report, canRestartCodexDesktop: true })
   })
 
@@ -919,6 +918,7 @@ describe('explicit applied connection routes on restore', () => {
     expect(result.failed).toEqual([{ provider: 'codex', message: configurationFailureMessages.routeMismatch }])
     expect(api.inspectRunningTools).not.toHaveBeenCalled()
     expect(result).not.toHaveProperty('routeRestart')
+    expect(result).not.toHaveProperty('routeFollowed')
   })
 
   it('does not ask which tools are open when no route changed', async () => {
@@ -929,26 +929,36 @@ describe('explicit applied connection routes on restore', () => {
     expect(api.configureManagedCliKeys).toHaveBeenCalled()
     expect(api.inspectRunningTools).not.toHaveBeenCalled()
     expect(result).not.toHaveProperty('routeRestart')
+    expect(result).not.toHaveProperty('routeFollowed')
   })
 
-  it('drops the restart prompt when dismissed, and stops naming the Codex desktop app once it was restarted', () => {
-    const base = { readyKeys: [], configured: ['codex' as ProviderId], failed: [], skipped: [], warnings: [], networkBlocked: false }
-    const both: AccountBootstrapResult = { ...base, routeRestart: { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
-    expect(withoutRouteRestart(both)).toEqual(base)
-    expect(afterCodexDesktopRestart(both).routeRestart).toEqual({ running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true })
-    const desktopOnly: AccountBootstrapResult = { ...base, routeRestart: { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
-    expect(afterCodexDesktopRestart(desktopOnly)).toEqual(base)
-    expect(afterCodexDesktopRestart(base)).toBe(base)
+  it('stops naming the Codex desktop app once it was restarted, and drops the prompt when nothing else is open', () => {
+    expect(afterCodexDesktopRestart({ running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }))
+      .toEqual({ running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true })
+    expect(afterCodexDesktopRestart({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true })).toBeUndefined()
+    expect(afterCodexDesktopRestart(undefined)).toBeUndefined()
   })
 
-  it('keeps the restart prompt through a later round that changed no line, and lets a new one replace it', () => {
+  it('keeps the restart prompt through a later round that changed no line, and lets the next line change replace or clear it', () => {
     const base = { readyKeys: [], configured: ['codex' as ProviderId], failed: [], skipped: [], warnings: [], networkBlocked: false }
-    const asked: AccountBootstrapResult = { ...base, routeRestart: { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
-    expect(carryRouteRestart(asked, base).routeRestart).toEqual(asked.routeRestart)
-    const again: AccountBootstrapResult = { ...base, routeRestart: { running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true } }
-    expect(carryRouteRestart(asked, again)).toBe(again)
-    expect(carryRouteRestart(withoutRouteRestart(asked), base)).toBe(base)
-    expect(carryRouteRestart(undefined, base)).toBe(base)
+    const asked: RunningToolsReport = { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
+    expect(nextRouteRestart(asked, base)).toBe(asked)
+    const again: RunningToolsReport = { running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true }
+    expect(nextRouteRestart(asked, { ...base, routeFollowed: ['codex', 'claude'], routeRestart: again })).toEqual(again)
+    // 又换了一次线路、这回都关着：上一轮那句已经不对了，收起。
+    expect(nextRouteRestart(asked, { ...base, routeFollowed: ['codex'] })).toBeUndefined()
+    expect(nextRouteRestart(undefined, base)).toBeUndefined()
+    expect(nextRouteRestart(undefined, { ...base, routeFollowed: ['claude'], routeRestart: again })).toBe(again)
+  })
+
+  it('keeps naming the tools a later round did not touch when it moved only some of them', () => {
+    const base = { readyKeys: [], configured: ['gemini' as ProviderId], failed: [], skipped: [], warnings: [], networkBlocked: false }
+    const asked: RunningToolsReport = { running: ['codex'], unknown: ['grok'], codexDesktopRunning: true, canRestartCodexDesktop: true }
+    // 装完 Gemini 那一轮只把 Gemini 挪了过去、它是关着的：上一句照旧点 Codex 和 Grok 的名。
+    expect(nextRouteRestart(asked, { ...base, routeFollowed: ['gemini'] })).toEqual(asked)
+    // 挪过去的那个还开着：排进原来那句里，照首页的顺序。
+    expect(nextRouteRestart(asked, { ...base, routeFollowed: ['claude', 'grok'], routeRestart: { running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true } }))
+      .toEqual({ running: ['claude', 'codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true })
   })
 })
 
