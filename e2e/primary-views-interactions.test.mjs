@@ -2,8 +2,16 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { createBrowserFixture, defaultViewport, projectRoot } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'primary views fixture' })
+}
 
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/primary-views')
 const fixture = createBrowserFixture()
@@ -16,8 +24,7 @@ after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 
 async function openFixture(scenario, viewport = defaultViewport, theme = 'dark') {
   const page = await fixture.newPage({ viewport })
-  await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=${scenario}&theme=${theme}`)
-  await page.locator(scenario === 'welcome' ? '.welcome-v3' : '.dashboard-v3').waitFor({ timeout: fixtureReadyTimeoutMs })
+  await navigateFixture(page, `${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=${scenario}&theme=${theme}`, (timeout) => page.locator(scenario === 'welcome' ? '.welcome-v3' : '.dashboard-v3').waitFor({ timeout }))
   return page
 }
 
@@ -66,7 +73,7 @@ test('tools preserve configure, launch, update and account actions; missing runt
     const history = page.getByRole('button', { name: /查看记录/ })
     await history.evaluate((element) => element.click())
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['launch:claude', 'configure:claude', 'install:claude', 'account', 'history'])
-    await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=missing`)
+    await navigateFixture(page, `${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=missing`)
     await page.locator('[data-provider-id="codex-desktop"]').getByRole('button').evaluate((element) => element.click())
     await page.locator('[data-provider-id="claude"]').getByRole('button', { name: '准备环境' }).evaluate((element) => element.click())
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['install:desktop', 'node'])
@@ -81,10 +88,10 @@ test('official and unknown sources stay distinct and detection failure exposes r
     assert.doesNotMatch(await page.locator('[data-provider-id="claude"]').innerText(), /已登录/)
     await page.locator('[data-provider-id="codex"]').getByRole('button', { name: '刷新额度', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['official-usage'])
-    await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=third-party`)
+    await navigateFixture(page, `${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=third-party`)
     await page.locator('[data-provider-id="claude"]').getByRole('button', { name: '检查配置' }).click()
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['configure:claude'])
-    await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=failed`)
+    await navigateFixture(page, `${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=failed`)
     await page.locator('[data-provider-id="grok"]').getByRole('button', { name: '重试' }).evaluate((element) => element.click())
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['scan'])
   } finally { await page.close() }

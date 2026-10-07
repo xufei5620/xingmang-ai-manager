@@ -2,7 +2,16 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { projectRoot as root, withBrowserFixture } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'settings fixture' })
+}
 
 async function withFixture(run) {
   await withBrowserFixture({ viewport: { width: 960, height: 560 } }, async (fixture) => {
@@ -12,7 +21,7 @@ async function withFixture(run) {
 
 test('settings saves independent fields and rolls a failed switch back without losing a directory draft', async () => {
   await withFixture(async (page, url) => {
-    await page.goto(`${url}?manual=1`)
+    await navigateFixture(page, `${url}?manual=1`)
     const motion = page.getByRole('switch', { name: '减少动画' })
     await motion.check()
     await page.getByLabel('界面大小').selectOption('110')
@@ -39,7 +48,7 @@ test('settings saves independent fields and rolls a failed switch back without l
 
 test('desktop notification preference rolls back on failure and saves only its own field on retry', async () => {
   await withFixture(async (page, url) => {
-    await page.goto(`${url}?manual=1`)
+    await navigateFixture(page, `${url}?manual=1`)
     await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '通知', exact: true }).click()
     const notifications = page.getByRole('switch', { name: '系统桌面通知', exact: true })
     assert.equal(await notifications.isChecked(), false)
@@ -65,7 +74,7 @@ test('desktop notification preference rolls back on failure and saves only its o
 
 test('an unsupported platform disables desktop notifications while preserving in-app update reminders', async () => {
   await withFixture(async (page, url) => {
-    await page.goto(`${url}?unsupportedNotifications=1`)
+    await navigateFixture(page, `${url}?unsupportedNotifications=1`)
     await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: '通知', exact: true }).click()
     assert.equal(await page.getByRole('switch', { name: '系统桌面通知', exact: true }).isDisabled(), true)
     assert.equal(await page.getByRole('switch', { name: '更新提醒', exact: true }).isEnabled(), true)
@@ -76,7 +85,7 @@ test('an unsupported platform disables desktop notifications while preserving in
 
 test('settings keeps the latest skin selected while a previous save completes and rolls back to the latest confirmed skin', async () => {
   await withFixture(async (page, url) => {
-    await page.goto(`${url}?manual=1`)
+    await navigateFixture(page, `${url}?manual=1`)
     await page.getByRole('button', { name: '雾青', exact: true }).click()
     await page.getByRole('button', { name: '极光紫', exact: true }).click()
     assert.equal(await page.evaluate(() => window.settingsHarness.requests.length), 1)
@@ -97,7 +106,7 @@ test('settings section layouts stay within compact and standard windows in both 
     for (const theme of ['light', 'dark']) {
       for (const viewport of [{ width: 960, height: 560 }, { width: 1280, height: 820 }]) {
         await page.setViewportSize(viewport)
-        await page.goto(`${url}?theme=${theme}`)
+        await navigateFixture(page, `${url}?theme=${theme}`)
         const nav = page.getByRole('navigation', { name: '设置分组' })
         assert.equal(await nav.getByRole('button').count(), 8)
         for (const name of ['外观', '启动与关闭', '工具', '网络', '通知', '账号', '隐私与数据', '关于']) {

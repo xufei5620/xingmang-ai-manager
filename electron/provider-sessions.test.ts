@@ -32,6 +32,13 @@ function summary(overrides: Partial<ProviderSessionSummary> = {}): ProviderSessi
 
 const temporaryDirectories: string[] = []
 
+// The probe cache is written after the page has been returned, so these tests
+// wait for it. vi.waitFor gives up after 1s by default, and the Windows release
+// build of 0.2.17 had not written the file by then (ENOENT on the last poll).
+// The wait still ends the moment the file is there; only a cache that is never
+// written now takes longer to fail.
+const probeCacheWrite = { timeout: 10_000 }
+
 interface Fixture {
   root: string
   codexHome: string
@@ -640,7 +647,7 @@ describe('ProviderSessionsService', () => {
       .list({ provider: 'claude', pageSize: 100 })
     expect(first.items[0].title).toBe('Claude 自定义标题')
     // The cache write deliberately trails the page, so wait for it here.
-    await vi.waitFor(() => expect(fs.existsSync(cacheFile)).toBe(true))
+    await vi.waitFor(() => expect(fs.existsSync(cacheFile)).toBe(true), probeCacheWrite)
 
     const opened = vi.spyOn(fsPromises, 'open')
     try {
@@ -662,7 +669,7 @@ describe('ProviderSessionsService', () => {
       { type: 'custom-title', sessionId: 'changed', customTitle: '旧标题' },
     ])
     await service(data, codexReader([]), { probeCacheFile: cacheFile }).list({ provider: 'claude', pageSize: 100 })
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('旧标题'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('旧标题'), probeCacheWrite)
 
     writeJsonLines(changedPath, [
       { type: 'custom-title', sessionId: 'changed', customTitle: '改过的标题' },
@@ -691,11 +698,11 @@ describe('ProviderSessionsService', () => {
     writeJsonLines(removedPath, [{ type: 'custom-title', sessionId: 'removed', customTitle: '待删除' }])
     const sessions = service(data, codexReader([]), { probeCacheFile: cacheFile })
     await sessions.list({ provider: 'claude', pageSize: 100 })
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('待删除'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('待删除'), probeCacheWrite)
 
     fs.rmSync(removedPath)
     await sessions.list({ provider: 'claude', pageSize: 100 })
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('待删除'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('待删除'), probeCacheWrite)
     expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题')
   })
 
@@ -719,11 +726,11 @@ describe('ProviderSessionsService', () => {
       probeCacheFile: cacheFile,
     })
     await sessions.list({ provider: 'claude', pageSize: 100 })
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('待删除'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('待删除'), probeCacheWrite)
 
     fs.rmSync(removedPath)
     await sessions.list({ provider: 'claude', pageSize: 100 })
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('待删除'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('待删除'), probeCacheWrite)
     expect(fs.readFileSync(cacheFile, 'utf8')).toContain('留下的会话')
   })
 
@@ -742,7 +749,7 @@ describe('ProviderSessionsService', () => {
 
     expect(page.items[0].title).toBe('Claude 自定义标题')
     expect(warnings).toEqual(['probe-cache-discarded'])
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题'), probeCacheWrite)
   })
 
   it('reports whether each listed session still has its working directory, without caching it', async () => {
@@ -765,7 +772,7 @@ describe('ProviderSessionsService', () => {
 
     // 目录随时会被删掉或恢复，所以这个判断不进探测缓存：缓存住就会一直显示
     // 上一次的状态，用户删了文件夹还看见一颗亮着的「接着聊」。
-    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('还在'))
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('还在'), probeCacheWrite)
     expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('cwdExists')
 
     fs.rmSync(alive, { recursive: true, force: true })

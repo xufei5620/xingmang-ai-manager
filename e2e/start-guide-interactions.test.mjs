@@ -2,8 +2,16 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { createBrowserFixture, defaultViewport, projectRoot } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'start guide fixture' })
+}
 
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/start-guide')
 const fixture = createBrowserFixture()
@@ -14,8 +22,7 @@ before(async () => {
 after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 async function openFixture(query = '', viewport = defaultViewport) {
   const page = await fixture.newPage({ viewport })
-  await page.goto(`${fixture.baseUrl}/e2e/start-guide-fixture.html?${query}`)
-  await page.getByTestId('start-guide').waitFor({ timeout: fixtureReadyTimeoutMs })
+  await navigateFixture(page, `${fixture.baseUrl}/e2e/start-guide-fixture.html?${query}`, (timeout) => page.getByTestId('start-guide').waitFor({ timeout }))
   return page
 }
 async function choose(page, route) {
