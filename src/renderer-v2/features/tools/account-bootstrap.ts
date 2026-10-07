@@ -130,7 +130,7 @@ export interface AccountBootstrapResult {
    * 只是开着的进程还拿着原来的地址，要重开才走新线路；首页据此提示。缺省 = 没有要重开的。
    */
   routeRestart?: RunningToolsReport
-  /** 这一轮跟着连接线路改了配置的工具，开没开都算；缺省 = 这一轮没改线路（nextRouteRestart 据此留着上一轮那句）。 */
+  /** 这一轮跟着连接线路改了配置的工具，开没开都算；nextRouteRestart 据此只换掉它们在上一句「要重开」里的说法。缺省 = 这一轮没改线路。 */
   routeFollowed?: ProviderId[]
 }
 

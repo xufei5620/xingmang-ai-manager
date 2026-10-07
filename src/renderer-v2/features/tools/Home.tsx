@@ -107,7 +107,7 @@ export interface HomeProps {
   onGuide(): void
   /**
    * finishedAt 是 result 落下来的时刻（Date.now()），「已完成…」那句据此到点收起；缺省 = 一直摆着（旧行为）。
-   * routeRestart 是最近一次跟着换线路改了配置时还开着的工具（account-bootstrap.ts 的 nextRouteRestart），
+   * routeRestart 是跟着换线路改了配置时还开着的工具（account-bootstrap.ts 的 nextRouteRestart），
    * 不跟着 result 走：后面几轮同步进行中 result 是空的，那句「要重开」也得留着。缺省 = 没有要重开的。
    */
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string; routeRestart?: RunningToolsReport }) | null

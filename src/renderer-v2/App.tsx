@@ -105,8 +105,8 @@ interface AccountBootstrapView extends AccountBootstrapProgress {
   finishedAt?: number
   error?: string
   /**
-   * 最近一次跟着换线路改了配置时还开着的工具，首页那句「要重开」（#941）。单放一格不放 result 里：
-   * 后面几轮同步一开始进度就把整格换掉，result 是空的，那句也得留着，等客户点「知道了」或下次换线路。
+   * 跟着换线路改了配置时还开着的工具，首页那句「要重开」（#941，每轮怎么换见 nextRouteRestart）。单放一格
+   * 不放 result 里：后面几轮同步一开始进度就把整格换掉、result 是空的，那句也得留着，等客户点「知道了」。
    */
   routeRestart?: RunningToolsReport
 }
