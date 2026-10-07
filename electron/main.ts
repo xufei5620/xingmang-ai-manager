@@ -1202,15 +1202,14 @@ if (!hasSingleInstanceLock) {
       },
     })
     // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
-    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。账号请求只会因为等太久
-    // 没回话而中止，算直连没走通；AI 对话画图中止多半是客户点了「停止」，不算。工具相关的检查（写
-    // 配置前查模型、工具自检）查的正是工具会用的那条线路，不换不重发，直连上的失败只报给线路那边。
+    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。等太久超时、客户点了
+    // 「停止」都只是这一次的事，不报给线路那边（#941 第 3 节）。工具相关的检查（写配置前查模型、工具
+    // 自检）查的正是工具会用的那条线路，不换不重发，直连上连不上只报给线路那边。
     function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
       runtimeLog.log(level, 'network', event, message, detail)
     }
     const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
-    const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansUnreachable: true, log: logRelayLine })
-    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansUnreachable: true, log: logRelayLine })
+    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { log: logRelayLine })
     const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
     // 「自动」换了线路：界面重读设置、把关着的工具迁过去（App.tsx）。窗口还没建好时不用叫，
     // 首屏读设置时读到的就是新线路。
@@ -2227,7 +2226,7 @@ if (!hasSingleInstanceLock) {
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
         // 历史账号的客户端写死的是默认线路的地址（sub2api-relay-backend.ts 不改），走直连靠请求这一层换地址。
-        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch, onSessionChange,
+        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedRelayFetch, onSessionChange,
           onCredentialRotation: (saved) => vault.updateSession(saved) })
         let client: ReturnType<typeof createNewApiClient>
         function saved(): RealmSavedAccount | null {

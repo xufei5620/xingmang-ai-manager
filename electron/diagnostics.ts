@@ -48,7 +48,7 @@ import {
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
-import { relayLineFailureAnswer, relayLineFailureReason } from './relay-line-fetch'
+import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import { relayApiProbeBaseUrl, relayEndpointForUrl, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite, type RelayEndpointId, type RelayRouteLines, type RelaySite } from './relay-sites'
 import { findReparseComponent, readSafeUtf8File, type ReparseComponent } from './safe-local-data'
 import { parseShellStartupExports, type ShellStartupDialect, type ShellStartupExport } from './shell-startup-exports'
@@ -1429,6 +1429,12 @@ function relayLineFailure(probe: RelayStatusProbe): string | null {
   return relayLineFailureAnswer(response)
 }
 
+// 要不要报给线路那边、叫它马上查一轮健康检查：同 relay-line-fetch.ts 的口径，直连那一次没在时限内
+// 查完只是慢，换默认线路查一次就行，不报（#941 第 3 节）。
+function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
+  return probe.kind === 'answered' || reportedRelayLineFailure(probe.error) !== null
+}
+
 /**
  * 「星芒 AI 网络」查通时那句结论（直连适配方案第六节第 3 条原话）。fellBack：选的是「自动」，
  * 直连这会儿连不上，用的是默认线路（这次当场退回的，或者之前就已经退回的）。
@@ -2419,7 +2425,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         let fellBack = false
         const directFailure = route && directFirst ? relayLineFailure(probe) : null
         if (route && directFailure) {
-          route.reportDirectFailure(directFailure)
+          if (reportsRelayLineFailure(probe)) route.reportDirectFailure(directFailure)
           // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
           relayAnswered = false
           const retry = await probeStatus(route.primarySite, signal).catch(() => null)

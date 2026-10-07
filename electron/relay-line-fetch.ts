@@ -12,10 +12,16 @@
  *   归 proxy-bypass.ts 管），以及调用方自己中止的。
  * - 会改动数据的请求（下单、建 Key、充值、AI 生成）只在请求肯定还没送到服务器时才重发：解析
  *   不出、连不上、TLS 失败、代理回绝、白名单 404。送出去以后才断的不重发，免得重复下单、重复扣费。
- * - 回了话以后正文读到一半断了（AI 回复写到一半）：已经交给调用方的回应没法重发，只报给线路那边查一次。
+ * - 回了话以后正文读到一半断了（AI 回复写到一半）：已经交给调用方的回应没法重发。
+ *
+ * 报给线路那边的只有网络层的失败（解析不出地址、连不上、TLS 失败、连接被重置或断开、代理回绝了
+ * 直连这个地址）和回话的不是星芒（拦截页、跳转、网关错误页）；报上去只是叫它马上查一轮健康检查，
+ * 改不改线路只看健康检查（#941 第 3 节）。请求等太久、正文下得慢都不报：直连下行只有几十 KB/s 的客户，
+ * 大一点的回应本来就要下一阵，这只在这一次请求里换线路重发，不算直连坏了。公告整个不报，它下得
+ * 再慢、下不下来都不影响线路。
  *
  * 写进工具配置之前那几次查模型、工具自检用的是另一个（createRelayObservedFetch）：它们查的
- * 正是那条线路通不通，不换地址也不重发，只把直连上的失败报给线路那边。
+ * 正是那条线路通不通，不换地址也不重发，只按上面的口径把直连上的失败报给线路那边。
  */
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
 import { relayEndpointForUrl, relayEndpointOrigin, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
@@ -31,20 +37,8 @@ export interface RelayLineRouter {
 }
 
 export interface RelayLineFetchOptions {
-  /**
-   * 调用方自己中止的请求算不算直连不通。账号请求只会因为等太久没回话而中止，算；AI 聊天、
-   * 画图中止多半是客户点了「停止」，不算（同 proxy-bypass.ts 的 SiteFetchOptions）。
-   */
-  abortMeansUnreachable?: boolean
   log?(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void
 }
-
-/**
- * 「自动」走直连时，只读的请求这么久还没回话就报给线路那边查一次直连。不掐它：直连只是慢的话
- * 接着等；查下来要改走默认线路，订阅那边会掐掉它、改走默认线路重发。账号请求 10 秒超时，
- * 这里加上一次检查的时间（relay-route-controller.ts 的 5 秒）还赶得上在超时前重发。
- */
-export const relayDirectSlowResponseMs = 3_000
 
 /**
  * 代理回绝了这一个地址：代理对 CONNECT 回 403、502 时 Chromium 报的是它（第三十八批在 Electron 上实测过），
@@ -64,6 +58,14 @@ const unsentFailureCodes: ReadonlySet<string> = new Set([
 // 跟线路有关的失败：换一条线路有可能走得通（被拦到别的页面也算：拦的可能只是直连域名）。代理软件
 // 本身没开、服务自己说暂时不可用（JSON）不算。
 const lineFailureReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'timeout', 'intercepted'])
+
+// 报给线路那边的失败：网络层连不上一类，加上跳转被拒（门户认证、拦截页的另一种样子）。超时只认连接
+// 超时（连不上）；请求整个等太久（AbortSignal.timeout 的 TimeoutError）是慢，不报。
+const reportedReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'proxy', 'intercepted'])
+const connectTimeoutCodes: ReadonlySet<string> = new Set(['ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT', 'ETIMEDOUT'])
+
+// 公告：下得慢、下不下来都不报给线路那边（#941 第 4 节）。
+const unreportedPaths: ReadonlySet<string> = new Set(['/api/notice'])
 
 const gatewayStatuses: ReadonlySet<number> = new Set([502, 503, 504])
 
@@ -116,12 +118,26 @@ export function relayLineFailureAnswer(response: Response): string | null {
   return answeredBySomeoneElse(response) ? 'intercepted' : null
 }
 
-/** 换一条线路有可能走得通的失败（检查页、更新检查也按这个认）；别的返回 null。 */
+/** 换一条线路有可能走得通的失败（检查页、更新检查也按这个认），这一次请求可以换线路重发；别的返回 null。 */
 export function relayLineFailureReason(error: unknown): NetworkFailureReason | null {
   if (error instanceof Error && error.name === 'TimeoutError') return 'timeout'
   const reason = classifyNetworkFailure(error)
   if (reason === 'proxy') return networkFailureCode(error) === tunnelRefusedCode ? reason : null
   return reason && lineFailureReasons.has(reason) ? reason : null
+}
+
+/**
+ * 上面那些里要报给线路那边的（解析不出地址、连不上、TLS 失败、连接被重置或断开、代理回绝了直连这个
+ * 地址、跳转被拒），给出报上去的原因（错误码，取不到就是归类）；请求自己超时、被人中止返回 null。
+ * 检查页、更新检查也按这个决定报不报。
+ */
+export function reportedRelayLineFailure(error: unknown): string | null {
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) return null
+  const reason = relayLineFailureReason(error)
+  if (!reason) return null
+  const code = networkFailureCode(error)
+  if (reason === 'timeout') return code !== null && connectTimeoutCodes.has(code) ? code : null
+  return reportedReasons.has(reason) ? code ?? reason : null
 }
 
 function provablyUnsent(error: unknown, reason: NetworkFailureReason): boolean {
@@ -177,6 +193,9 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const callerSignal = init?.signal ?? undefined
     const path = new URL(requested).pathname
     const method = (init?.method ?? 'GET').toUpperCase()
+    function report(reason: string): void {
+      if (!unreportedPaths.has(path)) router.reportDirectFailure(siteId, reason)
+    }
     async function fallBack(reason: string): Promise<Response> {
       const primary = onLine(requested, siteId, 'primary')
       log('info', 'relay.line.fallback', '直连这次没走通，改走默认线路重发', { siteId, from: 'direct', to: 'primary', reason, method, path })
@@ -197,44 +216,40 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const signal = unsubscribe
       ? callerSignal ? AbortSignal.any([callerSignal, lineChange.signal]) : lineChange.signal
       : callerSignal
-    const slow = idempotent ? setTimeout(() => router.reportDirectFailure(siteId, 'slow'), relayDirectSlowResponseMs) : null
-    slow?.unref?.()
     let response: Response
     try {
       response = await base(sent, unsubscribe ? { ...init, signal } : init)
     } catch (error) {
-      if (callerSignal?.aborted) {
-        if (options.abortMeansUnreachable) router.reportDirectFailure(siteId, 'timeout')
-        throw error
-      }
+      // 调用方自己中止的（等太久超时、客户点了「停止」）不报：直连可能只是慢。
+      if (callerSignal?.aborted) throw error
       if (lineChanged) return fallBack('line-changed')
       const reason = relayLineFailureReason(error)
       if (!reason) throw error
-      router.reportDirectFailure(siteId, networkFailureCode(error) ?? reason)
+      const reported = reportedRelayLineFailure(error)
+      if (reported) report(reported)
       if (idempotent || provablyUnsent(error, reason)) return fallBack(networkFailureCode(error) ?? reason)
       throw error
     } finally {
       unsubscribe?.()
-      if (slow) clearTimeout(slow)
     }
     if (blockedByAllowlist(response)) {
       // 白名单挡下的是这一个接口，直连本身是通的：不报给线路那边，后面的请求照样先走直连。
       await discard(response)
-      log('warn', 'relay.line.blocked', '直连没放行这个接口，这次改走默认线路', { siteId, method, path })
+      log('warn', 'relay.line.blocked', '直连没放行这个接口，这次改走默认线路', { siteId, line: 'direct', method, path })
       return fallBack('allowlist-404')
     }
     const failure = relayLineFailureAnswer(response)
     if (failure) {
-      router.reportDirectFailure(siteId, failure)
+      report(failure)
       if (idempotent) {
         await discard(response)
         return fallBack(failure)
       }
     }
-    // 回了话以后正文读到一半断了：这一次没法重发，只报给线路那边查一次直连。调用方自己中止的不算，
-    // 账号请求除外（同上）。
+    // 回了话以后正文读到一半断了（连接被重置）：这一次没法重发，只报给线路那边查一轮。调用方自己中止的
+    // 不报：账号请求读一个大回应读到超时，那是慢，不是直连坏了（10-7 公告就是这样被当成直连坏了）。
     const watched = watchResponseBody(response, () => {
-      if (options.abortMeansUnreachable || !callerSignal?.aborted) router.reportDirectFailure(siteId, 'body')
+      if (!callerSignal?.aborted) report('body')
     })
     return asRequested(watched, sent, requested)
   }
@@ -243,7 +258,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
 
 /**
  * 写进工具配置之前查模型、工具自检用的 fetch：查的正是工具会用的那条线路通不通，所以不换地址、
- * 不重发；「自动」的站在直连上没走通时只报给线路那边，由它决定要不要退回。
+ * 不重发；「自动」的站在直连上连不上时只报给线路那边，由它查过健康检查再决定要不要退回。
  */
 export function createRelayObservedFetch(router: RelayLineRouter, base: typeof fetch, options: Pick<RelayLineFetchOptions, 'log'> = {}): typeof fetch {
   return async (input, init) => {
@@ -257,8 +272,8 @@ export function createRelayObservedFetch(router: RelayLineRouter, base: typeof f
     try {
       response = await base(input, init)
     } catch (error) {
-      const reason = init?.signal?.aborted ? null : relayLineFailureReason(error)
-      if (reason) router.reportDirectFailure(siteId, networkFailureCode(error) ?? reason)
+      const reported = init?.signal?.aborted ? null : reportedRelayLineFailure(error)
+      if (reported) router.reportDirectFailure(siteId, reported)
       throw error
     }
     const failure = relayLineFailureAnswer(response)
@@ -266,7 +281,7 @@ export function createRelayObservedFetch(router: RelayLineRouter, base: typeof f
     else if (blockedByAllowlist(response)) {
       try {
         options.log?.('warn', 'relay.line.blocked', '直连没放行这个接口', {
-          siteId, method: (init?.method ?? 'GET').toUpperCase(), path: new URL(requested).pathname,
+          siteId, line: 'direct', method: (init?.method ?? 'GET').toUpperCase(), path: new URL(requested).pathname,
         })
       } catch { /* 记日志失败不影响请求 */ }
     }

@@ -2,7 +2,7 @@ import type { GenericServerOptions } from 'builder-util-runtime'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { networkFailureCode } from './network-failure'
-import { relayLineFailureReason } from './relay-line-fetch'
+import { relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import type { RelayEndpointId } from './relay-sites'
 
 const primaryUpdateUrl = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
@@ -95,12 +95,13 @@ function httpStatusCode(error: unknown): number | null {
 
 /**
  * 在直连那份更新地址上没查通、换回包里那份有可能查得通时，说清是哪一种（只记日志用，不带地址）；
- * 换了也白换的返回 null。lineFailure：连不上一类，要报给线路那边再查一次直连；直连回的 404 是
- * 白名单没放行那一个文件，502 / 503 / 504 是直连那边的网关出错，这次换回来查，404 不算直连坏了。
+ * 换了也白换的返回 null。lineFailure：要报给线路那边查一轮健康检查的，只有网络层连不上一类和
+ * 502 / 503 / 504（直连那边的网关出错）。直连回的 404 是白名单没放行那一个文件；下得太慢超时是慢，
+ * 不是直连坏了（#941 第 3 节）。这两种都只这一次换回来查。
  */
 export function classifyDirectFeedFailure(error: unknown): { reason: string; lineFailure: boolean } | null {
   const status = httpStatusCode(error)
   if (status !== null) return directFeedFallbackStatuses.has(status) ? { reason: `http-${status}`, lineFailure: status !== 404 } : null
   const reason = relayLineFailureReason(error)
-  return reason ? { reason: networkFailureCode(error) ?? reason, lineFailure: true } : null
+  return reason ? { reason: networkFailureCode(error) ?? reason, lineFailure: reportedRelayLineFailure(error) !== null } : null
 }

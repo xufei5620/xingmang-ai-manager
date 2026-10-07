@@ -699,7 +699,7 @@ describe('diagnostics', () => {
         expect(log).toHaveBeenCalledWith('info', 'diagnostics.network.fallback', expect.any(String), { reason: 'refused' })
       })
 
-      it('counts the direct share of the time running out as a timeout and still checks the default line', async () => {
+      it('checks the default line when the direct share of the time runs out, without blaming the line for being slow', async () => {
         const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         const signals: Array<AbortSignal | null | undefined> = []
         input.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -713,7 +713,7 @@ describe('diagnostics', () => {
         const network = networkItem(await runDiagnostics(input))
 
         expect(network).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
-        expect(reportDirectFailure).toHaveBeenCalledWith('timeout')
+        expect(reportDirectFailure).not.toHaveBeenCalled()
         // 直连那一次另有一个更短的时限，默认线路用的是整项的时限。
         expect(signals).toHaveLength(2)
         expect(signals[0]).not.toBe(signals[1])

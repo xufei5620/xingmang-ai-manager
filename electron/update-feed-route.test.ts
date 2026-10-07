@@ -141,10 +141,11 @@ describe('classifyDirectFeedFailure', () => {
     for (const status of [401, 403, 429, 500]) expect(classifyDirectFeedFailure(httpError(status))).toBeNull()
   })
 
-  it('reports a connection failure by its code and a timeout by name', () => {
+  it('reports a connection failure by its code, and retries a slow check without blaming the line', () => {
     expect(classifyDirectFeedFailure(new Error('net::ERR_CONNECTION_REFUSED'))).toEqual({ reason: 'ERR_CONNECTION_REFUSED', lineFailure: true })
     expect(classifyDirectFeedFailure(new Error('net::ERR_NAME_NOT_RESOLVED'))).toEqual({ reason: 'ERR_NAME_NOT_RESOLVED', lineFailure: true })
-    expect(classifyDirectFeedFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))).toEqual({ reason: 'timeout', lineFailure: true })
+    expect(classifyDirectFeedFailure(new Error('net::ERR_CONNECTION_TIMED_OUT'))).toEqual({ reason: 'ERR_CONNECTION_TIMED_OUT', lineFailure: true })
+    expect(classifyDirectFeedFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))).toEqual({ reason: 'timeout', lineFailure: false })
     // 只放行老地址的公司网关回绝了直连这个地址：包里那份有可能放行。
     expect(classifyDirectFeedFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))).toEqual({ reason: 'ERR_TUNNEL_CONNECTION_FAILED', lineFailure: true })
   })
