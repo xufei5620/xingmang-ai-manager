@@ -37,6 +37,13 @@ export interface RelayLineRouter {
 }
 
 export interface RelayLineFetchOptions {
+  /**
+   * 调用方只会因为自己等到时限才中止（账号请求：10 秒没回话就放弃）。中止时连回应头都没等来，直连多半
+   * 这会儿不通：被丢包的地址就是这样，Chromium 自己要等二十秒到两分钟才报连接超时，早过了调用方的时限。
+   * 这时报给线路那边查一轮健康检查；这一次不重发，调用方已经不等了。正文读到一半被中止照旧不报，那是
+   * 回应大、读得慢。AI 对话、画图中止多半是客户点了「停止」，不给这个选项。
+   */
+  abortMeansNoAnswer?: boolean
   log?(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void
 }
 
@@ -60,7 +67,8 @@ const unsentFailureCodes: ReadonlySet<string> = new Set([
 const lineFailureReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'timeout', 'intercepted'])
 
 // 报给线路那边的失败：网络层连不上一类，加上跳转被拒（门户认证、拦截页的另一种样子）。超时只认连接
-// 超时（连不上）；请求整个等太久（AbortSignal.timeout 的 TimeoutError）是慢，不报。
+// 超时（连不上）；请求整个等太久（AbortSignal.timeout 的 TimeoutError）分不清是没回话还是正文读得慢，
+// 不在这里认，由知道自己还没拿到回应头的那一段另报（createRelayLineFetch 的 noAnswerFailure）。
 const reportedReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'proxy', 'intercepted'])
 const connectTimeoutCodes: ReadonlySet<string> = new Set(['ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT', 'ETIMEDOUT'])
 
@@ -138,6 +146,15 @@ export function reportedRelayLineFailure(error: unknown): string | null {
   const code = networkFailureCode(error)
   if (reason === 'timeout') return code !== null && connectTimeoutCodes.has(code) ? code : null
   return reportedReasons.has(reason) ? code ?? reason : null
+}
+
+/**
+ * fetch() 还没交出回应就超时了（它自己报的 TimeoutError，或者归成超时的错误码）：等到时限还没等来回应头，
+ * 直连被丢包时就是这样。只在拿到回应以前那一段用，正文读得慢不算。报上去也只是叫线路那边查一轮健康
+ * 检查，换不换线路由它连着查过再定（#941 第 3 节）。
+ */
+function noAnswerFailure(error: unknown): string | null {
+  return relayLineFailureReason(error) === 'timeout' ? networkFailureCode(error) ?? 'no-answer' : null
 }
 
 function provablyUnsent(error: unknown, reason: NetworkFailureReason): boolean {
@@ -220,12 +237,17 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     try {
       response = await base(sent, unsubscribe ? { ...init, signal } : init)
     } catch (error) {
-      // 调用方自己中止的（等太久超时、客户点了「停止」）不报：直连可能只是慢。
-      if (callerSignal?.aborted) throw error
+      // 调用方自己中止的（等到时限、客户点了「停止」）不重发。账号请求连回应头都没等来就到了时限，叫线路
+      // 那边查一轮（abortMeansNoAnswer）；别的中止不报。
+      if (callerSignal?.aborted) {
+        if (options.abortMeansNoAnswer) report('no-answer')
+        throw error
+      }
       if (lineChanged) return fallBack('line-changed')
       const reason = relayLineFailureReason(error)
       if (!reason) throw error
-      const reported = reportedRelayLineFailure(error)
+      // 走到这里还没拿到回应：超时的也报（noAnswerFailure），正文读得慢的在下面 watchResponseBody 那段，不报。
+      const reported = reportedRelayLineFailure(error) ?? noAnswerFailure(error)
       if (reported) report(reported)
       if (idempotent || provablyUnsent(error, reason)) return fallBack(networkFailureCode(error) ?? reason)
       throw error
@@ -272,7 +294,7 @@ export function createRelayObservedFetch(router: RelayLineRouter, base: typeof f
     try {
       response = await base(input, init)
     } catch (error) {
-      const reported = init?.signal?.aborted ? null : reportedRelayLineFailure(error)
+      const reported = init?.signal?.aborted ? null : reportedRelayLineFailure(error) ?? noAnswerFailure(error)
       if (reported) router.reportDirectFailure(siteId, reported)
       throw error
     }

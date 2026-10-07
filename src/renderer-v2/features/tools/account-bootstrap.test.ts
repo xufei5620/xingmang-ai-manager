@@ -17,6 +17,7 @@ import {
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
   afterCodexDesktopRestart,
+  carryRouteRestart,
   relayFallbackActive,
   skippedNamedProviders,
   withoutRouteRestart,
@@ -938,6 +939,16 @@ describe('explicit applied connection routes on restore', () => {
     const desktopOnly: AccountBootstrapResult = { ...base, routeRestart: { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
     expect(afterCodexDesktopRestart(desktopOnly)).toEqual(base)
     expect(afterCodexDesktopRestart(base)).toBe(base)
+  })
+
+  it('keeps the restart prompt through a later round that changed no line, and lets a new one replace it', () => {
+    const base = { readyKeys: [], configured: ['codex' as ProviderId], failed: [], skipped: [], warnings: [], networkBlocked: false }
+    const asked: AccountBootstrapResult = { ...base, routeRestart: { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
+    expect(carryRouteRestart(asked, base).routeRestart).toEqual(asked.routeRestart)
+    const again: AccountBootstrapResult = { ...base, routeRestart: { running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true } }
+    expect(carryRouteRestart(asked, again)).toBe(again)
+    expect(carryRouteRestart(withoutRouteRestart(asked), base)).toBe(base)
+    expect(carryRouteRestart(undefined, base)).toBe(base)
   })
 })
 

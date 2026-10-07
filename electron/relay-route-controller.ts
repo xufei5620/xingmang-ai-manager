@@ -228,10 +228,13 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     return disposed ? null : reachable
   }
 
-  // 离上次切换还要等多久才能再切。钟被往回拨了也最多等一整段，不会一直等下去。
+  // 离上次切换还要等多久才能再切。钟被往回拨过（上次切换的时刻落到了「现在」后面）就从现在起算一整段：
+  // 只截短单次等待不够，下一轮再算还是差着拨回去的那几个钟头，直连坏着也要一轮轮等到钟追上来。
   function switchWait(state: SiteState): number {
     if (state.switchedAt === null) return 0
-    return Math.min(relayRouteMinSwitchGapMs, Math.max(0, state.switchedAt + relayRouteMinSwitchGapMs - now()))
+    const at = now()
+    if (state.switchedAt > at) state.switchedAt = at
+    return Math.max(0, state.switchedAt + relayRouteMinSwitchGapMs - at)
   }
 
   // 定下来以后接着看：走直连隔一阵查一次；走默认线路隔两分钟查一次直连，看能不能切回去。

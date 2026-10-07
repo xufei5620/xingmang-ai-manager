@@ -1202,14 +1202,16 @@ if (!hasSingleInstanceLock) {
       },
     })
     // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
-    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。等太久超时、客户点了
-    // 「停止」都只是这一次的事，不报给线路那边（#941 第 3 节）。工具相关的检查（写配置前查模型、工具
-    // 自检）查的正是工具会用的那条线路，不换不重发，直连上连不上只报给线路那边。
+    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
+    // 健康检查，换不换由它定（#941 第 3 节）：正文读得慢、客户点了「停止」不报；账号请求只会因为等到时限
+    // 才中止，连回应头都没等来就报（abortMeansNoAnswer）。工具相关的检查（写配置前查模型、工具自检）查的
+    // 正是工具会用的那条线路，不换不重发，直连上连不上只报给线路那边。
     function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
       runtimeLog.log(level, 'network', event, message, detail)
     }
     const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
-    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { log: logRelayLine })
+    const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansNoAnswer: true, log: logRelayLine })
+    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansNoAnswer: true, log: logRelayLine })
     const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
     // 「自动」换了线路：界面重读设置、把工具迁过去（App.tsx，开着的也迁）。窗口还没建好时不用叫，
     // 首屏读设置时读到的就是新线路。
@@ -2227,7 +2229,7 @@ if (!hasSingleInstanceLock) {
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
         // 历史账号的客户端写死的是默认线路的地址（sub2api-relay-backend.ts 不改），走直连靠请求这一层换地址。
-        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedRelayFetch, onSessionChange,
+        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch, onSessionChange,
           onCredentialRotation: (saved) => vault.updateSession(saved) })
         let client: ReturnType<typeof createNewApiClient>
         function saved(): RealmSavedAccount | null {

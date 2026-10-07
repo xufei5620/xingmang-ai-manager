@@ -1435,10 +1435,14 @@ function relayLineFailure(probe: RelayStatusProbe): string | null {
   return relayLineFailureAnswer(response)
 }
 
-// 要不要报给线路那边、叫它马上查一轮健康检查：同 relay-line-fetch.ts 的口径，直连那一次没在时限内
-// 查完只是慢，换默认线路查一次就行，不报（#941 第 3 节）。
+/**
+ * 要不要报给线路那边、叫它马上查一轮健康检查（#941 第 3 节）：同 relay-line-fetch.ts 的口径，加上直连那
+ * 几秒里一个字都没回来也算——状态接口只回几百字节，等不到它就是这会儿不通，不是慢。报上去也只是叫线路
+ * 那边连着查几次，换不换由它定。
+ */
 function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
-  return probe.kind === 'answered' || reportedRelayLineFailure(probe.error) !== null
+  if (probe.kind === 'answered') return true
+  return reportedRelayLineFailure(probe.error) !== null || probe.reason === 'timeout'
 }
 
 /**
@@ -1585,7 +1589,7 @@ export function describeRelayRouteChange(change: RelayRouteChange): string {
     ? `直连连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回直连`
     : change.reason === 'health-failed'
       ? `直连连着 ${relayRouteFailureThreshold} 次没连上，改走默认线路`
-      : '开机时直连能连上，走直连'
+      : '查到直连能连上，走直连'
   return `${time}，${reason}`
 }
 

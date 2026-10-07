@@ -171,6 +171,15 @@ export function withoutRouteRestart(result: AccountBootstrapResult): AccountBoot
   return rest
 }
 
+/**
+ * 后面几轮同步（联网后补跑、装完工具、重写 Key）不会再改线路，routeRestart 自然是空的：上一轮那句客户
+ * 还没点「知道了」、工具也还开着拿着旧地址，就留着它，别让提示自己消失。
+ */
+export function carryRouteRestart(previous: AccountBootstrapResult | undefined, next: AccountBootstrapResult): AccountBootstrapResult {
+  if (next.routeRestart || !previous?.routeRestart) return next
+  return { ...next, routeRestart: previous.routeRestart }
+}
+
 /** 替客户重开过 Codex 桌面端：它已经读到新地址，不再点它的名；别的都关了就整句收起。 */
 export function afterCodexDesktopRestart(result: AccountBootstrapResult): AccountBootstrapResult {
   if (!result.routeRestart) return result

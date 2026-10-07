@@ -809,7 +809,7 @@ describe('diagnostics', () => {
         expect(log).toHaveBeenCalledWith('info', 'diagnostics.network.fallback', expect.any(String), { reason: 'refused' })
       })
 
-      it('checks the default line when the direct share of the time runs out, without blaming the line for being slow', async () => {
+      it('checks the default line when the direct share of the time runs out, and asks the line to check itself', async () => {
         const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         const signals: Array<AbortSignal | null | undefined> = []
         input.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -823,7 +823,8 @@ describe('diagnostics', () => {
         const network = networkItem(await runDiagnostics(input))
 
         expect(network).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
-        expect(reportDirectFailure).not.toHaveBeenCalled()
+        // 状态接口只回几百字节，几秒里一个字都没回来就是这会儿不通：叫线路那边查一轮（#941 第 3 节）。
+        expect(reportDirectFailure).toHaveBeenCalledWith('timeout')
         // 直连那一次另有一个更短的时限，默认线路用的是整项的时限。
         expect(signals).toHaveLength(2)
         expect(signals[0]).not.toBe(signals[1])
@@ -956,7 +957,7 @@ describe('diagnostics', () => {
   describe('describeRelayRouteChange', () => {
     it('says when the line changed, in local time, and why, without any address', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，开机时直连能连上，走直连')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，查到直连能连上，走直连')
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ETIMEDOUT', at }))
         .toBe('1月3日 08:00，直连连着 3 次没连上，改走默认线路')
       expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at })).toBe('1月3日 08:00，直连连着 10 分钟都能连上，换回直连')

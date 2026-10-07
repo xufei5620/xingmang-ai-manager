@@ -6,7 +6,7 @@ import type { ProviderId, RunningToolsReport } from '../../../../electron/ipc-co
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import type { AccountBootstrapResult } from './account-bootstrap'
+import { configurationFailureMessages, type AccountBootstrapResult } from './account-bootstrap'
 
 const cliStatus: Record<string, unknown> = {
   installed: true, version: '1.2.3', path: 'C:\\fixture\\bin', installDirectory: 'C:\\fixture',
@@ -671,17 +671,23 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(mac).not.toContain('home-route-restart-codex-desktop')
   })
 
-  it('shows every failure in the banner again, route changes included', () => {
+  it('shows every failure in the banner again, a configuration that did not follow the line included', () => {
     const markup = render({}, undefined, {
       relayFallback: true,
       bootstrap: {
         phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [{ provider: 'claude', message: '当前分组未返回可用模型' }] }),
+        result: bootstrapResult({
+          failed: [
+            { provider: 'claude', message: '当前分组未返回可用模型' },
+            { provider: 'codex', message: configurationFailureMessages.routeMismatch },
+          ],
+        }),
       },
       onBootstrapRetry: () => undefined,
     })
     expect(markup).toContain(fallbackNotice)
     expect(markup).toContain('当前分组未返回可用模型')
+    expect(markup).toContain('连接线路尚未更新，请点「重新同步」')
     expect(markup).toContain('>重新同步<')
   })
 })

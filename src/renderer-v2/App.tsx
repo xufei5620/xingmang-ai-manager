@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, afterCodexDesktopRestart, bootstrapAccountTools, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, withoutRouteRestart, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, afterCodexDesktopRestart, bootstrapAccountTools, carryRouteRestart, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, withoutRouteRestart, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -443,7 +443,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         }
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
-          ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result, finishedAt: Date.now() }
+          ? {
+            ...current,
+            phase: 'verifying',
+            label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态',
+            percent: 100,
+            // 这一轮没改线路时留着上一轮那句「要重开」：工具还开着拿着旧地址（#941）。
+            result: carryRouteRestart(current.result, result),
+            finishedAt: Date.now(),
+          }
           : current)
         setWorkspaceEntered(true)
         // 只重读配置，不再把整轮环境探测走第二遍：跟着 Key 变的只有配置状态，

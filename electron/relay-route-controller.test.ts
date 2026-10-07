@@ -346,6 +346,26 @@ describe('relay route controller', () => {
     expect(run.controller.lastChange('solov')).toMatchObject({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ERR_CONNECTION_RESET' })
   })
 
+  it('waits one gap at most when the clock was turned back after the last switch', async () => {
+    const run = harness({ preferences: { solov: 'auto' } })
+    run.controller.start()
+    await settle()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+
+    // 系统对时把钟往回拨了三个钟头，接着直连坏了。
+    run.advance(-3 * 60 * 60_000)
+    run.reachable.direct = false
+    run.controller.reportDirectFailure('solov', 'ECONNRESET')
+    await settle()
+    await failTwiceMore(run)
+    expect(run.events('relay.route.held')).toEqual([{ siteId: 'solov', line: 'direct', waitMs: relayRouteMinSwitchGapMs }])
+
+    await run.fireTimer()
+    await failTwiceMore(run)
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
+    expect(run.events('relay.route.held')).toHaveLength(1)
+  })
+
   it('checks right away when a request on direct fails, one round at a time and at most once per gap', async () => {
     const pending = deferred<boolean>()
     const probes: Array<[RelayRouteSiteId, RelayEndpointId]> = []
