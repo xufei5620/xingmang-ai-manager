@@ -36,6 +36,20 @@ describe('diagnostic detail rows', () => {
     ])
     expect(diagnosticDetailRows(undefined)).toEqual([])
   })
+
+  it('names the line a tool uses, the line the app is on and the last line change, but keeps the trigger code for the report', () => {
+    expect(diagnosticDetailRows({
+      routeLine: '默认线路',
+      currentRouteLine: '直连',
+      lastRouteChange: '10月7日 21:14，直连连着 3 次没连上，改走默认线路',
+      lastRouteChangeTrigger: 'ERR_CONNECTION_RESET',
+      line: 'direct',
+    })).toEqual([
+      { key: 'routeLine', label: '这个工具走的线路', value: '默认线路' },
+      { key: 'currentRouteLine', label: '星芒现在走的线路', value: '直连' },
+      { key: 'lastRouteChange', label: '最近一次换线路', value: '10月7日 21:14，直连连着 3 次没连上，改走默认线路' },
+    ])
+  })
 })
 
 describe('settings group intent', () => {

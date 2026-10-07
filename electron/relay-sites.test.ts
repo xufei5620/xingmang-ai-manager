@@ -10,6 +10,7 @@ import {
   relayEndpointForUrl,
   relayEndpointOrigin,
   relaySiteKnownOrigins,
+  relayProviderBaseUrlEquals,
   relayProviderBaseUrlMatches,
   relayProviderBaseUrls,
   relaySiteEndpointChoices,
@@ -275,6 +276,19 @@ describe('relay site registry', () => {
       .toBe('https://38.147.105.28:8443/v1')
     for (const actual of ['https://38.147.105.28/v1', 'https://38.147.105.28:8444/v1', 'http://38.147.105.28:8443/v1']) {
       expect(relaySiteEndpointIdForBaseUrl('solov', 'codex', actual)).toBeNull()
+    }
+  })
+
+  it('takes only the very address of a line as equal, never another line or a retired alias', () => {
+    const direct = relayProviderBaseUrls('solov', 'direct')
+    expect(relayProviderBaseUrlEquals(`${direct.codex}/`, direct.codex)).toBe(true)
+    expect(relayProviderBaseUrlEquals('https://XM-DIRECT.solov.cc/v1', direct.codex)).toBe(true)
+    expect(relayProviderBaseUrlEquals(providerBaseUrls.codex, direct.codex)).toBe(false)
+    const [retired] = relaySiteProviderBaseUrlVariants('solov', 'codex')
+      .filter((variant) => variant.endpointId === 'direct' && variant.baseUrl !== direct.codex)
+    expect(relayProviderBaseUrlEquals(retired.baseUrl, direct.codex)).toBe(false)
+    for (const actual of [`${direct.codex}?key=fixture`, 'https://user:secret@xm-direct.solov.cc/v1', 'not a url', '']) {
+      expect(relayProviderBaseUrlEquals(actual, direct.codex)).toBe(false)
     }
   })
 

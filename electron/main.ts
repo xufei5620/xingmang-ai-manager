@@ -1470,6 +1470,7 @@ if (!hasSingleInstanceLock) {
         automatic: relayRouting.preferences[routeSiteId] === 'auto',
         primarySite: requireRelaySite(routeSiteId),
         reportDirectFailure: (reason) => relayRouteController.reportDirectFailure(routeSiteId, reason),
+        lastChange: relayRouteController.lastChange(routeSiteId),
       }
     }
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站

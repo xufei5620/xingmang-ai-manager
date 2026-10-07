@@ -6,12 +6,13 @@ import { providerIds, type ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection, ProviderAccountMode } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
-import { createRelayEndpointRoutingSnapshot, relaySites } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, relaySites } from './relay-sites'
 import {
   clockSkewMs,
   buildWindowsArmSummary,
   clockSyncGuidance,
   createDiagnosticsExport,
+  describeRelayRouteChange,
   describeRelocationTarget,
   environmentAccountBaseUrls,
   environmentOverrideNames,
@@ -288,6 +289,79 @@ describe('diagnostics', () => {
       .toBe('[CODEX_HOME]/.codex/config.toml')
     expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE')?.details?.file1)
       .toBe('~/.claude/config.json')
+  })
+
+  // #941 第 2 节：工具配置里写的地址和星芒这会儿走的线路对不上时，检查页要说出来，并说清两边各是哪条。
+  describe('tool connection settings against the current line', () => {
+    const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+    const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+
+    function onLine(line: 'direct' | 'primary', settled: boolean, codexBaseUrl: string) {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const site = line === 'direct' ? directSite : primarySite
+      input.relaySite = site
+      input.relayRoute = { line, automatic: true, settled, primarySite, reportDirectFailure: vi.fn() }
+      input.inspectProvider = (provider) => ({
+        ...inspection(provider, home, 'sk-test'),
+        actualBaseUrl: provider === 'codex' ? codexBaseUrl : site.providerBaseUrls[provider],
+      })
+      return input
+    }
+
+    function codexItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+      return report.items.find((item) => item.code === 'PROVIDER_CODEX')
+    }
+
+    it('warns when a tool still points at the other line and names both lines', async () => {
+      const item = codexItem(await runDiagnostics(onLine('direct', true, primarySite.providerBaseUrls.codex)))
+
+      expect(item).toMatchObject({
+        state: 'warn',
+        summary: '已连到当前账号，但连接线路和星芒现在走的不一样。点「去处理」再点「保存配置」就会改过来',
+        details: { matchesRelay: true, routeLine: '默认线路', currentRouteLine: '直连' },
+      })
+      // 结论和两条线路的名字里都不带地址，抽屉可以照常上屏。
+      expect(`${item?.summary} ${item?.details?.routeLine} ${item?.details?.currentRouteLine}`).not.toMatch(/https?:|solov/)
+    })
+
+    it('passes and names the line when the tool already uses the current one', async () => {
+      for (const line of ['direct', 'primary'] as const) {
+        const site = line === 'direct' ? directSite : primarySite
+        const item = codexItem(await runDiagnostics(onLine(line, true, `${site.providerBaseUrls.codex}/`)))
+
+        expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: line === 'direct' ? '直连' : '默认线路' } })
+        expect(item?.details).not.toHaveProperty('currentRouteLine')
+      }
+    })
+
+    it('does not compare while auto has not settled on a line yet', async () => {
+      const item = codexItem(await runDiagnostics(onLine('direct', false, primarySite.providerBaseUrls.codex)))
+
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号' })
+      expect(item?.details).not.toHaveProperty('routeLine')
+    })
+
+    it('does not compare when the run is not told which line the app is on', async () => {
+      const input = onLine('direct', true, primarySite.providerBaseUrls.codex)
+      delete input.relayRoute
+
+      const item = codexItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号' })
+      expect(item?.details).not.toHaveProperty('routeLine')
+    })
+
+    it('asks to save again for a retired address of the current line without guessing which line it is on', async () => {
+      const [retired] = relaySiteProviderBaseUrlVariants('solov', 'codex')
+        .filter((variant) => variant.endpointId === 'direct' && variant.baseUrl !== directSite.providerBaseUrls.codex)
+      expect(retired).toBeDefined()
+
+      const item = codexItem(await runDiagnostics(onLine('direct', true, retired.baseUrl)))
+
+      expect(item).toMatchObject({ state: 'warn', details: { currentRouteLine: '直连' } })
+      expect(item?.details).not.toHaveProperty('routeLine')
+    })
   })
 
   it('flags project folder settings that override the current account, without values', async () => {
@@ -657,6 +731,42 @@ describe('diagnostics', () => {
         return report.items.find((item) => item.code === 'XINGMANG_NETWORK')
       }
 
+      // #941 第 2、7 节：「自动」最近一次换线路是什么时候、为什么，查得通查不通都写在这一项里。
+      it('tells when and why auto last changed the line, keeping the code that started it for the report', async () => {
+        const at = new Date(2026, 9, 7, 21, 14).getTime()
+        const { input } = onRoute({
+          line: 'primary', automatic: true, settled: true,
+          lastChange: { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ECONNRESET', at },
+        })
+        input.fetch = vi.fn(async () => statusJson())
+
+        expect(networkItem(await runDiagnostics(input))).toMatchObject({
+          state: 'pass',
+          details: { lastRouteChange: '10月7日 21:14，直连连着 3 次没连上，改走默认线路', lastRouteChangeTrigger: 'ECONNRESET' },
+        })
+      })
+
+      it('also tells the last line change when neither line answers', async () => {
+        const at = new Date(2026, 9, 7, 9, 5).getTime()
+        const { input } = onRoute({
+          line: 'direct', automatic: true, settled: true,
+          lastChange: { from: 'primary', to: 'direct', reason: 'recovered', at },
+        })
+        input.fetch = vi.fn(async () => { throw refused() })
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({ state: 'fail', details: { lastRouteChange: '10月7日 09:05，直连连着 10 分钟都能连上，换回直连' } })
+        expect(network?.details).not.toHaveProperty('lastRouteChangeTrigger')
+      })
+
+      it('says nothing about line changes when auto has not changed the line yet', async () => {
+        const { input } = onRoute({ line: 'direct', automatic: true, settled: true, lastChange: null })
+        input.fetch = vi.fn(async () => statusJson())
+
+        expect(networkItem(await runDiagnostics(input))?.details).not.toHaveProperty('lastRouteChange')
+      })
+
       it('says the check used direct when auto is on direct and direct answers', async () => {
         const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         const fetchImpl = vi.fn(async (_url: string | URL | Request) => statusJson())
@@ -840,6 +950,16 @@ describe('diagnostics', () => {
         expect(relayNetworkPassSummary({ line: 'primary', fellBack: true }, false)).toBe('能连上星芒服务。直连这会儿连不上，已自动改走默认线路')
         expect(relayNetworkPassSummary({ line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是直连（开着加速也不绕加速线路）')
       })
+    })
+  })
+
+  describe('describeRelayRouteChange', () => {
+    it('says when the line changed, in local time, and why, without any address', () => {
+      const at = new Date(2026, 0, 3, 8, 0).getTime()
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，开机时直连能连上，走直连')
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ETIMEDOUT', at }))
+        .toBe('1月3日 08:00，直连连着 3 次没连上，改走默认线路')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at })).toBe('1月3日 08:00，直连连着 10 分钟都能连上，换回直连')
     })
   })
 

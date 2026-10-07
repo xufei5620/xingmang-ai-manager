@@ -274,6 +274,12 @@ export function relayProviderBaseUrlMatches(provider: ProviderId, actual: string
   return false
 }
 
+/** The configuration names exactly this address: the line's own origin, never one of its aliases. */
+export function relayProviderBaseUrlEquals(actual: string, expected: string): boolean {
+  const normalized = normalizedRelayBaseUrl(actual)
+  return normalized !== null && normalized === normalizedRelayBaseUrl(expected)
+}
+
 /** A preference names 'auto' or a line of that site; no setting can borrow another site's line or name a site without lines. */
 export function relayRoutePreferenceAllowed(siteId: unknown, value: unknown): value is RelayRoutePreference {
   const endpoints = relaySiteEndpointChoices(siteId)
