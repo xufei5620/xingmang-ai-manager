@@ -1,6 +1,7 @@
-import { accountSiteId, type AccountSiteId } from '../../account-context'
+import { accountScope, accountSiteId, type AccountSiteId } from '../../account-context'
 import {
   providerIds,
+  type AccountSessionState,
   type AppConfigSummary,
   type AppSettingsV2,
   type ProviderId,
@@ -200,6 +201,19 @@ export function afterCodexDesktopRestart(report: RunningToolsReport | undefined)
   if (!report) return undefined
   const restarted = { ...report, codexDesktopRunning: false }
   return describeRunningTools(restarted, 'route') ? restarted : undefined
+}
+
+/**
+ * 主进程说「会话变了」时，正在跑的那一轮 Key 同步还算不算数：还是同一个账号就接着算，换了账号、
+ * 退出登录才作废。登录成功后主进程要把手上的事忙完才发这一条，常常晚于界面已经开跑的那一轮登录同步；
+ * 以前一律作废，那一轮的结果被扔掉，引导页一直停在「正在同步账号专属 Key」、按钮全灰，要等别的事
+ * 碰巧再跑一轮才解开。
+ */
+export function sessionChangeKeepsBootstrap(
+  inFlightScope: string | null | undefined,
+  next: Pick<AccountSessionState, 'authenticated' | 'account' | 'siteId' | 'realmId'>,
+): boolean {
+  return Boolean(inFlightScope && next.authenticated && next.account && accountScope(next) === inFlightScope)
 }
 
 function installedState(system: SystemSnapshot, provider: ProviderId) {

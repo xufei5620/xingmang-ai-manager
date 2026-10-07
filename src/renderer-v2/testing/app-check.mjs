@@ -2779,6 +2779,27 @@ test('Key bootstrap progress locks the guide until the account operation settles
   } finally { await page.close() }
 })
 
+// 主进程登录完要把手上的事忙完才发「会话变了」，常常晚于界面开跑的那一轮登录同步；说的还是
+// 同一个账号，那一轮不能作废，否则引导页一直停在「正在同步账号专属 Key」、按钮全灰。
+test('the session event that trails a login keeps the login Key sync and unlocks the guide', async () => {
+  const page = await open('guest=1&bootstrapPending=1')
+  try {
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('start-guide').getByText('正在同步账号专属 Key').waitFor()
+    await page.evaluate(async () => window.v2Test.emit('onAccountSessionChanged', await window.xingmang.getAccountSession()))
+    await page.evaluate(() => window.v2Test.releaseBootstrap())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-busy') === 'false')
+    await page.getByTestId('guide-pause').click()
+    await page.getByRole('button', { name: '切换账号', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('installing a new CLI while signed in writes only that provider Key', async () => {
   const page = await open()
   try {

@@ -19,6 +19,7 @@ import {
   afterCodexDesktopRestart,
   nextRouteRestart,
   relayFallbackActive,
+  sessionChangeKeepsBootstrap,
   skippedNamedProviders,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
@@ -1143,5 +1144,27 @@ describe('account bootstrap configuration preflight', () => {
     await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
     expect(getConfig).toHaveBeenCalledTimes(3)
     expect(configureManagedCliKeys).not.toHaveBeenCalled()
+  })
+})
+
+describe('session changes while an account bootstrap runs', () => {
+  const member = { userId: 7, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 }
+
+  it('keeps the bootstrap when the event names the account it runs for', () => {
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov', account: member })).toBe(true)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, account: member })).toBe(true)
+    expect(sessionChangeKeepsBootstrap('api-account:7', { authenticated: true, siteId: 'solov-api', realmId: 'api-account', account: member })).toBe(true)
+  })
+
+  it('drops the bootstrap after a logout or a switch to another account or site', () => {
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: false, account: null })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: false, siteId: 'solov', account: member })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov', account: { ...member, userId: 18 } })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov-api', realmId: 'api-account', account: member })).toBe(false)
+  })
+
+  it('has nothing to keep when no bootstrap is running', () => {
+    expect(sessionChangeKeepsBootstrap(undefined, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
+    expect(sessionChangeKeepsBootstrap(null, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
   })
 })
