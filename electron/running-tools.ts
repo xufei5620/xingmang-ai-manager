@@ -91,15 +91,21 @@ export async function inspectRunningTools(
   return report
 }
 
-/** 提示里说的「换过来」到底换到哪。 */
-export type RunningToolsGoal = 'account' | 'official'
+/** 提示里说的「换过来」到底换到哪。route = 连接线路换了，工具配置跟着改到了新线路上（#941）。 */
+export type RunningToolsGoal = 'account' | 'official' | 'route'
+
+const runningToolsOutcomes: Readonly<Record<RunningToolsGoal, string>> = {
+  account: '用上当前账号',
+  official: '换回官方账号',
+  route: '换到新的连接线路',
+}
 
 /**
  * 只对确认开着的点名；看不出来的用「如果还开着」的说法，不能说成开着，也不能
  * 当成没开就一字不提。都没开就是空串，调用方什么也不补。
  */
 export function describeRunningTools(report: RunningToolsReport, goal: RunningToolsGoal): string {
-  const outcome = goal === 'official' ? '换回官方账号' : '用上当前账号'
+  const outcome = runningToolsOutcomes[goal]
   const running = report.running.map((provider) => cliCatalog[provider].name)
   if (report.codexDesktopRunning === true) running.push('Codex 桌面端')
   const unknown = report.unknown.map((provider) => cliCatalog[provider].name)

@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, lowBalanceText, pickFirstRunTool, recentResumeOffered, routeRestartNotice, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
-import type { ProviderId } from '../../../../electron/ipc-contract'
+import type { ProviderId, RunningToolsReport } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
@@ -620,65 +620,69 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     })).toBeNull()
   })
 
-  // 直连适配第六节第 4 条：「自动」退回默认线路、还有工具开着没迁时，上方说一句总的，横幅里不再逐个工具说。
+  // 直连适配第六节第 4 条：「自动」退回默认线路、另外三个客户端还开着没跟着换时，上方说一句总的。
   const fallbackNotice = '直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换'
-  const codexDeferred = { provider: 'codex' as const, message: 'Codex CLI 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步' }
 
-  it('says once that the tools follow the default line after they quit, instead of naming each tool', () => {
-    const markup = render({}, undefined, {
-      relayFallback: true,
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [codexDeferred], routeDeferred: ['codex'] }),
-      },
-      onBootstrapRetry: () => undefined,
-    })
+  it('says once that the other clients follow the default line after they quit', () => {
+    const markup = render({}, undefined, { relayFallback: true })
     expect(markup).toContain('data-testid="home-relay-fallback"')
     expect(markup).toContain(fallbackNotice)
-    expect(markup).not.toContain('连接线路暂未改动')
-    // 只剩开着的工具没迁时，横幅没有别的要说，也不给「重新同步」。
-    expect(markup).not.toContain('>重新同步<')
+    expect(render({}, undefined, {})).not.toContain('home-relay-fallback')
   })
 
-  it('keeps the other failures in the banner next to the fallback notice', () => {
+  // #941：四个命令行工具开着也照样跟着换线路，开着的要重开才走新地址，首页说给开着的那几个。
+  const routeRestartBootstrap = (routeRestart: RunningToolsReport) => ({
+    phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope',
+    result: bootstrapResult({ configured: ['codex'], routeRestart }),
+  })
+
+  it('asks to restart only the tools still open after they followed the line', () => {
+    const markup = render({}, undefined, {
+      bootstrap: routeRestartBootstrap({ running: ['codex'], unknown: ['claude'], codexDesktopRunning: false, canRestartCodexDesktop: true }),
+    })
+    expect(markup).toContain('data-testid="home-route-restart"')
+    expect(markup).toContain('连接线路换了，工具配置已经跟着改好。Codex CLI 还开着，要关掉重开才会换到新的连接线路。如果 Claude Code 还开着，也要关掉重开才会换到新的连接线路。')
+    expect(markup).not.toContain('home-route-restart-codex-desktop')
+    expect(markup).not.toContain('连接线路暂未改动')
+  })
+
+  it('says nothing about restarting once every followed tool is closed', () => {
+    const markup = render({}, undefined, {
+      bootstrap: routeRestartBootstrap({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true }),
+    })
+    expect(markup).not.toContain('home-route-restart')
+    expect(routeRestartNotice(undefined)).toBe('')
+  })
+
+  it('offers to restart the Codex desktop app only where it can be restarted', () => {
+    const restartable = render({}, undefined, {
+      bootstrap: routeRestartBootstrap({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }),
+      onRestartCodexDesktop: () => undefined, onDismissRouteRestart: () => undefined,
+    })
+    expect(restartable).toContain('Codex 桌面端 还开着，要关掉重开才会换到新的连接线路。')
+    expect(restartable).toContain('data-testid="home-route-restart-codex-desktop"')
+    expect(restartable).toContain('>帮我重开 Codex 桌面端<')
+    expect(restartable).toContain('data-testid="home-route-restart-dismiss"')
+    const mac = render({}, undefined, {
+      bootstrap: routeRestartBootstrap({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }),
+      onRestartCodexDesktop: () => undefined,
+    })
+    expect(mac).toContain('Codex 桌面端只关窗口不算，要在它的窗口里按 Command + Q 完全退出再打开。')
+    expect(mac).not.toContain('home-route-restart-codex-desktop')
+  })
+
+  it('shows every failure in the banner again, route changes included', () => {
     const markup = render({}, undefined, {
       relayFallback: true,
       bootstrap: {
         phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [codexDeferred, { provider: 'claude', message: '当前分组未返回可用模型' }], routeDeferred: ['codex'] }),
+        result: bootstrapResult({ failed: [{ provider: 'claude', message: '当前分组未返回可用模型' }] }),
       },
       onBootstrapRetry: () => undefined,
     })
     expect(markup).toContain(fallbackNotice)
     expect(markup).toContain('当前分组未返回可用模型')
-    expect(markup).not.toContain('连接线路暂未改动')
     expect(markup).toContain('>重新同步<')
-  })
-
-  it('lets the all-done line go when only the tools waiting to follow the fallback are left', () => {
-    const markup = render({}, undefined, {
-      relayFallback: true,
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt: Date.now() - 60_000,
-        result: bootstrapResult({ configured: ['claude'], failed: [codexDeferred], routeDeferred: ['codex'] }),
-      },
-      onBootstrapRetry: () => undefined,
-    })
-    expect(markup).toContain(fallbackNotice)
-    expect(markup).not.toContain('已完成 1 组工具的 Key 配置。')
-  })
-
-  it('names each deferred tool as before when no fallback is going on', () => {
-    const markup = render({}, undefined, {
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [codexDeferred], routeDeferred: ['codex'] }),
-      },
-      onBootstrapRetry: () => undefined,
-    })
-    expect(markup).not.toContain(fallbackNotice)
-    expect(markup).not.toContain('home-relay-fallback')
-    expect(markup).toContain('连接线路暂未改动')
   })
 })
 

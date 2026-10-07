@@ -613,6 +613,7 @@ describe('createSystemService', () => {
     explicit?: boolean
     report?: RunningToolsReport | Error
     routing?: RelayEndpointRoutingSnapshot
+    runtimeLog?: { log: ReturnType<typeof vi.fn> }
   } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-route-migration-'))
     temporaryDirectories.push(root)
@@ -643,6 +644,7 @@ describe('createSystemService', () => {
       relayFetch, inspectRunningToolsForTemplateFill: inspectRunning,
       resolveCliInstallation: async () => null,
       inspectCodexDesktopForModelCatalog: async () => ({ installed: false, version: null }),
+      ...(options.runtimeLog ? { runtimeLog: options.runtimeLog as unknown as SystemServiceOptions['runtimeLog'] } : {}),
     })
     function files(): Record<string, string> {
       const result: Record<string, string> = {}
@@ -656,83 +658,82 @@ describe('createSystemService', () => {
       collect(root)
       return result
     }
-    return { provider, service, inspectRunning, files, account,
+    return { provider, service, inspectRunning, relayFetch, files, account,
       save: (automatic = true) => service.saveConfig({ provider, apiKey: '', model: 'fixture-model', mode: 'merge' },
         false, undefined, { source: 'account', automatic }) }
   }
 
+  // #941：工具开着也照样跟着换线路，重开它才用上新地址；问它开没开、提示重开是渲染层写完以后的事。
   it.each([
-    { label: 'a CLI starts during the model query', report: { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false } },
-    { label: 'the CLI state becomes unknown', report: { running: [], unknown: ['codex'], codexDesktopRunning: false, canRestartCodexDesktop: false } },
-    { label: 'Codex desktop starts during the model query', report: { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false } },
+    { label: 'a CLI is open', report: { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false } },
+    { label: 'the CLI state is unknown', report: { running: [], unknown: ['codex'], codexDesktopRunning: false, canRestartCodexDesktop: false } },
+    { label: 'Codex desktop is open', report: { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false } },
     { label: 'Codex desktop cannot be checked', report: { running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false } },
     { label: 'the process probe fails', report: new Error('fixture process probe failed') },
   ] satisfies Array<{ label: string; report: RunningToolsReport | Error }>)(
-    'retains native files and ownership during automatic route migration when $label', async ({ report }) => {
+    'follows the current line during automatic route migration when $label', async ({ report }) => {
       const f = await automaticRouteFixture({ report })
-      const before = f.files()
-      await expect(f.save()).rejects.toThrow('已保留原配置')
-      expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
-      expect(f.files()).toEqual(before)
+      await f.save()
+      expect(f.inspectRunning).not.toHaveBeenCalled()
+      expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
       expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
     },
   )
 
   it.each(['claude', 'codex', 'gemini', 'grok'] satisfies ProviderId[])(
-    'checks that %s stayed closed before committing an explicit automatic route migration', async (provider) => {
+    'moves %s to an explicitly chosen line through an automatic write', async (provider) => {
       const f = await automaticRouteFixture({ provider })
       await f.save()
-      expect(f.inspectRunning).toHaveBeenCalledWith([provider])
       expect(f.service.getConfig(false).providers[provider].actualBaseUrl).toBe(relayProviderBaseUrls('solov', 'direct')[provider])
       expect(f.service.getConfig(false).providers[provider].configurationOwnership).toBe('account')
     },
   )
 
-  it('migrates a CLI once auto has settled on a line, through the same closed-tool gate', async () => {
+  it('migrates a CLI once auto has settled on a line', async () => {
     const f = await automaticRouteFixture({ routing: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'direct', settled: true } })) })
     await f.save()
-    expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
     expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
     expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
-  it('moves a CLI back to the default line after auto falls back, and keeps it while the tool is open', async () => {
-    const fallback = () => createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'primary', settled: true } }))
-    const open = await automaticRouteFixture({ source: 'direct', routing: fallback(), report: {
-      running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false,
-    } })
-    const before = open.files()
-    await expect(open.save()).rejects.toThrow('已保留原配置')
-    expect(open.files()).toEqual(before)
-    const closed = await automaticRouteFixture({ source: 'direct', routing: fallback() })
-    await closed.save()
-    expect(closed.inspectRunning).toHaveBeenCalledWith(['codex'])
-    expect(closed.service.getConfig(false).providers.codex.actualBaseUrl).toBe(providerBaseUrls.codex)
-  })
-
-  it('moves a CLI still on the retired IP test entry to the direct domain', async () => {
-    const f = await automaticRouteFixture({ source: 'historical' })
+  it('keeps a recognized line while auto has not settled yet', async () => {
+    const f = await automaticRouteFixture({ source: 'direct', routing: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'primary', settled: false } })) })
     await f.save()
-    expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
     expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+  })
+
+  it('moves a CLI back to the default line after auto falls back, even while the tool is open', async () => {
+    const f = await automaticRouteFixture({ source: 'direct', report: {
+      running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false,
+    }, routing: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: 'primary', settled: true } })) })
+    await f.save()
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe(providerBaseUrls.codex)
     expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
-  it('protects the retired IP test entry before changing it to the direct domain', async () => {
+  it('moves a CLI still on the retired IP test entry to the direct domain, even while Codex desktop is open', async () => {
     const f = await automaticRouteFixture({ source: 'historical', report: {
       running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false,
     } })
-    const before = f.files()
-    await expect(f.save()).rejects.toThrow('已保留原配置')
-    expect(f.files()).toEqual(before)
+    await f.save()
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
-  it('revalidates the account after the final automatic route migration process probe', async () => {
+  it('logs which line a followed configuration came from and went to, without addresses', async () => {
+    const log = vi.fn()
+    const f = await automaticRouteFixture({ runtimeLog: { log } })
+    await f.save()
+    expect(log).toHaveBeenCalledWith('info', 'config', 'route.followed', '工具配置已换到当前连接线路', { provider: 'codex', from: 'primary', to: 'direct' })
+    expect(JSON.stringify(log.mock.calls)).not.toContain('solov.cc')
+  })
+
+  it('refuses an automatic route migration when the account changes during the model query', async () => {
     const f = await automaticRouteFixture()
     const before = f.files()
-    f.inspectRunning.mockImplementationOnce(async () => {
+    f.relayFetch.mockImplementationOnce(async () => {
       f.account.owner = JSON.stringify(['solov', 10])
-      return { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
+      return Response.json({ data: [{ id: 'fixture-model' }] })
     })
     await expect(f.save()).rejects.toThrow('账号已变化')
     expect(f.files()).toEqual(before)
@@ -742,10 +743,12 @@ describe('createSystemService', () => {
     { label: 'manual account configuration', source: 'primary' as const, explicit: true, automatic: false },
     { label: 'ordinary account refresh on the active route', source: 'direct' as const, explicit: true, automatic: true },
     { label: 'a known native route without an explicit line choice', source: 'direct' as const, explicit: false, automatic: true },
-  ])('keeps existing $label outside the migration-only running gate', async ({ source, explicit, automatic }) => {
-    const f = await automaticRouteFixture({ source, explicit, report: new Error('must not be used') })
+  ])('saves $label without asking which tools are open or logging a followed line', async ({ source, explicit, automatic }) => {
+    const log = vi.fn()
+    const f = await automaticRouteFixture({ source, explicit, report: new Error('must not be used'), runtimeLog: { log } })
     await f.save(automatic)
     expect(f.inspectRunning).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalledWith('info', 'config', 'route.followed', expect.anything(), expect.anything())
   })
 
   it('saves provider configuration under the injected roots', async () => {

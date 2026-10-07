@@ -239,8 +239,8 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants,
-  type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteEndpointIdForBaseUrl, relaySiteForProviderBaseUrl,
+  relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -7192,9 +7192,12 @@ export function createSystemService(
       const model = payload.model.trim()
       const activeSite = providerRelaySite(payload.provider, before)
       const previousRoute = relaySiteForProviderBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl)
-      const automaticRouteMigration = ownership?.automatic === true
-        && relayRouting.selection(activeSite.id) !== undefined && previousRoute !== null
+      // 线路换了、自动写入跟着换过去的那一笔。工具开着也照样改（#941）：开着的进程要重开才用上新地址，
+      // 由渲染层在写完以后看它开没开、提示客户重开；不改的话它会一直停在原来那条线路上。
+      const followedRoute = ownership?.automatic === true && previousRoute !== null
         && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
+        ? relayRouting.selection(activeSite.id)
+        : undefined
       const assertUnchanged = () => {
         assertOwner()
         if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(payload.provider))) {
@@ -7215,20 +7218,6 @@ export function createSystemService(
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       // 同上：要问一遍 Codex 命令行是哪一版，也放在「校验没变」之前。
       const codexModelCatalog = payload.provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
-      if (automaticRouteMigration) {
-        // A Start Menu launch can happen while the models request is in flight.
-        // Probe after asynchronous preparation, before invalidating ownership or
-        // changing any native file. This is a process snapshot, not an OS lock.
-        let stopped = false
-        try {
-          const report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([payload.provider])
-          stopped = !report.running.includes(payload.provider) && !report.unknown.includes(payload.provider)
-            && (payload.provider !== 'codex' || report.codexDesktopRunning === false)
-        } catch {
-          // A failed probe must preserve the account's working configuration.
-        }
-        if (!stopped) throw new Error('工具可能还开着，已保留原配置；请完全退出工具后重新同步连接线路')
-      }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.
@@ -7268,6 +7257,14 @@ export function createSystemService(
       // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner, relayTemplateRevision)
       if (shadowRepair) runtimeLog?.log('info', 'config', 'codex-provider.auto-repaired', '开机时把 Codex 认不出的连接设置改好了，原来的设置已备份', { provider: payload.provider })
+      // 客服从日志看得出工具配置是什么时候、从哪条线路换到哪条的：只记线路 id，不记地址。
+      if (followedRoute) {
+        runtimeLog?.log('info', 'config', 'route.followed', '工具配置已换到当前连接线路', {
+          provider: payload.provider,
+          from: relaySiteEndpointIdForBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl),
+          to: followedRoute,
+        })
+      }
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)

@@ -16,9 +16,10 @@ import {
   configurationFailureMessages,
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
+  afterCodexDesktopRestart,
   relayFallbackActive,
-  routeDeferredMessage,
   skippedNamedProviders,
+  withoutRouteRestart,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
   type AccountBootstrapResult,
@@ -856,7 +857,7 @@ describe('explicit applied connection routes on restore', () => {
     expect(accountBootstrapPlan(system(['codex']), routedConfig(), { ...applied, officialProviders: ['codex'] }, 'restore', null).targets).toEqual([])
   })
 
-  it('uses ordinary automatic configure after the running check and holds launch while the scan is pending', async () => {
+  it('writes a route change through ordinary automatic configure and holds launch while the scan is pending', async () => {
     const { current, api } = fixture()
     const progress: AccountBootstrapProgress[] = []
     api.scanSystem.mockImplementation(async () => {
@@ -864,77 +865,79 @@ describe('explicit applied connection routes on restore', () => {
       return system(['codex'])
     })
     const result = await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, null)
-    expect(api.inspectRunningTools).toHaveBeenCalledWith(['codex'])
     expect(api.configureManagedCliKeys).toHaveBeenCalledWith({ providers: ['codex'], preferredModels: { codex: 'kept-model' } })
-    expect(api.inspectRunningTools.mock.invocationCallOrder[0]).toBeLessThan(api.configureManagedCliKeys.mock.invocationCallOrder[0])
+    // 写完才问开没开：问的是要不要提示重开，不是能不能改。
+    expect(api.inspectRunningTools).toHaveBeenCalledWith(['codex'])
+    expect(api.configureManagedCliKeys.mock.invocationCallOrder[0]).toBeLessThan(api.inspectRunningTools.mock.invocationCallOrder[0])
     expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
     expect(result).toMatchObject({ configured: ['codex'], failed: [] })
-    expect(result).not.toHaveProperty('routeDeferred')
+    expect(result).not.toHaveProperty('routeRestart')
   })
 
+  // #941：以前开着的工具先不改，客户不关工具、不点「重新同步」，它就一直停在原来那条线路上。
   it.each([
     { running: ['codex' as ProviderId], unknown: [], codexDesktopRunning: false },
     { running: [], unknown: ['codex' as ProviderId], codexDesktopRunning: false },
     { running: [], unknown: [], codexDesktopRunning: true },
     { running: [], unknown: [], codexDesktopRunning: null },
-  ])('defers a route change when the tool may still be running: %j', async (report) => {
+  ])('follows the line even when the tool may still be running and asks for a restart: %j', async (report) => {
     const { current, api } = fixture()
     api.inspectRunningTools.mockResolvedValue({ ...report, canRestartCodexDesktop: true })
     const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('关闭') })])
-    expect(result.routeDeferred).toEqual(['codex'])
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({ providers: ['codex'], preferredModels: { codex: 'kept-model' } })
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result).toMatchObject({ configured: ['codex'], failed: [] })
+    expect(result.routeRestart).toEqual({ ...report, canRestartCodexDesktop: true })
   })
 
-  it('tells a Mac user to quit the Codex desktop app with Command + Q when only it holds the route back', async () => {
-    const { current, api } = fixture()
-    api.inspectRunningTools.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
-    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(result.failed).toEqual([{ provider: 'codex', message: 'Codex 桌面端还开着，连接线路暂未改动；只关窗口不算，要在它的窗口里按 Command + Q 完全退出，再点「重新同步」' }])
-    expect(result.networkBlocked).toBe(false)
-  })
-
-  const desktopDeferred = 'Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
-  const cliDeferred = 'Codex CLI 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
-  it.each([
-    ['the desktop app when it runs where it can be restarted', { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }, desktopDeferred],
-    ['the desktop app when a Mac cannot tell whether it runs', { running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false }, desktopDeferred],
-    ['the CLI when it runs next to the Mac desktop app', { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }, cliDeferred],
-    ['the CLI when it cannot be told apart', { running: [], unknown: ['codex'], codexDesktopRunning: false, canRestartCodexDesktop: false }, cliDeferred],
-    ['the CLI when process inspection failed', null, cliDeferred],
-    ['the CLI when the running-tools capability is missing', undefined, cliDeferred],
-  ] as Array<[string, RunningToolsReport | null | undefined, string]>)('keeps the closing wording and names %s', (_name, report, message) => {
-    expect(routeDeferredMessage('codex', report)).toBe(message)
-  })
-
-  it('leaves the deferral wording of the other tools alone', () => {
-    expect(routeDeferredMessage('claude', { running: ['claude'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }))
-      .toBe('Claude Code 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步')
-  })
-
-  it('keeps the old route when process inspection fails and rejects a reported success that did not migrate it', async () => {
+  it('still follows the line when the process check fails, and words the restart as a maybe', async () => {
     const { current, api } = fixture()
     api.inspectRunningTools.mockRejectedValueOnce(new Error('process access denied'))
-    const deferred = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(deferred.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
-    api.configureManagedCliKeys.mockImplementation(async () => ({ configured: ['codex' as ProviderId], failed: [] }))
-    const unverified = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(unverified.configured).toEqual([])
-    expect(unverified.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('线路') })])
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result.configured).toEqual(['codex'])
+    expect(result.routeRestart).toEqual({ running: [], unknown: ['codex'], codexDesktopRunning: null, canRestartCodexDesktop: false })
+    expect(describeAccountBootstrapResult('restore', result).message).toContain('跟着换了连接线路，提示重开：如果 Codex CLI、Codex 桌面端 还开着，要关掉重开才会换到新的连接线路。')
   })
 
-  it('does not write a route when the running-tools capability is missing', async () => {
+  it('follows the line without a restart prompt when the running-tools capability is missing', async () => {
     const { current, api } = fixture()
     const { inspectRunningTools: _unused, ...withoutInspection } = api
     const result = await bootstrapAccountTools(withoutInspection, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result.configured).toEqual(['codex'])
+    expect(result).not.toHaveProperty('routeRestart')
+  })
+
+  it('rejects a reported success that did not move the route', async () => {
+    const { current, api } = fixture()
+    api.configureManagedCliKeys.mockImplementation(async () => ({ configured: ['codex' as ProviderId], failed: [] }))
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
     expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'codex', message: configurationFailureMessages.routeMismatch }])
+    expect(api.inspectRunningTools).not.toHaveBeenCalled()
+    expect(result).not.toHaveProperty('routeRestart')
+  })
+
+  it('does not ask which tools are open when no route changed', async () => {
+    const { current, api } = fixture()
+    current.providers.codex.actualBaseUrl = direct.codex
+    api.getConfig.mockImplementation(async () => structuredClone(current))
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
+    expect(api.configureManagedCliKeys).toHaveBeenCalled()
+    expect(api.inspectRunningTools).not.toHaveBeenCalled()
+    expect(result).not.toHaveProperty('routeRestart')
+  })
+
+  it('drops the restart prompt when dismissed, and stops naming the Codex desktop app once it was restarted', () => {
+    const base = { readyKeys: [], configured: ['codex' as ProviderId], failed: [], skipped: [], warnings: [], networkBlocked: false }
+    const both: AccountBootstrapResult = { ...base, routeRestart: { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
+    expect(withoutRouteRestart(both)).toEqual(base)
+    expect(afterCodexDesktopRestart(both).routeRestart).toEqual({ running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true })
+    const desktopOnly: AccountBootstrapResult = { ...base, routeRestart: { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true } }
+    expect(afterCodexDesktopRestart(desktopOnly)).toEqual(base)
+    expect(afterCodexDesktopRestart(base)).toBe(base)
   })
 })
 

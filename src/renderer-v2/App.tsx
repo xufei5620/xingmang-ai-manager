@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, afterCodexDesktopRestart, bootstrapAccountTools, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, withoutRouteRestart, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -664,7 +664,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   /**
    * 「自动」那条线路查出了结论、退回默认线路或切回直连（直连适配第二步）：设置里的线路跟着
    * 重读，另外三个客户端重新检测一遍（检测时跟着换，第四十三批 A）。工具配置还停在另一条线路
-   * 上的，照开机那一档迁过去，开着的先不改、首页提示；没有要迁的就不去同步 Key。
+   * 上的，照开机那一档迁过去，开着的也改、首页提示重开（#941）；没有要迁的就不去同步 Key。
    */
   const followRelayRoute = useCallback(async () => {
     const [next, config] = await Promise.all([app.readSettings(), native.getConfig()]).catch(() => [null, null] as const)
@@ -1621,13 +1621,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               </Suspense>
             </div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
-              relayFallback={session.authenticated && relayFallbackActive(settings) && (Boolean(accountBootstrap?.scope === scope && accountBootstrap.result?.routeDeferred?.length)
-                || toolbox.externalClients.some((client) => client.running && client.routePending))}
+              relayFallback={session.authenticated && relayFallbackActive(settings) && toolbox.externalClients.some((client) => client.running && client.routePending)}
+              onRestartCodexDesktop={() => void perform('重开 Codex 桌面端', async () => {
+                if (await launch('codexDesktop', 'restart')) setAccountBootstrap((current) => current?.result ? { ...current, result: afterCodexDesktopRestart(current.result) } : current)
+              })}
+              onDismissRouteRestart={() => setAccountBootstrap((current) => current?.result ? { ...current, result: withoutRouteRestart(current.result) } : current)}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => {
                 refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
-                // 上一轮有工具开着、连接线路先没改：退出工具后点这里就是要它跟着换（首页那句提示这么说的）。
-                if (session.account && accountBootstrap?.scope === scope && accountBootstrap.result?.routeDeferred?.length) void runAccountBootstrap(session.account.userId, 'restore', true)
               }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}

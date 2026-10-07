@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, KeyRound, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, RunningToolsReport } from '../../../../electron/ipc-contract'
+import { describeRunningTools, offersCodexDesktopRestart } from '../../../../electron/running-tools'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
@@ -108,10 +109,15 @@ export interface HomeProps {
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string }) | null
   onBootstrapRetry?(): void
   /**
-   * 「自动」退回了默认线路，还有工具开着、停在直连上（account-bootstrap.ts 的 relayFallbackActive
-   * 加上这一轮先没迁的）：上方说一句总的，横幅里不再逐个工具说。缺省 = 不提示（旧行为）。
+   * 「自动」退回了默认线路，还有另外三个客户端开着、停在直连上（account-bootstrap.ts 的 relayFallbackActive
+   * 加上它们的 routePending）：上方说一句总的。缺省 = 不提示（旧行为）。四个命令行工具开着也照样跟着换，
+   * 不在此列，见下面 routeRestart 那句。
    */
   relayFallback?: boolean
+  /** 跟着换了连接线路、还开着的工具，替客户重开 Codex 桌面端（只有能重开时才给）；缺省 = 不给这颗按钮。 */
+  onRestartCodexDesktop?(): void
+  /** 「要重开」那句客户点了「知道了」；缺省 = 不给这颗按钮，那句一直摆到下一轮同步。 */
+  onDismissRouteRestart?(): void
 }
 
 type ExternalPresentation = ReturnType<typeof presentExternalClients>[number]
@@ -154,6 +160,15 @@ const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常
 
 /** 直连适配方案第六节第 4 条的原话（yoyo 10-6 回「改」）。 */
 const relayFallbackNotice = '直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换'
+
+/**
+ * 连接线路换了，工具配置开着也照样跟着改好（#941）；开着的进程还拿着原来的地址，要重开才走新线路。
+ * 只对开着的、看不出开没开的说（running-tools.ts 的说法），都关着就不说。
+ */
+export function routeRestartNotice(report: RunningToolsReport | undefined): string {
+  const restart = report ? describeRunningTools(report, 'route') : ''
+  return restart ? `连接线路换了，工具配置已经跟着改好。${restart}` : ''
+}
 
 /**
  * 「配置被改过」这一档必须自己解释一句：角标只说了发生什么，没说会怎样。
@@ -368,8 +383,8 @@ export function Home(props: HomeProps) {
   const tier = dollars === null || subscription ? 'neutral' : balanceTier(dollars)
   const subscriptionNotice = subscription ? subscriptionWarning(subscription, dollars) : null
   const bootstrapResult = props.bootstrap?.result
-  // 上方那句总的提示已经说了开着的工具要退出后再换线路，横幅里就不再逐个工具说一遍。
-  const bootstrapFailed = bootstrapResult?.failed.filter((entry) => !(props.relayFallback && bootstrapResult.routeDeferred?.includes(entry.provider))) ?? []
+  const bootstrapFailed = bootstrapResult?.failed ?? []
+  const routeRestart = routeRestartNotice(bootstrapResult?.routeRestart)
   const subscriptionLine = subscription ? `订阅：${subscription.name ? `${subscription.name} · ` : ''}${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : null
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
   const remainingDays = usage && balance && usage.weekQuota > 0 ? Math.max(0, Math.floor(balance.quota / (usage.weekQuota / 7))) : null
@@ -676,6 +691,11 @@ export function Home(props: HomeProps) {
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {props.relayFallback && <div role="status" className="v2-callout is-warn" data-testid="home-relay-fallback"><span>{relayFallbackNotice}</span></div>}
+    {routeRestart && <div role="status" className="v2-callout is-warn" data-testid="home-route-restart"><span>{routeRestart}</span>
+      {props.onRestartCodexDesktop && offersCodexDesktopRestart(bootstrapResult?.routeRestart) && <Button size="xs" loading={Boolean(jobs['launch:codexDesktop'])} disabled={launchBusy}
+        onClick={props.onRestartCodexDesktop} testId="home-route-restart-codex-desktop">帮我重开 Codex 桌面端</Button>}
+      {props.onDismissRouteRestart && <Button size="xs" variant="ghost" onClick={props.onDismissRouteRestart} testId="home-route-restart-dismiss">知道了</Button>}
+    </div>}
     {bootstrapResult && bootstrapNoticeShown && (bootstrapResult.configured.length || bootstrapFailed.length || bootstrapResult.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${bootstrapFailed.length || bootstrapResult.warnings.length ? 'is-warn' : ''}`} role="status">
       <span className={`v2-dot ${bootstrapFailed.length || bootstrapResult.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? offlineBootstrapNotice : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapResult.warnings.length ? ` ${bootstrapResult.warnings.join('；')}` : ''}`}</span>
       {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
