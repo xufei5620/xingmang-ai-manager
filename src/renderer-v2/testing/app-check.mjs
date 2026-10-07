@@ -66,6 +66,16 @@ async function clean(page) {
   assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
 }
 
+// 首页「最近」读完之前说不准哪个工具聊过，第一次点「打开」照旧弹选择框；读完了、这个工具
+// 没聊过也没选过文件夹，「打开」才直接替用户建项目文件夹（已知40）。
+async function recentRead(page) {
+  await page.waitForFunction(() => {
+    const card = document.querySelector('[data-testid="home-recent-card"]')
+    return Boolean(card) && !card.textContent.includes('正在读取最近记录')
+  })
+}
+const starterFolder = 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project'
+
 const defaultSupportUrl = 'https://work.weixin.qq.com/kfid/kfc3ac7eece5344c034'
 const historicalSupportUrl = 'https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4'
 
@@ -786,6 +796,7 @@ test('launch and config actions use the original typed desktop and CLI endpoints
   const page = await open('allInstalled=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
     const providers = ['claude', 'codex', 'gemini', 'grok']
     for (const provider of providers) {
       const launchCount = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)
@@ -797,8 +808,9 @@ test('launch and config actions use the original typed desktop and CLI endpoints
     const calls = await page.evaluate(() => window.v2Test.calls)
     const choices = calls.filter((entry) => entry.method === 'chooseWorkspace')
     const launches = calls.filter((entry) => entry.method === 'launchCli')
-    assert.equal(choices.length, 4)
-    assert.deepEqual(launches.map((entry) => entry.args), providers.map((provider) => [provider, 'C:\\Selected Project']))
+    // 四个工具都没聊过、也没选过文件夹：「打开」替用户建项目文件夹，建不成才弹选择框（已知40）。
+    assert.deepEqual(choices.map((entry) => entry.args), providers.map(() => [{ createStarter: true, firstOpen: true }]))
+    assert.deepEqual(launches.map((entry) => entry.args), providers.map((provider) => [provider, starterFolder]))
     for (let index = 0; index < launches.length; index += 1) {
       assert.ok(calls.indexOf(choices[index]) < calls.indexOf(launches[index]))
     }
@@ -1541,24 +1553,79 @@ test('deleting a session asks first, then removes it from the list and the home 
   } finally { await page.close() }
 })
 
-test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
+test('a new user opens a CLI in a folder the app creates and can still pick one from the menu (known 40)', async () => {
   const page = await open('allInstalled=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    // 没有最近目录时「打开」旁边没有下拉，入口在「更多操作」里。
+    await recentRead(page)
+    // 没有最近目录时「打开」旁边没有下拉，按钮还是「打开」。
     assert.equal(await page.getByTestId('tool-codex-workspaces').count(), 0)
+    assert.equal(await page.getByTestId('tool-codex-primary').innerText(), '打开')
+    // 「⋯」里的「新建项目文件夹并打开」换成「选择其他目录…」：「打开」已经替人新建了。
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
-    await page.getByTestId('tool-codex-new-workspace').click()
+    assert.equal(await page.getByTestId('tool-codex-new-workspace').count(), 0)
+    assert.equal(await page.getByTestId('tool-codex-choose-workspace').innerText(), '选择其他目录…')
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-codex-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const calls = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true }]])
-    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
-      [['codex', 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project']])
-    // Codex 桌面端自己管工作区，不给这个入口。
-    await page.keyboard.press('Escape')
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, firstOpen: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['codex', starterFolder]])
+    // 想用自己的文件夹：从「⋯」选，弹的是原来的选择框。
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const picked = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(picked.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, firstOpen: true }], []])
+    assert.deepEqual(picked.filter((entry) => entry.method === 'launchCli').at(-1).args, ['claude', 'C:\\Selected Project'])
+    // Codex 桌面端自己管工作区，这两个入口都不给。
     await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
     assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
+    assert.equal(await page.getByTestId('tool-codexDesktop-choose-workspace').count(), 0)
     await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a CLI with chats older than the home list still asks for a folder on its first open (known 40)', async () => {
+  const page = await open('allInstalled=1&codexOlderSessions=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    // 首页只取最近 60 条，Codex 那两条挤不进来；整份记录里有它，就不是新手，照旧弹选择框。
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['codex', 'C:\\Selected Project']])
+    // 没聊过的 Claude Code 照样替人新建。
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const both = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(both.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[], [{ createStarter: true, firstOpen: true }]])
+    assert.deepEqual(both.filter((entry) => entry.method === 'launchCli').at(-1).args, ['claude', starterFolder])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('after the first open the button names the created folder and keeps the full dropdown (known 40)', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent === '打开 my-project')
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
+    await page.getByTestId('tool-codex-workspaces').getByRole('button', { name: '换一个目录' }).click()
+    assert.deepEqual(await page.getByRole('menuitem').allInnerTexts(), [starterFolder, '选择其他目录…', '新建项目文件夹并打开'])
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-claude-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)), [['codex', starterFolder], ['claude', starterFolder]])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1566,7 +1633,11 @@ test('a new user can open a CLI in a folder the app creates, without the directo
 test('a folder picked for one CLI opens the others there without asking again', async () => {
   const page = await open('launchRemembers=1')
   try {
-    await page.getByTestId('tool-codex-primary').click()
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    // 第一次点「打开」会替人新建（已知40）；自己挑文件夹从「⋯」里选。
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const claude = page.getByTestId('tool-claude-primary')
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
@@ -1619,7 +1690,10 @@ test('a folder picked on home opens CLIs from the tray and shortcuts, even when 
   const page = await open('launchRemembers=1')
   const sessionReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderSessions').length)
   try {
-    await page.getByTestId('tool-codex-primary').click()
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-choose-workspace').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
     // 上一次打开收完尾再发托盘事件：还在打开时，requestLaunch 会把新来的请求直接丢掉。
     await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
@@ -1853,6 +1927,46 @@ test('a switch goes on to install when the uninstall leaves old version files be
       { method: 'uninstallCli', args: ['claude', { reinstall: true }] },
       { method: 'installCli', args: ['claude', '2.0.0'] },
     ])
+    await clean(page)
+  } finally { await page.close() }
+})
+// 已知48「帮我清理」：主进程按卸载时记下的文件去删，删不掉就留着框说还剩几个。
+test('the leftover dialog cleans up through the main process and says what is still left', async () => {
+  const page = await open('cliUpdate=1&nativeInstall=1&uninstallLeftovers=1')
+  try {
+    await startManagedSwitch(page)
+    const dialog = page.getByRole('dialog', { name: 'Claude Code 还有文件没删干净', exact: true })
+    await dialog.getByText('点「帮我清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在普通 PowerShell里自己执行。', { exact: true }).waitFor()
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    // 第一次那个文件还被占着：框留着，红字说还剩几个、接下来怎么办。
+    await expect(dialog.getByTestId('manual-uninstall-cleanup-problem'))
+      .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「帮我清理」；还是不行，请联系客服。')
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    await waitForToast(page, '清理好了。')
+    await dialog.waitFor({ state: 'detached' })
+    // 界面只说是哪个工具，删哪几个文件由主进程自己定。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cleanUninstallLeftovers')), [
+      { method: 'cleanUninstallLeftovers', args: ['claude'] },
+      { method: 'cleanUninstallLeftovers', args: ['claude'] },
+    ])
+    await clean(page)
+  } finally { await page.close() }
+})
+test('the leftover dialog of the maintenance page cleans up the same way', async () => {
+  const page = await open('allInstalled=1&uninstallLeftovers=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    await expect(page.getByTestId('maintenance-state-claude')).toHaveText('已安装')
+    await page.getByRole('button', { name: 'Claude Code 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '卸载工具', exact: true }).click()
+    await page.getByRole('dialog', { name: '卸载工具？', exact: true }).getByRole('button', { name: '确认卸载', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Claude Code 还有文件没删干净', exact: true })
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    await expect(dialog.getByTestId('manual-uninstall-cleanup-problem')).toContainText('还有 1 个文件没删掉。')
+    await dialog.getByTestId('manual-uninstall-cleanup').click()
+    await waitForToast(page, '清理好了。')
+    await dialog.waitFor({ state: 'detached' })
     await clean(page)
   } finally { await page.close() }
 })
@@ -2488,10 +2602,12 @@ test('a connected tool opens while the last saved scan is still on screen, and i
     // 上次的结果里 Grok 还没装：装不装要等这一轮检测说了算。
     assert.equal(await page.getByTestId('tool-grok-primary').innerText(), '安装')
     assert.equal(await page.getByTestId('tool-grok-primary').isDisabled(), true)
+    // Claude Code 没聊过、也没选过文件夹：第一次点「打开」替人建项目文件夹（已知40）。
+    await recentRead(page)
     await page.getByTestId('tool-claude-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const calls = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\Selected Project']])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', starterFolder]])
     assert.equal(await page.getByTestId('home-cached-scan').count(), 1, '检测还没跑完就已经打开了')
     await page.evaluate(() => window.v2Test.releaseScan())
     await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
@@ -2591,7 +2707,10 @@ test('a folder picked while the startup scan runs stays on the button after the 
   try {
     await page.getByTestId('home-cached-scan').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
-    await page.getByTestId('tool-claude-primary').click()
+    // 第一次点「打开」会替人新建（已知40）；自己挑文件夹从「⋯」里选。
+    await recentRead(page)
+    await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
     // 账号这一轮写完 Key 也会重读一次配置，先按住它，看的是检测落地这一下本身。
     await page.evaluate(() => window.v2Test.holdNextConfigSave())
@@ -3632,6 +3751,35 @@ test('the update failure bubble retries the failed step without a detour', async
     await page.getByTestId('page-updates').waitFor()
     await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
     assert.equal(await calls('installUpdate'), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知31：更新页「确认重启安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
+// 客户在那一句里点了「继续安装」：确认框关掉，不说「安装请求已提交」，新版本留着。
+test('the updates page asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
+  const page = await open('installPostponed=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const restart = updates.getByRole('button', { name: '重启安装', exact: true })
+    // 更新页进来先自己读一次状态（假数据里是没开自动更新），读回来之前推过去的会被它盖掉：推到按钮出来为止。
+    await expect.poll(async () => {
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, error: null, development: true,
+      }))
+      return restart.count()
+    }).toBe(1)
+    await restart.click()
+    const confirm = page.getByRole('dialog', { name: '重启并安装更新？' })
+    await confirm.getByRole('button', { name: '确认重启安装', exact: true }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
+    await restart.waitFor()
+    await assertNoToast(page, '安装请求已提交')
     await clean(page)
   } finally { await page.close() }
 })
@@ -6377,6 +6525,44 @@ test('an uninstall that hits a running tool offers 重试, which uninstalls agai
     assert.equal(await failure.count(), 0)
     assert.equal(await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli').map((entry) => entry.args[0])), ['grok', 'grok'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知32：卸载其实做成了，紧接着的检测没读到。以前弹红色的「操作没有完成」、确认框也不关，
+// 客户以为没卸成又点一次。现在确认框照常关，出一条黄色提示；首页顶上检测自己的那句照旧。
+test('an uninstall that worked but whose rescan failed closes the dialog and says so instead of failing (known 32)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.evaluate(() => { window.v2Test.fail = 'scanSystem'; window.v2Test.failMessage = '检测没有完成，请重试。' })
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    await waitForToast(page, 'Grok CLI 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。')
+    await expect(page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true })).toHaveCount(0)
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    const scanFailure = page.locator('.v2-callout.is-bad', { hasText: '检测没有完成，请重试。' })
+    await scanFailure.waitFor()
+    // 照提示重新检测：读到了，Grok CLI 回到「还可以装」。
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await scanFailure.getByRole('button', { name: '重新检测', exact: true }).click()
+    await page.getByTestId('home-available').getByTestId('tool-row-grok').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'uninstallCli').map((entry) => entry.args[0])), ['grok'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知32 只管真卸掉了的：以管理员身份运行时转交给命令窗口的那种还没卸完，检测没读到照旧算没做完。
+test('a handed-off uninstall whose rescan failed still reports the failure (known 32)', async () => {
+  const page = await open('allInstalled=1&uninstallHandOff=1')
+  try {
+    await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '卸载', exact: true }).click()
+    await page.evaluate(() => { window.v2Test.fail = 'scanSystem'; window.v2Test.failMessage = '检测没有完成，请重试。' })
+    await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载工具', exact: true }).click()
+    await page.getByTestId('operation-error').getByText('检测没有完成，请重试。', { exact: true }).waitFor()
+    await assertNoToast(page, 'Grok CLI 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。')
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
     await clean(page)
   } finally { await page.close() }
 })

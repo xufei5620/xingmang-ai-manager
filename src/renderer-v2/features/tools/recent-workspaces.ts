@@ -23,6 +23,9 @@ export interface WorkspaceChoice {
 /** 首页与引导里「新建项目文件夹」入口的统一文案。 */
 export const newWorkspaceLabel = '新建项目文件夹并打开'
 
+/** 「选择其他目录…」：弹原来的目录选择器。下拉里和第一次打开前的「⋯」菜单里都用它。 */
+export const chooseWorkspaceLabel = '选择其他目录…'
+
 /** 下拉里最多放几个目录。再多用户也不会一个个看完。 */
 const RECENT_LIMIT = 5
 
@@ -86,7 +89,7 @@ export function launchWorkspaces(
 export function workspaceChoices(items: readonly RecentWorkspace[]): WorkspaceChoice[] {
   return [
     ...items.map((item) => ({ path: item.path, label: item.path })),
-    { path: null, label: '选择其他目录…' },
+    { path: null, label: chooseWorkspaceLabel },
     { path: null, label: newWorkspaceLabel, create: true },
   ]
 }

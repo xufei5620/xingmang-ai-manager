@@ -4,19 +4,22 @@ type DetailValue = boolean | number | string | null
 
 /**
  * 检查页那一行能不能「点这里就好」：主进程只在真能处理时往 details 里放 fix
- * （Codex 文件夹里有额外设置；Windows 上当前账号下设了能删的工具地址或密钥）。
+ * （Codex 文件夹里有额外设置；Windows 上当前账号下设了能删的工具地址或密钥；
+ * 个人文件夹里有一份星芒早先放、客户没改过的项目说明）。
  */
 export function diagnosticFixKind(item: { code: string; state: string; details?: Record<string, DetailValue> }): DiagnosticFixKind | null {
   if (item.state === 'pass') return null
   const fix = item.details?.fix
   if (item.code === 'CODEX_DOTENV' && fix === 'set-aside-codex-dotenv') return fix
   if (item.code === 'PROVIDER_ENVIRONMENT_OVERRIDE' && fix === 'clear-user-overrides') return fix
+  if (item.code === 'HOME_FOLDER_LEFTOVERS' && fix === 'set-aside-home-agents-md') return fix
   return null
 }
 
 export const diagnosticFixLabels: Readonly<Record<DiagnosticFixKind, string>> = {
   'set-aside-codex-dotenv': '挪开这份设置',
   'clear-user-overrides': '删掉这几项设置',
+  'set-aside-home-agents-md': '挪开这份说明',
 }
 
 export function diagnosticFixLabel(item: Parameters<typeof diagnosticFixKind>[0]): string | null {
@@ -35,11 +38,18 @@ export const diagnosticFixConfirm: Readonly<Record<DiagnosticFixKind, { title: s
     body: '会删掉你这个 Windows 账号下另外设的工具地址和密钥，整台电脑的设置不会动。删掉之后，以前靠它们连别家服务的用法就不再生效；从星芒打开的工具会用当前账号。已经开着的命令行窗口要关掉重开。',
     ok: '删掉',
   },
+  'set-aside-home-agents-md': {
+    title: '挪开这份项目说明？',
+    body: '这份文件会改个名字留在个人文件夹里，不会删掉。挪开之后，工具只看各个项目自己的说明。以后想用回来，把名字改回 AGENTS.md 就行。',
+    ok: '挪开',
+  },
 }
 
 export function diagnosticFixMessage(result: DiagnosticFixResult): string {
   if (result.kind === 'set-aside-codex-dotenv')
     return result.fixed ? '已经挪开。Codex 现在按当前账号连接。' : '没有要挪的了：这份设置已经不在了。'
+  if (result.kind === 'set-aside-home-agents-md')
+    return result.fixed ? '已经挪开。' : '没有要挪的了：这份说明已经不在了。'
   if (result.fixed)
     return result.machineRemaining
       ? '已经删掉你这个账号下的那几项。整台电脑还有同样的设置，要管理员才能改，请在「反馈」页导出报告发给客服。'

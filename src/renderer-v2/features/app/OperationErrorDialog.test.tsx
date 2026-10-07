@@ -70,6 +70,23 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toContain(directory)
   })
 
+  it('names the config file and offers retry and support instead of the install directory when a config write is refused', () => {
+    // 已知29：改用当前账号、重新写入 Key 写的是配置文件，安装目录跟它没关系，不出「复制路径」。
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件'"
+    const directory = 'C:\\Users\\peaker\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code'
+    const failure = { message: raw, tool: 'claude' as const, target: 'config' as const, retry: () => undefined }
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={failure} installDirectory={directory} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('写不进配置文件')
+    expect(markup).toContain('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
+    expect(markup).not.toContain('写不进安装目录')
+    expect(markup).not.toContain('operation-error-copyPath')
+    expect(markup).not.toContain(directory)
+    expect(operationErrorActions(failure, directory).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
+    expect(supportFailureOf(failure, new Date(0)).reason).toBe('写不进配置文件')
+  })
+
   it('hides 复制路径 when no directory is known, rather than copying an empty string', () => {
     const raw = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
     const markup = renderToStaticMarkup(

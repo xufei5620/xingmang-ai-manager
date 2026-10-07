@@ -14,6 +14,28 @@ export interface ApplicationTraySnapshot {
   update?: TrayUpdateEntry | null
   /** 缺省表示这个构建没有接加速，菜单里就不出现这两行。 */
   acceleration?: TrayAccelerationEntry | null
+  /** 星芒正挡着电脑自动睡眠时那一句（trayKeepAwakeLabel）；缺省或 null 时菜单和提示里都不出。 */
+  keepAwakeLabel?: string | null
+}
+
+export interface TrayKeepAwakeState {
+  /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
+  tools: readonly string[]
+  installing: boolean
+  downloadingUpdate: boolean
+}
+
+/**
+ * 星芒挡着电脑自动睡眠时，客户原本一点都不知道（已知35）。托盘里说一句，挡完就收起；
+ * 同一时间只说一件：终端里的工具在干活排最前，其次是装东西，最后是下载星芒新版本。
+ * Codex 自己挡睡眠，不归星芒管，不在这里说。
+ */
+export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
+  if (state.tools.length === 1) return `${state.tools[0]} 正在干活，暂不让电脑自动睡眠`
+  if (state.tools.length > 1) return 'AI 工具正在干活，暂不让电脑自动睡眠'
+  if (state.installing) return '正在安装，暂不让电脑自动睡眠'
+  if (state.downloadingUpdate) return '正在下载星芒新版本，暂不让电脑自动睡眠'
+  return null
 }
 
 /**
@@ -186,8 +208,10 @@ export function buildApplicationTrayMenu(
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
   const navigate = (target: TrayNavigationTarget) => run(async () => { await actions.onOpen(); await actions.onNavigate(target) })
+  const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
+    ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },
@@ -274,7 +298,8 @@ export function createApplicationTray(
     try {
       snapshot = copySnapshot(next ?? options.getSnapshot())
       if (!checkAvailable() || !tray) return
-      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}${snapshot.subscriptionLabel ? `\n订阅：${snapshot.subscriptionLabel}` : ''}`)
+      const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
+      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}${snapshot.subscriptionLabel ? `\n订阅：${snapshot.subscriptionLabel}` : ''}${keepAwake ? `\n${keepAwake}` : ''}`)
       tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName)))
     } catch (error) { unavailable(error) }
   }

@@ -129,7 +129,7 @@ import type { Conversation } from './features/chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './features/app/data-transfer'
 import { rememberedLoginAction, rememberedLoginForgottenMessage, sessionOnlyLoginNotice } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
-import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
+import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { describeNodeReplaceOutcome, nodeReplaceOffered } from './features/tools/node-replace'
@@ -1761,10 +1761,13 @@ export function UpdatesPage({
                 void operation.execute(
                   'install',
                   async () => {
-                    await api.installUpdate()
+                    // 有工具在装或排着队时主进程先问一句再重启（已知31）。
+                    const result = await api.installUpdate({ askIfInstalling: true })
                     setConfirm(false)
+                    return result
                   },
-                  '安装请求已提交',
+                  // 还有工具在装、客户在问的那一句里点了「继续安装」：这次不装，回到原来的样子（已知31）。
+                  (result) => (result.postponed ? null : '安装请求已提交'),
                 )
               }
             >
@@ -2435,13 +2438,14 @@ export function MaintenancePage({
                       if (result.outcome === 'manual-required') {
                         // The backend text promises a copyable cleanup command,
                         // so it has to reach a surface that can show one.
-                        setManualUninstall({
-                          name:
+                        setManualUninstall(
+                          manualUninstallState(
                             tools.find((tool) => tool.id === remove)?.name ??
+                              remove,
                             remove,
-                          reason: result.manualHelp.reason,
-                          manualCommand: result.manualHelp.manualCommand,
-                        })
+                            result.manualHelp,
+                          ),
+                        )
                         setRemove(null)
                         // 程序已经卸掉了一部分，首页那份也要重查。
                         onSystemChanged?.()
@@ -2478,6 +2482,7 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+          cleanUp={(tool) => api.cleanUninstallLeftovers(tool)}
         />
       )}
       {nodeReplaceOpen && (

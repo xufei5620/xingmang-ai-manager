@@ -100,6 +100,7 @@ import type {
 import type {
   AppConfigSummary as MainAppConfigSummary,
   CliLaunchResult as MainCliLaunchResult,
+  CliLeftoverCleanupResult as MainCliLeftoverCleanupResult,
   CliStatus as MainCliStatus,
   CliUninstallOptions as MainCliUninstallOptions,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
@@ -275,6 +276,14 @@ export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
 export type UpdateDiskShortfall = MainUpdateDiskShortfall
 export type UpdateDownloadOptions = MainUpdateDownloadOptions
+/** `update:install` 的可选参数。缺省 = 旧行为：不问，直接交给安装程序。 */
+export interface UpdateInstallOptions {
+  /**
+   * 还有工具在装或排着队时，先问退出时那一句（已知31）。只有更新页「确认重启安装」带它；
+   * 「必须更新」那层提示和旧回滚界面不带，照旧直接装（托盘那条路在主进程里自己问）。
+   */
+  askIfInstalling?: boolean
+}
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -305,6 +314,7 @@ export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
+export type CliLeftoverCleanupResult = MainCliLeftoverCleanupResult
 export type CliUninstallOptions = MainCliUninstallOptions
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
@@ -314,6 +324,12 @@ export type RepositoryContext = CodexRepositoryContext
 /** `workspace:choose` 的可选参数。渲染层只能说「要新建」，路径永远由主进程决定。 */
 export interface ChooseWorkspaceOptions {
   createStarter?: boolean
+  /**
+   * 首页第一次点「打开」（已知40），和 createStarter 一起用。主进程已经记着一个还在的文件夹时
+   * 直接用它：上一次已经建好、只是没打开成，再点「打开」或「重试」不再建第二个。没有才新建；
+   * 建不成说一句，接着弹目录选择器，不然再点「打开」还是去建、还是建不成。
+   */
+  firstOpen?: boolean
 }
 
 /**
@@ -806,7 +822,10 @@ export interface XingmangInvokeContract {
   fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [retry?: boolean], ToolTemplateFillResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
-  /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
+  /**
+   * options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹；
+   * 再带 firstOpen = 首页第一次点「打开」：记着的文件夹还在就用它，建不成时接着弹选择器。
+   */
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
@@ -820,6 +839,11 @@ export interface XingmangInvokeContract {
   cancelCliInstall: IpcInvokeDefinition<'cli:cancel-install', [provider: ProviderId], InstallCancelResult>
   /** options 省略 = 只卸载；reinstall = 「换成星芒装的」那一次，主进程先看盘够不够装回来再动手。 */
   uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId, options?: CliUninstallOptions], ToolUninstallResult>
+  /**
+   * 卸载框里的「帮我清理」（已知48）：只说是哪个工具。删哪几个文件由主进程按那次卸载自己记下的定，
+   * 删之前逐个再核对；不收渲染层给的路径。
+   */
+  cleanUninstallLeftovers: IpcInvokeDefinition<'cli:clean-uninstall-leftovers', [provider: ProviderId], CliLeftoverCleanupResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
   installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>
@@ -883,7 +907,11 @@ export interface XingmangInvokeContract {
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
   checkForUpdates: IpcInvokeDefinition<'update:check', [], UpdateSnapshot>
   downloadUpdate: IpcInvokeDefinition<'update:download', [options?: UpdateDownloadOptions], UpdateSnapshot>
-  installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true }>
+  /**
+   * postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装新版本（已知31）。
+   * 缺省 = 已经交给安装程序（旧行为）。
+   */
+  installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
   listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
   getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
   exportSession: IpcInvokeDefinition<
@@ -1321,6 +1349,7 @@ export const ipcInvokeChannels = {
   installCli: 'cli:install',
   cancelCliInstall: 'cli:cancel-install',
   uninstallCli: 'cli:uninstall',
+  cleanUninstallLeftovers: 'cli:clean-uninstall-leftovers',
   checkCliUpdate: 'cli:check-update',
   getCodexSetupStatus: 'setup:codex-status',
   installCodexDesktop: 'desktop:install-codex',

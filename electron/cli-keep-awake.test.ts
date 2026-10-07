@@ -133,4 +133,66 @@ describe('createCliKeepAwake', () => {
     keepAwake.observe(event({}))
     expect(running.size).toBe(0)
   })
+
+  it('names the tools it holds for and tells the tray only when that list changes', () => {
+    const { blocker } = fakeBlocker()
+    const onChange = vi.fn()
+    const keepAwake = createCliKeepAwake({ blocker, now: () => 10, onChange })
+    expect(keepAwake.tools()).toEqual([])
+    keepAwake.observe(event({ tool: 'claude', session: 'a' }))
+    expect(keepAwake.tools()).toEqual(['claude'])
+    expect(onChange).toHaveBeenCalledTimes(1)
+    // A second Claude Code window does not change what the tray says.
+    keepAwake.observe(event({ tool: 'claude', session: 'b' }))
+    keepAwake.observe(event({ tool: 'claude', event: 'waiting', session: 'b' }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    keepAwake.observe(event({ tool: 'grok', session: 'g' }))
+    expect(keepAwake.tools()).toEqual(['claude', 'grok'])
+    expect(onChange).toHaveBeenCalledTimes(2)
+    keepAwake.observe(event({ tool: 'claude', event: 'finished', session: 'a' }))
+    expect(onChange).toHaveBeenCalledTimes(2)
+    keepAwake.observe(event({ tool: 'claude', event: 'ended', session: 'b' }))
+    expect(keepAwake.tools()).toEqual(['grok'])
+    expect(onChange).toHaveBeenCalledTimes(3)
+    keepAwake.observe(event({ tool: 'grok', event: 'finished', session: 'g' }))
+    expect(keepAwake.tools()).toEqual([])
+    expect(onChange).toHaveBeenCalledTimes(4)
+    keepAwake.dispose()
+  })
+
+  it('tells the tray when it gives sleep back after the hold limit', () => {
+    vi.useFakeTimers()
+    let now = 0
+    const { blocker } = fakeBlocker()
+    const onChange = vi.fn()
+    const keepAwake = createCliKeepAwake({ blocker, now: () => now, onChange })
+    keepAwake.observe(event({ tool: 'gemini', at: 0 }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    now = MAX_KEEP_AWAKE_MS
+    vi.advanceTimersByTime(60_000)
+    expect(keepAwake.tools()).toEqual([])
+    expect(onChange).toHaveBeenCalledTimes(2)
+    keepAwake.dispose()
+  })
+
+  it('names no tool when the system refuses to block sleep and keeps going if the tray cannot follow', () => {
+    const refusedChange = vi.fn()
+    const refused = createCliKeepAwake({
+      blocker: { start: () => { throw new Error('no power service') }, stop: vi.fn() },
+      now: () => 10,
+      onChange: refusedChange,
+    })
+    refused.observe(event({}))
+    expect(refused.tools()).toEqual([])
+    expect(refusedChange).not.toHaveBeenCalled()
+    refused.dispose()
+
+    const log = vi.fn()
+    const { blocker } = fakeBlocker()
+    const keepAwake = createCliKeepAwake({ blocker, now: () => 10, log, onChange: () => { throw new Error('tray gone') } })
+    expect(() => keepAwake.observe(event({}))).not.toThrow()
+    expect(keepAwake.holding()).toBe(true)
+    expect(log).toHaveBeenCalledWith('warn', 'cli-keep-awake.notify-failed', expect.any(String), expect.any(Object))
+    keepAwake.dispose()
+  })
 })

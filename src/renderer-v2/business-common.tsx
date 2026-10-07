@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { Button, Empty, Pill, useToast } from './ui'
 import { errors } from './registry/errors'
-import { presentOperationFailure } from './operation-error'
+import { presentOperationFailure, type OperationTarget } from './operation-error'
 import { formatCalendarTime } from './calendar-time'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
@@ -69,13 +69,20 @@ export function rawErrorMessage(error: unknown) {
  * process names the file it failed on (config-files.ts, backups.ts) and on
  * Windows that path carries the account name, so I13's redaction has to hold on
  * this side of the IPC boundary too.
+ *
+ * 空格后面还有分隔符，路径就没完：Windows 的账户名、Mac 的「Application Support」
+ * 都带空格，以前到第一个空格就停，账户名的后半截跟着上了屏
+ * （`本地配置文件 San\.claude\settings.json`）。文件夹名里不收 Windows 不许用在
+ * 文件名里的字符、引号和断句标点，所以不会一路吞进路径后面那句话或下一个带引号
+ * 的路径。最后一节照旧到空格为止：过了最后一个分隔符，分不出哪是文件名、哪是句子。
  */
 export function userFacingErrorMessage(error: unknown) {
   return rawErrorMessage(error)
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .trim()
-    .replace(/[A-Za-z]:\\(?:[^\s;；，。！？]+\\?)+/g, '本地配置文件')
-    .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
+    .replace(/[A-Za-z]:\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, '本地配置文件')
+    .replace(/\\\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, '本地配置文件')
+    .replace(/\/(?:Users|home)\/(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\/)*[^\s;；，。！？]*/g, '本地配置文件')
     .slice(0, 1_000)
 }
 
@@ -306,6 +313,8 @@ export function useOperation() {
   const [error, setError] = useState('')
   // 页头红条只认上屏那句时，落到兜底句的失败就认不出类别了；原话跟着交给 ResultNotice。
   const [detail, setDetail] = useState('')
+  // 红条上那次失败是哪个动作的（execute 的 name）：页面据此判断它写的是不是配置文件。
+  const [failed, setFailed] = useState('')
   const lock = useRef(false)
   const execute = async <T,>(
     name: string,
@@ -320,6 +329,7 @@ export function useOperation() {
     setBusy(name)
     setError('')
     setDetail('')
+    setFailed('')
     setMessage('')
     setRevealPath('')
     try {
@@ -339,6 +349,7 @@ export function useOperation() {
       const failure = failureWithDetail(cause)
       setError(failure.message)
       setDetail(failure.detail ?? '')
+      setFailed(name)
       return false
     } finally {
       finish()
@@ -352,12 +363,14 @@ export function useOperation() {
     revealPath,
     error,
     detail,
+    failed,
     execute,
     clear: () => {
       setMessage('')
       setRevealPath('')
       setError('')
       setDetail('')
+      setFailed('')
     },
   }
 }
@@ -410,8 +423,8 @@ function RevealExportedFile({
  * its wording leads and the backend sentence stays underneath, because support
  * still needs the original text.
  */
-export function FailureReason({ error, detail }: { error: string; detail?: string }) {
-  const hint = presentOperationFailure({ message: error, detail })
+export function FailureReason({ error, detail, target }: { error: string; detail?: string; target?: OperationTarget }) {
+  const hint = presentOperationFailure({ message: error, detail, target })
   return hint ? (
     <>
       <strong>{hint.title}</strong>
@@ -434,6 +447,7 @@ export function ResultNotice({
   onReveal,
   onSupport,
   retry,
+  target,
 }: {
   error?: string
   /**
@@ -448,13 +462,15 @@ export function ResultNotice({
   onSupport?: () => void
   /** 读取失败时红条右边那颗重试按钮（比如设置页的「重新读取」）；缺省 = 没有。 */
   retry?: { label: string; onClick: () => void }
+  /** 这次失败写的是工具的配置文件时为 'config'（已知29）；缺省 = 只按原话认。 */
+  target?: OperationTarget
 }) {
-  const hint = error ? presentOperationFailure({ message: error, detail }) : null
+  const hint = error ? presentOperationFailure({ message: error, detail, target }) : null
   return error ? (
     <div className="v2-business-notice is-error" role="alert">
       <Pill tone="bad">未完成</Pill>
       <span>
-        <FailureReason error={error} detail={detail} />
+        <FailureReason error={error} detail={detail} target={target} />
       </span>
       {onSupport && hint?.actions.some((action) => action.id === 'support') && (
         <Button size="sm" icon={HelpCircle} onClick={onSupport} testId="result-notice-support">
