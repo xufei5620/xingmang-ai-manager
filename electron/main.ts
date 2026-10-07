@@ -1211,7 +1211,7 @@ if (!hasSingleInstanceLock) {
     const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
     const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { log: logRelayLine })
     const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
-    // 「自动」换了线路：界面重读设置、把关着的工具迁过去（App.tsx）。窗口还没建好时不用叫，
+    // 「自动」换了线路：界面重读设置、把工具迁过去（App.tsx，开着的也迁）。窗口还没建好时不用叫，
     // 首屏读设置时读到的就是新线路。
     const unsubscribeRelayRoute = relayRouteController.subscribe(() => {
       if (!managedMainWindow || managedMainWindow.isDestroyed()) return

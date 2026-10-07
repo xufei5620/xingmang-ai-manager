@@ -1304,7 +1304,7 @@ export interface XingmangEventContract {
   /**
    * 选「自动」的站换了线路（electron/relay-route-controller.ts）：开机后第一次查出结论、直连
    * 连不上改走默认线路、直连好了切回来。载荷为空：界面重读设置里的 relayRouteLines，再把
-   * 关着的工具迁过去。
+   * 工具迁过去（开着的也迁，写完提示重开，#941）。
    */
   onRelayRouteChanged: IpcEventDefinition<'network:relay-route-changed', undefined>
 }
