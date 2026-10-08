@@ -1548,6 +1548,58 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(markup).toContain('data-testid="home-runtime-git-hint"')
   })
 
+  describe('drawing notice that asks for the runtime', () => {
+    const drawing = '星芒画图还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    function bootstrap(overrides: Partial<AccountBootstrapResult> = {}): NonNullable<HomeProps['bootstrap']> {
+      return {
+        phase: 'verifying', label: 'Key 同步完成', percent: 100, scope: 'scope',
+        result: { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false, drawingNeedsNode: drawing, ...overrides },
+      }
+    }
+
+    // yoyo 10-8（A014）：黄条说缺运行环境，Node.js 那一行却写「可选」「一般不用单独点」，客户不知道装不装。
+    it('stays off the banner while Node.js reads optional', () => {
+      for (const platform of ['windows', 'macos'] as const) {
+        const markup = render({}, undefined, { snapshot: machine(platform), bootstrap: bootstrap(), onBootstrapRetry: () => undefined })
+        expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('可选 · 未装')
+        expect(markup).not.toContain('星芒画图')
+        expect(markup).not.toContain('账号 Key 已同步')
+        expect(markup).not.toContain('>重新同步<')
+      }
+    })
+
+    it('keeps the other warnings and lets a finished key write fold away on its own', () => {
+      const markup = render({}, undefined, {
+        snapshot: machine('windows'),
+        bootstrap: bootstrap({ warnings: ['本机加密缓存：fixture'] }),
+        onBootstrapRetry: () => undefined,
+      })
+      expect(markup).toContain('本机加密缓存：fixture')
+      expect(markup).not.toContain('星芒画图')
+      expect(bootstrapNoticeExpiresAt({ ...bootstrap({ configured: ['claude'] }), finishedAt: 1_000 })).not.toBeNull()
+    })
+
+    it('comes back with Node.js marked missing once a command-line tool is installed', () => {
+      const markup = render({}, undefined, { snapshot: machine('windows', { grok: cliStatus }), bootstrap: bootstrap(), onBootstrapRetry: () => undefined })
+      expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('is-warn')
+      expect(markup).toContain(drawing)
+      expect(markup).toContain('>重新同步<')
+    })
+
+    it('does not take a failed probe for an uninstalled tool (A4)', () => {
+      const failed = { ...notInstalled, detectionFailed: true, detectionError: '本地探针暂时不可用' }
+      const markup = render({}, undefined, { snapshot: machine('windows', { claude: failed }), bootstrap: bootstrap() })
+      expect(markup).toContain(drawing)
+    })
+
+    // 装命令行工具时星芒顺带准备 Node.js，装完那一轮同步把画图接上；中途冒出「还缺运行环境」是假话。
+    it('does not show up halfway through installing a tool', () => {
+      const job = { label: '正在准备 Node.js 运行环境（1/2）', log: [] } as unknown as ToolJob
+      const markup = render({ claude: job }, undefined, { snapshot: machine('windows'), bootstrap: bootstrap() })
+      expect(markup).not.toContain('星芒画图')
+    })
+  })
+
   it('greys out the Mac Node.js paragraph without changing a word when nothing needs it', () => {
     const quiet = render({}, undefined, { snapshot: machine('macos') })
     const managed = opening(quiet, 'home-runtime-node-managed', '</p>')

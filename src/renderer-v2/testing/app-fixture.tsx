@@ -127,7 +127,7 @@ if (query.has('routedSwitch') || query.has('autoRelay')) {
 if (query.has('autoRelay')) config.providers.gemini.authType = 'gemini-api-key'
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
-  claude: ['claude-opus-4-8', 'claude-opus-5', 'fixture-model'],
+  claude: ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'fixture-model'],
   codex: ['codex-auto-review', 'gpt-6-astra', 'fixture-model'],
   gemini: ['gemini-3.7-flash', 'gemini-3.8-flash-high', 'fixture-model'],
   grok: ['grok-4', 'grok-4.6', 'fixture-model'],
