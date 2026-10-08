@@ -240,6 +240,26 @@ describe('account managed Key bootstrap', () => {
     const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
 
     expect(result.warnings).toEqual([notice])
+    expect(result.drawingNeedsNode).toBeUndefined()
+    expect(result.networkBlocked).toBe(false)
+  })
+
+  it('keeps the missing-Node.js drawing notice apart so the home page can follow the runtime card', async () => {
+    const current = config()
+    const notice = '星芒画图还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [], imageMcpWarning: notice, imageMcpNeedsNode: true })),
+      scanSystem: vi.fn(async () => system([])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.warnings).toEqual([])
+    expect(result.drawingNeedsNode).toBe(notice)
     expect(result.networkBlocked).toBe(false)
   })
 

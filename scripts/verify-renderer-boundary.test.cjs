@@ -29,6 +29,8 @@ const valueImportable = [
   'electron/chinese-sentence',
   // Windows 上 Claude Desktop 装不上那句话的开头和官网下载页，主进程与错误框共用一份。
   'electron/claude-desktop-install-failure',
+  // 换型号提问里用的短名（Opus 5.5），与菜单共用一份（第十五批 6）。
+  'electron/claude-model-picker',
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
