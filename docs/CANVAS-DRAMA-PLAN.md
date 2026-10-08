@@ -41,7 +41,7 @@
 - **I15**：画布渲染层不能 `fetch`，摸不到 API Key。解析 / 编译若要用 LLM，只许主进程（`ai-chat-service` / 现有 `canvas-host` 通道）。
 - 新能力先问：画布被投毒后这个能力能干什么？文件路径仍只能走对话框或现有资产 ID。
 - 工作流只存 `assetId`、有界文本、枚举字段；不存 Key、绝对路径、远程 URL。
-- 新 IPC 通道必须走 `canvas-contract` + preload 字面量副本 + 测试钉死顺序（T1 / I4 / I7）。
+- 新 IPC 通道必须走 `canvas-contract` + preload 字面量副本 + 测试钉死通道清单（T1 / I4 / I7）。
 - 用户可见错误中文；测试名英文；无分号、单引号、顶层 `function`。
 
 ---
@@ -248,7 +248,7 @@ interface DramaShotData {
 
 ### 主进程通道
 
-优先**复用**现有聊天能力，避免新 `canvas-host` 通道（T1 顺序敏感）。
+优先**复用**现有聊天能力，避免新 `canvas-host` 通道。
 
 方案 A（推荐，第一刀）：`drama-parse` 的 executor 走已有 run 引擎，在 `electron/canvas-node-executors.ts` 里调 `ai-chat-service` 一次非流式 completion。画布不新增 IPC。
 
