@@ -1592,6 +1592,81 @@ test('every smoke that replays a collected inspector answer backs off through th
   })
 })
 
+// What took the third start of #934 and #939, reproduced without Electron: V8
+// before 15.2 holds the promise behind an awaitPromise call only weakly until
+// its then-callback runs, and a main thread on Node's explicit microtask policy
+// runs that callback only once the task the call landed in is over. A second
+// thread sends the call through the inspector, as Playwright does from outside
+// Electron's main process; the main thread stays busy until it lands and then
+// collects garbage before its task ends, which is what a busy start-up does.
+test('a main-process call settles in tasks of its own, so a collection mid-task cannot take its answer', async () => {
+  const { execFile } = require('node:child_process')
+  const { promisify } = require('node:util')
+  const readinessUrl = require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href
+  const probe = `
+    import { Worker } from 'node:worker_threads'
+    const { mainProcessCallInOwnTask } = await import(process.argv[1])
+    const worker = new Worker(\`
+      const { parentPort } = require('node:worker_threads')
+      const session = new (require('node:inspector').Session)()
+      session.connectToMainThread()
+      const post = (method, params) => new Promise((resolve) => session.post(method, params, (error, result) => resolve({ error, result })))
+      let target
+      parentPort.on('message', async (functionDeclaration) => {
+        target ??= (await post('Runtime.evaluate', { expression: 'globalThis' })).result.result.objectId
+        if (!functionDeclaration) return parentPort.postMessage('ready')
+        const { error, result } = await post('Runtime.callFunctionOn', { functionDeclaration, objectId: target, returnByValue: true, awaitPromise: true })
+        parentPort.postMessage({ error: error?.message, value: result?.result?.value, thrown: result?.exceptionDetails?.exception?.description })
+      })
+    \`, { eval: true, execArgv: [] })
+    await new Promise((resolve) => { worker.once('message', resolve); worker.postMessage(null) })
+    const fixture = '{ answer: 42 }'
+    // Set by the call itself as it lands. An atomic load, because an optimised
+    // empty loop may read a plain property once and spin on the stale value.
+    globalThis.landed = new Int32Array(new SharedArrayBuffer(4))
+    const land = 'Atomics.store(globalThis.landed, 0, 1)'
+    const direct = (body) => \`function () { \${land}; return (\${body})(\${fixture}, 1) }\`
+    const anchored = (body) => \`function () { \${land}; return (\${mainProcessCallInOwnTask})(\${fixture}, { source: \${JSON.stringify(body)}, argument: 1 }) }\`
+    function whileBusy(functionDeclaration) {
+      return new Promise((resolve) => {
+        worker.once('message', resolve)
+        Atomics.store(globalThis.landed, 0, 0)
+        worker.postMessage(functionDeclaration)
+        const deadline = Date.now() + 10_000
+        while (Atomics.load(globalThis.landed, 0) === 0 && Date.now() < deadline) {}
+        gc()
+      })
+    }
+    const read = '({ answer }, add) => answer + add'
+    const results = { direct: [], anchored: [], asynchronous: [] }
+    for (let round = 0; round < 3; round += 1) {
+      results.direct.push(await whileBusy(direct(read)))
+      results.anchored.push(await whileBusy(anchored(read)))
+      results.asynchronous.push(await whileBusy(anchored('async ({ answer }, add) => answer + add')))
+    }
+    results.thrown = await whileBusy(anchored("() => { throw new Error('fixture refused') }"))
+    console.log(JSON.stringify(results))
+    await worker.terminate()
+  `
+  const { stdout } = await promisify(execFile)(process.execPath, ['--expose-gc', '--input-type=module', '-e', probe, readinessUrl],
+    { encoding: 'utf8', timeout: 60_000 })
+  const results = JSON.parse(stdout)
+
+  const realmSmoke = fs.readFileSync(path.join(root, 'e2e/realm-account-smoke.mjs'), 'utf8')
+  assert.match(realmSmoke, /application\.evaluate\(mainProcessCallInOwnTask, \{ source: String\(body\), argument \}\)/,
+    'the realm smoke must send its main-process reads through the anchor')
+
+  for (const answer of [...results.anchored, ...results.asynchronous]) assert.deepEqual(answer, { value: 43 })
+  assert.match(results.thrown.thrown, /fixture refused/, 'a body that throws must still answer, with its error')
+
+  // The control: without the anchor the same call loses its answer on every
+  // round, or this test is not exercising what took the smoke down.
+  const [major, minor] = process.versions.v8.split('.').map(Number)
+  if (major < 15 || (major === 15 && minor < 2)) {
+    for (const answer of results.direct) assert.match(String(answer.error), /Promise was collected/)
+  }
+})
+
 // A React render crash or an unhandled rejection inside a fixture leaves the
 // page standing with whatever it had already committed, so a suite that only
 // asserts on the elements it touches stays green through it. Every browser

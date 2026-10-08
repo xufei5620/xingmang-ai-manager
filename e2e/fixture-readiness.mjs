@@ -66,6 +66,31 @@ export async function replayCollectedPromise(label, attemptOnce, { progress = ()
     { cause: collected })
 }
 
+// Why the main process loses an answer at all. Electron 43 ships V8 15.0,
+// whose inspector holds the promise behind an awaitPromise call only weakly
+// until its then-callback runs (V8 15.2 holds it strongly). The main process
+// runs Node's explicit microtask policy, so that callback waits for the end of
+// whatever task the command landed in, and a command that lands while start-up
+// work is running loses its answer to any garbage collection before then. The
+// replay above cannot outlast that: the third start of the realm smoke kept the
+// main process busy for longer than all four replays (#934, #939), and a plain
+// app.getPath() read lost 89 of 200 answers against a busy Electron main thread.
+//
+// Starting the call in a task of its own and settling it in another keeps the
+// answer reachable from the immediate queue the whole time, and lets its
+// then-callback run before anything else is queued behind it: the same read
+// lost 0 of 200. Pass this function to ElectronApplication.evaluate with
+// `{ source: String(body), argument }`. The body travels as source and is
+// compiled in the main process, as Playwright compiles any evaluated function,
+// because a function shipped there cannot close over another one.
+export function mainProcessCallInOwnTask(electron, { source, argument }) {
+  return new Promise((resolve, reject) => setImmediate(() => {
+    Promise.resolve().then(() => (0, eval)(`(${source})`)(electron, argument)).then(
+      (value) => setImmediate(resolve, value),
+      (error) => setImmediate(reject, error))
+  }))
+}
+
 // page.goto resolves on `load`, which says nothing about a Vite fixture: the
 // module graph is transformed on demand and the page is reloaded outright once
 // a dependency has to be pre-bundled. A suite that starts asserting there finds
