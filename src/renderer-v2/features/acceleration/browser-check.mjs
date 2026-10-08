@@ -4,7 +4,7 @@ import { before, after, test } from 'node:test'
 import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
-import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 import { enterWorkspaceWithoutAccount } from '../../testing/guest-workspace.mjs'
 
 let server, browser, origin
@@ -14,18 +14,26 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
-async function open(query = 'accelerationPreview=1') {
+async function open(query = 'accelerationPreview=1', { initScript } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } })
+  if (initScript) await page.addInitScript(initScript)
   await page.clock.install({ time: new Date('2026-09-14T00:00:00Z') })
   await page.clock.pauseAt(new Date('2026-09-14T00:00:01Z'))
   await page.route('**/*', route => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
   // Mounting and asserting are two different waits: the click below retries on
   // Playwright's 30s action default, which a cold Windows open of this fixture
   // can outlast, and it would be reported as the acceleration nav never
   // appearing. Take the shared mount budget first; everything after it keeps
   // the default so a real regression still fails in 30s.
-  await waitForFixtureMount(page, { what: 'the acceleration fixture' })
+  //
+  // On #768 (2026-10-02) this open spent that whole budget on a page that never
+  // mounted while the cases either side passed in 2-5s, so the budget is spent
+  // as up to three navigations rather than one. The clock installed above is
+  // replayed into every new document, so a second navigation starts from the
+  // same paused time; the mount is polled from Node because that clock also
+  // pauses Playwright's in-page polling.
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?${query}`,
+    (timeout) => waitForFixtureMount(page, { timeout, what: 'the acceleration fixture' }), { label: 'acceleration fixture' })
   if (new URLSearchParams(query).get('guest') === '1') await enterWorkspaceWithoutAccount(page)
   await openLazyAcceleration(page)
   return page
@@ -48,6 +56,8 @@ const remaining = page => page.getByTestId('acceleration-quota-remaining')
 test('lists selectable acceleration lines, checks ping and switches back to smart allocation before connecting', async () => {
   const page = await open()
   try {
+    // 舞台左上角那行小字以前是英文 GAME CONNECT。
+    assert.equal((await page.locator('.acceleration-eyebrow').innerText()).trim(), '游戏加速')
     await page.getByTestId('acceleration-line-picker-toggle').click()
     const list = page.getByRole('listbox', { name: '加速线路选择' })
     const auto = page.getByTestId('acceleration-line-auto')
@@ -175,12 +185,10 @@ test('acceleration trial counts only connected time, survives navigation, pauses
     assert.equal(await page.locator('.acceleration-quota-badge').innerText(), '20 分钟')
     await page.clock.runFor(5000)
     assert.equal(await remaining(page).innerText(), '00:20:00')
-    const tun = page.getByRole('switch', { name: 'TUN 模式' })
-    assert.equal(await tun.getAttribute('aria-checked'), 'false')
-    await tun.click()
+    // 加速只走系统代理，页面上不再有那颗从没开放过的模式开关（第二十一批 6）。
+    assert.equal(await page.getByRole('switch', { name: 'TUN 模式' }).count(), 0)
     await page.getByTestId('acceleration-session-start').click()
     await page.getByTestId('acceleration-session-stop').waitFor()
-    assert.equal(await tun.isDisabled(), true)
     await page.clock.runFor(10_000)
     assert.equal(await remaining(page).innerText(), '00:19:50')
     await page.getByTestId('nav-home').click()
@@ -189,7 +197,6 @@ test('acceleration trial counts only connected time, survives navigation, pauses
     assert.equal(await remaining(page).innerText(), '00:19:40')
     await page.getByTestId('acceleration-session-stop').click()
     await page.getByTestId('acceleration-session-start').waitFor()
-    assert.equal(await tun.isDisabled(), false)
     await page.clock.runFor(20_000)
     assert.equal(await remaining(page).innerText(), '00:19:40')
     await page.getByTestId('acceleration-session-start').click()
@@ -207,6 +214,41 @@ test('acceleration trial counts only connected time, survives navigation, pauses
   } finally { if (!page.isClosed()) await page.close() }
 })
 
+// React 找得到这个钩子就会在每次提交后调一次 onCommitFiberRoot（React DevTools 用的
+// 就是它），数它就知道界面这段时间重画了几回。
+function countReactCommits() {
+  window.__reactCommits = 0
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    supportsFiber: true, renderers: new Map(),
+    inject(renderer) { const id = this.renderers.size + 1; this.renderers.set(id, renderer); return id },
+    onCommitFiberRoot() { window.__reactCommits++ },
+    onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}, checkDCE() {},
+  }
+}
+
+test('a running session does not re-render the app every second while another page is open', async () => {
+  const page = await open('accelerationPreview=1', { initScript: countReactCommits })
+  try {
+    await page.getByTestId('acceleration-session-start').click()
+    await page.getByTestId('acceleration-session-stop').waitFor()
+    await page.clock.runFor(3000)
+    const onPage = await page.evaluate(() => window.__reactCommits)
+    await page.clock.runFor(5000)
+    // 加速页自己还是每秒走表，确认钩子确实数得到提交。
+    assert.ok(await page.evaluate(() => window.__reactCommits) - onPage >= 4)
+    await page.getByTestId('nav-home').click()
+    await page.clock.runFor(1000)
+    const onHome = await page.evaluate(() => window.__reactCommits)
+    await page.clock.runFor(10_000)
+    assert.equal(await page.evaluate(() => window.__reactCommits) - onHome, 0)
+    await page.getByTestId('nav-acceleration').click()
+    assert.equal(await remaining(page).innerText(), '00:19:41')
+    await page.getByTestId('acceleration-session-stop').click()
+    await page.getByTestId('acceleration-session-start').waitFor()
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
 test('a legacy thirty-five-minute remainder migrates to exhausted rather than a fresh twenty-minute trial', async () => {
   const page = await open()
   try {
@@ -216,9 +258,9 @@ test('a legacy thirty-five-minute remainder migrates to exhausted rather than a 
     })
     await page.reload()
     await openLazyAcceleration(page)
-    await page.getByTestId('acceleration-session-start').filter({ hasText: '免费体验已用完' }).waitFor()
+    await page.getByTestId('acceleration-contact-support').filter({ hasText: '联系客服' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:00:00')
-    assert.equal(await page.getByTestId('acceleration-session-start').isDisabled(), true)
+    assert.equal(await page.getByTestId('acceleration-session-start').count(), 0)
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('xingmang-acceleration-preview:v2:xm-account:17')).usedMilliseconds), 25 * 60 * 1000)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
@@ -232,9 +274,9 @@ test('exhaustion stops the session once even when the acceleration page is hidde
     await page.getByTestId('nav-home').click()
     await page.clock.runFor(10_000)
     await page.getByTestId('nav-acceleration').click()
-    await page.getByTestId('acceleration-session-start').filter({ hasText: '免费体验已用完' }).waitFor()
+    await page.getByTestId('acceleration-contact-support').filter({ hasText: '联系客服' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:00:00')
-    assert.equal(await page.getByTestId('acceleration-session-start').isDisabled(), true)
+    assert.equal(await page.getByTestId('acceleration-session-start').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'stopAcceleration').length), 1)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
@@ -262,6 +304,10 @@ test('failed start preserves the full trial and failed stop stays active until r
     await page.getByTestId('acceleration-session-start').click()
     await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:20:00')
+    assert.equal(await page.getByTestId('acceleration-phase').innerText(), '上次没连上')
+    const strip = await page.getByTestId('acceleration-error').boundingBox()
+    const workbench = await page.locator('.acceleration-workbench').boundingBox()
+    assert.ok(strip.y + strip.height <= workbench.y, `the failure strip sits above the workbench: ${JSON.stringify({ strip, workbench })}`)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await page.getByTestId('acceleration-session-start').click()
     await page.getByTestId('acceleration-session-stop').waitFor()
@@ -291,7 +337,7 @@ test('logged out users see the global acceleration page with a working login act
 
 const bonusCode = 'XM-NEBULA-10M-7Q9K'
 async function bonusPalette(page, code = bonusCode) {
-  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).click()
+  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).click()
   const palette = page.getByTestId('command-palette')
   const input = palette.getByRole('searchbox', { name: '搜索页面' })
   if (code) await input.fill(code)
@@ -357,10 +403,10 @@ test('bonus palette preserves page search, arrows, IME Enter and Escape focus re
     await input.press('Enter')
     await palette.waitFor({ state: 'hidden' })
     assert.equal(await page.getByTestId('nav-settings').getAttribute('aria-current'), 'page')
-    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).click()
+    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).click()
     await input.press('Escape')
     await palette.waitFor({ state: 'hidden' })
-    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).evaluate(element => document.activeElement === element), true)
+    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).evaluate(element => document.activeElement === element), true)
     assert.equal((await bonusCalls(page)).length, 0)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
@@ -437,6 +483,77 @@ test('closing and reopening the bonus palette does not display a stale success m
     assert.equal(await remaining(page).innerText(), '00:30:00')
     assert.equal(await reopened.feedback.count(), 0)
     assert.equal(await reopened.action.count(), 0)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 免费时长用完：主按钮直接打开「帮助与客服」，不再给换线路，地球下面也不再放一颗小按钮。
+test('an exhausted trial turns the main button into contacting support and hides the line picker', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      localStorage.removeItem('xingmang-acceleration-preview:v2:xm-account:17')
+      localStorage.setItem('xingmang-acceleration-preview:xm-account:17', String(35 * 60 * 1000))
+    })
+    await page.reload()
+    await openLazyAcceleration(page)
+    const contact = page.getByTestId('acceleration-contact-support')
+    await contact.filter({ hasText: '联系客服' }).waitFor()
+    assert.equal(await contact.isDisabled(), false)
+    assert.equal(await page.getByText('免费体验已经用完，后续服务请联系客服').count(), 1)
+    assert.equal(await page.getByTestId('acceleration-line-picker-toggle').count(), 0)
+    assert.equal(await page.getByTestId('acceleration-status-refresh').count(), 0)
+    await contact.click()
+    await page.getByTestId('support-dialog').waitFor()
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 失败后再点「开始加速」或「重新检查」，状态就不再停在「上次没连上」。
+test('the failed-start label clears once the user checks again', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'startAcceleration' })
+    await page.getByTestId('acceleration-session-start').click()
+    await page.getByTestId('acceleration-error').waitFor()
+    assert.equal(await page.getByTestId('acceleration-phase').innerText(), '上次没连上')
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await page.getByTestId('acceleration-error').getByRole('button', { name: '重新检查' }).click()
+    await page.getByTestId('acceleration-phase').filter({ hasText: '准备就绪' }).waitFor()
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 「换线路」挨着「加速线路」那一行最右边，是一颗带边框的小按钮；列表从这一行上面弹出来，不出卡片。
+test('the line switch sits at the end of the line row as an outlined button and the list opens above the row', async () => {
+  const page = await open()
+  try {
+    const toggle = page.getByTestId('acceleration-line-picker-toggle')
+    assert.equal(await toggle.innerText(), '换线路')
+    const row = await page.locator('.acceleration-route-info').boundingBox()
+    const button = await toggle.boundingBox()
+    assert.ok(button.y >= row.y && button.y + button.height <= row.y + row.height, 'the button is inside the line row')
+    assert.ok(row.x + row.width - (button.x + button.width) <= 24, 'the button is at the right end of the row')
+    assert.notEqual(await toggle.evaluate(element => getComputedStyle(element).borderTopColor), 'rgba(0, 0, 0, 0)')
+    await toggle.click()
+    assert.equal(await toggle.innerText(), '收起')
+    const list = await page.getByRole('listbox', { name: '加速线路选择' }).boundingBox()
+    const stage = await page.locator('.acceleration-stage').boundingBox()
+    assert.ok(list.y + list.height <= row.y && list.y >= stage.y, `the list opens above the row inside the stage: ${JSON.stringify({ list, row, stage })}`)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// 工作台不再定死 444 高：窗口 1280×560 时「开始加速」也在第一屏里。
+test('the start button is on the first screen of a 1280 by 560 window', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1280, height: 560 })
+    const start = page.getByTestId('acceleration-session-start')
+    await start.waitFor()
+    const box = await start.boundingBox()
+    const statusbar = await page.locator('.v2-statusbar').boundingBox()
+    assert.ok(box.y + box.height <= (statusbar?.y ?? 560), `the start button is visible without scrolling: ${JSON.stringify({ box, statusbar })}`)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
 })

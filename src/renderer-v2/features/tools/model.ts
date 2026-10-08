@@ -1,5 +1,8 @@
 import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
-import { snapshotErrorMessage } from '../../business-common'
+import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
+import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
+import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
+import { relayProviderBaseUrlMatches } from '../../../../electron/relay-sites'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -72,7 +75,7 @@ export function toolAvailability(
   if (status?.detectionFailed === true) {
     return {
       state: 'detectionFailed', label: '检测失败', tone: 'bad', versionFallback: '版本未读到',
-      reason: snapshotErrorMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
+      reason: detectionFailureMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
     }
   }
   if (statusUnknown) {
@@ -108,9 +111,9 @@ export function toolInstallDirectory(snapshot: ToolboxSnapshot | null, tool: Too
 }
 
 /**
- * 这台机器上这个工具的安装归不归本程序管。macOS 上 Codex 桌面端是 'external'：
- * 官方在 Mac 上只给自己下载的安装包，按钮点下去只能把人带到教程那一章，所以
- * 按钮不能再写「安装」，点完也不算一次失败（第七批 3）。
+ * 这台机器上这个工具的安装归不归本程序管。'external' 的（认不出芯片的 Mac 上的
+ * Codex 桌面端）按钮点下去只能把人带到教程那一章，所以按钮不能写「安装」，点完
+ * 也不算一次失败（第七批 3）。
  */
 export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolId): boolean {
   if (!snapshot) return false
@@ -122,8 +125,8 @@ export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolI
 
 /**
  * 原生安装器或 PATH 上其他来源装的 CLI，本工具的 npm 安装/回滚通道不该碰它：跑一次
- * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。对这类安装隐藏
- * 「更新」「回到推荐版本」按钮，改用一句被动提示。
+ * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。界面上给不给
+ * 「更新」「回到推荐版本」按钮看 updatesOutsideApp（能先卸再装的那一种照样给）。
  */
 export function isExternallyManagedInstall(
   status: Pick<ToolStatus, 'installed' | 'installSource'> | null | undefined,
@@ -131,6 +134,31 @@ export function isExternallyManagedInstall(
   return status?.installed === true
     && status.installSource != null
     && status.installSource !== 'npm'
+}
+
+/**
+ * 官方安装器装的 Claude Code 能换成星芒装的（第三十一批 B）：星芒写配置时关了它自己的
+ * 自动更新，又不在它旁边另装一份（#481），不给出路它就永远停在原来的版本。客户点过头，
+ * 星芒先用那条核对过的卸载把它卸掉（uninstall.available），再用自己的通道装回来。
+ * 别的方式装的、星芒卸不掉的（Codex 官方那份）不在此列。
+ */
+export function canSwitchToManagedInstall(
+  id: ToolId,
+  status: Pick<ToolStatus, 'installed' | 'installSource' | 'uninstall'> | null | undefined,
+): boolean {
+  return id === 'claude' && status?.installed === true && status.installSource === 'native'
+    && status.uninstall?.available === true
+}
+
+/**
+ * 只能用它自己的方式更新：外部来源装的，能换成星芒装的那一种除外。首页、新手引导、
+ * 安装卸载页对它只给被动提示、不给按钮，系统通知也不为它把人叫回来。
+ */
+export function updatesOutsideApp(
+  id: ToolId,
+  status: Pick<ToolStatus, 'installed' | 'installSource' | 'uninstall'> | null | undefined,
+): boolean {
+  return isExternallyManagedInstall(status) && !canSwitchToManagedInstall(id, status)
 }
 
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
@@ -179,7 +207,7 @@ export function sourceFor(
   // 当前账号服务的 config.toml：令牌被发给服务，每次请求都 401。这不是官方账号，
   // 是一份被改成半截的配置，按「被改过」提示，首页给出修复与切回官方两条路。
   if (provider === 'codex' && config.codexAuthMode === 'chatgpt') {
-    return config.actualBaseUrl && sameServiceUrl(config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
+    return config.actualBaseUrl && relayProviderBaseUrlMatches(provider, config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
   }
   if (provider === 'gemini' && config.authType === 'oauth-personal') return 'official'
   if (config.hasApiKey && config.matchesRelay) {
@@ -197,10 +225,6 @@ export function sourceFor(
   // 只有 ~/.grok/auth.json 里真有一份登录，才算在用 Grok 账号。
   if (provider === 'grok' && config.exists && !config.hasApiKey && config.grokLoginMode) return 'official'
   return 'missing'
-}
-
-function sameServiceUrl(left: string, right: string): boolean {
-  return left.trim().replace(/\/+$/, '').toLowerCase() === right.trim().replace(/\/+$/, '').toLowerCase()
 }
 
 /**
@@ -249,6 +273,95 @@ export function switchAccountLabel(username: string | null | undefined): string 
   return `改用 ${name.length > 16 ? `${name.slice(0, 15).join('')}…` : name.join('')}`
 }
 
+/**
+ * Codex 老配置把当前账号的服务写在 openai 这类内置名下，Codex 不认那张表，打开
+ * 就连不上（主进程 codexProviderShadowed）。只影响「连没连上」，来源判定照旧：
+ * 「…」菜单里「切回官方账号」还要靠它认出这是当前账号的配置。
+ */
+export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProviderShadowed'>, provider: ProviderId): boolean {
+  return provider === 'codex' && config.codexProviderShadowed === true
+}
+
+/**
+ * 工具自己也读不了的配置文件（主进程 configBroken、codexAuthBroken，判法见 cli-config-health.ts）。
+ * 这时读出来的 Key、来源都不作数，首页先说文件坏了：
+ * - codexConfig：Codex 的 config.toml。桌面端会停在「无法加载组织设置」，命令行直接报错。
+ * - codexAuth：Codex 的 auth.json。Codex 不报错，当成没登录，打开就要重新登录。
+ * - claudeSettings、geminiSettings：settings.json。Claude Code 弹英文的「Settings Error」、整份不用，
+ *   Gemini CLI 直接退出。星芒自己读不出 Key 时会把它认成官方账号，其实不是。
+ * Grok CLI 的配置主进程不判。
+ */
+export type BrokenConfig = 'codexConfig' | 'codexAuth' | 'claudeSettings' | 'geminiSettings'
+
+export function brokenConfigOf(config: Pick<ProviderConfigSummary, 'configBroken' | 'codexAuthBroken'>, provider: ProviderId): BrokenConfig | null {
+  if (provider === 'codex') return config.configBroken === true ? 'codexConfig' : config.codexAuthBroken === true ? 'codexAuth' : null
+  if (config.configBroken !== true) return null
+  return provider === 'claude' ? 'claudeSettings' : provider === 'gemini' ? 'geminiSettings' : null
+}
+
+/** 「配置文件坏了」那一行的小字；修的过程中行上照旧是这句（yoyo 2026-10-06 定的原话）。 */
+export const brokenConfigDetails: Record<BrokenConfig, string> = {
+  codexConfig: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+  codexAuth: 'Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留',
+  claudeSettings: 'Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+  geminiSettings: 'Gemini CLI 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+}
+
+/**
+ * 「配置文件坏了」的「修好它」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
+ * 看得出原来用的是官方登录就照旧用官方账号，不顺手换成当前账号：Codex 登录的是 ChatGPT，
+ * 或者只坏了 auth.json、config.toml 里又没有别的服务地址；Gemini CLI 读得出选的是 Google 登录。
+ * 其余按当前账号（Claude Code 的官方登录不记在 settings.json 里，看不出来）。
+ */
+export function brokenConfigRepairTarget(
+  broken: BrokenConfig,
+  config: Pick<ProviderConfigSummary, 'codexAuthMode' | 'actualBaseUrl' | 'authType'>,
+): AccountSourceTarget {
+  switch (broken) {
+    case 'codexConfig':
+      return config.codexAuthMode === 'chatgpt' ? 'official' : 'account'
+    case 'codexAuth':
+      return config.codexAuthMode === 'chatgpt' || !config.actualBaseUrl ? 'official' : 'account'
+    case 'geminiSettings':
+      return config.authType === 'oauth-personal' ? 'official' : 'account'
+    case 'claudeSettings':
+      return 'account'
+  }
+}
+
+/**
+ * 本软件写进这个工具的提醒设置（钩子、状态行）指向了不存在或不是这次安装的程序、脚本
+ * （主进程 cliHooksStale）。只影响终端里多不多报一行错，连不连得上照旧。
+ */
+export function cliHooksNeedRepair(config: Pick<ProviderConfigSummary, 'cliHooksStale'>): boolean {
+  return config.cliHooksStale === true
+}
+
+/**
+ * 这次打开软件时，提醒设置指向旧位置已经替用户改好了（主进程 cliHooksAutoRepaired）。
+ * 首页只在工具行上轻轻说一句，不改状态、不给按钮。
+ */
+export function cliHooksWereAutoRepaired(config: Pick<ProviderConfigSummary, 'cliHooksAutoRepaired'>): boolean {
+  return config.cliHooksAutoRepaired === true
+}
+
+/**
+ * Windows 上只装 Grok 时电脑上还没有运行环境，做完提醒和防睡那几条写不出来（主进程 cliHooksMissing）。
+ * Grok 照样能用，首页只说一句缺什么、给「补上」。
+ */
+export function cliHooksMissing(config: Pick<ProviderConfigSummary, 'cliHooksMissing'>): boolean {
+  return config.cliHooksMissing === true
+}
+
+/** 修好那一处之后能不能直接打开：「打开」前先修只在修完就能用时替用户做。 */
+export function readyOnceRepaired(
+  config: ProviderConfigSummary,
+  provider: ProviderId,
+  storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+): boolean {
+  return codexNeedsRepair(config, provider) && connectionReady({ ...config, codexProviderShadowed: false }, provider, storage)
+}
+
 export function connectionReady(
   config: ProviderConfigSummary,
   provider: ProviderId,
@@ -256,6 +369,7 @@ export function connectionReady(
 ): boolean {
   const source = sourceFor(config, provider, storage)
   if (source === 'official') return true
+  if (codexNeedsRepair(config, provider)) return false
   if ((source !== 'account' && source !== 'manual' && !((source === 'unknown' || source === 'changed') && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
 }
@@ -293,6 +407,18 @@ export function codexDesktopUpdateKind(
   return status.mirrorUpdateAvailable === false ? 'store-current' : 'unknown'
 }
 
+/**
+ * Codex 桌面端的版本建议：只有「这一版已知打不开」一种（第十九批 7）。桌面端装哪一版
+ * 由微软商店决定，所以不给推荐版本、不给退回，只把原因放进 blockedReason，首页那一行
+ * 照原样显示。
+ */
+export function codexDesktopVersionAdvice(status: Pick<DesktopAppStatus, 'installed' | 'version' | 'appVersion'>): CliVersionAdvice | null {
+  if (!status.installed) return null
+  const version = resolveCodexDesktopKnownIssue([status.version, status.appVersion])
+  if (!version) return null
+  return { recommendedVersion: null, blockedReason: codexDesktopKnownIssueNotice(version), onRecommended: false, pinned: false, rollbackAvailable: false }
+}
+
 export function presentTools(
   snapshot: ToolboxSnapshot,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
@@ -307,8 +433,8 @@ export function presentTools(
     const status = id === 'codexDesktop' ? snapshot.system.desktopApps.codex : snapshot.system.clis[id]
     const source = sourceFor(config, provider, storage)
     const version = id === 'codexDesktop' ? (status as DesktopAppStatus).appVersion ?? status.version : status.version
-    // 桌面端走的是镜像分发而不是 npm,名单管不到它,所以这里只取 CLI 的建议。
-    const versionAdvice = id === 'codexDesktop' ? null : snapshot.system.clis[id].versionAdvice ?? null
+    // 桌面端走的是商店 / 镜像分发而不是 npm,名单管不到它的安装,只查已知问题表。
+    const versionAdvice = id === 'codexDesktop' ? codexDesktopVersionAdvice(status as DesktopAppStatus) : snapshot.system.clis[id].versionAdvice ?? null
     const revertVersion = id === 'codexDesktop' ? null : snapshot.system.clis[id].revertVersion ?? null
     // 桌面端只有镜像真的有新包才算「可更新」;官方清单领先商店时按下「更新」什么也装不上。
     const updateAvailable = id === 'codexDesktop'
@@ -319,7 +445,7 @@ export function presentTools(
       configDirectoryReady: config.dataDirectoryExists === true,
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice, revertVersion,
-      error: status.detectionFailed ? snapshotErrorMessage(status.detectionError) ?? '工具检测没有完成' : null })
+      error: status.detectionFailed ? detectionFailureMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
 }
@@ -349,6 +475,35 @@ export function configDirectoryMenuItem(
  */
 export function recommendedVersionVerb(tool: Pick<ToolPresentation, 'versionAdvice'>): string {
   return tool.versionAdvice?.recommendedIsNewer ? '更新到' : '回到'
+}
+
+/**
+ * 用官方账号登录时，版本号后面那段。v0.1.31 的旧界面在 Codex 卡片上挂过套餐和续期两个
+ * 标签，重做新界面时收进了「官方账户额度」弹窗，卡片上只剩「官方账号」，客户看不到套餐
+ * 哪天续期。读不到就不写，不拿「尚未获取」占位；续期日已经过了也不写：那多半是登录
+ * 信息还没刷新，不等于套餐真的停了，写「几天前」反而像在说过期。
+ */
+export function officialAccountSubtitle(
+  config: Pick<ProviderConfigSummary, 'officialAccountPlan' | 'officialAccountRenewsAt'>,
+  now: number,
+): { text: string; renewal?: string } {
+  const parts = ['官方账号']
+  if (config.officialAccountPlan) parts.push(config.officialAccountPlan)
+  const renewsAt = config.officialAccountRenewsAt ? new Date(config.officialAccountRenewsAt) : null
+  const left = renewsAt ? renewsAt.getTime() - now : Number.NaN
+  if (!renewsAt || !(left > 0)) return { text: parts.join(' · ') }
+  parts.push(`${renewalDistance(left)}续期`)
+  return { text: parts.join(' · '), renewal: `${renewsAt.getFullYear()}年${renewsAt.getMonth() + 1}月${renewsAt.getDate()}日续期` }
+}
+
+// 与旧界面 formatOfficialRelative 的分档一致，客户在两个版本之间看到的说法不变。
+function renewalDistance(ms: number): string {
+  if (ms < 90_000) return '马上'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `${minutes}分钟后`
+  const hours = Math.round(ms / 3_600_000)
+  if (hours < 24) return `${hours}小时后`
+  return `${Math.round(ms / 86_400_000)}天后`
 }
 
 /**
@@ -402,7 +557,7 @@ export interface ToolUpdateOffer {
   newer: boolean
   /** 装着的版本落在名单的不兼容区间里。 */
   knownIssue: boolean
-  /** 不是本工具装的：只给这句提示，不给按钮（与首页同一条规矩）。 */
+  /** 只能用它自己的方式更新（updatesOutsideApp）：只给这句提示，不给按钮（与首页同一条规矩）。 */
   manualHint: string | null
 }
 
@@ -422,7 +577,7 @@ export function toolUpdateOffer(
   const advice = tool.versionAdvice
   const knownIssue = Boolean(advice?.blockedReason)
   const recommended = rollbackVersion(tool)
-  const manualHint = isExternallyManagedInstall(tool.status) ? externalInstallHint(tool.status.installSource) : null
+  const manualHint = updatesOutsideApp(tool.id, tool.status) ? externalInstallHint(tool.status.installSource) : null
   if (recommended && (advice?.recommendedIsNewer || knownIssue)) {
     return { version: recommended, target: recommended, newer: advice?.recommendedIsNewer === true, knownIssue, manualHint }
   }
@@ -436,6 +591,19 @@ export function greeting(hour: number): string {
 
 export function balanceTier(dollars: number): 'ok' | 'warn' | 'bad' {
   return dollars < 5 ? 'bad' : dollars < 20 ? 'warn' : 'ok'
+}
+
+/**
+ * 订阅快到期或快用完时首页那一条红条（第十五批 2）；不用提醒时 null。
+ * 余额还够 $5 时订阅到期也只是改扣余额，不值得挂红条；扣费偏好是「只用订阅」
+ * 时余额帮不上忙，不看余额。
+ */
+export function subscriptionWarning(subscription: UsableSubscription, walletDollars: number | null): string | null {
+  if (!subscription.subscriptionOnly && (walletDollars === null || walletDollars >= 5)) return null
+  const after = subscription.subscriptionOnly ? '工具就用不了了，续费后可继续使用' : '会从余额扣费'
+  if (subscription.expiringSoon) return `订阅 ${subscriptionEndDate(subscription.endsAt)}到期，到期后${after}。`
+  if (subscription.lowRemaining && subscription.remainingUsd !== null) return `订阅只剩 $${subscription.remainingUsd.toFixed(2)}，用完后${after}。`
+  return null
 }
 
 /**

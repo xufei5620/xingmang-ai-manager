@@ -1,7 +1,9 @@
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
+import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { chatLimits } from './api'
+import { speaksChinese, userFacingErrorMessage } from '../../business-common'
+import { canReadImages, chatLimits } from './api'
 
 export type ChatMode = 'text' | 'image'
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'canceled' | 'error'
@@ -28,7 +30,8 @@ export interface ChatMessage {
   assets?: AiChatAsset[]
   settings?: ChatSettings
 }
-export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean }
+// draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。
+export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean }
 export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
 export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[] }
 
@@ -86,12 +89,34 @@ export function filterConversations(conversations: Conversation[], search: strin
   return conversations.filter((conversation) => conversationSearchText(conversation).includes(keyword))
 }
 
+export const noImageModelMessage = '当前模型看不了图片，请换一个能看图的模型，或者先把图片去掉'
+
+// 更早消息里的图片：模型看不了图，或者一次要发的图超过上限时，就不再重复发，
+// 换成一句话，让 AI 知道那里原本有图。
+function earlierImagesNote(count: number): string { return `（这里附过 ${count} 张图片，这次没有再发给 AI）` }
+
 // 每发一句，这段对话前面的内容都会一起发出去，这里就是那一份。提醒和上限都按它算，
 // 两边口径一致，提醒到七成时离真正拦下还差三成。
 function contextMessages(history: readonly ChatMessage[], settings: ChatSettings): AiChatMessageInput[] {
+  const vision = canReadImages(settings.model)
+  let budget = chatLimits.imagesPerRequest
+  const sendImages = new Set<string>()
+  for (const message of [...history].reverse()) {
+    const count = message.role === 'user' ? message.assets?.length ?? 0 : 0
+    if (!count || !vision || count > budget) continue
+    budget -= count
+    sendImages.add(message.id)
+  }
   const messages: AiChatMessageInput[] = []
   if (settings.systemPrompt.trim()) messages.push({ role: 'system', content: settings.systemPrompt.trim() })
-  for (const message of history) if (message.content.trim() && (message.role === 'user' || (!message.assets?.length && message.status !== 'error'))) messages.push({ role: message.role, content: message.content })
+  for (const message of history) {
+    if (message.role === 'user') {
+      const images = message.assets?.map((asset) => asset.assetId) ?? []
+      if (images.length && sendImages.has(message.id)) messages.push({ role: 'user', content: message.content, images })
+      else if (images.length) messages.push({ role: 'user', content: message.content.trim() ? `${message.content}\n${earlierImagesNote(images.length)}` : earlierImagesNote(images.length) })
+      else if (message.content.trim()) messages.push({ role: 'user', content: message.content })
+    } else if (message.content.trim() && !message.assets?.length && message.status !== 'error') messages.push({ role: message.role, content: message.content })
+  }
   return messages
 }
 
@@ -123,34 +148,42 @@ export function isConversationTooLongMessage(message: string | undefined): boole
 export function continueInNewConversation(state: ChatWorkspace, sourceId: string, text: string, fromSourceDraft: boolean): ChatWorkspace {
   const source = state.conversations.find((item) => item.id === sourceId) ?? (state.draftConversation.id === sourceId ? state.draftConversation : null)
   if (!source) return state
-  const next = { ...createConversation(source.settings), draft: text }
-  const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => ({ ...item, draft: '' })) : state
+  const images = fromSourceDraft ? source.draftImages ?? [] : []
+  const next = { ...createConversation(source.settings), draft: text, ...(images.length ? { draftImages: images } : {}) }
+  const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => { const { draftImages: _moved, ...rest } = item; return { ...rest, draft: '' } }) : state
   return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
 }
 
-export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string }): TurnPlan {
+export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[] }): TurnPlan {
   if (isGenerating(conversation)) throw new Error('当前对话仍在生成，请先停止或等待完成')
   let history = conversation.messages.slice()
   let settings = conversation.settings
   let prompt = input.prompt.trim()
   let assistantId = input.assistantId
+  let images: AiChatAsset[] = []
   if (input.retryId) {
     const index = history.findIndex((message) => message.id === input.retryId && message.role === 'assistant')
     if (index < 1) throw new Error('找不到要重新生成的回复')
     settings = history[index].settings ?? settings
     assistantId = input.retryId
     history = history.slice(0, index)
-    prompt = [...history].reverse().find((message) => message.role === 'user')?.content ?? ''
+    const lastUser = [...history].reverse().find((message) => message.role === 'user')
+    prompt = lastUser?.content ?? ''
+    images = lastUser?.assets ?? []
   } else if (input.editId) {
     const index = history.findIndex((message) => message.id === input.editId && message.role === 'user')
     if (index < 0) throw new Error('找不到要编辑的消息')
+    images = history[index].assets ?? []
     history = [...history.slice(0, index), { ...history[index], content: prompt }]
   } else {
-    history.push({ id: input.userMessageId, role: 'user', content: prompt, reasoning: '', status: 'complete', createdAt: Date.now() })
+    images = input.images?.slice(0, chatLimits.imagesPerMessage) ?? []
+    history.push({ id: input.userMessageId, role: 'user', content: prompt, reasoning: '', status: 'complete', createdAt: Date.now(), ...(images.length ? { assets: images } : {}) })
   }
-  if (!prompt) throw new Error('请先输入消息内容')
+  if (!prompt && !images.length) throw new Error('请先输入消息内容')
   if (prompt.length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
   if (!settings.group || !settings.model) throw new Error('请先选择分组和模型')
+  if (images.length && settings.mode === 'image') throw new Error('生成图片时还不能带图片，请先把图片去掉')
+  if (images.length && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
   const messages = contextMessages(history, settings)
   // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
   // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
@@ -158,7 +191,10 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error(conversationTooLongMessage)
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
-  return { conversation: { ...conversation, title: conversation.messages.length ? conversation.title : prompt.slice(0, 32), updatedAt: Date.now(), draft: input.retryId || input.editId ? conversation.draft : '', messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages }
+  const fresh = !input.retryId && !input.editId
+  const title = conversation.messages.length ? conversation.title : prompt.slice(0, 32) || '图片提问'
+  const { draftImages: _sent, ...rest } = conversation
+  return { conversation: { ...(fresh ? rest : conversation), title, updatedAt: Date.now(), draft: fresh ? '' : conversation.draft, messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages }
 }
 
 export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string {
@@ -196,8 +232,34 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/quality|画质/.test(message)) return '当前模型不支持这个画质档位，请调整后重试'
   if (/invalid.parameter|parameter|参数/.test(message)) return '参数超出可用范围，请检查后重试'
   if (/可能仍|结果不明确/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
-  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话/.test(message)) return message
+  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^生成图片时还不能带图片/.test(message)) return message
+  if (/cannot read images/.test(message)) return noImageModelMessage
   return '本次请求没有完成，已保留内容，请稍后重试'
+}
+
+/**
+ * 选图、贴图失败时主进程说的就是原因和下一步，中文原话上屏（剥掉 IPC 前缀、脱路径、打码）。
+ * 英文原话（图片存不进去时系统给的 EPERM 这类）换成兜底句。以前从第一个汉字截起，
+ * Windows 用户名是中文时会从用户名那里截，带出半截路径；是不是中文按 speaksChinese 判（第三十批 A）。
+ */
+export function attachmentErrorMessage(error: unknown): string {
+  const message = userFacingErrorMessage(error)
+  if (/请先登录/.test(message)) return '请先登录，再加图片'
+  return speaksChinese(message) ? redactSecretPatterns(message) : '图片没有加上，请再试一次'
+}
+
+export function addDraftImages(conversation: Conversation, images: readonly AiChatAsset[]): Conversation {
+  const present = conversation.draftImages ?? []
+  const fresh = images.filter((image) => !present.some((item) => item.assetId === image.assetId))
+  if (!fresh.length) return conversation
+  return { ...conversation, draftImages: [...present, ...fresh].slice(0, chatLimits.imagesPerMessage) }
+}
+
+export function removeDraftImage(conversation: Conversation, assetId: string): Conversation {
+  const rest = (conversation.draftImages ?? []).filter((image) => image.assetId !== assetId)
+  if (rest.length) return { ...conversation, draftImages: rest }
+  const { draftImages: _removed, ...withoutImages } = conversation
+  return withoutImages
 }
 
 /** 余额不足给「去充值」，Key 额度上限给「去调额度」；Key 失效时点「重新生成」就会换新 Key。 */

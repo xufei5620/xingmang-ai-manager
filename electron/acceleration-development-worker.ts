@@ -148,6 +148,10 @@ async function handle(message: unknown): Promise<unknown> {
   if (request.operation === 'redeem-code' && typeof request.code === 'string' && request.code.length <= 64) {
     return backend.redeemAccelerationCode?.(request.scope, request.code)
   }
+  if (request.operation === 'start-automatic' && (request.mode === 'system-proxy' || request.mode === 'tun')) {
+    return backend.startAutomaticAcceleration(request.scope, request.mode,
+      typeof request.lineId === 'string' ? request.lineId : undefined)
+  }
   if (request.operation === 'start' && (request.mode === 'system-proxy' || request.mode === 'tun')) {
     return backend.startAcceleration(request.scope, request.mode,
       typeof request.lineId === 'string' ? request.lineId : undefined, request.ignoreConflicts === true)

@@ -4,8 +4,9 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { parse as parseYaml } from 'yaml'
-import { readBoundedUtf8FileSync } from './bounded-file'
-import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-directory'
+import { mapWithConcurrency } from './async-map'
+import { readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
+import { DirectoryEntryLimitError, readDirectoryEntries, readDirectoryEntriesSync } from './bounded-directory'
 import {
   commandEnvironment,
   findExecutable,
@@ -21,12 +22,15 @@ import {
 } from './tool-installation'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
+import { renameWithTransientRetrySync } from './safe-local-data'
 import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
+import { tomlErrorLocation } from './toml-error-location'
+import { describeBrokenConfig } from './broken-config-advice'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -35,6 +39,7 @@ const SKILL_DIRECTORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const MAX_SKILL_FILES = 2_000
 const MAX_SKILL_BYTES = 50 * 1024 * 1024
 const MAX_SKILL_DISCOVERY_ENTRIES = 10_000
+const SKILL_SCAN_CONCURRENCY = 16
 const MAX_SKILL_IMPORT_DEPTH = 32
 const MAX_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_MANIFEST_BYTES = 512 * 1024
@@ -517,15 +522,15 @@ function parseTomlFile(filePath: string): Record<string, unknown> {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) {
     throw new Error('Codex config.toml 必须是单链接普通文件')
   }
+  // 读文件自己的失败（超过上限、读的时候被换掉、被拒绝访问）照原样抛，那不是「无法解析」。
+  const content = readBoundedUtf8FileSync(filePath, MAX_CONFIG_BYTES, 'Codex config.toml')
   try {
-    return TOML.parse(readBoundedUtf8FileSync(
-      filePath,
-      MAX_CONFIG_BYTES,
-      'Codex config.toml',
-    )) as Record<string, unknown>
+    return TOML.parse(content) as Record<string, unknown>
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`Codex config.toml 无法解析，未执行修改：${detail}`)
+    // 解析器的原话会把出错那行连同上下几行原样抄进来，客户自己加的外接工具的令牌常常
+    // 就在旁边。这句会上屏、进运行日志和反馈报告，所以只报第几行（第三十批 B，I13），
+    // 再和保存配置那边一样指去「重置为初始状态」（第三十批 C）。
+    throw new Error(describeBrokenConfig('Codex', tomlErrorLocation(error)))
   }
 }
 
@@ -593,6 +598,22 @@ function writeUtf8Exclusive(filePath: string, content: string): void {
   }
 }
 
+// 不存在时返回 false；存在就必须是单链接普通文件，路径上也不能经过链接。
+function assertReplaceableTomlFile(filePath: string): boolean {
+  assertNoSymlinkComponents(filePath, 'Codex 配置路径')
+  let existing: fs.Stats
+  try {
+    existing = fs.lstatSync(filePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
+    throw new Error('Codex config.toml 必须是单链接普通文件')
+  }
+  return true
+}
+
 function performAtomicTomlMutation(
   filePath: string,
   mutate: (config: Record<string, unknown>) => void,
@@ -607,21 +628,16 @@ function performAtomicTomlMutation(
   let backupPath: string | null = null
   try {
     writeUtf8Exclusive(temporaryPath, content)
-    assertNoSymlinkComponents(filePath, 'Codex 配置路径')
-    let existing: fs.Stats | null = null
-    try {
-      existing = fs.lstatSync(filePath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    if (existing) {
-      if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
-        throw new Error('Codex config.toml 必须是单链接普通文件')
-      }
+    if (assertReplaceableTomlFile(filePath)) {
       backupPath = uniqueBackupPath(filePath)
       fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL)
     }
-    fs.renameSync(temporaryPath, filePath)
+    // Windows 上安全软件正扫着 config.toml 或刚写好的临时文件时，换过去会被拒
+    // （EPERM / EBUSY），过一会儿就好，等一下再试（第三十七批 C）。每次试之前再查一遍：
+    // 等的那一下，路径可能被换成联接，文件也可能多了硬链接。
+    renameWithTransientRetrySync(temporaryPath, filePath, () => {
+      assertReplaceableTomlFile(filePath)
+    })
   } finally {
     try {
       fs.rmSync(temporaryPath)
@@ -852,8 +868,8 @@ export function readCodexSkillEnablement(configPath: string): (skillPath: string
   return (skillPath) => skillEnabled(config, skillPath)
 }
 
-function skillFromFile(filePath: string, root: SkillRoot, config: Record<string, unknown>): SkillDto {
-  const metadata = frontmatter(readBoundedUtf8FileSync(
+async function skillFromFile(filePath: string, root: SkillRoot, config: Record<string, unknown>): Promise<SkillDto> {
+  const metadata = frontmatter(await readBoundedUtf8File(
     filePath,
     MAX_SKILL_DEFINITION_BYTES,
     'Codex SKILL.md',
@@ -877,15 +893,21 @@ interface SkillDiscoveryBudget {
   files: number
 }
 
-function collectSkillFiles(
+// Discovery runs on the main process whenever the Skills page opens, so every
+// filesystem call here is asynchronous: a user with thousands of Skills (or a
+// slow disk scanned by antivirus) must not freeze the whole window. Siblings
+// are stat'ed a few at a time, but subdirectories are still walked one at a
+// time so the shared entry budget is checked before each directory read,
+// exactly as the synchronous walk did.
+async function collectSkillFiles(
   root: string,
   depth = 0,
   budget: SkillDiscoveryBudget = { entries: 0, files: 0 },
-): string[] {
+): Promise<string[]> {
   if (depth > 5) return []
   let rootInfo: fs.Stats
   try {
-    rootInfo = fs.lstatSync(root)
+    rootInfo = await fs.promises.lstat(root)
   } catch {
     return []
   }
@@ -894,21 +916,20 @@ function collectSkillFiles(
   try {
     const remaining = MAX_SKILL_DISCOVERY_ENTRIES - budget.entries
     if (remaining < 1) throw new DirectoryEntryLimitError('Codex Skill 目录', MAX_SKILL_DISCOVERY_ENTRIES)
-    entries = readDirectoryEntriesSync(root, remaining, 'Codex Skill 目录')
+    entries = await readDirectoryEntries(root, remaining, 'Codex Skill 目录')
     budget.entries += entries.length
   } catch (error) {
     if (error instanceof DirectoryEntryLimitError) throw error
     return []
   }
+  const infos = await mapWithConcurrency(entries, SKILL_SCAN_CONCURRENCY, (entry) => (
+    fs.promises.lstat(path.join(root, entry.name)).catch(() => null)
+  ))
   const result: string[] = []
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const entryPath = path.join(root, entry.name)
-    let info: fs.Stats
-    try {
-      info = fs.lstatSync(entryPath)
-    } catch {
-      continue
-    }
+    const info = infos[index]
+    if (!info) continue
     if (info.isSymbolicLink()) continue
     if (info.isFile() && info.nlink <= 1 && entry.name === 'SKILL.md') {
       budget.files += 1
@@ -917,7 +938,7 @@ function collectSkillFiles(
       }
       result.push(entryPath)
     } else if (info.isDirectory()) {
-      result.push(...collectSkillFiles(entryPath, depth + 1, budget))
+      result.push(...await collectSkillFiles(entryPath, depth + 1, budget))
     }
   }
   return result
@@ -1006,7 +1027,12 @@ function moveToTrash(source: string, trashDirectory: string): string {
   )
   const sourceDirectory = path.dirname(source)
   try {
-    fs.renameSync(sourceDirectory, target)
+    // 安全软件正扫着 Skill 里的文件时，整个文件夹挪不动（EPERM），过一会儿就好，等一下
+    // 再试（第三十七批 C）；每次试之前照开头那样再查两边的路径。
+    renameWithTransientRetrySync(sourceDirectory, target, () => {
+      assertNoSymlinkComponents(source, 'Skill 路径')
+      assertNoSymlinkComponents(trashDirectory, '应用回收站路径')
+    })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
     validateSkillTree(sourceDirectory)
@@ -1245,18 +1271,18 @@ export class CodexExtensionService {
     return catalog
   }
 
-  listSkills(): SkillDto[] {
+  async listSkills(): Promise<SkillDto[]> {
     const config = parseTomlFile(this.configPath)
     const skills = new Map<string, SkillDto>()
     const discoveryBudget: SkillDiscoveryBudget = { entries: 0, files: 0 }
     for (const root of this.skillRoots()) {
-      for (const filePath of collectSkillFiles(root.path, 0, discoveryBudget)) {
-        try {
-          const skill = skillFromFile(filePath, root, config)
-          skills.set(skill.id, skill)
-        } catch {
-          // A Skill may disappear while the filesystem is being scanned.
-        }
+      const files = await collectSkillFiles(root.path, 0, discoveryBudget)
+      const parsed = await mapWithConcurrency(files, SKILL_SCAN_CONCURRENCY, (filePath) => (
+        // A Skill may disappear while the filesystem is being scanned.
+        skillFromFile(filePath, root, config).catch(() => null)
+      ))
+      for (const skill of parsed) {
+        if (skill) skills.set(skill.id, skill)
       }
     }
     return [...skills.values()].sort((left, right) => {
@@ -1269,7 +1295,7 @@ export class CodexExtensionService {
     skillPath: string,
     enabled: boolean,
   ): Promise<{ skills: SkillDto[]; rewriteNotice?: string }> {
-    const target = this.requireManagedSkill(skillPath)
+    const target = await this.requireManagedSkill(skillPath)
     const backupPath = await atomicTomlMutation(this.configPath, (config) => {
       if (!isRecord(config.skills)) config.skills = {}
       const skills = config.skills as Record<string, unknown>
@@ -1284,13 +1310,13 @@ export class CodexExtensionService {
       if (isRecord(existing)) existing.enabled = enabled
       else entries.push({ path: target.path, enabled })
     })
-    const skills = this.listSkills()
+    const skills = await this.listSkills()
     const reconciled = skills.find((skill) => skill.id === target.id)
     if (!reconciled || reconciled.enabled !== enabled) throw new Error('Skill 状态写入后对账失败')
     return { skills, rewriteNotice: configRewriteNotice(backupPath) }
   }
 
-  importSkill(input: ImportSkillInput): SkillDto[] {
+  async importSkill(input: ImportSkillInput): Promise<SkillDto[]> {
     if (!path.isAbsolute(input.sourcePath)) throw new Error('Skill 导入路径必须是绝对路径')
     let sourceDirectory = path.resolve(input.sourcePath)
     assertNoSymlinkComponents(sourceDirectory, 'Skill 导入路径')
@@ -1327,16 +1353,16 @@ export class CodexExtensionService {
     return this.listSkills()
   }
 
-  uninstallSkill(skillPath: string): { skills: SkillDto[]; trashPath: string } {
-    const target = this.requireManagedSkill(skillPath)
+  async uninstallSkill(skillPath: string): Promise<{ skills: SkillDto[]; trashPath: string }> {
+    const target = await this.requireManagedSkill(skillPath)
     const trashPath = moveToTrash(target.path, this.trashDirectory)
-    return { skills: this.listSkills(), trashPath }
+    return { skills: await this.listSkills(), trashPath }
   }
 
-  private requireManagedSkill(skillPath: string): SkillDto {
+  private async requireManagedSkill(skillPath: string): Promise<SkillDto> {
     if (!path.isAbsolute(skillPath)) throw new Error('Skill 路径必须是绝对路径')
     const requested = normalizedPathKey(skillPath)
-    const skill = this.listSkills().find((entry) => entry.id === requested)
+    const skill = (await this.listSkills()).find((entry) => entry.id === requested)
     if (!skill || !skill.managed || (skill.scope !== 'user' && skill.scope !== 'repo')) {
       throw new Error('只能修改受管的 user 或 repo Skill')
     }

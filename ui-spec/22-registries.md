@@ -102,7 +102,7 @@ type ToolDef = {
 | Key | active / disabled / expired / exhausted / revoked | 有效 / 已停用 / 已过期 / 额度用完 / 已撤销 | ok / neutral / warn / warn / neutral | 启用 / 编辑 / 撤销 |
 | 余额 | ok / warn / bad / zero | — | ok / warn / bad / bad | 充值 / 马上充值 |
 | 订单 | pending / paid / failed / timeout / unknown | 等待支付 / 已到账 / 支付失败 / 已超时 / 待确认 | warn / ok / bad / neutral / neutral | 重新支付 / 查询 |
-| 订阅 | active / exhausted / expired | 生效中 / 额度已用完 / 已到期 | ok / warn / neutral | 购买 |
+| 订阅 | active / exhausted / expired / cancelled / revoked / suspended / 其他 | 生效中 / 额度已用完 / 已到期 / 已撤销 / 已撤销 / 已停用 / 待确认 | ok / warn / neutral / neutral / neutral / neutral / neutral | 购买 |
 | 异步任务 | queued / running / done / failed | 排队中 / 处理中 / 已完成 / 失败 | neutral / accent / ok / bad | 详情 / 查看结果 / 重试 |
 | 更新 | idle / checking / latest / available / downloading / downloaded / failed | 见 04 §15 | — | 检查 / 下载 / 重启安装 / 重试 |
 | 外接工具 | enabled / disabled / update / authExpired | （开关）/ 可更新 / 授权过期 | — / warn / bad | 更新 / 重新授权 |
@@ -128,4 +128,4 @@ type ToolDef = {
 | 平台 | safeStorage 不可用（Linux） | 这台电脑无法安全保存密码 | 只保留本次登录 | 知道了 |
 | 平台 | 无托盘（Linux） | 关闭窗口会直接退出 | — | 安装扩展 |
 
-未列出的错误：标题「〈动作〉没有成功」，说明「已自动撤回，不会留下半成品」，动作「重试 · 查看日志 · 找客服」。**永远不把错误码或英文原文直接给用户看**；原文进「反馈」页日志。
+未列出的错误：标题「操作没有完成」，下面一行「〈动作〉没有完成」；原话里认得出原因（EBUSY、ENOSPC、EPERM……）就按目录那条说原因，认不出时写「原因：没认出是哪一类问题，原话在下面」，脱敏打码后的原话放在「给客服看的原话」里（认出原因时默认收起）。动作「重试 · 查看日志 · 复制给客服 · 找客服」。英文原文不作为正文，只在「给客服看的原话」里出现；完整经过仍在「反馈」页日志。（第二十批 2、3）

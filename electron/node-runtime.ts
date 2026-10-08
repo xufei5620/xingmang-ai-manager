@@ -11,6 +11,7 @@ import {
   type RunCommandOptions,
 } from './command-runner'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { downloadWithResume } from './download-retry'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
   isTrustedWindowsMachinePath,
@@ -18,6 +19,7 @@ import {
   resolveWindowsMachinePaths,
   type WindowsMachinePaths,
 } from './windows-machine-paths'
+import { authenticodeSignatureModules, buildPowerShellModuleImportStatement, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import {
   encodeWindowsPowerShellCommand,
   inspectWindowsElevationCapability,
@@ -58,7 +60,8 @@ export interface NodeRuntimeInstallProgress {
 export interface NodeRuntimeInstallResult {
   installed: true
   action: 'installed' | 'unchanged'
-  method: 'winget' | 'msi' | null
+  /** 'archive' = macOS 上把官方压缩包解到本软件自己的文件夹（macos-node-runtime.ts）。 */
+  method: 'winget' | 'msi' | 'archive' | null
   source: NodeRuntimeSource | null
   version: string | null
   architecture: NodeRuntimeArchitecture
@@ -118,6 +121,8 @@ export interface WindowsRestartStatus {
 
 export interface NodeRuntimeInstallerDependencies {
   fetch: typeof globalThis.fetch
+  /** 测试接缝：下载断了以后等多久再在同一条线路上接着下，缺省按真实时间等。 */
+  waitBeforeResume?(milliseconds: number, signal?: AbortSignal): Promise<void>
   runProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult>
   resolveWingetExecutable(signal?: AbortSignal): Promise<SystemWingetResolution>
   inspectInstalledNodeRuntime(signal?: AbortSignal): Promise<InstalledNodeRuntimeInspection>
@@ -126,13 +131,22 @@ export interface NodeRuntimeInstallerDependencies {
 }
 
 export interface InstallNodeRuntimeOptions {
-  networkRegion: NodeRuntimeNetworkRegion
+  /**
+   * 先走国内镜像还是官方源。可以给一个到要下载时才问的函数：Windows 先试 winget，没装成、
+   * 借到下载专用线路以后才定（借到了就官方源优先），先算好就算早了（第二十八批 D）。
+   */
+  networkRegion: NodeRuntimeNetworkRegion | (() => Promise<NodeRuntimeNetworkRegion>)
   architecture?: NodeJS.Architecture
   signal?: AbortSignal
   onProgress?: (progress: NodeRuntimeInstallProgress) => void
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
   dependencies?: Partial<NodeRuntimeInstallerDependencies>
+  /**
+   * 退到下安装包时才借下载专用线路。只有 Windows 这一份认它：winget 自己下载、不走这条线路；
+   * macOS、Linux 一开始就是下载，由调用方整段包住。缺省 = 不借。
+   */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 export interface AuthenticodeSignature {
@@ -159,8 +173,16 @@ const appInstallerPackageFamily = 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'
 const maximumNodeRedirects = 2
 const nodeRedirectStatuses = new Set([301, 302, 303, 307, 308])
 
-const windowsRestartStatusScript = [
+// The two probes below get 10 s each under trustedCommandEnvironment(), where a
+// cmdlet left to autoloading costs the whole System32 module scan (see
+// buildPowerShellModuleImportStatement); they import their modules by name.
+export const windowsRestartStatusModules = ['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'] as const
+export const appInstallerQueryModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
+export const nodeRuntimeWindowsProbeTimeoutMs = 10_000
+
+export const windowsRestartStatusScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  buildPowerShellModuleImportStatement(windowsRestartStatusModules),
   "$ErrorActionPreference = 'Stop'",
   '$reasons = [System.Collections.Generic.List[string]]::new()',
   "$componentServicing = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending'",
@@ -183,21 +205,21 @@ const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadS
   },
 }
 
-const signatureScript = [
+export const nodeInstallerSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_MSI_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
 ].join('; ')
 
-const installedNodeSignatureScript = [
+export const installedNodeSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_EXE_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
@@ -207,10 +229,11 @@ function encodedPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-const appInstallerQueryScript = [
+export const appInstallerQueryScript = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  buildPowerShellModuleImportStatement(appInstallerQueryModules),
   `$packages = @(Get-AppxPackage -Name '${appInstallerPackageName}' -ErrorAction Stop | Sort-Object Version -Descending)`,
   'if ($packages.Count -eq 0) {',
   '  try {',
@@ -287,7 +310,7 @@ export async function inspectWindowsRestartRequired(signal?: AbortSignal): Promi
   }, {
     env: trustedCommandEnvironment(process.env, machinePaths, 'win32'),
     trustedOnly: true,
-    timeoutMs: 10_000,
+    timeoutMs: nodeRuntimeWindowsProbeTimeoutMs,
     maxOutputBytes: 64 * 1024,
     signal,
   })
@@ -333,7 +356,7 @@ export async function resolveSystemWingetExecutable(
     }, {
       trustedOnly: true,
       machinePaths,
-      timeoutMs: 10_000,
+      timeoutMs: nodeRuntimeWindowsProbeTimeoutMs,
       maxOutputBytes: 128 * 1024,
       signal,
     })
@@ -366,7 +389,7 @@ export async function resolveSystemWingetExecutable(
 }
 
 function report(
-  options: InstallNodeRuntimeOptions,
+  options: Pick<InstallNodeRuntimeOptions, 'onProgress'>,
   progress: NodeRuntimeInstallProgress,
 ): void {
   options.onProgress?.(progress)
@@ -375,6 +398,10 @@ function report(
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw signal.reason ?? new Error('操作已取消')
 }
+
+// 1618：Windows 同一时间只让装一个安装包，别的程序（多半是 Windows 更新）正在装。
+// 跟从哪儿下载无关，认出它就不再换下载源重下（第三十五批 D）。
+const windowsInstallerBusyMessage = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
 
 function errorText(reason: unknown): string {
   const candidate = reason as { message?: unknown; stderr?: unknown } | null
@@ -390,6 +417,7 @@ function errorText(reason: unknown): string {
   if (/\b1603\b/i.test(raw)) {
     return 'Windows Installer 安装失败（错误 1603）。请先重启 Windows 完成挂起更新，再重新点击一键安装；如果仍失败，请检查系统安装权限'
   }
+  if (/\b1618\b/.test(raw)) return windowsInstallerBusyMessage
   if (raw) return raw
   return '未知错误'
 }
@@ -438,15 +466,38 @@ export function nodeRuntimeDownloadSources(
     : [sources.npmmirror, sources.official]
 }
 
+export function resolveNodeRuntimeNetworkRegion(
+  region: InstallNodeRuntimeOptions['networkRegion'],
+): Promise<NodeRuntimeNetworkRegion> {
+  return typeof region === 'function' ? region() : Promise.resolve(region)
+}
+
+/**
+ * index.json 里每个版本的 files 列出它发布了哪些包：Windows 认 MSI，macOS 认
+ * tar 压缩包（`osx-arm64-tar` → `node-vX-darwin-arm64.tar.gz`）。
+ */
+export type NodeRuntimePackageKind = 'windows-msi' | 'darwin-archive'
+
+export function nodeRuntimePackageFileName(
+  version: string,
+  architecture: NodeRuntimeArchitecture,
+  kind: NodeRuntimePackageKind,
+): string {
+  return kind === 'darwin-archive'
+    ? `node-${version}-darwin-${architecture}.tar.gz`
+    : `node-${version}-${architecture}.msi`
+}
+
 export function parseNodeReleaseIndex(
   input: string,
   architecture: NodeRuntimeArchitecture,
+  kind: NodeRuntimePackageKind = 'windows-msi',
 ): NodeRuntimeRelease | null {
   if (!input.trim() || Buffer.byteLength(input, 'utf8') > maximumIndexBytes) return null
   try {
     const value = JSON.parse(input) as unknown
     if (!Array.isArray(value)) return null
-    const requiredFile = `win-${architecture}-msi`
+    const requiredFile = kind === 'darwin-archive' ? `osx-${architecture}-tar` : `win-${architecture}-msi`
     const releases: NodeRuntimeRelease[] = []
     for (const entry of value) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
@@ -464,7 +515,7 @@ export function parseNodeReleaseIndex(
         version: record.version,
         lts: record.lts.trim(),
         architecture,
-        fileName: `node-${record.version}-${architecture}.msi`,
+        fileName: nodeRuntimePackageFileName(record.version, architecture, kind),
       })
     }
     releases.sort((left, right) => compareVersions(right.version, left.version))
@@ -657,7 +708,7 @@ export function buildNodeRuntimeInstallPlan(
         '-ExecutionPolicy',
         'Bypass',
         '-EncodedCommand',
-        encodedPowerShellCommand(signatureScript),
+        encodedPowerShellCommand(nodeInstallerSignatureScript),
       ],
       timeoutMs: 60_000,
       acceptedExitCodes: [0],
@@ -679,7 +730,10 @@ export function buildNodeRuntimeInstallPlan(
   }
 }
 
-export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+export function buildNodeRuntimeWingetPlan(
+  executable: string,
+  architecture?: NodeRuntimeArchitecture,
+): NodeRuntimeProcessPlan {
   if (
     !path.win32.isAbsolute(executable)
     || path.win32.basename(executable).toLowerCase() !== 'winget.exe'
@@ -700,15 +754,21 @@ export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProce
       '--accept-package-agreements',
       '--accept-source-agreements',
       '--disable-interactivity',
+      // 只在调用方认准了芯片时才钉住：星芒在 ARM 电脑上是模拟运行的，不钉的话装哪一版
+      // 由 winget 自己猜，和后面安装包那条路挑的可能不是同一版。
+      ...(architecture ? ['--architecture', architecture] : []),
     ],
     timeoutMs: wingetTimeoutMs,
     acceptedExitCodes: [0],
   }
 }
 
-function verifiedNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+function verifiedNodeRuntimeWingetPlan(
+  executable: string,
+  architecture?: NodeRuntimeArchitecture,
+): NodeRuntimeProcessPlan {
   return {
-    ...buildNodeRuntimeWingetPlan(executable),
+    ...buildNodeRuntimeWingetPlan(executable, architecture),
     // The resolver immediately above this call validated the App Installer
     // package identity, real install root, canonical executable and basename.
     // Run it as the current user so WindowsApps ACL probing is not repeated by
@@ -1092,7 +1152,7 @@ async function responseTextWithLimit(response: Response, maximumBytes: number): 
 }
 
 async function fetchLimitedText(
-  dependencies: NodeRuntimeInstallerDependencies,
+  dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch'>,
   url: string,
   maximumBytes: number,
   signal?: AbortSignal,
@@ -1108,68 +1168,101 @@ async function fetchLimitedText(
 }
 
 async function downloadMsi(
-  dependencies: NodeRuntimeInstallerDependencies,
+  dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch' | 'waitBeforeResume'>,
   url: string,
   targetPath: string,
-  options: InstallNodeRuntimeOptions,
+  options: Pick<InstallNodeRuntimeOptions, 'signal' | 'onProgress'>,
   source: NodeRuntimeDownloadSource,
 ): Promise<{ sha256: string; size: number }> {
-  let size = 0
-  const hash = createHash('sha256')
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('安装包下载超时')), downloadTimeoutMs)
+  const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
-    const response = await fetchTrustedNodeResource(url, {
-      method: 'GET',
+    const download = await downloadWithResume({
+      targetPath,
+      maximumBytes: maximumMsiBytes,
+      oversizeMessage: '安装包超过 160 MB 安全限制',
       signal: controller.signal,
-      headers: { Accept: 'application/octet-stream' },
-    }, dependencies.fetch)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    if (!response.body) throw new Error('服务器没有返回安装包内容')
-    const declaredLengthHeader = response.headers.get('content-length')
-    const declaredLength = declaredLengthHeader === null ? null : Number(declaredLengthHeader)
-    if (declaredLength !== null && (!Number.isSafeInteger(declaredLength) || declaredLength < minimumMsiBytes)) {
-      throw new Error('服务器返回的安装包大小无效')
-    }
-    if (declaredLength !== null && declaredLength > maximumMsiBytes) {
-      throw new Error('安装包超过 160 MB 安全限制')
-    }
-    const file = await fs.promises.open(targetPath, 'wx')
-    const reader = response.body.getReader()
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (!value) continue
-        size += value.byteLength
-        if (size > maximumMsiBytes) {
-          await reader.cancel()
+      ...(dependencies.waitBeforeResume ? { wait: dependencies.waitBeforeResume } : {}),
+      request: (headers, signal) => fetchTrustedNodeResource(url, {
+        method: 'GET',
+        signal,
+        headers: { Accept: 'application/octet-stream', ...headers },
+      }, dependencies.fetch),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.body) throw new Error('服务器没有返回安装包内容')
+        const declaredLengthHeader = response.headers.get('content-length')
+        const declaredLength = declaredLengthHeader === null ? null : Number(declaredLengthHeader)
+        if (declaredLength !== null && (!Number.isSafeInteger(declaredLength) || declaredLength < minimumMsiBytes)) {
+          throw new Error('服务器返回的安装包大小无效')
+        }
+        if (declaredLength !== null && declaredLength > maximumMsiBytes) {
           throw new Error('安装包超过 160 MB 安全限制')
         }
-        hash.update(value)
-        await file.writeFile(value)
-        report(options, {
-          phase: 'downloading',
-          source: source.id,
-          message: `正在从${source.label}下载 Node.js LTS`,
-          percent: declaredLength ? Math.min(99, (size / declaredLength) * 100) : null,
-          transferredBytes: size,
-          totalBytes: declaredLength,
-        })
-      }
-    } finally {
-      await file.close()
-    }
-    if (size < minimumMsiBytes) throw new Error('下载的安装包内容过小')
-    if (declaredLength !== null && size !== declaredLength) throw new Error('安装包下载不完整')
-    return { sha256: hash.digest('hex'), size }
+        return declaredLength
+      },
+      onProgress: (size, total) => report(options, {
+        phase: 'downloading',
+        source: source.id,
+        message: `正在从${source.label}下载 Node.js LTS`,
+        percent: percentOf(size, total),
+        transferredBytes: size,
+        totalBytes: total,
+      }),
+      onResume: (size, total) => report(options, {
+        phase: 'downloading',
+        source: source.id,
+        message: `网络断了一下，正在从${source.label}接着下载 Node.js LTS`,
+        percent: percentOf(size, total),
+        transferredBytes: size,
+        totalBytes: total,
+      }),
+    })
+    if (download.size < minimumMsiBytes) throw new Error('下载的安装包内容过小')
+    if (download.total !== null && download.size !== download.total) throw new Error('安装包下载不完整')
+    return { sha256: download.sha256.toString('hex'), size: download.size }
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
   }
+}
+
+/**
+ * macOS 那一路（macos-node-runtime.ts）复用同一套下载：只认 nodejs.org 与 npmmirror、
+ * 手动跟随重定向、限时限大小、边下边算 SHA-256。两个平台的包都在 50~160 MB 以内，
+ * 大小上下限不用分开。
+ */
+export function fetchNodeRuntimeText(
+  fetchImplementation: typeof globalThis.fetch,
+  url: string,
+  kind: 'index' | 'checksums',
+  signal?: AbortSignal,
+): Promise<string> {
+  return fetchLimitedText(
+    { fetch: fetchImplementation },
+    url,
+    kind === 'index' ? maximumIndexBytes : maximumChecksumsBytes,
+    signal,
+  )
+}
+
+export function downloadNodeRuntimePackage(
+  fetchImplementation: typeof globalThis.fetch,
+  url: string,
+  targetPath: string,
+  options: Pick<InstallNodeRuntimeOptions, 'signal' | 'onProgress'>,
+  source: NodeRuntimeDownloadSource,
+  waitBeforeResume?: NodeRuntimeInstallerDependencies['waitBeforeResume'],
+): Promise<{ sha256: string; size: number }> {
+  return downloadMsi({ fetch: fetchImplementation, waitBeforeResume }, url, targetPath, options, source)
+}
+
+export function nodeRuntimeSourceUrl(baseUrl: string, relativePath: string): string {
+  return sourceUrl(baseUrl, relativePath)
 }
 
 async function hashFileSha256(filePath: string): Promise<string> {
@@ -1317,7 +1410,10 @@ export async function installNodeRuntime(
       })
     } else {
       try {
-        await dependencies.runProcess(verifiedNodeRuntimeWingetPlan(winget.executable), options.signal)
+        await dependencies.runProcess(
+          verifiedNodeRuntimeWingetPlan(winget.executable, options.architecture ? architecture : undefined),
+          options.signal,
+        )
         const installedRuntime = await dependencies.inspectInstalledNodeRuntime(options.signal)
         const result: NodeRuntimeInstallResult = {
           installed: true,
@@ -1359,34 +1455,45 @@ export async function installNodeRuntime(
     throw new Error(message)
   }
   try {
-    for (const source of nodeRuntimeDownloadSources(options.networkRegion)) {
-      throwIfAborted(options.signal)
-      try {
-        const result = await installFromSource(
-          source,
-          architecture,
-          temporaryDirectory,
-          options,
-          dependencies,
-        )
-        report(options, {
-          phase: 'complete',
-          source: source.id,
-          message: `Node.js ${result.version ?? 'LTS'} 安装完成，重启本程序后即可使用`,
-          percent: 100,
-        })
-        return result
-      } catch (error) {
-        failures.push(`${source.label}：${errorText(error)}`)
-        if (options.signal?.aborted) throw error
-        report(options, {
-          phase: 'resolving',
-          source: source.id,
-          message: `${source.label}安装失败，正在尝试备用下载源`,
-          percent: null,
-        })
+    // 到这里才真要下载，这时才借下载专用线路，借到以后再问先走哪个源（第二十八批 D）。
+    const installFromSources = async (): Promise<NodeRuntimeInstallResult | null> => {
+      for (const source of nodeRuntimeDownloadSources(await resolveNodeRuntimeNetworkRegion(options.networkRegion))) {
+        throwIfAborted(options.signal)
+        try {
+          const result = await installFromSource(
+            source,
+            architecture,
+            temporaryDirectory,
+            options,
+            dependencies,
+          )
+          report(options, {
+            phase: 'complete',
+            source: source.id,
+            message: `Node.js ${result.version ?? 'LTS'} 安装完成，重启本程序后即可使用`,
+            percent: 100,
+          })
+          return result
+        } catch (error) {
+          const reason = errorText(error)
+          failures.push(`${source.label}：${reason}`)
+          if (options.signal?.aborted) throw error
+          // 换个源再下几十 MB，Windows 那边还在装别的，照样是 1618。
+          if (reason === windowsInstallerBusyMessage) break
+          report(options, {
+            phase: 'resolving',
+            source: source.id,
+            message: `${source.label}安装失败，正在尝试备用下载源`,
+            percent: null,
+          })
+        }
       }
+      return null
     }
+    const installed = await (options.withDownloadRoute
+      ? options.withDownloadRoute(installFromSources)
+      : installFromSources())
+    if (installed) return installed
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)
   }

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // publish-release 在往更新目录写任何东西之前的最后一道关（#493）：
 //
-//   --local <本次出的清单> --live <线上那一份> --name latest.yml|latest-mac.yml
+//   --local <本次出的清单> --live <线上那一份> --name <清单名>
+//
+// 清单名只认 update-release-utils.cjs 的 UPDATE_MANIFEST_NAMES（Windows、Mac、Linux 两个
+// 架构各一份）。
 //
 // 线上那一份不存在（工作流拿到 404）时不传 --live，这个平台是第一次发，放行。
 // 线上比本次旧：正常的升级，放行。线上比本次新：拒绝，这不是发布而是降级。
@@ -19,10 +22,10 @@
 // Windows 出包时 release:build:unsigned 自己会拒绝同版本，但 macOS 那条路没有这一步，
 // 只发 Mac 时原来要到最后打 tag 那一步才发现，线上的 Mac 包那时已经被覆盖了。
 const fs = require('node:fs')
-const { compareReleaseVersions, parseLatestMetadata } = require('./update-release-utils.cjs')
+const { UPDATE_MANIFEST_NAMES, compareReleaseVersions, parseLatestMetadata } = require('./update-release-utils.cjs')
 const { parseCurrentStatus } = require('./service-status.cjs')
 
-const MANIFEST_NAMES = new Set(['latest.yml', 'latest-mac.yml'])
+const MANIFEST_NAMES = new Set(UPDATE_MANIFEST_NAMES)
 
 class PublishGuardError extends Error {}
 
@@ -83,7 +86,7 @@ function parseArguments(argv) {
 function main(argv) {
   const options = parseArguments(argv)
   if (!options.local || !options.name) {
-    throw new PublishGuardError('用法：publish-guard.cjs --local <file> --name <latest.yml|latest-mac.yml> [--live <file>] [--status <file>]')
+    throw new PublishGuardError(`用法：publish-guard.cjs --local <file> --name <${UPDATE_MANIFEST_NAMES.join('|')}> [--live <file>] [--status <file>]`)
   }
   const liveText = options.live ? fs.readFileSync(options.live, 'utf8') : null
   const localText = fs.readFileSync(options.local, 'utf8')

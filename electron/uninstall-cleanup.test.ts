@@ -4,19 +4,27 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
+import { providerBaseUrls } from './catalog'
+import { inspectManagedCliHookTargets, inspectProviderConfig, saveProviderConfig } from './config-files'
+import { activeRelocatedFolderPolicy, setRelocatedFolderPolicy } from './relocated-folders'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import {
   chatHistoryDirectoryNames,
   clearChatHistory,
   clearLoginRecords,
+  clearUpdaterCache,
   describeCleanupFailure,
   hasProxyRecoveryRecords,
   inspectUninstallAccount,
   loginRecordFiles,
   parseUninstallAccountProbe,
+  removeCliHooksFromConfigs,
+  resolveUpdaterCacheDirectory,
   runUninstallCleanup,
   startUninstallCleanup,
   uninstallCleanupExitCodes as codes,
+  uninstallProviderConfigRoots,
+  updaterCacheDirectoryName,
 } from './uninstall-cleanup'
 
 const temporaryDirectories: string[] = []
@@ -24,6 +32,16 @@ const temporaryDirectories: string[] = []
 // Without this the real probe starts PowerShell on the Windows shard.
 async function sameAccount(): Promise<'same'> {
   return 'same'
+}
+
+// Keeps the real cleanup away from the tool configs of the machine running the tests.
+function noConfigs(): boolean {
+  return true
+}
+
+// Likewise for the update installers electron-updater keeps on that machine.
+async function noUpdaterCache(): Promise<boolean> {
+  return true
 }
 
 function temporaryDataDirectory(): string {
@@ -136,6 +154,25 @@ describe('uninstall cleanup', () => {
     expect(app.setLoginItemSettings).not.toHaveBeenCalled()
   })
 
+  it('follows no relocated folder while it cleans up elevated', async () => {
+    // Whatever might have switched it on earlier in the process (I8).
+    setRelocatedFolderPolicy({ homeDirectories: [os.homedir()], acceptsTarget: () => true })
+    try {
+      const app = {
+        isPackaged: true,
+        getPath: vi.fn(() => temporaryDataDirectory()),
+        setAppUserModelId: vi.fn(),
+        getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+        setLoginItemSettings: vi.fn(),
+      }
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount, noConfigs, noUpdaterCache))
+      expect(activeRelocatedFolderPolicy()).toBeNull()
+      await expect(exited).resolves.toBe(0)
+    } finally {
+      setRelocatedFolderPolicy(null)
+    }
+  })
+
   it('names the login item exactly as the desktop process does before removing it', async () => {
     const calls: string[] = []
     const app = {
@@ -145,7 +182,7 @@ describe('uninstall cleanup', () => {
       getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
       setLoginItemSettings: vi.fn((value: { openAtLogin: boolean }) => { calls.push(`login:${value.openAtLogin}`) }),
     }
-    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount))
+    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount, noConfigs, noUpdaterCache))
     await expect(exited).resolves.toBe(0)
     expect(app.getPath).toHaveBeenCalledWith('userData')
     expect(calls).toEqual([`aumid:${windowsAppUserModelId}`, 'login:false'])
@@ -315,10 +352,13 @@ describe('uninstall cleanup', () => {
         getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
         setLoginItemSettings: vi.fn(),
       }
-      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount))
+      // The installers go either way: they are no sign-in and no data of the customer's.
+      const removeUpdaterCache = vi.fn(noUpdaterCache)
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount, noConfigs, removeUpdaterCache))
       await expect(exited).resolves.toBe(0)
       expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(remains)
       expect(fs.existsSync(path.join(dataDirectory, 'chat-history'))).toBe(remains)
+      expect(removeUpdaterCache).toHaveBeenCalledTimes(1)
     }
   })
 
@@ -360,16 +400,19 @@ describe('uninstall cleanup', () => {
     const recoverProxy = vi.fn(async () => undefined)
     const removeLoginItem = vi.fn(() => true)
     const clearLoginRecords = vi.fn(async () => true)
+    const removeUpdaterCache = vi.fn(async () => true)
     const report = vi.fn()
     await expect(runUninstallCleanup({
       dataDirectory: temporaryDataDirectory(),
       inspectAccount: async () => 'other',
       proxyRecordsExist: () => true,
-      recoverProxy, removeLoginItem, clearLoginRecords, report,
+      recoverProxy, removeLoginItem, clearLoginRecords, removeUpdaterCache, report,
     })).resolves.toBe(codes.otherAccount)
     expect(removeLoginItem).not.toHaveBeenCalled()
     expect(recoverProxy).not.toHaveBeenCalled()
     expect(clearLoginRecords).not.toHaveBeenCalled()
+    // That administrator's cache is not the desktop user's either.
+    expect(removeUpdaterCache).not.toHaveBeenCalled()
     expect(report).toHaveBeenCalledWith(expect.stringMatching(/^account: /))
   })
 
@@ -405,9 +448,212 @@ describe('uninstall cleanup', () => {
       setLoginItemSettings: vi.fn(),
     }
     const argv = ['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearLoginArgument]
-    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, async () => 'other'))
+    const removeUpdaterCache = vi.fn(noUpdaterCache)
+    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, async () => 'other', noConfigs, removeUpdaterCache))
     await expect(exited).resolves.toBe(codes.otherAccount)
     expect(app.setLoginItemSettings).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(true)
+    expect(removeUpdaterCache).not.toHaveBeenCalled()
+  })
+})
+
+describe('removing the update installers on uninstall', () => {
+  function updaterCache(localAppData: string): string {
+    return path.join(localAppData, updaterCacheDirectoryName)
+  }
+
+  // An installer copy and a downloaded update, laid out the way the installer and electron-updater leave them.
+  function seedUpdaterCache(directory: string): void {
+    fs.mkdirSync(path.join(directory, 'pending'), { recursive: true })
+    fs.writeFileSync(path.join(directory, 'installer.exe'), 'installer')
+    fs.writeFileSync(path.join(directory, 'pending', '星芒AI管理工具-Setup-0.2.16.exe'), 'update')
+    fs.writeFileSync(path.join(directory, 'pending', 'update-info.json'), '{"fileName":"星芒AI管理工具-Setup-0.2.16.exe"}')
+  }
+
+  it('names the folder the way electron-builder derives it from the package name', () => {
+    // app-builder-lib appInfo.updaterCacheDirName: the package name in lower case plus -updater.
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')) as { name: string }
+    expect(updaterCacheDirectoryName).toBe(`${manifest.name.toLowerCase()}-updater`)
+  })
+
+  it('looks where electron-updater keeps its cache', () => {
+    const cache = 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater'
+    // electron-updater reads LOCALAPPDATA and falls back to the home folder when it is missing or empty.
+    for (const env of [{ LOCALAPPDATA: 'C:\\Users\\张三\\AppData\\Local' }, { LOCALAPPDATA: 'c:\\users\\张三\\appdata\\local\\' }, {}, { LOCALAPPDATA: '' }]) {
+      expect(resolveUpdaterCacheDirectory('win32', env, 'C:\\Users\\张三')).toBe(cache)
+    }
+    expect(resolveUpdaterCacheDirectory('darwin', {}, '/Users/alex')).toBe('/Users/alex/Library/Caches/xingmang-ai-manager-updater')
+  })
+
+  it('lets no environment variable choose where the elevated cleanup deletes', () => {
+    // LOCALAPPDATA and USERPROFILE can be set without administrator rights; the
+    // account's registered profile folder cannot. A mismatch keeps the cache.
+    for (const LOCALAPPDATA of ['D:\\Profiles\\me\\Local', 'C:\\Users\\other\\AppData\\Local', 'AppData\\Local', 'C:relative']) {
+      expect(resolveUpdaterCacheDirectory('win32', { LOCALAPPDATA }, 'C:\\Users\\me')).toBeNull()
+    }
+    for (const home of [null, '', 'Users\\me', '\\\\server\\share\\me']) {
+      expect(resolveUpdaterCacheDirectory('win32', {}, home)).toBeNull()
+    }
+    expect(resolveUpdaterCacheDirectory('darwin', {}, 'relative')).toBeNull()
+    expect(resolveUpdaterCacheDirectory('linux', {}, '/home/me')).toBeNull()
+  })
+
+  it('removes the copied installer and the downloaded update and nothing beside them', async () => {
+    const localAppData = temporaryDataDirectory()
+    const cache = updaterCache(localAppData)
+    seedUpdaterCache(cache)
+    fs.mkdirSync(path.join(localAppData, 'Programs'))
+    fs.writeFileSync(path.join(localAppData, 'Programs', 'keep.txt'), 'keep')
+
+    await expect(clearUpdaterCache(cache)).resolves.toBe(true)
+    expect(fs.existsSync(cache)).toBe(false)
+    expect(fs.readdirSync(localAppData)).toEqual(['Programs'])
+    expect(fs.readFileSync(path.join(localAppData, 'Programs', 'keep.txt'), 'utf8')).toBe('keep')
+    // A machine that never updated, or a second uninstall, is already clear.
+    await expect(clearUpdaterCache(cache)).resolves.toBe(true)
+  })
+
+  it('refuses a linked file or folder inside the cache but still removes the rest', async () => {
+    const cache = updaterCache(temporaryDataDirectory())
+    const elsewhere = temporaryDataDirectory()
+    fs.writeFileSync(path.join(elsewhere, 'someone-elses.exe'), 'not ours')
+    seedUpdaterCache(cache)
+    // A hard link needs no privilege on Windows, nor does a junction; the
+    // elevated uninstaller must delete through neither (I8).
+    fs.linkSync(path.join(elsewhere, 'someone-elses.exe'), path.join(cache, 'pending', 'hard-linked.exe'))
+    fs.symlinkSync(elsewhere, path.join(cache, 'linked'), 'junction')
+    const report = vi.fn()
+
+    await expect(clearUpdaterCache(cache, report)).resolves.toBe(false)
+    expect(fs.readdirSync(cache).sort()).toEqual(['linked', 'pending'])
+    expect(fs.readdirSync(path.join(cache, 'pending'))).toEqual(['hard-linked.exe'])
+    expect(fs.readdirSync(elsewhere)).toEqual(['someone-elses.exe'])
+    expect(fs.readFileSync(path.join(elsewhere, 'someone-elses.exe'), 'utf8')).toBe('not ours')
+    expect(report).toHaveBeenCalledWith('update cache: 更新安装包必须是单链接普通文件')
+  })
+
+  it('refuses a cache folder that is itself a link', async () => {
+    const localAppData = temporaryDataDirectory()
+    const elsewhere = temporaryDataDirectory()
+    seedUpdaterCache(elsewhere)
+    const cache = updaterCache(localAppData)
+    fs.symlinkSync(elsewhere, cache, 'junction')
+    const report = vi.fn()
+
+    await expect(clearUpdaterCache(cache, report)).resolves.toBe(false)
+    expect(fs.readdirSync(elsewhere).sort()).toEqual(['installer.exe', 'pending'])
+    expect(report).toHaveBeenCalledWith('update cache: 更新安装包不能经过符号链接或目录联接')
+  })
+
+  it('leaves folders deeper than electron-updater ever writes', async () => {
+    const cache = updaterCache(temporaryDataDirectory())
+    seedUpdaterCache(cache)
+    fs.mkdirSync(path.join(cache, 'pending', 'a', 'b'), { recursive: true })
+    fs.writeFileSync(path.join(cache, 'pending', 'a', 'b', 'deep.bin'), 'deep')
+    const report = vi.fn()
+
+    await expect(clearUpdaterCache(cache, report)).resolves.toBe(false)
+    expect(fs.readdirSync(cache)).toEqual(['pending'])
+    expect(fs.readdirSync(path.join(cache, 'pending'))).toEqual(['a'])
+    expect(fs.readFileSync(path.join(cache, 'pending', 'a', 'b', 'deep.bin'), 'utf8')).toBe('deep')
+    expect(report).toHaveBeenCalledWith('update cache: 更新安装包目录层级超出预期')
+  })
+
+  it('touches nothing when the location cannot be told', async () => {
+    const report = vi.fn()
+    await expect(clearUpdaterCache(null, report)).resolves.toBe(false)
+    expect(report).toHaveBeenCalledWith('update cache: location unknown; left in place')
+  })
+
+  it('removes the installers before proxy recovery and never turns a leftover into an exit code', async () => {
+    const order: string[] = []
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(),
+      proxyRecordsExist: () => true,
+      removeLoginItem: () => { order.push('login item'); return true },
+      clearLoginRecords: async () => { order.push('login records'); return true },
+      removeUpdaterCache: async () => { order.push('update cache'); return false },
+      recoverProxy: async () => { order.push('proxy') },
+    })).resolves.toBe(0)
+    expect(order).toEqual(['login item', 'login records', 'update cache', 'proxy'])
+
+    const report = vi.fn()
+    const recoverProxy = vi.fn(async () => undefined)
+    await expect(runUninstallCleanup({
+      report,
+      dataDirectory: temporaryDataDirectory(),
+      proxyRecordsExist: () => true,
+      removeLoginItem: () => true,
+      recoverProxy,
+      removeUpdaterCache: async () => { throw new Error('更新安装包无法验证路径组件') },
+    })).resolves.toBe(0)
+    expect(recoverProxy).toHaveBeenCalledTimes(1)
+    expect(report).toHaveBeenCalledWith('update cache: 更新安装包无法验证路径组件')
+  })
+
+  it('removes the installers on a machine that never handed the system proxy to acceleration', async () => {
+    const removeUpdaterCache = vi.fn(async () => true)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem: () => true, removeUpdaterCache,
+    })).resolves.toBe(0)
+    expect(removeUpdaterCache).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('taking our CLI hooks back on uninstall', () => {
+  const cliHook = {
+    nodeExecutable: '/managed/node/bin/node',
+    scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+    eventsDirectory: '/home/me/.config/xingmang-ai-manager/cli-events',
+    platform: 'linux' as const,
+  }
+
+  it('removes our hooks from every tool config and keeps the keys', () => {
+    const roots = uninstallProviderConfigRoots(temporaryDataDirectory())
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-4-6', 'reset', roots, {}, providerBaseUrls,
+      '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"', undefined, cliHook)
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(inspectManagedCliHookTargets('claude', roots)).not.toEqual([])
+    expect(removeCliHooksFromConfigs(roots)).toBe(true)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookTargets(provider, roots)).toEqual([])
+    expect(inspectProviderConfig('claude', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('gemini', roots).apiKey).toBe('sk-relay')
+  })
+
+  it('ignores CODEX_HOME, which a process without administrator rights can set', () => {
+    const home = temporaryDataDirectory()
+    expect(uninstallProviderConfigRoots(home)).toEqual({ userHome: path.resolve(home), codexHome: path.join(path.resolve(home), '.codex') })
+  })
+
+  it('keeps going after one tool fails and reports it', () => {
+    const report = vi.fn()
+    const tried: string[] = []
+    const removed = removeCliHooksFromConfigs(uninstallProviderConfigRoots(temporaryDataDirectory()), report, (provider) => {
+      tried.push(provider)
+      if (provider === 'gemini') throw new Error('配置路径越过 Provider 根目录')
+    })
+    expect(removed).toBe(false)
+    expect([...tried].sort()).toEqual(['claude', 'codex', 'gemini', 'grok'])
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('cli hooks (gemini)'))
+  })
+
+  it('records a failed hook removal without stopping the rest of the cleanup', async () => {
+    const removeLoginItem = vi.fn(() => true)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem, removeCliHooks: () => false,
+    })).resolves.toBe(codes.cliHooksRemain)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem, removeCliHooks: () => { throw new Error('x') },
+    })).resolves.toBe(codes.cliHooksRemain)
+    expect(removeLoginItem).toHaveBeenCalledTimes(2)
+  })
+
+  it('touches no tool config when another account runs the uninstaller', async () => {
+    const removeCliHooks = vi.fn(() => true)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), inspectAccount: async () => 'other', recoverProxy: async () => undefined,
+      removeLoginItem: () => true, removeCliHooks,
+    })).resolves.toBe(codes.otherAccount)
+    expect(removeCliHooks).not.toHaveBeenCalled()
   })
 })

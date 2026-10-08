@@ -2,16 +2,17 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
-import { windowsPowerShellExecutable } from './windows-elevation'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
+import { InstallCancelledError, isInstallCancelledError } from './install-cancellation'
+import { parseWindowsProcessesJson } from './codex-desktop'
 import type { NativeConfigInspection } from './config-files'
 import {
+  assertCodexDesktopUninstalled,
   buildCodexDesktopDarwinStatus,
   createCodexDesktopService,
   buildCodexDesktopLaunchPlan,
@@ -20,39 +21,70 @@ import {
   buildCodexDesktopPackageSources,
   buildCodexDesktopCombinedProbeFailure,
   buildCodexDesktopCombinedProbeScript,
+  codexDesktopCombinedProbeModules,
   buildCodexDesktopPackageInspectionScript,
   buildCodexDesktopPackageProbeScript,
   buildCodexDesktopProcessProbeScript,
+  codexDesktopProcessCheckFailedMessage,
+  collectCodexDesktopProcesses,
   buildCodexDesktopWorkspaceLaunchPlan,
   buildCodexDesktopWorkspaceUrl,
   buildCodexDesktopWindowsProbes,
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  describeCodexDesktopLaunchWait,
+  buildCodexDesktopResetScript,
+  buildCodexDesktopStartAppProbeScript,
+  buildCodexDesktopUninstallScript,
+  codexDesktopAppxCommandModules,
+  codexDesktopPackageInspectionModules,
+  codexDesktopPackageProbeModules,
+  codexDesktopProcessProbeModules,
+  codexDesktopStartAppProbeModules,
+  describeCodexDesktopResetFailure,
+  startCodexDesktopLaunchHeartbeat,
+  codexDesktopLaunchHeartbeatIntervalMs,
+  codexDesktopNotStartedPrefix,
+  processExistsFromSignalError,
+  buildCodexDesktopSessionProcessProbeScript,
+  parseCodexDesktopSessionProcessIds,
+  codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopOfficialDownload,
+  describeCodexDesktopStoreNotice,
   describeCodexDesktopStoreFailure,
+  codexDesktopStoreExitCode,
   parseCodexDesktopStoreProgress,
+  buildCodexDesktopStoreWaitMessage,
+  codexDesktopStoreHeartbeatMs,
   shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
+  downloadCodexDesktopOfficialPackage,
+  buildCodexDesktopOfficialPackageSource,
+  codexDesktopOfficialDownloadLimitMs,
+  codexDesktopSlowDownloadGraceMs,
+  estimateCodexDesktopDownloadRemainingMs,
+  isCodexDesktopDownloadTooSlow,
   fetchCodexDesktopManifestCandidate,
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
   parseCodexDesktopCombinedProbeJson,
-  parseCodexDesktopWindowsLaunchContext,
   validateCodexDesktopResourceUrl,
+  toCodexDesktopMacInstallFailure,
   type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
-
-// Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
-// 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
+import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
+import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage } from './macos-desktop-install-failure'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const temporaryDirectories: string[] = []
 
@@ -106,37 +138,151 @@ function testMirrorCandidate(
 }
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
-  it('recognizes the built-in Administrator SID and numeric UAC values', () => {
-    expect(parseCodexDesktopWindowsLaunchContext(
-      '{"sid":"S-1-5-21-2548096332-2102100343-2330258446-500","uacEnabled":0,"filterAdministratorToken":0}\n',
-    )).toEqual({
-      userSid: 'S-1-5-21-2548096332-2102100343-2330258446-500',
-      isBuiltInAdministrator: true,
-      uacEnabled: false,
-      filterAdministratorToken: false,
-    })
+  it('resets only the probed package, passing its name as a PowerShell literal', () => {
+    const script = buildCodexDesktopResetScript("OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0'; Remove-Item C:\\")
+    expect(script).toContain("Reset-AppxPackage -Package 'OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0''; Remove-Item C:\\'")
+    expect(script).not.toMatch(/Remove-AppxPackage/)
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(scan.code).not.toContain('Remove-Item')
   })
 
-  it('degrades malformed PowerShell output without exposing arbitrary text', () => {
-    expect(parseCodexDesktopWindowsLaunchContext('warning\nnot-json\n')).toEqual({
-      userSid: null,
-      isBuiltInAdministrator: false,
-      uacEnabled: null,
-      filterAdministratorToken: null,
-    })
+  it('points a failed reset at the same button in Windows settings, in plain words', () => {
+    const generic = describeCodexDesktopResetFailure(new Error('Reset-AppxPackage : The term is not recognized'))
+    const slow = describeCodexDesktopResetFailure(Object.assign(new Error('timeout'), { killed: true }))
+    for (const message of [generic, slow]) {
+      expect(message).toContain('「高级选项」→「重置」')
+      expect(message).not.toMatch(/Reset-AppxPackage|PowerShell|AppX|Appx|0x[0-9A-F]{8}/i)
+    }
+    expect(slow).toContain('两分钟')
   })
 
-  it('gives built-in Administrator users actionable AppModel guidance', () => {
-    const message = describeCodexDesktopLaunchFailure({
-      userSid: 'S-1-5-21-1-2-3-500',
-      isBuiltInAdministrator: true,
-      uacEnabled: false,
-      filterAdministratorToken: false,
-    })
-    expect(message).toContain('0xC0EA0001')
-    expect(message).toContain('内置 Administrator')
-    expect(message).toContain('wsreset.exe')
-    expect(message).toContain('普通 Windows 账户')
+  it('gives the three steps a customer can take', () => {
+    const generic = describeCodexDesktopLaunchFailure()
+    expect(generic.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(generic).toContain('点「重试」')
+    expect(generic).toContain('开始菜单里搜「Codex」')
+    expect(generic).toContain('联系客服')
+  })
+
+  it('says how long it waited and gives a start-menu check the customer can do alone', () => {
+    const noWindow = describeCodexDesktopLaunchFailure({ waitedSeconds: 47, processSeen: true })
+    expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(noWindow).toContain('等了 47 秒')
+    expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
+    expect(noWindow).toContain('开始菜单里搜「Codex」直接点开')
+    expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
+    expect(noWindow).toContain('联系客服')
+
+    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })
+    expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
+    expect(notStarted).not.toContain('窗口一直没出来')
+  })
+
+  // Windows only refuses sandboxed store apps on these accounts; Codex Desktop
+  // is a full-trust package and opened on the built-in Administrator test
+  // machine. A failure there has the same causes as anywhere else.
+  it('never blames the Windows account for a failed launch', () => {
+    for (const message of [
+      describeCodexDesktopLaunchFailure(),
+      describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }),
+      describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: true }, '26.924.2738.0'),
+    ]) {
+      expect(message).not.toMatch(/Administrator|用户账户控制|普通账户/)
+    }
+  })
+
+  it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('等了 51 秒，Codex 没有启动起来')
+    expect(message).toContain('你装的这一版（26.924.2738.0）')
+    expect(message).toContain(codexDesktopKnownIssueMarker)
+    expect(message).toContain('「改用 Codex 命令行版」')
+    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
+
+    const noOutcome = describeCodexDesktopLaunchFailure(undefined, '26.924.2738.0')
+    expect(noOutcome).toContain('等了将近一分钟')
+    expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
+
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
+  })
+
+  it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
+    expect(describeCodexDesktopLaunchWait('preparing', 5)).toBe('正在准备打开 Codex 桌面端，已经等了 5 秒。')
+    expect(describeCodexDesktopLaunchWait('waiting-window', 15)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 15 秒。Codex 第一次打开有时要一分钟。')
+    expect(describeCodexDesktopLaunchWait('waiting-window', 20)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 20 秒。Codex 第一次打开有时要一分钟，可以先去开始菜单看看它有没有弹出来。')
+    for (const stage of ['preparing', 'waiting-window', 'switching-language'] as const) {
+      expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID|调试端口|CDP/i)
+    }
+  })
+
+  it('says Codex is already open while its interface is switched to Chinese and never sends the customer to the start menu', () => {
+    expect(describeCodexDesktopLaunchWait('switching-language', 8)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 8 秒。')
+    expect(describeCodexDesktopLaunchWait('switching-language', 25)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。')
+    for (const elapsed of [5, 20, 45, 90]) {
+      const message = describeCodexDesktopLaunchWait('switching-language', elapsed)
+      expect(message).not.toContain('开始菜单')
+      expect(message).not.toContain('等 Codex 桌面端的窗口出现')
+    }
+  })
+
+  it('moves the heartbeat to the Chinese-switch sentence once the stage changes', () => {
+    vi.useFakeTimers()
+    try {
+      let clock = 0
+      const reports: Array<{ elapsedSeconds: number; message: string }> = []
+      const heartbeat = startCodexDesktopLaunchHeartbeat((progress) => reports.push(progress), { now: () => clock })
+      heartbeat.setStage('waiting-window')
+      clock = 4 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(4 * codexDesktopLaunchHeartbeatIntervalMs)
+      heartbeat.setStage('switching-language')
+      clock = 5 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports.at(-2)?.message).toBe(describeCodexDesktopLaunchWait('waiting-window', 20))
+      expect(reports.at(-1)).toEqual({ elapsedSeconds: 25, message: 'Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。' })
+      heartbeat.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports elapsed time every interval and stays silent once stopped', () => {
+    vi.useFakeTimers()
+    try {
+      let clock = 0
+      const reports: Array<{ elapsedSeconds: number; message: string }> = []
+      const heartbeat = startCodexDesktopLaunchHeartbeat((progress) => reports.push(progress), { now: () => clock })
+      clock = codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports).toEqual([{ elapsedSeconds: 5, message: describeCodexDesktopLaunchWait('preparing', 5) }])
+      heartbeat.setStage('waiting-window')
+      clock = 4 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports[1]).toEqual({ elapsedSeconds: 20, message: describeCodexDesktopLaunchWait('waiting-window', 20) })
+      expect(heartbeat.elapsedSeconds()).toBe(20)
+      heartbeat.stop()
+      clock = 10 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(5 * codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps Windows internals out of every sentence a customer can see', () => {
+    for (const processSeen of [true, false]) {
+      expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen })).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+    }
+    expect(describeCodexDesktopLaunchFailure()).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+  })
+
+  it('counts a process that refuses the liveness probe as still running', () => {
+    expect(processExistsFromSignalError(Object.assign(new Error('denied'), { code: 'EPERM' }))).toBe(true)
+    expect(processExistsFromSignalError(Object.assign(new Error('gone'), { code: 'ESRCH' }))).toBe(false)
+    expect(processExistsFromSignalError(null)).toBe(false)
   })
 })
 
@@ -196,6 +342,21 @@ describe('Codex Desktop launch trust', () => {
 })
 
 describe('Codex Desktop update state', () => {
+  it('allows first install when only another Windows account has a running package', () => {
+    const processes = parseWindowsProcessesJson(JSON.stringify({
+      ProcessId: 101,
+      ParentProcessId: 0,
+      Name: 'ChatGPT.exe',
+      ExecutablePath: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\ChatGPT.exe',
+      OwnerSid: 'S-1-5-21-5678',
+      CurrentOwnerSid: 'S-1-5-21-1234',
+      SessionId: 2,
+      CurrentSessionId: 2,
+      PackageFamilyName: 'OpenAI.Codex_id',
+    }))
+    expect(canAttemptCodexDesktopFirstInstallFallback(null, null, processes, true)).toBe(true)
+  })
+
   it('allows historical fallback only when every local install probe is empty', () => {
     expect(canAttemptCodexDesktopFirstInstallFallback(null, null, [])).toBe(true)
     expect(canAttemptCodexDesktopFirstInstallFallback(null, { name: 'Codex', appId: 'OpenAI.Codex!App' }, [])).toBe(false)
@@ -631,6 +792,70 @@ describe('Codex Desktop update state', () => {
     expect(progress.every((value) => value >= 0 && value <= 100)).toBe(true)
   })
 
+  it('continues a dropped mirror download from where it stopped and keeps the progress going', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-resume-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
+    const cut = 4 * 1024 * 1024
+    const url = 'https://mirror.example.cn/Codex.msix'
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      let sent = false
+      const response = range
+        ? new Response(new Uint8Array(bytes.subarray(cut)), {
+          status: 206,
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}`,
+          },
+        })
+        : new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.error(new TypeError('fetch failed'))
+              return
+            }
+            sent = true
+            controller.enqueue(new Uint8Array(bytes.subarray(0, cut)))
+          },
+        }), {
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Length': String(bytes.byteLength),
+            ETag: '"msix"',
+          },
+        })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const progress: Array<{ percent: number; resuming?: boolean }> = []
+
+    const result = await downloadCodexDesktopPackage(
+      {
+        label: '测试镜像',
+        url,
+        expectedContentLength: bytes.byteLength,
+        expectedSha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+      destination,
+      ({ percent, resuming }) => progress.push({ percent, resuming }),
+      fetchMock,
+      undefined,
+      { wait: async () => undefined },
+    )
+
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(result.transferred).toBe(bytes.byteLength)
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(progress).toContainEqual({ percent: 40, resuming: true })
+    const percents = progress.map((entry) => entry.percent)
+    expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
+    expect(percents.at(-1)).toBe(100)
+  })
+
   it('rejects a package whose Content-Length differs from the mirror manifest', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
     temporaryDirectories.push(directory)
@@ -908,6 +1133,26 @@ describe('Codex Desktop mirror fallback disclosure', () => {
       .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
   })
 
+  it('says the store is missing instead of that it failed, on every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
+    const noStore = { storeFailure: null, storeUnavailable: true }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore))
+      .toBe('这台电脑没有微软商店，直接用国内线路装：正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像：SHA-256 不一致', [], noStore))
+      .toBe('这台电脑没有微软商店，直接用国内线路装：前一路镜像未通过校验，已改从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore)).not.toContain('没装上')
+  })
+
+  it('names a missing store installer as a missing part, not a store failure', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+    })).toBe('微软商店少一个安装组件，先用国内线路装：正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: null })).toBe('')
+  })
+
   it('keeps the Microsoft Store failure in front of every mirror attempt', () => {
     const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '连不上微软商店'))
@@ -1124,14 +1369,110 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('$_.CommandLine')
     expect(script).toContain("@('ChatGPT.exe', 'Codex.exe')")
     expect(script).toContain('WindowsApps\\\\OpenAI.Codex')
-    expect(script).toContain('ExecutablePath = $path')
+    expect(script).toContain('ExecutablePath = $candidate.Path')
+  })
+
+  it('checks owner SID and session before returning a process for termination', () => {
+    const script = buildCodexDesktopProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script).toContain('[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+    expect(script).toContain('[System.Diagnostics.Process]::GetCurrentProcess().SessionId')
+    expect(script).toContain('Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId')
+    expect(script).toContain('Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5')
+    expect(script).toContain('$owner.ReturnValue -eq 0')
+    expect(script).toContain('$owner.Sid -eq $currentSid')
+    expect(script).toContain('$_.SessionId -eq $currentSessionId')
+    expect(script).toContain('PackageFamilyName = $packageFamilyName')
+  })
+
+  it('keeps status and launch scans quiet when the process check fails', async () => {
+    const failingProbe = async (): Promise<string> => { throw new Error('WMI timed out') }
+    await expect(collectCodexDesktopProcesses(failingProbe, 'roots', {})).resolves.toEqual([])
+    await expect(collectCodexDesktopProcesses(failingProbe, 'all', {})).resolves.toEqual([])
+  })
+
+  it('refuses to close anything when the process check fails on a close path', async () => {
+    const failingProbe = async (): Promise<string> => { throw new Error('WMI timed out') }
+    await expect(collectCodexDesktopProcesses(failingProbe, 'all', { strict: true }))
+      .rejects.toThrow(codexDesktopProcessCheckFailedMessage)
+    expect(codexDesktopProcessCheckFailedMessage).not.toContain('星芒')
+  })
+
+  it('gives the close scan a longer budget than the status scan', async () => {
+    const budgets: number[] = []
+    const probe = async (_script: string, timeoutMs: number): Promise<string> => {
+      budgets.push(timeoutMs)
+      return ''
+    }
+    await collectCodexDesktopProcesses(probe, 'roots', {})
+    await collectCodexDesktopProcesses(probe, 'all', { strict: true })
+    expect(budgets).toEqual([8_000, 60_000])
+  })
+
+  it('limits status scans to the app executables but lets close scans see helpers from the package', () => {
+    expect(buildCodexDesktopProcessProbeScript('roots'))
+      .toContain(`-Filter "SessionId=$currentSessionId AND (Name='ChatGPT.exe' OR Name='Codex.exe')"`)
+    const closeScript = buildCodexDesktopProcessProbeScript('all')
+    expect(closeScript).toContain('-Filter "SessionId=$currentSessionId"')
+    expect(closeScript).not.toContain("Name='ChatGPT.exe'")
+    // Helpers are still admitted only from a Codex WindowsApps package path.
+    expect(closeScript).toContain(String.raw`\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_`)
+  })
+
+  it('finds a launched window by session and package path alone, without the owner check the close paths need', () => {
+    const script = buildCodexDesktopSessionProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script).toContain('Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId"')
+    expect(script).toContain('$_.SessionId -eq $currentSessionId')
+    expect(script).toContain('$_.CommandLine')
+    // Opening never closes anything, so it must not drop a window whose owner
+    // WMI cannot confirm, and it must not be limited to today's exe names.
+    expect(script).not.toContain('GetOwnerSid')
+    expect(script).not.toContain("Name='ChatGPT.exe'")
+  })
+
+  it('reduces the launch probe to PIDs of the expected package only', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    const beta = String.raw`C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.716.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    const output = JSON.stringify([
+      { ProcessId: 101, ExecutablePath: stable },
+      { ProcessId: 102, ExecutablePath: beta },
+      { ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` },
+      { ProcessId: -1, ExecutablePath: stable },
+      { ProcessId: 104 },
+    ])
+    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_2p2nqsd0c76g0')).toEqual([101])
+    expect(parseCodexDesktopSessionProcessIds(output, null)).toEqual([101, 102])
+    expect(parseCodexDesktopSessionProcessIds(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }), null)).toEqual([101])
+    expect(parseCodexDesktopSessionProcessIds('', null)).toEqual([])
+    expect(parseCodexDesktopSessionProcessIds('WARNING: not json', null)).toEqual([])
+  })
+
+  it('tells an unreadable exit probe apart from a closed desktop app', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }))).toBe(true)
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify([{ ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` }]))).toBe(false)
+    expect(codexDesktopRunningFromProbeOutput('  \r\n')).toBe(false)
+    // 读不懂的输出不能当「已经关了」：那会把正在用的人断掉。
+    expect(codexDesktopRunningFromProbeOutput('WARNING: not json')).toBeNull()
   })
 
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {
     const combined = buildCodexDesktopCombinedProbeScript()
+    // The real run of this script is the Windows packaging job's PowerShell
+    // probe smoke (e2e/windows-powershell-probes-smoke.mjs); here only its text.
+    for (const script of [combined, buildCodexDesktopProcessProbeScript('all')]) {
+      const scan = scanPowerShell(script)
+      expect(scan.unterminated).toBe(false)
+      expect(unbalancedBracket(scan.code)).toBeNull()
+    }
 
     expect(combined).toContain("Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' }")
-    expect(combined).toContain('Get-CimInstance Win32_Process')
+    expect(combined).toContain('Get-CimInstance -ClassName Win32_Process')
     expect(combined).toContain("Get-AppxPackage -Name 'OpenAI.Codex*' -ErrorAction Stop")
     expect(combined).not.toContain("Get-AppxPackage -AllUsers")
     // 每段各自 try/catch，任一段失败只写自己的 error 字段
@@ -1142,43 +1483,72 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
 
-  it.runIf(process.platform === 'win32')('executes the process probe on Windows and emits bounded JSON', () => {
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildCodexDesktopProcessProbeScript(),
-    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-    if (output.trim()) expect(() => JSON.parse(output)).not.toThrow()
+  it('imports the module of every cmdlet the merged probe calls before the first one runs', () => {
+    const combined = buildCodexDesktopCombinedProbeScript()
+    // Under trustedCommandEnvironment() a single autoloaded cmdlet costs the
+    // whole module analysis (#714), so one module left out is as slow as none.
+    const cmdletModules: Record<string, string | null> = {
+      'Where-Object': null,
+      'ForEach-Object': null,
+      'Import-Module': null,
+      'Get-ItemProperty': 'Microsoft.PowerShell.Management',
+      'Select-Object': 'Microsoft.PowerShell.Utility',
+      'ConvertTo-Json': 'Microsoft.PowerShell.Utility',
+      'Get-CimInstance': 'CimCmdlets',
+      'Invoke-CimMethod': 'CimCmdlets',
+      'Get-StartApps': 'StartLayout',
+      'Get-AppxPackage': 'Appx',
+    }
+    const used = [...new Set(combined.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g) ?? [])]
+    for (const cmdlet of used) {
+      expect(Object.keys(cmdletModules), `${cmdlet} needs a module entry`).toContain(cmdlet)
+      const module = cmdletModules[cmdlet]
+      if (module) expect(codexDesktopCombinedProbeModules).toContain(module)
+    }
+    const importAt = combined.indexOf(buildPowerShellModuleImportStatement(codexDesktopCombinedProbeModules))
+    expect(importAt).toBeGreaterThan(0)
+    for (const cmdlet of used.filter((name) => cmdletModules[name])) {
+      expect(combined.indexOf(cmdlet)).toBeGreaterThan(importAt)
+    }
+  })
+})
+
+describe('Codex Desktop uninstall verification', () => {
+  const packageFullName = 'OpenAI.Codex_26.721.4979.0_x64__abc123'
+  const installed = {
+    name: 'OpenAI.Codex',
+    version: '26.721.4979.0',
+    packageFullName,
+    packageFamilyName: 'OpenAI.Codex_abc123',
+    installLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__abc123',
+  }
+
+  it('accepts only a successful current-user absence probe', () => {
+    expect(() => assertCodexDesktopUninstalled(packageFullName, {
+      value: null, error: null, confirmedAbsent: true,
+    })).not.toThrow()
   })
 
-  it.runIf(process.platform === 'win32')('executes the merged probe on Windows and emits the three segments', () => {
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildCodexDesktopCombinedProbeScript(),
-    ], {
-      encoding: 'utf8',
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-      timeout: powerShellStartupTimeoutMs,
-    })
+  it('rejects when the same package is still registered', () => {
+    expect(() => assertCodexDesktopUninstalled(packageFullName, {
+      value: installed, error: null, confirmedAbsent: false,
+    })).toThrow('卸载未完成')
+  })
 
-    const parsed = JSON.parse(output.trim()) as Record<string, unknown>
-    expect(Object.prototype.hasOwnProperty.call(parsed, 'startApps')).toBe(true)
-    expect(Object.prototype.hasOwnProperty.call(parsed, 'processes')).toBe(true)
-    expect(parsed.package).toBeTruthy()
-    // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错
-    const probe = parseCodexDesktopCombinedProbeJson(output)
-    expect(
-      probe.packageProbe.value !== null
-      || probe.packageProbe.confirmedAbsent === true
-      || probe.packageProbe.error !== null,
-    ).toBe(true)
-  }, 180_000)
+  it('does not call a failed probe a confirmed uninstall', () => {
+    expect(() => assertCodexDesktopUninstalled(packageFullName, {
+      value: null, error: 'AppX probe failed', confirmedAbsent: false,
+    })).toThrow('未能确认')
+  })
+
+  it('does not call an inconclusive or different package a confirmed uninstall', () => {
+    for (const probe of [
+      { value: null, error: null, confirmedAbsent: false },
+      { value: { ...installed, packageFullName: 'OpenAI.CodexBeta_26.721.4979.0_x64__abc123' }, error: null, confirmedAbsent: false },
+    ]) {
+      expect(() => assertCodexDesktopUninstalled(packageFullName, probe)).toThrow('未能确认')
+    }
+  })
 })
 
 describe('parseCodexDesktopCombinedProbeJson', () => {
@@ -1195,6 +1565,11 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     ParentProcessId: 1,
     Name: 'ChatGPT.exe',
     ExecutablePath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__abc123\\ChatGPT.exe',
+    OwnerSid: 'S-1-5-21-1234',
+    CurrentOwnerSid: 'S-1-5-21-1234',
+    SessionId: 2,
+    CurrentSessionId: 2,
+    PackageFamilyName: 'OpenAI.Codex_abc123',
   }
 
   function combinedOutput(overrides: Record<string, unknown> = {}): string {
@@ -1223,6 +1598,9 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
       parentProcessId: 1,
       name: 'ChatGPT.exe',
       executablePath: processEntry.ExecutablePath,
+      ownerSid: processEntry.OwnerSid,
+      sessionId: processEntry.SessionId,
+      packageFamilyName: processEntry.PackageFamilyName,
     }])
     expect(probe.packageProbe).toMatchObject({
       value: { name: 'OpenAI.Codex', version: '26.721.4979.0' },
@@ -1595,6 +1973,326 @@ describe('Codex Desktop launch acceleration', () => {
   })
 })
 
+describe('Codex Desktop install on macOS', () => {
+  function macInstallFixture(overrides: Partial<CodexDesktopServiceOptions> = {}) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-install-'))
+    temporaryDirectories.push(directory)
+    const routed: string[] = []
+    const downloadFetch = vi.fn<typeof fetch>()
+    const executeCommand = vi.fn<CodexDesktopServiceOptions['executeCommand']>(async (spec) => ({
+      executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+      stdout: spec.executable === '/usr/sbin/sysctl' ? '1\n' : '', stderr: '', outputBytes: 0, durationMs: 1,
+    }))
+    const installMacosDesktopApp = vi.fn<NonNullable<CodexDesktopServiceOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.930.31730', percent: 40 })
+      options.onProgress?.({ phase: 'checking', message: '正在检查下载下来的安装包是不是完整的官方版', percent: null })
+      await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
+      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
+    })
+    const service = createCodexDesktopService({
+      platform: 'darwin',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      executeCommand,
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch,
+      installMacosDesktopApp,
+      withDownloadRoute: async (operation) => {
+        routed.push('start')
+        try { return await operation() } finally { routed.push('end') }
+      },
+      userHome: '/Users/tester',
+      getuid: () => 501,
+      architecture: 'arm64',
+      ...overrides,
+    })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    function progress(): unknown[][] {
+      return target.send.mock.calls
+        .filter(([channel]) => channel === 'desktop:codex-install-progress')
+        .map(([, event]) => [event.phase, event.percent, event.message])
+    }
+    return { service, target, installMacosDesktopApp, executeCommand, downloadFetch, routed, progress }
+  }
+
+  it('installs the official package through the shared Mac installer, inside the download route', async () => {
+    const f = macInstallFixture()
+
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
+      tool: 'codexDesktop', architecture: 'arm64', userHome: '/Users/tester', fetch: f.downloadFetch, signal: expect.any(AbortSignal),
+    }))
+    expect(f.progress()).toEqual([
+      ['downloading', 40, '正在下载 Codex 桌面端 26.930.31730'],
+      ['validating', null, '正在检查下载下来的安装包是不是完整的官方版'],
+      ['installing', null, '正在放进「应用程序」'],
+      ['completed', 100, 'Codex 桌面端 26.930.31730 装好了，在「应用程序」里叫 ChatGPT'],
+    ])
+    // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
+    expect(f.executeCommand).toHaveBeenCalledWith(
+      { executable: '/usr/bin/codesign', argv: ['--verify'] },
+      expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000, signal: expect.any(AbortSignal) }),
+    )
+    for (const [, options] of f.executeCommand.mock.calls) expect(options?.trustedOnly).toBe(false)
+  })
+
+  it('installs the Apple silicon package when an Intel build of the toolbox runs under Rosetta', async () => {
+    const rosetta = macInstallFixture({ architecture: 'x64' })
+    await rosetta.service.installCodexDesktop(rosetta.target)
+    expect(rosetta.executeCommand).toHaveBeenCalledWith({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, expect.objectContaining({ trustedOnly: false }))
+    expect(rosetta.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64' }))
+
+    // Intel Macs report 0, or have no such key and sysctl fails.
+    for (const answer of [async () => '0\n', async (): Promise<string> => { throw new Error('unknown oid') }]) {
+      const intel = macInstallFixture({
+        architecture: 'x64',
+        executeCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: spec.executable === '/usr/sbin/sysctl' ? await answer() : '', stderr: '', outputBytes: 0, durationMs: 1,
+        }),
+      })
+      await intel.service.installCodexDesktop(intel.target)
+      expect(intel.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'x64' }))
+    }
+  })
+
+  it('leaves an installed desktop app alone', async () => {
+    const f = macInstallFixture({
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+  })
+
+  // 点「安装」那一刻检测没做完：照「没装」往下走的话，安装那一步会把「应用程序」里客户自己装好的
+  // 正版 ChatGPT 说成「不是官方原版」，叫客户移到废纸篓。
+  it('checks once more when the first detection did not finish, and leaves the app it then finds alone', async () => {
+    const installed = {
+      app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+      detectionFailed: false,
+      detectionError: null,
+    }
+    const unfinished = { app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' }
+    const firstAttempts: Array<() => Promise<MacosCodexAppInspection>> = [
+      async () => unfinished,
+      async () => { throw new Error('plutil 没有起来') },
+    ]
+    for (const first of firstAttempts) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+        .mockImplementationOnce(first)
+        .mockResolvedValueOnce(installed)
+      const f = macInstallFixture({ detectMacosCodexApp })
+      await expect(f.service.installCodexDesktop(f.target))
+        .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
+      expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+      expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+    }
+  })
+
+  // 没做完的原因不一定和 ChatGPT.app 有关（Spotlight 查不了、扫应用目录超时）：一律停下会让这类 Mac
+  // 再也装不上。
+  it('installs as before when the second detection does not finish either', async () => {
+    const unfinished = { app: null, detectionFailed: true, detectionError: '应用目录扫描达到时间上限，Codex 检测未能完成' }
+    const secondAttempts: Array<() => Promise<MacosCodexAppInspection>> = [
+      async () => unfinished,
+      async () => { throw new Error('plutil 没有起来') },
+    ]
+    for (const second of secondAttempts) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+        .mockResolvedValueOnce(unfinished)
+        .mockImplementationOnce(second)
+      const f = macInstallFixture({ detectMacosCodexApp })
+      await expect(f.service.installCodexDesktop(f.target))
+        .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
+      expect(f.installMacosDesktopApp).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  // 两次都没做完、「应用程序」里又是自称正版的 ChatGPT：照「检测未完成」说，不再说它不是官方原版、
+  // 叫客户移到废纸篓。安装那一步用真的，只把「应用程序」换成临时目录。
+  it.skipIf(process.platform === 'win32')('says the detection did not finish when neither detection could check the ChatGPT already in Applications', async () => {
+    const detectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
+    const applications = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-applications-'))
+    temporaryDirectories.push(applications)
+    fs.mkdirSync(path.join(applications, 'ChatGPT.app', 'Contents'), { recursive: true })
+    const installed = fs.realpathSync(path.join(applications, 'ChatGPT.app'))
+    const unfinished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' })
+    const broken = async (): Promise<MacosCodexAppInspection> => { throw new Error('plutil 没有起来') }
+    const finished = async (): Promise<MacosCodexAppInspection> => ({ app: null, detectionFailed: false, detectionError: null })
+    const rejectedElsewhere = async (): Promise<MacosCodexAppInspection> => ({
+      app: null,
+      detectionFailed: true,
+      detectionError: '核对 ChatGPT.app 的签名超时；已找到 Codex，但应用架构与此 Mac 不兼容',
+      rejectedPaths: ['/Users/tester/Downloads/ChatGPT.app'],
+    })
+    const rejectedHere = async (): Promise<MacosCodexAppInspection> => ({
+      app: null,
+      detectionFailed: true,
+      detectionError: '命令执行失败（退出码 1）：codesign',
+      rejectedPaths: [installed],
+    })
+    const cases: Array<[Array<() => Promise<MacosCodexAppInspection>>, string]> = [
+      [[unfinished, unfinished], detectionUnfinishedMessage],
+      [[broken, broken], detectionUnfinishedMessage],
+      // A copy elsewhere that was turned down says nothing about this one.
+      [[rejectedElsewhere, rejectedElsewhere], detectionUnfinishedMessage],
+      // A detection that finished and still did not find it has turned that app down,
+      // and so has one that checked this very copy and found it is not the official app.
+      [[finished], macosDesktopNameTakenMessage('ChatGPT')],
+      [[unfinished, finished], macosDesktopNameTakenMessage('ChatGPT')],
+      [[rejectedHere, rejectedHere], macosDesktopNameTakenMessage('ChatGPT')],
+    ]
+    for (const [attempts, message] of cases) {
+      const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>()
+      for (const attempt of attempts) detectMacosCodexApp.mockImplementationOnce(attempt)
+      const f = macInstallFixture({
+        detectMacosCodexApp,
+        executeCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: spec.executable === '/usr/bin/plutil' ? 'com.openai.codex\n' : '', stderr: '', outputBytes: 0, durationMs: 1,
+        }),
+        installMacosDesktopApp: (options) => installMacosDesktopApp({ ...options, systemApplicationsDirectory: applications }),
+      })
+      const error = await f.service.installCodexDesktop(f.target).then(() => null, (reason: unknown) => reason)
+      expect(error).toBeInstanceOf(MacosDesktopInstallError)
+      expect((error as Error).message).toBe(message)
+      expect(detectMacosCodexApp).toHaveBeenCalledTimes(attempts.length)
+      expect(f.downloadFetch).not.toHaveBeenCalled()
+      expect(fs.readdirSync(path.join(applications, 'ChatGPT.app'))).toEqual(['Contents'])
+      expect(f.progress().at(-1)).toEqual(['error', null, message])
+    }
+  })
+
+  it('does not detect a second time once the customer has cancelled during the first one', async () => {
+    let finishFirst = (): void => {}
+    const firstFinished = new Promise<void>((resolve) => { finishFirst = resolve })
+    const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>(async () => {
+      await firstFinished
+      return { app: null, detectionFailed: true, detectionError: '核对 ChatGPT.app 的签名超时' }
+    })
+    const f = macInstallFixture({ detectMacosCodexApp })
+    const install = f.service.installCodexDesktop(f.target)
+    await vi.waitFor(() => expect(detectMacosCodexApp).toHaveBeenCalledTimes(1))
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    finishFirst()
+    const error = await install.then(() => null, (reason: unknown) => reason)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(detectMacosCodexApp).toHaveBeenCalledTimes(1)
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
+  })
+
+  it('detects only once when the first detection finished and found nothing', async () => {
+    const detectMacosCodexApp = vi.fn<CodexDesktopServiceOptions['detectMacosCodexApp']>(async () => ({
+      app: null,
+      detectionFailed: false,
+      detectionError: null,
+    }))
+    const f = macInstallFixture({ detectMacosCodexApp })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'installed', previousVersion: null, installedVersion: '26.930.31730' })
+    expect(detectMacosCodexApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('will not install for root, whose copy the customer could never update', async () => {
+    const f = macInstallFixture({ getuid: () => 0 })
+    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。')
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('tells root that an app already there is installed instead of refusing', async () => {
+    const f = macInstallFixture({
+      getuid: () => 0,
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/ChatGPT.app', version: '26.930.31730', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+    })
+    await expect(f.service.installCodexDesktop(f.target))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('passes the Mac wording on as it is, never the Windows one that points at the Microsoft Store', async () => {
+    const failure = new MacosDesktopInstallError('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。', 'fetch failed')
+    const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
+    await expect(failing.service.installCodexDesktop(failing.target)).rejects.toBe(failure)
+    expect(failing.progress().at(-1)).toEqual(['error', null, failure.message])
+
+    const unexpected = macInstallFixture({ withDownloadRoute: async () => { throw new Error('连接超时') } })
+    const error = await unexpected.service.installCodexDesktop(unexpected.target).then(() => null, (reason: unknown) => reason)
+    expect(error).toBeInstanceOf(MacosDesktopInstallError)
+    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect((error as MacosDesktopInstallError).detail).toBe('连接超时')
+  })
+
+  it('says why a Mac install failed in plain words, keeping the ones already written for customers', () => {
+    const disk = new Error('Codex 桌面端安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
+    expect(toCodexDesktopMacInstallFailure(disk)).toBe(disk)
+    const failure = toCodexDesktopMacInstallFailure(new Error('HTTP 503'))
+    expect(failure.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect(isMacosDesktopInstallFailure(failure.message)).toBe(true)
+    expect(failure.message).not.toContain('Codex 桌面端没装上')
+  })
+
+  it('stops a cancelled install and reports it as cancelled', async () => {
+    let release = (): void => {}
+    const f = macInstallFixture({
+      installMacosDesktopApp: async (options) => {
+        await new Promise<void>((resolve) => { release = resolve })
+        options.signal?.throwIfAborted()
+        return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
+      },
+    })
+    const install = f.service.installCodexDesktop(f.target)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    release()
+    const error = await install.then(() => null, (reason: unknown) => reason)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(f.progress().at(-1)).toEqual(['error', null, 'Codex 桌面端安装已取消'])
+  })
+
+  it('takes an install still waiting in the queue out at once instead of waiting for the one ahead', async () => {
+    const queue = new InstallationQueue()
+    let release = (): void => {}
+    const ahead = queue.enqueue('cli:install:claude', () => new Promise<void>((resolve) => { release = resolve }))
+    const f = macInstallFixture({ installationQueue: queue })
+    const install = f.service.installCodexDesktop(f.target).then(() => 'installed', (reason: unknown) => reason)
+    expect(queue.snapshot().pendingKeys).toEqual(['desktop:codex:install'])
+
+    expect(f.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const error = await Promise.race([install, Promise.resolve('still waiting for the install ahead')])
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect((error as Error).message).toBe('Codex 桌面端安装已取消')
+    expect(f.progress()).toEqual([['error', null, 'Codex 桌面端安装已取消']])
+    expect(queue.snapshot()).toEqual({ activeKey: 'cli:install:claude', pendingKeys: [] })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+    expect(f.service.cancelCodexDesktopInstall().cancelled).toBe(false)
+    release()
+    await ahead
+  })
+})
+
 describe('Codex Desktop Microsoft Store install', () => {
   const winget = 'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.0_x64__8wekyb3d8bbwe\\winget.exe'
 
@@ -1626,7 +2324,8 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店里暂时还没有更新的版本')
     expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店里没找到 Codex 桌面端')
     expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等了很久还没装完')
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('错误码 0x8a150084')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('商店那边没说原因')
+    expect(codexDesktopStoreExitCode(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('0x8a150084')
     expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装没有完成')
   })
 
@@ -1636,9 +2335,525 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(parseCodexDesktopStoreProgress('999%')).toBeNull()
   })
 
+  it('tells the user how long the Store install has been waiting', () => {
+    expect(buildCodexDesktopStoreWaitMessage(0, null)).toBe('正在从微软商店下载安装 Codex 桌面端，要等几分钟，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(3 * 60_000 + 5_000, null))
+      .toBe('正在从微软商店下载安装 Codex 桌面端，已经等了 3 分 05 秒。商店有时要十来分钟，不用管它，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(codexDesktopStoreHeartbeatMs, 42)).toContain('（42%），已经等了 15 秒')
+  })
+
+  it('says how much longer the Store gets before switching to the fallback download', () => {
+    const timeoutMs = 15 * 60_000
+    expect(buildCodexDesktopStoreWaitMessage(12 * 60_000, null, timeoutMs))
+      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换 OpenAI 官网的离线安装包接着装，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已经等了 11 分 00 秒')
+  })
+
+  it('keeps install jargon out of the Store wait messages', () => {
+    const samples = [0, 20_000, 5 * 60_000, 13 * 60_000].flatMap((elapsed) => [
+      buildCodexDesktopStoreWaitMessage(elapsed, null),
+      buildCodexDesktopStoreWaitMessage(elapsed, 50),
+    ])
+    for (const message of samples) {
+      expect(message).not.toMatch(/winget|msstore|appx|msix|app installer|powershell/i)
+    }
+  })
+
   it('tries the Store for an update unless the official feed says nothing newer exists', () => {
     expect(shouldTryCodexDesktopStoreUpdate('26.900.1.0', '26.917.9434.0')).toBe(true)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', '26.917.9434.0')).toBe(false)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', null)).toBe(true)
+  })
+})
+
+describe('Codex Desktop official offline package', () => {
+  const manifestUrl = 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'
+  const packageUrl = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix'
+
+  function officialMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
+    return {
+      name: 'OpenAI.Codex',
+      version,
+      architecture: 'x64',
+      publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B',
+      hasSignature: true,
+      ...overrides,
+    }
+  }
+
+  function officialFetch(options: { version?: string; contentType?: string | null; manifestStatus?: number } = {}) {
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x43)
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      requested.push(url)
+      let response: Response
+      if (url === manifestUrl) {
+        response = new Response(JSON.stringify({
+          schemaVersion: 1,
+          buildVersion: options.version ?? '26.930.1.0',
+          storeProductId: '9PLM9XGG6VKS',
+          packageIdentity: 'OpenAI.Codex',
+        }), { status: options.manifestStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
+      } else if (url === packageUrl) {
+        const headers: Record<string, string> = { 'Content-Length': String(bytes.byteLength) }
+        if (options.contentType !== null) headers['Content-Type'] = options.contentType ?? 'application/octet-stream'
+        response = new Response(bytes, { headers })
+      } else {
+        throw new Error(`unexpected request ${url}`)
+      }
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    return { bytes, requested, fetchMock }
+  }
+
+  function officialDestination(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-msix-'))
+    temporaryDirectories.push(directory)
+    return path.join(directory, 'ChatGPT-x64.msix')
+  }
+
+  it('words the official download step the way the customer was told', () => {
+    const storeFailed = { storeFailure: '连不上微软商店' }
+    expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 12 }))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（12%）')
+    expect(describeCodexDesktopOfficialDownload({ storeFailure: null, storeUnavailable: true }, '26.930.1.0'))
+      .toBe('这台电脑没有微软商店，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（0%）')
+    expect(describeCodexDesktopOfficialDownload({
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+    }, '26.930.1.0', { percent: 40 }))
+      .toBe('微软商店少一个安装组件，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（40%）')
+    expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 40, resuming: true }))
+      .toBe('网络断了一下，正在接着从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（已下 40%）')
+    // 接线路、读官网清单那几秒还不知道版本：先把「正在等微软商店」换掉。
+    expect(describeCodexDesktopOfficialDownload(storeFailed, null))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端的离线安装包')
+  })
+
+  it('names the failed official package, without the store reason, before every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    const official = 'OpenAI 官网连接或下载超时'
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: '连不上微软商店', officialFailure: official }))
+      .toBe('微软商店这次没装上，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: null, storeUnavailable: true, officialFailure: official }))
+      .toBe('这台电脑没有微软商店，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+      officialFailure: official,
+    })).toBe('微软商店少一个安装组件，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: '连不上微软商店', officialFailure: official })).not.toContain(official)
+  })
+
+  it('keeps install jargon out of every official download line', () => {
+    const attempts = [
+      { storeFailure: '连不上微软商店' },
+      { storeFailure: null, storeUnavailable: true },
+      { storeFailure: '这台电脑上的微软商店安装组件用不了', storeInstallerMissing: true },
+    ]
+    for (const attempt of attempts) {
+      for (const message of [
+        describeCodexDesktopOfficialDownload(attempt, null),
+        describeCodexDesktopOfficialDownload(attempt, '26.930.1.0', { percent: 3 }),
+        describeCodexDesktopOfficialDownload(attempt, '26.930.1.0', { percent: 3, resuming: true }),
+        describeCodexDesktopStoreNotice({ ...attempt, officialFailure: 'OpenAI 官网返回 HTTP 403' }),
+      ]) {
+        expect(message).not.toMatch(/winget|msstore|appx|msix|app installer|powershell|HTTP \d{3}/i)
+      }
+    }
+  })
+
+  it('downloads the package for this processor from the official site and checks it is the signed OpenAI build', async () => {
+    const destination = officialDestination()
+    const { bytes, requested, fetchMock } = officialFetch()
+    const events: string[] = []
+    const inspected: string[] = []
+
+    const result = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      onVersion: (version) => events.push(`version ${version}`),
+      onProgress: (version, progress) => {
+        if (progress.percent === 100) events.push(`downloaded ${version}`)
+      },
+      onValidating: () => events.push('validating'),
+      inspectPackage: async (packagePath) => {
+        inspected.push(packagePath)
+        return officialMetadata('26.930.1.0')
+      },
+    })
+
+    expect(requested).toEqual([manifestUrl, packageUrl])
+    expect(result).toEqual({
+      status: 'downloaded',
+      version: '26.930.1.0',
+      download: {
+        transferred: bytes.byteLength,
+        total: bytes.byteLength,
+        sha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+    })
+    expect(events).toEqual(['version 26.930.1.0', 'downloaded 26.930.1.0', 'validating'])
+    expect(inspected).toEqual([destination])
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(buildCodexDesktopOfficialPackageSource('arm64').url)
+      .toBe('https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix')
+  })
+
+  it('installs the newer build the official package turns out to carry', async () => {
+    const { fetchMock } = officialFetch({ version: '26.930.1.0' })
+
+    const result = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.900.1.0',
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      inspectPackage: async () => officialMetadata('26.931.2.0'),
+    })
+
+    expect(result.status === 'downloaded' && result.version).toBe('26.931.2.0')
+  })
+
+  it('accepts whatever binary type the official CDN sends but not a web page', async () => {
+    for (const contentType of [null, 'application/x-msix', 'application/vnd.ms-appx']) {
+      const { fetchMock } = officialFetch({ contentType })
+      await expect(downloadCodexDesktopOfficialPackage({
+        architecture: 'x64',
+        destination: officialDestination(),
+        installedVersion: null,
+        knownVersion: '26.930.1.0',
+        fetchImplementation: fetchMock,
+        inspectPackage: async () => officialMetadata('26.930.1.0'),
+      })).resolves.toMatchObject({ status: 'downloaded' })
+    }
+
+    const destination = officialDestination()
+    const page = officialFetch({ contentType: 'text/html; charset=utf-8' })
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: page.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+    })).rejects.toThrow('OpenAI 官网返回的不是 MSIX 文件（Content-Type: text/html; charset=utf-8）')
+    expect(fs.existsSync(destination)).toBe(false)
+
+    // 国内镜像那一路照旧只认 MSIX 与二进制流。
+    const mirror = officialFetch({ contentType: null })
+    await expect(downloadCodexDesktopPackage(
+      { label: '国内镜像', url: packageUrl },
+      officialDestination(),
+      () => undefined,
+      mirror.fetchMock,
+    )).rejects.toThrow('国内镜像返回的不是 MSIX 文件（Content-Type: 缺失）')
+  })
+
+  it('skips the download when the official build is not newer than the installed one', async () => {
+    const asked = officialFetch({ version: '26.930.1.0' })
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.930.1.0',
+      knownVersion: null,
+      fetchImplementation: asked.fetchMock,
+    })).resolves.toEqual({ status: 'not-newer', version: '26.930.1.0' })
+    expect(asked.requested).toEqual([manifestUrl])
+
+    const known = officialFetch()
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.931.0.0',
+      knownVersion: '26.930.1.0',
+      fetchImplementation: known.fetchMock,
+    })).resolves.toEqual({ status: 'not-newer', version: '26.930.1.0' })
+    expect(known.requested).toEqual([])
+  })
+
+  it('uses the version read when the install started instead of asking the official site again', async () => {
+    const { requested, fetchMock } = officialFetch()
+
+    await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: '26.900.1.0',
+      knownVersion: '26.930.1.0',
+      fetchImplementation: fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+    })
+
+    expect(requested).toEqual([packageUrl])
+  })
+
+  it('deletes the download and gives up on this route when the package is not the official build', async () => {
+    for (const [metadata, reason] of [
+      [officialMetadata('26.930.1.0', { publisher: 'CN=Someone Else' }), '发布者身份不匹配'],
+      [officialMetadata('26.930.1.0', { name: 'Contoso.Codex' }), '产品身份不是 OpenAI.Codex'],
+      [officialMetadata('26.930.1.0', { hasSignature: false }), '缺少 Appx 签名'],
+      [officialMetadata('26.930.1.0', { architecture: 'arm64' }), '架构 arm64 与本机 x64 不匹配'],
+      [officialMetadata('26.929.0.0'), '低于更新清单 26.930.1.0'],
+    ] as const) {
+      const destination = officialDestination()
+      const { fetchMock } = officialFetch()
+      await expect(downloadCodexDesktopOfficialPackage({
+        architecture: 'x64',
+        destination,
+        installedVersion: null,
+        knownVersion: null,
+        fetchImplementation: fetchMock,
+        inspectPackage: async () => metadata,
+      })).rejects.toThrow(reason)
+      expect(fs.existsSync(destination)).toBe(false)
+    }
+  })
+
+  it('says why the route failed when the official version list cannot be read', async () => {
+    const { requested, fetchMock } = officialFetch({ manifestStatus: 403 })
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+    })).rejects.toThrow('OpenAI 官网版本清单读取失败：返回 HTTP 403')
+    expect(requested).toEqual([manifestUrl])
+  })
+
+  it('reports a cancellation as a cancellation and asks nothing more', async () => {
+    const controller = new AbortController()
+    controller.abort(new InstallCancelledError())
+    const { requested, fetchMock } = officialFetch()
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      signal: controller.signal,
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(requested).toEqual([])
+  })
+
+  /**
+   * 每读一块就把假时钟往前拨 secondsPerChunk 秒：下载「花了多久」全由它说了算，
+   * 测试本身不用真等。cancelled 记下连接有没有被掐断（没掐断的话连接会一直挂着）。
+   */
+  function trickleFetch(secondsPerChunk: number, options: { chunks?: number; onChunk?: (sent: number) => void } = {}) {
+    const chunks = options.chunks ?? 10
+    const chunkBytes = 1024 * 1024
+    const clock = { now: 0 }
+    const stream = { sent: 0, cancelled: false }
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      // highWaterMark 0: a chunk "arrives" only when the download asks for it, so the
+      // fake clock reads exactly the time the chunks handed out so far took.
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (stream.sent >= chunks) {
+            controller.close()
+            return
+          }
+          stream.sent += 1
+          clock.now += secondsPerChunk * 1000
+          controller.enqueue(new Uint8Array(chunkBytes).fill(0x43))
+          options.onChunk?.(stream.sent)
+        },
+        cancel() {
+          stream.cancelled = true
+        },
+      }, { highWaterMark: 0 })
+      const response = new Response(body, {
+        headers: { 'Content-Length': String(chunks * chunkBytes), 'Content-Type': 'application/octet-stream' },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    return { fetchMock, clock, stream, now: () => clock.now }
+  }
+
+  it('estimates how much longer a download takes at its average speed so far', () => {
+    const megabytes = 1024 * 1024
+    // 一分钟下了 30 MB，剩下 270 MB 还要九分钟。
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 30 * megabytes, 300 * megabytes)).toBe(9 * 60_000)
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 300 * megabytes, 300 * megabytes)).toBe(0)
+    expect(estimateCodexDesktopDownloadRemainingMs(60_000, 0, 300 * megabytes)).toBeNull()
+  })
+
+  it('gives up on a download only after half a minute and only when ten more minutes are still ahead', () => {
+    const megabytes = 1024 * 1024
+    const limit = codexDesktopOfficialDownloadLimitMs
+    expect(limit).toBe(10 * 60_000)
+    // 前半分钟速度还没稳，再慢也不判。
+    expect(isCodexDesktopDownloadTooSlow(codexDesktopSlowDownloadGraceMs - 1, 1, 300 * megabytes, limit)).toBe(false)
+    // 半分钟下了 15 MB：剩下 285 MB 要 9.5 分钟，接着下。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 15 * megabytes, 300 * megabytes, limit)).toBe(false)
+    // 半分钟只下了 12 MB：还要 12 分钟，换下一路。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 12 * megabytes, 300 * megabytes, limit)).toBe(true)
+    // 半分钟一个字节都没收到。
+    expect(isCodexDesktopDownloadTooSlow(30_000, 0, 300 * megabytes, limit)).toBe(true)
+    // 前面慢过、已经下了二十分钟，但只差最后一点：不扔掉重下。
+    expect(isCodexDesktopDownloadTooSlow(20 * 60_000, 299 * megabytes, 300 * megabytes, limit)).toBe(false)
+  })
+
+  it('drops the official download as too slow, not as cancelled, once ten more minutes are ahead', async () => {
+    const destination = officialDestination()
+    // 两分钟才 1 MB：第一块到时已过了半分钟的观察期，剩下 9 MB 照这个速度还要 18 分钟，
+    // 超过 10 分钟，第一块之后就停下。
+    const slow = trickleFetch(120)
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: slow.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: slow.now },
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(false)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('OpenAI 官网下载太慢：照目前的速度还要 18 分钟才下得完')
+    // 顶多多向服务器要了一块，没写进文件。
+    expect(slow.stream.sent).toBeLessThanOrEqual(2)
+    expect(slow.stream.cancelled).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+
+  it('lets a slow official download finish when what is left is short', async () => {
+    // 十秒一块（每分钟 6 MB）：半分钟时还剩 7 MB、七十秒，不换。
+    const steady = trickleFetch(10)
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: steady.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: steady.now },
+    })).resolves.toMatchObject({ status: 'downloaded', version: '26.930.1.0' })
+    expect(steady.stream.sent).toBe(10)
+  })
+
+  it('never drops the domestic mirror for being slow: it is the last route', async () => {
+    const slow = trickleFetch(120)
+
+    await expect(downloadCodexDesktopPackage(
+      { label: '国内镜像', url: packageUrl },
+      officialDestination(),
+      () => undefined,
+      slow.fetchMock,
+      undefined,
+      { now: slow.now },
+    )).resolves.toMatchObject({ transferred: 10 * 1024 * 1024 })
+  })
+
+  it('still reports the customer pressing cancel mid-download as a cancellation', async () => {
+    const controller = new AbortController()
+    const destination = officialDestination()
+    const download = trickleFetch(10, { onChunk: (sent) => { if (sent === 2) controller.abort(new InstallCancelledError()) } })
+
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: download.fetchMock,
+      signal: controller.signal,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: download.now },
+    }).catch((cause: unknown) => cause)
+
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(download.stream.cancelled).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+})
+
+describe('Codex Desktop PowerShell scripts import their modules', () => {
+  // Under trustedCommandEnvironment() one cmdlet left to autoloading costs the
+  // whole module analysis, about 22 s against an 8 s limit for most of these
+  // (#714, #716). So every cmdlet must belong to a module imported by name
+  // before it runs. Core cmdlets are always loaded and need no import.
+  const cmdletModules: Record<string, string | null> = {
+    'Where-Object': null,
+    'ForEach-Object': null,
+    'Import-Module': null,
+    'Select-Object': 'Microsoft.PowerShell.Utility',
+    'ConvertTo-Json': 'Microsoft.PowerShell.Utility',
+    'Add-Type': 'Microsoft.PowerShell.Utility',
+    'Get-ItemProperty': 'Microsoft.PowerShell.Management',
+    'Get-CimInstance': 'CimCmdlets',
+    'Invoke-CimMethod': 'CimCmdlets',
+    'Get-StartApps': 'StartLayout',
+    'Get-AppxPackage': 'Appx',
+    'Remove-AppxPackage': 'Appx',
+    'Reset-AppxPackage': 'Appx',
+  }
+  const packageFullName = 'OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0'
+  const scripts: Array<[string, string, readonly string[]]> = [
+    ['merged scan probe', buildCodexDesktopCombinedProbeScript(), codexDesktopCombinedProbeModules],
+    ['start menu probe', buildCodexDesktopStartAppProbeScript(), codexDesktopStartAppProbeModules],
+    ['scan process probe', buildCodexDesktopProcessProbeScript('roots'), codexDesktopProcessProbeModules],
+    ['close process probe', buildCodexDesktopProcessProbeScript('all', new Set([101, 102])), codexDesktopProcessProbeModules],
+    ['session process probe', buildCodexDesktopSessionProcessProbeScript(), codexDesktopProcessProbeModules],
+    ['package probe', buildCodexDesktopPackageProbeScript(), codexDesktopPackageProbeModules],
+    ['package file inspection', buildCodexDesktopPackageInspectionScript('C:\\Temp\\codex.msix'), codexDesktopPackageInspectionModules],
+    ['uninstall', buildCodexDesktopUninstallScript(packageFullName), codexDesktopAppxCommandModules],
+    ['reset', buildCodexDesktopResetScript(packageFullName), codexDesktopAppxCommandModules],
+  ]
+
+  function importStatement(modules: readonly string[]): string {
+    return buildPowerShellModuleImportStatement(modules)
+  }
+
+  /** Cmdlets that would still be autoloaded: unknown, unimported, or used before the import. */
+  function unimportedCmdlets(script: string, modules: readonly string[]): string[] {
+    const importAt = script.indexOf(importStatement(modules))
+    const used = [...new Set(script.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g) ?? [])]
+    return used.filter((cmdlet) => {
+      if (!(cmdlet in cmdletModules)) return true
+      const module = cmdletModules[cmdlet]
+      if (!module) return false
+      return importAt < 0 || !modules.includes(module) || script.indexOf(cmdlet) < importAt
+    })
+  }
+
+  it.each(scripts)('imports the module of every cmdlet the %s calls before the first one runs', (_name, script, modules) => {
+    expect(unimportedCmdlets(script, modules)).toEqual([])
+    expect(script.indexOf(importStatement(modules))).toBeGreaterThan(0)
+  })
+
+  it.each(scripts)('notices when the %s loses any one of its imports', (_name, script, modules) => {
+    // Utility is imported whatever the list says, so it cannot be lost.
+    for (const module of modules.filter((name) => name !== 'Microsoft.PowerShell.Utility')) {
+      const remaining = modules.filter((name) => name !== module)
+      const weakened = script.replace(importStatement(modules), importStatement(remaining))
+      expect(weakened).not.toBe(script)
+      expect(unimportedCmdlets(weakened, remaining), `${module} dropped`).not.toEqual([])
+    }
+  })
+
+  it('imports nothing a script does not call', () => {
+    for (const [name, script, modules] of scripts) {
+      const needed = new Set(Object.entries(cmdletModules)
+        .filter(([cmdlet, module]) => module && script.includes(cmdlet))
+        .map(([, module]) => module))
+      expect([...modules].sort(), name).toEqual([...needed].sort())
+    }
   })
 })

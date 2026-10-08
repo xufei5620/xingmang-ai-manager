@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
-import { cliInstallStageLabel, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
+import { platformCapabilitiesFor } from '../../../../electron/platform-capabilities'
+import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
 
 const base = { installed: true, version: '1.0.0', path: null, installDirectory: null }
 
@@ -72,11 +73,57 @@ describe('planCliInstall', () => {
     expect(planCliInstall({ runtime: failedProbe, needsPython: false, ...managed })).toEqual({ prepare: [], blocked: null })
   })
 
+  it('skips Node for a tool that does not need it, without skipping Python', () => {
+    expect(planCliInstall({ runtime: missingNode, needsNode: false, needsPython: false, ...managed })).toEqual({ prepare: [], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, needsNode: false, needsPython: false, ...external })).toEqual({ prepare: [], blocked: null })
+    const bare = { ...missingNode, python: { ...missingNode.python, installed: false, version: null } }
+    expect(planCliInstall({ runtime: bare, needsNode: false, needsPython: true, ...managed })).toEqual({ prepare: ['python'], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, needsNode: true, needsPython: false, ...managed })).toEqual({ prepare: ['node'], blocked: null })
+  })
+
   it('still blocks where the app cannot install the runtime, and says which step', () => {
     expect(planCliInstall({ runtime: missingNode, needsPython: false, ...external })).toEqual({ prepare: [], blocked: '请先准备 Node.js 运行环境，再安装命令行工具。' })
     expect(planCliInstall({ runtime: missingNode, needsPython: false, nodeInstall: undefined, pythonInstall: undefined }).blocked).toContain('Node.js')
     const noPython = { ...runtime({}), python: { ...runtime({}).python, installed: false } }
     expect(planCliInstall({ runtime: noPython, needsPython: true, ...external }).blocked).toContain('Python')
+  })
+})
+
+describe('cliNeedsNodeRuntime', () => {
+  it('reads the platform table and treats a missing table as needing Node', () => {
+    const windows = platformCapabilitiesFor('win32', 'x64')
+    expect(cliNeedsNodeRuntime(windows, 'grok')).toBe(false)
+    expect(cliNeedsNodeRuntime(windows, 'claude')).toBe(true)
+    expect(cliNeedsNodeRuntime(platformCapabilitiesFor('darwin', 'arm64'), 'grok')).toBe(true)
+    expect(cliNeedsNodeRuntime({}, 'grok')).toBe(true)
+    expect(cliNeedsNodeRuntime(null, 'grok')).toBe(true)
+  })
+})
+
+describe('cliNeedsPythonRuntime', () => {
+  it('drops Python for Gemini on every platform, and falls back to the registry when the table is missing', () => {
+    const gemini = (platform: Parameters<typeof cliNeedsPythonRuntime>[0]) => cliNeedsPythonRuntime(platform, 'gemini', true)
+    expect(gemini(platformCapabilitiesFor('win32', 'x64'))).toBe(false)
+    expect(gemini(platformCapabilitiesFor('darwin', 'arm64'))).toBe(false)
+    expect(gemini(platformCapabilitiesFor('linux', 'x64'))).toBe(false)
+    expect(gemini({})).toBe(true)
+    expect(gemini(null)).toBe(true)
+    expect(cliNeedsPythonRuntime({}, 'claude', false)).toBe(false)
+    expect(cliNeedsPythonRuntime(platformCapabilitiesFor('linux', 'x64'), 'claude', false)).toBe(false)
+  })
+
+  // 第二十八批 C：以前 Windows 上要先多装一个 Python 3.12（它没装上 Gemini 就不装），Mac 上直接拦下。
+  it('starts a Gemini install without Python on every platform, neither installing it first nor blocking', () => {
+    const withoutPython = { ...runtime({}), python: { installed: false, version: null, path: null, installDirectory: null } }
+    for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'arm64'], ['linux', 'x64']] as const) {
+      const capabilities = platformCapabilitiesFor(platform, architecture)
+      expect(planCliInstall({
+        runtime: withoutPython,
+        needsPython: cliNeedsPythonRuntime(capabilities, 'gemini', true),
+        nodeInstall: capabilities.nodeRuntimeInstall,
+        pythonInstall: capabilities.pythonRuntimeInstall,
+      })).toEqual({ prepare: [], blocked: null })
+    }
   })
 })
 
@@ -91,5 +138,12 @@ describe('install stage wording', () => {
     const message = runtimeStageFailureMessage('node', 'Claude Code', 'ETIMEDOUT registry.npmmirror.com')
     expect(message).toMatch(/^Node\.js 运行环境没装上，Claude Code 还没开始安装。/)
     expect(message).toContain('ETIMEDOUT')
+  })
+
+  it('keeps the Electron IPC wrapper out of the middle of the sentence', () => {
+    // 拼进句子中间以后，上屏前的 errorMessage 只剥开头，剥不到这里。
+    const rejected = new Error("Error invoking remote method 'runtime:install-node': Error: Node.js LTS 自动安装失败。国内镜像：fetch failed")
+    expect(runtimeStageFailureMessage('node', 'Claude Code', rejected))
+      .toBe('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js LTS 自动安装失败。国内镜像：fetch failed')
   })
 })

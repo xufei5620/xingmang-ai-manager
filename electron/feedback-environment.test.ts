@@ -5,11 +5,13 @@ import {
   buildFeedbackEnvironmentLines,
   buildFeedbackRuntimeLines,
   pickFeedbackRuntimeSnapshot,
+  resolveFeedbackRelayRoute,
   type FeedbackRuntimeInput,
   type FeedbackCliConfig,
   type FeedbackCliStatus,
   type FeedbackExternalClient,
 } from './feedback-environment'
+import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import type { SystemSnapshot } from './system-service'
 
 const installed: FeedbackCliStatus = {
@@ -40,6 +42,16 @@ describe('buildFeedbackEnvironmentLines', () => {
 
     expect(lines).toHaveLength(providerIds.length + externalToolIds.length)
     expect(lines[0]).toBe('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号，模型 claude-opus-5')
+  })
+
+  it('names the Codex connection and flags one Codex ignores', () => {
+    const codexLine = (config: FeedbackCliConfig) => buildFeedbackEnvironmentLines({
+      clis: statusesWith(),
+      readConfig: (provider) => provider === 'codex' ? config : pointingAtAccount,
+    }).find((line) => line.startsWith('Codex CLI'))
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'XingmangAI', codexProviderShadowed: false })).toMatch(/，连接名 XingmangAI$/)
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'openai', codexProviderShadowed: true })).toMatch(/，连接名 openai（Codex 不认，要修）$/)
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'bad\nname"x', codexProviderShadowed: false })).toMatch(/，连接名 badnamex$/)
   })
 
   it('labels the other install sources and leaves Grok unlabelled', () => {
@@ -225,6 +237,36 @@ describe('buildFeedbackRuntimeLines', () => {
     ])
   })
 
+  it('names the route this run uses right below the network location, ahead of the certificate line', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ relayRoute: '备用直连', certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
+    const at = lines.indexOf('网络位置: 中国大陆')
+
+    expect(lines.slice(at, at + 3)).toEqual([
+      '网络位置: 中国大陆',
+      '连接线路: 备用直连',
+      '安全证书: 这台电脑装了公司或安全软件的证书。',
+    ])
+  })
+
+  it('names the route even before any scan has finished, since it was fixed at startup', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ snapshot: null, relayRoute: '默认线路' }))
+
+    expect(lines[lines.indexOf('网络位置: 未能读取') + 1]).toBe('连接线路: 默认线路')
+  })
+
+  it('adds no route line when none is passed', () => {
+    for (const relayRoute of [undefined, null, '  ']) {
+      expect(buildFeedbackRuntimeLines(runtimeInput({ relayRoute })).some((line) => line.startsWith('连接线路'))).toBe(false)
+    }
+  })
+
+  it('adds the latest certificate conclusion right after the network location', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
+
+    expect(lines[lines.indexOf('网络位置: 中国大陆') + 1]).toBe('安全证书: 这台电脑装了公司或安全软件的证书。')
+    expect(buildFeedbackRuntimeLines(runtimeInput()).some((line) => line.startsWith('安全证书'))).toBe(false)
+  })
+
   it('never carries the public IP or country code from the scan into the report', () => {
     const scanned = {
       checkedAt: '2026-09-22T10:00:00.000Z',
@@ -299,5 +341,43 @@ describe('buildFeedbackRuntimeLines', () => {
       '软件位置: C:\\Program Files\\XingMang',
       '数据目录: C:\\Users\\alice\\AppData\\Roaming\\xingmang',
     ])
+  })
+})
+
+describe('resolveFeedbackRelayRoute', () => {
+  // 直连适配方案第六节第 5 条的四句原话。
+  it('names the option the account site runs with, and under auto the line it is on right now', () => {
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('只用直连')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('只用默认线路')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('自动（这次用的是默认线路）')
+    let line: 'primary' | 'direct' = 'direct'
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'auto' }, () => ({ solov: { line, settled: true } }))
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是直连）')
+    line = 'primary'
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是默认线路）')
+  })
+
+  it('follows the account site, not the other site the settings chose a route for', () => {
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' }, () => ({ 'solov-api': { line: 'direct', settled: true } }))
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是直连）')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct', 'solov-api': 'primary' }), 'solov-api')).toBe('只用默认线路')
+  })
+
+  it('resolves a missing or retired site id the way the rest of the app does', () => {
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
+
+    expect(resolveFeedbackRelayRoute(routing, null)).toBe('只用直连')
+    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('只用直连')
+  })
+
+  it('never carries an address into the report', () => {
+    const routes = [
+      resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov'),
+      resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'auto' }, () => ({ solov: { line: 'direct', settled: true } })), 'solov'),
+    ].join(' ')
+
+    for (const fragment of ['http', '38.147', 'solov', ':8443']) {
+      expect(routes).not.toContain(fragment)
+    }
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, withAccelerationReason } from './acceleration-contract'
-import { createAccelerationService } from './acceleration-service'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, withAccelerationReason } from './acceleration-contract'
+import { createAccelerationService, createUserAccelerationApi, userAccelerationState } from './acceleration-service'
 
 const scope = 'xm-account:42'
 const otherScope = 'api-account:42'
@@ -98,7 +98,7 @@ describe('acceleration-service', () => {
     const backend = createBackend()
     backend.redeemAccelerationCode = vi.fn(async () => response as AccelerationRedemptionResult)
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
-    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速口令兑换失败')
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速时长这次没有加上')
   })
 
   it('rejects a queued redemption after an account epoch changes without crediting the backend', async () => {
@@ -137,7 +137,21 @@ describe('acceleration-service', () => {
     const backend = createBackend()
     backend.redeemAccelerationCode = vi.fn(async () => { throw new Error('private-proxy-token') })
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
-    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(/^加速口令兑换失败，请稍后重试。$/)
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(/^加速时长这次没有加上，请稍后再输一次口令；还不行就联系客服。$/)
+  })
+
+  it('says why a redemption did not go through when the helper classified it', async () => {
+    const backend = createBackend()
+    backend.redeemAccelerationCode = vi.fn(async () => { throw withAccelerationReason(new Error('private-path'), 'local-data') })
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const failure = await service.redeemAccelerationCode(scope, accelerationBonusCode).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe('加速时长这次没有加上：本机的时长记录写不进去。请检查磁盘剩余空间后再输一次口令。')
+    // 托盘和日志仍然认得出是哪一类。
+    expect(accelerationFailureReason(failure)).toBe('local-data')
+
+    backend.redeemAccelerationCode = vi.fn(async () => { throw withAccelerationReason(new Error('private-path'), 'helper-launch') })
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(`加速时长这次没有加上：${accelerationFailureMessages['helper-launch']}`)
   })
 
   it.each(['local-device', 'local-development', 'server'] as const)('preserves the explicit %s entitlement source across IPC', async (entitlementSource) => {
@@ -189,6 +203,22 @@ describe('acceleration-service', () => {
     })
     await expect(service.startAcceleration(scope, 'tun')).rejects.toThrow('加速线路暂未开通，请稍后再试。')
     expect((await service.stopAcceleration(scope)).phase).toBe('unavailable')
+    await service.dispose()
+  })
+
+  it('says the unavailable state comes from a damaged bundle and rechecks it on request', async () => {
+    const recheck = vi.fn(async () => 'repaired' as const)
+    const service = createAccelerationService({ getAccountScope: () => scope, bundleDamaged: { recheck } })
+    expect(await service.getAccelerationState(scope)).toMatchObject({ phase: 'unavailable', unavailableReason: 'bundle-damaged' })
+    await expect(service.recheckAccelerationBundle?.()).resolves.toBe('repaired')
+    expect(recheck).toHaveBeenCalledTimes(1)
+    await service.dispose()
+  })
+
+  it('offers no bundle recheck when the bundle was never found damaged', async () => {
+    const service = createAccelerationService({ getAccountScope: () => scope })
+    expect(await service.getAccelerationState(scope)).not.toHaveProperty('unavailableReason')
+    expect(service.recheckAccelerationBundle).toBeUndefined()
     await service.dispose()
   })
 
@@ -602,6 +632,22 @@ describe('acceleration started by the app', () => {
     expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
   })
 
+  it('asks the backend for a free connection and accepts one running on a used-up allowance', async () => {
+    const backend = createBackend()
+    const free = active({ remainingSeconds: 0, autoStartedBy: 'codex-desktop' })
+    const startAutomaticAcceleration = vi.fn(async () => free)
+    const service = createAccelerationService({ getAccountScope: () => scope, backend: { ...backend, startAutomaticAcceleration } })
+    expect(await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy', 'line-1'))
+      .toMatchObject({ phase: 'active', remainingSeconds: 0, autoStartedBy: 'codex-desktop' })
+    expect(startAutomaticAcceleration).toHaveBeenCalledWith(scope, 'system-proxy', 'line-1')
+    expect(backend.startAcceleration).not.toHaveBeenCalled()
+    // 用户自己的会话剩 0 还说连着，仍然是坏数据。
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ remainingSeconds: 0 }))
+    await expect(service.getAccelerationState(scope)).rejects.toThrow()
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(state({ autoStartedBy: 'codex-desktop' }))
+    await expect(service.getAccelerationState(scope)).rejects.toThrow()
+  })
+
   it('drops the mark when a later read shows a different session', async () => {
     const backend = createBackend()
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
@@ -610,5 +656,98 @@ describe('acceleration started by the app', () => {
     expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
     vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active())
     expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
+  })
+})
+
+// yoyo 2026-10-02：软件替他在后台连的加速「不在游戏加速那边体现」。
+describe('what the acceleration page and tray see', () => {
+  function statefulBackend() {
+    let current = state()
+    const backend = {
+      getAccelerationState: vi.fn(async (_scope: string) => current),
+      startAcceleration: vi.fn(async (_scope: string, mode: AccelerationMode) => (current = active({ mode, connectedAt: '2026-09-14T09:00:00.000Z' }))),
+      startAutomaticAcceleration: vi.fn(async () => (current = active({ autoStartedBy: 'codex-desktop' }))),
+      stopAcceleration: vi.fn(async (_scope: string) => (current = state())),
+      listAccelerationLines: vi.fn(async () => [{ id: 'jp-01', name: '东京优选', region: '日本', latencyMs: 38 }]),
+      pingAccelerationLine: vi.fn(async (_scope: string, lineId: string) => ({ id: lineId, name: '东京优选', region: '日本', latencyMs: 40 })),
+      redeemAccelerationCode: vi.fn(async (): Promise<AccelerationRedemptionResult> => ({
+        status: 'redeemed', addedSeconds: accelerationBonusSeconds,
+        state: { ...current, totalSeconds: 3600 + accelerationBonusSeconds, remainingSeconds: (current.remainingSeconds ?? 0) + accelerationBonusSeconds },
+      })),
+    }
+    return backend
+  }
+
+  it('shows an automatic session as not connected, keeping the allowance as it was', () => {
+    expect(userAccelerationState(active({ autoStartedBy: 'codex-desktop', sessionSeconds: 90 }))).toEqual({
+      scope, phase: 'idle', mode: 'system-proxy', totalSeconds: 3600, remainingSeconds: 3570, sessionSeconds: 0,
+      measuredAt: '2026-09-14T08:00:00.000Z', connectedAt: null, line: null, error: null,
+    })
+    expect(userAccelerationState(active({ autoStartedBy: 'codex-desktop', remainingSeconds: 0, entitlementSource: 'local-device', supportedModes: ['system-proxy'] })))
+      .toMatchObject({ phase: 'exhausted', remainingSeconds: 0, entitlementSource: 'local-device', supportedModes: ['system-proxy'] })
+    expect(userAccelerationState(state({ autoStartedBy: 'codex-desktop', phase: 'stopping', error: '停止加速未完成' })))
+      .toMatchObject({ phase: 'idle', error: null })
+    const own = active()
+    expect(userAccelerationState(own)).toBe(own)
+  })
+
+  it('hides the automatic session from reads and leaves it running when the user presses stop', async () => {
+    const backend = statefulBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const user = createUserAccelerationApi(service)
+    await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    expect(await user.getAccelerationState(scope)).toMatchObject({ phase: 'idle', connectedAt: null, line: null })
+    expect(await user.stopAcceleration(scope)).toMatchObject({ phase: 'idle' })
+    expect(backend.stopAcceleration).not.toHaveBeenCalled()
+    // 主进程别的观察者读到的仍是真实状态。
+    expect(await service.getAccelerationState(scope)).toMatchObject({ phase: 'active', autoStartedBy: 'codex-desktop' })
+    expect((await user.redeemAccelerationCode!(scope, accelerationBonusCode)).state).toMatchObject({ phase: 'idle', connectedAt: null })
+  })
+
+  it('lets the user start a session of their own and stop it as usual', async () => {
+    const backend = statefulBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const user = createUserAccelerationApi(service)
+    await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    const started = await user.startAcceleration(scope, 'system-proxy')
+    expect(started).toMatchObject({ phase: 'active', connectedAt: '2026-09-14T09:00:00.000Z' })
+    expect(started.autoStartedBy).toBeUndefined()
+    expect(await user.stopAcceleration(scope)).toMatchObject({ phase: 'idle' })
+    expect(backend.stopAcceleration).toHaveBeenCalledOnce()
+  })
+
+  it('stops only the automatic session it was asked about', async () => {
+    const backend = statefulBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const automatic = await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    expect(await service.stopAutomaticAcceleration(scope, '2026-09-14T07:00:00.000Z')).toMatchObject({ phase: 'active', autoStartedBy: 'codex-desktop' })
+    expect(backend.stopAcceleration).not.toHaveBeenCalled()
+    // 到点要断的那一刻他刚点了「开始加速」：连着的已经是他计时的那一次。
+    await service.startAcceleration(scope, 'system-proxy')
+    expect(await service.stopAutomaticAcceleration(scope, automatic.connectedAt!)).toMatchObject({ phase: 'active', connectedAt: '2026-09-14T09:00:00.000Z' })
+    expect(backend.stopAcceleration).not.toHaveBeenCalled()
+    await service.stopAcceleration(scope)
+    const again = await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    expect(await service.stopAutomaticAcceleration(scope, again.connectedAt!)).toMatchObject({ phase: 'idle' })
+    expect(backend.stopAcceleration).toHaveBeenCalledTimes(2)
+  })
+
+  it('says who holds the line when a ping would have to wait for the background session', async () => {
+    const backend = statefulBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const user = createUserAccelerationApi(service)
+    await expect(user.pingAccelerationLine!(scope, 'jp-01')).resolves.toMatchObject({ latencyMs: 40 })
+    await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    await expect(user.pingAccelerationLine!(scope, 'jp-01')).rejects.toThrow('Codex 桌面端正在后台用加速，暂不能检测线路。')
+    expect(backend.pingAccelerationLine).toHaveBeenCalledOnce()
+    expect(await user.listAccelerationLines!(scope)).toHaveLength(1)
+  })
+
+  it('offers a bundle recheck only when the service has one', () => {
+    const backend = statefulBackend()
+    expect(createUserAccelerationApi(createAccelerationService({ getAccountScope: () => scope, backend })).recheckAccelerationBundle).toBeUndefined()
+    const recheck = vi.fn(async () => 'repaired' as const)
+    const user = createUserAccelerationApi(createAccelerationService({ getAccountScope: () => scope, bundleDamaged: { recheck } }))
+    expect(user.recheckAccelerationBundle).toBeTypeOf('function')
   })
 })

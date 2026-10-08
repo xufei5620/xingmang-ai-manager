@@ -3,7 +3,8 @@
  * running CLI keeps its own executable mapped, so the replacement fails with a
  * sharing violation and the user is told the install was "blocked by antivirus"
  * — the wrong direction entirely. Detecting the CLI's own processes is what
- * lets the failure say「先关掉它的窗口」instead.
+ * lets the failure say「先关掉它的窗口」instead. Uninstalling runs into the same
+ * lock: npm moves the package directory aside before deleting it.
  *
  * The matching rule is deliberately narrow: a process counts only when its
  * image, or its command line, points inside the package directory of this one
@@ -14,6 +15,7 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
@@ -33,16 +35,26 @@ export interface CliProcessProbe {
 
 export const cliProcessRootEnvironmentVariable = 'XINGMANG_CLI_PROCESS_ROOT'
 
+export const windowsCliProcessProbeModules = ['Microsoft.PowerShell.Utility', 'CimCmdlets'] as const
+
+/** What the probe gets before an install or update goes ahead without the running-tool check. */
+export const cliProcessProbeTimeoutMs = 8_000
+
 /**
  * The probed directory is handed over through the environment rather than
  * spliced into the script: a path is attacker-influenced data (the user picks
  * where npm lives) and PowerShell string literals have their own escaping
  * rules. `.StartsWith`/`.IndexOf` are ordinal .NET calls, so no part of the
  * path is ever parsed as a pattern either (I1).
+ *
+ * The modules are imported by name first: under trustedCommandEnvironment()
+ * an autoloaded Get-CimInstance costs the whole module scan, longer than the
+ * 8 s this probe gets (see buildPowerShellModuleImportStatement).
  */
 export function buildWindowsCliProcessProbeScript(): string {
   return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(windowsCliProcessProbeModules),
     '$ErrorActionPreference = "SilentlyContinue"',
     `$root = [string]$env:${cliProcessRootEnvironmentVariable}`,
     "if (-not $root) { '[]'; exit 0 }",
@@ -140,7 +152,9 @@ export function managedCliPackageDirectory(
   packageName: string,
   platform: NodeJS.Platform,
 ): string {
-  const nodeModules = platform === 'darwin'
+  // npm keeps global packages in <prefix>/node_modules only on Windows; macOS and Linux
+  // both use <prefix>/lib/node_modules.
+  const nodeModules = platform !== 'win32'
     ? path.join(npmPrefix, 'lib', 'node_modules')
     : path.join(npmPrefix, 'node_modules')
   return cliPackageDirectory(nodeModules, packageName)
@@ -197,7 +211,7 @@ export async function probeRunningCliProcesses(
     return { status: 'unsupported', processes: [], detail: `当前平台不做进程检测：${platform}` }
   }
   const runProbe = options.runProbe ?? runDefaultProbe
-  const timeoutMs = options.timeoutMs ?? 8_000
+  const timeoutMs = options.timeoutMs ?? cliProcessProbeTimeoutMs
   try {
     if (platform === 'win32') {
       const stdout = await runProbe(
@@ -264,7 +278,7 @@ function extractErrorCode(error: unknown): string | null {
 
 export interface OccupiedUpdateFailureInput {
   toolName: string
-  action: '安装' | '更新'
+  action: '安装' | '更新' | '卸载'
   error: unknown
   probe: CliProcessProbe
   detail?: string

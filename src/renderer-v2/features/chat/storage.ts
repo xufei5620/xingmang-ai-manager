@@ -1,6 +1,9 @@
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
+// 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
+const unreadableHistory = '以前的聊天记录暂时读不出来，原文件没动'
+
 // localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
 // 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
 export interface ChatStorage { getItem: (key: string) => string | null; setItem?: (key: string, value: string) => void; removeItem?: (key: string) => void }
@@ -84,7 +87,9 @@ function readConversation(value: unknown): Conversation {
   if (!conversation || !Array.isArray(conversation.messages)) throw new ChatStorageError('聊天对话格式无效，原始记录已保留')
   const messages = conversation.messages.map(readMessage)
   assertUniqueIds(messages)
-  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
+  if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
+  const draftImages = (conversation.draftImages ?? []).map(readAsset)
+  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))
@@ -148,7 +153,7 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
       if (legacy) return { state: legacy, exists: true }
     }
     return empty()
-  } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留' } }
+  } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : unreadableHistory } }
 }
 // The history files sit unencrypted in the user profile, and chat text is the one
 // surface where a pasted key, an Authorization header or a whole base64 image
@@ -170,6 +175,9 @@ export function redactPersistentChatText(value: string): string {
 function persistedSettings(settings: ChatSettings): ChatSettings {
   return { ...settings, systemPrompt: redactPersistentChatText(settings.systemPrompt) }
 }
+function persistedAsset({ localUrl: _runtimeUrl, ...asset }: AiChatAsset) {
+  return { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
+}
 function persistedMessage(message: ChatMessage) {
   return {
     ...message,
@@ -178,13 +186,11 @@ function persistedMessage(message: ChatMessage) {
     reasoning: redactPersistentChatText(message.reasoning),
     ...(message.error === undefined ? {} : { error: redactPersistentChatText(message.error) }),
     ...(message.settings ? { settings: persistedSettings(message.settings) } : {}),
-    assets: message.assets?.map(({ localUrl: _runtimeUrl, ...asset }) => (
-      { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
-    )),
+    assets: message.assets?.map(persistedAsset),
   }
 }
 function persistedConversation(conversation: Conversation) {
-  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
+  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), draftImages: conversation.draftImages?.map(persistedAsset), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
 }
 
 // What the file store holds after the last successful save. Conversations are
@@ -254,7 +260,7 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 // them for the next attempt. Once migrated, a missing file store stays empty.
 export async function loadChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
   let snapshot: AiChatHistorySnapshot
-  try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
+  try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: unreadableHistory, saved: null } }
   if (snapshot.index === null) {
     if (hasMigrated(storage, scope)) return { state: createWorkspace(scope), exists: false, saved: null }
     const legacy = readWorkspace(storage, scope)
@@ -266,7 +272,7 @@ export async function loadChatHistory(api: { readHistory: (scope: string) => Pro
     forgetLegacyHistory(storage, scope)
     return loaded
   }
-  catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
+  catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : unreadableHistory, saved: null } }
 }
 
 // Saves still on their way to the file store, from every writer including
@@ -387,6 +393,33 @@ export function mergeImportedConversations(state: ChatWorkspace, imported: Conve
   const added = fresh.filter((conversation) => kept.has(conversation.id)).length
   const activeId = state.activeId && kept.has(state.activeId) ? state.activeId : null
   return { state: { ...state, conversations, activeId }, added }
+}
+
+/**
+ * 「重新读取」读出了以前的记录：这一回在窗口里聊的对话还没存过，一个不丢地排在读出来的
+ * 前面。合起来超过 50 个时照常存不进去、提示先删掉一些，不替用户删。这一回什么都没动过
+ * 就停在上次看的那段，动过就停在正在看的那段；输入框里这一回打了字就留这一回的。
+ */
+export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWorkspace): ChatWorkspace {
+  // Ids are random, so a clash is not expected; a duplicate would make the saved record unreadable, though.
+  const used = new Set([loaded.draftConversation.id, ...loaded.conversations.map((conversation) => conversation.id)])
+  function unused(id: string): string {
+    let candidate = id
+    while (used.has(candidate)) candidate = createId()
+    used.add(candidate)
+    return candidate
+  }
+  const ids = new Map<string, string>()
+  const added = session.conversations.map((conversation) => {
+    const id = unused(conversation.id)
+    ids.set(conversation.id, id)
+    return id === conversation.id ? conversation : { ...conversation, id }
+  })
+  const typed = Boolean(session.draftConversation.draft.trim() || session.draftConversation.draftImages?.length)
+  const draftId = typed ? unused(session.draftConversation.id) : ''
+  const draftConversation = !typed ? loaded.draftConversation : draftId === session.draftConversation.id ? session.draftConversation : { ...session.draftConversation, id: draftId }
+  const activeId = session.activeId ? ids.get(session.activeId) ?? null : typed || added.length ? null : loaded.activeId
+  return { ...loaded, activeId, conversations: [...added, ...loaded.conversations], draftConversation }
 }
 
 /**

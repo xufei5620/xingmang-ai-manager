@@ -1,25 +1,25 @@
 .auth-welcome, .auth-welcome *, .auth-guide, .auth-guide *, .auth-form, .auth-form *, .auth-splash, .auth-splash * { box-sizing: border-box; }
 .auth-window-content { flex: 1; min-height: 0; overflow: auto; }
-.auth-welcome { position: relative; isolation: isolate; width: 100%; min-height: 700px; height: 100%; display: grid; grid-template-rows: minmax(460px, 1fr) auto; gap: 26px; padding: 42px 60px 40px; overflow: hidden; color: var(--text); background: var(--bg); }
+/* 不定最小高度：窗口够高时铺满，矮了就按内容的高度来，外面那层滚动，最下面的客服二维码滚一下就看得到。 */
+.auth-welcome { position: relative; isolation: isolate; width: 100%; min-height: 100%; display: grid; grid-template-rows: 1fr auto; gap: 26px; padding: 42px 60px 40px; overflow: hidden; color: var(--text); background: var(--bg); }
 .auth-welcome::before { content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none; background: radial-gradient(ellipse at 80% 34%, color-mix(in srgb, var(--xm-sky) 12%, transparent), transparent 54%), radial-gradient(ellipse at 24% 14%, color-mix(in srgb, var(--xm-gold) 8%, transparent), transparent 56%); }
 .auth-starfield { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; pointer-events: none; }
 .auth-welcome-hero, .auth-welcome-foot { position: relative; z-index: 1; }
-.auth-welcome-hero { display: grid; grid-template-columns: 1fr 1.05fr; align-items: center; gap: 40px; min-height: 460px; }
+.auth-welcome-hero { display: grid; grid-template-columns: 1fr 1.05fr; align-items: center; gap: 40px; }
 .auth-welcome-copy { min-width: 0; }
-.auth-welcome-brand { display: flex; align-items: center; gap: 10px; margin: 0 0 12px -14px; }
+.auth-welcome-brand { display: flex; align-items: center; gap: 4px; margin: 0 0 12px -8px; }
 .auth-welcome-copy h1 { margin: 0 0 14px; color: var(--text); font-size: var(--font-display); line-height: 1.12; letter-spacing: -.03em; }
 .auth-welcome-copy h1 em { font-style: normal; color: transparent; background: linear-gradient(90deg, var(--xm-gold), color-mix(in srgb, var(--xm-gold) 50%, var(--xm-ivory)) 45%, var(--xm-sky)); background-clip: text; }
 [data-skin='obsidian'] .auth-welcome-copy h1 em, [data-skin='mist'] .auth-welcome-copy h1 em, [data-skin='aurora'] .auth-welcome-copy h1 em { background-image: linear-gradient(90deg, var(--accent), var(--accent-2) 45%, var(--info)); }
-.auth-welcome-lead { margin: 18px 0; max-width: 36em; color: var(--text-2); font-size: 14.5px; line-height: 1.65; }
-.auth-welcome-brands { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
-.auth-welcome-brands > span { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px 0 7px; border: 1px solid var(--line); border-radius: 99px; background: var(--panel); color: var(--text-2); font-size: var(--font-small); box-shadow: var(--tile-ring); }
+.auth-welcome-lead { margin: 18px 0 22px; max-width: 36em; color: var(--text-2); font-size: 14.5px; line-height: 1.65; }
 .auth-welcome-cta { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .auth-welcome-cta .xm-btn { height: 40px; padding-inline: 22px; }
 .auth-welcome-links, .auth-welcome-legal { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .auth-welcome-links .xm-btn, .auth-welcome-legal .xm-btn { padding: 4px 0; height: auto; font-size: var(--font-small-compact); }
 .auth-welcome-legal { gap: 14px; }
 .auth-welcome-legal .xm-btn { color: var(--text-3); }
-.auth-orbit-scene { position: relative; min-width: 0; height: 460px; background: transparent; border: 0; }
+/* 星轨跟着首屏的高度走：最高 460，窗口矮时缩到 380，轨道和胶囊都还在框里。 */
+.auth-orbit-scene { position: relative; min-width: 0; height: 100%; min-height: 380px; max-height: 460px; background: transparent; border: 0; }
 .auth-orbit-ellipses { position: absolute; inset: -95px -38px; pointer-events: none; }
 .auth-orbit-ellipses i { position: absolute; left: 0; top: 14%; width: 100%; height: 64%; border: 1px solid color-mix(in srgb, var(--xm-sky) 25%, transparent); border-radius: 50%; transform: rotate(-27deg); }
 .auth-orbit-ellipses i::after { content: ''; position: absolute; top: 12%; left: 10%; width: 6px; height: 6px; background: var(--xm-sky); border-radius: 50%; box-shadow: 0 0 14px var(--xm-sky); }
@@ -34,14 +34,11 @@
 [data-theme='light'] .auth-orbit-core::before { background: radial-gradient(circle, color-mix(in srgb, var(--xm-gold) 45%, transparent) 0%, transparent 68%); }
 .auth-orbit-core .xm-logo { position: relative; width: 118px; height: auto; }
 @property --auth-spin { syntax: '<angle>'; initial-value: 0deg; inherits: true; }
-.auth-orbit-ring { --auth-spin: 0deg; position: absolute; left: 50%; top: 46%; border: 1px dashed var(--line-2); border-radius: 50%; transform: translate(-50%, -50%) rotate(var(--auth-spin)); pointer-events: none; }
-.auth-orbit-inner { --auth-radius: 110px; width: 220px; height: 220px; animation: auth-orbit 18s linear infinite; }
-.auth-orbit-outer { --auth-radius: 170px; width: 340px; height: 340px; animation: auth-orbit-reverse 32s linear infinite; }
+.auth-orbit-ring { --auth-spin: 0deg; --auth-radius: 150px; position: absolute; left: 50%; top: 46%; width: 300px; height: 300px; border: 1px dashed var(--line-2); border-radius: 50%; transform: translate(-50%, -50%) rotate(var(--auth-spin)); pointer-events: none; animation: auth-orbit 40s linear infinite; }
 .auth-orbit-satellite { --auth-angle: 20deg; position: absolute; left: 50%; top: 50%; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 8px; transform: translate(-50%, -50%) rotate(var(--auth-angle)) translateY(calc(var(--auth-radius) * -1)) rotate(calc((var(--auth-angle) + var(--auth-spin)) * -1)); border: 1px solid var(--line-2); border-radius: 99px; color: var(--text-2); background: color-mix(in srgb, var(--panel-solid) 84%, transparent); backdrop-filter: blur(6px); box-shadow: 0 4px 14px color-mix(in srgb, var(--xm-navy) 40%, transparent); font-size: 12px; font-weight: 500; white-space: nowrap; }
-.auth-orbit-inner .auth-orbit-satellite { color: var(--text); border-color: var(--accent-soft); box-shadow: 0 4px 14px color-mix(in srgb, var(--xm-navy) 40%, transparent), 0 0 12px var(--accent-soft); }
-.auth-orbit-inner .auth-orbit-satellite[data-position='1'] { --auth-angle: 200deg; }
-.auth-orbit-outer .auth-orbit-satellite { --auth-angle: 110deg; }
-.auth-orbit-outer .auth-orbit-satellite[data-position='1'] { --auth-angle: 290deg; }
+.auth-orbit-satellite[data-position='1'] { --auth-angle: 110deg; }
+.auth-orbit-satellite[data-position='2'] { --auth-angle: 200deg; }
+.auth-orbit-satellite[data-position='3'] { --auth-angle: 290deg; }
 .auth-orbit-hud { position: absolute; left: 14px; right: 14px; bottom: 12px; display: flex; align-items: center; gap: 10px; color: var(--text-3); font-family: var(--mono); font-size: 11px; }
 .auth-orbit-hud > i { flex: 1; position: relative; height: 3px; overflow: hidden; background: var(--panel-2); }
 .auth-orbit-hud b { position: absolute; inset-block: 0; width: 34%; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: auth-scan 2.8s ease-in-out infinite; }
@@ -60,7 +57,6 @@
 /* !important：几条动画写在比这里更具体的选择器上（例如 .auth-orbit-ellipses i:nth-child(2)），不加就停不全。 */
 .auth-welcome[data-motion-paused='true'] *, .auth-welcome[data-motion-paused='true'] *::before, .auth-welcome[data-motion-paused='true'] *::after { animation: none !important; animation-play-state: paused !important; }
 @keyframes auth-orbit { to { --auth-spin: 360deg; } }
-@keyframes auth-orbit-reverse { to { --auth-spin: -360deg; } }
 @keyframes auth-core { 50% { opacity: .7; transform: scale(1.08); } }
 @keyframes auth-beam { 50% { opacity: .6; } }
 @keyframes auth-scan { from { left: -34%; } to { left: 100%; } }
@@ -124,6 +120,13 @@
 .auth-guide-connected { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .auth-guide-callout { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--accent-soft); color: var(--text-2); font-size: 13px; line-height: 1.75; }
 .auth-guide-checklist { display: grid; gap: 4px; }.auth-guide-check-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }.auth-guide-check-row > div:not(.xm-brand) { flex: 1; min-width: 0; }.auth-guide-check-row p { margin: 4px 0 0; font-size: 12px; color: var(--text-2); }.auth-guide-check-row strong { font-size: 13px; }.auth-guide-check-row > svg { flex: none; color: var(--text-2); }
+.auth-guide-result { display: grid; gap: 0; padding: 4px 14px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.auth-guide-result-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.auth-guide-result-row > strong { padding-top: 3px; color: var(--text); }.auth-guide-result-row > div { min-width: 0; }.auth-guide-result-row p { margin: 5px 0 0; color: var(--text-2); line-height: 1.6; overflow-wrap: anywhere; }
+.auth-guide-result-billing { margin: 9px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.auth-guide-first-task { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-input); }
+.auth-guide-first-task > strong { font-size: 13px; }.auth-guide-first-task p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }.auth-guide-first-task > div { display: flex; align-items: center; gap: 10px; }.auth-guide-first-task code { flex: 1; min-width: 0; user-select: text; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: 12px; }.auth-guide-first-task .xm-btn { flex: none; }
+.auth-guide-raw { color: var(--text-2); font-size: 12px; }.auth-guide-raw summary { cursor: pointer; }.auth-guide-raw pre, .auth-guide-support-text { margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; max-height: 200px; overflow: auto; font: 12px/1.65 var(--mono); color: var(--text-2); }
 .auth-guide-ready { display: flex; align-items: center; gap: 12px; padding: 18px 0; font-size: 13px; }.auth-guide-ready > svg { color: var(--ok); }
 .auth-guide-actions { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
 .auth-guide-actions .xm-btn { font-size: 12px; }

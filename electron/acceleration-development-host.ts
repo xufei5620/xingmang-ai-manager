@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { lstat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
-import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationMode, AccelerationState } from './acceleration-contract'
 import { accelerationFailureReason, isAccelerationConflictKind, isAccelerationFailureReason, withAccelerationReason } from './acceleration-contract'
 import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
@@ -19,6 +19,8 @@ export interface AccelerationDevelopmentConfig {
 }
 
 export interface AccelerationDevelopmentHost extends AccelerationApi {
+  /** 软件替用户连的那种，不扣免费时长（见 backend 的同名方法）。不进 AccelerationApi。 */
+  startAutomaticAcceleration(scope: string, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
   /** Replays a system-proxy lease left behind by a crash, without an account. */
   recover(): Promise<void>
   /**
@@ -94,9 +96,13 @@ export async function readAccelerationDevelopmentConfig(options: {
 export const accelerationStartFailureDescriptions: Record<AccelerationStartFailureStage, string> = {
   'core-architecture': '加速内核与本机架构不一致',
   'core-integrity': '加速内核完整性校验未通过',
-  'core-launch': '加速内核未能启动或提前退出',
+  'core-launch': '加速内核没有按时启动或控制接口不可用',
+  'core-blocked': '系统拒绝运行加速内核（多半是安全软件拦截）',
+  'core-exited': '加速内核启动后很快退出',
+  'core-port': '加速内核本地端口分配失败',
   'core-storage': '加速运行目录或内核文件未通过本地安全检查',
   'line-unavailable': '没有可用的加速线路',
+  'line-unreachable': '所选加速线路连不通',
   'runtime-invalid': '加速内核已启动但状态不可用',
   'ledger-write': '本机免费时长账本写入失败',
   'proxy-authorization': '系统代理授权未完成',
@@ -461,7 +467,7 @@ export function createAccelerationDevelopmentHost(options: {
 
   async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
     await ensureReady()
-    if (operation === 'start' && child) leaseWorkers.add(child)
+    if ((operation === 'start' || operation === 'start-automatic') && child) leaseWorkers.add(child)
     // The service above this adapter validates and projects every returned field.
     return await rpc(operation, {
       scope, ...(mode ? { mode } : {}), ...(lineId ? { lineId } : {}), ...(ignoreConflicts ? { ignoreConflicts: true } : {}),
@@ -483,6 +489,7 @@ export function createAccelerationDevelopmentHost(options: {
     },
     getAccelerationState: (scope) => request('get', scope),
     startAcceleration: (scope, mode, lineId, ignoreConflicts) => request('start', scope, mode, lineId, ignoreConflicts),
+    startAutomaticAcceleration: (scope, mode, lineId) => request('start-automatic', scope, mode, lineId),
     stopAcceleration: (scope) => request('stop', scope),
     redeemAccelerationCode: async (scope, code) => {
       await ensureReady()

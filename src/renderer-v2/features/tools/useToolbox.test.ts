@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { guideJobProgress, planConfigRefresh } from './useToolbox'
+import type { ExternalClientStatus } from '../../../../electron/ipc-contract'
+import { guideJobProgress, planConfigRefresh, withExternalRunning } from './useToolbox'
 
 describe('post key-sync refresh plan', () => {
   it('only re-reads the config once a snapshot is on screen', () => {
@@ -28,5 +29,28 @@ describe('guide progress while installing', () => {
       claude: { label: '正在准备 Node.js 运行环境（1/2）', log: [] },
       node: { label: '正在下载 Node.js', percent: 40, log: [] },
     })).toEqual({ label: '正在准备 Node.js 运行环境（1/2）', percent: 40 })
+  })
+})
+
+// 第三十一批 C：打开客户端以后先把那一行写成「运行中」，不等后台那次重扫。
+describe('desktop client marked running after it was opened', () => {
+  const client = (tool: ExternalClientStatus['tool'], running = false): ExternalClientStatus => ({
+    tool, installed: true, version: '1.2.3', path: `C:\\Fixture\\${tool}.exe`, installDirectory: 'C:\\Fixture', running,
+    installSupported: true, launchSupported: true, detectionError: null, installHint: null,
+    configured: true, model: 'fixture-model', configurationSource: 'xingmang', configurationError: null,
+  })
+
+  it('marks only the client that was opened', () => {
+    const statuses = [client('workbuddy'), client('claudeDesktop'), client('opencode')]
+    const next = withExternalRunning(statuses, 'claudeDesktop')
+    expect(next.map((entry) => [entry.tool, entry.running])).toEqual([['workbuddy', false], ['claudeDesktop', true], ['opencode', false]])
+    expect(next[0]).toBe(statuses[0])
+    expect(statuses[1].running).toBe(false)
+  })
+
+  it('keeps the same list when that client already reads as running or is not listed', () => {
+    const statuses = [client('workbuddy', true), client('opencode')]
+    expect(withExternalRunning(statuses, 'workbuddy')).toBe(statuses)
+    expect(withExternalRunning(statuses, 'claudeDesktop')).toBe(statuses)
   })
 })

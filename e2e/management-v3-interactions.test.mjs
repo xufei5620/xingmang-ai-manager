@@ -2,12 +2,21 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { defaultViewport, projectRoot as root, withBrowserFixture } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'management v3 fixture' })
+}
 
 async function withPage(query, run, viewport = defaultViewport) {
   await withBrowserFixture({ viewport }, async (fixture) => {
     const page = await fixture.newPage()
-    await page.goto(`${fixture.baseUrl}/e2e/management-v3-fixture.html?${query}`)
+    await navigateFixture(page, `${fixture.baseUrl}/e2e/management-v3-fixture.html?${query}`)
     await run(page)
   })
 }

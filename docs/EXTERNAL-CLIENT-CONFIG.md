@@ -31,11 +31,13 @@ Claude Desktop 的“已配好”依据当前生效的本地第三方推理配�
 
 ## 连接自检
 
-保存配置之后，主进程会把刚写下去的配置回读一遍，用读回来的那把 Key 向该客户端真正会打的那个站点地址核对一次当前账号的可用模型清单；结论显示在保存成功的提示里，检查页的“连接自检”也按同一条路把已安装的客户端与四个 CLI 排在一起。归因层、结果条渲染与四个 CLI 共用同一份（`electron/connection-check.ts`）。
+保存配置之后，主进程会把刚写下去的配置回读一遍，用读回来的那把 Key 向该客户端真正会打的那个站点地址问一次：WorkBuddy 与 OpenCode 核对一次当前账号的可用模型清单；Claude Desktop 照它自己网关的启动检查发同一条消息（`POST /v1/messages`，Bearer，内容为 `.`，`max_tokens: 1`）。结论显示在保存成功的提示里，检查页的“连接自检”也按同一条路把已安装的客户端与四个 CLI 排在一起。归因层、结果条渲染与四个 CLI 共用同一份（`electron/connection-check.ts`）。
 
 只有归属当前账号已确认（`configured`）的配置才会被拿去发请求：未安装、未配置、指向别处或读不出来时一律停在“未配置 / 本地配置”那一层，不发送任何请求，也不回显该配置现在指向哪里。清单是按令牌所属分组过滤的，因此密钥、分组、模型三层一次问完且不花额度。
 
-**这次自检不验证的部分**：客户端自身构造的那次对话请求（WorkBuddy 的 `/chat/completions`、OpenCode 的 `/responses`、Claude Desktop 网关的 `/v1/messages`）由客户端进程发出，本机测不到，成功结论里会写明这一点。外部客户端的 Key 是用户显式选的，自检不会替换或重新签发它。
+Claude Desktop 为什么不查清单：它每次启动、每次点「Check again」都会拿配置里的密钥发上面那条一个字的消息，中转回 401 或 403 就弹“Couldn't sign in to Gateway / The provider rejected your credentials”（2.9939.4 安装包里的网关探测，403 对静态密钥也算凭据被拒）。new-api 查清单不走计费：账号余额不足时清单照样 200，这条消息却回 403（“用户额度不足”），于是 0.2.13 及以前星芒说“正常”、客户端说“凭据被拒”。照它发同一条，自检就能说出“账号额度不足”这类真正的原因；代价是每次自检花这个模型一个输出 token，与 Claude Code 的自检相同。
+
+**这次自检不验证的部分**：客户端里真正聊天时的请求（WorkBuddy 的 `/chat/completions`、OpenCode 的 `/responses`、Claude Desktop 的会话）由客户端进程发出，本机测不到，成功结论里会写明这一点。外部客户端的 Key 是用户显式选的，自检不会替换或重新签发它。
 
 ## 安装与启动
 
@@ -127,6 +129,8 @@ Windows x64 WorkBuddy 在受信任的 winget 缺失，或安装器启动前遇�
 商店版路径由经过安装检测验证的实际可执行文件、`AppxManifest.xml` 文件虚拟化声明及运行系统版本共同决定，不能仅因存在旧目录就选用。2.2553.1.0 的清单虽将 `$(KnownFolder:LocalAppData)\Claude-3p` 列入 `ExcludedDirectory`，但新版命名空间最低要求 build 20348；本机 19045 会忽略这项声明，原生保存实测仍进入 `LocalCache`。build 18362 起的旧 `desktop6:FileSystemWriteVirtualization` 全局开关仍独立生效。第一方开发设置的 Roaming 目录单独判定，不随第三方目录一起迁移。`CLAUDE_USER_DATA_DIR` 为显式覆盖目录。Windows 旧 Roaming 数据尚未由 Claude 迁移时，提示先打开 Claude 完成迁移，避免提前创建 Local 目录让原生迁移被跳过。
 
 保存涉及 `configLibrary/<UUID>.json`（上面的 gateway 字段）、`configLibrary/_meta.json`（`entries` 与当前 `appliedId`）、第三方目录的 `claude_desktop_config.json`（`deploymentMode: "3p"`），以及原生和第三方目录的 `developer_settings.json`（`allowDevTools: true`）。为星芒配置维护独立条目，保留用户原有配置列表、MCP、偏好及其他文件内容；重复保存复用本工具关联的配置。所有文件先验证、备份，提交失败尝试回滚，界面只返回路径和结果，不返回凭据。
+
+0.2.12 曾把当前 Key 能用的全部 `claude-*` 型号写进 `inferenceModels`（#685），客户端因此发消息没有回复；#746 起改回只写所选的一个。已经写成多个的，升级后开机由 `claude-desktop-model-repair.ts` 修一次：只认工具箱归属记录认领得到的那份配置，且清单逐项对得上当年的写法（所选在前，其余为去重并按名字排好的 `claude-*`，最多 20 个）、网关地址是星芒的，才改回第一项，其余字段不动并留 `.bak`；认不准的不碰、只记日志。查完记在工具箱数据目录的 `migrations/` 下，不再重复检查。
 
 配置保存后需完全退出并重新打开 Claude Desktop；工具箱不强制结束用户正在进行的会话。保存成功只表示本地配置已落盘，不代表正在运行的旧进程已重新加载，也不代表真实推理已通过。此配置可继续在 Claude 原生第三方推理窗口编辑。
 

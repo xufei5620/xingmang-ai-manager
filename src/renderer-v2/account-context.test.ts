@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, sessionRestoreRetrying, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab } from './account-context'
+import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, sessionRestoreRetrying, sessionRestoring, sessionScope, signedInSiteId, siteIdForOrigin, visibleAccountTab } from './account-context'
 
 describe('renderer account ownership', () => {
   it('retains Sub2API fractional dollar limits and never rounds a limited key to unlimited', () => {
@@ -61,6 +61,18 @@ describe('renderer account scope while the startup restore is still running', ()
     expect(sessionScope(retrying)).toBe(sessionScope(restored))
     expect(sessionRestoreRetrying({ authenticated: false, restoring: { account: null } })).toBe(false)
     expect(sessionRestoreRetrying({ ...restored, restoring: { account: null, retrying: true } })).toBe(false)
+  })
+
+  // 检查页「星芒 AI 网络」给不给「去处理」看这个（第四十三批 B）：线路被切断时开机恢复多半联不上，
+  // 那时登录还在，得按正在恢复的账号算；会话自己的 siteId 这时还是默认那个站。
+  it('names the site of the account that is signed in or still being restored, and none for a guest', () => {
+    expect(signedInSiteId(restored)).toBe('solov-api')
+    expect(signedInSiteId({ ...restored, siteId: 'solov' })).toBe('solov')
+    expect(signedInSiteId({ authenticated: true })).toBe('solov')
+    expect(signedInSiteId({ authenticated: false, siteId: 'solov', restoring: { account: { siteId: 'solov-api', userId: 42 }, retrying: true } })).toBe('solov-api')
+    expect(signedInSiteId({ authenticated: false, siteId: 'solov', restoring: { account: { siteId: 'solov', userId: 42 } } })).toBe('solov')
+    expect(signedInSiteId({ authenticated: false, siteId: 'solov', restoring: { account: null } })).toBeNull()
+    expect(signedInSiteId({ authenticated: false, siteId: 'solov' })).toBeNull()
   })
 
   it('treats a session without the restoring mark as settled', () => {

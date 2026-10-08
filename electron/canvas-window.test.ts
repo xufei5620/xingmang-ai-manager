@@ -266,6 +266,9 @@ function controllerOptions(
       subscribe: vi.fn((_listener: unknown) => () => undefined),
     } as never,
     externalShell: { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) },
+    // The real probe starts a hidden renderer, which the BrowserWindow mock cannot
+    // stand in for; linux-renderer-sandbox.test.ts covers its verdicts.
+    inspectRendererSandbox: async () => ({ kind: 'sandboxed' }),
     ...overrides,
   }
 }
@@ -375,6 +378,37 @@ describe('createCanvasWindowController', () => {
     )
   })
 
+  it('refuses to create the canvas window when the renderer sandbox is off', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({
+      runtimeLog: runtimeLog as never,
+      inspectRendererSandbox: async () => ({ kind: 'disabled', reason: 'no-sandbox' }),
+    }))
+
+    await expect(controller.open()).rejects.toThrow('这层保护被关掉了')
+
+    expect(electronMocks.browserWindowOptions).toEqual([])
+    expect(runtimeLog.log).toHaveBeenCalledWith('error', 'canvas', 'sandbox.refused', expect.any(String), {
+      verdict: 'disabled',
+      reason: 'no-sandbox',
+    })
+  })
+
+  it('asks the sandbox gate again on the next open after a refusal', async () => {
+    const inspectRendererSandbox = vi.fn()
+      .mockResolvedValueOnce({ kind: 'unverified', reason: 'renderer status unreadable' })
+      .mockResolvedValue({ kind: 'sandboxed' })
+    const controller = createCanvasWindowController(controllerOptions({ inspectRendererSandbox }))
+
+    await expect(controller.open()).rejects.toThrow('没能确认画布的安全保护')
+    await controller.open()
+
+    expect(inspectRendererSandbox).toHaveBeenCalledTimes(2)
+    expect(electronMocks.browserWindowOptions).toEqual([
+      expect.objectContaining({ webPreferences: expect.objectContaining({ sandbox: true, contextIsolation: true, nodeIntegration: false }) }),
+    ])
+  })
+
   it('opens with the stored light theme in both the native background and renderer URL', async () => {
     const systemService = {
       readStoredConfig: vi.fn(() => ({ theme: 'light' })),
@@ -429,6 +463,29 @@ describe('createCanvasWindowController', () => {
 
     await expect(handler(trustedEvent(), 'https://docs.canvas.best')).resolves.toBe(true)
     expect(externalShell.openExternal).toHaveBeenCalledWith('https://docs.canvas.best')
+  })
+
+  it('logs a failed browser launch from a popup or navigation instead of leaving it unhandled', async () => {
+    const failure = new Error('no default browser')
+    const externalShell = { openExternal: vi.fn(async () => { throw failure }), openPath: vi.fn(async () => undefined) }
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ externalShell, runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const webContents = electronMocks.latestWebContents!
+    const openHandler = (webContents.setWindowOpenHandler as ReturnType<typeof vi.fn>).mock.calls[0][0] as (
+      details: { url: string },
+    ) => { action: string }
+    const navigate = (webContents.on as ReturnType<typeof vi.fn>).mock.calls
+      .find(([event]) => event === 'will-navigate')![1] as (event: { preventDefault: () => void }, url: string) => void
+
+    expect(openHandler({ url: 'https://docs.canvas.best' })).toEqual({ action: 'deny' })
+    navigate({ preventDefault: vi.fn() }, 'https://docs.canvas.best')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(externalShell.openExternal).toHaveBeenCalledTimes(2)
+    expect(runtimeLog.exception).toHaveBeenCalledTimes(2)
+    expect(runtimeLog.exception).toHaveBeenCalledWith('canvas', 'external.open.failed', failure)
+    controller.dispose()
   })
 
   it('rejects a URL that is not an exact allowlist match (I12) -- subdomain and path confusion both fail', async () => {

@@ -1,12 +1,31 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { runCommand } from '../command-runner'
-import { buildWindowsLoopbackProxySnapshot, createWindowsSystemProxy, parseWindowsProxySnapshot, type WindowsProxySnapshot } from './windows-system-proxy'
+import { CommandRunnerError, type CommandErrorCode, type runCommand } from '../command-runner'
+import { scanPowerShell, unbalancedBracket } from '../powershell-script-scan.test-support'
+import {
+  buildWindowsLoopbackProxySnapshot, createWindowsSystemProxy, parseWindowsProxySnapshot, shouldRetryWithCompiledScript,
+  windowsSystemProxyCompiledScript, windowsSystemProxyScript, type WindowsProxySnapshot,
+} from './windows-system-proxy'
 
 const directories: string[] = []
 afterEach(() => { for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }) })
+
+function commandFailure(code: CommandErrorCode, exitCode: number | null, stderr = ''): CommandRunnerError {
+  return new CommandRunnerError('PowerShell 未完成。', {
+    code, executable: 'powershell.exe', argv: [], exitCode, signal: null, stdout: '', stderr, outputBytes: 0, maxOutputBytes: 0, durationMs: 0,
+  })
+}
+
+const scriptBlockScanningRefusal = 'This script contains malicious content and has been blocked by your antivirus software.\r\n'
+  + '    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException\r\n'
+  + '    + FullyQualifiedErrorId : ScriptContainedMaliciousContent\r\n'
+
+function scriptOf(argv: readonly string[]): string {
+  return Buffer.from(argv[4], 'base64').toString('utf16le')
+}
 
 function originalSnapshot(): WindowsProxySnapshot {
   return {
@@ -269,11 +288,127 @@ describe('Windows system proxy lease', () => {
       expect(script).not.toContain('Start-Process calc')
       expect(script).toContain('InternetQueryOptionW')
       expect(script).toContain('InternetSetOptionW')
-      expect(script).toContain('DefaultDllImportSearchPaths(DllImportSearchPath.System32)')
+      expect(script).toContain('[IO.Path]::Combine([Environment]::SystemDirectory,')
       expect(script).not.toContain('DefaultConnectionSettings')
       expect(options).toMatchObject({ trustedOnly: true, windowsHide: true, timeoutMs: 15_000, maxOutputBytes: 96 * 1024 })
     }
     await f.service.restore()
+  })
+
+  it('declares WinInet in memory by its System32 path instead of compiling it on every call', () => {
+    const { code, literals, unterminated } = scanPowerShell(windowsSystemProxyScript)
+    expect(unterminated).toBe(false)
+    expect(unbalancedBracket(code)).toBeNull()
+    // A type definition makes Windows PowerShell start csc.exe and load the DLL it writes under
+    // %TEMP%: a second cold process per call, 18.6 s against the 15 s limit on a CI runner (#805).
+    expect(code).not.toMatch(/Add-Type|DllImport/)
+    expect(code).toContain('$type.DefinePInvokeMethod($call[0],[IO.Path]::Combine([Environment]::SystemDirectory,$call[1]),$call[2],')
+    expect(literals).toEqual(expect.arrayContaining(['wininet.dll', 'InternetQueryOptionW', 'InternetSetOptionW', 'kernel32.dll', 'GlobalFree']))
+    // The owner lookup reads only the process start time, so it never declares WinInet: the
+    // two calls are the first read or write, never a top-level one every operation pays for.
+    expect(/'owner' \{([^\n]*)\}/.exec(windowsSystemProxyScript)?.[1]).not.toMatch(/State|WinInet/)
+    expect(code.match(/^\s*Initialize-WinInet$/gm)).toHaveLength(2)
+    expect(code).toMatch(/function New-WinInetList\(\[int\]\$extra\) \{\n\s*Initialize-WinInet\n/)
+    expect(code).toMatch(/function Update-WinInet \{\n\s*Initialize-WinInet\n/)
+    // The connection name, the error slot and each option's value are cleared field by field,
+    // not by copying a byte array into the block the way a shellcode loader fills its own.
+    expect(code).not.toContain('::Copy(')
+    expect(code).toContain('$m::WriteIntPtr($list,$p,[IntPtr]::Zero);$m::WriteInt32($list,2*$p,4);$m::WriteInt32($list,2*$p+4,0);')
+    expect(code).toContain('$m::WriteInt64($list,$size+$i*($p+8)+$p,0)')
+  })
+
+  it('keeps the fallback byte for byte as 0.2.14 ran it, compiling WinInet with Add-Type', () => {
+    // Its worth is being the text customers' antivirus software has already seen on every
+    // call; a change here, even one bringing it in line with the in-memory script, gives that up.
+    expect(createHash('sha256').update(windowsSystemProxyCompiledScript.replaceAll('\r\n', '\n')).digest('hex'))
+      .toBe('69a95a9361d9d6e637d53c913d1fa3dc87fa60e386ed2ea4636a0649f5cee1e3')
+    const { code, literals } = scanPowerShell(windowsSystemProxyCompiledScript)
+    expect(code).toContain("Add-Type -TypeDefinition @'")
+    expect(code).not.toMatch(/Reflection\.Emit|DefinePInvokeMethod/)
+    expect(literals.join('\n')).toContain('[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]')
+  })
+
+  it('retries with the compiled script after any error exit, but not after a timeout', () => {
+    expect(shouldRetryWithCompiledScript(commandFailure('EXIT_NON_ZERO', 1, scriptBlockScanningRefusal))).toBe(true)
+    expect(shouldRetryWithCompiledScript(commandFailure('EXIT_NON_ZERO', 1, 'proxy-query-failed'))).toBe(true)
+    // An antivirus ending the process leaves an arbitrary exit code and no error record.
+    expect(shouldRetryWithCompiledScript(commandFailure('EXIT_NON_ZERO', -1073741819))).toBe(true)
+    expect(shouldRetryWithCompiledScript(commandFailure('TIMED_OUT', null))).toBe(false)
+    expect(shouldRetryWithCompiledScript(commandFailure('SPAWN_FAILED', null))).toBe(false)
+    expect(shouldRetryWithCompiledScript(new Error('ScriptContainedMaliciousContent'))).toBe(false)
+  })
+
+  it.each([
+    ['script-block scanning refused it', commandFailure('EXIT_NON_ZERO', 1, scriptBlockScanningRefusal)],
+    ['its process was ended', commandFailure('EXIT_NON_ZERO', 1)],
+  ])('reruns the same request on the compiled script when %s, then keeps to it', async (_name, failure) => {
+    const f = fixture()
+    f.execute.mockRejectedValueOnce(failure)
+    await f.service.enable(18765)
+    expect(f.current).toEqual(buildWindowsLoopbackProxySnapshot(18765))
+    expect(f.mutations).toHaveLength(1)
+    const calls = f.execute.mock.calls
+    expect(calls.map(([command]) => scriptOf(command.argv))).toEqual([
+      windowsSystemProxyScript, windowsSystemProxyCompiledScript, windowsSystemProxyCompiledScript,
+    ])
+    expect(calls[1][1]!.env!.XINGMANG_SYSTEM_PROXY_REQUEST).toBe(calls[0][1]!.env!.XINGMANG_SYSTEM_PROXY_REQUEST)
+    expect(calls[1][1]).toMatchObject({ trustedOnly: true, windowsHide: true, timeoutMs: 15_000, maxOutputBytes: 96 * 1024 })
+    await f.service.restore()
+    expect(scriptOf(calls.at(-1)![0].argv)).toBe(windowsSystemProxyCompiledScript)
+    expect(f.current).toEqual(f.before)
+  })
+
+  it('never writes over a write the failed run left in place', async () => {
+    const f = fixture()
+    const passThrough = f.execute.getMockImplementation()!
+    f.execute.mockImplementationOnce(passThrough).mockImplementationOnce(async (command, options) => {
+      // The in-memory script writes the proxy, then fails to report it.
+      await passThrough(command, options)
+      throw commandFailure('EXIT_NON_ZERO', 1, 'proxy-apply-failed')
+    })
+    await expect(f.service.enable(18765)).rejects.toThrow('系统代理启用失败，原设置已保留。')
+    // The compiled rerun finds the proxy already changed, writes nothing, and the journal
+    // takes it back to the original exactly once.
+    expect(f.mutations).toEqual([buildWindowsLoopbackProxySnapshot(18765), f.before])
+    expect(f.current).toEqual(f.before)
+    expect(f.execute.mock.calls.map(([command]) => scriptOf(command.argv))).toEqual([
+      windowsSystemProxyScript, windowsSystemProxyScript, windowsSystemProxyCompiledScript, windowsSystemProxyCompiledScript,
+    ])
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+  })
+
+  it('does not rerun after a timeout', async () => {
+    const f = fixture()
+    f.execute.mockRejectedValueOnce(commandFailure('TIMED_OUT', null))
+    await expect(f.service.enable(18765)).rejects.toThrow('Windows 系统代理操作未完成')
+    expect(f.execute).toHaveBeenCalledTimes(1)
+    await f.service.enable(18765)
+    expect(f.execute.mock.calls.map(([command]) => scriptOf(command.argv))).toEqual([
+      windowsSystemProxyScript, windowsSystemProxyScript, windowsSystemProxyScript,
+    ])
+    await f.service.restore()
+  })
+
+  it('runs the compiled script once a call after switching to it, even when it fails as well', async () => {
+    const f = fixture()
+    const refusal = commandFailure('EXIT_NON_ZERO', 1, scriptBlockScanningRefusal)
+    f.execute.mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal)
+    await expect(f.service.enable(18765)).rejects.toThrow('Windows 系统代理操作未完成')
+    await expect(f.service.enable(18765)).rejects.toThrow('Windows 系统代理操作未完成')
+    expect(f.execute.mock.calls.map(([command]) => scriptOf(command.argv))).toEqual([
+      windowsSystemProxyScript, windowsSystemProxyCompiledScript, windowsSystemProxyCompiledScript,
+    ])
+    expect(f.mutations).toEqual([])
+  })
+
+  it('reruns an owner lookup too, which a refusal of the whole script stops as well', async () => {
+    const f = fixture()
+    fs.writeFileSync(f.lockPath, JSON.stringify({ version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } }), 'utf8')
+    f.ownerTime = null
+    f.execute.mockRejectedValueOnce(commandFailure('EXIT_NON_ZERO', 1, scriptBlockScanningRefusal))
+    await f.service.recover()
+    expect(f.execute.mock.calls.map(([command]) => scriptOf(command.argv))).toEqual([windowsSystemProxyScript, windowsSystemProxyCompiledScript])
+    expect(fs.existsSync(f.lockPath)).toBe(false)
   })
 
   it('lets a caller on a cold PowerShell raise the per-command limit without changing the default', async () => {

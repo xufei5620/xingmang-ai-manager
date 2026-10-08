@@ -7,8 +7,14 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
-import type { InstallProgressStage } from './ipc-contract'
+import type { InstallProgressStage, NodeRuntimeInstallRequest } from './ipc-contract'
 import { redactHomeDirectory } from './startup-log'
+import {
+  bypassClosedLoopbackProxies,
+  describeDroppedProxies,
+  probeLoopbackProxy,
+  type LoopbackProbe,
+} from './stale-proxy-environment'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
@@ -40,35 +46,70 @@ import {
   describeRunningCliProcessWarning,
   fileLockErrorCode,
   managedCliPackageDirectory,
+  type OccupiedUpdateFailureInput,
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { cliProcessProbeRoots, inspectRunningTools as inspectRunningToolsWith, type RunningToolsReport } from './running-tools'
-import { createToolModelChecker, type ToolModelCheck } from './tool-model-check'
+import { createToolModelChecker, type ToolModelCheck, type ToolModelCheckTarget } from './tool-model-check'
 import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
+import { isChineseSentence } from './chinese-sentence'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
+import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
+import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
+import { activateCodexDesktopWithCdp, withCodexDesktopCdpFailureReport } from './codex-desktop-cdp'
 import {
   createCodexDesktopService,
   desktopUpdateFields,
+  inspectCodexDesktopPackage,
   type CodexDesktopInstallResult,
+  type CodexDesktopPackageProbe,
 } from './codex-desktop-service'
 import {
+  buildCodexRelayModelCatalog,
+  codexCliAcceptsModelCatalog,
+  codexDesktopAcceptsModelCatalog,
+  codexModelCatalogContent,
+  codexModelCatalogListsModel,
+  codexModelCatalogRequiredCliVersion,
+  combineCodexModelCatalogVerdicts,
+  parseCodexModelCatalog,
+  readBundledCodexModelCatalog,
+  type CodexDesktopCatalogProbe,
+  type CodexModelCatalog,
+  type CodexModelCatalogVerdict,
+  type ParsedCodexModelCatalog,
+} from './codex-model-catalog'
+import {
   canLaunchManagedProvider,
+  claudeForeignModelEnvKeys,
   geminiCliCompatibleModel,
   ensureCodexPermissionDefaults,
   ensureGeminiProjectContextFiles,
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
   claudeModelPickerNeedsRefresh,
+  classifyCodexConfigProfile,
+  codexModelCatalogNeedsRefresh,
+  codexModelCatalogTargetUsable,
+  inspectCodexModelCatalogOnDisk,
+  takeBackCodexModelCatalog,
+  inspectManagedCliHookTargets,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
+  providerAccountMode,
   readCodexAuthTokens,
   restoreClaudeConsoleKey,
+  rewriteManagedCliHooks,
   saveProviderConfig,
+  fillRelayTemplateDefaults,
+  forgetStaleGeminiUsageStatisticsRecord,
+  relayTemplateDefaultsPending,
+  relayTemplateRevision,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
   trustManagedWorkspace,
@@ -78,13 +119,14 @@ import {
   type NativeConfigInspection,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
+  type ProviderAccountMode,
 } from './config-files'
 import {
   ProjectInstructionsStateStore,
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
-import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { classifyWorkspace, resolveRememberedWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
   describeOverride,
   inspectWorkspaceConfigOverrides,
@@ -111,13 +153,16 @@ import {
   type CliUninstallCapability,
 } from './tool-installation'
 export type { CliLaunchMode } from './tool-installation'
-import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
+import { isExactCliVersion, isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
+import { nodeReadsSystemCertificates, toolCertificateFailureKind, withSystemCertificateTrust } from './system-certificate-trust'
 import {
   inspectWindowsRestartRequired,
   installNodeRuntime as installNodeRuntimeLts,
   type NodeRuntimeInstallResult,
   type WindowsRestartStatus,
 } from './node-runtime'
+import { installDarwinNodeRuntime, resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
+import { installLinuxNodeRuntime } from './linux-node-runtime'
 import {
   inspectInstalledPythonRuntime,
   installPythonRuntime as installPythonRuntime312,
@@ -139,7 +184,7 @@ import {
   type InstallCancellationOutcome,
 } from './install-cancellation'
 import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
-import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership } from './tool-config-ownership'
+import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
 import {
@@ -147,13 +192,28 @@ import {
   launchCliPowerShell,
   launchUnelevatedCommandWindow,
   resolveWindowsPowerShellExecutable,
+  WindowsCliLaunchError,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
-import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { createTrustedTemporaryDirectory, trustedInstallerCacheRoot } from './trusted-temp'
+import {
+  buildInstallLeftoverLocations,
+  type InstallLeftoverLocation,
+  type InstallLeftoverSweepResult,
+} from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
-import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
+import {
+  chooseNodeRuntimeArchitecture,
+  inspectWindowsExecutableMachine,
+  inspectWindowsProcessorArchitecture,
+  type WindowsProcessorArchitecture,
+} from './windows-processor'
+import { createCliTerminalAccess, type UserPathOutcome, type UserPathRemoval } from './windows-cli-shell-access'
+import type { MacosShellProfileOutcome } from './macos-shell-profile'
+import type { LinuxTerminalCommandsReason, LinuxTerminalCommandsResult } from './linux-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
-import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedCliRoot, managedNativeProviderRoot, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
   describeInsufficientDiskSpace,
   readDiskSpace,
@@ -172,12 +232,15 @@ import {
   inspectCodexDesktopGlobalState,
   type CodexDesktopGlobalStateStatus,
 } from './codex-desktop-state'
-import { fetchGrokStableVersion } from './grok-update'
+import { fetchGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
+import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
-import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
+import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteEndpointIdForBaseUrl, relaySiteForProviderBaseUrl,
+  relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -187,16 +250,42 @@ import {
   runDarwinGrokPostInstallTransaction,
   verifyDarwinGrokUninstallPlan,
 } from './macos-grok'
-import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
-import { isCommandLineToolsShimBacked, isMacOsCommandLineToolsShim } from './macos-command-line-tools'
+import {
+  buildLinuxGrokRetainedFilesCommand,
+  buildLinuxGrokRetainedFilesReason,
+  resolveLinuxGrokInstalledVersion,
+  runLinuxGrokPostInstallTransaction,
+  uninstallVerifiedLinuxGrokInstallation,
+  verifyLinuxGrokPostInstall,
+  type VerifyLinuxGrokPostInstallOptions,
+} from './linux-grok'
+import { inspectMacosCodexApp, type MacosCodexAppInfo, type MacosCodexAppInspection } from './macos-codex-app'
+import {
+  inspectCommandLineToolsShim,
+  isCommandLineToolsShimBacked,
+  isMacOsCommandLineToolsShim,
+} from './macos-command-line-tools'
+import {
+  installMacGitRuntime,
+  requestMacCommandLineToolsInstall,
+  waitForMacCommandLineTools,
+} from './macos-git-install'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
 import {
+  buildClaudeNativeLayout,
   buildClaudeRetainedVersionFilesCommand,
   buildClaudeRetainedVersionFilesReason,
   uninstallVerifiedClaudeNativeInstallation,
 } from './claude-native-uninstall'
+import { isDarwinForeignWritablePath } from './darwin-path-trust'
+import {
+  captureUninstallLeftovers,
+  removeUninstallLeftovers,
+  type UninstallLeftover,
+  type UninstallLeftoverOptions,
+} from './uninstall-leftovers'
 import { sameLocalPathIdentity } from './path-identity'
-import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
+import { adoptRestoredXingmangAiSkillOff, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -204,21 +293,23 @@ import {
   type DownloadedGrokBinary,
 } from './grok-installer'
 import {
+  followExternalToolRoute,
   saveExternalToolConfig,
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import type { ExternalClientConfigResult, ExternalClientStatus, ExternalClientRuntimeStatus } from './external-client-contract'
-import { createExternalClientRuntime } from './external-client-runtime'
+import { externalClientNames, type ExternalClientConfigResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
-import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
+import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
 import { BoundedOperationQueue } from './bounded-operation-queue'
 
 const execFileAsync = promisify(execFile)
@@ -237,6 +328,9 @@ const npmMirrorRegistry = 'https://registry.npmmirror.com'
 // CLI 既跑不起来也回不去。这两条是拒绝取消时给用户看的原因。
 const managedPrefixSwapSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
 const grokBinarySwapSealReason = '正在替换 Grok CLI 可执行文件，这一步中断会让工具用不了，请等它结束。'
+// Windows 上装完 Claude Code 接着顺带装 Git 的那一段接不上取消（第四十批 C），
+// 用界面上别处「停不下来」时的同一句。
+const gitAlongsideClaudeSealReason = '这一步已经不能取消了。'
 const networkLocationUrl = 'https://www.cloudflare.com/cdn-cgi/trace'
 const networkLocationFallbackUrls = [
   'https://myip.ipip.net/',
@@ -247,7 +341,6 @@ const maximumModelResponseBytes = 1024 * 1024
 const modelAccessCacheMaxEntries = 32
 const maximumRuntimeManifestBytes = 256 * 1024
 const maximumGrokVersionMetadataBytes = 16 * 1024
-const semanticVersionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z](?:[0-9A-Za-z.-]{0,126})?)?(?:\+[0-9A-Za-z](?:[0-9A-Za-z.-]{0,126})?)?$/
 
 export type UpdateCheckStatus = 'checked' | 'failed' | 'skipped'
 export type UpdateState = 'available' | 'latest' | 'unknown'
@@ -363,13 +456,24 @@ export function interactiveTerminalEnvironment(
 }
 
 /**
+ * 普通权限打开工具时的基底：在 commandEnvironment 之上让 Claude Code、Gemini CLI
+ * 也信任这台电脑装的证书（公司上网审计、安全软件的网页扫描）。管理员身份那条路
+ * 用 trustedCommandEnvironment，不经过这里。
+ */
+export function sameUserTerminalEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return withSystemCertificateTrust(commandEnvironment(env))
+}
+
+/**
  * 打开 CLI 的排队 key。只有同一工具、同一文件夹、同一种打开方式才算「同一次打开」
  * 合并成一个（双击幂等，I11）；换了文件夹或从记录页「接着聊」是另一件事，
  * 要排在后面各自执行，不能被前一个吞掉、再拿到前一个的结果（#482）。
  * 前缀保持 `cli:launch:`，退出拦截（quit-blocking-tasks.ts）按前缀认它不是安装。
  */
-export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, mode: CliLaunchMode): string {
-  return `cli:launch:${provider}:${mode}:${path.resolve(workspace)}`
+export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, mode: CliLaunchMode, resumeSessionId?: string | null): string {
+  // 同一目录里按 id 接两条不同的 Codex 对话也是两件事，不能合并。
+  const resumed = mode === 'resumeLast' && resumeSessionId ? `${mode}=${resumeSessionId}` : mode
+  return `cli:launch:${provider}:${resumed}:${path.resolve(workspace)}`
 }
 
 /**
@@ -390,12 +494,19 @@ export function buildDarwinCliLaunchPlan(
   command: { executable: string; argv: readonly string[] },
   workspace: string,
   env: NodeJS.ProcessEnv,
+  clearedEnvironmentKeys: readonly string[] = [],
 ): MacosTerminalLaunchPlan {
   if (!path.isAbsolute(command.executable)) {
     throw new Error('macOS CLI executable must be an absolute resolved path')
   }
   if (!path.isAbsolute(workspace)) throw new Error('macOS workspace must be an absolute path')
-  return { executable: command.executable, argv: [...command.argv], workspace, env }
+  return {
+    executable: command.executable,
+    argv: [...command.argv],
+    workspace,
+    env,
+    ...(clearedEnvironmentKeys.length ? { clearedEnvironmentKeys: [...clearedEnvironmentKeys] } : {}),
+  }
 }
 
 export type { OfficialChatGptAccount, OfficialChatGptWindow }
@@ -431,6 +542,15 @@ export interface SystemScanOptions {
   acceptCached?: boolean
 }
 
+/** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
+export interface CliUninstallOptions {
+  /**
+   * 这次卸载是「换成星芒装的」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
+   * 先按安装那一道门槛看盘：装不下就一个文件都不动，免得客户卸完落得一份都没有。
+   */
+  reinstall?: boolean
+}
+
 export interface CodexDesktopLaunchResult {
   restarted: boolean
   status: DesktopAppStatus
@@ -449,6 +569,11 @@ export interface CliLaunchResult {
    * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
    */
   declined?: boolean
+  /**
+   * 打开后「上次选的文件夹」是哪个（同 AppConfigSummary.rememberedWorkspace，null = 没有）。
+   * 首页据此直接换按钮，不必为这一个字段再读一遍整份配置。缺省 = 没带，界面照旧。
+   */
+  rememberedWorkspace?: string | null
 }
 
 export type ToolUninstallResult =
@@ -472,8 +597,19 @@ export type ToolUninstallResult =
          * files left behind by uninstallVerifiedClaudeNativeInstallation.
          */
         manualCommand: string | null
+        /**
+         * true = the main process pinned exactly the files manualCommand names
+         * and `cli:clean-uninstall-leftovers` may delete them after checking
+         * them again (已知48「帮我清理」). Omitted = the command is all there is.
+         */
+        cleanUpAvailable?: boolean
       }
     }
+
+/** 「帮我清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
+export interface CliLeftoverCleanupResult {
+  remaining: number
+}
 
 export interface CodexSetupStatus {
   checkedAt: string
@@ -494,6 +630,11 @@ export interface ConfigSavePayload {
 
 export interface AppConfigSummary {
   workspace: string
+  /**
+   * 首页「打开」在这个工具还没有会话记录时直接用的文件夹：用户上次在本软件里选过、
+   * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
+   */
+  rememberedWorkspace?: string
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -605,6 +746,33 @@ export async function inspectVerifiedDarwinGrokPostInstall(
 }
 
 /**
+ * Linux 版拆分 ③：Linux 上没有 codesign，linux-grok.ts 改用「和 npm 官方源校验过的主程序包逐字节
+ * 一致 + 报告的版本一致」来证明装的是 xAI 的那份，证明完了才在这里描述这次安装，和 macOS 那一份同形。
+ */
+export async function inspectVerifiedLinuxGrokPostInstall(
+  options: VerifyLinuxGrokPostInstallOptions,
+): Promise<{ status: ToolStatus; installation: CliInstallation }> {
+  const selection = await verifyLinuxGrokPostInstall(options)
+  const installDirectory = fs.realpathSync(path.dirname(selection.canonicalLinkPath))
+  return {
+    status: {
+      installed: true,
+      version: options.expectedVersion,
+      path: selection.executablePath,
+      installDirectory,
+    },
+    installation: {
+      commandPath: selection.canonicalLinkPath,
+      installDirectory,
+      packageRoot: null,
+      npmPrefix: null,
+      packageVersion: null,
+      source: 'native',
+    },
+  }
+}
+
+/**
  * internal #20 (second-round darwin verification): every entry point that
  * decides whether to run a fresh install — the dashboard's per-card button,
  * "安装全部缺失项", and the maintenance page's batch action — gates purely on
@@ -666,11 +834,14 @@ function buildDarwinGrokCleanupCommand(paths: readonly string[]): string {
  */
 export class DarwinGrokRetainedPathsError extends Error {
   readonly manualCommand: string
+  /** Exactly the paths manualCommand names, for the 「帮我清理」 record. */
+  readonly retainedPaths: readonly string[]
 
-  constructor(message: string, manualCommand: string) {
+  constructor(message: string, manualCommand: string, retainedPaths: readonly string[]) {
     super(message)
     this.name = 'DarwinGrokRetainedPathsError'
     this.manualCommand = manualCommand
+    this.retainedPaths = retainedPaths
   }
 }
 
@@ -768,7 +939,7 @@ export async function uninstallVerifiedDarwinGrokInstallation(
           + `（共约 ${formatMebibytes(orphanBytes)}：${orphanNamesText}），如确认不再需要可一并手动清理，本工具不会自动删除它们。`,
       )
     }
-    throw new DarwinGrokRetainedPathsError(messageParts.join(''), buildDarwinGrokCleanupCommand(retainedPaths))
+    throw new DarwinGrokRetainedPathsError(messageParts.join(''), buildDarwinGrokCleanupCommand(retainedPaths), retainedPaths)
   }
   return result
 }
@@ -795,15 +966,18 @@ export function grokManualUninstallResult(
       },
     }
   }
+  const fallback = 'Grok CLI 自动卸载安全验证失败'
   const raw = error instanceof Error ? error.message : String(error)
   const message = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500)
-    || 'Grok CLI 自动卸载安全验证失败'
   return {
     outcome: 'manual-required',
     previousVersion,
-    error: message,
+    // 原话留在这里，卸载日志记的就是它。
+    error: message || fallback,
     manualHelp: {
-      reason: `自动卸载安全验证失败：${message}`,
+      // 安全核对里不少是英文原话（链接、目录不合规矩的那几句），Mac 上卸不了时整句英文上屏（已知48）。
+      // 英文只进日志，屏上换成现成的那句；中文原话照旧接在后面。
+      reason: message && isChineseSentence(message) ? `自动卸载安全验证失败：${message}` : fallback,
       manualCommand: null,
     },
   }
@@ -828,8 +1002,21 @@ export interface SystemService {
   restoreOfficialCredentials?(provider: ProviderId): Promise<void>
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
-  /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
-  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
+  /**
+   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
+   */
+  repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
+  /**
+   * 开机后读配置前：本账号写的、指向旧位置的钩子与状态行不等客户点就改好，每家这次启动只试一次。
+   * 返回这一次改好了哪几家。可选 = 旧实现不提供。
+   */
+  autoRepairStaleCliHooks?(): Promise<ProviderId[]>
+  /**
+   * 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。
+   * `fromBackupsPage`：客户在备份页挑的那一份；缺省 = 切换失败的回滚（恢复切换前那一刻）。
+   */
+  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean, options?: { fromBackupsPage?: boolean }): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
@@ -842,19 +1029,25 @@ export interface SystemService {
   refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
-  installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
+  installNodeRuntime(target: RendererMessageTarget, request?: NodeRuntimeInstallRequest): Promise<NodeRuntimeInstallResult>
+  /** 这台 Windows 电脑真实的芯片（星芒在 ARM 电脑上是模拟运行的，process.arch 不作数）；认不出或不是 Windows 为 null。 */
+  inspectWindowsProcessor(): Promise<WindowsProcessorArchitecture | null>
   restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
   installGitRuntime(target: RendererMessageTarget): Promise<GitRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
-  uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
+  uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
+  /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
+  cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
+  resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<CliLaunchResult>
+  /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -872,9 +1065,26 @@ export interface SystemService {
   inspectRunningTools?(providers: readonly ProviderId[]): Promise<RunningToolsReport>
   /** 打开工具前核对当前账号能用的模型（一天一次）；可选 = 旧实现不提供，调用方直接打开。 */
   checkToolModels?(provider: ProviderId): Promise<ToolModelCheck>
-  fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
+  /**
+   * 开机恢复账号后给落后于模板的配置补缺省项；可选 = 旧实现不提供，调用方当什么都没补。
+   * retry = 只补开机那轮因为工具可能开着而欠下的（第二十六批 E）。
+   */
+  fillToolTemplateDefaults?(backup?: (provider: ProviderId) => void, retry?: boolean): Promise<ToolTemplateFillResult>
+  /**
+   * 换账号、退出、登录之前叫一声（main.ts 的 quiesce）：正在补设置的那次不再等本机看工具开没开，
+   * 这次先不补、记成还欠着，账号操作不用陪它等。返回的函数在那段等待结束后调，之后开始的补设置
+   * 照常看。可选 = 旧实现不提供，调用方照旧等它做完。
+   */
+  stopTemplateFillWaits?(): () => void
+  /** routed：星芒自己用的（AI 工作区），「自动」时直连没走通当场改走默认线路；缺省查的是工具会用的那条线路。 */
+  fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean; routed?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
+  /**
+   * 本次启动还没真检测过客户端时，给出上次落盘的结果（每条带 `cachedAt`）；检测过了、或没有可用的
+   * 旧结果时是空列表。只读文件、不起盘点，只给首页「先画个样子」用（已知13）。
+   */
+  cachedExternalClients(): Promise<ExternalClientStatus[]>
   /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
   getLastExternalClients(): ExternalClientStatus[] | null
   /**
@@ -886,9 +1096,22 @@ export interface SystemService {
     knownStatus?: ExternalClientRuntimeStatus | null,
   ): Promise<ExternalClientCheckResult>
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
+  cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
+  /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
+  onInstallationQueueChange(listener: (snapshot: InstallationQueueSnapshot) => void): () => void
+  /**
+   * 清掉以前中途被打断的安装留下的临时下载目录（见 install-leftovers.ts）。排在安装
+   * 队列里，不会和正在进行的安装撞上；从不抛错。
+   */
+  cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult>
+  /**
+   * 开机时在本机看一眼本软件写给 Codex 的型号名单还读不读得进，读不进就收回那一行；不看
+   * 账号、不联网，登录状态下开机那轮按账号同步也共用这一次。从不抛错。可选 = 旧实现不提供。
+   */
+  guardCodexModelCatalogAtStartup?(): Promise<void>
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -909,11 +1132,11 @@ export function parseLatestNpmVersion(output: string): string | null {
       : parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).version
         : null
-    return typeof candidate === 'string' && semanticVersionPattern.test(candidate.trim())
+    return typeof candidate === 'string' && isExactCliVersion(candidate.trim())
       ? candidate.trim()
       : null
   } catch {
-    return semanticVersionPattern.test(trimmed) ? trimmed : null
+    return isExactCliVersion(trimmed) ? trimmed : null
   }
 }
 
@@ -924,7 +1147,7 @@ export function parseGrokLocalVersion(input: string): string | null {
     const record = parsed as Record<string, unknown>
     for (const key of ['version', 'stable_version']) {
       const value = record[key]
-      if (typeof value === 'string' && semanticVersionPattern.test(value.trim())) {
+      if (typeof value === 'string' && isExactCliVersion(value.trim())) {
         return value.trim()
       }
     }
@@ -955,6 +1178,11 @@ export async function readGrokLocalVersionForExecutable(
     } catch {
       return null
     }
+  }
+  if (platform === 'linux') {
+    // npm 的 postinstall 不写 version.json，版本在 ~/.grok/bin/grok 指向的文件名里（Linux 版拆分 ③）。
+    const version = resolveLinuxGrokInstalledVersion(options.homeDirectory ?? os.homedir(), executablePath)
+    if (version) return version
   }
   const executableDirectory = path.dirname(executablePath)
   const candidates = new Set<string>([
@@ -1010,7 +1238,7 @@ async function readPackageManifestVersion(filePath: string, label: string): Prom
     )) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     const version = (parsed as Record<string, unknown>).version
-    return typeof version === 'string' && semanticVersionPattern.test(version.trim())
+    return typeof version === 'string' && isExactCliVersion(version.trim())
       ? version.trim()
       : null
   } catch {
@@ -1317,6 +1545,21 @@ export function npmRegistryLabel(registry: string): string {
 export const npmResolutionTimeoutMs = 10 * 60_000
 export const npmDownloadTimeoutMs = 5 * 60_000
 export const npmResolutionHeartbeatMs = 15_000
+/**
+ * `npm ci` is where the package bytes move, and a fixed five minutes was not
+ * enough of them: Claude Code and Codex are 90-160 MB per platform, so a link
+ * under roughly 0.3-0.5 MB/s ran out of time mid-download, and the next
+ * registry started again from zero because every attempt has its own cache.
+ * npm never ends a transfer that is slow but still moving, so neither does
+ * this step: it ends only once the attempt directory has stopped changing for
+ * the stall window, and the ceiling is a backstop for a download that trickles
+ * forever. The `--offline` install that follows still uses
+ * npmDownloadTimeoutMs; it reads the verified cache and fetches nothing.
+ */
+export const npmDownloadStallTimeoutMs = 3 * 60_000
+export const npmDownloadCeilingMs = 30 * 60_000
+export const npmDownloadProgressCheckMs = 15_000
+export const npmDownloadHeartbeatMs = 15_000
 export const grokDownloadStallHeartbeatMs = 15_000
 
 export function grokDownloadStallMessage(idleMs: number): string {
@@ -1341,6 +1584,137 @@ export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: numbe
 }
 
 /**
+ * npm 下载时也一声不出，网慢时这一步能下到 30 分钟（第三十七批 A），进度停在一句话上像卡死了。
+ * 写法照解析那句，只报已用时：总量不知道，不猜百分比。两句是 2026-10-06 拍板的原话（第三十七批 D），
+ * 「从」后面接 npm 时空一格，所以不拼 npmRegistryLabel。
+ */
+export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number): string {
+  const source = registry === npmMirrorRegistry ? '从国内 npm 镜像' : '从 npm 官方源'
+  return `仍在${source}下载…（已用时 ${formatElapsedDuration(elapsedMs)}）`
+}
+
+/** 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按它归成「下载超时」）。 */
+const npmDownloadTimedOutMessage = '下载超时，长时间没有完成，已中止'
+
+/**
+ * Bytes under `directory`, counted without following links. Entries that vanish
+ * mid-walk (npm moves a finished download out of its temp folder) are skipped.
+ * A root that cannot be read rejects instead of counting as empty: a reading
+ * that stays at zero would look exactly like a download that stopped moving.
+ * The walk is sequential on purpose: it runs every few seconds next to the
+ * download it watches and must not compete with it for the disk.
+ */
+export async function measureDirectoryBytes(directory: string): Promise<number> {
+  let total = 0
+  const pending = [directory]
+  while (pending.length) {
+    const current = pending.pop()
+    if (current === undefined) break
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true })
+    } catch (error) {
+      if (current === directory) throw error
+      continue
+    }
+    for (const entry of entries) {
+      const child = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        pending.push(child)
+      } else if (entry.isFile()) {
+        try {
+          total += (await fs.promises.lstat(child)).size
+        } catch {
+          // 量的这一刻刚被挪走或删掉：这次少算它，下一次再量。
+        }
+      }
+    }
+  }
+  return total
+}
+
+export interface NpmDownloadStallWatch {
+  /** Fires once the measured size has not changed for the stall window. */
+  readonly signal: AbortSignal
+  /** True once this watch ended the download, as opposed to the user's cancel or the ceiling. */
+  readonly stalled: boolean
+  /** The last size measured; null until the first measurement lands. */
+  readonly bytes: number | null
+  stop(): void
+}
+
+export interface NpmDownloadStallWatchOptions {
+  checkIntervalMs?: number
+  stallTimeoutMs?: number
+  /** Monotonic milliseconds: a wall-clock correction must never read as a stall. */
+  now?: () => number
+}
+
+/**
+ * The size of the attempt directory is the progress report npm never prints:
+ * make-fetch-happen tees every response into cacache, which appends to a temp
+ * file as chunks arrive, while tar unpacks into node_modules as it reads. Any
+ * change counts, a shrink included, since npm discarding a broken partial
+ * download before its own retry is activity rather than a hang. A measurement
+ * that fails counts as activity too: a download is never ended on evidence the
+ * watch could not collect.
+ */
+export function createNpmDownloadStallWatch(
+  measureBytes: () => Promise<number>,
+  options: NpmDownloadStallWatchOptions = {},
+): NpmDownloadStallWatch {
+  const checkIntervalMs = options.checkIntervalMs ?? npmDownloadProgressCheckMs
+  const stallTimeoutMs = options.stallTimeoutMs ?? npmDownloadStallTimeoutMs
+  const now = options.now ?? (() => performance.now())
+  const controller = new AbortController()
+  let lastBytes: number | null = null
+  let lastChangeAt = now()
+  let measuring = false
+  let stopped = false
+  let stalled = false
+  const timer = setInterval(() => { void check() }, checkIntervalMs)
+
+  function stop(): void {
+    if (stopped) return
+    stopped = true
+    clearInterval(timer)
+  }
+
+  async function check(): Promise<void> {
+    // 上一次还没量完（盘慢、文件多）就跳过这一拍，不叠着量。
+    if (measuring || stopped) return
+    measuring = true
+    let bytes: number | null
+    try {
+      bytes = await measureBytes()
+    } catch {
+      bytes = null
+    } finally {
+      measuring = false
+    }
+    if (stopped) return
+    const checkedAt = now()
+    if (bytes === null || bytes !== lastBytes) {
+      if (bytes !== null) lastBytes = bytes
+      lastChangeAt = checkedAt
+      return
+    }
+    if (checkedAt - lastChangeAt < stallTimeoutMs) return
+    stalled = true
+    stop()
+    controller.abort(new Error(npmDownloadTimedOutMessage))
+  }
+
+  void check()
+  return {
+    signal: controller.signal,
+    get stalled() { return stalled },
+    get bytes() { return lastBytes },
+    stop,
+  }
+}
+
+/**
  * CommandRunnerError keeps npm's stderr on the error object, but its message
  * only says "命令执行失败（退出码 1）：node". The renderer classifies install
  * failures by the tokens npm prints (ENOSPC, EPERM, ETIMEDOUT, certificate
@@ -1356,7 +1730,20 @@ export function describeNpmCommandFailure(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) {
     return error instanceof Error ? error.message : String(error)
   }
-  if (error.code === 'TIMED_OUT') return '下载超时，长时间没有完成，已中止'
+  if (error.code === 'TIMED_OUT') return npmDownloadTimedOutMessage
+  const highlights = npmFailureHighlights(error.stderr)
+  return highlights ? `${error.message}（${highlights}）` : error.message
+}
+
+/**
+ * 卸载不下载任何东西，所以不借上面那句「下载超时」：借过去渲染层会归成下载超时，
+ * 叫客户换源重试。这里一律用命令运行器自己那句话（它刻意不说「超时」），后面接上
+ * npm 的要点（EPERM、EBUSY 这些），文件被占用要靠它们才认得出来。
+ */
+export function describeNpmUninstallFailure(error: unknown): string {
+  if (!(error instanceof CommandRunnerError)) {
+    return error instanceof Error ? error.message : String(error)
+  }
   const highlights = npmFailureHighlights(error.stderr)
   return highlights ? `${error.message}（${highlights}）` : error.message
 }
@@ -1411,7 +1798,7 @@ export function parseNpmPackageReleaseMetadata(
   const name = typeof record.name === 'string' ? record.name.trim() : ''
   const version = typeof record.version === 'string' ? record.version.trim() : ''
   const integrity = typeof dist?.integrity === 'string' ? dist.integrity.trim() : ''
-  if (name !== expectedPackageName || !semanticVersionPattern.test(version)) return null
+  if (name !== expectedPackageName || !isExactCliVersion(version)) return null
   const match = integrity.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)
   if (!match) return null
   try {
@@ -1563,7 +1950,7 @@ function canonicalNpmPackageLock(
     const entryVersion = typeof record.version === 'string' ? record.version.trim() : ''
     const integrity = typeof record.integrity === 'string' ? record.integrity.trim() : ''
     const integrityMatch = integrity.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)
-    if (!semanticVersionPattern.test(entryVersion) || !integrityMatch) {
+    if (!isExactCliVersion(entryVersion) || !integrityMatch) {
       throw new Error(`npm package-lock.json 包版本或 SHA-512 无效：${location}`)
     }
     if (Buffer.from(integrityMatch[1], 'base64').length !== 64) {
@@ -1608,13 +1995,52 @@ export interface ManagedNpmReplaceOperations {
   rename(source: string, destination: string): Promise<void>
 }
 
+export interface ManagedNpmReplaceResult {
+  /**
+   * 检查通过后，旧版那份是否已改名成 superseded-prefix。false 时它还叫 previous-prefix：
+   * 收尾删除没做完的话，下次安装开头的恢复仍会把它当成「更新没做完」退回去，和以前一样。
+   */
+  backupRetired: boolean
+}
+
+const managedNpmBackupRetireAttempts = 5
+
+function isTransientManagedNpmRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'EAGAIN'
+}
+
+/**
+ * 新版检查通过以后，previous-prefix 就不该再是「断了要退回的那份」。下次装、更新、卸载开头的
+ * 恢复（managed-cli.ts）只认这个名字：「完成」之后、临时文件夹删完之前退出、关机、崩掉，或者
+ * 删到一半失败，以前都会被它当成更新没做完，把检查过的新版换回旧版，删了一半的话换回来的
+ * 还是残缺的旧版。同一个目录里改名一步完成，所以不另写记号文件：删到一半时记号可能先没了、
+ * 备份还在。安全软件正攥着里面的文件时照 safe-local-data.ts 的规矩重试几次；还不行就留着
+ * 原名，和以前一样，不影响这次报完成。
+ */
+async function retireVerifiedManagedNpmBackup(
+  backup: string,
+  superseded: string,
+  operations: ManagedNpmReplaceOperations,
+): Promise<boolean> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await operations.rename(backup, superseded)
+      return true
+    } catch (error) {
+      if (!isTransientManagedNpmRenameError(error) || attempt === managedNpmBackupRetireAttempts - 1) return false
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20 * (2 ** attempt)))
+  }
+}
+
 export async function replaceManagedNpmPrefixAtomically(
   activePrefix: string,
   stagedPrefix: string,
   transactionDirectory: string,
   verifyPromotedPrefix: () => Promise<void>,
   operations: ManagedNpmReplaceOperations = fs.promises,
-): Promise<void> {
+): Promise<ManagedNpmReplaceResult> {
   const active = path.resolve(activePrefix)
   const staged = path.resolve(stagedPrefix)
   const transaction = path.resolve(transactionDirectory)
@@ -1658,6 +2084,9 @@ export async function replaceManagedNpmPrefixAtomically(
     }
     throw error
   }
+  return {
+    backupRetired: await retireVerifiedManagedNpmBackup(backup, path.join(transaction, 'superseded-prefix'), operations),
+  }
 }
 
 export function modelAccessCacheKey(apiKey: string): string {
@@ -1679,12 +2108,27 @@ export interface CliMaintenancePlan {
   windowsPackageManager: 'npm'
 }
 
-export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'external'
+export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'linux-official-npm' | 'external'
 
 export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallStrategy {
   if (platform === 'win32') return 'windows-native'
   if (platform === 'darwin') return 'darwin-official-npm'
+  // 和 macOS 一样从 npm 装（Linux 版拆分 ③），只是没有 codesign，核对改由 linux-grok.ts 做。
+  if (platform === 'linux') return 'linux-official-npm'
   return 'external'
+}
+
+/**
+ * 「有没有新版」去哪问。Windows 与 macOS 的 Grok 以 xAI 的 stable 清单为准；Linux 的 Grok 从
+ * npm 装，也就问 npm：x.ai 和它的备用地址在国内大多连不上，Linux 第一版又没有加速。
+ * 不给平台时按 stable 清单答，和以前一样。
+ */
+export function cliLatestVersionSource(
+  provider: ProviderId,
+  platform?: NodeJS.Platform,
+): 'npm' | 'official-manifest' {
+  if (provider !== 'grok') return 'npm'
+  return platform && grokInstallStrategyFor(platform) === 'linux-official-npm' ? 'npm' : 'official-manifest'
 }
 
 export interface CliInstallTargetOptions {
@@ -1693,7 +2137,10 @@ export interface CliInstallTargetOptions {
   npmGlobalRoot: string | null
   /** 这一次安装会不会落进托管 npm 布局，落则给出它的 prefix，否则 null。 */
   managedNpmPrefix: string | null
-  /** Grok 在 Windows 上走原生通道，装进这个目录，而不是 node_modules。 */
+  /**
+   * Grok 不落在 node_modules 里：Windows 上走原生通道装进这个目录，Linux 上 npm 的
+   * postinstall 把程序放进 ~/.grok/bin。
+   */
   managedNativeRoot: string | null
 }
 
@@ -1709,7 +2156,8 @@ export function cliInstallTargetDirectory(
   provider: ProviderId,
   options: CliInstallTargetOptions,
 ): string | null {
-  if (provider === 'grok' && grokInstallStrategyFor(options.platform) === 'windows-native') {
+  const grokStrategy = provider === 'grok' ? grokInstallStrategyFor(options.platform) : null
+  if (grokStrategy === 'windows-native' || grokStrategy === 'linux-official-npm') {
     return options.managedNativeRoot
   }
   const packageName = cliCatalog[provider].packageName
@@ -1720,7 +2168,7 @@ export function cliInstallTargetDirectory(
 }
 
 export interface CliInstallReleaseOptions {
-  /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径不受它影响。 */
+  /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径以 xAI stable 为上限。 */
   version?: string
   fetchGrokStableVersion: () => Promise<{ version: string }>
   fetchNpmRelease: (
@@ -1747,13 +2195,14 @@ export async function resolveCliInstallRelease(
     )
   }
   const stable = await options.fetchGrokStableVersion()
+  const version = resolveGrokInstallVersion(options.version, stable.version)
   const release = await options.fetchNpmRelease(
     npmOfficialRegistry,
     cliCatalog.grok.packageName,
-    stable.version,
+    version,
   )
-  if (release.version !== stable.version) {
-    throw new Error('Grok npm 发布版本与 xAI 官方稳定版本不一致')
+  if (release.version !== version) {
+    throw new Error('Grok npm 发布版本与要安装的 xAI 官方版本不一致')
   }
   return release
 }
@@ -1779,10 +2228,10 @@ export function buildCliMaintenancePlan(
     }
   }
   if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
-  if (platform === 'darwin' && provider !== 'grok' && !npmPrefix) {
-    throw new Error('macOS 用户级 npm 前缀不能为空')
+  if (platform !== 'win32' && provider !== 'grok' && !npmPrefix) {
+    throw new Error(platform === 'darwin' ? 'macOS 用户级 npm 前缀不能为空' : '用户级 npm 前缀不能为空')
   }
-  if (version !== 'latest' && !semanticVersionPattern.test(version)) {
+  if (version !== 'latest' && !isExactCliVersion(version)) {
     throw new Error('npm CLI 版本号格式无效')
   }
   if (provider === 'grok') {
@@ -1877,8 +2326,9 @@ export function buildUncheckedLatestVersion(
   provider: ProviderId,
   installed: boolean,
   checkedAt: string = new Date().toISOString(),
+  platform?: NodeJS.Platform,
 ): LatestVersionProbe {
-  const source = provider === 'grok' ? 'official-manifest' : 'npm'
+  const source = cliLatestVersionSource(provider, platform)
   return installed
     ? { status: 'failed', version: null, source, checkedAt, error: latestVersionUncheckedMessage }
     : { status: 'skipped', version: null, source, checkedAt, error: null }
@@ -1960,10 +2410,10 @@ export function buildCliStatus(
     }
   }
   if (isNewerVersion(installed.version, latest.version)) {
-    // 名单把安装钉在已装的这个版本上时,npm 上更新的版本不是用户能点的更新:
-    // 点「更新」只会把同一个版本重装一遍。所以这里如实报「已是最新」,
-    // 而 latestVersion 仍然照实带上,不瞒着上游真实进度。
-    if (versionAdvice?.pinned && versionAdvice.onRecommended) {
+    // npm latest 变新并不代表推荐安装目标也变新；同版重装和退回推荐版
+    // 都不是更新。latestVersion 仍保留真实上游版本供界面说明。
+    if (versionAdvice?.pinned && versionAdvice.recommendedVersion
+      && !isNewerVersion(installed.version, versionAdvice.recommendedVersion)) {
       return { ...base, updateAvailable: false, updateState: 'latest', updateError: null }
     }
     return { ...base, updateAvailable: true, updateState: 'available', updateError: null }
@@ -2001,7 +2451,7 @@ function safeVersionCheckError(error: unknown, operation = 'npm latest'): string
  * 只留一句中文说明，首页运行环境那行的「安装 Git」按钮照旧在，客户想重试点它就行。
  */
 export async function installGitAlongsideClaude(
-  install: () => Promise<{ action: 'installed' | 'unchanged' }>,
+  install: () => Promise<{ action: GitRuntimeInstallResult['action'] }>,
   note: (message: string) => void,
 ): Promise<void> {
   try {
@@ -2009,6 +2459,27 @@ export async function installGitAlongsideClaude(
     if (result.action === 'installed') note('Git 也顺带装好了')
   } catch {
     note('Git 这次没装上，不影响使用 Claude Code；以后可以在首页「运行环境」里点「安装 Git」再试')
+  }
+}
+
+/**
+ * Windows 上装 Claude Code 时，顺带的 Git（installGitAlongsideClaude）是在 Claude Code 那一项出队之后
+ * 才装的，界面上却仍是同一次「安装」，那一行的「取消」也还亮着。装 Git 接不上取消，所以这次安装的取消
+ * 句柄先不收、改成封住：这时点「取消」回「这一步已经不能取消了。」，而不是「这个工具当前没有正在进行的
+ * 安装。」（第四十批 C）。Git 那段结束（装上、没装上都算）再收。Claude Code 自己没装成（失败或被取消）
+ * 就不进 Git 这段，照旧马上收。
+ */
+export async function finishClaudeInstallWithGit(
+  claude: Promise<void>,
+  cancellation: InstallCancellationHandle,
+  installGit: () => Promise<void>,
+): Promise<void> {
+  try {
+    await claude
+    cancellation.seal(gitAlongsideClaudeSealReason)
+    await installGit()
+  } finally {
+    cancellation.release()
   }
 }
 
@@ -2076,7 +2547,9 @@ export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
-  /** 落盘的旧结果只认同一版本的软件写的。 */
+  /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
+  externalClientSnapshotCacheFile?: string
+  /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
   claudeDesktopEnv?: NodeJS.ProcessEnv
@@ -2085,8 +2558,12 @@ export interface SystemServiceOptions {
   externalClientRuntime?: ReturnType<typeof createExternalClientRuntime>
   /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
   getRelaySiteId?: () => string
+  /** Preferences freeze at startup; under "auto" the line itself may move during the run (relay-route-controller.ts). */
+  relayEndpointRouting?: RelayEndpointRoutingSnapshot
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
+  /** 开机补模板缺省项前问「哪些工具开着」的那一步；缺省 = 真去查进程，测试里替换掉。 */
+  inspectRunningToolsForTemplateFill?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
   platform?: NodeJS.Platform
@@ -2096,27 +2573,55 @@ export interface SystemServiceOptions {
   resolveCliCommand?: typeof resolveCliCommand
   resolveCliInstallation?: typeof resolveCliInstallation
   findExecutable?: typeof findExecutable
+  /** Test seam: the real one looks for a terminal program and waits for its window (linux-terminal.ts). */
+  launchLinuxTerminal?: typeof launchLinuxTerminal
+  /** Test seam: the real one has a hidden PowerShell start the terminal and hand back its process id (windows-elevation.ts). */
+  launchCliPowerShell?: typeof launchCliPowerShell
+  /** Test seam: the real one writes the zsh launcher and has `open -a Terminal` run it (macos-platform.ts). */
+  launchMacosTerminal?: typeof launchMacosTerminal
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
   inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
   inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
   installNodeRuntime?: typeof installNodeRuntimeLts
+  /** Test seam: the real probe reads HKLM through reg.exe. */
+  inspectWindowsProcessor?: () => Promise<WindowsProcessorArchitecture | null>
+  /** Test seam: the real probe reads the PE header of the installed node.exe. */
+  inspectExecutableMachine?: typeof inspectWindowsExecutableMachine
   installGitRuntime?: typeof installGitForWindows
+  /** Test seam: the macOS path would otherwise run the real xcode-select --install. */
+  installMacGitRuntime?: typeof installMacGitRuntime
   /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
+  /** Test seam: the real read runs reg.exe for the machine and user PATH. */
+  readWindowsLivePath?: (system32: string, env: NodeJS.ProcessEnv) => Promise<string | null>
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
   fetchOfficialChatGptUsage?: typeof fetchOfficialChatGptUsage
-  /** Relay traffic uses Electron's proxy-aware network stack in the desktop host. */
+  /**
+   * Relay traffic uses Electron's proxy-aware network stack in the desktop host. Tool-facing
+   * requests (model checks before a config write, client checks) go out on exactly the line the
+   * tool will use: no rewrite, no retry (relay-line-fetch.ts createRelayObservedFetch).
+   */
   relayFetch?: typeof fetch
+  /** 星芒自己的请求：「自动」时直连没走通当场改走默认线路（createRelayLineFetch）。缺省同 relayFetch。 */
+  relayRoutedFetch?: typeof fetch
   /** Location must use the desktop session's actual route, independently of relay traffic. */
   networkLocationFetch?: typeof fetch
   /** Re-read Chromium's proxy configuration before an explicit location refresh. */
   reloadNetworkProxyConfig?: () => Promise<void>
   /** Artifact downloads follow the same proxy a browser would; see download-proxy.ts. */
   downloadFetch?: typeof fetch
+  /**
+   * 查 npm 包版本与完整性元数据用的 fetch。缺省 = 主进程自带的 Node fetch，行为与
+   * 从前一致；宿主接 Chromium 那条（net.fetch），它认这台电脑装的证书，公司电脑上
+   * 装工具才不会第一步就卡在「校验版本」。管理员身份时不用它，见 registryMetadataFetch。
+   */
+  registryFetch?: typeof fetch
   /** Loopback-only proxy variables handed to package-manager subprocesses. */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  /** 试连电脑里代理设置指向的本机端口；缺省 = 真的去连（stale-proxy-environment.ts）。 */
+  probeLoopbackProxy?: LoopbackProbe
   /**
    * 下载期间临时拉起加速（只开本机回环端口，不动系统代理）。缺省 = 不做，
    * 行为与从前一致。真正的路由由宿主实现，这里只需要知道它有没有生效——
@@ -2135,6 +2640,18 @@ export interface SystemServiceOptions {
   projectInstructionsTemplatePath?: string
   /** 随包的 Claude Code 状态行脚本路径；缺省则不给 Claude Code 写 statusLine。 */
   claudeStatusLineScriptPath?: string
+  /** 随包的命令行工具钩子脚本路径；缺省则不给 Claude Code / Gemini CLI 写通知钩子。 */
+  cliHookScriptPath?: string
+  /**
+   * 随包的官方 Codex 型号名单（codex-model-catalog.ts）。缺省 = 不写也不收回 Codex 的
+   * 型号名单，与从前一致。
+   */
+  bundledCodexModelCatalogPath?: string
+  /**
+   * 读型号名单的还有桌面端自带的那份 Codex，写之前要知道桌面端是哪一批。缺省 = Windows
+   * 问 Appx 包、Mac 看应用包、其余平台算没装；测试里替换掉。
+   */
+  inspectCodexDesktopForModelCatalog?: () => Promise<CodexDesktopCatalogProbe>
   /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   /**
@@ -2142,7 +2659,37 @@ export interface SystemServiceOptions {
    * 敲工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
    */
   ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
+  /**
+   * Windows 上卸掉 ~/.grok/bin 里的 Grok 后，把这个目录从当前用户的 PATH 里拿掉（官方安装脚本
+   * 加的那一段）。缺省 = 不改（测试里不起 PowerShell），只有 main.ts 接真实现。
+   */
+  removeWindowsUserPath?: (directory: string) => Promise<UserPathRemoval>
+  /**
+   * Mac 上对应的那一步：往当前用户登录 shell 读的启动文件补几行（zsh 的 ~/.zprofile、
+   * bash 的 ~/.bash_profile 或 ~/.profile、fish 的 conf.d 文件），让自己开的终端也能直接敲
+   * 工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
+   */
+  ensureMacosShellProfile?: (reason: 'install' | 'startup') => Promise<MacosShellProfileOutcome>
+  /**
+   * Linux 上对应的那一步：给星芒装的每个工具放一个小启动器，并往 ~/.bashrc 等文件末尾补
+   * 几行；卸掉最后一个时再去掉。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
+   */
+  syncLinuxTerminalCommands?: (reason: LinuxTerminalCommandsReason) => Promise<LinuxTerminalCommandsResult>
+  /**
+   * 真正去删安装残留的那一步。缺省 = 不清（测试与旧行为），只有 main.ts 接真实现，
+   * 免得单测装一次工具就去扫开发机的临时目录。
+   */
+  sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
 }
+
+// Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
+// already present. A shell-level stale gateway/key/model would otherwise
+// override the account configuration just written by the manager and send
+// requests to another relay (or select a model that is not in the group).
+const managedGeminiVariables = [
+  'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
+  'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
+] as const
 
 export function providerCommandEnvironment(
   provider: ProviderId,
@@ -2151,19 +2698,54 @@ export function providerCommandEnvironment(
 ): NodeJS.ProcessEnv {
   const environment = commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
   if (provider === 'gemini') {
-    // Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
-    // already present. A shell-level stale gateway/key/model would otherwise
-    // override the account configuration just written by the manager and send
-    // requests to another relay (or select a model that is not in the group).
-    const managedGeminiVariables = new Set([
-      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
-      'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
-    ])
+    const managed = new Set<string>(managedGeminiVariables)
     for (const key of Object.keys(environment)) {
-      if (managedGeminiVariables.has(key.toUpperCase())) delete environment[key]
+      if (managed.has(key.toUpperCase())) delete environment[key]
     }
   }
   return environment
+}
+
+/**
+ * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进）。用星芒账号时，客户自己设的 ANTHROPIC_MODEL 这类
+ * 选型号的变量会让 Claude Code 去要当前账号没有的型号；接账号时 settings.json 里的同名项已经挪开
+ * （config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。用自己的 Claude 账号时照旧带。
+ */
+export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  return provider === 'claude' && accountMode === 'relay' ? claudeForeignModelEnvKeys : []
+}
+
+/** 名字不分大小写：Windows 上 `anthropic_model` 和大写是同一个变量（同 providerCommandEnvironment）。 */
+export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
+  const excluded = new Set(names.map((name) => name.toUpperCase()))
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !excluded.has(key.toUpperCase())))
+}
+
+/**
+ * Mac 上「终端」先起客户自己的登录 shell 读 ~/.zshrc 这些启动文件，再跑星芒的启动脚本，那里 export
+ * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
+ * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
+ * 都在里面，另加 Mac 才要的：
+ * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
+ *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
+ *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
+ *   不动。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，也不动。
+ * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
+ *   里的，要给的值启动时另给。
+ * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
+ */
+export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
+  switch (provider) {
+    case 'claude':
+      return accountMode === 'relay'
+        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...launchExcludedEnvironmentVariables(provider, accountMode)]
+        : []
+    case 'gemini':
+      return managedGeminiVariables
+    case 'codex':
+    case 'grok':
+      return []
+  }
 }
 
 /** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
@@ -2232,9 +2814,211 @@ export function planRestoredConfigOwnership(input: {
   return input.owner && input.matchesRelay && input.isAccountKey ? 'account' : 'manual'
 }
 
+/**
+ * 老版本写下的 Codex 配置把当前账号的服务放在 openai 这类内置名下，Codex 不认那张表，
+ * 一打开就 401；这种配置往往没有归属记录，平常会被「来源未经确认就不自动改写」挡住。
+ * 只在三件事都对得上时让开机那一轮自动修（yoyo 9-30 同意第十七批 1b）：地址是当前站、
+ * 配置里的 Key 正是这次要写入的当前账号 Key、写入只把那张表搬到我们自己的连接名下。
+ * 「被改过」（changed）和手动来源不在其列：那是用户动过的配置，照旧只给按钮。
+ */
+export function permitsShadowedCodexRepair(
+  provider: ProviderId,
+  before: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay' | 'apiKey' | 'codexProviderShadowed'>,
+  previousOwnership: ToolConfigOwnership,
+  apiKey: string,
+): boolean {
+  const key = apiKey.trim()
+  return provider === 'codex' && previousOwnership === 'unknown' && before.codexProviderShadowed === true
+    && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
+}
+
+/**
+ * 「保存前读到的那份配置一点没动」只有这一个口径：检测模型期间被人改了就不写；写失败以后，
+ * 也只有这样才把来源原样放回。修改时间也要一样：回滚会把内容照原样写回去，身份和型号都对得上，
+ * 可那几个文件毕竟被这次保存动过，按「写到一半」处理，照旧留着保护。
+ */
+export function sameNativeConfigSnapshot(before: NativeConfigInspection, current: NativeConfigInspection): boolean {
+  return toolConfigIdentity(current) === toolConfigIdentity(before) && current.updatedAt === before.updatedAt && current.model === before.model
+}
+
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
 export function ccSwitchLeftoverField(leftover: CcSwitchLeftover | null): { ccSwitchLeftover?: CcSwitchLeftover } {
   return leftover ? { ccSwitchLeftover: leftover } : {}
+}
+
+/** 首页「提醒设置要修」那两项；「换了命令行」只在真换了时才带，旧快照和测试夹具不用跟着改。null = 引导预览，一律不报。 */
+export function cliHooksSummaryFields(
+  state: { stale: boolean; shellChanged: boolean; missing?: boolean } | null,
+): { cliHooksStale: boolean; cliHooksShellChanged?: true; cliHooksMissing?: true } {
+  if (!state) return { cliHooksStale: false }
+  if (state.shellChanged) return { cliHooksStale: true, cliHooksShellChanged: true }
+  return !state.stale && state.missing ? { cliHooksStale: false, cliHooksMissing: true } : { cliHooksStale: state.stale }
+}
+
+/**
+ * Windows 上只装 Grok 时不装运行环境（#695），那时钩子写不出来，配置照写，Grok 于是少了做完提醒和
+ * 防睡两项。只认本软件替当前账号写的那份（连着星芒、有 Key）；推到 cmd 本来就不写，不算缺。
+ * Mac 上的 Grok 从 npm 装，没有运行环境装不上，不会走到这里。
+ */
+export function grokCliHooksMissing(input: {
+  platform: NodeJS.Platform
+  provider: ProviderId
+  managedTargets: number
+  relayConfigured: boolean
+  shell: GrokWindowsShell | null
+}): boolean {
+  return input.platform === 'win32' && input.provider === 'grok' && input.managedTargets === 0
+    && input.relayConfigured && input.shell !== null && input.shell !== 'cmd'
+}
+
+/**
+ * 开机发现的旧钩子要不要不等客户点就改掉（第十八批 1b，yoyo 2026-09-30 同意）：只改本账号写的、
+ * 这次启动还没试过的那份。别处来的配置、被改过的配置不自动动，首页照旧给「修好它」；
+ * 试过一次没修好的也不再反复试，免得每次读配置都去改文件。
+ */
+export function shouldAutoRepairCliHooks(input: {
+  stale: boolean
+  ownership: ToolConfigOwnership
+  attempted: boolean
+}): boolean {
+  return input.stale && !input.attempted && input.ownership === 'account'
+}
+
+/** 这次启动替用户改好了、而且现在确实不再指向旧位置，才带这个字段；旧快照和测试夹具不用跟着改。 */
+export function cliHooksAutoRepairedField(autoRepaired: boolean, stale: boolean): { cliHooksAutoRepaired?: true } {
+  return autoRepaired && !stale ? { cliHooksAutoRepaired: true } : {}
+}
+
+/**
+ * 客户点了「换成新版 Node.js」（公司电脑的证书要 22.19 / 24.6 以上才认）时，已经装着的
+ * Node.js 即使够装工具也要照样换。Windows 上换：那边装的是官方安装包，会接替
+ * Program Files 里原来那份；Linux 上也换：本软件代下的那份排在 PATH 最前
+ * （linux-platform.ts），装上就是它。Mac 上代下的那份排在 PATH 最后，客户自己的旧版
+ * 永远先被找到，装了也白装（macos-platform.ts darwinCommandPathCandidates）。
+ * 版本读不出（null）不换：那时不知道该怪 Node 旧。
+ */
+export function shouldReplaceNodeForCertificates(input: {
+  platform: NodeJS.Platform
+  request: NodeRuntimeInstallRequest
+  node: Pick<ToolStatus, 'installed' | 'version'>
+}): boolean {
+  return input.platform !== 'darwin'
+    && input.request.reason === 'certificate'
+    && input.node.installed
+    && nodeReadsSystemCertificates(input.node.version) === false
+}
+
+export const nodeStillOutdatedAfterReplaceMessage = '新版 Node.js 已经装上了，但电脑上另外还有一份旧的 Node.js 排在前面，工具仍会先用到它，还是认不了这台电脑的证书。请联系客服帮你处理。'
+
+/**
+ * Windows 上桌面端是哪一批：Appx 探测明确报了「没有」才算没装，报错、没下结论都算看不出
+ * （同 codex-desktop-service.ts 判卸载干净的口径）。
+ */
+export function codexDesktopCatalogProbeFromPackage(probe: CodexDesktopPackageProbe): CodexDesktopCatalogProbe {
+  if (probe.value) return { installed: true, version: probe.value.version }
+  return probe.confirmedAbsent === true && !probe.error ? { installed: false, version: null } : { installed: null, version: null }
+}
+
+/** Mac 上同理：检测没跑完（detectionFailed）就是看不出，不当没装。 */
+export function codexDesktopCatalogProbeFromMacosApp(inspection: MacosCodexAppInspection): CodexDesktopCatalogProbe {
+  if (inspection.app) return { installed: true, version: inspection.app.version }
+  return inspection.detectionFailed ? { installed: null, version: null } : { installed: false, version: null }
+}
+
+/** 读本软件写的 Codex 型号名单的是哪几份 Codex：命令行、桌面端自带的那份，或两边都看。 */
+type CodexModelCatalogReaders = 'cli' | 'desktop' | 'all'
+
+type CodexModelCatalogGuardTrigger = 'cli-installed' | 'desktop-installed' | 'startup' | 'before-launch'
+
+/** 收回读不进的名单时只看这次可能变了的那一边：装了命令行只看命令行，开机两边都看。 */
+const codexModelCatalogGuardReaders: Record<CodexModelCatalogGuardTrigger, CodexModelCatalogReaders> = {
+  'cli-installed': 'cli',
+  'desktop-installed': 'desktop',
+  startup: 'all',
+  'before-launch': 'cli',
+}
+
+/** 打开 Codex 之前在本机看一眼型号名单，最多等这么久。 */
+const codexModelCatalogLaunchGuardMs = 3_000
+
+/**
+ * 补设置这一轮看哪些：开机那轮（连同联网后、开通订阅后补跑的那几次）什么都看；渲染层
+ * 隔一阵来补做（retry）时只看开机那轮因为工具可能开着而欠下的（第二十六批 E）。
+ */
+interface TemplateFillRound {
+  retry: boolean
+  providers: readonly ProviderId[]
+  codexModelCatalog: boolean
+}
+
+/** 等 promise 落定，最多等 ms 毫秒：到点就不等了，它自己接着跑完。从不抛错。 */
+export function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    function done(): void {
+      clearTimeout(timer)
+      resolve()
+    }
+    promise.then(done, done)
+  })
+}
+
+/**
+ * 等 start() 起的活落定，signal 一停就不等了（按停下的原因拒绝），活自己接着跑完、结果没人要；
+ * 已经停了就不起。给只读的本机探测用：起出去的进程收不回来，放着跑完无害，等它的人不必陪着。
+ */
+export function unlessStopped<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const work = start()
+    function stop(): void {
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', stop, { once: true })
+    void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
+  })
+}
+
+/**
+ * 同一个本机探测在 ttlMs 内复用上一次的结果（同时只跑一遍）；forget 之后下一次重新探。
+ * probe 自己不该抛错：抛了也会被复用到过期为止。
+ */
+export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now: () => number = () => Date.now()) {
+  let cached: { at: number; result: Promise<T> } | null = null
+  return {
+    read(): Promise<T> {
+      const at = now()
+      // 系统时间往回拨过也重新探，不能让上一次的结论一直用下去。
+      if (!cached || at - cached.at >= ttlMs || at < cached.at) cached = { at, result: probe() }
+      return cached.result
+    },
+    forget(): void {
+      cached = null
+    },
+  }
+}
+
+/** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
+export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
+  return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
+}
+
+/** 苹果没放行时进运行日志的那几项：应用包可能在主目录下的「应用程序」里，原话里也会带着这个路径。 */
+export function buildExternalClientMacVerificationLogDetail(failure: ExternalClientMacVerificationFailure, userHome: string) {
+  return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
+}
+
+/** 检测失败时 PowerShell 的原话进运行日志的那几项：读签名报的错里常带着客户端的完整路径。 */
+export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClientDetectionErrorDetail, userHome: string) {
+  return { ...failure, message: redactHomeDirectory(failure.message, userHome) }
+}
+
+/** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
+function sameRouteUrl(left: string, right: string): boolean {
+  return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
 }
 
 export function createSystemService(
@@ -2245,6 +3029,11 @@ export function createSystemService(
   const platform = serviceOptions.platform ?? process.platform
   const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
   const runtimeLog = serviceOptions.runtimeLog
+  // 这次启动替用户改过的钩子（第十八批 1b）：试过的不再试，改好的让首页说一句。只在内存里，重开软件从头算。
+  const autoRepairAttemptedCliHooks = new Set<ProviderId>()
+  const autoRepairCheckedOwners = new Set<string>()
+  const autoRepairedCliHooks = new Set<ProviderId>()
+  let autoRepairQueue: Promise<unknown> = Promise.resolve()
   const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
   const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
   const projectInstructionsState = new ProjectInstructionsStateStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'project-instructions'))
@@ -2257,19 +3046,29 @@ export function createSystemService(
   }
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
-  // Read fresh at call time (not captured once at service construction) so a
-  // settings change takes effect on the very next inspection without
-  // requiring a service restart -- same reasoning as saveConfig's activeSite
-  // read below.
+  const relayRouting = serviceOptions.relayEndpointRouting ?? createRelayEndpointRoutingSnapshot(store.read().relayEndpointIds)
+  function activeRelaySite(): RelaySite {
+    return relayRouting.resolve(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+  }
+  function providerRelaySite(provider: ProviderId, current: NativeConfigInspection, removal = false): RelaySite {
+    const selected = activeRelaySite()
+    if (!removal && relayRouting.selection(selected.id) !== undefined) return selected
+    return relaySiteForProviderBaseUrl(selected.id, provider, current.actualBaseUrl) ?? selected
+  }
+  // The account's site remains live. An explicit line is frozen until restart; under "auto" the
+  // line may move mid-run, so each write and probe reads it once and uses that line throughout.
   const inspectNativeProviderConfig = (provider: ProviderId) =>
     (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
       provider,
       providerRoots,
-      resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).providerBaseUrls,
+      activeRelaySite().providerBaseUrls,
     )
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
+  const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
+  const launchCliPowerShellForService = serviceOptions.launchCliPowerShell ?? launchCliPowerShell
+  const launchMacosTerminalForService = serviceOptions.launchMacosTerminal ?? launchMacosTerminal
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
@@ -2277,14 +3076,45 @@ export function createSystemService(
   const installPythonRuntimeForService = serviceOptions.installPythonRuntime ?? installPythonRuntime312
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
-  const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  // macOS 上不跑 Windows 那套 winget / MSI：把官方压缩包解进本软件自己的文件夹（第十六批 2）。
+  // Linux 同理，只是版本和校验值钉在软件里（linux-node-runtime.ts，Linux 版拆分 ②）。
+  const installNodeRuntimeForService = serviceOptions.installNodeRuntime
+    ?? (platform === 'darwin'
+      ? installDarwinNodeRuntime
+      : platform === 'win32' ? installNodeRuntimeLts : installLinuxNodeRuntime)
   const installGitRuntimeForService = serviceOptions.installGitRuntime ?? installGitForWindows
+  const installMacGitRuntimeWith = serviceOptions.installMacGitRuntime ?? installMacGitRuntime
   // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
   // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
   const downloadFetch = serviceOptions.downloadFetch ?? fetch
+  /**
+   * 管理员身份时照旧用 Node 自带的根证书：当前用户的证书库普通权限就写得进，不能
+   * 让它决定管理员的安装信任哪张证书（与 trustedCommandEnvironment 剥掉
+   * NODE_USE_SYSTEM_CA 同一个理由）。取 fetch 放在调用时，测试替换全局 fetch 才生效。
+   */
+  const registryMetadataFetch: typeof fetch = (input, init) => (
+    serviceOptions.registryFetch && !(platform === 'win32' && windowsExecutionMode === 'trusted-only')
+      ? serviceOptions.registryFetch(input, init)
+      : fetch(input, init)
+  )
   const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
     ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
   const acquireDownloadAcceleration = serviceOptions.acquireDownloadAcceleration
+  const probeLoopbackProxyForService = serviceOptions.probeLoopbackProxy ?? probeLoopbackProxy
+  /**
+   * 电脑里留着指向本机某个没开的代理的设置时，这一次不带它（第十六批 5）。只减不增：
+   * 开着的、指向别的机器的照旧带上；探测出错时原样返回，不挡住打开和安装。
+   */
+  async function withoutDeadLoopbackProxies(env: NodeJS.ProcessEnv, provider: ProviderId): Promise<NodeJS.ProcessEnv> {
+    const bypass = await bypassClosedLoopbackProxies(env, probeLoopbackProxyForService)
+    if (bypass.dropped.length) {
+      runtimeLog?.log('info', 'network', 'proxy-env.bypassed', '电脑里设的本机代理没开，这一次不带它', {
+        provider,
+        ...describeDroppedProxies(bypass.dropped),
+      })
+    }
+    return bypass.env
+  }
   // 有多少次下载正跑在加速线路上。只用来决定安装源顺序，所以是个计数而不是
   // 布尔：两个工具同时装时，先装完的那个不能把后一个的官方优先撤掉。
   let acceleratedDownloads = 0
@@ -2294,9 +3124,28 @@ export function createSystemService(
   const installCancellations = new InstallCancellationRegistry()
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
+    // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
+    fetch: downloadFetch,
+    withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
+    // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
+    onRegistryIncomplete: (failures) => runtimeLog?.log('warn', 'system', 'external-client.registry-incomplete', '部分软件安装记录无法读取，桌面客户端检测不完整',
+      buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
+    onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
+      buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
+    // 首页只说「无法读取客户端数字签名」这类前半句中文（已知3），系统给的原话客服在反馈报告里看这一行。
+    onDetectionErrorDetail: (failure) => runtimeLog?.log('warn', 'system', 'external-client.detection-error-detail', '桌面客户端检测失败时系统给的原话',
+      buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
   })
   let nodeRuntimeInstalling = false
+  // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
+  // 同一阵子里的检测、装工具、开工具共用一次结果；强制重新检测、装完 Node.js 时重新判断。
+  let preferredNodeProbe: { at: number; directory: Promise<string | null> } | null = null
+  let windowsProcessor: Promise<WindowsProcessorArchitecture | null> | null = null
+  const inspectExecutableMachine = serviceOptions.inspectExecutableMachine ?? inspectWindowsExecutableMachine
+  // 苹果的安装窗口一次只该弹一个：连点两下「安装 Git」拿到的是同一次等待。
+  let macGitInstall: Promise<GitRuntimeInstallResult> | null = null
   let pythonRuntimeInstalling = false
   const npmLatestCache = new Map<string, { expiresAt: number; value: LatestVersionProbe }>()
   // 失效时递增，让失效前发起的在途查询放弃回写过期结果
@@ -2426,10 +3275,41 @@ export function createSystemService(
    * process still blocks version execution from user-writable paths.
    */
   async function findInstalledExecutable(command: string): Promise<string | null> {
+    const additionalPaths = await nodeCommandDirectories(command)
     return findExecutableForService(command, {
       env: commandEnvironment(),
       windowsPackageManagers: command.toLowerCase() === 'npm' ? ['npm'] : [],
+      ...(additionalPaths.length ? { additionalPaths } : {}),
     })
+  }
+
+  /**
+   * Mac 上客户自己那份 Node.js 太旧、代下的那份够新时，本软件自己找 node / npm、跑 npm
+   * 都把代下的那份排到最前（第三十四批 A，macos-node-runtime.ts）；别的平台、别的情况是空的，
+   * 顺序照旧。交给工具的终端 PATH 不经过这里，客户在工具里用的还是他自己那份。
+   */
+  function preferredNodeDirectories(): Promise<string[]> {
+    if (platform !== 'darwin') return Promise.resolve([])
+    const now = Date.now()
+    if (!preferredNodeProbe || now - preferredNodeProbe.at >= scanReuseMs) {
+      preferredNodeProbe = {
+        at: now,
+        directory: resolveDarwinPreferredNodeDirectory({
+          findNode: () => findExecutableForService('node', { env: commandEnvironment() }),
+          readVersion: (executable) => executeVersion(executable, ['--version']),
+        }).catch(() => null),
+      }
+    }
+    return preferredNodeProbe.directory.then((directory) => directory ? [directory] : [])
+  }
+
+  function nodeCommandDirectories(command: string): Promise<string[]> {
+    return ['node', 'npm', 'npx'].includes(command.toLowerCase()) ? preferredNodeDirectories() : Promise.resolve([])
+  }
+
+  /** `npm root --global` 也得用找 npm 时排在最前的那份 Node.js 跑，不然代下的 npm 会落到客户的旧 node 上。 */
+  async function resolveServiceNpmGlobalRoot(npmExecutable: string | null): Promise<string | null> {
+    return resolveNpmGlobalRoot(npmExecutable, commandEnvironment(), undefined, undefined, await preferredNodeDirectories())
   }
 
   async function executeVersion(
@@ -2437,13 +3317,14 @@ export function createSystemService(
     args: string[],
     windowsPackageManager?: WindowsPackageManager,
     baseEnv: NodeJS.ProcessEnv = process.env,
+    additionalPaths: readonly string[] = [],
   ): Promise<string | null> {
     try {
       const trustedOnly = platform === 'win32' && windowsExecutionMode === 'trusted-only'
       if (trustedOnly) await primeTrustedHighIntegrityExecutable(executable, platform)
       if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
       const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
-        env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv),
+        env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv, additionalPaths),
         trustedOnly,
         timeoutMs: 8_000,
         maxOutputBytes: 1024 * 1024,
@@ -2470,6 +3351,8 @@ export function createSystemService(
       executable,
       args,
       command.toLowerCase() === 'npm' ? 'npm' : undefined,
+      process.env,
+      await nodeCommandDirectories(command),
     )
     if (!version && command.toLowerCase() === 'npm') {
       version = await readNpmPackageVersion(executable)
@@ -2484,6 +3367,22 @@ export function createSystemService(
       path: executable,
       installDirectory: path.dirname(executable),
     }
+  }
+
+  /**
+   * npm 报「证书被换掉」时，说清是哪一种（system-certificate-trust.ts）。npm 已经带着
+   * 「也信任这台电脑的证书」去跑、仍然失败的，原文不动，交给渲染层「连接被证书拦截」
+   * 那条。Node 版本读 PATH 上的 node：npm 就是由它跑起来的。读不出版本就不下结论。
+   */
+  async function withToolCertificateHint(message: string): Promise<string> {
+    if (classifyNetworkFailure(message) !== 'tls') return message
+    const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
+    let nodeVersion: string | null = null
+    if (!trustedOnly) {
+      try { nodeVersion = (await inspectTool('node')).version } catch { nodeVersion = null }
+    }
+    const kind = toolCertificateFailureKind({ trustedOnly, nodeVersion })
+    return kind ? `${message}。${toolCertificateMessages[kind]}` : message
   }
 
   async function inspectNode(): Promise<ToolStatus> {
@@ -2503,12 +3402,16 @@ export function createSystemService(
     try {
       const managed = platform === 'win32'
         ? windowsExecutionMode === 'trusted-only' ? managedNpmPrefix() : null
-        : platform === 'darwin' && provider !== 'grok' ? managedNpmPrefix(commandEnvironment(), 'darwin') : null
+        : provider !== 'grok' ? managedNpmPrefix(commandEnvironment(), platform) : null
       return cliInstallTargetDirectory(provider, {
         platform,
         npmGlobalRoot,
         managedNpmPrefix: managed,
-        managedNativeRoot: platform === 'win32' && provider === 'grok' ? managedNativeProviderRoot('grok') : null,
+        managedNativeRoot: provider !== 'grok'
+          ? null
+          : platform === 'win32'
+            ? managedNativeProviderRoot('grok')
+            : path.join(commandEnvironment().HOME?.trim() || os.homedir(), '.grok', 'bin'),
       })
     } catch {
       return null
@@ -2667,7 +3570,7 @@ export function createSystemService(
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), npmLatestQueryTimeoutMs)
       try {
-        const response = await fetch(npmPackageLatestUrl(registry, packageName), {
+        const response = await registryMetadataFetch(npmPackageLatestUrl(registry, packageName), {
           headers: { Accept: 'application/json' },
           redirect: 'error',
           signal: controller.signal,
@@ -2740,7 +3643,7 @@ export function createSystemService(
     const probe = (async (): Promise<LatestVersionProbe> => {
       const checkedAt = new Date().toISOString()
       try {
-        const result = await fetchGrokStableVersion({ abandonedSignal: budgetSignal })
+        const result = await fetchGrokStableVersion({ abandonedSignal: budgetSignal, fetchImpl: registryMetadataFetch })
         return {
           status: 'checked',
           version: result.version,
@@ -2786,7 +3689,8 @@ export function createSystemService(
         if (key.startsWith('official:grok:')) npmLatestCache.delete(key)
       }
       grokLatestInFlight.clear()
-      return
+      // Linux 的 Grok 问的是 npm（cliLatestVersionSource），下面那份也要清。
+      if (cliLatestVersionSource(provider, platform) === 'official-manifest') return
     }
     const packageSuffix = `:${cliCatalog[provider].packageName}`
     for (const key of npmLatestCache.keys()) {
@@ -2802,16 +3706,17 @@ export function createSystemService(
     networkRegion: NetworkRegion,
     budgetSignal?: AbortSignal,
   ): Promise<LatestVersionProbe> {
+    const source = cliLatestVersionSource(provider, platform)
     if (!installed.installed) {
       return {
         status: 'skipped',
         version: null,
-        source: provider === 'grok' ? 'official-manifest' : 'npm',
+        source,
         checkedAt: new Date().toISOString(),
         error: null,
       }
     }
-    if (provider === 'grok') {
+    if (source === 'official-manifest') {
       return inspectLatestGrokVersion(budgetSignal)
     }
     return inspectLatestNpmVersion(cliCatalog[provider].packageName, networkRegion, budgetSignal)
@@ -2828,7 +3733,7 @@ export function createSystemService(
     function locateNpm() {
       npmLocation ??= (async () => {
         const npmExecutable = await findInstalledExecutable('npm')
-        return { npmExecutable, npmGlobalRoot: await resolveNpmGlobalRoot(npmExecutable, commandEnvironment()) }
+        return { npmExecutable, npmGlobalRoot: await resolveServiceNpmGlobalRoot(npmExecutable) }
       })()
       return npmLocation
     }
@@ -2863,10 +3768,12 @@ export function createSystemService(
     forceRefresh = false,
   ): Promise<CliStatus> {
     if (forceRefresh) invalidateCliUpdateCache(provider)
-    const npm = await inspectTool('npm')
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
-    const { status } = await inspectCliTool(provider, npm.path, npmGlobalRoot)
-    const networkRegion = provider !== 'grok' && status.installed
+    // 同「打开」那条路（launchProviderOperation）：检查更新只用得上 npm 在哪，
+    // 用不上它的版本号，别为此多起一次 `npm --version`。路径照旧每次现查，不缓存。
+    const npmPath = await findInstalledExecutable('npm')
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
+    const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
+    const networkRegion = cliLatestVersionSource(provider, platform) === 'npm' && status.installed
       ? await inspectNetworkRegion()
       : 'unknown'
     const latest = await inspectCliLatestVersion(provider, status, networkRegion)
@@ -2950,6 +3857,7 @@ export function createSystemService(
       npmLatestCache.clear()
       grokLatestInFlight.clear()
       officialChatGptCache = null
+      preferredNodeProbe = null
     }
     const [nodeResult, npmResult, pythonResult, gitResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
       limitedProbe(inspectNode),
@@ -2967,26 +3875,33 @@ export function createSystemService(
     const git = buildToolStatusFromSettled(gitResult)
     const codexDesktop = buildDesktopAppStatusFromSettled(codexDesktopResult)
     const network = buildNetworkLocationStatusFromSettled(networkResult)
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npm.path)
     // 单个 CLI 探测异常不能伪装成“未安装”，否则维护页会自动勾选并重装。
     const cliProbes = await Promise.allSettled(
       providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     // 老版本装的工具旁边还留着 .ps1 启动文件；每次打开软件后的第一轮检测顺手清掉，
-    // 只动文件、不起 PowerShell，也不等它。
+    // 只动文件、不起 PowerShell，也不等它。Mac 上这一轮给以前装过、还没补终端设置的
+    // 电脑补一次（只补一次，见 macos-shell-profile.ts）；Linux 同理，另外把小启动器
+    // 和装着的工具对齐（linux-shell-profile.ts）。
     void cliTerminalAccess.sweepOnce(providerIds.flatMap((provider, index) => {
       const probe = cliProbes[index]
       return probe.status === 'fulfilled' && probe.value.installation
         ? [{ provider, installation: probe.value.installation }]
         : []
-    }))
+    })).catch((error: unknown) => {
+      // 没人等它，出错也不该变成进程级的未处理 Promise；留一行日志就够，下次打开软件会再清。
+      runtimeLog?.log('warn', 'install', 'cli.powershell-shim.sweep-failed', '打开软件后顺手清理旧启动文件没有完成', {
+        reason: credentialFailureReason(error),
+      })
+    })
     const networkRegion = network.region
 
     // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
     // 给整批一个总预算，到点先出画面（见 settleLatestVersionProbes）。
     const uncheckedLatest = providerIds.map(
-      (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed),
+      (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed, undefined, platform),
     )
     const latestVersionBudgetMs = networkProbeSuggestsOffline(network)
       ? offlineLatestVersionBudgetMs
@@ -3041,7 +3956,7 @@ export function createSystemService(
     const node = buildToolStatusFromSettled(nodeResult)
     const npm = buildToolStatusFromSettled(npmResult)
     const desktop = buildDesktopAppStatusFromSettled(desktopResult)
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npm.path)
     // CLI 探测依赖上面 npm 探测的结果，只能顺序执行、无法并入 allSettled；
     // 同样降级为「检测失败」而非「未安装」，避免向导误判并对已在正常工作的 CLI 触发重装
     const [cliSettled] = await Promise.allSettled([inspectCliTool('codex', npm.path, npmGlobalRoot)])
@@ -3049,7 +3964,10 @@ export function createSystemService(
     return { checkedAt: new Date().toISOString(), runtime: { node, npm }, cli, desktop }
   }
 
-  async function installNodeRuntimeOperation(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult> {
+  async function installNodeRuntimeOperation(
+    target: RendererMessageTarget,
+    request: NodeRuntimeInstallRequest,
+  ): Promise<NodeRuntimeInstallResult> {
     if (nodeRuntimeInstalling) throw new Error('Node.js 正在安装中，请等待当前任务完成')
     nodeRuntimeInstalling = true
     try {
@@ -3059,7 +3977,8 @@ export function createSystemService(
       if (node.detectionFailed || npm.detectionFailed) {
         throw new Error(node.detectionError ?? npm.detectionError ?? 'Node.js/npm 检测失败，请重新检测后再试')
       }
-      if (node.installed && node.versionStatus === 'supported' && npm.installed) {
+      const replaceForCertificates = shouldReplaceNodeForCertificates({ platform, request, node })
+      if (node.installed && node.versionStatus === 'supported' && npm.installed && !replaceForCertificates) {
         const architecture = process.arch === 'x64' || process.arch === 'arm64' ? process.arch : 'x64'
         const result: NodeRuntimeInstallResult = {
           installed: true,
@@ -3115,22 +4034,76 @@ export function createSystemService(
           throw new Error(message)
         }
       }
-      return await installNodeRuntimeForService({
-        networkRegion: await inspectNetworkRegion(),
+      const architecture = platform === 'win32'
+        ? chooseNodeRuntimeArchitecture({
+          processor: await inspectWindowsProcessor(),
+          existingNodeMachine: node.installed && node.path ? await inspectExecutableMachine(node.path) : null,
+          nodeInstalled: node.installed,
+        })
+        : undefined
+      if (architecture === 'arm64' && process.arch !== 'arm64' && !target.isDestroyed()) {
+        target.send('runtime:node-install-progress', {
+          phase: 'checking',
+          source: null,
+          message: '这台电脑是 ARM 芯片，会装 ARM 版 Node.js，工具跑起来更快、更省电',
+          percent: null,
+        })
+      }
+      const result = await installNodeRuntimeForService({
+        ...(architecture ? { architecture } : {}),
+        // 到要下载时才问先走哪个源：Windows 借到线路以后才定，借到了就官方源优先。
+        networkRegion: inspectNetworkRegion,
+        // Windows 先试 winget，它自己下载、不走下载专用线路，退到下安装包时才借（第二十八批 D）；
+        // macOS、Linux 一开始就是下载，整段已经包在线路里（installNodeRuntime）。
+        withDownloadRoute: platform === 'win32' ? (operation) => withDownloadAcceleration(null, operation) : undefined,
         temporaryDirectoryMode: windowsExecutionMode,
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:node-install-progress', progress)
         },
       })
+      // Mac 上客户自己那份太旧时，刚下好的这份当场就用上，后面装工具不再去下（第三十四批 A）。
+      preferredNodeProbe = null
+      if (replaceForCertificates) await assertNodeReplacedForCertificates()
+      return result
     } finally {
       nodeRuntimeInstalling = false
     }
   }
 
-  function installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult> {
-    return installationQueue.enqueue('runtime:node',
-      () => withDownloadAcceleration(null, () => installNodeRuntimeOperation(target)))
+  /**
+   * 装新版的目的是让工具认得公司证书，装完却仍然找到旧的那份（比如 nvm 之类的
+   * 版本管理工具把自己的目录放在前面），工具还是会失败。这时照实说，别让客户以为
+   * 换好了、回去重试再撞同一个错。读不出版本就不下结论。
+   */
+  async function assertNodeReplacedForCertificates(): Promise<void> {
+    let version: string | null = null
+    try { version = (await inspectTool('node')).version } catch { return }
+    if (nodeReadsSystemCertificates(version) !== false) return
+    throw new Error(nodeStillOutdatedAfterReplaceMessage)
+  }
+
+  function inspectWindowsProcessor(): Promise<WindowsProcessorArchitecture | null> {
+    // 芯片开机后不会变，一次启动只问一次；问失败也记住「不知道」，不反复起 reg.exe。
+    windowsProcessor ??= (serviceOptions.inspectWindowsProcessor
+      ?? (() => inspectWindowsProcessorArchitecture({ platform, machinePaths: () => resolveWindowsMachinePathsForService() })))()
+      .catch(() => null)
+    return windowsProcessor
+  }
+
+  function installNodeRuntime(
+    target: RendererMessageTarget,
+    request: NodeRuntimeInstallRequest = {},
+  ): Promise<NodeRuntimeInstallResult> {
+    // Windows 只在退到下安装包时借线路，见 installNodeRuntimeOperation 传下去的 withDownloadRoute。
+    return installationQueue.enqueue('runtime:node', () => platform === 'win32'
+      ? installNodeRuntimeOperation(target, request)
+      : withDownloadAcceleration(null, () => installNodeRuntimeOperation(target, request)))
+      .then(async (result) => {
+        // 等补完再回，首页随后那次刷新就不再显示「补上」。它自己兜住所有错误，不影响装运行环境的结果。
+        if (platform === 'win32') await addMissingGrokHooks('runtime-installed')
+        return result
+      })
   }
 
   async function restartWindows(): Promise<void> {
@@ -3180,12 +4153,17 @@ export function createSystemService(
         }
         return result
       }
+      // 商店装不上时退到 python.org 下载，那是国外的站：和装 Node.js、Git 一样借一条
+      // 下载专用线路（不改系统代理），所以 fetch 也要换成认这条线路的那一个。商店那一步
+      // 自己下载、不走这条线路，所以退到 python.org 时才借（第二十八批 D）。
       return await installPythonRuntimeForService({
         architecture: process.arch,
         temporaryDirectoryMode: windowsExecutionMode,
+        withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:python-install-progress', progress)
         },
+        dependencies: { fetch: downloadFetch },
       })
     } finally {
       pythonRuntimeInstalling = false
@@ -3200,7 +4178,7 @@ export function createSystemService(
     target: RendererMessageTarget,
     onProgress?: (progress: GitRuntimeInstallProgress) => void,
   ): Promise<GitRuntimeInstallResult> {
-    if (platform !== 'win32') throw new Error('Git 自动安装当前仅支持 Windows')
+    if (platform !== 'win32') throw new Error('Git 自动安装当前仅支持 Windows 和 macOS')
     const git = buildToolStatusFromSettled((await Promise.allSettled([inspectGit()]))[0])
     if (git.detectionFailed) throw new Error(git.detectionError ?? 'Git 检测失败，请重新检测后再试')
     const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
@@ -3239,12 +4217,86 @@ export function createSystemService(
     })
   }
 
+  /**
+   * macOS 上的 Git 交给苹果自己的安装窗口（第十六批 2）。只有「弹窗口」这一下进安装队列；
+   * 之后客户在苹果窗口里下载安装可能要十几分钟，这段等待不能占着队列，否则别的工具
+   * 全都装不了。
+   */
+  function installMacGitRuntimeForService(target: RendererMessageTarget): Promise<GitRuntimeInstallResult> {
+    macGitInstall ??= installMacGitRuntimeWith({
+      inspectInstalled: async () => {
+        const git = await inspectGit()
+        return git.installed ? { version: git.version } : null
+      },
+      inspectShim: () => inspectCommandLineToolsShim('/usr/bin/git'),
+      request: () => installationQueue.enqueue('runtime:git', () => requestMacCommandLineToolsInstall()),
+      wait: () => waitForMacCommandLineTools(),
+      onProgress: (progress) => {
+        if (!target.isDestroyed()) target.send('runtime:git-install-progress', progress)
+      },
+    }, process.arch === 'arm64' ? 'arm64' : 'x64').finally(() => {
+      macGitInstall = null
+    })
+    return macGitInstall
+  }
+
   function installGitRuntime(
     target: RendererMessageTarget,
     onProgress?: (progress: GitRuntimeInstallProgress) => void,
   ): Promise<GitRuntimeInstallResult> {
+    if (platform === 'darwin') return installMacGitRuntimeForService(target)
     return installationQueue.enqueue('runtime:git',
       () => withDownloadAcceleration(null, () => installGitRuntimeOperation(target, onProgress)))
+      .then((result) => {
+        if (result.installed && result.action === 'installed') void refreshGrokHooksForShellChange()
+        return result
+      })
+  }
+
+  /**
+   * Windows 版 Grok 找得到 Git Bash 就改用它跑钩子，原来按 PowerShell 写的那几行会每一轮报红。
+   * 所以星芒装好 Git 之后，把 Grok 配置里本软件那几条钩子按新的 shell 重写一遍（只动我们
+   * 写过的那几条，原来没有就不补，同「修好它」那条路）。失败只记日志，不影响装 Git。
+   */
+  async function refreshGrokHooksForShellChange(): Promise<void> {
+    try {
+      const cliHook = await resolveCliHookInvocation()
+      if (!cliHook) return
+      await serializeConfigWrite(async () => {
+        rewriteManagedCliHooks('grok', providerRoots, { cliHook })
+      })
+      runtimeLog?.log('info', 'config', 'grok-hooks.rewritten', '装好 Git 后按新的命令行重写了 Grok 的钩子', { shell: cliHook.grokWindowsShell ?? null })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'grok-hooks.rewrite-failed', '装好 Git 后重写 Grok 钩子没成功', { reason: credentialFailureReason(error) })
+    }
+  }
+
+  /**
+   * Windows 上只装 Grok 时没有运行环境，做完提醒和防睡的钩子写不出来（#695）。等这台电脑有了运行环境
+   * （星芒装的、客户自己装的都算），就把那几条补上：装好运行环境后、打开 Grok 前、每次启动各看一眼。
+   * 只补本软件替当前账号写的那份，其余设置一个字不动，写之前照旧备份。补不上只记日志，下次再看。
+   */
+  async function addMissingGrokHooks(trigger: 'runtime-installed' | 'before-launch' | 'startup'): Promise<boolean> {
+    if (platform !== 'win32') return false
+    try {
+      await refreshWindowsLivePath()
+      if (!managedCliHooksState('grok').missing) return false
+      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+      if (!owner || configOwnership.read('grok', inspectNativeProviderConfig('grok'), owner) !== 'account') return false
+      const cliHook = await resolveCliHookInvocation()
+      // 还是找不到运行环境：首页那句「缺什么」留着，不写文件。
+      if (!cliHook || grokCliHookCommand(cliHook) === null) return false
+      await serializeConfigWrite(async () => {
+        rewriteManagedCliHooks('grok', providerRoots, { cliHook, addIfMissing: true })
+      })
+      const added = !managedCliHooksState('grok').missing
+      runtimeLog?.log(added ? 'info' : 'warn', 'config', added ? 'grok-hooks.added' : 'grok-hooks.add-incomplete',
+        added ? '有了运行环境，给 Grok 补上了做完提醒和防睡' : '给 Grok 补做完提醒和防睡没补上', { trigger, shell: cliHook.grokWindowsShell ?? null })
+      return added
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'grok-hooks.add-failed', '给 Grok 补做完提醒和防睡没成功', { trigger, reason: credentialFailureReason(error) })
+      return false
+    }
   }
 
   function sendInstallProgress(
@@ -3278,11 +4330,13 @@ export function createSystemService(
   async function findNpmForCliInstall(
     provider: ProviderId,
     target: RendererMessageTarget,
+    nodeDirectories: readonly string[],
   ): Promise<string | null> {
     if (process.platform !== 'win32') {
       return findExecutableForService('npm', {
         env: commandEnvironment(),
         windowsPackageManagers: ['npm'],
+        ...(nodeDirectories.length ? { additionalPaths: nodeDirectories } : {}),
       })
     }
 
@@ -3341,7 +4395,7 @@ export function createSystemService(
     errorLike: unknown,
     detail: string,
     probeRoot: string | null,
-    updating: boolean,
+    action: OccupiedUpdateFailureInput['action'],
   ): Promise<string | null> {
     if (!fileLockErrorCode(errorLike)) return null
     const probe = probeRoot
@@ -3349,13 +4403,13 @@ export function createSystemService(
       : { status: 'unsupported' as const, processes: [] }
     const message = describeOccupiedUpdateFailure({
       toolName: cliCatalog[provider].name,
-      action: updating ? '更新' : '安装',
+      action,
       error: errorLike,
       probe,
       detail,
     })
     if (!message) return null
-    runtimeLog?.log('warn', 'install', 'cli.file-locked', `${cliCatalog[provider].name} 更新时文件被占用`, {
+    runtimeLog?.log('warn', 'install', 'cli.file-locked', `${cliCatalog[provider].name} ${action}时文件被占用`, {
       provider,
       probeStatus: probe.status,
       processes: probe.processes.length,
@@ -3380,10 +4434,16 @@ export function createSystemService(
     // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
     // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
     await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
-    await withDownloadAcceleration(
-      (message) => sendInstallProgress(target, provider, 'output', message),
-      () => runCliInstall(provider, target, requestedVersion, cancellation),
-    )
+    try {
+      await withDownloadAcceleration(
+        (message) => sendInstallProgress(target, provider, 'output', message),
+        () => runCliInstall(provider, target, requestedVersion, cancellation),
+      )
+    } finally {
+      // 命令行可能换了版本（更新、退回，装到一半回滚没回干净的也算）：读不进型号名单的话
+      // Codex 起不来。趁还没出队就收回，排在后面的那次打开才不会先撞上。
+      if (provider === 'codex') await takeBackUnreadableCodexModelCatalog('cli-installed')
+    }
   }
 
   /**
@@ -3394,14 +4454,41 @@ export function createSystemService(
     if (provider === 'grok') return
     let installSource: CliInstallDisplaySource | undefined
     try {
-      const npmTool = await inspectTool('npm')
-      const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-      installSource = (await inspectCliTool(provider, npmTool.path, npmGlobalRoot)).status.installSource
+      // 同 inspectCliUpdate：这里只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
+      const npmPath = await findInstalledExecutable('npm')
+      const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
+      installSource = (await inspectCliTool(provider, npmPath, npmGlobalRoot)).status.installSource
     } catch {
       return
     }
     const refusal = externalCliInstallRefusal(provider, installSource)
     if (refusal) throw new Error(refusal)
+  }
+
+  async function readInstalledCliVersion(provider: ProviderId): Promise<string | null> {
+    try {
+      return (await inspectCliTool(provider, null, null)).status.version ?? null
+    } catch {
+      return null
+    }
+  }
+
+  async function recordCliUpdate(
+    provider: ProviderId,
+    from: string | null,
+    to: string | null,
+    requested: boolean,
+  ): Promise<void> {
+    const updateRecord = buildCliUpdateRecord(from, to, requested, Date.now())
+    if (!updateRecord) return
+    // 记录只决定首页能不能「退回更新前的版本」,写不进去不该让一次已经
+    // 成功的更新报失败。
+    await cliUpdateHistory.record(provider, updateRecord).catch((error: unknown) => {
+      runtimeLog?.log('warn', 'install', 'cli.update-history.write-failed', `${cliCatalog[provider].name} 更新记录没有写入`, {
+        provider,
+        detail: error instanceof Error ? redactHomeDirectory(error.message, providerRoots.userHome) : '未知错误',
+      })
+    })
   }
 
   async function runCliInstall(
@@ -3425,7 +4512,18 @@ export function createSystemService(
     let updatingExistingInstall = false
     let versionBeforeUpdate: string | null = null
     try {
+      // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
+      // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
+      // latest,行为与从前一致。Grok 在 Windows、macOS 上以 xAI stable 为上限;Linux 上
+      // 和另外三家一样只认 npm（cliLatestVersionSource）。
+      const versionChoice = resolveCliInstallVersion(provider, {
+        requested: requestedVersion,
+        alwaysLatest: store.read().alwaysInstallLatestCli === true,
+      })
       if (provider === 'grok') {
+        // Grok 不走下面按 npm 目录读 package.json 的那一套,更新前的版本只能问它自己。
+        // 读不出来就不记这一笔,「退回」只是不出现,不影响这次更新。
+        versionBeforeUpdate = await readInstalledCliVersion(provider)
         if (grokInstallStrategy === 'external') {
           throw new Error('当前平台不支持 Grok CLI 一键安装')
         }
@@ -3459,6 +4557,7 @@ export function createSystemService(
           try {
             downloadedGrokBinary = await downloadLatestGrokBinary({
               fetchImpl: downloadFetch,
+              ...(versionChoice.source === 'latest' ? {} : { version: versionChoice.version }),
               ...(cancellation ? { signal: cancellation.signal } : {}),
               createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
               onProgress: ({ percent, transferred, total }) => {
@@ -3506,6 +4605,7 @@ export function createSystemService(
           ) {
             throw new Error('Grok CLI 安装后验证失败：未识别到托管可执行文件或版本不一致')
           }
+          await recordCliUpdate(provider, versionBeforeUpdate, installed.version, versionChoice.source === 'requested')
           sendInstallProgress(
             target,
             provider,
@@ -3516,13 +4616,18 @@ export function createSystemService(
         }
       }
 
-      const npmExecutable = await findNpmForCliInstall(provider, target)
+      // Mac 上客户自己那份 Node.js 太旧时用代下的那份装：npm 用它自带的，跑 npm 的环境也把它
+      // 排最前，npm 和工具的安装脚本都靠 `#!/usr/bin/env node` 找 node（第三十四批 A）。
+      const nodeDirectories = await preferredNodeDirectories()
+      const npmExecutable = await findNpmForCliInstall(provider, target, nodeDirectories)
       let installPrefix: string | null = null
       if (process.platform === 'win32' && windowsExecutionMode === 'trusted-only') {
         managedNpmLayout = await ensureManagedNpmLayout()
-      } else if (platform === 'darwin' && provider !== 'grok') {
+      } else if (platform !== 'win32' && provider !== 'grok') {
+        // Linux 与 macOS 一样装进当前用户自己的托管目录（Linux 版拆分 ②）：发行版 npm 的
+        // 默认全局目录是 /usr，普通权限写不进去；装进 Node.js 自己的目录又会在换 Node 时一起丢掉。
         managedNpmLayout = await ensureManagedNpmLayout({
-          platform: 'darwin',
+          platform,
           env: commandEnvironment(),
         })
       }
@@ -3559,7 +4664,7 @@ export function createSystemService(
             definition.packageName,
           )
         } else {
-          const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
+          const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmExecutable)
           occupancyProbeRoot = npmGlobalRoot
             ? cliPackageDirectoryFromNpmRoot(npmGlobalRoot, definition.packageName)
             : null
@@ -3587,13 +4692,6 @@ export function createSystemService(
           if (warning) sendInstallProgress(target, provider, 'output', warning)
         }
       }
-      // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
-      // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
-      // latest,行为与从前一致。
-      const versionChoice = resolveCliInstallVersion(provider, {
-        requested: requestedVersion,
-        alwaysLatest: store.read().alwaysInstallLatestCli === true,
-      })
       sendInstallProgress(
         target,
         provider,
@@ -3606,8 +4704,10 @@ export function createSystemService(
       )
       const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy, {
         version: versionChoice.version,
-        fetchGrokStableVersion,
-        fetchNpmRelease: fetchNpmPackageReleaseMetadata,
+        fetchGrokStableVersion: () => fetchGrokStableVersion({ fetchImpl: registryMetadataFetch }),
+        fetchNpmRelease: (registry, packageName, version) => (
+          fetchNpmPackageReleaseMetadata(registry, packageName, version, registryMetadataFetch)
+        ),
       })
       if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
       const networkRegion = await inspectNetworkRegion()
@@ -3651,16 +4751,36 @@ export function createSystemService(
         }
         return npmProxyVariables
       }
+      // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
+      // 装不上。同一次安装只判断一次，日志也只写一条。Linux 上照着网上教程把
+      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）；
+      // macOS 维持原样。
+      let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
+      const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
+        if (!npmBaseEnvironment) {
+          // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
+          // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
+          const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment(process.env, nodeDirectories))
+          npmBaseEnvironment = platform !== 'darwin' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+        }
+        return npmBaseEnvironment
+      }
       const executeNpm = async (
         argv: string[],
         cwd: string,
         cache: string,
         timeoutMs = npmDownloadTimeoutMs,
+        signal?: AbortSignal,
       ) => {
         // 提权执行会对 argv 里的每个绝对路径做 realpath，路径不存在即判定为
         // 「位于用户可写目录」而拒绝。npm 自己会建缓存目录，但那发生在校验之后。
         await fs.promises.mkdir(cache, { recursive: true })
         const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
+        // 调用处自己的信号（下载卡住）和客户的取消，哪个先到都结束这次 npm；
+        // 是哪一个由调用处分辨，取消照旧报「安装已取消」。
+        const abortSignal = cancellation && signal
+          ? AbortSignal.any([cancellation.signal, signal])
+          : cancellation?.signal ?? signal
         return executeCommand({
           executable: npmExecutable,
           argv: [
@@ -3673,14 +4793,14 @@ export function createSystemService(
           windowsPackageManager: 'npm',
         }, {
           env: {
-            ...(trustedOnly ? trustedCommandEnvironment() : commandEnvironment()),
+            ...await resolveNpmBaseEnvironment(trustedOnly),
             ...await resolveNpmProxyVariables(),
           },
           trustedOnly,
           trustedPaths: managedNpmLayout
             ? [npmUserConfig, transaction]
             : undefined,
-          ...(cancellation ? { signal: cancellation.signal } : {}),
+          ...(abortSignal ? { signal: abortSignal } : {}),
           cwd,
           timeoutMs,
           maxOutputBytes: 8 * 1024 * 1024,
@@ -3689,6 +4809,18 @@ export function createSystemService(
             if (message) sendInstallProgress(target, provider, 'output', message, undefined, { stage: 'raw-output' })
           },
         })
+      }
+      const assertCliNativePackageInstalled = async (packageRoot: string) => {
+        const missing = await findMissingCliNativePackage(packageRoot, definition.packageName, platform)
+        if (!missing) return
+        runtimeLog?.log(
+          'warn',
+          'install',
+          'cli.install.native-package-missing',
+          `${definition.name} 的平台主程序包 ${missing} 没有装上（npm 跳过了下载失败的可选依赖）`,
+          { provider },
+        )
+        throw new Error(cliNativePackageMissingMessage(definition.name))
       }
       const createResolutionManifest = async (directory: string) => {
         await fs.promises.mkdir(directory, { recursive: true })
@@ -3751,7 +4883,7 @@ export function createSystemService(
       } catch (error) {
         if (isInstallCancelledError(error)) throw error
         cancellation?.throwIfCancelled()
-        throw new Error(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`)
+        throw new Error(await withToolCertificateHint(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`))
       }
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
@@ -3775,8 +4907,8 @@ export function createSystemService(
             { stage: 'switch-route' },
           )
         }
+        const attemptRoot = path.join(transaction, `attempt-${index}`)
         try {
-          const attemptRoot = path.join(transaction, `attempt-${index}`)
           const resolution = path.join(attemptRoot, 'resolution')
           const cache = path.join(attemptRoot, 'cache')
           const attemptPrefix = managedNpmLayout
@@ -3803,13 +4935,60 @@ export function createSystemService(
             undefined,
             { stage: 'verify' },
           )
-          await executeNpm([
-            'ci',
-            '--ignore-scripts',
-            '--omit=dev',
-            `--registry=${registry}`,
-            '--replace-registry-host=always',
-          ], resolution, cache)
+          // 下载这一步看的是还在不在下，不是总共下了多久：网慢的客户以前满 5 分钟就被掐、换源
+          // 从零再下，怎么点都装不上。这一轮的临时目录 3 分钟一点没变才算卡住、换下一个源，
+          // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
+          const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
+          const downloadStartedAt = performance.now()
+          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「还在下载，已经等了……」，
+          // 这句原话进安装日志；运行日志不记这种每隔几秒一条的（第三十七批 D）。
+          const downloadTicker = setInterval(() => {
+            const elapsedMs = Math.round(performance.now() - downloadStartedAt)
+            sendInstallProgress(
+              target,
+              provider,
+              'output',
+              npmDownloadHeartbeatMessage(registry, elapsedMs),
+              undefined,
+              { stage: 'download', elapsedMs },
+            )
+          }, npmDownloadHeartbeatMs)
+          try {
+            await executeNpm([
+              'ci',
+              '--ignore-scripts',
+              '--omit=dev',
+              `--registry=${registry}`,
+              '--replace-registry-host=always',
+            ], resolution, cache, npmDownloadCeilingMs, stallWatch.signal)
+          } catch (error) {
+            if (!stallWatch.stalled) throw error
+            runtimeLog?.log(
+              'warn',
+              'install',
+              'cli.install.download-stalled',
+              `${definition.name} 从${npmRegistryLabel(registry)}下载 ${formatElapsedDuration(npmDownloadStallTimeoutMs)}没有进展，已中止`,
+              {
+                provider,
+                registry,
+                elapsedMs: Math.round(performance.now() - downloadStartedAt),
+                attemptBytes: stallWatch.bytes,
+              },
+            )
+            throw new Error(npmDownloadTimedOutMessage, { cause: error })
+          } finally {
+            clearInterval(downloadTicker)
+            stallWatch.stop()
+          }
+          // npm ci 跳过下载失败的平台主程序包也照样退出 0，所以下完就在它解出来的包里查。普通权限
+          // 那条路没有暂存目录，后面 npm 直接写进正在用的工具目录，写完再查就晚了，旧版已经被盖掉；
+          // 在这里查出缺了，记成这个源失败、换下一个源，旧版还没动（第二十八批 A）。Grok 的两条
+          // npm 通道在自己的安装事务里核对。
+          if (provider !== 'grok') {
+            await assertCliNativePackageInstalled(
+              path.join(resolution, 'node_modules', ...definition.packageName.split('/')),
+            )
+          }
           if (managedNpmLayout && attemptPrefix) {
             await fs.promises.cp(managedNpmLayout.prefix, attemptPrefix, {
               recursive: true,
@@ -3847,8 +5026,44 @@ export function createSystemService(
                 return inspected
               },
             })
+          } else if (provider === 'grok' && grokInstallStrategy === 'linux-official-npm') {
+            // 核对用的主程序包就在这次 npm ci 的 resolution 目录里，事务结束前它都还在。
+            verification = await runLinuxGrokPostInstallTransaction({
+              homeDirectory: os.homedir(),
+              lifecycle,
+              verify: () => inspectVerifiedLinuxGrokPostInstall({
+                homeDirectory: os.homedir(),
+                expectedVersion: trustedRelease.version,
+                resolutionDirectory: resolution,
+                architecture: process.arch,
+                runCommand: buildDarwinTrustedVerificationRunner(executeCommand),
+              }),
+            })
           } else {
-            await lifecycle()
+            // 普通权限这条路没有暂存目录：npm 在正在用的目录里先挪开旧版、再解新包、跑安装脚本，取消是
+            // 强行结束整棵进程树，它来不及挪回去，新旧两份都用不了。所以从这里起和暂存那条路换进去
+            // 以后一样不让取消，前面下载、对账照样能取消（第二十八批 B）。
+            const writesInPlace = !attemptPrefix
+            if (writesInPlace) {
+              cancellation?.throwIfCancelled()
+              cancellation?.seal(managedPrefixSwapSealReason)
+            }
+            try {
+              await lifecycle()
+              // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
+              // 而不是带着装不全的程序走到替换托管目录那一步。
+              const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
+              if (stagedPrefix) {
+                await assertCliNativePackageInstalled(
+                  managedCliPackageDirectory(stagedPrefix, definition.packageName, platform),
+                )
+              }
+            } catch (error) {
+              // 这个源没装成，换下一个源要重新下载，下载那段照样能取消。装成了就一直不让取消到结束：
+              // 新版已经写进去了，这时再取消，界面会以为没装上。
+              if (writesInPlace) cancellation?.unseal()
+              throw error
+            }
           }
           installPrefix = attemptPrefix
           installed = true
@@ -3860,21 +5075,24 @@ export function createSystemService(
           installErrors.push(
             `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
           )
+          // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
+          // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
+          await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
         }
       }
       if (!installed) {
         const detail = installErrors.join('；') || '所有 npm 源均不可用'
         // npm 替换正在运行的工具时报的是 EBUSY / EPERM,两者的原文都读不出「谁
         // 占着这个文件」。这里重新数一遍进程,数到了才改写成「文件被占用」。
-        const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall)
-        throw new Error(occupied ?? `${definition.name} 安装失败：${detail}`)
+        const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall ? '更新' : '安装')
+        throw new Error(occupied ?? await withToolCertificateHint(`${definition.name} 安装失败：${detail}`))
       }
       sendInstallProgress(target, provider, 'output', `${definition.name} 已安装，正在检查安装结果`, undefined, { stage: 'final-check' })
       invalidateCliUpdateCache(provider)
       const stagedManifest = installPrefix
         ? path.join(
             installPrefix,
-            ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+            ...(platform !== 'win32' ? ['lib', 'node_modules'] : ['node_modules']),
             ...definition.packageName.split('/'),
             'package.json',
           )
@@ -3889,10 +5107,14 @@ export function createSystemService(
         }
       }
 
+      // 两条 npm 官方通道都在 postinstall 事务里核对过了（macOS 靠 codesign，Linux 靠逐字节对账）。
+      const grokPostInstallVerified = provider === 'grok'
+        && (grokInstallStrategy === 'darwin-official-npm' || grokInstallStrategy === 'linux-official-npm')
       if (managedNpmLayout && managedNpmTransaction && installPrefix) {
         cancellation?.seal(managedPrefixSwapSealReason)
+        let promotion: ManagedNpmReplaceResult | null = null
         try {
-          await replaceManagedNpmPrefixAtomically(
+          promotion = await replaceManagedNpmPrefixAtomically(
             managedNpmLayout.prefix,
             installPrefix,
             managedNpmTransaction,
@@ -3903,7 +5125,7 @@ export function createSystemService(
                 npmExecutable,
                 path.join(
                   managedNpmLayout!.prefix,
-                  ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+                  ...(platform !== 'win32' ? ['lib', 'node_modules'] : ['node_modules']),
                 ),
               )
               if (
@@ -3927,17 +5149,28 @@ export function createSystemService(
             error,
             redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300),
             occupancyProbeRoot,
-            updatingExistingInstall,
+            updatingExistingInstall ? '更新' : '安装',
           )
           if (!occupied) throw error
           throw new Error(occupied, { cause: error })
         }
-      } else if (provider !== 'grok' || grokInstallStrategy !== 'darwin-official-npm') {
-        const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
+        if (!promotion.backupRetired) {
+          runtimeLog?.log(
+            'warn',
+            'install',
+            'cli.install.backup-retire-failed',
+            `${definition.name} 新版已检查通过，但旧版那份没能标成已换下；临时文件夹删完之前退出的话，下次装工具时会被退回旧版`,
+            { provider },
+          )
+        }
+      } else if (!grokPostInstallVerified) {
+        const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmExecutable)
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)
+        if (verification.installation?.source === 'npm' && verification.installation.packageRoot) {
+          await assertCliNativePackageInstalled(verification.installation.packageRoot)
+        }
       }
-      const darwinGrokVerified = provider === 'grok' && grokInstallStrategy === 'darwin-official-npm'
-      if (!darwinGrokVerified && (
+      if (!grokPostInstallVerified && (
         !verification?.installation
         || verification.status.version !== trustedRelease.version
         || (managedNpmLayout && !isManagedNpmInstallation(verification.installation))
@@ -3946,22 +5179,7 @@ export function createSystemService(
       }
       // npm 每次安装都会把 .ps1 启动文件重新写回来，所以装完、更新完都要再清一遍。
       if (verification?.installation) await cliTerminalAccess.prepare({ provider, installation: verification.installation }, 'install')
-      const updateRecord = buildCliUpdateRecord(
-        versionBeforeUpdate,
-        verification?.status.version ?? null,
-        versionChoice.source === 'requested',
-        Date.now(),
-      )
-      if (updateRecord) {
-        // 记录只决定首页能不能「退回更新前的版本」,写不进去不该让一次已经
-        // 成功的更新报失败。
-        await cliUpdateHistory.record(provider, updateRecord).catch((error: unknown) => {
-          runtimeLog?.log('warn', 'install', 'cli.update-history.write-failed', `${definition.name} 更新记录没有写入`, {
-            provider,
-            detail: error instanceof Error ? redactHomeDirectory(error.message, providerRoots.userHome) : '未知错误',
-          })
-        })
-      }
+      await recordCliUpdate(provider, versionBeforeUpdate, verification?.status.version ?? null, versionChoice.source === 'requested')
       sendInstallProgress(
         target,
         provider,
@@ -3985,7 +5203,22 @@ export function createSystemService(
     } finally {
       if (downloadedGrokBinary) await cleanupDownloadedGrokBinary(downloadedGrokBinary)
       if (managedNpmTransaction && !preserveManagedNpmTransaction) {
-        await fs.promises.rm(managedNpmTransaction, { recursive: true, force: true }).catch(() => undefined)
+        // 几百 MB 的目录删起来要一会儿，安全软件、索引服务常在中途攥住刚解出来的文件：让 rm 自己
+        // 等一等再删（同 install-leftovers.ts）。还删不掉的过 6 小时由那边清；新版检查通过的话，
+        // 里面的旧版这时已经改名成 superseded-prefix，下次装工具时不会再被退回去。
+        await fs.promises.rm(managedNpmTransaction, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 })
+          .catch((error: unknown) => {
+            runtimeLog?.log(
+              'warn',
+              'install',
+              'cli.install.transaction-cleanup-failed',
+              `${definition.name} 安装用的临时文件夹没删掉，之后会自动清理`,
+              {
+                provider,
+                error: redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome),
+              },
+            )
+          })
       }
       installing.delete(provider)
     }
@@ -3997,57 +5230,106 @@ export function createSystemService(
     const key = `cli:install:${provider}`
     // 重复点击复用队列里的同一个 Promise,所以这里也不能再开一个取消句柄:
     // 后点的那次会把前一次的句柄挤掉,取消按钮就再也找不到正在跑的安装。
+    // Windows 上 Claude Code 接着装 Git 的那一段句柄也还登记着(见 finishClaudeInstallWithGit),
+    // 这时再装一次 Claude Code 会走到这里,另排一次取消不了的安装;界面上同一个工具
+    // 一次只放一个安装(useToolbox 的 run 按工具加锁),碰不到。
     if (installCancellations.has(key)) {
       return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
     }
     // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
     // 否则用户只能干等前一个工具装完。
     const cancellation = installCancellations.begin(key)
+    let started = false
     const finished = installationQueue.enqueue(
       key,
-      () => installCliOperation(provider, target, version, cancellation),
-    ).finally(() => cancellation.release())
+      () => {
+        started = true
+        return installCliOperation(provider, target, version, cancellation)
+      },
+      { signal: cancellation.signal },
+    ).catch((error: unknown) => {
+      if (started) throw error
+      // 排着队时取消的那次直接出队，installCliOperation 没跑过：取消的那句和进度在这里补上，
+      // 和跑起来以后取消一样。
+      const cancelled = new InstallCancelledError(`${cliCatalog[provider].name} 安装已取消`)
+      sendInstallProgress(target, provider, 'error', cancelled.message)
+      throw cancelled
+    })
+    // 装好一次顺手清掉以前中途被打断的残留：这次自己的临时目录已经在 finally 里删了，
+    // 剩下的只会是更早的。排在队列末尾，不拖慢这次安装的完成提示。
+    void finished.then(() => cleanupInstallLeftovers(), () => undefined)
     // Windows 上 Claude Code 靠 Git 自带的 bash 跑技能和插件里的命令。Claude Code 自己
     // 那一项出队之后才排 Git：队列是全局串行的，在队列任务里再入队会互相等死。
-    if (provider !== 'claude' || platform !== 'win32') return finished
-    return finished.then(() => installGitAlongsideClaude(
+    if (provider !== 'claude' || platform !== 'win32') return finished.finally(() => cancellation.release())
+    return finishClaudeInstallWithGit(finished, cancellation, () => installGitAlongsideClaude(
       () => installGitRuntime(target, (progress) => sendInstallProgress(
         target, provider, 'output', progress.message, progress.percent ?? undefined)),
       (message) => sendInstallProgress(target, provider, 'output', message),
     ))
   }
 
+  function resolveInstallLeftoverLocations(): InstallLeftoverLocation[] {
+    let trustedCacheRoot: string | null = null
+    try {
+      trustedCacheRoot = trustedInstallerCacheRoot(process.env, platform)
+    } catch {
+      // ProgramData 解析不出来时安装本身也用不了那里，没有残留可清。
+    }
+    let managedNpmCache: string | null = null
+    try {
+      // 和装工具时准备托管目录（ensureManagedNpmLayout）用同一份环境，指的才是同一处。
+      managedNpmCache = managedNpmCacheRoot(commandEnvironment(), platform)
+    } catch {
+      // 同上：解析不出来时托管安装也用不了，那里不会有更新留下的临时文件夹。
+    }
+    // 安装缓存和托管 npm 缓存都在 ProgramData\XingMangAI 底下。按管理员身份在那里删东西，要这次运行
+    // 亲手加固、核过 ACL 的目录才算只有管理员能写（装、卸工具准备托管目录，或建安装用的临时目录时，
+    // 会把整个 XingMangAI 加固一遍）。没核过的那一处可能是普通进程抢先建好、等着在删的时候换成联接的
+    // （同 I8），这一轮先不扫，核过以后的那一轮再清：开机后那一轮一般还没核过，装完工具那一轮会清。
+    if (platform === 'win32' && trustedCacheRoot && !isRegisteredTrustedManagedWindowsPath(trustedCacheRoot)) {
+      trustedCacheRoot = null
+    }
+    if (platform === 'win32' && managedNpmCache && !isRegisteredTrustedManagedWindowsPath(managedNpmCache)) {
+      managedNpmCache = null
+    }
+    return buildInstallLeftoverLocations({
+      platform,
+      windowsExecutionMode,
+      temporaryDirectory: os.tmpdir(),
+      trustedCacheRoot,
+      managedNpmCacheRoot: managedNpmCache,
+    })
+  }
+
+  function cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult> {
+    const sweep = serviceOptions.sweepInstallLeftovers
+    const empty: InstallLeftoverSweepResult = { removed: 0, freedBytes: 0, failed: 0 }
+    if (!sweep) return Promise.resolve(empty)
+    // 走安装队列（I11）：清理和安装、卸载互相等，谁也看不到对方做了一半的目录。
+    return installationQueue.enqueue('maintenance:install-leftovers', async () => {
+      const result = await sweep(resolveInstallLeftoverLocations())
+      if (result.removed || result.failed) {
+        runtimeLog?.log('info', 'install', 'install-leftovers.swept', `清掉以前没装完留下的下载 ${result.removed} 份，约 ${Math.round(result.freedBytes / 1024 / 1024)} MB`, {
+          removed: result.removed,
+          freedBytes: result.freedBytes,
+          failed: result.failed,
+        })
+      }
+      return result
+    }).catch((error: unknown) => {
+      runtimeLog?.log('warn', 'install', 'install-leftovers.failed', '清理以前没装完留下的下载时出错，下次再试', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return empty
+    })
+  }
+
   function cancelCliInstall(provider: ProviderId): InstallCancellationOutcome {
     return installCancellations.cancel(`cli:install:${provider}`)
   }
 
-  async function removeDirectoryFromUserPath(directory: string): Promise<void> {
-    if (process.platform !== 'win32') return
-    const script = [
-      '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-      '$target = [IO.Path]::GetFullPath($env:XINGMANG_REMOVE_PATH).TrimEnd("\\")',
-      '$current = [Environment]::GetEnvironmentVariable("Path", "User")',
-      '$next = @(($current -split ";") | Where-Object {',
-      '  if (-not $_) { return $false }',
-      '  try { [IO.Path]::GetFullPath($_).TrimEnd("\\") -ine $target } catch { $true }',
-      '}) -join ";"',
-      '[Environment]::SetEnvironmentVariable("Path", $next, "User")',
-    ].join('\n')
-    await execFileAsync(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      script,
-    ], {
-      env: { ...trustedCommandEnvironment(), XINGMANG_REMOVE_PATH: directory },
-      windowsHide: true,
-      timeout: 8_000,
-      maxBuffer: 1024 * 1024,
-    })
-  }
-
-  async function uninstallNativeGrok(installation: CliInstallation): Promise<void> {
+  /** 返回命令入口已经删掉、但没能删掉的程序文件（只有 Linux 会有）。 */
+  async function uninstallNativeGrok(installation: CliInstallation): Promise<string[]> {
     const cliEnvironment = commandEnvironment()
     const homeDirectory = cliEnvironment.HOME?.trim() || os.homedir()
     const userDirectory = path.resolve(homeDirectory, '.grok', 'bin')
@@ -4057,7 +5339,15 @@ export function createSystemService(
         installDirectory: installation.installDirectory,
         runCommand: buildDarwinTrustedVerificationRunner(executeCommand),
       })
-      return
+      return []
+    }
+    if (platform === 'linux') {
+      // npm postinstall 留下的是指向 grok-<版本> 的链接，按普通文件卸会被拒（Linux 版拆分 ③）。
+      const result = await uninstallVerifiedLinuxGrokInstallation({
+        homeDirectory,
+        installDirectory: installation.installDirectory,
+      })
+      return result.retainedFiles
     }
     const managedDirectory = process.platform === 'win32'
       ? path.resolve(managedNativeProviderRoot('grok'))
@@ -4074,7 +5364,10 @@ export function createSystemService(
       label: 'Grok CLI',
       platform: process.platform,
     })
-    if (!managed) await removeDirectoryFromUserPath(result.directory)
+    // 官方安装脚本把 ~/.grok/bin 加进了当前用户的 PATH，卸完顺手拿掉。程序文件这时已经删完，所以不等它、
+    // 也不算进卸载结果：以前等着它、只给 8 秒，慢机器上 PowerShell 冷启动一超时就把卸完的说成失败（已知48）。
+    if (!managed) cliTerminalAccess.forgetUserPath('grok', result.directory)
+    return []
   }
 
   // Q14：官方脚本装的 ~/.local/bin/claude 在 macOS/Linux 上是指向
@@ -4090,7 +5383,7 @@ export function createSystemService(
   }
 
   function isManagedNpmInstallation(installation: Pick<CliInstallation, 'npmPrefix'>): boolean {
-    if ((platform !== 'win32' && platform !== 'darwin') || !installation.npmPrefix) return false
+    if (!installation.npmPrefix) return false
     const expected = managedNpmPrefix(commandEnvironment(), platform)
     return sameLocalPathIdentity(expected, installation.npmPrefix)
   }
@@ -4104,6 +5397,9 @@ export function createSystemService(
     executionMode: windowsExecutionMode,
     isManaged: isManagedNpmInstallation,
     ensureUserPath: serviceOptions.ensureWindowsUserPath,
+    removeUserPath: serviceOptions.removeWindowsUserPath,
+    ensureShellProfile: serviceOptions.ensureMacosShellProfile,
+    syncTerminalCommands: serviceOptions.syncLinuxTerminalCommands,
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
     describeError: (error) => redactHomeDirectory(
       redactCommandText(error instanceof Error ? error.message : String(error)),
@@ -4111,19 +5407,102 @@ export function createSystemService(
     ),
   })
 
-  async function uninstallCliOperation(provider: ProviderId): Promise<ToolUninstallResult> {
+  // 「帮我清理」只删卸载那一刻记下的文件（已知48）：界面只说是哪个工具，路径永远由这里给，
+  // 不收界面传来的。下一次卸这个工具时清掉，清干净了也清掉。
+  const uninstallLeftovers = new Map<ProviderId, UninstallLeftover[]>()
+
+  function uninstallLeftoverOptions(): UninstallLeftoverOptions {
+    return {
+      platform: process.platform,
+      ownerUid: process.platform === 'win32' ? undefined : process.getuid?.(),
+      // Mac 上卸载本来不按路径删改名后的链接，「帮我清理」要删（yoyo 2026-10-06「Mac 也帮我清理」）：
+      // 只在别的账户改不了的目录里删，核对和删除之间就只剩客户自己能动它。
+      isForeignWritableDirectory: process.platform === 'darwin'
+        ? (directory) => isDarwinForeignWritablePath(directory)
+        : undefined,
+    }
+  }
+
+  /** 记下这次卸载留下的文件；一个都核对不了就不记，界面也就不给「帮我清理」。 */
+  function rememberUninstallLeftovers(provider: ProviderId, filePaths: readonly string[]): boolean {
+    const leftovers = captureUninstallLeftovers(filePaths, uninstallLeftoverOptions())
+    if (!leftovers.some((leftover) => leftover.kind === 'pinned')) {
+      uninstallLeftovers.delete(provider)
+      return false
+    }
+    uninstallLeftovers.set(provider, leftovers)
+    return true
+  }
+
+  /**
+   * 这个工具重新装上后会运行的那个文件。Grok 的 npm 安装脚本见到同版本的 grok-<版本> 已经在
+   * ~/.grok/bin 里就直接沿用、只把链接指回去，卸载时记下的程序文件就又成了正在用的那一份。
+   */
+  function liveCommandLinks(provider: ProviderId): string[] {
+    // 卸载 Grok 时按 HOME 找、Linux 上还先解开主目录的链接（同 npm 安装脚本），这里几种写法都看。
+    const homes = new Set<string>()
+    for (const home of [commandEnvironment().HOME?.trim() || os.homedir(), os.homedir()]) {
+      homes.add(home)
+      try {
+        homes.add(fs.realpathSync(home))
+      } catch {
+        // 主目录读不了就只按原样找。
+      }
+    }
+    return [...homes].flatMap((home) => {
+      if (provider === 'claude') return [buildClaudeNativeLayout(home, process.platform).commandPath]
+      if (provider === 'grok') return ['grok', 'agent'].map((name) => path.join(home, '.grok', 'bin', name))
+      return []
+    })
+  }
+
+  function cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult> {
+    // 和卸载、安装排同一个队：删的是工具目录里的文件，不能和正在装的那一份同时动。
+    return installationQueue.enqueue(`cli:clean-leftovers:${provider}`, async () => {
+      const leftovers = uninstallLeftovers.get(provider)
+      // 界面只在卸载记下了文件时给「帮我清理」，清干净以后框就关了；走到这里只会是连点。
+      if (!leftovers) return { remaining: 0 }
+      const cleanup = await removeUninstallLeftovers(leftovers, {
+        ...uninstallLeftoverOptions(),
+        liveCommandLinks: liveCommandLinks(provider),
+      })
+      if (cleanup.kept.length > 0) uninstallLeftovers.set(provider, cleanup.kept.map((entry) => entry.leftover))
+      else uninstallLeftovers.delete(provider)
+      if (cleanup.kept.length > 0 || cleanup.reused > 0) {
+        runtimeLog?.log(cleanup.kept.length > 0 ? 'warn' : 'info', 'install', 'cli.uninstall-leftovers.cleaned',
+          `${cliCatalog[provider].name} 卸载残留删掉 ${cleanup.removed} 个，还剩 ${cleanup.kept.length} 个`, {
+            provider,
+            removed: cleanup.removed,
+            reused: cleanup.reused,
+            kept: cleanup.kept.map((entry) => ({
+              file: redactHomeDirectory(entry.leftover.path, providerRoots.userHome),
+              reason: entry.reason,
+              ...(entry.code ? { code: entry.code } : {}),
+            })),
+          })
+      }
+      return { remaining: cleanup.kept.length }
+    })
+  }
+
+  async function uninstallCliOperation(provider: ProviderId, options: CliUninstallOptions = {}): Promise<ToolUninstallResult> {
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装、更新或卸载中`)
     installing.add(provider)
+    uninstallLeftovers.delete(provider)
     try {
-      const npmTool = await inspectTool('npm')
-      const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-      const initial = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+      // 同 inspectCliUpdate：卸载只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
+      const npmPath = await findInstalledExecutable('npm')
+      const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
+      const initial = await inspectCliTool(provider, npmPath, npmGlobalRoot)
       if (!initial.status.installed || !initial.installation) {
         return { outcome: 'not-installed', previousVersion: null }
       }
+      // 和装的时候问同一句、用同一个门槛（installCliOperation），只是提前到动手卸之前。
+      if (options.reinstall) await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
       let current = initial
       const removedInstallations: string[] = []
       const retainedClaudeVersionFiles: string[] = []
+      const retainedGrokFiles: string[] = []
       for (let attempt = 0; attempt < 8 && current.installation; attempt += 1) {
         const installation = current.installation
         const uninstall = current.status.uninstall
@@ -4137,9 +5516,16 @@ export function createSystemService(
         if (uninstall.delegated) {
           // 包自带的卸载脚本位于用户可写目录，绝不能拿主进程的管理员令牌去跑。
           if (!uninstall.manualCommand) throw new Error('缺少可执行的卸载命令')
+          const name = cliCatalog[provider].name
           await launchUnelevatedCommandWindow({
             commandLine: uninstall.manualCommand,
-            title: `Uninstall ${cliCatalog[provider].packageName}`,
+            // 窗口里的字说中文（已知33）；中间卸载程序自己吐的几行还是英文。
+            text: {
+              title: `星芒：卸载 ${name}`,
+              running: `正在卸载 ${name}，请稍等，别关这个窗口。`,
+              succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
+              failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+            },
             machinePaths: resolveWindowsMachinePaths(),
           })
           return { outcome: 'delegated', previousVersion: initial.status.version }
@@ -4158,7 +5544,7 @@ export function createSystemService(
               trustedOnly: true,
             })
           : await findNpmExecutable(commandEnvironment(), [installation.commandPath])
-            ?? npmTool.path
+            ?? npmPath
         const plan = buildCliUninstallPlan(provider, installation, npmExecutable)
         if (plan.kind === 'npm-uninstall') {
           const layout = managedInstallation ? await ensureManagedNpmLayout() : null
@@ -4184,6 +5570,24 @@ export function createSystemService(
               timeoutMs: 2 * 60_000,
               maxOutputBytes: 4 * 1024 * 1024,
             })
+          } catch (error) {
+            // 工具开着时 Windows 锁着它自己的文件，npm 挪不开包目录，报 EPERM / EBUSY 后原样退回。
+            // 原话只剩「命令执行失败（退出码 1）：node.exe」，客户看不出是工具开着（第三十三批 C），
+            // 所以和安装、更新一样接上 npm 的要点，再数一遍这个工具的进程。cause 用 Object.assign
+            // 挂成可枚举的：运行日志只记错误的可枚举字段（runtime-log.ts 的 sanitizeValue），
+            // npm 的原始输出要跟着进日志给客服看。
+            // Mac 不数：那边挪得动、删得掉正开着的程序文件，EPERM / EACCES 只会是权限不够（比如
+            // 用 sudo 装进 /usr/local 的那份），这时数到进程就会叫客户去关窗口，关了照样卸不掉。
+            // Linux 的进程检测本来就回 unsupported。
+            const detail = describeNpmUninstallFailure(error)
+            const occupied = await describeOccupiedCliFailure(
+              provider,
+              detail,
+              detail,
+              platform === 'darwin' ? null : plan.packageRoot,
+              '卸载',
+            )
+            throw Object.assign(new Error(occupied ?? `${cliCatalog[provider].name} 卸载失败：${detail}`), { cause: error })
           } finally {
             if (cache) await fs.promises.rm(cache, { recursive: true, force: true }).catch(() => undefined)
           }
@@ -4192,10 +5596,16 @@ export function createSystemService(
           }
         } else if (plan.kind === 'grok-native') {
           try {
-            await uninstallNativeGrok(installation)
+            retainedGrokFiles.push(...await uninstallNativeGrok(installation))
           } catch (error) {
-            if (platform === 'darwin') {
-              return grokManualUninstallResult(initial.status.version, error)
+            // Linux 和 macOS 一样：安全核对没过就交给客户手动卸，并说清为什么。
+            if (platform === 'darwin' || platform === 'linux') {
+              const manual = grokManualUninstallResult(initial.status.version, error)
+              // Mac 上每次都走到这里：命令入口删了，改名后的链接和程序文件按规矩留着。
+              if (!(error instanceof DarwinGrokRetainedPathsError) || !rememberUninstallLeftovers(provider, error.retainedPaths)) {
+                return manual
+              }
+              return { ...manual, manualHelp: { ...manual.manualHelp, cleanUpAvailable: true } }
             }
             throw error
           }
@@ -4203,7 +5613,7 @@ export function createSystemService(
           retainedClaudeVersionFiles.push(...await uninstallNativeClaude(installation))
         }
         removedInstallations.push(installation.installDirectory)
-        current = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+        current = await inspectCliTool(provider, npmPath, npmGlobalRoot)
       }
       if (current.status.installed) {
         const removed = removedInstallations.length
@@ -4213,8 +5623,11 @@ export function createSystemService(
         throw new Error(`${removed}仍检测到 ${cliCatalog[provider].name}：${remaining}`)
       }
       invalidateCliUpdateCache(provider)
+      // Linux：删掉这个工具的小启动器，星芒装的一个都不剩时把终端启动设置里加的几行也去掉。
+      void cliTerminalAccess.release(provider)
       const retainedReason = buildClaudeRetainedVersionFilesReason(retainedClaudeVersionFiles, process.platform)
       if (retainedReason) {
+        const cleanUpAvailable = rememberUninstallLeftovers(provider, retainedClaudeVersionFiles)
         return {
           outcome: 'manual-required',
           previousVersion: initial.status.version,
@@ -4222,6 +5635,21 @@ export function createSystemService(
           manualHelp: {
             reason: retainedReason,
             manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeVersionFiles, process.platform),
+            ...(cleanUpAvailable ? { cleanUpAvailable } : {}),
+          },
+        }
+      }
+      const retainedGrokReason = buildLinuxGrokRetainedFilesReason(retainedGrokFiles)
+      if (retainedGrokReason) {
+        const cleanUpAvailable = rememberUninstallLeftovers(provider, retainedGrokFiles)
+        return {
+          outcome: 'manual-required',
+          previousVersion: initial.status.version,
+          error: retainedGrokReason,
+          manualHelp: {
+            reason: retainedGrokReason,
+            manualCommand: buildLinuxGrokRetainedFilesCommand(retainedGrokFiles),
+            ...(cleanUpAvailable ? { cleanUpAvailable } : {}),
           },
         }
       }
@@ -4231,8 +5659,11 @@ export function createSystemService(
     }
   }
 
-  function uninstallCli(provider: ProviderId): Promise<ToolUninstallResult> {
-    return installationQueue.enqueue(`cli:uninstall:${provider}`, () => uninstallCliOperation(provider))
+  function uninstallCli(provider: ProviderId, options: CliUninstallOptions = {}): Promise<ToolUninstallResult> {
+    const finished = installationQueue.enqueue(`cli:uninstall:${provider}`, () => uninstallCliOperation(provider, options))
+    // 卸掉命令行不会让谁读不进型号名单，只是下次写名单时要重新看装没装。
+    if (provider === 'codex') void finished.then(forgetCodexModelCatalogReaders, forgetCodexModelCatalogReaders)
+    return finished
   }
 
   function spawnDetached(
@@ -4269,6 +5700,7 @@ export function createSystemService(
     installCodexDesktop: installCodexDesktopOperation,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop: uninstallCodexDesktopOperation,
+    resetCodexDesktop,
     launchCodexDesktop: launchCodexDesktopOperation,
   } = createCodexDesktopService({
     platform,
@@ -4284,10 +5716,24 @@ export function createSystemService(
     reloadDownloadProxyConfig,
     prepareAcceleration: serviceOptions.prepareCodexDesktopAcceleration,
     assertInstallDiskSpace,
+    // 官方包在海外：Mac 上那次下载、Windows 上商店没走通后的官网离线安装包，都和 OpenCode
+    // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
+    withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    userHome: providerRoots.userHome,
+    // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
+    activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
+      'warn', 'system', 'codex-desktop.chinese-launch.failed', 'Codex 桌面端中文增强启动没成，改走普通启动', { error },
+    )),
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
-    const result = await installCodexDesktopOperation(target)
+    let result: CodexDesktopInstallResult
+    try {
+      result = await installCodexDesktopOperation(target)
+    } finally {
+      // 桌面端换了一批，自带的 Codex 也跟着换了：读不进型号名单的话开不了新对话。
+      await takeBackUnreadableCodexModelCatalog('desktop-installed')
+    }
     // A successful manual install is an explicit opt-in again. The setting is
     // cleared only after the desktop package has been verified by the service.
     await store.update({ version: 2, codexDesktopInstallDisabled: false })
@@ -4295,7 +5741,7 @@ export function createSystemService(
   }
 
   async function uninstallCodexDesktop(): Promise<ToolUninstallResult> {
-    const result = await uninstallCodexDesktopOperation()
+    const result = await uninstallCodexDesktopOperation().finally(forgetCodexModelCatalogReaders)
     if (result.outcome === 'uninstalled') {
       await store.update({ version: 2, codexDesktopInstallDisabled: true })
     }
@@ -4378,6 +5824,7 @@ export function createSystemService(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode,
+    resumeSessionId: string | null,
   ): Promise<CliLaunchResult> {
     const nativeConfig = inspectNativeProviderConfig(provider)
     if (!canLaunchManagedProvider(nativeConfig)) {
@@ -4386,6 +5833,7 @@ export function createSystemService(
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
       throw new Error('工作目录不存在，请重新选择')
     }
+    if (provider === 'grok') await repairGrokHooksBeforeLaunch()
 
     const definition = cliCatalog[provider]
     // 主目录、盘根、桌面、系统目录、四家工具的配置目录等敏感目录不写信任、也不生成 AGENTS.md：
@@ -4466,7 +5914,16 @@ export function createSystemService(
       }
     }
     const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
-    const providerEnv = providerEnvironment(provider)
+    const accountMode = providerAccountMode(nativeConfig)
+    const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
+    // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
+    // 只在不跨提权边界时补；trusted-only 的终端 PATH 由 trustedCommandEnvironment 重建，不收用户可写的目录（I2）。
+    const providerEnv = withoutEnvironmentVariables(
+      provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
+        ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
+        : providerEnvironment(provider),
+      excludedVariables,
+    )
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
       // and it never overwrites conflicting parent-process variables. Pass the
@@ -4476,9 +5933,12 @@ export function createSystemService(
       if (nativeConfig.baseUrl) providerEnv.GOOGLE_GEMINI_BASE_URL = nativeConfig.baseUrl
       if (nativeConfig.model) providerEnv.GEMINI_MODEL = geminiCliCompatibleModel(nativeConfig.model)
     }
-    const npmTool = await inspectTool('npm')
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-    const { status: installedStatus, installation } = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+    // 打开只用得上 npm 在哪，用不上它的版本号；inspectTool 会多起一次 `npm --version`
+    // （Windows 上是 .cmd 再套 node，还要过一遍杀毒），每点一次「打开」都白等那一下。
+    // 路径照旧每次现查，不缓存，刚装 / 卸 / 换过 Node 也不会拿到旧答案。
+    const npmPath = await findInstalledExecutable('npm')
+    const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
+    const { status: installedStatus, installation } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
     if (!installation) throw new Error(`未检测到 ${definition.name}，请先安装`)
 
     if (platform === 'win32') {
@@ -4488,11 +5948,11 @@ export function createSystemService(
         if (windowsExecutionMode === 'trusted-only') {
           assertTrustedElevatedCliCommand(command, definition.name)
         }
-        await launchCliPowerShell({
+        await launchCliPowerShellForService({
           executable: command.executable,
           argv: cliLaunchArgv(provider, command.argv, mode, {
-            platform,
             installedVersion: installedStatus.version,
+            resumeSessionId,
           }),
           workspace,
           title: `${definition.name} · 星芒AI`,
@@ -4501,12 +5961,22 @@ export function createSystemService(
           // other injection variables would cross the integrity boundary and
           // run attacker code as administrator. assertTrustedElevatedCliCommand
           // only vets the executable path and cannot see the environment.
-          env: interactiveTerminalEnvironment(
+          env: await withoutDeadLoopbackProxies(interactiveTerminalEnvironment(
             providerEnv,
-            windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : commandEnvironment,
-          ),
+            windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : sameUserTerminalEnvironment,
+          ), provider),
         })
       } catch (error) {
+        if (error instanceof WindowsCliLaunchError) {
+          // 错误框只说原因；PowerShell 和 Node 交回来的原文记在这一条里，路径按主目录脱敏（I13）。
+          const { stderr, message, ...exit } = error.launchOutput
+          runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的命令窗口没能打开`, {
+            provider,
+            ...exit,
+            stderr: stderr && redactHomeDirectory(stderr, providerRoots.userHome),
+            message: message && redactHomeDirectory(message, providerRoots.userHome),
+          })
+        }
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
       }
@@ -4515,38 +5985,79 @@ export function createSystemService(
 
     if (platform === 'darwin') {
       try {
+        // 客户自己那份 Node.js 太旧时，要 node 才跑得起来的工具（比如 Gemini CLI）用代下的那份跑；
+        // 下面交给终端的环境照旧，客户在工具里跑 node 还是他自己那份（第三十四批 A）。
+        const nodeDirectories = await preferredNodeDirectories()
         const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode, {
           darwinStagingRetention: 'retained',
+          ...(nodeDirectories.length ? { nodeDirectories } : {}),
         })
-        await launchMacosTerminal(buildDarwinCliLaunchPlan(
-          { ...command, argv: cliLaunchArgv(provider, command.argv, mode) },
+        await launchMacosTerminalForService(buildDarwinCliLaunchPlan(
+          {
+            ...command,
+            argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),
+          },
           workspace,
-          providerEnv,
+          withSystemCertificateTrust(providerEnv),
+          macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
+        // 随这次失败一起进运行日志。
+        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`, { cause: error })
       }
       return launchResult
     }
 
-    const environment = interactiveTerminalEnvironment(providerEnv)
-    const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
-    const argv = cliLaunchArgv(provider, command.argv, mode)
-    const terminals = [
-      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...argv] },
-      { command: 'gnome-terminal', args: ['--', command.executable, ...argv] },
-      { command: 'konsole', args: ['-e', command.executable, ...argv] },
-    ]
-    let terminal = terminals[0]
-    for (const candidate of terminals) {
-      if (await findExecutable(candidate.command, { env: environment })) {
-        terminal = candidate
-        break
+    // Linux：找一个命令窗口程序，交给它一份一次性启动脚本，脚本真的跑起来才算打开
+    // （linux-terminal.ts，Linux 版拆分 ⑤）。
+    try {
+      // 打开的工具同样带不上一个没开的本机代理，否则连不上中转（Linux 版拆分 ②，与上面 Windows 那条同理）。
+      const environment = await withoutDeadLoopbackProxies(
+        interactiveTerminalEnvironment(providerEnv, sameUserTerminalEnvironment),
+        provider,
+      )
+      const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
+      const opened = await launchLinuxTerminalForService({
+        executable: command.executable,
+        argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version, resumeSessionId }),
+        workspace,
+        title: `${definition.name} · 星芒AI`,
+        env: environment,
+        // 交给已经开着的命令窗口程序时，工具拿到的是那个程序自己的环境，上面去掉的得在脚本里再去一次。
+        ...(excludedVariables.length ? { clearedEnvironmentKeys: excludedVariables } : {}),
+      })
+      runtimeLog?.log('info', 'system', 'terminal.opened', `${definition.name} 已在「${opened.terminal.label}」里打开`, {
+        provider,
+        terminal: opened.terminal.id,
+        ...describeLinuxTerminalAttempts(opened.attempts),
+      })
+    } catch (error) {
+      if (error instanceof LinuxTerminalLaunchError) {
+        runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的命令窗口没能打开`, {
+          provider,
+          ...describeLinuxTerminalAttempts(error.attempts),
+          ...(error.reason ? { reason: redactHomeDirectory(error.reason, providerRoots.userHome) } : {}),
+        })
       }
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
     }
-    await spawnDetached(terminal.command, terminal.args, { cwd: workspace, env: environment })
     return launchResult
+  }
+
+  /** 日志只写试过哪几个命令窗口、各自怎么失败的；路径按主目录脱敏（I13）。 */
+  function describeLinuxTerminalAttempts(attempts: readonly LinuxTerminalAttempt[]): Record<string, unknown> {
+    if (!attempts.length) return {}
+    return {
+      attempts: attempts.map((attempt) => ({
+        terminal: attempt.terminal,
+        executable: redactHomeDirectory(attempt.executable, providerRoots.userHome),
+        outcome: attempt.outcome,
+        detail: attempt.detail,
+      })),
+    }
   }
 
   /**
@@ -4597,10 +6108,14 @@ export function createSystemService(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode = 'new',
+    resumeSessionId: string | null = null,
   ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
-      buildCliLaunchQueueKey(provider, workspace, mode),
-      () => launchProviderOperation(provider, workspace, mode),
+      buildCliLaunchQueueKey(provider, workspace, mode, resumeSessionId),
+      async () => ({
+        ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
+        rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
+      }),
     )
   }
 
@@ -4647,7 +6162,9 @@ export function createSystemService(
     }
     const result = trustCodexWorkspace(providerRoots, workspace)
     let restarted = false
-    if (result.changed) {
+    // 只在 Windows 上替人重开：Mac 上主进程一律拒绝重启 Codex（codex-desktop-service.ts），
+    // 信任这时已经写进去了，再去重启只会把「已保存」变成一个报错框（第二十九批 A 的同一个原因）。
+    if (result.changed && platform === 'win32') {
       const desktop = await inspectCodexDesktop()
       if (desktop.running) {
         await launchCodexDesktop('restart', target)
@@ -4704,7 +6221,7 @@ export function createSystemService(
 
   async function fetchAvailableModels(
     apiKeyInput: string,
-    options: { bypassCache?: boolean } = {},
+    options: { bypassCache?: boolean; site?: RelaySite; routed?: boolean } = {},
   ): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
     if (!apiKey) throw new Error('请先填写 API Key')
@@ -4726,8 +6243,8 @@ export function createSystemService(
     // different relay site within the 2-minute TTL (site switcher), and a
     // model list fetched from the previous site must not validate a model
     // that then gets written into a config aimed at the new site.
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-    const cacheKey = `${activeSite.id}:${modelAccessCacheKey(apiKey)}`
+    const activeSite = options.site ?? activeRelaySite()
+    const cacheKey = `${activeSite.id}:${relayApiProbeBaseUrl(activeSite)}:${modelAccessCacheKey(apiKey)}`
     const cached = options.bypassCache ? undefined : modelAccessCache.get(cacheKey)
     if (cached) {
       modelAccessCache.delete(cacheKey)
@@ -4738,7 +6255,8 @@ export function createSystemService(
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
     try {
-      const response = await (serviceOptions.relayFetch ?? fetch)(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
+      const relayFetch = (options.routed ? serviceOptions.relayRoutedFetch : undefined) ?? serviceOptions.relayFetch ?? fetch
+      const response = await relayFetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
         credentials: 'omit',
         redirect: 'error',
@@ -4794,6 +6312,17 @@ export function createSystemService(
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
   let latestExternalClients: ExternalClientStatus[] | null = null
+  const externalClientCache = serviceOptions.externalClientSnapshotCacheFile
+    ? createExternalClientSnapshotCache({
+        filePath: serviceOptions.externalClientSnapshotCacheFile,
+        onWarning: (code, message) => runtimeLog?.log('warn', 'system', code, '上次客户端检测结果没有读写成功', { error: message }),
+      })
+    : null
+  let externalScansStarted = 0
+  let newestExternalScanSaved = 0
+  // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
+  // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
+  const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
   async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
     if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
     const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
@@ -4815,12 +6344,12 @@ export function createSystemService(
    * 说法。
    */
   function externalClientContext(tool: ExternalToolId) {
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    const activeSite = activeRelaySite()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
     const belongsToCurrentAccount = (apiKey: string) => owner !== null
       && serviceOptions.getExternalClientAccountId?.() === owner
-      && resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id === activeSite.id
+      && activeRelaySite().id === activeSite.id
       && externalOwnership.matches(tool, owner, baseUrl, apiKey)
     return { activeSite, baseUrl, belongsToCurrentAccount }
   }
@@ -4895,14 +6424,27 @@ export function createSystemService(
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
   async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
+    const started = ++externalScansStarted
     // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
     // 保存配置之后那次刷新要看到的正是刚写下去的那份。
-    const clients = await Promise.all((await externalClientRuntime.scan({ force })).map(describeExternalClient))
+    const clients = await followExternalClientRoutes(await externalClientRuntime.scan({ force }))
     // 反馈报告要答「客户端装没装、什么版本、配置指没指向当前账号」，而生成报告
     // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
     // 数据源：只在用户自己点检测时更新。
     latestExternalClients = clients
+    // 下次开机首页先摆它（已知13）。强制重扫与普通扫描可能交错完成，落盘只让后开始的那一轮
+    // 覆盖先开始的，同 CLI 那份快照。
+    if (started > newestExternalScanSaved) {
+      newestExternalScanSaved = started
+      void externalClientCache?.save(clients)
+    }
     return clients
+  }
+  async function cachedExternalClients(): Promise<ExternalClientStatus[]> {
+    if (latestExternalClients || !externalClientCache) return []
+    const cached = await externalClientCache.load()
+    // 读文件这几毫秒里真的检测可能已经回来了，那就不必再给旧的。
+    return latestExternalClients || !cached ? [] : cached
   }
   /** 反馈报告用的上一份客户端快照；还没检测过时为 null，那一段写「未能读取」。 */
   function getLastExternalClients(): ExternalClientStatus[] | null {
@@ -4921,6 +6463,7 @@ export function createSystemService(
       : [...(latestExternalClients ?? []), described]
     return described
   }
+  const cancelExternalClientInstall = (tool: ExternalToolId) => externalClientRuntime.cancelInstall(tool)
   const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
   /**
    * 保存之后立刻回读一遍并自检。这一步问出来的比保存时那次模型清单校验多两件
@@ -4945,7 +6488,7 @@ export function createSystemService(
   ): Promise<ExternalClientConfigResult> {
     const work = async (): Promise<ExternalClientConfigResult> => {
       assertBeforeWrite?.()
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = activeRelaySite()
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const apiKey = requested.apiKey?.trim() ?? ''
       const model = requested.model?.trim() ?? ''
@@ -4953,7 +6496,7 @@ export function createSystemService(
       const models = await fetchAvailableModels(apiKey, { bypassCache: true })
       const assertContext = () => {
         assertBeforeWrite?.()
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
+        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
         if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
       }
       assertContext()
@@ -4963,6 +6506,8 @@ export function createSystemService(
         assertContext()
         if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
         const gateway = await claudeDesktopConfig(status, assertContext)
+        // 只写客户选中的那一个型号。0.2.12 曾把当前 Key 能用的全部 claude-* 型号都写进去（#685），
+        // 客户 Mac 上 Claude Desktop 随即提示型号被拒、发消息没回复，退回只写一个（0.2.8 的做法）就好了。
         const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
         const result = await gateway.saveGateway(input)
         assertContext()
@@ -4994,22 +6539,208 @@ export function createSystemService(
     externalConfigQueue = task.catch(() => undefined)
     return task
   }
+  /**
+   * 第四十三批 A：用户换了线路、重启以后，星芒替当前账号写进 Claude Desktop、WorkBuddy、
+   * OpenCode 的那一份跟着换到当前线路，只换地址，Key、型号和别的设置都不动。四个命令行工具
+   * #872 起已经这么换，规矩照那边：用户明确选过线路、地址是这个站登记过的另一条、归属对得上、
+   * 客户端没开着，四条都满足才写；开着就先不写，那一行带 routePending。和保存配置排同一个队。
+   * 检测时顺带做：开机那一次、「重新检测」、检查页「测试连接」之前那次都会走到。换过以后归属
+   * 记在新地址上：客户端要是又把旧的那份写了回来，那份不再算星芒的，不会来回改。
+   *
+   * 选过线路的人连读配置也排进队：同时有两次检测时，后一次要读到前一次换完的那份，不然
+   * 首页会被它旧的结论盖回去。
+   */
+  async function followExternalClientRoutes(statuses: readonly ExternalClientRuntimeStatus[]): Promise<ExternalClientStatus[]> {
+    const describe = () => Promise.all(statuses.map(describeExternalClient))
+    const to = relayRouting.selection(activeRelaySite().id)
+    if (to === undefined) return describe()
+    const work = async () => {
+      const clients = await describe()
+      // 已经在当前线路上的不用再读一遍（Windows 商店版读 Claude Desktop 配置要起一次 PowerShell）；
+      // 没装上的看不出开没开，不碰。
+      const candidates = statuses.flatMap((status) => {
+        const client = clients.find((entry) => entry.tool === status.tool)
+        return client && status.installed && !status.detectionError && client.configurationSource === 'other' ? [{ status, client }] : []
+      })
+      const updated = new Map<ExternalToolId, ExternalClientStatus>()
+      for (const { status, client } of candidates) {
+        try {
+          const next = await followExternalClientRoute(status, client, to)
+          if (next) updated.set(status.tool, next)
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'external-client.route.failed', `${externalClientNames[status.tool]} 的连接线路这次没换成，下次检测再试`, {
+            tool: status.tool, to, reason: credentialFailureReason(error),
+          })
+        }
+      }
+      return clients.map((client) => updated.get(client.tool) ?? client)
+    }
+    const task = externalConfigQueue.then(work, work)
+    externalConfigQueue = task.catch(() => undefined)
+    return task
+  }
+  /** followExternalClientRoutes 里的一个客户端：那一行要换成什么就回什么，不用动时回 null。 */
+  async function followExternalClientRoute(
+    status: ExternalClientRuntimeStatus,
+    client: ExternalClientStatus,
+    to: RelayEndpointId,
+  ): Promise<ExternalClientStatus | null> {
+    const { tool } = status
+    const name = externalClientNames[tool]
+    const activeSite = activeRelaySite()
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (owner === null) return null
+    const followedKey = JSON.stringify([tool, owner])
+    const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
+    const assertContext = () => {
+      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
+        throw new Error('账号已变化，这次不换线路')
+      }
+    }
+    const found = await externalClientRouteCredential(status, activeSite, owner)
+    if (!found) {
+      // 换过的又回到原来那份：归属已经记在新地址上，不会再换，只在日志里说一次。
+      const followed = externalRoutesFollowed.get(followedKey)
+      if (!followed) return null
+      externalRoutesFollowed.delete(followedKey)
+      if (await externalClientProbeCredential(status, followed.baseUrl, (apiKey) => apiKey === followed.apiKey)) {
+        runtimeLog?.log('warn', 'config', 'external-client.route.reverted', `${name} 换过连接线路后又回到了原来那条，不再替它换`, { tool, from: followed.from, to })
+      }
+      return null
+    }
+    const detail = { tool, from: found.from, to }
+    if (found.baseUrl === baseUrl) {
+      // 地址已经在当前线路上，归属还记在原来那条：上回换完没记上（记归属那一步失败，或者星芒
+      // 正好在两步之间退出）。客户端那份不用再动，补记归属就行。
+      assertContext()
+      await externalOwnership.write(tool, owner, baseUrl, found.apiKey)
+      runtimeLog?.log('info', 'config', 'external-client.route.recorded', `${name} 已在当前连接线路上，补记归属`, detail)
+      return await describeExternalClient(status)
+    }
+    if (status.running) {
+      runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
+      return { ...client, routePending: true }
+    }
+    const latest = { status, moved: false }
+    try {
+      // 新线路上认这把 Key、型号也还在才换，不替客户换型号（同 #872）；Claude Desktop 没写型号
+      // （由它自动获取）的那份，新线路认这把 Key 就够了。
+      const models = await fetchAvailableModels(found.apiKey, { bypassCache: true, site: activeSite })
+      assertContext()
+      if (found.model !== null && !models.includes(found.model)) throw new Error('当前密钥不支持所选模型，请重新检测')
+      // 动文件之前再盘点一次客户端开没开，放在写之前最后一步异步里（同 #872）。要的是这之后才
+      // 开始的那一轮：客户端可能是在拉清单那几秒里打开的，而那时正在跑的盘点可能比它早。
+      const recheck = async () => {
+        latest.status = (await externalClientRuntime.scan({ fresh: true })).find((entry) => entry.tool === tool) ?? { ...status, installed: false }
+        if (latest.status.running) throw new Error(`${name} 还开着，已保留原配置`)
+        if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
+        assertContext()
+      }
+      await moveExternalClientRoute(status, { from: found.baseUrl, to: baseUrl, apiKey: found.apiKey }, assertContext, recheck)
+      latest.moved = true
+      externalRoutesFollowed.set(followedKey, { from: found.from, baseUrl: found.baseUrl, apiKey: found.apiKey })
+      await externalOwnership.write(tool, owner, baseUrl, found.apiKey)
+      runtimeLog?.log('info', 'config', 'external-client.route.followed', `已把 ${name} 换到当前连接线路`, detail)
+      return await describeExternalClient(latest.status)
+    } catch (error) {
+      if (latest.status.running) {
+        runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
+        return { ...client, ...latest.status, routePending: true }
+      }
+      // 拉不到模型清单、型号不在了、写之前客户刚改过配置也走这里：这次不动，下次检测再试。
+      // 地址已经换好、只是归属没记上的，下次检测补记（上面 recorded 那一支）。
+      runtimeLog?.log('warn', 'config', 'external-client.route.failed', latest.moved
+        ? `${name} 已换到当前连接线路，归属没记上，下次检测补记` : `${name} 的连接线路这次没换成，下次检测再试`,
+      { ...detail, reason: credentialFailureReason(error) })
+      return { ...client, ...latest.status }
+    }
+  }
+  /**
+   * 星芒替当前账号写的那一份在这个站的哪条线路上：from 是归属记在哪条线路，baseUrl 是那份配置
+   * 现在指着的地址，Key 和型号原样交出（Claude Desktop 没写型号时 model 为 null）。baseUrl 是另一条
+   * 线路的，跟着换；已经是当前线路的（上回地址换好了、归属没记上），补记归属。归属对不上、不是
+   * 这个站登记过的线路，回 null。别名也认：直连原来的地址是 IP 测试入口，那时存的那份归属记在
+   * IP 上，现在 IP 退成别名、要关掉，得跟着换到域名。主进程内部专用，密钥永不跨 IPC（I3）。
+   */
+  async function externalClientRouteCredential(
+    status: ExternalClientRuntimeStatus,
+    activeSite: RelaySite,
+    owner: string,
+  ): Promise<{ from: RelayEndpointId; baseUrl: string; apiKey: string; model: string | null } | null> {
+    const provider = status.tool === 'claudeDesktop' ? 'claude' : 'codex'
+    const current = activeSite.providerBaseUrls[provider]
+    const routes = relaySiteProviderBaseUrlVariants(activeSite.id, provider)
+      .map((variant) => ({ from: variant.endpointId, baseUrl: variant.baseUrl }))
+      .filter((route) => route.baseUrl !== current)
+    const unchanged = () => serviceOptions.getExternalClientAccountId?.() === owner && activeRelaySite().id === activeSite.id
+    const ownedRoute = (apiKey: string) => unchanged() ? routes.find((route) => externalOwnership.matches(status.tool, owner, route.baseUrl, apiKey)) : undefined
+    if (status.tool === 'claudeDesktop') {
+      // 一次读出地址再比：Windows 上每读一次都要起 PowerShell 查管理策略。
+      const gateway = await claudeDesktopConfig(status).then((service) => service.inspectOwnedRoute()).catch(() => null)
+      const route = gateway ? ownedRoute(gateway.apiKey) : undefined
+      if (!gateway || !route) return null
+      const at = sameRouteUrl(gateway.baseUrl, current) ? current : sameRouteUrl(gateway.baseUrl, route.baseUrl) ? route.baseUrl : null
+      return at ? { ...gateway, from: route.from, baseUrl: at } : null
+    }
+    for (const route of routes) {
+      const credential = await externalClientProbeCredential(status, route.baseUrl, (apiKey) => ownedRoute(apiKey) === route)
+      if (credential) return { ...credential, from: route.from, baseUrl: route.baseUrl }
+    }
+    const credential = await externalClientProbeCredential(status, current, (apiKey) => ownedRoute(apiKey) !== undefined)
+    const route = credential ? ownedRoute(credential.apiKey) : undefined
+    return credential && route ? { ...credential, from: route.from, baseUrl: current } : null
+  }
+  /**
+   * 只改地址的那一笔写：Claude Desktop 改网关地址，WorkBuddy、OpenCode 改星芒那几条的地址。
+   * recheck 是写之前最后看一眼客户端开没开，放在最后一步异步之后：Claude Desktop 那边商店版目录、
+   * 管理策略都要起 PowerShell，所以交给 followRoute 在那之后调。
+   */
+  async function moveExternalClientRoute(
+    status: ExternalClientRuntimeStatus,
+    route: { from: string; to: string; apiKey: string },
+    assertContext: () => void,
+    recheck: () => Promise<void>,
+  ): Promise<void> {
+    if (status.tool === 'claudeDesktop') {
+      await (await claudeDesktopConfig(status, assertContext)).followRoute(route.from, route.to, route.apiKey, recheck)
+      return
+    }
+    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
+    if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
+    await recheck()
+    await followExternalToolRoute(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
+      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
+    }, route, { beforeReplace: assertContext })
+  }
+
+  function rememberedWorkspaceFor(workspace: string): string | null {
+    return resolveRememberedWorkspace(workspace, {
+      platform,
+      home: providerRoots.userHome,
+      defaultWorkspace: os.homedir(),
+    })
+  }
 
   function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
+    const rememberedWorkspace = rememberedWorkspaceFor(stored.workspace)
     const result = {
       workspace: stored.workspace,
+      ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)
+          const hooks = previewOnboarding ? null : managedCliHooksState(id)
           return [id, {
             ...toNativeConfigSummary(current),
             configurationOwnership: configOwnership.read(id, current, owner),
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
+            ...cliHooksSummaryFields(hooks),
+            ...cliHooksAutoRepairedField(!previewOnboarding && autoRepairedCliHooks.has(id), hooks?.stale === true),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -5028,6 +6759,8 @@ export function createSystemService(
         officialAccountPlan: null,
         officialAccountRenewsAt: null,
         codexAuthMode: null,
+        codexProviderName: null,
+        codexProviderShadowed: false,
         model: '',
         updatedAt: null,
         files: result.providers.codex.files.map((file) => ({ ...file, exists: false })),
@@ -5065,6 +6798,372 @@ export function createSystemService(
     }
   }
 
+  /**
+   * 终端里出错、做完、等人时通知星芒的钩子。与状态行同一个口径：哪一环不成立（没有
+   * 托管 Node、脚本没随包、路径带 shell 元字符）都只是这次不写，配置照写。
+   */
+  async function resolveCliHookInvocation(): Promise<CliHookInvocation | undefined> {
+    const scriptPath = serviceOptions.cliHookScriptPath
+    const dataDirectory = serviceOptions.managerDataDirectory
+    if (!scriptPath || !dataDirectory) return undefined
+    try {
+      const nodeExecutable = await findInstalledExecutable('node')
+      if (!nodeExecutable) return undefined
+      const invocation = buildCliHookInvocation(nodeExecutable, scriptPath, cliHookEventsDirectory(dataDirectory), platform)
+      if (!invocation) return undefined
+      if (platform === 'win32') {
+        await refreshWindowsLivePath()
+        invocation.grokWindowsShell = expectedGrokWindowsShell()
+      }
+      return invocation
+    } catch {
+      return undefined
+    }
+  }
+
+  // 随包那份官方 Codex 型号名单同一次运行里不会变，只读一次；读不成（构建残留、被替换）
+  // 也不必每次保存都再试，这次运行就不写名单。
+  let bundledCodexModelCatalog: ParsedCodexModelCatalog | null | undefined
+
+  function loadBundledCodexModelCatalog(): ParsedCodexModelCatalog | null {
+    if (bundledCodexModelCatalog !== undefined) return bundledCodexModelCatalog
+    bundledCodexModelCatalog = null
+    const filePath = serviceOptions.bundledCodexModelCatalogPath
+    if (!filePath) return null
+    try {
+      bundledCodexModelCatalog = readBundledCodexModelCatalog(filePath)
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.bundled-unreadable', '随包的 Codex 型号名单读不出来，这次运行不写型号名单', {
+        reason: credentialFailureReason(error),
+      })
+      return null
+    }
+    if (bundledCodexModelCatalog.rejected.length) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.bundled-rejected', '随包的 Codex 型号名单里有 Codex 读不进去的型号，已经剔掉', {
+        rejected: bundledCodexModelCatalog.rejected,
+      })
+    }
+    return bundledCodexModelCatalog
+  }
+
+  // 读 xingmang-models.json 的不只命令行，还有桌面端自带的那份 Codex：两边是哪一版都在本机
+  // 探（命令行读 npm 包的版本或跑一次 --version，桌面端 Windows 问 Appx 包、Mac 看应用包）。
+  // 一次保存、开机那一轮会连着问好几遍，30 秒内复用上一次的结论；星芒自己装、卸、更新过
+  // 之后作废。
+  const codexCliForModelCatalog = createCachedProbe(async (): Promise<{ installed: boolean; version: string | null } | null> => {
+    try {
+      const { status } = await inspectCliTool('codex', null, null)
+      return { installed: status.installed, version: status.version }
+    } catch {
+      return null
+    }
+  }, 30_000)
+  const codexDesktopForModelCatalog = createCachedProbe(async (): Promise<CodexDesktopCatalogProbe> => {
+    try {
+      if (serviceOptions.inspectCodexDesktopForModelCatalog) return await serviceOptions.inspectCodexDesktopForModelCatalog()
+      if (platform === 'win32') return codexDesktopCatalogProbeFromPackage(await inspectCodexDesktopPackage())
+      if (platform === 'darwin') return codexDesktopCatalogProbeFromMacosApp(await detectMacosCodexApp())
+      return { installed: false, version: null }
+    } catch {
+      return { installed: null, version: null }
+    }
+  }, 30_000)
+
+  function forgetCodexModelCatalogReaders(): void {
+    codexCliForModelCatalog.forget()
+    codexDesktopForModelCatalog.forget()
+  }
+
+  /** 读这份名单的几份 Codex 合起来能不能用它（codex-model-catalog.ts），顺带各自的版本留给日志。 */
+  async function codexModelCatalogReadersVerdict(catalog: CodexModelCatalog, readers: CodexModelCatalogReaders): Promise<{
+    verdict: CodexModelCatalogVerdict
+    detail: Record<string, unknown>
+  }> {
+    const verdicts: CodexModelCatalogVerdict[] = []
+    const detail: Record<string, unknown> = { required: codexModelCatalogRequiredCliVersion(catalog) }
+    if (readers !== 'desktop') {
+      const cli = await codexCliForModelCatalog.read()
+      const verdict = cli ? codexCliAcceptsModelCatalog(cli, catalog) : 'unknown'
+      verdicts.push(verdict)
+      Object.assign(detail, { cli: verdict, cliVersion: cli?.version ?? null })
+    }
+    if (readers !== 'cli') {
+      const desktop = await codexDesktopForModelCatalog.read()
+      const verdict = codexDesktopAcceptsModelCatalog(desktop)
+      verdicts.push(verdict)
+      Object.assign(detail, { desktop: verdict, desktopVersion: desktop.version })
+    }
+    return { verdict: combineCodexModelCatalogVerdicts(verdicts), detail }
+  }
+
+  /**
+   * 这次要给 Codex 写的型号名单（codex-model-catalog.ts）：全文 = 照写；null = 收回本软件
+   * 写的那一行（账号的型号随包名单里一个都没有、默认型号不在名单里、名单文件的位置被换成了
+   * 链接、这台电脑上的命令行或桌面端太旧）；undefined = 原样不动（没有随包名单、看不出
+   * 命令行或桌面端是哪一版），免得一次没读到就把菜单来回改。
+   */
+  async function resolveCodexModelCatalog(availableModels: readonly string[], model: string): Promise<string | null | undefined> {
+    const official = loadBundledCodexModelCatalog()
+    if (!official) return undefined
+    const catalog = buildCodexRelayModelCatalog(official, availableModels)
+    if (!catalog) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.no-match', '当前账号能用的型号随包名单里都没有，Codex 用它自带的菜单', {
+        models: availableModels.length,
+      })
+      return null
+    }
+    if (!codexModelCatalogListsModel(catalog, model)) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.model-not-listed', 'Codex 的默认型号不在随包名单里，这次不写型号名单', { model })
+      return null
+    }
+    if (!codexModelCatalogTargetUsable(providerRoots)) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.target-unsafe', 'Codex 型号名单的位置被换成了链接，这次不写型号名单')
+      return null
+    }
+    const { verdict, detail } = await codexModelCatalogReadersVerdict(catalog, 'all')
+    if (verdict === 'unknown') {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.reader-unknown', '看不出 Codex 命令行或桌面端是哪一版，型号名单这次不动', detail)
+      return undefined
+    }
+    if (verdict === 'too-old') {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.reader-too-old', '这台电脑上的 Codex 命令行或桌面端太旧，读不进型号名单，这次不写', detail)
+      return null
+    }
+    return codexModelCatalogContent(catalog)
+  }
+
+  /** Codex 那份型号名单按当前账号的型号重写会不会变；看不出该不该写的时候算没变。 */
+  async function codexModelCatalogOutdated(availableModels: readonly string[], model: string): Promise<boolean> {
+    const expected = await resolveCodexModelCatalog(availableModels, model)
+    return expected !== undefined && codexModelCatalogNeedsRefresh(expected, providerRoots)
+  }
+
+  /**
+   * 本软件写的名单该不该收回：名单文件丢了、读不进，或读它的命令行 / 桌面端太旧（只看这次
+   * 可能变了的那一边）。不该收回是 null，该收回给出原因留给日志；看不出版本的算不该。
+   */
+  async function codexModelCatalogTakeBackReason(trigger: CodexModelCatalogGuardTrigger): Promise<Record<string, unknown> | null> {
+    const onDisk = inspectCodexModelCatalogOnDisk(providerRoots)
+    if (!onDisk.managed) return null
+    let catalog: ParsedCodexModelCatalog | null = null
+    try {
+      catalog = onDisk.content === null ? null : parseCodexModelCatalog(onDisk.content)
+    } catch {
+      catalog = null
+    }
+    if (!catalog || catalog.rejected.length) return { reason: onDisk.content === null ? 'missing' : 'unreadable' }
+    const readers = await codexModelCatalogReadersVerdict(catalog, codexModelCatalogGuardReaders[trigger])
+    return readers.verdict === 'too-old' ? { reason: 'too-old', ...readers.detail } : null
+  }
+
+  /**
+   * 不看账号、不联网，只看本机，读不进就收回 config.toml 里那一行（名单文件留着）：Codex 读
+   * 不进名单整个起不来，这一步不能等联网核对，也不管工具开没开。失败只记日志。
+   */
+  async function takeBackUnreadableCodexModelCatalog(trigger: CodexModelCatalogGuardTrigger): Promise<void> {
+    if (!serviceOptions.bundledCodexModelCatalogPath) return
+    try {
+      // 打开前那次有人在等：名单好好的（绝大多数时候）就不必排在别的写入后面。装完那两次
+      // 不能这样省：正在进行的保存可能拿装之前探的版本写下那一行，要等它写完再看。
+      if (trigger === 'before-launch' && !(await codexModelCatalogTakeBackReason(trigger))) return
+      await serializeConfigWrite(async () => {
+        if (trigger === 'cli-installed' || trigger === 'desktop-installed') {
+          // 刚装完的那一边要重新探，不能用装之前那次的结论；当天那次核对说的「名单该不该写」
+          // 也跟着作废，版本够了下次打开就补上。
+          forgetCodexModelCatalogReaders()
+          toolModelChecker.forget('codex')
+        }
+        // 进锁以后按同一套条件再判一次：排队期间配置可能刚被重写过。
+        const detail = await codexModelCatalogTakeBackReason(trigger)
+        if (detail && takeBackCodexModelCatalog(providerRoots)) {
+          runtimeLog?.log('info', 'config', 'codex-model-catalog.taken-back', 'Codex 读不进本软件写的型号名单，已经收回 config.toml 里那一行', { trigger, ...detail })
+        }
+      })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'codex-model-catalog.take-back-failed', '没能收回 Codex 读不进的型号名单', { trigger, reason: credentialFailureReason(error) })
+    }
+  }
+
+  // 开机那次只做一遍：没登录的由 main.ts 在开机后调，登录状态下开机那轮按账号同步也先等它，
+  // 两边共用这一次，不为同一件事问两遍命令行和桌面端。
+  let startupCodexModelCatalogGuard: Promise<void> | null = null
+  function guardCodexModelCatalogAtStartup(): Promise<void> {
+    startupCodexModelCatalogGuard ??= takeBackUnreadableCodexModelCatalog('startup')
+    return startupCodexModelCatalogGuard
+  }
+
+  // 注册表里整台电脑 + 当前账号的 PATH，最近读到的那一份；读不到时是 null，只看星芒启动时的快照。
+  let windowsLivePath: string | null = null
+  let windowsLivePathRead: Promise<void> | null = null
+  let windowsLivePathReadAt = 0
+
+  /**
+   * 星芒开着的时候客户装了 PowerShell 7，启动时的快照里没有它，新开的终端里却有（windows-live-path.ts）。
+   * 异步起 reg.exe，同一时刻只读一次，几秒内读过的不再读（修一次钩子会先后问两遍）；读不到就留着上一次的。
+   */
+  function refreshWindowsLivePath(): Promise<void> {
+    if (platform !== 'win32' || Date.now() - windowsLivePathReadAt < 5_000) return Promise.resolve()
+    windowsLivePathRead ??= (async () => {
+      try {
+        const system32 = resolveWindowsMachinePathsForService().system32
+        const value = await (serviceOptions.readWindowsLivePath ?? readWindowsLivePath)(system32, process.env)
+        if (value) windowsLivePath = value
+      } catch {
+        // 读不到只是少看见新装的那几段，照旧用快照推。
+      } finally {
+        windowsLivePathReadAt = Date.now()
+        windowsLivePathRead = null
+      }
+    })()
+    return windowsLivePathRead
+  }
+
+  /**
+   * Windows 版 Grok 现在会拿哪个 shell 跑钩子。PATH 用启动时快照再补上注册表里新加的那几段：
+   * 客户新开的终端看得到的，这里也要看得到；从星芒打开 Grok 时也补上同样几段（launchProviderOperation），
+   * 两边推出来的是同一个 shell。Git Bash 那三处本来就是实时看文件在不在。
+   */
+  function expectedGrokWindowsShell(): GrokWindowsShell {
+    return resolveGrokWindowsShell(withAppendedWindowsPath(process.env, windowsLivePath), (candidate) => fs.existsSync(candidate))
+  }
+
+  /**
+   * 本软件写进这家配置的钩子、状态行要不要重写：指向旧位置（cliHookTargetsStale），或 Windows 上 Grok 换了 shell；
+   * 以及 Windows 上只装 Grok 时一条都没写上（grokCliHooksMissing）。读不出来按不用算。
+   */
+  function managedCliHooksState(provider: ProviderId): { stale: boolean; shellChanged: boolean; missing: boolean } {
+    try {
+      const targets = inspectManagedCliHookTargets(provider, providerRoots)
+      const windowsGrok = provider === 'grok' && platform === 'win32'
+      const shell = windowsGrok ? expectedGrokWindowsShell() : null
+      const shellChanged = shell !== null && grokCliHookShellChanged(targets, shell)
+      const moved = cliHookTargetsStale(targets, [serviceOptions.cliHookScriptPath, serviceOptions.claudeStatusLineScriptPath])
+      let missing = false
+      if (windowsGrok && targets.length === 0) {
+        const current = inspectNativeProviderConfig(provider)
+        missing = grokCliHooksMissing({
+          platform,
+          provider,
+          managedTargets: targets.length,
+          relayConfigured: current.hasApiKey && current.matchesRelay,
+          shell,
+        })
+      }
+      return { stale: moved || shellChanged, shellChanged, missing }
+    } catch {
+      return { stale: false, shellChanged: false, missing: false }
+    }
+  }
+
+  function cliHooksStale(provider: ProviderId): boolean {
+    return managedCliHooksState(provider).stale
+  }
+
+  /**
+   * 打开 Grok 之前复核一遍星芒写的那几条钩子：Grok 换了 shell、或指向旧位置，就先修好再开，
+   * 与 Codex「打开前先修」同一个路数。这是客户点了「打开」才做的，不是开机静默改文件；
+   * 修不好只记日志，不挡打开。
+   */
+  async function repairGrokHooksBeforeLaunch(): Promise<void> {
+    await refreshWindowsLivePath()
+    const state = managedCliHooksState('grok')
+    if (state.missing) {
+      await addMissingGrokHooks('before-launch')
+      return
+    }
+    if (!state.stale) return
+    const shell = platform === 'win32' ? expectedGrokWindowsShell() : null
+    try {
+      await repairCliHooks('grok')
+      runtimeLog?.log('info', 'config', state.shellChanged ? 'grok-hooks.shell-changed' : 'grok-hooks.repaired-before-launch',
+        state.shellChanged ? 'Grok 换了命令行，打开前按新的命令行重写了钩子' : '打开 Grok 前把指向旧位置的钩子改好了', { shell })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'grok-hooks.repair-before-launch-failed', '打开 Grok 前修钩子没成功，照常打开', {
+        shellChanged: state.shellChanged,
+        shell,
+        reason: credentialFailureReason(error),
+      })
+    }
+  }
+
+  async function repairCliHooks(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>> {
+    // 找 node 要读 PATH，放在排队之前；与 saveConfig 同一个次序。修完的复核也按最新的 PATH 推 Grok 的 shell。
+    await refreshWindowsLivePath()
+    const cliHook = await resolveCliHookInvocation()
+    const claudeStatusLineCommand = await resolveClaudeStatusLineCommand(provider)
+    return serializeConfigWrite(async () => {
+      // 首页「补上」也走这里：Grok 一条没写过的，这次一并补上。
+      const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
+      const after = managedCliHooksState(provider)
+      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      if (cliHook && after.missing) throw new Error('做完提醒和防睡还没补上，先点首页的「补上」准备好运行环境再试')
+      runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
+        provider,
+        rewritten: Boolean(cliHook),
+      })
+      return result
+    })
+  }
+
+  /**
+   * 开机后第一次读配置时，把本账号写的、指向旧位置的钩子和状态行直接改好（卸载后换文件夹重装、
+   * 挪了软件、换装了 Node.js 之后），不用客户去首页点「修好它」。每个账号只查一遍、每家只试一次；
+   * 修不好只记日志，首页照旧给「修好它」。串成一条队，同时来的几次读配置不会一起改同一份文件。
+   */
+  function autoRepairStaleCliHooks(): Promise<ProviderId[]> {
+    const run = autoRepairQueue.then(repairStaleAccountCliHooks, repairStaleAccountCliHooks)
+    autoRepairQueue = run.catch(() => [])
+    return run
+  }
+
+  async function repairStaleAccountCliHooks(): Promise<ProviderId[]> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    // 每个账号这次启动只查一遍：读配置很频繁，不能每次都去翻四家的文件（Windows 上还要读注册表）。
+    // Grok 换了命令行这种开着软件时才发生的事，交给打开 Grok 前那一道（repairGrokHooksBeforeLaunch）。
+    if (!owner || autoRepairCheckedOwners.has(owner)) return []
+    autoRepairCheckedOwners.add(owner)
+    const repaired: ProviderId[] = []
+    for (const provider of providerIds) {
+      if (provider === 'grok' && platform === 'win32') {
+        // 只装 Grok 时缺的那几条：这台电脑后来有了运行环境就补上（addMissingGrokHooks 自己看归属）。
+        if (await addMissingGrokHooks('startup')) repaired.push(provider)
+      }
+      let due = false
+      try {
+        due = shouldAutoRepairCliHooks({
+          stale: managedCliHooksState(provider).stale,
+          ownership: configOwnership.read(provider, inspectNativeProviderConfig(provider), owner),
+          attempted: autoRepairAttemptedCliHooks.has(provider),
+        })
+      } catch {
+        due = false
+      }
+      if (!due) continue
+      autoRepairAttemptedCliHooks.add(provider)
+      try {
+        await repairCliHooks(provider)
+        autoRepairedCliHooks.add(provider)
+        repaired.push(provider)
+        runtimeLog?.log('info', 'config', 'cli-hooks.auto-repaired', '打开软件时把指向旧位置的提醒设置改好了', { provider })
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'cli-hooks.auto-repair-failed', '打开软件时没能改好提醒设置，首页留着「修好它」', {
+          provider,
+          reason: credentialFailureReason(error),
+        })
+      }
+    }
+    return repaired
+  }
+
+  // 读不出来（比如路径里冒出了联接）就当动过：宁可留着「手动」保护，也不能让读配置的错误顶掉保存本来的错误。
+  function untouchedSince(provider: ProviderId, before: NativeConfigInspection): boolean {
+    try {
+      return sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))
+    } catch {
+      return false
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -5083,50 +7182,89 @@ export function createSystemService(
       const previousOwnership = configOwnership.read(payload.provider, before, owner)
       // `changed`（我们写过、之后被改动）同样不在放行之列：自动写入永远不覆盖
       // 用户或工具自己改出来的配置，首页只会提示，改不改由用户点。
-      if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing') {
+      const shadowRepair = ownership?.automatic === true && permitsShadowedCodexRepair(payload.provider, before, previousOwnership, payload.apiKey)
+      if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing' && !shadowRepair) {
         throw new Error('已有工具配置的来源未经确认，已保留原配置；请在工具配置中明确选择账号密钥')
       }
       if (ownership?.automatic && store.read().officialProviders?.includes(payload.provider)) {
         throw new Error('工具已选择官方账号，已保留原配置')
       }
       const model = payload.model.trim()
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = providerRelaySite(payload.provider, before)
+      const previousRoute = relaySiteForProviderBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl)
+      // 线路换了、自动写入跟着换过去的那一笔。工具开着也照样改（#941）：开着的进程要重开才用上新地址，
+      // 由渲染层在写完以后看它开没开、提示客户重开；不改的话它会一直停在原来那条线路上。
+      const followedRoute = ownership?.automatic === true && previousRoute !== null
+        && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
+        ? relayRouting.selection(activeSite.id)
+        : undefined
       const assertUnchanged = () => {
         assertOwner()
-        const current = inspectNativeProviderConfig(payload.provider)
-        if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
+        if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(payload.provider))) {
           throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
         }
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
+        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
       if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
       if (!apiKey) throw new Error('请先填写 API Key')
-      const availableModels = await fetchAvailableModels(apiKey)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
       if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
+      const cliHook = await resolveCliHookInvocation()
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
+      // 同上：要问一遍 Codex 命令行是哪一版，也放在「校验没变」之前。
+      const codexModelCatalog = payload.provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.
       const source = ownership?.source ?? (payload.apiKey.trim() ? 'manual'
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
+      const restoreOwnership = configOwnership.remember(payload.provider, before)
       await configOwnership.write(payload.provider, before, 'manual', owner)
-      assertUnchanged()
-      // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
-      // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
-      const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
       let result: ReturnType<typeof saveProviderConfig>
       try {
-        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels)
+        assertUnchanged()
+        // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
+        // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
+        const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
+        try {
+          result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+        } catch (error) {
+          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+          throw error
+        }
       } catch (error) {
-        if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+        // 上面那条「手动」防的是写到一半崩掉。没写成、配置也一点没动时（最常见的是工具开着、
+        // 文件被占用）要原样放回：不然客户关掉工具再保存一次就成功了，可这一次把「手动」当成了
+        // 原来的来源，「当前账号」从此变成「手动」，开机同步 Key、换账号、换连接线路都不再改它
+        // （10-06 写 #899 真机清单时看到）。账号中途换了就照旧留着「手动」：那一刻是谁在操作已经
+        // 说不清，宁可多挡一次自动写入。
+        const sameOwner = (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
+        if (restoreOwnership && sameOwner && untouchedSince(payload.provider, before)) {
+          await restoreOwnership().catch((restoreError: unknown) => {
+            runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '保存没成功，工具配置的来源记录也没能原样放回', {
+              provider: payload.provider,
+              reason: credentialFailureReason(restoreError),
+            })
+          })
+        }
         throw error
       }
-      await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
+      // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
+      await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner, relayTemplateRevision)
+      if (shadowRepair) runtimeLog?.log('info', 'config', 'codex-provider.auto-repaired', '开机时把 Codex 认不出的连接设置改好了，原来的设置已备份', { provider: payload.provider })
+      // 客服从日志看得出工具配置是什么时候、从哪条线路换到哪条的：只记线路 id，不记地址。
+      if (followedRoute) {
+        runtimeLog?.log('info', 'config', 'route.followed', '工具配置已换到当前连接线路', {
+          provider: payload.provider,
+          from: relaySiteEndpointIdForBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl),
+          to: followedRoute,
+        })
+      }
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
@@ -5137,24 +7275,33 @@ export function createSystemService(
   // 打开前的模型核对（tool-model-check.ts）。只认本软件用当前账号写的配置：官方账号、
   // 手填、被改动过的都不碰；刷新菜单走 saveConfig 的自动写入那道闸，与开机同步 Key
   // 同一套所有权规则，写一半回滚（I9）也照旧。
+  function modelCheckTarget(provider: ProviderId, accountOwnedOnly: boolean): ToolModelCheckTarget | null {
+    if (store.read().officialProviders?.includes(provider)) return null
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (!owner) return null
+    const config = inspectNativeProviderConfig(provider)
+    const apiKey = config.apiKey?.trim() ?? ''
+    const model = config.model.trim()
+    if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
+    if (accountOwnedOnly && configOwnership.read(provider, config, owner) !== 'account') return null
+    const site = activeRelaySite()
+    return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
+  }
+
   const toolModelChecker = createToolModelChecker({
     now: () => Date.now(),
-    target: (provider) => {
-      if (store.read().officialProviders?.includes(provider)) return null
-      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-      if (!owner) return null
-      const config = inspectNativeProviderConfig(provider)
-      const apiKey = config.apiKey?.trim() ?? ''
-      const model = config.model.trim()
-      if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
-      if (configOwnership.read(provider, config, owner) !== 'account') return null
-      const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-      return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
-    },
+    target: (provider) => modelCheckTarget(provider, true),
+    // 写入当中认人时不看来源记录：saveConfig 写之前会先把记录改成「手动」（写失败就停在受
+    // 保护的状态），按记录认人的话刷新永远在写到一半时作废，记录还留在「手动」（#562 起
+    // Claude Code 的菜单就是这样一次没刷成过）。来源是不是当前账号，由 saveConfig 的自动写入
+    // 那道闸进锁时自己把关。
+    identity: (provider) => modelCheckTarget(provider, false)?.identity ?? null,
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
-    pickerOutdated: (models, model) => claudeModelPickerNeedsRefresh(models, model, providerRoots),
-    refreshPicker: async (model, assertCurrent) => {
-      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
+    pickerOutdated: (provider, models, model) => provider === 'claude'
+      ? claudeModelPickerNeedsRefresh(models, model, providerRoots)
+      : codexModelCatalogOutdated(models, model),
+    refreshPicker: async (provider, model, assertCurrent) => {
+      await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
     upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
     markUpgradeOffered: async (provider, model) => {
@@ -5162,6 +7309,164 @@ export function createSystemService(
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })
+
+  /**
+   * 开机那轮因为工具可能开着而没做的（第二十六批 E）：哪几个工具的设置没补、Codex 的型号
+   * 名单有没有按账号核对。客户升级后头一回开星芒时 Codex 多半正开着，以前要等下次开机；
+   * 现在渲染层隔一阵来要一次（retry），只补这几样。记的是那一轮的账号，换了账号就作废。
+   */
+  let templateFillDebt: { owner: string; providers: readonly ProviderId[]; codexModelCatalog: boolean } | null = null
+
+  /**
+   * 换账号、退出、登录要先等跟账号有关的活都收尾（main.ts 的 quiesce 等 accountWork），补设置
+   * 那次调用也算在里面。它动手前要在本机看工具开没开（Windows 上起 PowerShell），开机那次还要
+   * 先等型号名单的本机核对；安全软件拖慢的电脑上这几步各自等到超时，加起来超过换账号肯等的
+   * 30 秒，客户就看到「账号服务请求超时」，被引去查网络。这几步都只是看：换账号前叫停
+   * （stopTemplateFillWaits）就不再等，还没看完的当成没看出来，不写、记成还欠着；已经在写的
+   * 照常写完（都在本机，很快）。真换了账号，欠的就作废。
+   * 每次调用开头拿当时那个 signal，叫停之后这次调用里后面的等待也都不等了。叫停一直管到换账号
+   * 那段等待结束（调返回的函数）：已经进了门、晚一步才走到这里的那次（ipc.ts 要先读备份用的账号
+   * 信息）也不等。上一次换账号超时了还在等、又来一次的，两次都放开才恢复。
+   */
+  let templateFillWaits = new AbortController()
+  let templateFillHolds = 0
+  function stopTemplateFillWaits(): () => void {
+    templateFillHolds += 1
+    templateFillWaits.abort()
+    let resumed = false
+    return () => {
+      if (resumed) return
+      resumed = true
+      templateFillHolds -= 1
+      if (!templateFillHolds) templateFillWaits = new AbortController()
+    }
+  }
+
+  /**
+   * 老客户的配置不跟着模板升级（第十七批第 2 条）：开机恢复账号只核对连没连上，一个字
+   * 不写。这里对「来源确认是当前账号、记录的模板版本落后」的配置补一次缺省项
+   * （fillRelayTemplateDefaults：只补缺的，用户写过的一律不动）。官方账号、手填、来源
+   * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，记进 pending 等渲染层
+   * 再来要。失败只记日志，不打扰用户，版本号不前进，下次开机再试。
+   */
+  async function fillToolTemplateDefaults(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ToolTemplateFillResult> {
+    const filled: ProviderId[] = []
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (!owner) return { filled }
+    function outdated(provider: ProviderId): boolean {
+      if (store.read().officialProviders?.includes(provider)) return false
+      const config = inspectNativeProviderConfig(provider)
+      if (!config.hasApiKey || !config.matchesRelay) return false
+      if (configOwnership.read(provider, config, owner) !== 'account') return false
+      const revision = configOwnership.templateRevision(provider, config)
+      return revision !== null && revision < relayTemplateRevision
+    }
+    const due = round.providers.filter(outdated)
+    if (!due.length) return { filled }
+    let report: RunningToolsReport
+    try {
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due), stopped)
+    } catch {
+      return { filled, pending: due }
+    }
+    // 补做那几次在日志里标出来，客服看得出开机那轮之后又试过几回。
+    const again = round.retry ? { retry: true } : {}
+    const pending: ProviderId[] = []
+    for (const provider of due) {
+      const busy = report.running.includes(provider) || report.unknown.includes(provider)
+        || (provider === 'codex' && report.codexDesktopRunning !== false)
+      if (busy) {
+        runtimeLog?.log('info', 'config', 'template-defaults.deferred', '工具可能正开着，这次先不补设置', { provider, ...again })
+        pending.push(provider)
+        continue
+      }
+      try {
+        const wrote = await serializeConfigWrite(async () => {
+          // 排队期间账号、配置都可能变了：进锁以后按同一套条件再判一次。
+          if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner || !outdated(provider)) return false
+          const site = providerRelaySite(provider, inspectNativeProviderConfig(provider))
+          // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
+          // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；
+          // 备份不成就不补。
+          const pending = relayTemplateDefaultsPending(provider, providerRoots, site.providerBaseUrls)
+          if (pending) backup?.(provider)
+          const result = pending ? fillRelayTemplateDefaults(provider, providerRoots, site.providerBaseUrls) : null
+          // 补的都是指纹之外的键，来源记录照旧是当前账号，只把版本号往前挪。
+          await configOwnership.write(provider, inspectNativeProviderConfig(provider), 'account', owner, relayTemplateRevision)
+          return result !== null
+        })
+        if (wrote) {
+          filled.push(provider)
+          runtimeLog?.log('info', 'config', 'template-defaults.filled', '已按新版模板给工具补齐设置', { provider, ...again })
+        }
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'template-defaults.failed', '给工具补齐设置没有完成，下次开机再试', { provider, reason: credentialFailureReason(error) })
+      }
+    }
+    return pending.length ? { filled, pending } : { filled }
+  }
+
+  /**
+   * 开机那一轮把 Codex 的型号名单对一遍：先在本机收回读不进的（不看账号），再按当前账号能用
+   * 的型号补上或刷新（tool-model-check.ts 的 syncPicker）。老客户升级以后配置不会重写，多半
+   * 也直接从开始菜单打开桌面端、不经过打开前那次核对，不在这里补，新型号就一直进不了菜单。
+   * 按账号刷新与补设置同一套规矩：Codex 开着或看不出开没开的这次不动（桌面端自己也会写
+   * config.toml），返回 true 记成还欠着；真要改先做一份与保存配置同样的备份，备份不成就不改。
+   * 按账号核对要先问一遍中转，放到后台去做，不等它。失败只记日志。
+   */
+  async function syncCodexModelCatalog(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<boolean> {
+    if (!serviceOptions.bundledCodexModelCatalogPath) return false
+    try {
+      await unlessStopped(guardCodexModelCatalogAtStartup, stopped)
+    } catch {
+      // 那次核对从不抛错，到这里只会是换账号叫停：核对照旧在后台做（main.ts 开机也起它）；欠不欠这次还没看，照原样记。
+      return round.codexModelCatalog
+    }
+    // 不是当前账号写的 Codex 配置本来就不按账号刷新，谈不上欠着，不必起进程看它开没开。
+    if (!round.codexModelCatalog || !modelCheckTarget('codex', true)) return false
+    let report: RunningToolsReport
+    try {
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex']), stopped)
+    } catch {
+      return true
+    }
+    if (report.running.includes('codex') || report.unknown.includes('codex') || report.codexDesktopRunning !== false) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-deferred', 'Codex 可能正开着，型号名单这次先不按账号刷新', round.retry ? { retry: true } : undefined)
+      return true
+    }
+    if (round.retry) runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-resumed', 'Codex 已经关了，型号名单补做一次按账号核对')
+    void toolModelChecker.syncPicker('codex', { beforeRefresh: () => backup?.('codex') }).catch(() => undefined)
+    return false
+  }
+
+  /**
+   * 开机那次：先补设置，再在本机看 Codex 开没开、型号名单欠不欠，两样都算进 pending 交回去；
+   * 按账号核对型号名单要先问一遍中转，补设置那句提示不等它。retry = 渲染层隔一阵来补做
+   * （第二十六批 E）：只做开机那轮欠下的，换了账号就什么都不做。
+   */
+  async function fillToolTemplateDefaultsThenSyncPickers(backup?: (provider: ProviderId) => void, retry = false): Promise<ToolTemplateFillResult> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const debt = templateFillDebt?.owner === owner ? templateFillDebt : null
+    if (retry && !debt) return { filled: [] }
+    const round: TemplateFillRound = retry && debt
+      ? { retry, providers: debt.providers, codexModelCatalog: debt.codexModelCatalog }
+      : { retry: false, providers: providerIds, codexModelCatalog: true }
+    const stopped = templateFillWaits.signal
+    let result: ToolTemplateFillResult
+    try {
+      result = await fillToolTemplateDefaults(backup, round, stopped)
+    } catch (error) {
+      void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
+      throw error
+    }
+    const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
+    const skipped = result.pending ?? []
+    templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
+    const pending = providerIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
+    // 客服看报告分得清是工具开着没补，还是给换账号让了路。
+    if (stopped.aborted) runtimeLog?.log('info', 'config', 'template-defaults.stopped', '要换账号了，补设置不再等本机检测，没补的下次再补', { pending, ...(round.retry ? { retry: true } : {}) })
+    return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
+  }
 
   function credentialFailureReason(error: unknown): string {
     return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
@@ -5219,8 +7524,41 @@ export function createSystemService(
     })
   }
 
-  async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
+  async function adoptRestoredConfig(
+    provider: ProviderId,
+    isAccountKey: (apiKey: string) => boolean,
+    options: { fromBackupsPage?: boolean } = {},
+  ): Promise<void> {
     await serializeConfigWrite(async () => {
+      // 恢复出来的 settings.json 不一定还带着星芒写的统计开关（#834 F03），对不上就作废那笔记录。
+      // 放在登记来源前面：那一步失败时这里也要做完。
+      if (provider === 'gemini') {
+        try {
+          forgetStaleGeminiUsageStatisticsRecord(providerRoots)
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'gemini.statistics-record.forget-failed', 'Gemini CLI 恢复备份后没能作废星芒写过的统计开关记录', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
+      // 星芒AI技能的记录也不跟着备份恢复：备份页恢复出来的星芒配置里技能关着，是客户自己关的
+      // （#834 F07），改用当前账号时不能打开。同样放在登记来源前面。
+      if (provider === 'codex' && options.fromBackupsPage) {
+        try {
+          const current = inspectNativeProviderConfig('codex')
+          const siteBaseUrl = providerRelaySite('codex', current).providerBaseUrls.codex
+          await adoptRestoredXingmangAiSkillOff({
+            userHome: providerRoots.userHome,
+            officialCodex: (store.read().officialProviders ?? []).includes('codex'),
+            configPath: path.join(providerRoots.codexHome, 'config.toml'),
+            isXingmangConfig: (config) => classifyCodexConfigProfile(config, siteBaseUrl) === 'relay',
+          })
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'codex.skill-record.adopt-failed', 'Codex 恢复备份后没能记下星芒AI技能是客户自己关的', {
+            reason: credentialFailureReason(error),
+          })
+        }
+      }
       const owner = serviceOptions.getExternalClientAccountId?.() ?? null
       const restored = inspectNativeProviderConfig(provider)
       const source = planRestoredConfigOwnership({
@@ -5236,7 +7574,7 @@ export function createSystemService(
 
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
-      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const activeSite = providerRelaySite(provider, inspectNativeProviderConfig(provider), true)
       // 与 saveConfig 对称：先放回官方 Key，放不回就不切；切换失败再把 Key 挪开。
       const restoredConsoleKey = provider === 'claude' && restoreOfficialCredentialsNow()
       let result: ReturnType<typeof switchProviderToOfficialAccount>
@@ -5266,12 +7604,17 @@ export function createSystemService(
   }
 
   return {
-    readStoredConfig: () => ({ ...store.read(), ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
-    updateStoredConfig: (update) => store.update(update),
+    readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.preferences },
+      relayRouteLines: relayRouting.lines(),
+      ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
+    updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
+      relayRouteLines: relayRouting.lines() }),
     inspectCodexReadiness,
     getConfig: buildConfigSummary,
     revealApiKey,
     saveConfig,
+    repairCliHooks,
+    autoRepairStaleCliHooks,
     switchToOfficialAccount,
     setOfficialSourcePreference,
     restoreOfficialCredentials,
@@ -5284,16 +7627,19 @@ export function createSystemService(
     refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,
     installNodeRuntime,
+    inspectWindowsProcessor,
     restartWindows,
     installPythonRuntime,
     installGitRuntime,
     installCli,
     cancelCliInstall,
     uninstallCli,
+    cleanUninstallLeftovers,
     inspectCliUpdate,
     installCodexDesktop,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop,
+    resetCodexDesktop,
     inspectCodexDesktopUpdate,
     launchProvider,
     inspectCodexDesktop,
@@ -5303,14 +7649,27 @@ export function createSystemService(
     setCodexDesktopLocale,
     launchCodexDesktop,
     inspectRunningTools,
-    checkToolModels: (provider: ProviderId) => toolModelChecker.check(provider),
+    checkToolModels: async (provider: ProviderId) => {
+      // 打开前那次核对一天只有一回，还要联网；命令行在星芒开着时被换成了旧版，名单读不进
+      // 它就起不来，所以每次打开前先在本机看一眼。最多等这么久，打开的人在等；没看完的
+      // 自己在后台接着做完。
+      if (provider === 'codex') await settleWithin(takeBackUnreadableCodexModelCatalog('before-launch'), codexModelCatalogLaunchGuardMs)
+      return toolModelChecker.check(provider)
+    },
+    guardCodexModelCatalogAtStartup,
+    fillToolTemplateDefaults: fillToolTemplateDefaultsThenSyncPickers,
+    stopTemplateFillWaits,
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,
+    cachedExternalClients,
     getLastExternalClients,
     checkExternalClientConnection,
     installExternalClient,
+    cancelExternalClientInstall,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),
+    onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
+    cleanupInstallLeftovers,
   }
 }

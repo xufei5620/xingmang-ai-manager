@@ -1,9 +1,10 @@
 import type { App } from 'electron'
+import type { LinuxAutostart } from '../linux-autostart'
 import { loginLaunchArgument } from '../login-launch'
 import { resolveRelaySite } from '../relay-sites'
 import type {
   PlatformActivityKind,
-  PlatformInstallNotice,
+  PlatformActivityDetail,
   PlatformNotificationKind,
   PlatformNotificationResult,
   PlatformPrivacyPreference,
@@ -27,16 +28,27 @@ export interface PlatformSystemDependencies {
   packaged: boolean
   executablePath: string
   resolveProxy(url: string): Promise<string>
+  /** Linux 的开机启动（~/.config/autostart 里那份文件）；Electron 在 Linux 上没有登录项。 */
+  linuxAutostart?: LinuxAutostart
+  /** 托盘建没建出来；null = 还不知道。只影响 Linux 那句说明。 */
+  trayAvailable?: () => boolean | null
   relaySiteId?: () => string | undefined
-  /** 本次运行是否因为系统代理连不上而改成了直连（见 electron/proxy-bypass.ts）。 */
+  /** 现在是否因为系统代理连不上而改成了直连；代理又连得上以后会改回去（见 electron/proxy-bypass.ts）。 */
   proxyBypassed?: () => boolean
+  /** 代理开着、只是不转发星芒时，账号和 AI 对话是不是已经改走直连（应用窗口照旧跟着代理）。 */
+  proxySiteDirect?: () => boolean
   onError?: (error: unknown) => void
   notify?: (
     kind: PlatformActivityKind | 'test',
     eventKey: string,
-    install?: PlatformInstallNotice,
+    detail?: PlatformActivityDetail,
   ) => PlatformNotificationResult
 }
+
+const startupTrayEnabledNote =
+  '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
+const startupTrayDisabledNote =
+  '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
 
 const proxyScopeNote =
   '这里只查看应用窗口如何连接。账号、AI 请求和工具安装继续使用各自原有的连接方式；此处不会更改电脑或工具的网络设置。'
@@ -52,14 +64,21 @@ export function summarizeSessionProxy(
   return { route: 'unknown', summary: '暂时无法确认应用窗口的连接路径' }
 }
 
-/** 直连是星芒替用户绕开坏代理的结果时写明原因，否则用户会以为自己的代理没生效。 */
+/**
+ * 直连是星芒替用户绕开坏代理的结果时写明原因，否则用户会以为自己的代理没生效。
+ * 代理开着、只是不转发星芒时，应用窗口照旧跟着代理，账号和 AI 对话却已经改了直连，
+ * 也写明，免得用户以为要去关代理（已知30）。
+ */
 export function describeSessionProxy(
   value: string,
   bypassed: boolean,
+  siteDirect = false,
 ): Pick<PlatformProxyStatus, 'route' | 'summary'> {
   const status = summarizeSessionProxy(value)
   if (bypassed && status.route === 'direct')
     return { route: 'direct', summary: '应用窗口当前直接连接（电脑里的代理连不上，本次已自动绕开）' }
+  if (siteDirect && status.route === 'proxy')
+    return { route: 'proxy', summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动改成直接连接）' }
   return status
 }
 
@@ -145,7 +164,9 @@ export class PlatformSystemService {
   }
 
   private startup(): PlatformSystemState['startup'] {
-    const { app, platform, packaged, executablePath } = this.dependencies
+    const { app, platform, packaged, executablePath, linuxAutostart } = this.dependencies
+    if (packaged && linuxAutostart && platform !== 'win32' && platform !== 'darwin')
+      return this.linuxStartup(linuxAutostart)
     if ((platform !== 'win32' && platform !== 'darwin') || !packaged)
       return {
         supported: false,
@@ -182,8 +203,31 @@ export class PlatformSystemService {
         : requested && !enabled
           ? '启动项已登记，但系统尚未允许自动运行。'
           : enabled
-            ? '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
-            : '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。',
+            ? startupTrayEnabledNote
+            : startupTrayDisabledNote,
+    }
+  }
+
+  // Linux 的任务栏不一定有托盘（linux-tray-host.ts）。没有时开机直接弹窗口
+  // （shouldRevealInitialWindow），说明就不能再说「在托盘里待命」。
+  private linuxStartup(autostart: LinuxAutostart): PlatformSystemState['startup'] {
+    let state = { requested: false, enabled: false }
+    try {
+      state = autostart.inspect()
+    } catch (error) {
+      this.dependencies.onError?.(error)
+    }
+    const tray = this.dependencies.trayAvailable?.() ?? true
+    return {
+      supported: true,
+      requested: state.requested,
+      enabled: state.enabled,
+      approvalRequired: false,
+      note: state.requested && !state.enabled
+        ? '开机启动项还在，但现在不会生效，可能在系统设置里被关掉了。把开关关掉再打开就好。'
+        : state.enabled
+          ? tray ? startupTrayEnabledNote : '开机后自动打开星芒窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。'
+          : tray ? startupTrayDisabledNote : '打开后，开机时会自动打开星芒窗口，开机头几分钟也不跟电脑抢资源。',
     }
   }
 
@@ -253,11 +297,14 @@ export class PlatformSystemService {
     return this.serial(async () => {
       if (!this.startup().supported)
         throw new Error('当前运行环境不能设置开机自动启动。')
-      const { app, platform, executablePath } = this.dependencies
-      app.setLoginItemSettings({
-        openAtLogin: enabled,
-        ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
-      })
+      const { app, platform, executablePath, linuxAutostart } = this.dependencies
+      if (linuxAutostart && platform !== 'win32' && platform !== 'darwin')
+        await linuxAutostart.set(enabled)
+      else
+        app.setLoginItemSettings({
+          openAtLogin: enabled,
+          ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
+        })
       const state = this.getState()
       if (state.startup.requested !== enabled)
         throw new Error('系统没有保存开机启动设置，请在系统设置中检查。')
@@ -275,7 +322,10 @@ export class PlatformSystemService {
           task: true,
           cliUpdate: true,
           announcement: true,
+          spend: true,
           acceleration: true,
+          cliTrouble: true,
+          cliTurn: true,
           ...current.notifications,
           [kind]: enabled,
         },
@@ -300,9 +350,9 @@ export class PlatformSystemService {
   notifyActivity(
     kind: PlatformActivityKind,
     eventKey: string,
-    install?: PlatformInstallNotice,
+    detail?: PlatformActivityDetail,
   ) {
-    return this.dependencies.notify?.(kind, eventKey, install) ?? 'unsupported'
+    return this.dependencies.notify?.(kind, eventKey, detail) ?? 'unsupported'
   }
 
   async getProxyStatus(): Promise<PlatformProxyStatus> {
@@ -315,6 +365,7 @@ export class PlatformSystemService {
       ...describeSessionProxy(
         await this.dependencies.resolveProxy(targetOrigin),
         this.dependencies.proxyBypassed?.() ?? false,
+        this.dependencies.proxySiteDirect?.() ?? false,
       ),
       note: proxyScopeNote,
     }

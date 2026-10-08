@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { relaySites } from './relay-sites'
+import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
@@ -11,6 +11,7 @@ import {
   ensureSafeDataDirectory,
   readSafeUtf8FileSync,
   removeSafeDataFile,
+  renameWithTransientRetry,
 } from './safe-local-data'
 
 export type AppTheme = 'light' | 'dark'
@@ -54,6 +55,15 @@ export interface AppSettings {
    */
   relaySiteId?: string
   /**
+   * 每个账号站的连接线路：auto（「自动」）、direct（「只用直连」）、primary（「只用默认线路」）。
+   * 缺省（整个字段或某个站没写）算「自动」；#872 起存下的 direct / primary 原样当后两个。
+   */
+  relayEndpointIds?: RelayRoutePreferences
+  /** IPC runtime snapshot only: the preferences applied at startup, never persisted by settings writes. */
+  readonly activeRelayEndpointIds?: RelayRoutePreferences
+  /** IPC runtime snapshot only: the line each site uses right now ('auto' can move during a run). */
+  readonly relayRouteLines?: RelayRouteLines
+  /**
    * Pinned download-source order. Absent = 'auto' (probe the region, the
    * entire install base's behavior pre-2.4). Unknown values degrade to
    * absent so a newer version's policy string can never fail the read.
@@ -80,6 +90,12 @@ export interface AppSettings {
    * 等于没修。只有显式关闭才落盘,所以文件里出现这个字段就代表用户亲手关过。
    */
   crashReporting?: boolean
+  /**
+   * 已经用一次性卡片告诉过用户「出错时会把错误报告发到海外的错误收集服务」。只落 true：
+   * 老版本没有这个字段，读出来就是「还没说过」，升级后说一次。和 crashReporting 的开关
+   * 互不影响——告知不等于同意，也不改上报的缺省。
+   */
+  crashReportingNoticeShown?: boolean
   /**
    * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
    * needs a loopback CDP port which stays open for the whole Codex session and
@@ -157,11 +173,14 @@ export interface AppSettingsUpdate {
   runDiagnosticsOnStartup?: boolean
   sidebarMoreExpanded?: boolean
   relaySiteId?: string
+  relayEndpointIds?: RelayRoutePreferences
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
   crashReporting?: boolean
+  /** true is sticky and false is ignored, like trayHintShown. */
+  crashReportingNoticeShown?: boolean
   codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
@@ -227,6 +246,17 @@ function parseRelaySiteId(value: unknown): string | undefined {
   return typeof value === 'string' && relaySites.some((site) => site.id === value)
     ? value
     : undefined
+}
+
+/** Stored preferences cannot supply a URL or borrow another account site's line. */
+export function parseRelayRoutePreferences(value: unknown): RelayRoutePreferences | undefined {
+  if (!isRecord(value)) return undefined
+  const preferences: RelayRoutePreferences = {}
+  for (const siteId of relayRouteSiteIds) {
+    const preference = value[siteId]
+    if (relayRoutePreferenceAllowed(siteId, preference)) preferences[siteId] = preference
+  }
+  return Object.keys(preferences).length ? preferences : undefined
 }
 
 function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
@@ -301,6 +331,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   // check would silently swallow a (pathological but type-legal) empty-string
   // site id, and calling the parser twice invites the two results drifting.
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
+  const relayEndpointIds = parseRelayRoutePreferences(value.relayEndpointIds)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
   const codexDesktopChineseRuntimePatch = parseChineseRuntimePatch(value.codexDesktopChineseRuntimePatch)
@@ -328,6 +359,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // than failing the whole read, matching every other optional field here.
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(relayEndpointIds !== undefined ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
@@ -335,6 +367,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(value.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
@@ -410,12 +443,15 @@ async function performAtomicSettingsWrite(
       assertSafeDataFile(filePath, '应用设置文件')
       assertSafeDataFile(backupPath, '应用设置备份')
       await fsPromises.copyFile(filePath, backupTemporaryPath, fs.constants.COPYFILE_EXCL)
-      await fsPromises.rename(backupTemporaryPath, backupPath)
+      await renameWithTransientRetry(backupTemporaryPath, backupPath, () => {
+        assertSafeDataFile(backupPath, '应用设置备份')
+      })
     }
 
-    await hooks.beforeReplace?.(filePath)
-    assertSafeDataFile(filePath, '应用设置文件')
-    await fsPromises.rename(temporaryPath, filePath)
+    await renameWithTransientRetry(temporaryPath, filePath, async () => {
+      await hooks.beforeReplace?.(filePath)
+      assertSafeDataFile(filePath, '应用设置文件')
+    })
   } finally {
     await Promise.allSettled([
       removeIfPresent(temporaryPath),
@@ -447,6 +483,10 @@ export function writeAppSettings(
 export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): AppSettings {
   const sidebarMoreExpanded = update.sidebarMoreExpanded ?? base.sidebarMoreExpanded ?? false
   const relaySiteId = update.relaySiteId ?? base.relaySiteId
+  const relayEndpointIds = {
+    ...parseRelayRoutePreferences(base.relayEndpointIds),
+    ...parseRelayRoutePreferences(update.relayEndpointIds),
+  }
   const mirrorPolicy = update.mirrorPolicy === 'auto'
     ? undefined
     : update.mirrorPolicy ?? base.mirrorPolicy
@@ -485,11 +525,13 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     runDiagnosticsOnStartup: update.runDiagnosticsOnStartup ?? base.runDiagnosticsOnStartup,
     ...(sidebarMoreExpanded ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(Object.keys(relayEndpointIds).length ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),

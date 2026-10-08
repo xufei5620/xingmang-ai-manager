@@ -7,7 +7,8 @@
 #   2. customHeader 里的目录页守卫：不许把程序装进别人的非空目录。
 #   3. customRemoveFiles：卸载时只删本程序自己装进去的东西。
 #   4. customInit：系统太旧（Windows 10 以下）时一开始就说明并退出。
-#   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项。
+#   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项，再删掉第 1 件事
+#      补建在当前用户桌面和开始菜单里的图标。
 #   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录和聊天记录」勾选框（默认不勾）。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
@@ -181,7 +182,7 @@
         Return
       ${EndIf}
       Push $R0
-      DetailPrint "正在还原系统代理，并移除开机启动项。"
+      DetailPrint "正在还原系统代理，移除开机启动项，并收回写进 AI 工具里的提醒设置。"
       ClearErrors
       ${If} $xingmangClearLogin == "1"
         DetailPrint "正在清除登录记录。"
@@ -192,13 +193,119 @@
       ${If} ${Errors}
         DetailPrint "卸载清理没能启动，可以忽略，不影响卸载。"
       ${ElseIf} $R0 == 32
-        DetailPrint "这次是用另一个管理员账号卸载的，原来那个账号的开机启动项和登录记录没有动。"
+        DetailPrint "这次是用另一个管理员账号卸载的，原来那个账号的开机启动项、登录记录和工具里的提醒设置都没有动。"
       ${ElseIf} $R0 != 0
         # 退出码只给排查的人看，单独一行，不混进给用户读的那句。
         DetailPrint "卸载清理已完成，有几项没清掉，不影响卸载。"
         DetailPrint "（排查用代码：$R0）"
       ${EndIf}
       Pop $R0
+    FunctionEnd
+
+    !ifdef DO_NOT_CREATE_DESKTOP_SHORTCUT & DO_NOT_CREATE_START_MENU_SHORTCUT
+      # 两种图标都不建就没有要删的，下面这个函数没人调用，makensis -WX 会报错。
+    !else
+      # 删一个补建的图标，入栈它的完整路径。
+      #
+      # 卸载程序是提权跑的，这两个图标却在当前用户自己就能改的地方：用户这边的程序
+      # 可以把桌面、开始菜单换成联接，或者在这个名字上放一个符号链接，让提权的删除
+      # 落到别的文件上。所以不用 Delete，而是先不跟链接地打开它，确认打开的就是这个
+      # 路径上的那个文件（路径里没有哪一段被联接、符号链接转到别处），它不是文件夹、
+      # 也不是指向别处的链接，再经同一个句柄删掉：删的就是核对过的那一个，核对完再
+      # 换也没用。哪一条不对都不删，留一个点不开的图标总比删错东西好。硬链接不用管，
+      # 删掉的只是这一个名字，内容在别的名字上原样还在。
+      Function un.xingmangDeleteFallbackShortcut
+        Exch $R0
+        Push $R1
+        Push $R2
+        Push $R3
+        Push $R4
+        Push $R5
+        Push $R6
+        StrCpy $R6 "0"
+        # DELETE | FILE_READ_ATTRIBUTES，读、写、删都允许别人同时打开，OPEN_EXISTING，
+        # FILE_FLAG_OPEN_REPARSE_POINT：路径最后一段是链接时打开的是链接本身。
+        System::Call 'kernel32::CreateFileW(w R0, i 0x10080, i 7, p 0, i 3, i 0x200000, p 0) p .R1'
+        ${If} $R1 <> -1
+          # 系统给的是 \\?\C:\... 或 \\?\UNC\服务器\共享\...，要删的路径按同样的写法拼出来再比。
+          System::Call 'kernel32::GetFinalPathNameByHandleW(p R1, w .R2, i ${NSIS_MAX_STRLEN}, i 0) i .R3'
+          StrCpy $R4 $R0 2
+          ${If} $R4 == "\\"
+            StrCpy $R4 $R0 "" 2
+            StrCpy $R4 "\\?\UNC\$R4"
+          ${Else}
+            StrCpy $R4 "\\?\$R0"
+          ${EndIf}
+          ${If} $R3 > 0
+          ${AndIf} $R3 < ${NSIS_MAX_STRLEN}
+          ${AndIf} $R2 == $R4
+            # FILE_ATTRIBUTE_TAG_INFO：属性，和重解析点的标记。
+            System::Call '*(i, i) p .R2'
+            System::Call 'kernel32::GetFileInformationByHandleEx(p R1, i 9, p R2, i 8) i .R3'
+            System::Call '*$R2(i .R4, i .R5)'
+            System::Free $R2
+            ${If} $R3 <> 0
+              StrCpy $R6 "1"
+              # 文件夹不删。
+              IntOp $R3 $R4 & 0x10
+              ${If} $R3 <> 0
+                StrCpy $R6 "0"
+              ${EndIf}
+              # 符号链接、联接这类指向别处的重解析点不删；OneDrive 占位符那类不指向别处的照删。
+              IntOp $R3 $R4 & 0x400
+              IntOp $R5 $R5 & 0x20000000
+              ${If} $R3 <> 0
+              ${AndIf} $R5 <> 0
+                StrCpy $R6 "0"
+              ${EndIf}
+            ${EndIf}
+            ${If} $R6 == "1"
+              # FileDispositionInfo：句柄关掉时删除。
+              System::Call 'kernel32::SetFileInformationByHandle(p R1, i 4, *i 1, i 4) i'
+            ${EndIf}
+          ${EndIf}
+          System::Call 'kernel32::CloseHandle(p R1)'
+        ${EndIf}
+        Pop $R6
+        Pop $R5
+        Pop $R4
+        Pop $R3
+        Pop $R2
+        Pop $R1
+        Pop $R0
+      FunctionEnd
+    !endif
+
+    # 公共桌面、公共开始菜单写不进去的电脑上，customInstall 把图标补建在执行安装的
+    # 这个用户自己的桌面和开始菜单里。模板卸载时只删 setLinkVars 在「所有用户」
+    # 上下文里算出的那两个，补建的这两个没人删：卸完留着点不开的图标；以后重装到
+    # 别的文件夹，customInstall 看见同名图标还在，也不再补。
+    #
+    # 所以这里删的就是补建时写的那几个固定路径：图标名是编译期常量，不用通配符，
+    # 不带 /r，每一个都经 un.xingmangDeleteFallbackShortcut 核对过才删。只在真卸载时
+    # 调（见 customUnInstall）：升级时新版不补图标，这时删了图标就真没了。普通账号输
+    # 管理员密码安装、卸载时，补建和删除都落在那个管理员自己的桌面上。
+    Function un.xingmangRemoveFallbackShortcuts
+      # 按当前用户安装时，模板删的本来就是当前用户那两个；带 --keep-shortcuts 时
+      # 跟模板一样一个都不删。
+      ${If} $installMode != "all"
+      ${OrIf} ${isKeepShortcuts}
+        Return
+      ${EndIf}
+      SetShellVarContext current
+      !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
+        !insertmacro xingmangRemoveFallbackShortcut "$DESKTOP\${SHORTCUT_NAME}.lnk"
+      !endif
+      !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+        !ifdef MENU_FILENAME
+          !insertmacro xingmangRemoveFallbackShortcut "$SMPROGRAMS\${MENU_FILENAME}\${SHORTCUT_NAME}.lnk"
+          # 不带 /r：文件夹里还有别的东西就留着。
+          RMDir "$SMPROGRAMS\${MENU_FILENAME}"
+        !else
+          !insertmacro xingmangRemoveFallbackShortcut "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
+        !endif
+      !endif
+      !insertmacro xingmangRestoreShellVarContext
     FunctionEnd
 
     # 卸载欢迎页上加一个勾选框。欢迎页正文标签占到 175u（MUI2 Welcome.nsh：从 45u
@@ -356,12 +463,22 @@
   Pop $R0
 !macroend
 
+# 卸载时删一个补建的图标。跟模板删公共图标一样先 WinShell::UninstShortcut；删本身
+# 交给 un.xingmangDeleteFallbackShortcut，为什么不直接 Delete 见那里。
+!macro xingmangRemoveFallbackShortcut LinkPath
+  WinShell::UninstShortcut "${LinkPath}"
+  Push "${LinkPath}"
+  Call un.xingmangDeleteFallbackShortcut
+!macroend
+
 # 卸载区段里，这个宏在 CHECK_APP_RUNNING 已经结束掉程序之后、删文件之前执行。
 # 升级安装也会以 --updated 跑一遍旧版的卸载程序：那时不能删开机项（用户的开关
-# 会被悄悄关掉），也不必动代理（新版启动时会自己恢复），所以只在真正卸载时做。
+# 会被悄悄关掉），也不必动代理（新版启动时会自己恢复），补建的图标也得留着
+# （新版不会再补），所以只在真正卸载时做。
 !macro customUnInstall
   ${IfNot} ${isUpdated}
     Call un.xingmangUninstallCleanup
+    Call un.xingmangRemoveFallbackShortcuts
   ${EndIf}
 !macroend
 
@@ -388,7 +505,8 @@
 # 所以这里只做加法：缺了才补，补不上公共桌面就退回执行安装的这个用户自己的
 # 桌面。已经存在的快捷方式一律不碰，升级安装因此既不会多出第二个图标，也不会
 # 把用户自己挪过位置或改过名字的那一个删掉。更新器拉起的静默安装不走这里，
-# 用户主动删掉的图标不会被复活。
+# 用户主动删掉的图标不会被复活。补到当前用户那里的图标，模板卸载时不管，由
+# un.xingmangRemoveFallbackShortcuts 按同样的路径删掉，两边要一起改。
 #
 # 这段脚本在提权的安装进程里执行，所以只允许出现 CreateShortCut 与路径判断，
 # 不读注册表以外的外部输入，也永远不删除任何文件。

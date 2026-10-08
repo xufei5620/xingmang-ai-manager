@@ -152,7 +152,12 @@ describe('macos-command-line-tools', () => {
   it('tells the customer why the built-in command does not count and how to fix it', () => {
     const notice = commandLineToolsShimNotice('git')
     expect(notice).toContain('空壳')
-    expect(notice).toContain('xcode-select --install')
+    // Mac 上的 Git 由首页按钮弹出苹果的安装窗口（第十六批 2），不再叫客户开终端。
+    expect(notice).toContain('「安装 Git」')
+    expect(notice).not.toContain('终端')
     expect(notice).not.toMatch(/[。.]$/)
+    const python = commandLineToolsShimNotice('python3')
+    expect(python).toContain('xcode-select --install')
+    expect(python).not.toMatch(/[。.]$/)
   })
 })

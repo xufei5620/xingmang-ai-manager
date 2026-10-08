@@ -19,7 +19,9 @@ import {
   detachHostNotifier,
   type HostNotifier,
 } from './host-notification-bridge'
-import { proxyBypassActive } from './proxy-bypass-bridge'
+import { proxyBypassActive, proxySiteDirectActive } from './proxy-bypass-bridge'
+import { trayAvailability } from './tray-availability-bridge'
+import { createLinuxAutostart } from '../linux-autostart'
 import {
   createPlatformNotifications,
   type PlatformNotificationRuntime,
@@ -47,12 +49,16 @@ export function installPlatformSystemApi(
   let notifications: ReturnType<typeof createPlatformNotifications> | null =
     null
   // main.ts 与这里互不 import，加速那两条通知靠这个转接口过来。
-  const hostNotifier: HostNotifier = (request) =>
-    notifications?.notifyHost(
+  const hostNotifier: HostNotifier = (request) => {
+    if (!notifications) return 'unsupported'
+    if ('terminal' in request)
+      return notifications.notifyTerminal(request.terminal, request.eventKey)
+    return notifications.notifyHost(
       request.event,
       request.eventKey,
       request.onClick,
-    ) ?? 'unsupported'
+    )
+  }
   const registrations = new Map<Session, string>()
   const extraPreload = path.resolve(
     options.platformPreloadPath ?? path.join(__dirname, 'preload.js'),
@@ -118,7 +124,10 @@ export function installPlatformSystemApi(
               task: true,
               cliUpdate: true,
               announcement: true,
+              spend: true,
               acceleration: true,
+              cliTrouble: true,
+              cliTurn: true,
               ...store.read().notifications,
             }),
             focusMainWindow: () => {
@@ -150,15 +159,25 @@ export function installPlatformSystemApi(
           platform: process.platform,
           packaged: options.app.isPackaged,
           executablePath: process.execPath,
+          ...(process.platform !== 'win32' && process.platform !== 'darwin'
+            ? {
+                linuxAutostart: createLinuxAutostart({
+                  env: process.env,
+                  executablePath: process.execPath,
+                }),
+              }
+            : {}),
+          trayAvailable: trayAvailability,
           relaySiteId: () => existing.read().relaySiteId,
           proxyBypassed: proxyBypassActive,
+          proxySiteDirect: proxySiteDirectActive,
           resolveProxy: (url) => {
             if (!owner || owner.isDestroyed()) throw new Error('主窗口已关闭。')
             return owner.session.resolveProxy(url)
           },
           onError: options.onError,
-          notify: (kind, key, install) =>
-            notifications?.notify(kind, key, install) ?? 'unsupported',
+          notify: (kind, key, detail) =>
+            notifications?.notify(kind, key, detail) ?? 'unsupported',
         })
         unsubscribe = service.subscribe((state) => {
           if (

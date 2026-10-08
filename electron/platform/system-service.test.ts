@@ -238,6 +238,64 @@ describe('platform system preferences', () => {
       expect(state.app.setLoginItemSettings).not.toHaveBeenCalled()
     }
   })
+  it('turns Linux autostart on and off through the XDG launcher, never through Electron login items', async () => {
+    const state = setup('linux')
+    let file = { requested: false, enabled: false }
+    const linuxAutostart = {
+      inspect: vi.fn(() => ({ ...file })),
+      set: vi.fn(async (enabled: boolean) => { file = { requested: enabled, enabled } }),
+    }
+    let tray: boolean | null = true
+    const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart, trayAvailable: () => tray })
+
+    expect(service.getState().startup).toEqual({
+      supported: true, requested: false, enabled: false, approvalRequired: false,
+      note: '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。',
+    })
+    await expect(service.setStartup(true)).resolves.toMatchObject({ startup: { requested: true, enabled: true } })
+    expect(linuxAutostart.set).toHaveBeenLastCalledWith(true)
+    expect(service.getState().startup.note).toBe('开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。')
+    await expect(service.setStartup(false)).resolves.toMatchObject({ startup: { requested: false, enabled: false } })
+    expect(linuxAutostart.set).toHaveBeenLastCalledWith(false)
+    expect(state.app.getLoginItemSettings).not.toHaveBeenCalled()
+    expect(state.app.setLoginItemSettings).not.toHaveBeenCalled()
+
+    // 任务栏上没地方放托盘时开机直接弹窗口，说明不能再说「在托盘里待命」。
+    tray = false
+    expect(service.getState().startup.note).toBe('打开后，开机时会自动打开星芒窗口，开机头几分钟也不跟电脑抢资源。')
+    file = { requested: true, enabled: true }
+    expect(service.getState().startup.note).toBe('开机后自动打开星芒窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。')
+    tray = null
+    expect(service.getState().startup.note).toContain('托盘')
+  })
+  it('says how to fix a Linux launcher the desktop switched off', () => {
+    const state = setup('linux')
+    const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart: { inspect: () => ({ requested: true, enabled: false }), set: vi.fn() } })
+    expect(service.getState().startup).toMatchObject({ supported: true, requested: true, enabled: false, note: expect.stringContaining('关掉再打开') })
+  })
+  it('reports a Linux launcher it cannot read as off and keeps going', () => {
+    const state = setup('linux')
+    const onError = vi.fn()
+    const service = new PlatformSystemService({ ...state.dependencies, onError, linuxAutostart: { inspect: () => { throw new Error('boom') }, set: vi.fn() } })
+    expect(service.getState().startup).toMatchObject({ supported: true, requested: false, enabled: false })
+    expect(onError).toHaveBeenCalled()
+  })
+  it('keeps Linux autostart off in development and ignores the Linux launcher on Windows and macOS', async () => {
+    const linuxAutostart = { inspect: vi.fn(() => ({ requested: true, enabled: true })), set: vi.fn(async () => undefined) }
+    const development = setup('linux', false)
+    const devService = new PlatformSystemService({ ...development.dependencies, linuxAutostart })
+    expect(devService.getState().startup).toMatchObject({ supported: false, note: '开发模式不设置开机自动启动。' })
+    await expect(devService.setStartup(true)).rejects.toThrow('不能设置')
+    for (const platform of ['win32', 'darwin']) {
+      const state = setup(platform)
+      const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart, trayAvailable: () => false })
+      expect(service.getState().startup.note).toBe('打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。')
+      await service.setStartup(true)
+      expect(state.app.setLoginItemSettings).toHaveBeenCalled()
+    }
+    expect(linuxAutostart.inspect).not.toHaveBeenCalled()
+    expect(linuxAutostart.set).not.toHaveBeenCalled()
+  })
   it('reads only the fixed application route and never claims Node traffic was changed', async () => {
     const state = setup()
     const proxy = await state.service.getProxyStatus()
@@ -270,6 +328,19 @@ describe('platform system preferences', () => {
     // A proxy route is reported as it is; the bypass note only explains DIRECT.
     expect(describeSessionProxy('PROXY 127.0.0.1:7890', true).route).toBe(
       'proxy',
+    )
+  })
+  it('says the account and AI chat already go direct while the window still follows the proxy', () => {
+    // 已知30：代理开着、只是不转发星芒时，只有连星芒的请求改了直连。
+    expect(describeSessionProxy('PROXY 127.0.0.1:7890', false, true)).toEqual({
+      route: 'proxy',
+      summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动改成直接连接）',
+    })
+    expect(describeSessionProxy('PROXY 127.0.0.1:7890', false, false).summary).toBe(
+      '应用窗口当前通过转发连接',
+    )
+    expect(describeSessionProxy('DIRECT', false, true).summary).toBe(
+      '应用窗口当前直接连接',
     )
   })
   it('persists granular notification and privacy preferences without any network or startup mutation', async () => {

@@ -1,10 +1,12 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { macDesktopTutorialTopic, macRuntimeTutorialTopic, type accountTabs, type settingsGroups } from './business';
+import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
 import { runtimeButtonLabel, runtimeHomebrewCommand } from '../features/tools/runtime-install-guide';
+import type { WindowOs } from '../features/app/window-os';
+import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 
 export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'acceleration' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
 
@@ -50,6 +52,35 @@ export interface TutorialTopic {
 export const macKeychainTutorialTitle = 'Mac 更新后弹出钥匙串密码框？';
 export const macKeychainTutorialDetail = 'Mac 上换新版本后第一次打开，系统可能提示「星芒AI管理工具」想使用钥匙串里「xingmang-ai-manager Safe Storage」的信息。这是工具箱在读你本机保存的登录信息：输入这台 Mac 的开机密码，点「始终允许」就好，换新版本后一般只问这一次。点了「拒绝」会像退出了登录，下次打开还会再问。Windows 不会出现这个提示。';
 
+// 更新页「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
+// 缓存、临时目录这类词；删之前先看清楚是什么，别让客户把项目文件清掉。
+export const updateDiskCleanupTitle = '电脑磁盘快满了，更新下不下来？';
+// 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了更新页，收尾那句换成门自己的按钮。
+export const updateDiskCleanupSteps = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。';
+export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。`;
+// Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
+export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
+
+// 技能页选到不能在这里导入的工具时，「看怎么放」打开技能那篇并展开这一条。
+export const skillImportTutorialExtra = 'Claude Code、Grok CLI 没有导入按钮？';
+
+export function updateDiskCleanupStepsFor(os: WindowOs): string {
+  return os === 'linux' ? linuxUpdateDiskCleanupSteps : updateDiskCleanupSteps;
+}
+
+// 第一章的登录这一步和读完的两句提醒，Windows / Mac 版和 Linux 版共用。
+const signInTutorialStep: TutorialStep = {
+  title: '登录星芒账号',
+  where: '工具箱左下角 → 账号',
+  detail: '用你自己的星芒账号登录。左下角已经显示账号名字的，直接看第 2 步。',
+  bullets: ['点左下角账号区域，输入账号和密码。', '没有账号就按登录窗口里的注册入口操作。'],
+  expected: '左下角显示你的账号名字。',
+  illustration: 'account',
+  action: '打开个人中心',
+  page: 'account',
+};
+const firstUseReminders = ['AI 写出来的代码和给出的结论都可能出错，合并或执行之前自己再过一遍。', '粘贴来路不明的网页、文档或日志时留个心眼，里面可能藏着让 AI 去做别的事的指令。'] as const;
+
 export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: 'start',
@@ -59,24 +90,15 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     minutes: 5,
     keywords: ['新手', '入门', '第一次', '不会用', '安装', '登录', '首页', 'Codex', '桌面端', '图形界面'],
     steps: [
-      {
-        title: '登录星芒账号',
-        where: '工具箱左下角 → 账号',
-        detail: '用你自己的星芒账号登录。左下角已经显示账号名字的，直接看第 2 步。',
-        bullets: ['点左下角账号区域，输入账号和密码。', '没有账号就按登录窗口里的注册入口操作。'],
-        expected: '左下角显示你的账号名字。',
-        illustration: 'account',
-        action: '打开个人中心',
-        page: 'account',
-      },
+      signInTutorialStep,
       {
         title: '装好 Codex 桌面端',
         where: '工具箱首页 → Codex 桌面端',
         detail: '找准「Codex 桌面端」这一行。已经显示版本号的，不用重复安装。',
-        bullets: ['Windows：点「安装」，等进度结束。', 'Mac：先在应用外装好官方 Codex App，再回首页点「重新检测」。'],
+        bullets: ['Windows：点「安装」，等进度结束。', 'Mac：也是点「安装」，等进度结束；装好后它在「应用程序」里叫 ChatGPT。'],
         expected: 'Codex 桌面端显示已安装版本。',
         illustration: 'desktop-install',
-        extra: [{ title: '下载完还不算装好？', detail: 'Mac 按安装包说明完成安装；要求拖入「应用程序」时要完成这一步。Windows 安装报错时按提示处理，详细步骤见「Codex 桌面端怎么安装？」。桌面端不用先装 Codex CLI、Node.js 或 Python。' }],
+        extra: [{ title: '安装报错怎么办？', detail: 'Windows 安装报错时按提示处理，详细步骤见「Codex 桌面端怎么安装？」。Mac 一键安装没成功时，也可以照「Mac 上装桌面端」那一章自己从官网下载安装。桌面端不用先装 Codex CLI、Node.js 或 Python。' }, { title: '装的时候能走开吗？', detail: '可以。装工具、装 Codex 桌面端和下载新版本的时候，电脑不会自动睡着（屏幕照样会按你的设置关），装完就恢复平常的睡眠设置。合上笔记本盖子还是会睡，别合盖。' }],
         action: '去首页找 Codex 桌面端',
         page: 'home',
       },
@@ -99,12 +121,12 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         example: '你好，请用中文告诉我你能帮我做什么。',
         expected: 'Codex 回了一段完整文字，你就可以开始用了。',
         illustration: 'desktop-message',
-        extra: [{ title: '提示 Codex 已在运行？', detail: '点「打开窗口」回到现有窗口。刚改过配置，需要重新读取时，先保存任务再选「重启 Codex」。' }],
+        extra: [{ title: '提示 Codex 已在运行？', detail: '点「打开窗口」回到现有窗口。刚改过配置，需要重新读取时，先保存任务再选「重启 Codex」；Mac 上不会出这个提示，要先在 Codex 窗口里按 Command + Q 完全退出，再回首页点「打开」。' }],
         action: '回首页打开 Codex',
         page: 'home',
       },
     ],
-    reminders: ['AI 写出来的代码和给出的结论都可能出错，合并或执行之前自己再过一遍。', '粘贴来路不明的网页、文档或日志时留个心眼，里面可能藏着让 AI 去做别的事的指令。'],
+    reminders: firstUseReminders,
   },
   {
     id: 'install',
@@ -112,7 +134,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     lead: 'Windows 和 Mac 走不同的安装步骤，选你正在用的电脑。',
     category: 'start',
     minutes: 4,
-    keywords: ['Codex', '桌面端', 'Windows', 'Mac', 'macOS', '苹果', '安装', '下载', '已安装', '未安装', '检测失败', '商店'],
+    keywords: ['Codex', '桌面端', 'Windows', 'Mac', 'macOS', '苹果', 'ChatGPT', '安装', '下载', '已安装', '未安装', '检测失败', '商店'],
     steps: [
       {
         title: '确认看的是「Codex 桌面端」',
@@ -130,25 +152,25 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '安装由工具箱完成，不用先装 Node.js 或 Python。',
         bullets: ['点一次「安装」，等待下载和安装进度结束。', '出现版本号后再看账号连接状态。'],
         expected: 'Codex 桌面端显示版本号。',
-        extra: [{ title: '安装报错或要求去微软商店？', detail: '按错误提示完成商店安装后回来「重新检测」。下载失败先看具体原因；「更多」→「安装卸载」可查看安装日志。' }],
+        extra: [{ title: '安装报错，或者电脑上没有微软商店？', detail: '电脑没有微软商店也能装，星芒会改用 OpenAI 官网的离线安装包或国内线路；装不上时按错误框里的按钮走，装好后回来「重新检测」。「更多」→「安装卸载」可查看安装日志。' }],
         action: '去首页安装桌面端',
         page: 'home',
       },
       {
-        title: 'Mac：装好官方应用，再回来检测',
-        where: 'Mac 官方安装包 → 工具箱首页 → 重新检测',
-        detail: 'Mac 需要在工具箱外安装官方 Codex App。',
-        bullets: ['从官方渠道下载 Mac 安装包，按说明完成安装。', '要求拖入「应用程序」时先完成拖入，再打开应用。', '回工具箱首页点「重新检测」。'],
-        expected: '工具箱显示 Codex 桌面端已安装。',
-        extra: [{ title: 'Mac 需要先装 Homebrew 吗？', detail: '使用桌面端不用装 Homebrew、Node.js 或 Codex CLI。「Mac 上装 Node.js 和 Python」一章只用于命令行工具。' }],
-        action: '回首页重新检测',
+        title: 'Mac：点安装，等它装完',
+        where: '工具箱首页 → Codex 桌面端 → 安装',
+        detail: '工具箱会从 OpenAI 官网下载 Mac 版，确认是官方原版后放进「应用程序」。Mac 版的名字是 ChatGPT。',
+        bullets: ['点一次「安装」，等下载和安装进度结束；安装包有六七百 MB，网速慢要多等一会儿。', '「应用程序」里已经有旧版 ChatGPT 的，先把它移到废纸篓再点「安装」。', '出现版本号后再看账号连接状态。'],
+        expected: 'Codex 桌面端显示版本号。',
+        extra: [{ title: 'Mac 需要先装 Homebrew 吗？', detail: '使用桌面端不用装 Homebrew、Node.js 或 Codex CLI。「Mac 上准备 Node.js 和 Python」一章只用于命令行工具。' }, { title: '一键安装没成功？', detail: '按错误框里的按钮走；也可以照「Mac 上装桌面端」那一章自己从官网下载安装，装好后回来「重新检测」。' }],
+        action: '去首页安装桌面端',
         page: 'home',
       },
       {
         title: '装好了却没显示，先重新检测',
         where: '工具箱首页 → 重新检测',
         detail: '先确认电脑本身能打开 Codex，再让工具箱重新检测。',
-        bullets: ['Windows：使用安装 Codex 的同一个系统用户。', 'Mac：确认完成了安装，不是只打开下载的安装包。'],
+        bullets: ['Windows：使用安装 Codex 的同一个系统用户。', 'Mac：在「应用程序」里找 ChatGPT，确认它能打开。'],
         expected: '识别成功后能看到版本；仍失败就记下具体错误。',
         extra: [{ title: '显示检测失败，不是未安装？', detail: '表示工具箱这次没读到可靠结果。到「检查」查看原因，仍无法解决时到「反馈」预览报告交给客服。' }],
         action: '回首页核对桌面端',
@@ -199,7 +221,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '保存后，让 Codex 重新读取配置',
         where: 'Codex 配置窗口 → 保存配置',
         detail: '点「保存配置」只改账号、密钥和模型，其他设置都会留着。',
-        bullets: ['核对账号、密钥和模型后，点「保存配置」。', 'Codex 已运行时先保存任务，再从首页「打开」中选「重启 Codex」。'],
+        bullets: ['核对账号、密钥和模型后，点「保存配置」。', 'Codex 已运行时先保存任务，再从首页「打开」中选「重启 Codex」；Mac 上先在 Codex 窗口里按 Command + Q 完全退出，再点「打开」。'],
         expected: '窗口关闭并提示保存成功，重开 Codex 后使用新配置。',
         extra: [{ title: '「重置为初始状态」在哪、什么时候用？', detail: '在配置窗口底部的「高级」里，仅在配置乱了想从头来过时使用。它先备份，再重置该来源的权限、MCP 和推理参数等自定义设置；历史会话保留。' }],
         action: '回首页保存并打开 Codex',
@@ -250,7 +272,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '这台电脑没登录过官方账号时，切回后要在工具里登录一次。',
         bullets: ['Claude Code：打开后输入 /login，按提示登录 Claude 账号。', 'Codex：打开后按提示用 ChatGPT 账号登录。', '提示「refresh token has expired」时，在 Codex 里退出后重新登录。'],
         expected: '工具里显示已登录，能正常回复。',
-        extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「环境变量覆盖」有没有提示：系统里设过的 ANTHROPIC_API_KEY 这类变量会盖过工具箱写的配置。' }],
+        extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「电脑里另外设过的工具地址或密钥」有没有提示：电脑里另外设过的 Key 会盖过当前账号的设置。' }],
         action: '去检查页',
         page: 'health',
       },
@@ -343,7 +365,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '按页面提供的金额和支付方式充值。手里有充值码的，也可以直接兑换。',
         bullets: ['选金额和支付方式，点「充值」，核对报价后支付。', '使用充值码时，填入「兑换充值码」，点「兑换」并确认账号。', '付款后等成功提示，核对余额或权益。'],
         expected: '显示充值或兑换成功，余额或权益已更新。',
-        extra: [{ title: '付了钱但没有到账提示？', detail: '先「刷新余额与订阅」，再到「我的订单」点「查询订单」。关闭支付窗口不会取消订单，不要因窗口没关就重复付款；可用支付、订阅入口以页面实际显示为准。' }],
+        extra: [{ title: '付了钱但没有到账提示？', detail: '关掉支付窗口后，星芒还会在后台确认一阵子，到账了余额会自己更新。想自己核对就点提示里的「查看我的订单」。关闭支付窗口不会取消订单，不要因为没看到提示就重复付款；可用支付、订阅入口以页面实际显示为准。' }],
         action: '打开个人中心办理充值',
         page: 'account',
         section: 'recharge',
@@ -441,9 +463,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '查看、导出或归档记录',
-        where: '记录 → 查看记录 → 右侧详情',
+        where: '记录 → 点一行 → 右侧详情',
         detail: '先查看内容，需要保存一份就导出，不常用的记录可以归档。',
-        bullets: ['点「查看记录」，在右侧阅读对话。', '点「导出 Markdown」，按提示找到导出文件。', '不想放在当前列表时点「归档记录」，需要时再「恢复记录」。'],
+        bullets: ['点一行记录，在右侧阅读对话。', '点「导出」，按提示找到导出文件。', '不想放在当前列表时点「归档」，需要时再「恢复」。'],
         expected: '能阅读或导出对话，归档状态也能恢复。',
         extra: [{ title: '归档会影响继续聊天吗？', detail: '归档会把记录移出工具自己的目录，所以已归档记录不能「接着聊」。需要继续时先恢复，再核对它是否为该目录最近一条。' }],
         action: '打开记录查看详情',
@@ -453,7 +475,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '看懂不可续接和保留期',
         where: '记录 → 状态提示',
         detail: '显示「文件夹已不存在」时，原目录已删除或搬走，不能继续，但仍可查看和导出。',
-        bullets: ['按钮按不动时，先看旁边的文件夹状态。', '重要内容及时「导出 Markdown」，不要只依赖工具保留记录。'],
+        bullets: ['按钮按不动时，先看旁边的文件夹状态。', '重要内容及时「导出」，不要只依赖工具保留记录。'],
         expected: '知道不能续接的原因，也能保留需要的内容。',
         extra: [{ title: '记录会保留多久？', detail: '记录由各工具管理。由工具箱写配置的 Claude Code 与 Gemini CLI，默认保留期已从一个月延长到一年；你自己设置过的保留期仍按原设置。' }],
         action: '打开记录核对状态',
@@ -516,7 +538,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     lead: '选线路，点开始；用完点停止，剩余时长下次继续。',
     category: 'everyday',
     minutes: 3,
-    keywords: ['加速', '网络', '线路', '智能分配', 'Ping', '延迟', 'TUN', '代理', 'VPN', '免费时长', '托盘', '自动连接', '下载', '到期', '提醒', '通知'],
+    keywords: ['加速', '网络', '线路', '智能分配', 'Ping', '延迟', '代理', 'VPN', '免费时长', '托盘', '自动连接', '下载', '到期', '提醒', '通知'],
     steps: [
       {
         title: '登录后查看可用时长',
@@ -525,13 +547,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['未登录先点「登录领取免费体验」。', '查看剩余时长、页面下方「本次连接」和「累计使用」。'],
         expected: '读到剩余时长与线路状态。',
         illustration: 'acceleration',
-        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「免费体验已用完」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
+        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
         action: '打开游戏加速',
         page: 'acceleration',
       },
       {
         title: '连接前选择线路或智能分配',
-        where: '游戏加速 → 选择加速线路',
+        where: '游戏加速 → 换线路',
         detail: '不确定选哪条就用「智能分配」，连接时自动测速选可用线路。Ping 用来测线路的响应快慢。',
         bullets: ['展开线路列表，选择「智能分配」或具体线路。', '手选线路可点旁边「Ping」，数字越小通常越快。'],
         expected: '当前线路显示你的选择。',
@@ -542,11 +564,11 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '开始加速，等状态确认',
         where: '游戏加速 → 开始加速',
         detail: '点「开始加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
-        bullets: ['TUN 显示「暂未开放」时不用操作。', '点「开始加速」，等待状态变为「加速已开启」。'],
+        bullets: ['点「开始加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
         expected: '显示实际线路，剩余时长开始计时。',
         extra: [
           { title: '提示其他代理或 VPN 冲突？', detail: '先关闭其他代理或 VPN 后重试；也可以按页面选择「仍然连接」。系统代理能否影响某个应用，取决于那个应用是否采用系统代理。' },
-          { title: '为什么有时会自动连接？', detail: '安装、更新 CLI 或下载 Node.js 时，工具箱可准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，加速页不显示已连接。打开 Codex 桌面端时，若有可用额度且还没连接，会先尝试正常加速；成功后会弹一条通知、托盘和加速页会标出「自动连接」，并开始计时；关掉 Codex 也不会自动断开，用完请手动停止。已有线路不改动，自动连接失败也会照常打开 Codex。' },
+          { title: '为什么有时会自动连接？', detail: '安装、更新命令行工具，装 Node.js、Git、Python，或下载 Codex 插件目录时，工具箱会在后台准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，加速页不显示已连接。打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，加速页和托盘也不显示。桌面端用星芒 Key 的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。' },
           { title: '「加速服务暂不可用」或连不上？', detail: '先按具体提示处理：完全退出工具箱（含托盘）后重开、检查磁盘空间，或请管理员处理系统限制。「查看日志」会进入反馈页运行日志，「重新检查」会重新读取状态；线路准备中可点「刷新线路状态」。' },
         ],
         action: '打开游戏加速连接',
@@ -556,7 +578,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '用完明确点击停止加速',
         where: '游戏加速 → 停止加速',
         detail: '不用时明确点停止，缩到托盘或切换页面不等于停止。',
-        bullets: ['点「停止加速」，等连接结束。', '要换线路或 TUN 模式，也先停止。'],
+        bullets: ['点「停止加速」，等连接结束。', '要换线路，也先停止。'],
         expected: '显示未计时，剩余时长保留。',
         extra: [{ title: '窗口缩到托盘后怎么操作？', detail: '右键工具箱托盘图标，查看加速状态和剩余时长，使用「连接加速 / 断开加速」。不可操作时按钮变灰，状态行说明原因。' }],
         action: '查看并停止加速',
@@ -565,49 +587,49 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
   {
-    id: 'cli',
+    id: cliTutorialTopic,
     title: '进阶：安装与使用命令行工具',
-    lead: 'CLI 是在终端里使用 AI 的方式。只用 Codex 桌面端可以跳过这一章。',
+    lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。只用 Codex 桌面端可以跳过这一章。',
     category: 'advanced',
     minutes: 5,
     keywords: ['CLI', '命令行', '终端', 'Claude Code', 'Codex CLI', 'Gemini', 'Grok', 'Node.js', 'npm', 'Python', 'Git', '安装', '首次命令', '接着聊'],
     steps: [
       {
-        title: '选一个 CLI，准备它需要的环境',
+        title: '选一个命令行工具，看看缺不缺运行环境',
         where: '工具箱首页 → 运行环境',
-        detail: '命令行工具需要 Node.js 与 npm，Gemini CLI 还要 Python。',
-        bullets: ['Windows 点运行环境卡里的准备按钮。', 'Mac 按「Mac 上装 Node.js 和 Python」操作。'],
+        detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，不用自己去下载；Windows 上只装 Grok 用不到它。四个命令行工具都不用装 Python。',
+        bullets: ['外接工具里个别要用 Python 的，那一页会提示；Mac 上怎么装看「Mac 上准备 Node.js 和 Python」。'],
         expected: '所需运行环境显示版本号。',
         extra: [{ title: 'Claude Code 为什么提示 Git？', detail: 'Windows 上部分技能、插件命令和首次添加官方插件市场需要 Git，按「检查」页的指引安装。' }],
         illustration: 'install',
-        action: '去首页准备 CLI 环境',
+        action: '去首页看运行环境',
         page: 'home',
       },
       {
-        title: '安装 CLI 并确认账号连接',
-        where: '工具箱首页 → 目标 CLI → 安装',
-        detail: '选一个要用的 CLI，装好后确认账号连接。',
+        title: '安装命令行工具并确认账号连接',
+        where: '工具箱首页 → 要用的工具 → 安装',
+        detail: '选一个要用的工具，装好后确认账号连接。',
         bullets: ['点「安装」，等进度和账号同步结束。', '仍未配好时点「连接账号」，选来源、密钥和模型后保存。'],
         expected: '工具行出现版本和「已配好」。',
         extra: [{ title: '已有安装或正在使用 Codex 桌面端？', detail: '已有工具先检测；官方安装器或其他来源管理的工具按原方式更新。Codex CLI 与桌面端共用配置，修改会影响两者；点「保存配置」只改账号、密钥和模型。' }],
-        action: '查看 CLI 安装状态',
+        action: '查看安装状态',
         page: 'maintenance',
       },
       {
         title: '点击打开，选择这次的工作文件夹',
-        where: '工具箱首页 → CLI 打开 → 选择文件夹',
+        where: '工具箱首页 → 工具的「打开」 → 选择文件夹',
         detail: '文件夹决定 AI 在哪里处理项目。第一次先用练习目录。',
-        bullets: ['点「打开」，选择项目文件夹。', '已有最近目录时可用旁边下拉「换一个目录」。', '等终端里工具启动好，再输入中文任务。'],
-        expected: 'CLI 已在正确目录启动，不用再敲一次启动命令。',
+        bullets: ['点「打开」，第一次会让你选项目文件夹；以后按钮上直接写着上次的文件夹名，点了就开。', '已有最近目录时可用旁边下拉「换一个目录」。', '等终端里工具启动好，再输入中文任务。'],
+        expected: '工具已在正确的文件夹里启动，不用再敲一次启动命令。',
         extra: [{ title: '不知道选哪个文件夹？', detail: '点新建就好：在这一行的「…」里选「新建项目文件夹并打开」，已有最近目录时在旁边下拉里选同一项。软件会建好一个空的项目文件夹并直接打开，不用选位置、不用起名。' }],
         illustration: 'launch',
-        action: '回首页打开 CLI',
+        action: '回首页打开工具',
         page: 'home',
       },
       {
         title: '发出第一个任务，再从记录继续',
-        where: 'CLI 终端 → 输入任务；工具箱 → 记录',
-        detail: '在启动好的 CLI 里输入任务，收到回复后再继续。',
+        where: '工具的终端窗口 → 输入任务；工具箱 → 记录',
+        detail: '在启动好的工具里输入任务，收到回复后再继续。',
         bullets: ['发送下面的例句。', '下次从「记录」或首页「最近」找项目，支持时可点「接着聊」。'],
         example: firstRunHints.claude.prompt,
         expected: '收到项目相关的回复。',
@@ -631,7 +653,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '连接浏览器就能使用相应的网页操作；文件服务可提供获准的文件。各 AI 工具的连接分别管理。',
         bullets: ['顶部选择你正在使用的 AI 工具。', '先看连接说明和权限。'],
         expected: '列表对应选中的工具，空列表表示还没添加。',
-        extra: [{ title: '读项目文件一定需要 MCP 吗？', detail: '不需要。CLI 本身可以访问获准的项目文件；文件服务连接用于该服务额外提供的文件。' }],
+        extra: [{ title: '读项目文件一定需要 MCP 吗？', detail: '不需要。命令行工具本身就能读你允许的项目文件；文件服务连接用于该服务额外提供的文件。' }],
         illustration: 'extensions',
         action: '打开外接工具',
         page: 'mcp',
@@ -691,7 +713,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: 'Codex CLI 填本机技能文件夹，Gemini CLI 填技能来源。',
         bullets: ['点「导入技能」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
-        extra: [{ title: 'Claude Code、Grok CLI 没有导入按钮？', detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页重新加载；选择当前项目时先核对工作文件夹。' }],
+        extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
         action: '去导入技能',
         page: 'skills',
       },
@@ -760,19 +782,19 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '工具运行中安装的插件，可能需要重新打开工具才生效。',
         bullets: ['先保存当前工作，再重新打开工具。', '仍失败时，记录插件名称、工具版本和报错。'],
         expected: '重开后能使用插件，或已取得明确错误。',
-        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '「当前工具未提供市场管理接口」表示没有市场，现有插件仍在已安装列表。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
+        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '看到「没有插件市场」，表示这个工具没有市场，装好的插件仍在「已安装」里。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
         action: '打开插件检查状态',
         page: 'plugins',
       },
     ],
   },
   {
-    id: 'safety',
+    id: updatesTutorialTopic,
     title: '备份、更新与数据',
     lead: '改配置前留备份，更新前保存工作，项目文件另外保管。',
     category: 'advanced',
     minutes: 3,
-    keywords: ['备份', '恢复', '更新', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许'],
+    keywords: ['备份', '恢复', '更新', '自动更新', '退回', '授权', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许', 'C 盘', '磁盘满', '空间不够', '清理'],
     steps: [
       {
         title: '先备份工具配置',
@@ -785,13 +807,17 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'backups',
       },
       {
-        title: '区分两种更新入口',
+        title: '工具箱自己更新，AI 工具在首页更新',
         where: '更多 → 更新；首页 → 工具行更新',
-        detail: '「更多」里的更新管工具箱，首页工具行的更新管那个 AI 工具。',
-        bullets: ['进入对应的更新入口，按提示下载。', '先保存任务，再确认重启安装。'],
-        expected: '重新打开并检测后看到新版本。',
+        detail: '工具箱的新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的；首页工具行的「更新」管那个 AI 工具。',
+        bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「更多」→「更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启安装」。'],
+        expected: '重新打开后，更新页显示「已是最新版本」。',
         extra: [
-          { title: '更新失败怎么办？', detail: '按页面给出的失败步骤处理后重试，不要把工具箱版本和 Codex 等工具的版本混在一起。' },
+          { title: '不想让它自动装？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
+          { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
+          { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+          { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
+          { title: updateDiskCleanupTitle, detail: updateDiskCleanupDetail },
           { title: macKeychainTutorialTitle, detail: macKeychainTutorialDetail },
         ],
         action: '打开工具箱更新',
@@ -811,8 +837,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   },
   {
     id: macRuntimeTutorialTopic,
-    title: 'Mac 上装 Node.js 和 Python',
-    lead: '只用 Codex 桌面端可以跳过。要用 CLI 时，下面两种安装方式选一种。',
+    title: 'Mac 上准备 Node.js 和 Python',
+    lead: '只用 Codex 桌面端可以跳过。Node.js 在首页点一下，星芒替你放好；Python 和想自己装 Node.js 的，看后面两种装法。',
     category: 'advanced',
     minutes: 4,
     keywords: ['Mac', 'macOS', '苹果', 'CLI', '命令行', 'Node.js', 'npm', 'Python', 'Homebrew', 'brew', 'pkg', '环境'],
@@ -820,7 +846,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '先看首页缺哪一个',
         where: '工具箱首页 → 运行环境',
-        detail: 'CLI 需要 Node.js 与 npm，Gemini CLI 还要 Python。',
+        detail: '命令行工具需要 Node.js。Python 四个命令行工具都用不到，外接工具里个别要用它的才装。',
         bullets: ['查看哪项没有版本号。', '只安装要用的环境，已装好的不用重复装。'],
         expected: '知道这次缺少 Node.js 还是 Python。',
         illustration: 'install',
@@ -828,22 +854,31 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'home',
       },
       {
-        title: '装过 Homebrew 的走这条',
+        title: `Node.js：点「${runtimeButtonLabel('node', 'managed')}」`,
+        where: '工具箱首页 → 运行环境',
+        detail: '星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。装命令行工具时缺 Node.js，也会自动先准备好。',
+        bullets: ['点运行环境卡里的按钮，等它下载、核对、解压完。', '电脑上本来就有 Node.js 的，星芒照旧用你自己的那份。'],
+        expected: 'Node.js 一行显示版本号，不用再点「重新检测」。',
+        action: '返回首页准备 Node.js',
+        page: 'home',
+      },
+      {
+        title: '想自己装：装过 Homebrew 的走这条',
         where: 'Mac 终端 → 安装命令',
         detail: `Node.js 用 ${runtimeHomebrewCommand('node')}，Python 用 ${runtimeHomebrewCommand('python')}。星芒不会替你跑这条命令。`,
-        bullets: ['打开 Mac 的「终端」。', '只粘贴缺少的那项命令，回车并等它完成。'],
+        bullets: ['打开 Mac 自带的「终端」：按 Command + 空格，输入「终端」后回车。', '只粘贴缺少的那项命令，回车并等它完成。'],
         example: `${runtimeHomebrewCommand('node')}\n${runtimeHomebrewCommand('python')}`,
         expected: '需要的安装命令完成，没有失败提示。',
-        extra: [{ title: '不知道 Homebrew 是什么？', detail: '它是 Mac 的命令行安装工具。没用过可以直接选下一步的官网安装包方式；工具箱不会替你执行命令，也不会在软件内要求管理员密码。' }],
+        extra: [{ title: '不知道 Homebrew 是什么？', detail: '它是在「终端」里输一行字就能装软件的工具。没用过可以直接选下一步的官网安装包方式；工具箱不会替你执行命令，也不会在软件内要求管理员密码。' }],
         action: '返回首页查看安装提示',
         page: 'home',
       },
       {
-        title: '没装过 Homebrew 的走这条',
+        title: '想自己装：没装过 Homebrew 的走这条',
         where: '工具箱首页 → 运行环境 → 官网下载',
-        detail: `点「${runtimeButtonLabel('node', 'external')}」或 Python 的官网下载按钮，选择 macOS 的 .pkg 安装包。`,
+        detail: `Python 点「${runtimeButtonLabel('python', 'external')}」，Node.js 到它的官网下载，都选 macOS 的 .pkg 安装包。`,
         bullets: ['Node.js 选 LTS 版本，下载对应安装包。', '双击安装包，按安装器提示完成。'],
-        expected: '安装器提示完成，Node.js 安装包也会提供 npm。',
+        expected: '安装器提示完成，没有失败提示。',
         extra: [{ title: '点击官网按钮后没有开始安装？', detail: '按钮只打开官网，下载和运行安装包需要你自己完成。' }],
         action: '返回首页打开官网',
         page: 'home',
@@ -853,7 +888,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         where: '工具箱首页 → 重新检测',
         detail: '装完回工具箱，让它再找一次新安装的环境。',
         bullets: ['点「重新检测」，查看对应环境的版本号。', '还没识别就重开终端和工具箱，再检测。'],
-        expected: '环境显示版本号，可以继续安装 CLI。',
+        expected: '环境显示版本号，可以继续安装命令行工具。',
         extra: [{ title: '重开后仍找不到？', detail: '进入「检查」查看具体环境结果，把错误和已安装版本提供给客服。' }],
         action: '打开检查',
         page: 'health',
@@ -863,18 +898,22 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: macDesktopTutorialTopic,
     title: 'Mac 上装桌面端',
-    lead: 'Mac 用户从官网下载需要的桌面端，装好后回工具箱检测、配置。不用把四个都装一遍。',
+    lead: 'Codex 桌面端、Claude Desktop 和 OpenCode 在首页点「安装」就能装好；WorkBuddy 还要你从官网下载。装好后回工具箱检测、配置。不用把四个都装一遍。',
     category: 'advanced',
     minutes: 4,
-    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
+    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', '一键安装', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
     steps: [
       {
         title: '先选你要用的桌面端',
-        where: '工具箱首页 → 对应桌面端 → 安装指南',
-        detail: 'Mac 上的「安装指南」会打开本教程，下载安装要你自己完成。',
+        where: '工具箱首页 → 对应桌面端 → 安装 / 安装指南',
+        detail: 'Codex 桌面端、Claude Desktop 和 OpenCode 点「安装」，工具箱会下载官方安装包、放进「应用程序」，装好直接看第 4 步。WorkBuddy 的「安装指南」会打开本教程，下载安装要你自己完成。',
         bullets: ['选择 Codex 桌面端、WorkBuddy、Claude Desktop 或 OpenCode。', '已显示版本号的不用重装，直接看第 4 步。'],
         expected: '知道这次要安装哪个应用。',
-        extra: [{ title: '为什么这里不能一键安装？', detail: 'Windows 支持工具箱代装这四个桌面端，macOS 目前采用官网下载、手动安装。它们在 Mac 上也能使用，安装桌面端不会改动已经装好的命令行工具。' }],
+        extra: [
+          { title: '为什么 WorkBuddy 不能一键安装？', detail: '工具箱要能确认下载到的是官方原版才会代你安装，Mac 上目前能确认的是 Codex 桌面端、Claude Desktop 和 OpenCode。WorkBuddy 请从官网下载、自己安装，它在 Mac 上一样能用。一键安装没成功时，也可以照第 2、3 步自己装。安装桌面端不会改动已经装好的命令行工具。' },
+          { title: 'Codex 桌面端装好后为什么叫 ChatGPT？', detail: 'OpenAI 的 Mac 版 Codex 桌面端在「应用程序」里就叫 ChatGPT。「应用程序」里已经有一个旧版 ChatGPT（以前的聊天程序）时，先把它移到废纸篓，再点「安装」。' },
+          { title: '装到哪里去了？', detail: '管理员账号装进「应用程序」；不是管理员的账号装进自己个人文件夹里的「应用程序」，工具箱一样认得出来。' },
+        ],
         action: '回首页选择桌面端',
         page: 'home',
       },
@@ -914,7 +953,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '桌面端使用当前账号配置，并能正常回复。',
         extra: [
           { title: 'Claude Desktop 保存后没生效？', detail: '先保存当前工作，把 Claude Desktop 完全退出，再重新打开，让它读取新配置。' },
-          { title: 'Codex 桌面端和 CLI 为什么一起变了？', detail: 'Codex 桌面端与 Codex CLI 共用一份配置。配好其中一个，另一个也会使用这份设置。' },
+          { title: 'Codex 桌面端和 Codex CLI 为什么一起变了？', detail: 'Codex 桌面端与 Codex CLI 共用一份配置。配好其中一个，另一个也会使用这份设置。' },
           { title: '重新检测后还是未安装？', detail: '先确认应用真的放在「应用程序」目录里、仍使用官方名称，并且能从那里打开。仍失败时到「检查」查看具体原因。' },
         ],
         action: '回首页检测并配置',
@@ -987,6 +1026,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '工具使用正确的配置，文件任务在选定的项目内进行。',
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
+          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。登录或打开软件时一般会自动改好；没改好的，点工具行上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「备份」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。软件打开时会自己改好：先备份原来的设置（在「备份」里能找回），再只改这几行。自己没改好，或者这份设置不是软件替当前账号写的，工具行上会出现「修好它」，点一下就改。' },
           { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点工具行上的「改用（你的账号名）」就能用，改之前会先备份原来的设置（在「备份」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
           { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点「改用（你的账号名）」换成你自己的，改之前会先备份。' },
           { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点「改用（你的账号名）」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
@@ -1020,7 +1061,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '装了却没识别：先确认应用和系统账号',
         where: '工具箱首页 → Codex 桌面端 → 重新检测',
         detail: '先确认电脑能打开 Codex 桌面端，再重新检测。装了 Codex CLI 不代表装了桌面端。',
-        bullets: ['Windows 用安装 Codex 的同一个系统用户。', 'Mac 确认已完成安装，不是只下载了安装包。', '点「重新检测」，记下仍然出现的错误。'],
+        bullets: ['Windows 用安装 Codex 的同一个系统用户。', 'Mac 确认「应用程序」里的 ChatGPT 能打开。', '点「重新检测」，记下仍然出现的错误。'],
         expected: '读到桌面端状态，或取得具体检测错误。',
         extra: [{ title: '检测失败或安装失败在哪里看？', detail: '检测失败不等于未安装。安装日志在「更多」→「安装卸载」；记录系统、Codex 版本和错误，不必重装 Node.js 或 Python。' }],
         action: '回首页重新检测 Codex',
@@ -1030,9 +1071,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '已配好却打不开：查看启动结果',
         where: '工具箱首页 → Codex 桌面端 → 打开',
         detail: '「已配好」说明设置保存了，还要点「打开」启动 Codex。',
-        bullets: ['提示已运行时选「打开窗口」。', '刚改过配置时先保存任务，再选「重启 Codex」。', '其他错误记下原文，不要连续重复点击。'],
+        bullets: ['提示已运行时选「打开窗口」。', '刚改过配置时先保存任务，再选「重启 Codex」（Mac 上先按 Command + Q 退出 Codex，再点「打开」）。', '其他错误记下原文，不要连续重复点击。'],
         expected: '看到 Codex 窗口，或取得明确启动错误。',
-        extra: [{ title: '能打开，但还是英文？', detail: '在桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
+        extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
         action: '回首页检查 Codex 打开结果',
         page: 'home',
       },
@@ -1060,3 +1101,150 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
 ];
+
+/*
+ * Linux 版教程（Linux 版拆分 ⑩）。Linux 上没有 Codex 桌面端和游戏加速，Mac 专属的两章
+ * 也用不上；第一章换成 Codex CLI（和新手引导在 Linux 上的推荐项同一个），更新那一步换成
+ * 「交给系统安装窗口」的说法，和更新页、退出确认、必须更新提示同一口径（#760）。
+ * 其余章节原样沿用，只删掉几句讲 Codex 桌面端的话。Windows 和 Mac 拿到的还是上面那份。
+ */
+const linuxHiddenTutorialTopics: ReadonlySet<string> = new Set(['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic]);
+
+const linuxStartTutorial: TutorialTopic = {
+  id: 'start',
+  title: '第一次用？照着这 4 步做',
+  lead: '工具箱帮你装好、配好 Codex CLI。跟着做，最后在终端窗口里发出第一条消息。',
+  category: 'start',
+  minutes: 5,
+  keywords: ['新手', '入门', '第一次', '不会用', '安装', '登录', '首页', 'Codex', 'Codex CLI', '命令行', '终端'],
+  steps: [
+    signInTutorialStep,
+    {
+      title: '装好 Codex CLI',
+      where: '工具箱首页 → Codex CLI',
+      detail: '找准「Codex CLI」这一行。已经显示版本号的，不用重复安装。',
+      bullets: ['点「安装」，等进度和账号同步结束。', '缺 Node.js 时星芒会先自动准备好，不用输开机密码，也不用自己去下载。'],
+      expected: 'Codex CLI 显示已安装版本。',
+      illustration: 'install',
+      action: '去首页找 Codex CLI',
+      page: 'home',
+    },
+    {
+      title: '看到「已配好」就继续',
+      where: '工具箱首页 → Codex CLI → 状态',
+      detail: '工具箱通常会自动配好。已经显示「已配好」就看第 4 步；显示「连接账号」时，才需要下面的操作。',
+      bullets: ['点「连接账号」，选择「使用星芒账号」。', '需要准备密钥时选「自动准备（推荐）」；密钥就是工具调用 AI 用的通行证。', '点「保存配置」，你在工具里做的其他设置会原样保留。'],
+      expected: 'Codex CLI 这一行显示「已配好」。',
+      illustration: 'config',
+      action: '去首页看是否已配好',
+      page: 'home',
+    },
+    {
+      title: '打开 Codex，发出第一条消息',
+      where: '工具箱首页 → Codex CLI「打开」→ 终端窗口',
+      detail: '点「打开」，第一次会让你选这次要处理的文件夹，选好后会弹出终端窗口，Codex 在里面启动。先问一个简单问题。',
+      bullets: ['不知道选哪个文件夹，就在这一行的「…」里选「新建项目文件夹并打开」。', '等终端里的 Codex 启动好，输入下面这句话并回车，等它回复。'],
+      example: '你好，请用中文告诉我你能帮我做什么。',
+      expected: 'Codex 回了一段完整文字，你就可以开始用了。',
+      illustration: 'launch',
+      action: '回首页打开 Codex',
+      page: 'home',
+    },
+  ],
+  reminders: firstUseReminders,
+};
+
+const linuxRuntimeTutorialStep: TutorialStep = {
+  title: '选一个命令行工具，看看缺不缺运行环境',
+  where: '工具箱首页 → 运行环境',
+  detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，放在星芒自己的文件夹里，不用输开机密码，也不用自己去下载。',
+  bullets: ['运行环境卡里 Node.js 一行显示出版本号，就是准备好了。'],
+  expected: '所需运行环境显示版本号。',
+  extra: [{ title: 'Claude Code 为什么提示 Git？', detail: `部分技能、插件里的命令和第一次添加官方插件市场要用到 Git。没有的话打开「终端」，输入 ${gitLinuxInstallCommand} 回车，提示输密码时输开机密码（屏幕上不显示，输完回车）。` }],
+  illustration: 'install',
+  action: '去首页看运行环境',
+  page: 'home',
+};
+
+const linuxSelfUpdateTutorialStep: TutorialStep = {
+  title: '工具箱自己更新，AI 工具在首页更新',
+  where: '更多 → 更新；首页 → 工具行更新',
+  detail: '工具箱的新版本会在后台下好，下好后提醒你点「安装新版本」；首页工具行的「更新」管那个 AI 工具。',
+  bullets: ['点「安装新版本」，星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。', '装好后从应用菜单重新打开星芒。'],
+  expected: '重新打开后，更新页显示「已是最新版本」。',
+  extra: [
+    { title: '不想让它在后台下载？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
+    { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
+    { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+    { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
+    { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。` },
+  ],
+  action: '打开工具箱更新',
+  page: 'updates',
+};
+
+const linuxLaunchTroubleTutorialStep: TutorialStep = {
+  title: '点「打开」后没看到终端窗口',
+  where: '工具箱首页 → 工具的「打开」',
+  detail: '命令行工具会在这台电脑的终端窗口里启动。窗口没出来时，先看看是不是被别的窗口挡住了，再看首页有没有出错提示。',
+  bullets: ['有出错提示就按提示里的按钮处理，不要连续重复点击。', '工具行显示「已配好」只说明设置保存了，还要点「打开」才会启动。'],
+  expected: '终端窗口里工具启动好了，或者拿到了明确的出错提示。',
+  action: '回首页打开工具',
+  page: 'home',
+};
+
+// 沿用的章节里只有这几句讲 Codex 桌面端，Linux 上删掉。原文改了这里就对不上，
+// tutorials.test.ts 会因 Linux 版里又出现「桌面端」而失败。
+const linuxRemovedTutorialSentences = ['Codex 桌面端也一样。', 'Codex CLI 和 Codex 桌面端共用一份设置，会一起改。', 'Codex CLI 与桌面端共用配置，修改会影响两者；'] as const;
+
+function withoutLinuxSentences(text: string): string {
+  return linuxRemovedTutorialSentences.reduce((result, sentence) => result.split(sentence).join(''), text);
+}
+
+function linuxTutorialText(topic: TutorialTopic): TutorialTopic {
+  return {
+    ...topic,
+    lead: withoutLinuxSentences(topic.lead),
+    steps: topic.steps.map((step) => ({
+      ...step,
+      detail: withoutLinuxSentences(step.detail),
+      ...(step.bullets ? { bullets: step.bullets.map(withoutLinuxSentences) } : {}),
+      ...(step.extra ? { extra: step.extra.map((entry) => ({ title: entry.title === '已有安装或正在使用 Codex 桌面端？' ? '已经装过这个工具？' : entry.title, detail: withoutLinuxSentences(entry.detail) })) } : {}),
+    })),
+  };
+}
+
+function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
+  if (topic.id === 'start') return [linuxStartTutorial];
+  if (linuxHiddenTutorialTopics.has(topic.id)) return [];
+  if (topic.id === cliTutorialTopic) {
+    return [linuxTutorialText({
+      ...topic,
+      lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。第一章走的是 Codex CLI，Claude Code、Gemini CLI 也是同样的装法。',
+      steps: topic.steps.map((step) => step.illustration === 'install' ? linuxRuntimeTutorialStep : step),
+    })];
+  }
+  if (topic.id === updatesTutorialTopic) {
+    return [{
+      ...topic,
+      keywords: [...topic.keywords.filter((keyword) => !['Mac', '钥匙串', '始终允许', 'C 盘'].includes(keyword)), '安装窗口', '应用菜单'],
+      steps: topic.steps.map((step) => step.page === 'updates' ? linuxSelfUpdateTutorialStep : step),
+    }];
+  }
+  if (topic.id === 'trouble') {
+    return [{
+      ...topic,
+      keywords: topic.keywords.filter((keyword) => keyword !== '桌面端'),
+      // 前两步讲的是 Codex 桌面端装没装上、打没打开。
+      steps: [linuxLaunchTroubleTutorialStep, ...topic.steps.filter((step) => step.page !== 'home')],
+    }];
+  }
+  return [linuxTutorialText(topic)];
+}
+
+const linuxTutorialTopics: readonly TutorialTopic[] = tutorialTopics.flatMap(linuxTutorialTopic);
+
+/** 当前系统能看到的教程。Windows 和 Mac 是同一份（tutorialTopics 本身）。 */
+export function tutorialTopicsFor(os: WindowOs): readonly TutorialTopic[] {
+  return os === 'linux' ? linuxTutorialTopics : tutorialTopics;
+}

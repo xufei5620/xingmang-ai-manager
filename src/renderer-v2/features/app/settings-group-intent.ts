@@ -1,6 +1,6 @@
-import type { settingsGroups } from '../../registry/business'
+import type { SettingsGroupId } from '../../registry/business'
 
-export type SettingsGroupId = (typeof settingsGroups)[number]['value']
+export type { SettingsGroupId }
 
 /**
  * 从别的页跳进「设置」时要直接落在某一组（检查页的网络项要落「网络」，不是默认的

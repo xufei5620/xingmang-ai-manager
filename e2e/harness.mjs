@@ -102,6 +102,89 @@ export async function createFixtureServer(inlineConfig = {}) {
   }
 }
 
+/** Bootstrap evidence contains module paths and structural state only, never fixture data. */
+export function observeFixtureBootstrap(page, server) {
+  const started = Date.now()
+  const pending = new Map()
+  const events = []
+  const counters = { scriptRequests: 0, failedResponses: 0, requestFailures: 0, pageErrors: 0, navigations: 0, fullReloads: 0 }
+  const listeners = []
+  const sockets = []
+  const optimizer = server?.environments?.client?.depsOptimizer
+  let scanState = optimizer?.scanProcessing ? 'pending' : 'idle'
+  if (optimizer?.scanProcessing) Promise.resolve(optimizer.scanProcessing).then(() => { scanState = 'settled' }, () => { scanState = 'rejected' })
+  function safeModulePath(value) {
+    try {
+      const url = new URL(value)
+      if (url.hostname !== '127.0.0.1') return '(non-fixture-origin)'
+      if (url.pathname.startsWith('/@fs/')) return '/@fs/(local-module)'
+      return /^\/(?:src\/|e2e\/|node_modules\/|@vite\/|@react-refresh)/.test(url.pathname) ? url.pathname : '(fixture-resource)'
+    } catch { return '(unparsed-module)' }
+  }
+  function event(value) {
+    if (events.length < 16) events.push({ ms: Date.now() - started, ...value })
+  }
+  function watch(name, handler) { page.on(name, handler); listeners.push([name, handler]) }
+  watch('request', request => {
+    if (request.resourceType() !== 'script') return
+    counters.scriptRequests += 1
+    pending.set(request, Date.now())
+  })
+  watch('requestfinished', request => pending.delete(request))
+  watch('requestfailed', request => {
+    pending.delete(request)
+    if (request.resourceType() !== 'script') return
+    counters.requestFailures += 1
+    event({ kind: 'module-request-failed', path: safeModulePath(request.url()), code: request.failure()?.errorText.match(/(?:net::)?ERR_[A-Z_]+/)?.[0] || 'request-failed' })
+  })
+  watch('response', response => {
+    if (response.request().resourceType() !== 'script' || response.status() < 400) return
+    counters.failedResponses += 1
+    event({ kind: 'module-http-error', path: safeModulePath(response.url()), status: response.status(), outdatedOptimizeDep: /Outdated Optimize Dep/.test(response.statusText()) })
+  })
+  watch('pageerror', error => {
+    counters.pageErrors += 1
+    event({ kind: 'page-error', category: ['Error', 'TypeError', 'ReferenceError', 'SyntaxError', 'RangeError'].includes(error.name) ? error.name : 'Error' })
+  })
+  watch('console', message => {
+    if (message.type() !== 'error') return
+    const text = message.text()
+    const category = /Outdated Optimize Dep/.test(text) ? 'outdated-optimize-dependency'
+      : /Failed to load module script/.test(text) ? 'module-script-load-error'
+        : /Failed to fetch dynamically imported module/.test(text) ? 'module-import-failed' : 'console-error'
+    event({ kind: 'console-error', category, path: safeModulePath(message.location().url) })
+  })
+  watch('framenavigated', frame => { if (frame === page.mainFrame()) counters.navigations += 1 })
+  watch('websocket', socket => {
+    const received = frame => {
+      if (typeof frame.payload !== 'string' || frame.payload.length > 65536) return
+      try { if (JSON.parse(frame.payload).type === 'full-reload') counters.fullReloads += 1 } catch {}
+    }
+    socket.on('framereceived', received)
+    sockets.push([socket, received])
+  })
+  return {
+    async snapshot() {
+      const structure = await Promise.race([
+        page.evaluate(() => {
+          const root = document.getElementById('root')
+          const first = root?.firstElementChild
+          const style = first ? getComputedStyle(first) : null
+          return { readyState: document.readyState, rootChildren: root?.childElementCount ?? 0, viteOverlay: Boolean(document.querySelector('vite-error-overlay')), firstDisplay: style?.display ?? null, firstVisibility: style?.visibility ?? null, firstOpacity: style?.opacity ?? null }
+        }).catch(() => ({ unavailable: true })),
+        new Promise(resolve => setTimeout(() => resolve({ unavailable: true }), 1000)),
+      ])
+      return { elapsedMs: Date.now() - started, ...counters, scanState, optimizedDependencies: Object.keys(optimizer?.metadata?.optimized || {}).length,
+        discoveredDependencies: Object.keys(optimizer?.metadata?.discovered || {}).length, events,
+        pendingScripts: [...pending].slice(0, 12).map(([request, at]) => ({ path: safeModulePath(request.url()), ageMs: Date.now() - at })), structure }
+    },
+    dispose() {
+      for (const [name, handler] of listeners) page.off(name, handler)
+      for (const [socket, handler] of sockets) socket.off('framereceived', handler)
+    },
+  }
+}
+
 async function startFixtureServer({ cacheDir } = {}) {
   const { server, origin } = await createFixtureServer({
     root: projectRoot,

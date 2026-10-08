@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
 import { codexPluginCatalogNetworkMessage } from './codex-plugin-catalog'
 import { providerIds } from './catalog'
+import { gitLinuxInstallCommand } from './git-runtime'
 import type { ProviderId } from './catalog'
 import {
   claudeMarketplaceGitMissingMessage,
@@ -579,6 +580,34 @@ describe('ProviderExtensionService list facade', () => {
     expect(snapshot.capabilities.mcp.list).toBe(true)
     expect(snapshot.warnings.some((warning) => warning.includes('2048 KB 安全上限'))).toBe(true)
     expect(snapshot.items.some((item) => item.kind === 'mcp' && item.name === 'alive')).toBe(true)
+  })
+
+  it('reads MCP config and scans Skills without synchronous filesystem calls', async () => {
+    const home = temporaryDirectory()
+    write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { local: { command: 'node' } } }))
+    write(path.join(home, '.claude', 'skills', 'first', 'SKILL.md'), '---\nname: First\n---\n')
+    write(path.join(home, '.claude', 'skills', 'second', 'SKILL.md'), '---\nname: Second\n---\n')
+    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+    // On Windows the shared single-link check in bounded-file (path-identity.ts)
+    // still stats each path component synchronously for the files actually read;
+    // opening, listing and reading the files must be asynchronous everywhere.
+    const methods = process.platform === 'win32'
+      ? ['openSync', 'opendirSync', 'readFileSync'] as const
+      : ['lstatSync', 'statSync', 'realpathSync', 'existsSync', 'openSync', 'opendirSync', 'readFileSync'] as const
+    const syncCalls = methods.map((method) => vi.spyOn(fs, method))
+
+    try {
+      const snapshot = await service.list('claude')
+
+      const touchedHome = syncCalls
+        .flatMap((spy) => spy.mock.calls)
+        .filter(([target]) => typeof target === 'string' && target.startsWith(home))
+      expect(touchedHome).toEqual([])
+      expect(snapshot.items.filter((item) => item.kind === 'skill').map((item) => item.name).sort()).toEqual(['First', 'Second'])
+      expect(snapshot.items.some((item) => item.kind === 'mcp' && item.name === 'local')).toBe(true)
+    } finally {
+      for (const spy of syncCalls) spy.mockRestore()
+    }
   })
 
   it('allows ~/.claude.json beyond 2MB up to the relaxed limit', async () => {
@@ -1225,8 +1254,10 @@ describe('Claude Code official marketplace', () => {
 
   it('names a platform-appropriate way to install Git', () => {
     expect(claudeMarketplaceGitMissingMessage('win32')).toContain('「安装 Git」')
-    expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('xcode-select --install')
-    expect(claudeMarketplaceGitMissingMessage('linux')).toContain('包管理器')
+    expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('「安装 Git」')
+    // Linux 版拆分 ⑩：原来是「请用系统的包管理器装上 Git」，小白看不懂；Linux 只出 deb，改成照抄就能用的 apt 命令。
+    expect(claudeMarketplaceGitMissingMessage('linux')).toContain(gitLinuxInstallCommand)
+    expect(claudeMarketplaceGitMissingMessage('linux')).not.toContain('包管理器')
     for (const platform of ['win32', 'darwin', 'linux'] as const) {
       expect(claudeMarketplaceGitMissingMessage(platform)).toContain('Git')
     }
@@ -1457,7 +1488,7 @@ describe('official marketplace as a standalone action', () => {
 
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true })
     expect(message).toContain('空壳')
-    expect(message).toContain('xcode-select --install')
+    expect(message).toContain('「安装 Git」')
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)
   })
@@ -1497,8 +1528,8 @@ describe('official marketplace as a standalone action', () => {
 
 describe('Codex official plugin catalog', () => {
   function seedCatalog(codexHome: string): void {
-    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'marketplace.json'), '{}')
-    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'api_marketplace.json'), '{}')
+    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'marketplace.json'), '{"name":"openai-curated","plugins":[]}')
+    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'api_marketplace.json'), '{"name":"openai-api-curated","plugins":[]}')
     write(path.join(codexHome, '.tmp', 'plugins.sha'), 'export-backup\n')
   }
 

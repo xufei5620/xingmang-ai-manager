@@ -1,5 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { formatFreeSpace } from './disk-space-copy'
+
+export { formatFreeSpace }
 
 /**
  * 装一个 CLI 要的不止一份空间：托管 npm 布局是「先在临时目录装完整份，再原子
@@ -83,15 +86,6 @@ export async function readDiskSpace(
   return null
 }
 
-/** 给用户看的剩余空间：到了 GB 量级说 GB，不足 1 GB 说 MB，都不出现小数点后第二位。*/
-export function formatFreeSpace(bytes: number): string {
-  const safe = Math.max(0, bytes)
-  if (safe >= 1024 ** 3) return `${(safe / 1024 ** 3).toFixed(1)} GB`
-  const megabytes = safe / 1024 ** 2
-  if (megabytes >= 1) return `${Math.round(megabytes)} MB`
-  return '不足 1 MB'
-}
-
 /** 同一块盘只留一条：Windows 上托管目录和用户数据目录几乎总在 C 盘。*/
 export function mergeSameDeviceReadings<T extends DiskSpaceReading>(readings: readonly T[]): T[] {
   const merged: T[] = []
@@ -137,4 +131,21 @@ export function describeInsufficientDiskSpace(
   if (reading.availableBytes >= minimumBytes) return null
   return `安装目录所在磁盘空间不足，只剩 ${formatFreeSpace(reading.availableBytes)}，`
     + `至少需要 ${formatFreeSpace(minimumBytes)}，请先清理磁盘再试`
+}
+
+/**
+ * 主程序更新包落地的地方。electron-updater 把安装包下进各平台的缓存目录
+ * （Windows 是 %LOCALAPPDATA%\<名字>-updater，Mac 是 ~/Library/Caches/<名字>-updater），
+ * 装的时候再解到系统临时目录。两处一起量，看最紧的那块盘。
+ */
+export function updateDownloadProbeTargets(
+  platform: NodeJS.Platform,
+  locations: { localAppData?: string | null; home: string; temp: string },
+): string[] {
+  const cacheRoot = platform === 'win32'
+    ? locations.localAppData?.trim() || path.join(locations.home, 'AppData', 'Local')
+    : platform === 'darwin'
+      ? path.join(locations.home, 'Library', 'Caches')
+      : path.join(locations.home, '.cache')
+  return [cacheRoot, locations.temp]
 }

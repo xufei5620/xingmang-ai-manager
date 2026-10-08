@@ -1,19 +1,22 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
-const { spawnSync } = require('node:child_process')
 const { test } = require('node:test')
 
 const recoveryPath = path.resolve(__dirname, 'windows-acceleration-recovery.ps1')
 const productProxyPath = path.resolve(__dirname, '..', 'electron', 'platform', 'windows-system-proxy.ts')
 
-function winInetTypeDefinition(file) {
+// The C# type definition, then Read-State through the end of Same-State, found after `from`.
+function compiledProxyHelpers(file, from = '') {
   // The .ps1 is checked out with CRLF (.gitattributes) and the .ts with the platform default.
   const source = fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n')
-  const start = source.indexOf("Add-Type -TypeDefinition @'")
+  const start = source.indexOf("Add-Type -TypeDefinition @'", source.indexOf(from))
   const end = source.indexOf("\n'@", start)
-  assert.ok(start >= 0 && end > start, 'WinInet type definition not found')
-  return source.slice(start, end)
+  const first = source.indexOf('\nfunction Read-State {', end)
+  const last = source.indexOf('\nfunction Same-State(', first)
+  const close = source.indexOf('\n}\n', last)
+  assert.ok(source.includes(from) && start >= 0 && end > start && first > end && last > first && close > last, 'WinInet helper not found')
+  return { typeDefinition: source.slice(start, end), stateFunctions: source.slice(first + 1, close + 2) }
 }
 
 test('customer recovery source is UTF-8 without BOM and remains readable in Windows PowerShell 5.1', () => {
@@ -22,131 +25,20 @@ test('customer recovery source is UTF-8 without BOM and remains readable in Wind
   assert.ok([...bytes].every((value) => value < 128))
 })
 
-// The logic test below stubs every native read and write, so it no longer compiles the WinInet
-// helper: Add-Type starts csc.exe, a second cold .NET process on top of powershell.exe, and on a
-// busy windows-latest runner the pair outlasted the 30-second budget (run 35885043224). The
-// helper is still compiled and driven against the real system proxy by
+// The script's restore logic is driven for real by e2e/windows-powershell-probes-smoke.mjs in the
+// Windows packaging job, beside the other real PowerShell checks; scripts/ci-workflow-config.test.cjs
+// keeps the unit suites from starting powershell.exe. It used to run here, in the node --test shard beside dozens of other suites,
+// where a cold Windows PowerShell start ran out its 30 seconds (#782) without a single check
+// failing. The WinInet helper itself is compiled and driven against the real system proxy by
 // windows-uninstall-smoke.yml, which dot-sources this script and runs on every change to it or
-// to windows-system-proxy.ts; the app ships the same text, and this keeps the two in step.
-test('customer recovery carries the same WinInet helper the app itself compiles', () => {
-  const recovery = winInetTypeDefinition(recoveryPath)
-  assert.equal(recovery, winInetTypeDefinition(productProxyPath))
-  assert.match(recovery, /public static class XingmangWinInet/)
-})
-
-test('Windows recovery preserves bypass edits and refuses conflicting or unverified proxy writes', { skip: process.platform !== 'win32' }, () => {
-  const source = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-. '${recoveryPath.replaceAll("'", "''")}'
-$script:checks = 0
-function Check([bool]$condition, [string]$name) {
-  if (-not $condition) { throw ('CHECK FAILED: ' + $name) }
-  $script:checks++
-}
-function Fails([scriptblock]$action, [string]$message) {
-  $caught = $null
-  try { & $action } catch { $caught = $_.Exception.Message }
-  Check ($caught -ceq $message) ('expected failure ' + $message + ', actual ' + $caught)
-}
-function Clone-Snapshot($value) { return $value | ConvertTo-Json -Depth 12 | ConvertFrom-Json }
-$applied = @'
-{"flags":3,"server":"http=127.0.0.1:57448;https=127.0.0.1:57448","bypass":"<local>;localhost;127.0.0.1;[::1]","autoConfigUrl":"","registry":{"ProxyEnable":1,"ProxyServer":"http=127.0.0.1:57448;https=127.0.0.1:57448","ProxyOverride":"<local>;localhost;127.0.0.1;[::1]","AutoConfigURL":null}}
-'@ | ConvertFrom-Json
-$before = @'
-{"flags":3,"server":"http://localhost:15236","bypass":"old-bypass","autoConfigUrl":"","registry":{"ProxyEnable":1,"ProxyServer":"http://localhost:15236","ProxyOverride":null,"AutoConfigURL":null}}
-'@ | ConvertFrom-Json
-$journal = [pscustomobject]@{version=1;id='aaaabbbb-cccc-4ddd-8eee-ffffffffffff';owner=[pscustomobject]@{pid=44300;startedAt='134022112340000000'};before=$before;applied=$applied}
-$lease = [pscustomobject]@{version=1;id=$journal.id;owner=(Clone-Snapshot $journal.owner)}
-Check ((Assert-RecoveryJournal $journal $lease) -eq 57448) 'valid journal'
-Check ((Assert-RecoveryJournal $journal $null) -eq 57448) 'missing lease is recoverable'
-Check (Same-State (Get-ProxyRestoreTarget $applied $journal) $before) 'unchanged proxy restores original including absent registry'
-$current = Clone-Snapshot $applied
-$current.registry.ProxyOverride = 'added.example.test;<local>'
-$desired = Get-ProxyRestoreTarget $current $journal
-Check ($desired.registry.ProxyOverride -ceq $current.registry.ProxyOverride) 'customer registry-only bypass edit retained'
-Check ($desired.bypass -ceq $before.bypass) 'unmodified native bypass restores original'
-Check ($desired.server -ceq $before.server) 'previous localhost proxy retained'
-$current = Clone-Snapshot $applied
-$current.bypass = ''
-$desired = Get-ProxyRestoreTarget $current $journal
-Check ($desired.bypass -ceq '') 'native empty bypass edit retained'
-Check ($null -eq $desired.registry.ProxyOverride) 'unchanged registry restores absent value'
-foreach ($override in @($null, '', 'new-bypass')) {
-  $current = Clone-Snapshot $applied
-  $current.bypass = 'native-new'
-  $current.registry.ProxyOverride = $override
-  $desired = Get-ProxyRestoreTarget $current $journal
-  Check ($desired.bypass -ceq 'native-new' -and $desired.registry.ProxyOverride -ceq $override) 'distinct native/registry bypass edits retained'
-}
-foreach ($field in @('flags', 'server', 'autoConfigUrl')) {
-  $current = Clone-Snapshot $applied
-  if ($field -eq 'flags') { $current.flags = 7 } else { $current.$field = 'external-change' }
-  Fails { Get-ProxyRestoreTarget $current $journal } 'settings-changed-beyond-bypass'
-}
-foreach ($field in @('ProxyEnable', 'ProxyServer', 'AutoConfigURL')) {
-  $current = Clone-Snapshot $applied
-  if ($field -eq 'ProxyEnable') { $current.registry.ProxyEnable = 0 } else { $current.registry.$field = 'external-change' }
-  Fails { Get-ProxyRestoreTarget $current $journal } 'settings-changed-beyond-bypass'
-}
-$bad = Clone-Snapshot $lease
-$bad.owner.startedAt = '134022112340000001'
-Fails { Assert-RecoveryJournal $journal $bad } 'lease-journal-mismatch'
-$bad = Clone-Snapshot $journal
-$bad.applied.registry.ProxyOverride = 'tampered'
-Fails { Assert-RecoveryJournal $bad $lease } 'noncanonical-owned-snapshot'
-$bad = Clone-Snapshot $journal
-$bad.before = Clone-Snapshot $applied
-Fails { Assert-RecoveryJournal $bad $lease } 'original-proxy-still-uses-owned-port'
-Check (Test-ProxyEndpoint $applied '127.0.0.1:57448') 'detect owned endpoint'
-Check (-not (Test-ProxyEndpoint $before '127.0.0.1:57448')) 'previous proxy is independent'
-$disabled = Clone-Snapshot $applied
-$disabled.flags = 1
-$disabled.registry.ProxyEnable = 0
-Check (-not (Test-ProxyEndpoint $disabled '127.0.0.1:57448')) 'disabled proxy is independent'
-
-# Stub all registry/native reads and writes. No test changes the real proxy.
-function Read-State { return Clone-Snapshot $script:state }
-function Write-State($value) {
-  $script:writes++
-  if ($script:failure -eq 'before') { $script:failure = ''; throw 'synthetic-write-denied' }
-  $script:state = Clone-Snapshot $value
-  if ($script:failure -eq 'after') { $script:failure = ''; throw 'synthetic-notify-failed' }
-  if ($script:failure -eq 'external') { $script:failure = ''; $script:state.server = 'other.example.test:8080' }
-}
-$script:state = Clone-Snapshot $applied
-$script:writes = 0
-$script:failure = ''
-Invoke-ProxyRestore $applied $before
-Check ((Same-State $script:state $before) -and $script:writes -eq 1) 'confirmed restoration'
-$script:state = Clone-Snapshot $before
-$script:writes = 0
-Fails { Invoke-ProxyRestore $applied $before } 'proxy-changed-before-write'
-Check ($script:writes -eq 0) 'CAS refuses concurrent edits'
-$script:state = Clone-Snapshot $applied
-$script:writes = 0
-$script:failure = 'before'
-Fails { Invoke-ProxyRestore $applied $before } 'proxy-restore-not-confirmed'
-Check ((Same-State $script:state $applied) -and $script:writes -eq 1) 'failed write leaves owned endpoint recoverable'
-$script:state = Clone-Snapshot $applied
-$script:writes = 0
-$script:failure = 'after'
-Fails { Invoke-ProxyRestore $applied $before } 'proxy-restore-not-confirmed'
-Check ((Same-State $script:state $applied) -and $script:writes -eq 2) 'notification failure safely rolls back'
-Invoke-ProxyRestore $applied $before
-Check (Same-State $script:state $before) 'retry after rollback succeeds'
-$script:state = Clone-Snapshot $applied
-$script:writes = 0
-$script:failure = 'external'
-Fails { Invoke-ProxyRestore $applied $before } 'proxy-restore-not-confirmed'
-Check ($script:state.server -ceq 'other.example.test:8080' -and $script:writes -eq 1) 'readback mismatch never overwrites a third-party change'
-Write-Output ('RECOVERY_CHECKS=' + $script:checks)
-`
-  const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], {
-    encoding: 'utf8', windowsHide: true, timeout: 30_000,
-  })
-  assert.equal(result.status, 0, result.stderr || result.stdout || String(result.error))
-  assert.match(result.stdout, /RECOVERY_CHECKS=33/)
+// to windows-system-proxy.ts. The app falls back to the same text when its in-memory WinInet
+// declaration fails (windowsSystemProxyCompiledScript), and this keeps the two in step.
+test('customer recovery carries the same WinInet helper and state functions the app falls back to', () => {
+  const recovery = compiledProxyHelpers(recoveryPath)
+  const product = compiledProxyHelpers(productProxyPath, 'export const windowsSystemProxyCompiledScript')
+  assert.equal(recovery.typeDefinition, product.typeDefinition)
+  assert.equal(recovery.stateFunctions, product.stateFunctions)
+  assert.match(recovery.typeDefinition, /public static class XingmangWinInet/)
+  assert.match(recovery.stateFunctions, /^function Write-State\(\$state\) \{$/m)
+  assert.match(recovery.stateFunctions, /^function Same-State\(\$left,\$right\) \{$/m)
 })

@@ -1,10 +1,22 @@
-import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cliExitHintLines } from './cli-exit-hint'
-import { managedNpmBinDirectory } from './managed-cli-paths'
+import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
+import { managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import type { CommandSpec, RunCommandOptions } from './command-runner'
+import type { StaleProxyVariableName } from './stale-proxy-environment'
+import {
+  captureLauncherIdentity,
+  cleanupStaleTerminalDirectoriesOnce,
+  quotePosixArgument,
+  removeLauncherIfUnchanged,
+  terminalDirectoryPrefix,
+  writeLauncherAtomically,
+  type LauncherIdentity,
+} from './terminal-launcher-files'
+
+// 启动脚本的文件部分挪到了 terminal-launcher-files.ts，与 Linux 共用；这两个仍从这里导出。
+export { cleanupStaleTerminalDirectories, quotePosixArgument } from './terminal-launcher-files'
 
 export interface MacosTerminalScriptPlan {
   executable: string
@@ -12,6 +24,11 @@ export interface MacosTerminalScriptPlan {
   workspace: string
   launcherPath: string
   env: NodeJS.ProcessEnv
+  /**
+   * 客户的登录 shell 可能带进来、这次不能交给工具的变量（system-service.ts 的 macosShellOverrideVariables）。
+   * 先 unset，再写 env 里星芒自己的值。缺省 = 不 unset（旧行为）。
+   */
+  clearedEnvironmentKeys?: readonly string[]
 }
 
 export interface MacosTerminalLaunchPlan extends Omit<MacosTerminalScriptPlan, 'launcherPath'> {}
@@ -26,36 +43,6 @@ export type MacosTerminalCleanupScheduler = (
   delayMs: number,
 ) => void
 
-interface PathIdentity {
-  device: bigint
-  inode: bigint
-  owner: bigint
-}
-
-/**
- * A directory has to be recognized by identity alone: removing the launcher bumps
- * its own mtime and size, so comparing those would make the cleanup abandon the
- * directory it just emptied.
- *
- * A regular file has no such excuse, and identity alone is not enough for one.
- * `unlink` frees the inode number, and a filesystem is free to hand it straight
- * back to the next file created in its place — ext4 and tmpfs do so immediately,
- * APFS happens not to. Comparing size, link count and both timestamps is what
- * makes "is this still the file I wrote?" independent of that allocation policy,
- * so a replacement dropped at the same path is never mistaken for our own.
- */
-interface FileIdentity extends PathIdentity {
-  size: bigint
-  links: bigint
-  modifiedNs: bigint
-  changedNs: bigint
-}
-
-interface LauncherIdentity {
-  directory: PathIdentity
-  launcher: FileIdentity
-}
-
 const terminalLauncherCleanupDelayMs = 5 * 60_000
 const persistedTerminalEnvironmentKeys = new Set([
   'HOME',
@@ -64,6 +51,8 @@ const persistedTerminalEnvironmentKeys = new Set([
   'GEMINI_API_KEY',
   'GOOGLE_GEMINI_BASE_URL',
   'GEMINI_MODEL',
+  // 让 Claude Code / Gemini CLI 也认公司或安全软件装进钥匙串的证书（system-certificate-trust.ts）。
+  'NODE_USE_SYSTEM_CA',
   'LANG',
   'LANGUAGE',
   'LC_ALL',
@@ -81,71 +70,11 @@ const persistedTerminalEnvironmentKeys = new Set([
   'CLICOLOR',
   'CLICOLOR_FORCE',
 ])
+// export、unset 后面的名字不带引号写进启动脚本，所以只收普通的变量名。
+const environmentKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function isAbsolutePath(value: string): boolean {
   return Boolean(value) && !value.includes('\0') && path.isAbsolute(value)
-}
-
-function pathIdentity(stats: fs.BigIntStats): PathIdentity {
-  return { device: stats.dev, inode: stats.ino, owner: stats.uid }
-}
-
-function fileIdentity(stats: fs.BigIntStats): FileIdentity {
-  return {
-    ...pathIdentity(stats),
-    size: stats.size,
-    links: stats.nlink,
-    modifiedNs: stats.mtimeNs,
-    changedNs: stats.ctimeNs,
-  }
-}
-
-function samePathIdentity(stats: fs.BigIntStats, expected: PathIdentity): boolean {
-  return stats.dev === expected.device
-    && stats.ino === expected.inode
-    && stats.uid === expected.owner
-}
-
-function sameFileIdentity(stats: fs.BigIntStats, expected: FileIdentity): boolean {
-  return samePathIdentity(stats, expected)
-    && stats.size === expected.size
-    && stats.nlink === expected.links
-    && stats.mtimeNs === expected.modifiedNs
-    && stats.ctimeNs === expected.changedNs
-}
-
-async function lstat(filePath: string): Promise<fs.BigIntStats | null> {
-  try {
-    return await fs.promises.lstat(filePath, { bigint: true })
-  } catch {
-    return null
-  }
-}
-
-async function removeLauncherIfUnchanged(
-  directory: string,
-  launcherPath: string,
-  identity: LauncherIdentity,
-): Promise<void> {
-  const directoryStats = await lstat(directory)
-  if (
-    !directoryStats?.isDirectory()
-    || !samePathIdentity(directoryStats, identity.directory)
-  ) return
-
-  const launcherStats = await lstat(launcherPath)
-  if (launcherStats) {
-    if (!launcherStats.isFile() || !sameFileIdentity(launcherStats, identity.launcher)) return
-    await fs.promises.unlink(launcherPath).catch(() => undefined)
-  }
-
-  const currentDirectoryStats = await lstat(directory)
-  if (
-    currentDirectoryStats?.isDirectory()
-    && samePathIdentity(currentDirectoryStats, identity.directory)
-  ) {
-    await fs.promises.rmdir(directory).catch(() => undefined)
-  }
 }
 
 function scheduleLauncherCleanup(
@@ -196,13 +125,86 @@ export function darwinCommandPathCandidates(
     '/opt/homebrew/bin',
     '/usr/local/bin',
     ...inheritedPath.split(path.delimiter),
+    // 本软件代下的 Node.js 排在最后：客户自己装过（Homebrew、官网安装包、nvm）
+    // 的那份先被找到，这一份只在他什么都没有时才顶上（第十六批 2）。他那份太旧时，
+    // 本软件自己干活另把这一份经 additionalPaths 排到最前（第三十四批 A，
+    // macos-node-runtime.ts 的 resolveDarwinPreferredNodeDirectory），交给工具的终端仍是这个顺序。
+    managedNodeRuntimeBinDirectory({ ...baseEnv, HOME: homeDirectory }, 'darwin'),
   ]
 }
 
-/** Quotes one POSIX shell argument without evaluating its contents. */
-export function quotePosixArgument(value: string): string {
-  if (value.includes('\0')) throw new TypeError('POSIX argument must not contain NUL bytes')
-  return `'${value.replace(/'/g, "'\\''")}'`
+// 键和 stale-proxy-environment.ts 的 staleProxyVariableNames 一一对应：那边加减一个名字，这里不跟着改就编译不过。
+const shellProxyVariables: Record<StaleProxyVariableName, true> = {
+  HTTP_PROXY: true,
+  HTTPS_PROXY: true,
+  ALL_PROXY: true,
+}
+
+// 认的写法和 parseLoopbackProxyTarget 一样：可带协议、用户名密码和后面的路径，主机只认
+// localhost、127.x.x.x、[::1]，端口必须写出来。拿转成小写的值来比。那边的 URL 解析还会把
+// 127.1、[0:0:0:0:0:0:0:1] 这类简写还原成本机地址，这里不认，照旧带上。
+const loopbackProxyPattern = '^[[:space:]]*([a-z][a-z0-9+.-]*://)?([^/?#]*@)?'
+  + '(localhost|127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|\\[::1])'
+  + ':0*([0-9]{1,5})([/?#].*)?[[:space:]]*$'
+
+/**
+ * 「终端」开新窗口时先起客户自己的登录 shell，读过 ~/.zprofile、~/.zshrc 才跑这份启动脚本，
+ * 那里 export 的代理会一路带给工具；本软件是从访达、程序坞打开的，自己的环境里看不到它们。
+ * 照教程写进 ~/.zshrc 的 `export https_proxy=http://127.0.0.1:7890` 还在、代理软件却没开时，
+ * 从这里打开的工具就全连不上（第三十四批 B）。
+ *
+ * 所以在脚本里现判，规则照 Windows、Linux 那边（stale-proxy-environment.ts，第十六批 5）：
+ * 只看这三个名字，只管指向本机、写了端口的，连不上的这一次 unset；连得上的、指向别的机器的、
+ * 写法认不出的一律不动。客户的 ~/.zshrc 一个字不改，他自己开的终端照旧。
+ *
+ * 和那边不同的地方：大写小写各算一个变量、各判各的，macOS 上它们本来就是两个变量，去掉没开的
+ * 那个，开着的那个照旧给工具用。探测用系统自带的 nc，最多等 1 秒（-G 以秒为单位；127.0.0.1、::1
+ * 上的端口不是当场连上就是当场被拒，用不了这么久）。
+ *
+ * 探不了的时候宁可不动：nc 不在、正则模块载不进来时整段跳过；nc 连不上时本来一声不吭，它要是
+ * 自己报了错（不认这几个参数、认不出地址），说明是探测本身出了问题，这个目标这次照旧带上。中途
+ * 出任何错都只当没探，所以在函数里关掉 errexit、允许取没设的变量，返回时 zsh 自己把选项换回来；
+ * 整段的错误输出也丢掉，不往客户的终端里打英文。
+ */
+export function buildMacosClosedProxyGuard(probeExecutable = '/usr/bin/nc'): string[] {
+  const names = Object.keys(shellProxyVariables).flatMap((name) => [name, name.toLowerCase()])
+  const probe = quotePosixArgument(probeExecutable)
+  return [
+    '() {',
+    '  setopt localoptions noerrexit unset',
+    `  [[ -x ${probe} ]] && zmodload zsh/regex 2>/dev/null || return 0`,
+    '  local name value host port target address failure MATCH MBEGIN MEND',
+    '  local -a match mbegin mend addresses',
+    '  local -A reach',
+    `  local pattern=${quotePosixArgument(loopbackProxyPattern)}`,
+    `  for name in ${names.join(' ')}; do`,
+    '    value=${(P)name}',
+    '    [[ ${#value} -le 2048 && ${(L)value} =~ $pattern ]] || continue',
+    '    host=${match[3]} port=$(( 10#${match[4]} ))',
+    '    (( port >= 1 && port <= 65535 )) || continue',
+    '    target=$host:$port',
+    '    if [[ -z ${reach[$target]} ]]; then',
+    // localhost 两个地址都试，一个连得上就算开着：代理多半只听 127.0.0.1（同 probeLoopbackProxy）。
+    '      case $host in',
+    '        localhost) addresses=(127.0.0.1 ::1) ;;',
+    "        '[::1]') addresses=(::1) ;;",
+    '        *) addresses=($host) ;;',
+    '      esac',
+    '      reach[$target]=closed',
+    '      for address in $addresses; do',
+    // 只留 nc 的错误输出：连不上时它不出声，出了声就是探测本身的问题。
+    `        if failure=$(${probe} -z -n -G 1 $address $port 2>&1 </dev/null >/dev/null); then`,
+    '          reach[$target]=open',
+    '          break',
+    '        fi',
+    '        [[ -n $failure ]] && reach[$target]=unknown',
+    '      done',
+    '    fi',
+    '    [[ ${reach[$target]} == closed ]] && unset $name',
+    '  done',
+    '  return 0',
+    '} 2>/dev/null',
+  ]
 }
 
 /** Builds the short-lived zsh launcher that Terminal executes. */
@@ -215,10 +217,16 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
   }
   const environmentEntries = Object.entries(plan.env)
   for (const [key, value] of environmentEntries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!environmentKeyPattern.test(key)) {
       throw new TypeError(`invalid environment key: ${key}`)
     }
     if (value?.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
+  }
+  const clearedEnvironmentKeys = plan.clearedEnvironmentKeys ?? []
+  for (const key of clearedEnvironmentKeys) {
+    if (!environmentKeyPattern.test(key)) {
+      throw new TypeError(`invalid environment key: ${key}`)
+    }
   }
   for (const requiredKey of ['HOME', 'PATH'] as const) {
     if (!plan.env[requiredKey]?.trim()) {
@@ -240,8 +248,23 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     'set -eu',
     `rm -f -- ${quotePosixArgument(plan.launcherPath)}`,
     `rmdir -- ${quotePosixArgument(path.dirname(plan.launcherPath))} 2>/dev/null || true`,
-    `cd -- ${quotePosixArgument(plan.workspace)}`,
+    // cd 失败时 set -e 只会留下一句英文就结束；受保护文件夹通常能进、读不出，所以进去后
+    // 再用 ls 试读一次，读不到就说清楚去哪开权限，不启动工具（启动了也什么都看不到）。
+    // ls 写绝对路径：这时 PATH 还没导出。只输出固定文案，不引入外部输入。
+    `if ! cd -- ${quotePosixArgument(plan.workspace)} 2>/dev/null; then`,
+    ...macosFolderAccessHintLines.unreachable.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
+    '  exit 1',
+    'fi',
+    'if ! /bin/ls -A -- . >/dev/null 2>&1; then',
+    ...macosFolderAccessHintLines.unreadable.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
+    '  exit 1',
+    'fi',
+    // ~/.zshrc 里设的 ANTHROPIC_API_KEY 这类变量会盖过星芒写的配置，这一次不带给工具（已知45）；
+    // 星芒自己要给的值紧接着在下面写回去。
+    ...(clearedEnvironmentKeys.length ? [`unset ${clearedEnvironmentKeys.join(' ')}`] : []),
     ...environmentExports,
+    // ~/.zshrc 里留着、却已经没开的本机代理，这一次不带给工具（第三十四批 B）。
+    ...buildMacosClosedProxyGuard(),
     // 不再 exec：工具退出后还要留在这个脚本里补一句中文，告诉用户下一步。
     // set -e 下工具非零退出会直接结束脚本，所以用 || 接住退出码。trap 让 zsh
     // 在用户按 Ctrl+C 时不跟着工具一起被打断；它是 shell 函数处理器不是忽略，
@@ -257,88 +280,6 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     'fi',
     '',
   ].join('\n')
-}
-
-async function writeLauncherAtomically(launcherPath: string, content: string): Promise<void> {
-  const temporaryPath = `${launcherPath}.${randomUUID()}.tmp`
-  const file = await fs.promises.open(temporaryPath, 'wx', 0o600)
-  let renamed = false
-  try {
-    try {
-      await file.writeFile(content, 'utf8')
-      await file.sync()
-    } finally {
-      await file.close()
-    }
-    await fs.promises.chmod(temporaryPath, 0o700)
-    await fs.promises.rename(temporaryPath, launcherPath)
-    renamed = true
-  } finally {
-    // A failed write must not leave the partial file behind. The caller only has an
-    // empty-directory removal to fall back on, so a surviving .tmp would keep the
-    // whole mkdtemp tree alive with no owner and no later pass to collect it.
-    if (!renamed) await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined)
-  }
-}
-
-const collectedTerminalRoots = new Set<string>()
-
-function terminalDirectoryPrefix(processId: number = process.pid): string {
-  return `xingmang-terminal-${processId}-`
-}
-
-/** One sweep per temp root per process; launching a terminal is not a rare event. */
-async function cleanupStaleTerminalDirectoriesOnce(baseDirectory: string): Promise<void> {
-  const key = path.resolve(baseDirectory)
-  if (collectedTerminalRoots.has(key)) return
-  collectedTerminalRoots.add(key)
-  await cleanupStaleTerminalDirectories(baseDirectory)
-}
-
-function processIsAlive(processId: number): boolean {
-  try {
-    process.kill(processId, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
-  }
-}
-
-/**
- * Removes launcher directories left by processes that are gone.
- *
- * The launcher is normally unlinked by the script itself or by the scheduled
- * cleanup, but neither runs if the app exits in between, and nothing else ever
- * looked at these directories again. Keying on the creating pid rather than on an
- * age threshold means a directory is only collected once its owner cannot possibly
- * still need it, so a launcher waiting out its five-minute window is never taken.
- */
-export async function cleanupStaleTerminalDirectories(
-  baseDirectory = os.tmpdir(),
-  isAlive: (processId: number) => boolean = processIsAlive,
-): Promise<void> {
-  let entries: fs.Dirent[]
-  try {
-    entries = await fs.promises.readdir(baseDirectory, { withFileTypes: true })
-  } catch {
-    return
-  }
-  const currentUid = process.getuid?.()
-  await Promise.all(entries.map(async (entry) => {
-    const match = /^xingmang-terminal-(\d+)-/.exec(entry.name)
-    if (!match || !entry.isDirectory()) return
-    const processId = Number(match[1])
-    if (!Number.isSafeInteger(processId) || processId <= 0 || isAlive(processId)) return
-    const directory = path.join(baseDirectory, entry.name)
-    try {
-      const stats = await fs.promises.lstat(directory)
-      if (!stats.isDirectory() || stats.isSymbolicLink()) return
-      if (currentUid !== undefined && stats.uid !== currentUid) return
-      await fs.promises.rm(directory, { recursive: true, force: true })
-    } catch {
-      // A concurrently removed or inaccessible stale directory is harmless.
-    }
-  }))
 }
 
 async function defaultCommandRunner(spec: CommandSpec, options: RunCommandOptions): Promise<unknown> {
@@ -365,17 +306,7 @@ export async function launchMacosTerminal(
   try {
     await fs.promises.chmod(directory, 0o700)
     await writeLauncherAtomically(launcherPath, buildMacosTerminalScript({ ...plan, launcherPath }))
-    const [directoryStats, launcherStats] = await Promise.all([
-      fs.promises.lstat(directory, { bigint: true }),
-      fs.promises.lstat(launcherPath, { bigint: true }),
-    ])
-    if (!directoryStats.isDirectory() || !launcherStats.isFile()) {
-      throw new Error('macOS Terminal launcher identity is invalid')
-    }
-    launcherIdentity = {
-      directory: pathIdentity(directoryStats),
-      launcher: fileIdentity(launcherStats),
-    }
+    launcherIdentity = await captureLauncherIdentity(directory, launcherPath)
     await commandRunner({
       executable: '/usr/bin/open',
       argv: ['-a', 'Terminal', launcherPath],

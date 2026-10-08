@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
+import { listClaudeDesktopProfileCandidates, resolveClaudeDesktopPaths } from './claude-desktop-paths'
 
 const windowsHome = 'C:\\Users\\fixture'
 const windowsOptions = { platform: 'win32' as const, userHome: windowsHome, env: {}, pathExists: () => false }
@@ -119,5 +119,35 @@ describe('resolveClaudeDesktopPaths', () => {
 
   it('isolates an injected home without requiring tests to sanitize the host environment', () => {
     expect(resolveClaudeDesktopPaths({ platform: 'win32', userHome: windowsHome, pathExists: () => false }).profileDirectory).toBe('C:\\Users\\fixture\\AppData\\Local\\Claude-3p')
+  })
+})
+
+describe('listClaudeDesktopProfileCandidates', () => {
+  it('lists both Windows profiles a save could have used, whichever edition is installed now', () => {
+    const candidates = listClaudeDesktopProfileCandidates(windowsOptions)
+    expect(candidates).toEqual([
+      'C:\\Users\\fixture\\AppData\\Local\\Claude-3p',
+      'C:\\Users\\fixture\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Local\\Claude-3p',
+    ])
+    for (const virtualization of [undefined, storeVirtualization]) {
+      const options = virtualization ? { ...windowsOptions, installationPath: storeExecutable, storeVirtualization: virtualization } : windowsOptions
+      expect(candidates).toContain(resolveClaudeDesktopPaths(options).profileDirectory)
+    }
+  })
+
+  it('puts an explicit Claude data directory first and follows the profile environment variables', () => {
+    expect(listClaudeDesktopProfileCandidates({ ...windowsOptions, env: { CLAUDE_USER_DATA_DIR: 'D:\\Claude', LOCALAPPDATA: 'E:\\Local' } })).toEqual([
+      'D:\\Claude', 'E:\\Local\\Claude-3p', 'E:\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Local\\Claude-3p',
+    ])
+    expect(listClaudeDesktopProfileCandidates({ platform: 'darwin', userHome: '/Users/fixture', env: {} }))
+      .toEqual(['/Users/fixture/Library/Application Support/Claude-3p'])
+    expect(listClaudeDesktopProfileCandidates({ platform: 'linux', userHome: '/home/fixture', env: { XDG_CONFIG_HOME: '/srv/config' } }))
+      .toEqual(['/srv/config/Claude-3p'])
+  })
+
+  it('skips variables a save would have rejected instead of failing the whole list', () => {
+    expect(listClaudeDesktopProfileCandidates({ ...windowsOptions, env: { CLAUDE_USER_DATA_DIR: 'relative\\dir', LOCALAPPDATA: 'nowhere' } })).toEqual([])
+    expect(listClaudeDesktopProfileCandidates({ platform: 'darwin', userHome: '/Users/fixture', env: { CLAUDE_USER_DATA_DIR: 'relative' } }))
+      .toEqual(['/Users/fixture/Library/Application Support/Claude-3p'])
   })
 })

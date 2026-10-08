@@ -1,3 +1,5 @@
+import { toolCertificateMessages } from '../../../electron/network-failure';
+
 export const errors = {
   sessionExpired: { title: '登录已过期', body: '工具里已写入的 Key 还能用，余额和用量不再更新', actions: ['重新登录'] },
   keyInvalid: { title: 'Key 失效', body: '工具打不开对话，需要换一把 Key', actions: ['一键修复'] },
@@ -11,9 +13,12 @@ export const errors = {
   downloadTimeout: { title: '下载超时', body: '下载没有完成，已安装的工具不受影响。', actions: ['换官方源重试'] },
   diskFull: { title: '磁盘空间不够', body: '安装目录所在的磁盘没有空间了。请清理后再试。', actions: ['复制路径', '重试', '查看日志'] },
   certDate: { title: '证书日期对不上', body: '多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。', actions: ['重试', '查看日志'] },
-  tlsIntercepted: { title: '连接被证书拦截', body: '网络里有设备替换了证书（常见于公司网络或安全软件）。请换个网络或关闭拦截后重试。', actions: ['重试', '查看日志'] },
+  tlsIntercepted: { title: '连接被证书拦截', body: '网络里有设备替换了证书，这台电脑也不认它（常见于公司网络或安全软件）。公司电脑请找网络管理员处理；自己的电脑请换个网络，或关掉安全软件的网页扫描后重试。', actions: ['重试', '查看日志'] },
+  toolCertOutdatedNode: { title: 'Node.js 太旧，认不了这台电脑的证书', body: toolCertificateMessages.outdatedNode, actions: ['换成新版 Node.js', '重试', '查看日志'] },
+  toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
+  configPermission: { title: '写不进配置文件', body: '常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。', actions: ['重试', '查看日志', '找客服'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },
   paymentClosed: { title: '支付窗口已手动关闭', body: '订单没有取消。', actions: ['看订单'] },
   paymentTimeout: { title: '订单已超时', body: '查询订单状态后可重新支付。', actions: ['重新支付'] },
@@ -21,6 +26,15 @@ export const errors = {
   unsafeStorage: { title: '这台电脑无法安全保存密码', body: '只保留本次登录。', actions: ['知道了'] },
   noTray: { title: '关闭窗口会直接退出', body: '', actions: ['安装扩展'] },
   toolNotEnabled: { title: '这个账号还没开通这个工具', body: '原来的设置没有动。找客服开通后再试一次。', actions: ['找客服'] },
+  codexDesktopTooOld: { title: '这台电脑装不了 Codex 桌面端', body: '可以先用 Codex CLI；把 Windows 更新到最新后，再回星芒装桌面端。', actions: ['查看日志', '找客服'] },
+  codexDesktopInstallNoStore: { title: '没能装好 Codex 桌面端', body: '这台电脑没有微软商店，星芒已经试过 OpenAI 官网的离线安装包和国内线路。先点「重试」；还不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '查看日志', '找客服'] },
+  codexDesktopInstallFailed: { title: '没能装好 Codex 桌面端', body: '先点「重试」；还不行就点「去微软商店装」，在商店里点「获取」装好，再回星芒点「重新检测」。', actions: ['重试', '去微软商店装', '查看日志', '找客服'] },
+  claudeDesktopInstallFailed: { title: '没能装好 Claude Desktop', body: '先点「重试」；还不行就点「去官网下载」，装好后回星芒点「重新检测」。', actions: ['重试', '去官网下载', '查看日志', '找客服'] },
+  macDesktopTooOld: { title: '这台 Mac 装不了这个桌面端', body: '把 macOS 更新到下面这句话里说的版本后，再回星芒点「安装」。', actions: ['查看日志', '找客服'] },
+  macDesktopInstallFailed: { title: '桌面端没能装好', body: '先照下面这句话做；还不行就点「看安装指南」，照教程从官网下载安装。', actions: ['重试', '看安装指南', '查看日志', '找客服'] },
+  codexDesktopKnownIssue: { title: 'Codex 这一版打不开', body: '这是 Codex 这一版自己的问题，不是星芒，等微软商店出新版会自动好。急用先点「改用 Codex 命令行版」。', actions: ['重试', '改用 Codex 命令行版', '找客服'] },
+  codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「重置 Codex」，重置完会自动再打开一次；还是不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '重置 Codex', '找客服'] },
+  pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },
   switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「备份」里恢复改用之前的那一份就好。', actions: ['去备份页', '找客服'] },
-  unknown: { title: '操作没有成功', body: '已自动撤回，不会留下半成品', actions: ['重试', '查看日志', '找客服'] },
+  unknown: { title: '操作没有完成', body: '', actions: ['重试', '查看日志', '找客服'] },
 } as const;

@@ -10,6 +10,7 @@ import { copyBoundedFileExclusive, readBoundedFile } from './bounded-file'
 import { readDirectoryEntries } from './bounded-directory'
 import { assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 import { buildIsolatedMihomoConfig, type AccelerationClashProfile } from './acceleration-clash-config'
+import { relayDirectHosts, relayDirectIps } from './relay-sites'
 import type { AccelerationLine } from './acceleration-contract'
 import { assertMacosAccelerationBinary } from './acceleration-binary'
 
@@ -59,6 +60,9 @@ interface RuntimeSession {
   resolveExit: () => void
   stopping: boolean
   result: MihomoRuntimeResult | null
+  /** The OS refused to run the copied core at all (no pid). Kept apart from an
+   *  early exit so the caller can say which of the two happened. */
+  spawnFailed: boolean
 }
 
 interface ControllerReply {
@@ -120,13 +124,13 @@ async function reserveLoopbackPorts(): Promise<LoopbackPortReservation> {
         server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, resolve)
       })
       const address = server.address()
-      if (!address || typeof address === 'string') throw new Error('无法分配加速内核本地端口')
+      if (!address || typeof address === 'string') throw new Error('加速内核本地端口分配失败')
       ports.push(address.port)
     }
     return { proxyPort: ports[0], controllerPort: ports[1], release }
   } catch {
     await release()
-    throw new Error('无法分配加速内核本地端口')
+    throw new Error('加速内核本地端口分配失败')
   }
 }
 
@@ -203,7 +207,7 @@ async function awaitController(session: RuntimeSession): Promise<void> {
   const deadline = Date.now() + 12_000
   while (Date.now() < deadline) {
     assertNotAborted(session.abort.signal)
-    if (session.exited) throw new Error('加速内核启动失败')
+    if (session.exited) throw new Error(session.spawnFailed ? '加速内核未能运行' : '加速内核启动后退出')
     try {
       const version = parseControllerObject(await controllerRequest(session, 'GET', '/version', undefined, undefined, 1000))
       if (typeof version.version !== 'string' || !version.version) throw new Error('invalid')
@@ -249,7 +253,12 @@ async function selectAvailableLine(session: RuntimeSession, lines: AccelerationL
     const preferred = lines.find((line) => line.id === preferredId)
     if (!preferred) throw new Error('加速线路不存在')
     const query = new URLSearchParams({ url: PROBE_URL, timeout: '6000' })
-    const reply = parseControllerObject(await controllerRequest(session, 'GET', `/proxies/${encodeURIComponent(preferred.id)}/delay?${query}`))
+    const probe = await controllerRequest(session, 'GET', `/proxies/${encodeURIComponent(preferred.id)}/delay?${query}`)
+    // The core answers a failed delay test with 503/504. That is the chosen
+    // line being unreachable, not the core failing, and the user's next step
+    // (pick another line) is different.
+    if (probe.status === 503 || probe.status === 504) throw new Error('所选加速线路不可用')
+    const reply = parseControllerObject(probe)
     if (typeof reply.delay !== 'number' || !Number.isSafeInteger(reply.delay) || reply.delay < 0 || reply.delay > 6000) {
       throw new Error('所选加速线路不可用')
     }
@@ -307,7 +316,7 @@ function probeProxy(session: RuntimeSession): Promise<void> {
       proxySocket?.destroy()
       request.destroy()
       if (success) resolve()
-      else reject(session.abort.signal.aborted ? abortError(session.abort.signal) : new Error('加速代理连通性验证失败'))
+      else reject(session.abort.signal.aborted ? abortError(session.abort.signal) : new Error('加速线路连通性验证失败'))
     }
     function abort(): void { finish(false) }
     if (session.abort.signal.aborted) return finish(false)
@@ -452,12 +461,15 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
       directory, directoryCreated: false, configPath: path.join(directory, 'config.yaml'),
       executablePath: path.join(directory, process.platform === 'win32' ? 'mihomo.exe' : 'mihomo'),
       proxyPort: reservation.proxyPort, controllerPort: reservation.controllerPort,
-      controllerSecret, abort, child: null, exited: true, exitPromise, resolveExit, stopping: false, result: null,
+      controllerSecret, abort, child: null, exited: true, exitPromise, resolveExit, stopping: false, result: null, spawnFailed: false,
     }
     current = session
     try {
       assertNotAborted(abort.signal)
-      const yaml = buildIsolatedMihomoConfig(profile, { mixedPort: session.proxyPort, controllerPort: session.controllerPort, controllerSecret })
+      const yaml = buildIsolatedMihomoConfig(profile, {
+        mixedPort: session.proxyPort, controllerPort: session.controllerPort, controllerSecret,
+        directHosts: relayDirectHosts(), directIps: relayDirectIps(),
+      })
       ensureSafeDataDirectory(options.runtimeDirectory, '加速运行目录')
       await fs.promises.mkdir(directory, { mode: 0o700 })
       session.directoryCreated = true
@@ -495,21 +507,26 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
       child.once('error', () => {
         // A failed spawn has no process to await; later errors cannot establish
         // that a previously spawned process has exited.
-        if (!child.pid) onExit()
+        if (child.pid) return
+        session.spawnFailed = true
+        onExit()
       })
       await awaitController(session)
       await confirmCorePorts(session)
       const line = await selectAvailableLine(session, lines, preferredId)
       await probeProxy(session)
       assertNotAborted(abort.signal)
-      if (session.exited) throw new Error('加速内核已退出')
+      if (session.exited) throw new Error('加速内核启动后退出')
       session.result = { line, proxyPort: session.proxyPort }
       return { ...session.result, line: { ...line } }
     } catch (error) {
       await reservation.release()
       await stopSession(session)
       if (current === session) current = null
-      if (error instanceof Error && /^加速|^暂无可用加速线路/.test(error.message)) throw error
+      // Both of these surface as an abort of the session signal, which reads
+      // like a cancellation; the flag says what really happened to the child.
+      if (session.spawnFailed) throw new Error('加速内核未能运行')
+      if (error instanceof Error && /^加速|^暂无可用加速线路|^所选加速线路/.test(error.message)) throw error
       throw new Error('加速内核启动失败')
     }
   }

@@ -98,7 +98,11 @@ describe('secure command runner', () => {
       APPDATA: 'C:\\Users\\tester\\AppData\\Roaming',
     }, 'win32')).toBe(false)
     expect(isTrustedHighIntegrityExecutable('node.exe', {}, 'win32')).toBe(false)
-    expect(isTrustedHighIntegrityExecutable('/home/tester/bin/node', {}, 'linux')).toBe(true)
+    // Linux used to answer true for every path. It now asks linux-path-trust.ts, which
+    // fails closed on a target it cannot resolve, so this changes by design rather than
+    // weakening: an absent or relative path is no longer trusted.
+    expect(isTrustedHighIntegrityExecutable('/home/tester/bin/node', {}, 'linux')).toBe(false)
+    expect(isTrustedHighIntegrityExecutable('bin/node', {}, 'linux')).toBe(false)
   })
 
   it('passes spaces and shell metacharacters as literal argv values', async () => {
@@ -287,7 +291,7 @@ describe('secure command runner', () => {
     expect(environment.PATH?.split(process.platform === 'win32' ? ';' : ':')[0]).toBeTruthy()
   })
 
-  it.runIf(process.platform !== 'darwin')('keeps the app-installed Python behind every inherited PATH entry', () => {
+  it.runIf(process.platform === 'win32')('keeps the app-installed Python behind every inherited PATH entry', () => {
     const localAppData = path.join(os.tmpdir(), 'xingmang-local-app-data')
     const environment = commandEnvironment({ PATH: ['/custom/python', '/custom/inherited'].join(path.delimiter), LOCALAPPDATA: localAppData })
     const entries = environment.PATH?.split(path.delimiter) ?? []
@@ -299,7 +303,7 @@ describe('secure command runner', () => {
     expect(entries.indexOf('/custom/python')).toBeLessThan(entries.indexOf(python))
   })
 
-  it.runIf(process.platform !== 'darwin')('finds the app-installed Git without restarting, behind the inherited PATH', () => {
+  it.runIf(process.platform === 'win32')('finds the app-installed Git without restarting, behind the inherited PATH', () => {
     const localAppData = path.join(os.tmpdir(), 'xingmang-local-app-data')
     const programFiles = path.join(os.tmpdir(), 'xingmang-program-files')
     const environment = commandEnvironment({ PATH: '/custom/git', LOCALAPPDATA: localAppData, ProgramFiles: programFiles })
@@ -310,6 +314,53 @@ describe('secure command runner', () => {
     expect(entries).toContain(userGit)
     expect(entries).toContain(machineGit)
     expect(entries.indexOf('/custom/git')).toBeLessThan(entries.indexOf(userGit))
+  })
+
+  it.runIf(process.platform === 'linux')('puts the app-downloaded Node.js and the managed CLIs ahead of the inherited Linux PATH', () => {
+    const environment = commandEnvironment({
+      HOME: '/home/isolated-test-user',
+      PATH: '/usr/local/bin:/usr/bin:/custom/inherited',
+    }, ['/resolved/bin'])
+
+    // A distro Node.js in /usr/bin must not shadow the pinned one this app downloaded
+    // (Linux 版拆分 ②); everything the user put on PATH keeps its own order after ours.
+    expect(environment.PATH?.split(':')).toEqual([
+      '/resolved/bin',
+      '/home/isolated-test-user/.local/share/XingMangAI/Runtime/node/bin',
+      '/home/isolated-test-user/.local/share/XingMangAI/Cli/npm/bin',
+      '/usr/local/bin',
+      '/usr/bin',
+      '/custom/inherited',
+      '/home/isolated-test-user/.local/bin',
+      '/home/isolated-test-user/.npm-global/bin',
+      '/home/isolated-test-user/.volta/bin',
+      '/home/isolated-test-user/.local/share/fnm/aliases/default/bin',
+      '/home/isolated-test-user/.grok/bin',
+      '/bin',
+      '/snap/bin',
+    ])
+    // None of the Windows-only fallbacks leak into a Linux PATH.
+    expect(environment.PATH).not.toContain('Python312')
+  })
+
+  it.runIf(process.platform === 'linux')('resolves node from the app-downloaded runtime before an older one on the inherited PATH', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-node-order-'))
+    try {
+      const distro = path.join(home, 'distro-bin')
+      const managed = path.join(home, '.local', 'share', 'XingMangAI', 'Runtime', 'node', 'bin')
+      for (const directory of [distro, managed]) {
+        fs.mkdirSync(directory, { recursive: true })
+        fs.writeFileSync(path.join(directory, 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+      }
+
+      const resolved = await findExecutable('node', {
+        env: commandEnvironment({ HOME: home, PATH: distro }),
+      })
+
+      expect(resolved).toBe(path.join(managed, 'node'))
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it.runIf(process.platform === 'darwin')('orders deterministic macOS command paths before inherited PATH entries', () => {
@@ -336,6 +387,8 @@ describe('secure command runner', () => {
       `${os.homedir()}/Library/pnpm`,
       '/opt/homebrew/bin',
       '/custom/inherited',
+      // The app-downloaded Node.js comes last so any runtime the user installed wins.
+      `${os.homedir()}/Library/Application Support/XingMangAI/Runtime/node/bin`,
     ])
   })
 
@@ -423,6 +476,7 @@ describe('secure command runner', () => {
       npm_config_script_shell: 'C:\\Users\\tester\\evil.cmd',
       npm_lifecycle_script: 'C:\\Users\\tester\\payload.js',
       NODE_EXTRA_CA_CERTS: 'C:\\Users\\tester\\fake-ca.pem',
+      Node_Use_System_CA: '1',
       COMSPEC: 'C:\\Users\\tester\\evil.cmd',
       PSModulePath: 'C:\\Users\\tester\\Documents\\WindowsPowerShell\\Modules',
       PSModuleAnalysisCachePath: 'C:\\Users\\tester\\module-cache',
@@ -464,6 +518,7 @@ describe('secure command runner', () => {
     expect(environment.npm_config_script_shell).toBeUndefined()
     expect(environment.npm_lifecycle_script).toBeUndefined()
     expect(environment.NODE_EXTRA_CA_CERTS).toBeUndefined()
+    expect(environment.Node_Use_System_CA).toBeUndefined()
     expect(environment.COMSPEC).toBeUndefined()
     expect(environment.PSModuleAnalysisCachePath).toBeUndefined()
     expect(environment.PSExecutionPolicyPreference).toBeUndefined()
@@ -508,7 +563,10 @@ describe('secure command runner', () => {
       expect(environment.PATH?.split(path.posix.delimiter)).toContain('/usr/bin')
     } else {
       expect(environment.PSModulePath).toBeUndefined()
-      expect(environment.PATH).toBe('C:\\Windows\\System32')
+      // Linux used to hand the caller's PATH back verbatim. It now rebuilds it the way
+      // darwin does, through linux-path-trust.ts, so the same two facts hold.
+      expect(environment.PATH).not.toContain('C:\\Windows\\System32')
+      expect(environment.PATH?.split(path.posix.delimiter)).toContain('/usr/bin')
     }
     expect(environment.GIT_EXEC_PATH).toBeUndefined()
     expect(environment.GIT_SSH_COMMAND).toBeUndefined()
@@ -751,6 +809,125 @@ describe('secure command runner', () => {
       expect(executable).toBe(path.join(directory, 'npm.cmd'))
     } finally {
       fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('Linux trust boundary', () => {
+  const linuxOnlyInjection = {
+    LD_AUDIT: '/tmp/audit.so',
+    LD_PROFILE: 'libc.so.6',
+    GCONV_PATH: '/tmp/gconv',
+    GLIBC_TUNABLES: 'glibc.malloc.check=3',
+    HOSTALIASES: '/tmp/aliases',
+    LOCPATH: '/tmp/locale',
+    NLSPATH: '/tmp/%N',
+    RES_OPTIONS: 'ndots:9',
+    'BASH_FUNC_ls%%': '() { /tmp/payload; }',
+    SHELLOPTS: 'xtrace',
+    PS4: '$(/tmp/payload)',
+    GTK_MODULES: 'payload',
+    GTK_PATH: '/tmp/gtk',
+    GIO_MODULE_DIR: '/tmp/gio',
+    GIO_EXTRA_MODULES: '/tmp/gio',
+    GST_PLUGIN_PATH: '/tmp/gst',
+    GDK_PIXBUF_MODULE_FILE: '/tmp/loaders.cache',
+    QT_PLUGIN_PATH: '/tmp/qt',
+    QT_QPA_PLATFORM_PLUGIN_PATH: '/tmp/qpa',
+    LUA_INIT: '@/tmp/init.lua',
+    LUA_PATH_5_4: '/tmp/?.lua',
+    LUA_CPATH: '/tmp/?.so',
+    TCLLIBPATH: '/tmp/tcl',
+    PHPRC: '/tmp/php.ini',
+    PHP_INI_SCAN_DIR: '/tmp/php.d',
+  }
+
+  it('strips loader, shell and desktop-module injection variables on Linux', () => {
+    const environment = trustedCommandEnvironment({
+      ...linuxOnlyInjection,
+      TMPDIR: '/home/tester/.cache/tmp',
+      XINGMANG_TEST_VALUE: 'kept',
+    }, undefined, 'linux')
+
+    for (const key of Object.keys(linuxOnlyInjection)) expect(environment[key]).toBeUndefined()
+    // glibc's list also names TMPDIR; dropping it would only move temp files into /tmp.
+    expect(environment.TMPDIR).toBe('/home/tester/.cache/tmp')
+    expect(environment.XINGMANG_TEST_VALUE).toBe('kept')
+    expect(environment.PYTHONNOUSERSITE).toBe('1')
+  })
+
+  it('leaves the Windows and macOS environments exactly as they were', () => {
+    const windows = trustedCommandEnvironment({ ...linuxOnlyInjection, PATH: 'D:\\Windows\\System32' }, testMachinePaths, 'win32')
+    const darwin = trustedCommandEnvironment({ ...linuxOnlyInjection, PATH: '/usr/bin' }, undefined, 'darwin')
+    for (const environment of [windows, darwin]) {
+      expect(environment.GCONV_PATH).toBe('/tmp/gconv')
+      expect(environment.GTK_MODULES).toBe('payload')
+      expect(environment.QT_PLUGIN_PATH).toBe('/tmp/qt')
+      expect(environment['BASH_FUNC_ls%%']).toBe('() { /tmp/payload; }')
+      expect(environment.LUA_INIT).toBe('@/tmp/init.lua')
+      // Not one of the two LD_ keys every platform already strips, so it passes as before.
+      expect(environment.LD_AUDIT).toBe('/tmp/audit.so')
+    }
+  })
+
+  it.runIf(process.platform === 'linux')('rebuilds PATH from directories no other account can modify', () => {
+    const scratch = fs.mkdtempSync('/tmp/xingmang-linux-path-')
+    try {
+      const entries = (trustedCommandEnvironment({
+        PATH: [scratch, 'relative/bin', '/usr/bin', '/usr/bin/', '/nonexistent/xingmang/bin'].join(':'),
+      }, undefined, 'linux').PATH ?? '').split(':')
+
+      expect(entries).toContain('/usr/bin')
+      expect(entries).not.toContain(scratch)
+      expect(entries).not.toContain('relative/bin')
+      expect(entries).not.toContain('/nonexistent/xingmang/bin')
+      // The inherited '/usr/bin/' is the fixed entry spelled differently, so it is dropped.
+      expect(entries.filter((entry) => entry.replace(/\/$/, '') === '/usr/bin')).toHaveLength(1)
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform === 'linux')('trusts a root-owned system binary as a high-integrity executable', () => {
+    expect(isTrustedHighIntegrityExecutable('/usr/bin/env', process.env, 'linux')).toBe(true)
+    expect(isUserWritablePath('/usr/bin/env')).toBe(false)
+    expect(isUserWritablePath('/tmp')).toBe(true)
+  })
+
+  it.runIf(process.platform === 'linux')('runs a trusted-only command through the canonical system binary', async () => {
+    const result = await runCommand({ executable: 'true', argv: [] }, { trustedOnly: true, env: process.env })
+    expect(result.exitCode).toBe(0)
+    expect(path.posix.isAbsolute(result.executable)).toBe(true)
+    expect(result.executable).toBe(fs.realpathSync(result.executable))
+  })
+
+  it.runIf(process.platform === 'linux')('keeps the name a trusted-only binary was found by as argv[0]', async () => {
+    // With nothing after the -c script, sh reports its own argv[0] as $0. On Debian and
+    // Ubuntu /usr/bin/sh links to dash, the same shape as a multi-call coreutils binary.
+    const result = await runCommand({ executable: 'sh', argv: ['-c', 'printf %s "$0"'] }, { trustedOnly: true, env: process.env })
+    expect(result.exitCode).toBe(0)
+    expect(path.posix.basename(result.stdout)).toBe('sh')
+    expect(result.executable).toBe(fs.realpathSync(result.stdout))
+  })
+
+  it.runIf(process.platform === 'linux')('refuses trusted-only commands, arguments and inputs another account could swap', async () => {
+    const scratch = fs.mkdtempSync('/tmp/xingmang-linux-run-')
+    try {
+      const script = path.join(scratch, 'payload.sh')
+      fs.writeFileSync(script, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+      const refused = async (promise: Promise<unknown>) => {
+        const error = await promise.then(() => null, (cause: unknown) => cause)
+        expect(error).toBeInstanceOf(CommandRunnerError)
+        expect((error as CommandRunnerError).code).toBe('UNSAFE_COMMAND')
+        expect((error as CommandRunnerError).message).toContain('本机其他账号')
+      }
+      await refused(runCommand({ executable: script, argv: [] }, { trustedOnly: true }))
+      await refused(runCommand({ executable: '/usr/bin/env', argv: [script] }, { trustedOnly: true }))
+      await refused(runCommand({ executable: '/usr/bin/env', argv: [`--file=${script}`] }, { trustedOnly: true }))
+      await refused(runCommand({ executable: '/usr/bin/true', argv: [] }, { trustedOnly: true, trustedPaths: [script] }))
+      await refused(runCommand({ executable: 'bin/true', argv: [] }, { trustedOnly: true }))
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true })
     }
   })
 })

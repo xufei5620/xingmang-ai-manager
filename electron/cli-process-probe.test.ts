@@ -17,6 +17,7 @@ import {
   parseDarwinCliProcessProbeOutput,
   parseWindowsCliProcessProbeOutput,
   probeRunningCliProcesses,
+  windowsCliProcessProbeModules,
   type CliProcessProbe,
 } from './cli-process-probe'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
@@ -109,6 +110,8 @@ describe('cli process probe', () => {
       .toBe(path.join('C:\\prefix', 'node_modules', '@anthropic-ai', 'claude-code'))
     expect(managedCliPackageDirectory('/opt/prefix', '@openai/codex', 'darwin'))
       .toBe(path.join('/opt/prefix', 'lib', 'node_modules', '@openai', 'codex'))
+    expect(managedCliPackageDirectory('/home/a/.local/share/XingMangAI/Cli/npm', '@openai/codex', 'linux'))
+      .toBe(path.join('/home/a/.local/share/XingMangAI/Cli/npm', 'lib', 'node_modules', '@openai', 'codex'))
     expect(cliPackageDirectory('/root/node_modules', '@google/gemini-cli'))
       .toBe(path.join('/root/node_modules', '@google', 'gemini-cli'))
   })
@@ -172,6 +175,37 @@ describe('cli process probe', () => {
       detail: 'EPERM: operation not permitted',
     })
     expect(classifyOperationError(message!)).toBe('toolRunning')
+  })
+
+  it('says it was the uninstall that the running tool stopped', () => {
+    // 卸载撞上的是同一把锁（npm 先把包目录挪开再删），客户看到的还是同一句，只是
+    // 动作说成「卸载」（第三十三批 C）。
+    const detail = '命令执行失败（退出码 1）：node.exe（EPERM；Error: EPERM: operation not permitted, rename）'
+    const counted = describeOccupiedUpdateFailure({
+      toolName: 'Codex CLI',
+      action: '卸载',
+      error: detail,
+      probe: checkedProbe(1),
+      detail,
+    })
+    expect(counted).toBe(
+      'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+        + `原始报错：${detail}`,
+    )
+    expect(classifyOperationError(counted!)).toBe('toolRunning')
+
+    const busy = '命令执行失败（退出码 1）：node.exe（EBUSY；Error: EBUSY: resource busy or locked, rename）'
+    const uncounted = describeOccupiedUpdateFailure({
+      toolName: 'Codex CLI',
+      action: '卸载',
+      error: busy,
+      probe: { status: 'checked', processes: [] },
+      detail: busy,
+    })
+    expect(uncounted).toBe(
+      'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+        + `原始报错：${busy}`,
+    )
   })
 
   it('only warns before the update when it really saw something', () => {
@@ -295,8 +329,9 @@ describe('cli process probe', () => {
     const scan = scanPowerShell(buildWindowsCliProcessProbeScript())
     expect(scan.unterminated).toBe(false)
     expect(unbalancedBracket(scan.code)).toBeNull()
-    // No path is ever spliced into the text: the only literal is the empty-result JSON.
-    expect(scan.literals).toEqual(['[]'])
+    // No path is ever spliced into the text: the only literals are the module names and the
+    // empty-result JSON.
+    expect(scan.literals).toEqual([...windowsCliProcessProbeModules, '[]'])
     expect(scan.code).toContain(`$root = [string]$env:${cliProcessRootEnvironmentVariable}`)
     expect(scan.code).toContain("if (-not $root) { ''; exit 0 }")
     // A native CLI is its own image; a node-hosted one carries its entry script on the command

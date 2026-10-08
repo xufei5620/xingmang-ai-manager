@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { isManagedCliGroupName } from './managed-cli-groups'
 import type { SafeStorageLike } from './account-session-store'
-import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
+import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -32,6 +33,8 @@ export interface PersistedManagedCliKeyAccount {
 
 export interface PersistedManagedCliKeys {
   version: 2
+  /** Absent in older files, which still require the shipped group names. */
+  siteId?: 'solov' | 'solov-api'
   revision?: number
   accounts: PersistedManagedCliKeyAccount[]
 }
@@ -44,12 +47,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isStoredManagedCliKey(value: unknown, siteId: 'solov' | 'solov-api'): value is StoredManagedCliKey {
+function isStoredManagedCliKey(
+  value: unknown,
+  siteId: 'solov' | 'solov-api',
+  scoped: boolean,
+): value is StoredManagedCliKey {
   if (!isRecord(value) || !isProviderId(value.provider)) return false
   return typeof value.id === 'number'
     && Number.isInteger(value.id)
     && value.id > 0
-    && value.group === resolveManagedCliKeyProfiles(siteId)[value.provider].group
+    && (scoped ? isManagedCliGroupName(value.group) : value.group === resolveManagedCliKeyProfiles(siteId)[value.provider].group)
     && typeof value.name === 'string'
     && value.name.length > 0
     && value.name.length <= 50
@@ -57,25 +64,30 @@ function isStoredManagedCliKey(value: unknown, siteId: 'solov' | 'solov-api'): v
     && /^sk-\S{8,509}$/.test(value.key)
 }
 
-function isPersistedManagedCliKeyAccount(value: unknown, siteId: 'solov' | 'solov-api'): value is PersistedManagedCliKeyAccount {
+function isPersistedManagedCliKeyAccount(
+  value: unknown,
+  siteId: 'solov' | 'solov-api',
+  scoped: boolean,
+): value is PersistedManagedCliKeyAccount {
   if (!isRecord(value)) return false
   if (typeof value.userId !== 'number' || !Number.isInteger(value.userId) || value.userId <= 0) return false
   if (typeof value.updatedAt !== 'string' || Number.isNaN(Date.parse(value.updatedAt))) return false
-  if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId))) return false
+  if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId, scoped))) return false
   return new Set(value.keys.map((entry) => entry.provider)).size === value.keys.length
 }
 
 function isLegacyPersistedManagedCliKeys(value: unknown): value is LegacyPersistedManagedCliKeys {
-  return isRecord(value) && value.version === 1 && isPersistedManagedCliKeyAccount(value, 'solov')
+  return isRecord(value) && value.version === 1 && isPersistedManagedCliKeyAccount(value, 'solov', false)
 }
 
 export function isPersistedManagedCliKeys(value: unknown, siteId: 'solov' | 'solov-api' = 'solov'): value is PersistedManagedCliKeys {
   if (!isRecord(value) || value.version !== CURRENT_VERSION) return false
+  if (value.siteId !== undefined && value.siteId !== siteId) return false
   if (value.revision !== undefined && (
     typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0
   )) return false
   if (!Array.isArray(value.accounts) || value.accounts.length > MAX_CACHED_ACCOUNTS) return false
-  if (!value.accounts.every((entry) => isPersistedManagedCliKeyAccount(entry, siteId))) return false
+  if (!value.accounts.every((entry) => isPersistedManagedCliKeyAccount(entry, siteId, value.siteId === siteId))) return false
   return new Set(value.accounts.map((entry) => entry.userId)).size === value.accounts.length
 }
 
@@ -119,12 +131,20 @@ export class ManagedCliKeyCacheCorruptError extends Error {}
 export class ManagedCliKeyStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private revision = 0
+  // Session-only: the record this store would have written, so switching
+  // accounts within one run still reuses keys instead of signing new ones.
+  private sessionRecord: PersistedManagedCliKeys | null = null
 
   constructor(
     private readonly filePath: string,
     private readonly storage: SafeStorageLike,
     private readonly siteId: 'solov' | 'solov-api' = 'solov',
+    private readonly persistence: CredentialPersistence = 'durable',
   ) {}
+
+  getSiteId(): 'solov' | 'solov-api' {
+    return this.siteId
+  }
 
   async read(userId: number): Promise<StoredManagedCliKey[]> {
     this.assertEncryptionAvailable()
@@ -163,6 +183,7 @@ export class ManagedCliKeyStore {
       ].slice(0, MAX_CACHED_ACCOUNTS)
       const record: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
+        siteId: this.siteId,
         revision: this.revision + 1,
         accounts,
       }
@@ -180,6 +201,7 @@ export class ManagedCliKeyStore {
       if (!record || !account?.keys.some((entry) => entry.id === keyId)) return
       const updated: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
+        siteId: this.siteId,
         revision: this.revision + 1,
         accounts: record.accounts.map((entry) => entry.userId === userId
           ? {
@@ -195,6 +217,7 @@ export class ManagedCliKeyStore {
   }
 
   private async readRecord(): Promise<PersistedManagedCliKeys | null> {
+    if (this.persistence === 'session-only') return this.sessionRecord && structuredClone(this.sessionRecord)
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedManagedCliKeys(content, this.storage, this.siteId)
@@ -238,6 +261,7 @@ export class ManagedCliKeyStore {
   }
 
   private assertEncryptionAvailable(): void {
+    if (this.persistence === 'session-only') return
     const backend = inspectSafeStorageBackend(this.storage)
     if (backend === 'unavailable') {
       throw new Error('系统安全存储不可用，无法持久化托管 API Key')
@@ -247,6 +271,10 @@ export class ManagedCliKeyStore {
 
   private async writeRecord(record: PersistedManagedCliKeys): Promise<void> {
     if (!isPersistedManagedCliKeys(record, this.siteId)) throw new Error('托管 CLI API Key 格式错误')
+    if (this.persistence === 'session-only') {
+      this.sessionRecord = structuredClone(record)
+      return
+    }
     ensureSafeDataDirectory(path.dirname(this.filePath), FILE_LABEL)
     await writeAtomicSafeUtf8File(
       this.filePath,

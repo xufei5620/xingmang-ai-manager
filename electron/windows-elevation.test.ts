@@ -10,10 +10,13 @@ import {
 import {
   assertTrustedElevatedCliCommand,
   buildCliLaunchPlan,
+  buildUnelevatedCommandScript,
+  buildWindowsCliLaunchOutput,
   buildWindowsTokenElevationProbeScript,
   decodeWindowsPowerShellCommand,
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
+  escapePowerShellWildcard,
   inspectCurrentWindowsIntegrityRid,
   inspectCurrentWindowsProcessHighIntegrity,
   inspectWindowsElevationCapability,
@@ -22,6 +25,7 @@ import {
   parseWindowsMandatoryLabelRid,
   parseWindowsTokenElevationType,
   parseStartedWindowsProcessId,
+  parseWindowsCliLaunchCause,
   powerShellLiteral,
   classifyWindowsExecutionProbeFailure,
   describeWindowsExecutionProbeFailure,
@@ -169,6 +173,34 @@ describe('Windows CLI launch', () => {
       // known at all the failure answers same-user.
       expect(failed).toMatchObject({ mode: failedMode, probeFailure: { reason: 'timeout' } })
     }
+  })
+
+  it('says whether the process runs at High integrity whenever the label was read', async () => {
+    // 已知19：自带 Administrator（默认令牌、High）照旧 same-user，但界面要知道装东西不会弹授权窗口。
+    const cases = [
+      { probeIntegrityRid: async () => 8192, highIntegrity: false },
+      { probeIntegrityRid: async () => 12288, highIntegrity: true },
+      { probeIntegrityRid: async () => 16384, highIntegrity: true },
+    ] as const
+    for (const { probeIntegrityRid, highIntegrity } of cases) {
+      await expect(resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'default',
+      })).resolves.toMatchObject({ mode: 'same-user', highIntegrity })
+      await expect(resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true,
+        platform: 'win32',
+        probeIntegrityRid,
+        probeElevationType: async () => { throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }) },
+      })).resolves.toMatchObject({ highIntegrity })
+    }
+    // Nothing read, nothing claimed: the renderer keeps the old sentence.
+    for (const probeIntegrityRid of [async () => null, async () => { throw new Error('whoami failed') }]) {
+      const resolution = await resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'full',
+      })
+      expect(resolution).not.toHaveProperty('highIntegrity')
+    }
+    expect(await resolveWindowsCliExecutionModeDetailed({ isPackaged: true, platform: 'darwin' })).not.toHaveProperty('highIntegrity')
   })
 
   it.runIf(process.platform === 'win32')('reads the integrity label of the real process token', async () => {
@@ -454,6 +486,63 @@ describe('Windows CLI launch', () => {
     expect(terminalScript.indexOf('UTF8Encoding')).toBeLessThan(terminalScript.indexOf('node.exe'))
   })
 
+  it('switches the hidden launch broker to UTF-8 output before Start-Process can fail', () => {
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      workspace: 'C:\\Work',
+      title: 'Claude Code',
+    }, testPowerShell)
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+
+    // launchCliPowerShell reads the broker's errors as UTF-8.
+    const utf8 = brokerScript.indexOf('$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')
+    expect(utf8).toBeGreaterThan(-1)
+    expect(utf8).toBeLessThan(brokerScript.indexOf('$ErrorActionPreference = "Stop"'))
+    expect(utf8).toBeLessThan(brokerScript.indexOf('Start-Process'))
+    // A console that refuses the code page must not keep the terminal from opening.
+    expect(brokerScript).toMatch(/^try \{ \$OutputEncoding = [^}]*\} catch \{ \}; /)
+    expect(brokerScript).not.toMatch(/\bchcp\b/i)
+  })
+
+  it('escapes wildcard characters in the folder for -WorkingDirectory only', () => {
+    const workspace = 'D:\\[2024]课程资料\\毕业设计[最终版]\\O\'Brien`s'
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      argv: ['C:\\ProgramData\\XingMangAI\\Cli\\node_modules\\tool\\cli.js'],
+      workspace,
+      title: 'Claude Code',
+    }, testPowerShell)
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+    const terminalScript = decodeTerminalScript(brokerScript)
+
+    expect(brokerScript).toContain(
+      "-WorkingDirectory 'D:\\`[2024`]课程资料\\毕业设计`[最终版`]\\O''Brien``s' -WindowStyle Normal",
+    )
+    // The broker's own folder and the terminal's Set-Location take it literally.
+    expect(plan.cwd).toBe(workspace)
+    expect(terminalScript).toContain("Set-Location -LiteralPath 'D:\\[2024]课程资料\\毕业设计[最终版]\\O''Brien`s'")
+    expect(terminalScript).not.toContain('`[')
+  })
+
+  it('writes only the cause back when the terminal cannot be started', () => {
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      workspace: 'D:\\{草稿} [1]\\O\'Brien',
+      title: 'Claude Code',
+    }, testPowerShell)
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+
+    // Left to PowerShell, the failure would come back as CLIXML with the failing line of
+    // script attached. The catch writes $_ alone and still exits 1, so the launch fails.
+    expect(brokerScript.indexOf('try { $process = Start-Process ')).toBeGreaterThan(brokerScript.indexOf('$ErrorActionPreference = "Stop"'))
+    expect(brokerScript.endsWith(
+      '; [Console]::Out.WriteLine($process.Id) } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }',
+    )).toBe(true)
+    const scan = scanPowerShell(brokerScript)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+  })
+
   it('tells the user what to do next once the CLI exits, keeping the window open', () => {
     const plan = buildCliLaunchPlan({
       executable: 'C:\\Program Files\\nodejs\\node.exe',
@@ -510,6 +599,158 @@ describe('Windows CLI launch', () => {
     [{ message: 'The directory name is invalid' }, '工作目录已失效或无法访问'],
   ])('classifies Windows CLI launch failures', (error, expected) => {
     expect(describeWindowsCliLaunchError(error)).toContain(expected)
+  })
+
+  // What execFile hands back when the broker exits 1: the command line, then stderr.
+  const brokerCommandLine = `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${'JABPAHUAdABwAHUAdAA'.repeat(8)}=`
+  function brokerFailure(stderr: string, fields: Record<string, unknown> = { code: 1, killed: false, signal: null }) {
+    return Object.assign(new Error(`Command failed: ${brokerCommandLine}\n${stderr}`), { ...fields, cmd: brokerCommandLine, stdout: '', stderr })
+  }
+  const unrecognizedCause = '此命令由于以下错误而无法运行: 指定的程序不是有效的 Win32 应用程序。'
+  // How the host writes errors to a redirected stderr: one <S S="Error"> per line of the error
+  // view, and the header on its own as soon as it has anything to report.
+  function clixmlDocument(body: string, writtenBeforeTheXml = ''): string {
+    return `#< CLIXML\r\n${writtenBeforeTheXml}<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">${body}</Objs>`
+  }
+  function clixml(lines: readonly string[]): string {
+    return clixmlDocument(lines.map((line) => `<S S="Error">${line}_x000D__x000A_</S>`).join(''))
+  }
+  // What PowerShell reports while it prepares modules, as the host serializes it.
+  const progressRecord = '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>'
+  const powerShellPath = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+  // What execFile hands back when PowerShell cannot be started at all.
+  function spawnFailure(code: string) {
+    return Object.assign(new Error(`spawn ${powerShellPath} ${code}`), {
+      code, syscall: `spawn ${powerShellPath}`, path: powerShellPath, cmd: brokerCommandLine, stdout: '', stderr: '',
+    })
+  }
+
+  it('shows a failed launch by its cause alone, without the command line', () => {
+    const message = describeWindowsCliLaunchError(brokerFailure(`${unrecognizedCause}\r\n`))
+    expect(message).toBe(`Windows 无法启动 PowerShell：${unrecognizedCause}`)
+    expect(message).not.toContain('Command failed')
+    expect(message).not.toContain('EncodedCommand')
+  })
+
+  it('still recognizes the cause once it is read from stderr alone', () => {
+    expect(describeWindowsCliLaunchError(brokerFailure('此命令由于以下错误而无法运行: 目录名称无效。\r\n')))
+      .toBe('工作目录已失效或无法访问，请重新选择工作目录')
+    expect(describeWindowsCliLaunchError(brokerFailure('This command cannot be run due to the error: Access is denied.\r\n')))
+      .toBe('Windows 拒绝访问 PowerShell 或工作目录，请检查目录权限后重试')
+  })
+
+  it('still says why PowerShell could not be started, though execFile attaches an empty stderr', () => {
+    expect(describeWindowsCliLaunchError(spawnFailure('ENOENT')))
+      .toBe('系统 PowerShell 启动文件不存在或已被移除，请修复 Windows PowerShell 或安装 PowerShell 7')
+    expect(describeWindowsCliLaunchError(spawnFailure('EMFILE')))
+      .toBe(`Windows 无法启动 PowerShell：spawn ${powerShellPath} EMFILE`)
+  })
+
+  it('sends a launch that ended without a cause to the log, not to the command line', () => {
+    // The broker ran past its limit and was stopped: nothing on stderr to quote.
+    const timedOut = brokerFailure('', { code: null, killed: true, signal: 'SIGTERM' })
+    expect(describeWindowsCliLaunchError(timedOut)).toBe('Windows 无法启动 PowerShell，请查看反馈与诊断日志')
+    // Raised by launchCliPowerShell itself, the reason is the message.
+    expect(describeWindowsCliLaunchError(new Error('PowerShell 启动代理未返回有效的终端进程 ID')))
+      .toBe('Windows 无法启动 PowerShell：PowerShell 启动代理未返回有效的终端进程 ID')
+  })
+
+  it('unwraps a cause PowerShell reported itself in CLIXML, without the position it adds', () => {
+    // Constrained Language Mode refuses the [Console] call in the catch, so the host reports.
+    const constrained = clixml([
+      '无法调用方法。此语言模式仅支持对核心类型调用方法。',
+      '所在位置 行:1 字符: 712',
+      "+ ... ', '-EncodedCommand', 'JABPAHUAdABwAHUAdAA=') -WorkingDirectory 'D:\\Work' ...",
+      '+                                                                ~~~~~~~~~~~~~~~~~~~~~~~~~',
+      '    + CategoryInfo          : InvalidOperation: (:) [], RuntimeException',
+      '    + FullyQualifiedErrorId : MethodInvocationNotSupportedInConstrainedLanguage',
+      ' ',
+    ])
+    expect(parseWindowsCliLaunchCause(constrained)).toBe('无法调用方法。此语言模式仅支持对核心类型调用方法。')
+    const message = describeWindowsCliLaunchError(brokerFailure(constrained))
+    expect(message).toBe('Windows 无法启动 PowerShell：无法调用方法。此语言模式仅支持对核心类型调用方法。')
+    expect(message).not.toMatch(/CLIXML|<S|_x000D_|CategoryInfo|所在位置/)
+
+    // As Windows PowerShell 5.1 on the CI runner wrote a failed Start-Process: the cause
+    // broken over two lines at the console width, then where it happened.
+    const wrapped = clixml([
+      'Start-Process : Cannot perform operation because the wildcard path ',
+      'D:\\作业[1] did not resolve to a file.',
+      'At line:1 char:236',
+      "+ ... ; try { $process = Start-Process -FilePath 'C:\\Windows\\System32\\Windo ...",
+      '+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~',
+      '    + CategoryInfo          : OpenError: (D:\\作业[1]:String) [Start-Process], FileNotFoundException',
+      '    + FullyQualifiedErrorId : FileOpenFailure,Microsoft.PowerShell.Commands.StartProcessCommand',
+      ' ',
+    ])
+    expect(describeWindowsCliLaunchError(brokerFailure(wrapped)))
+      .toBe('Windows 无法启动 PowerShell：Cannot perform operation because the wildcard path D:\\作业[1] did not resolve to a file.')
+  })
+
+  it('unwraps the cause of a script PowerShell never ran, which comes after the quote of it', () => {
+    const blocked = 'This script contains malicious content and has been blocked by your antivirus software.'
+    // Windows PowerShell 5.1: where, the quote, then the cause, wrapped like the category
+    // lines, whose spill-over does not start with "+".
+    const fromWindowsPowerShell = clixml([
+      'At line:1 char:1',
+      '+ try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8E ...',
+      '+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~',
+      'This script contains malicious content and has been blocked by your antivirus',
+      'software.',
+      '    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordExce',
+      '   ption',
+      '    + FullyQualifiedErrorId : ScriptContainedMaliciousContent',
+      ' ',
+    ])
+    expect(describeWindowsCliLaunchError(brokerFailure(fromWindowsPowerShell))).toBe(`Windows 无法启动 PowerShell：${blocked}`)
+    // PowerShell 7: the reason alone, "Line |", the quote, then "~" and the cause behind a bar.
+    const fromPowerShell7 = clixml([
+      '_x001B_[31;1mParserError: ',
+      '_x001B_[36;1mLine _x001B_[36;1m|',
+      '_x001B_[36;1m   1 | _x001B_[0m try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8E ...',
+      '_x001B_[36;1m_x001B_[36;1m     | _x001B_[31;1m ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~',
+      `_x001B_[36;1m_x001B_[36;1m     | _x001B_[31;1m${blocked}_x001B_[0m`,
+    ])
+    expect(describeWindowsCliLaunchError(brokerFailure(fromPowerShell7))).toBe(`Windows 无法启动 PowerShell：${blocked}`)
+  })
+
+  it.each([
+    ['plain text', `${unrecognizedCause}\r\n`, unrecognizedCause],
+    ['nothing', ' \r\n', null],
+    ['CLIXML with escapes', clixml(['a &lt;b&gt; &amp; &quot;c&quot;_x0009_d _x005F_x0041_ D:\\作业[1]']), 'a <b> & "c"\td _x0041_ D:\\作业[1]'],
+    ['CLIXML with a line written in two parts', clixmlDocument(
+      '<S S="Error">Start-Process : The directory name </S><S S="Error">is invalid._x000D__x000A_</S><S S="Error">At line:1 char:1_x000D__x000A_</S>',
+    ), 'The directory name is invalid.'],
+    // As PowerShell 7 on the CI runner wrote it: ConciseView on one line, coloured.
+    ['CLIXML from PowerShell 7', clixml([
+      '_x001B_[31;1mStart-Process: _x001B_[31;1mCannot perform operation because the wildcard path D:\\作业[1] did not resolve to a file._x001B_[0m',
+    ]), 'Cannot perform operation because the wildcard path D:\\作业[1] did not resolve to a file.'],
+    ['CLIXML with no error in it', clixmlDocument(''), null],
+    // The host held its XML while the catch wrote the cause: the header comes first anyway.
+    ['the cause between the CLIXML header and the XML', clixmlDocument(progressRecord, `${unrecognizedCause}\r\n`), unrecognizedCause],
+    ['the cause before anything in CLIXML', `${unrecognizedCause}\r\n${clixmlDocument(progressRecord)}`, unrecognizedCause],
+    ['CLIXML with progress and an error', clixmlDocument(`${progressRecord}<S S="Error">The directory name is invalid._x000D__x000A_</S>`), 'The directory name is invalid.'],
+    ['CLIXML cut short', clixmlDocument(progressRecord).slice(0, 120), null],
+  ])('reads the cause from stderr holding %s', (_name, stderr, cause) => {
+    expect(parseWindowsCliLaunchCause(stderr)).toBe(cause)
+  })
+
+  it('keeps what the broker and Node reported for the log, the encoded script left out', () => {
+    const constrained = clixml(["+ ... @('-NoLogo', '-EncodedCommand', 'JABPAHUAdABwAHUAdAA=') -WorkingDirectory ..."])
+    const output = buildWindowsCliLaunchOutput(brokerFailure(constrained))
+    expect(output).toEqual({
+      stderr: expect.stringContaining("'-EncodedCommand', '[REDACTED]')"),
+      message: expect.stringContaining('-NonInteractive -EncodedCommand [REDACTED]'),
+      code: 1,
+      signal: null,
+      killed: false,
+    })
+    expect(JSON.stringify(output)).not.toContain('JABPAHUAdABwAHUAdAA')
+    expect(buildWindowsCliLaunchOutput(brokerFailure('', { code: null, killed: true, signal: 'SIGTERM' })))
+      .toMatchObject({ stderr: null, code: null, signal: 'SIGTERM', killed: true })
+    expect(buildWindowsCliLaunchOutput(new Error('PowerShell 启动代理未返回有效的终端进程 ID'))).toEqual({
+      stderr: null, message: 'PowerShell 启动代理未返回有效的终端进程 ID', code: null, signal: null, killed: false,
+    })
   })
 
   it.each([
@@ -752,5 +993,116 @@ describe('PowerShell verbatim literals', () => {
     const command = buildClaudeRetainedVersionFilesCommand([file, 'C:\\Other'], 'win32')!
     const benign = buildClaudeRetainedVersionFilesCommand(['C:\\Temp\\2.1.0', 'C:\\Other'], 'win32')!
     expect(expectQuotedLike(command, benign).literals).toEqual([file, 'C:\\Other'])
+  })
+})
+
+// WildcardPattern.ContainsWildcardCharacters and WildcardPattern.Unescape
+// (engine/regex.cs): what the globber does with Start-Process -WorkingDirectory
+// before it looks on disk. A value with no wildcard left is unescaped once and
+// must then exist exactly as it reads.
+const powerShellWildcardCharacters = '*?[]'
+
+function containsPowerShellWildcard(pattern: string): boolean {
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (powerShellWildcardCharacters.includes(pattern[index])) return true
+    if (pattern[index] === '`') index += 1
+  }
+  return false
+}
+
+function unescapePowerShellWildcard(pattern: string): string {
+  let result = ''
+  let escaping = false
+  for (const char of pattern) {
+    if (char === '`' && !escaping) {
+      escaping = true
+      continue
+    }
+    if (escaping && char !== '`' && !powerShellWildcardCharacters.includes(char)) result += '`'
+    result += char
+    escaping = false
+  }
+  return escaping ? `${result}\`` : result
+}
+
+describe('PowerShell wildcard escaping', () => {
+  it.each([
+    ['D:\\作业[1]', 'D:\\作业`[1`]'],
+    ['D:\\[2024]课程资料\\作业', 'D:\\`[2024`]课程资料\\作业'],
+    ['C:\\a`b', 'C:\\a``b'],
+    ['C:\\a`[1]', 'C:\\a```[1`]'],
+    ['*?', '`*`?'],
+  ])('escapes %j', (value, escaped) => {
+    expect(escapePowerShellWildcard(value)).toBe(escaped)
+  })
+
+  it.each([
+    'C:\\Work & Test\\O\'Brien',
+    'D:\\毕业设计【最终版】(1) {x}',
+  ])('leaves %j as it is, since nothing in it is a wildcard', (value) => {
+    expect(escapePowerShellWildcard(value)).toBe(value)
+  })
+
+  it.each([
+    'D:\\作业[1]',
+    'D:\\作业[12]',
+    'D:\\a]b[',
+    'C:\\a`b',
+    'C:\\a`[1]',
+    'C:\\a``[x]``',
+    'C:\\trailing`',
+    'C:\\x`*`?',
+  ])('lets PowerShell read %j back as the same literal folder', (value) => {
+    const escaped = escapePowerShellWildcard(value)
+    expect(containsPowerShellWildcard(escaped)).toBe(false)
+    expect(unescapePowerShellWildcard(escaped)).toBe(value)
+  })
+
+  it('reads an unescaped folder as a pattern, which is what kept it from opening', () => {
+    expect(containsPowerShellWildcard('D:\\作业[1]')).toBe(true)
+    // Escaping only the brackets is not enough once a backtick comes before one.
+    expect(containsPowerShellWildcard('C:\\a`[1]'.replace(/[[\]]/g, '`$&'))).toBe(true)
+  })
+})
+
+describe('unelevated uninstall command window', () => {
+  const text = {
+    title: '星芒：卸载 Claude Code',
+    running: '正在卸载 Claude Code，请稍等，别关这个窗口。',
+    succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
+    failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+  }
+  const chcp = 'C:\\Windows\\System32\\chcp.com'
+
+  it('switches the window to UTF-8 before any Chinese line is read', () => {
+    // 已知33：窗口里的字说中文。cmd 一行一行按当时的代码页读，头两行必须只有 ASCII。
+    const script = buildUnelevatedCommandScript('npm.cmd uninstall -g @anthropic-ai/claude-code', text, chcp)
+    const lines = script.split('\r\n')
+    expect(lines.slice(0, 2)).toEqual(['@echo off', '"C:\\Windows\\System32\\chcp.com" 65001 >nul'])
+    expect(lines.slice(0, 2).every((line) => /^[\x20-\x7E]*$/.test(line))).toBe(true)
+    expect(lines).toEqual([
+      '@echo off',
+      '"C:\\Windows\\System32\\chcp.com" 65001 >nul',
+      'title 星芒：卸载 Claude Code',
+      'echo 正在卸载 Claude Code，请稍等，别关这个窗口。',
+      'echo.',
+      'call npm.cmd uninstall -g @anthropic-ai/claude-code',
+      'echo.',
+      'if errorlevel 1 (echo 卸载没有完成（错误代码 %errorlevel%）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。) else (echo 卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。)',
+      'echo.',
+      'pause',
+      'del "%~f0"',
+      '',
+    ])
+    expect(script).not.toMatch(/Running:|Completed successfully|FAILED with code|refresh the app/)
+  })
+
+  it('refuses a command line or a sentence that could become another command', () => {
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g 包', text, chcp)).toThrow('非 ASCII')
+    for (const unsafe of ['卸载 & calc', '卸载 | more', '卸载 > out', '卸载 ^', '卸载 %PATH%', '卸载 "x"', '卸载 (x)', '卸载\r\ncalc'])
+      expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', { ...text, running: unsafe }, chcp)).toThrow('命令符号')
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', { ...text, title: ' ' }, chcp)).toThrow('命令符号')
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', text, 'chcp.com')).toThrow('chcp 路径')
+    expect(() => buildUnelevatedCommandScript('npm.cmd uninstall -g x', text, 'C:\\系统\\chcp.com')).toThrow('chcp 路径')
   })
 })

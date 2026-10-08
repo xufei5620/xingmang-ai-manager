@@ -6,6 +6,7 @@ vi.mock('electron', () => ({
 vi.mock('qrcode', () => ({ default: { toDataURL: vi.fn(async () => 'data:image/png;base64,AA==') } }))
 
 import QRCode from 'qrcode'
+import { classifyNetworkFailure } from './network-failure'
 import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import {
@@ -13,6 +14,8 @@ import {
   detectPaymentWindowTerminalStatus,
   isAllowedPaymentNavigationUrl,
   isPaymentWindowReady,
+  paymentFollowUpDelayMs,
+  paymentFollowUpMaxMs,
   paymentFormLimits,
   validatePaymentForm,
   validatePaymentUrl,
@@ -95,6 +98,9 @@ function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<P
     windowEvents,
   }
 }
+
+const inWindow = { afterClose: false }
+const afterClose = { afterClose: true }
 
 beforeEach(() => vi.clearAllMocks())
 afterEach(() => vi.useRealTimers())
@@ -283,7 +289,7 @@ describe('createPaymentWindowController', () => {
     await vi.waitFor(() => expect(harness.onTerminalState).toHaveBeenCalledWith({
       status: 'expired',
       tradeNo: 'XM-20260815-1',
-    }))
+    }, inWindow))
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.window.close).not.toHaveBeenCalled()
     expect(harness.window.destroy.mock.invocationCallOrder[0]).toBeLessThan(
@@ -312,7 +318,7 @@ describe('createPaymentWindowController', () => {
     expect(harness.onTerminalState).toHaveBeenCalledWith({
       status: 'closed',
       tradeNo: 'XM-20260815-1',
-    })
+    }, inWindow)
     expect(harness.controller.isOpen()).toBe(false)
   })
 
@@ -382,6 +388,23 @@ describe('createPaymentWindowController', () => {
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.controller.isOpen()).toBe(false)
   })
+
+  // The runtime log records the cause; the address carries the order number and the signature.
+  it('keeps only the error code of a failed load as the cause, never the payment address', async () => {
+    const address = 'https://pay.example.com/submit?channel=alipay&out_trade_no=XM-20260815-1&sign=private-signature'
+    const harness = createHarness(Object.assign(new Error(`ERR_CONNECTION_RESET (-101) loading '${address}'`), {
+      errno: -101,
+      code: 'ERR_CONNECTION_RESET',
+      url: address,
+    }))
+
+    const failure: unknown = await harness.controller.open(paymentForm()).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof Error && failure.message).toBe('支付页面打开失败，请稍后重试')
+    expect(failure instanceof Error && failure.cause).toEqual({ code: 'ERR_CONNECTION_RESET' })
+    // The failure log still tells a cut connection apart from a certificate or a lookup.
+    expect(classifyNetworkFailure(failure)).toBe('refused')
+  })
 })
 
 function qrPayment(tradeNo = 'sub2-qr-1') {
@@ -413,7 +436,7 @@ describe('authenticated payment order monitoring', () => {
     await vi.advanceTimersByTimeAsync(3_000)
 
     expect(harness.window.destroy).toHaveBeenCalledOnce()
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'sub2-qr-1' })
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'sub2-qr-1' }, inWindow)
     expect(harness.window.destroy.mock.invocationCallOrder[0]).toBeLessThan(harness.onTerminalState.mock.invocationCallOrder[0]!)
     await vi.advanceTimersByTimeAsync(9_000)
     expect(reader).toHaveBeenCalledTimes(2)
@@ -423,7 +446,7 @@ describe('authenticated payment order monitoring', () => {
     const harness = createHarness(undefined, '', { createOrderStatusReader: () => async () => status })
     await harness.controller.openQrCode(qrPayment())
     await vi.advanceTimersByTimeAsync(3_000)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status, tradeNo: 'sub2-qr-1' })
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status, tradeNo: 'sub2-qr-1' }, inWindow)
     expect(harness.window.destroy).toHaveBeenCalledOnce()
   })
 
@@ -436,7 +459,7 @@ describe('authenticated payment order monitoring', () => {
     expect(harness.window.destroy).not.toHaveBeenCalled()
     expect(harness.onTerminalState).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(3_000)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'sub2-qr-1' })
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'sub2-qr-1' }, inWindow)
   })
 
   it('does not overlap queries while an earlier order request is unresolved', async () => {
@@ -449,7 +472,7 @@ describe('authenticated payment order monitoring', () => {
     pending.resolve('pending')
     await vi.advanceTimersByTimeAsync(3_000)
     expect(reader).toHaveBeenCalledTimes(2)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'sub2-qr-1' })
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'sub2-qr-1' }, inWindow)
   })
 
   it('ignores an older order response after a replacement window has opened', async () => {
@@ -475,28 +498,45 @@ describe('authenticated payment order monitoring', () => {
     controller.destroy()
   })
 
-  it.each(['close', 'destroy'] as const)('ignores an order response after controller.%s()', async (action) => {
+  it.each(['close', 'destroy'] as const)('ignores the in-window order response after controller.%s()', async (action) => {
     const pending = deferred<NewApiTopupOrderStatus>()
-    const reader = vi.fn(() => pending.promise)
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockReturnValueOnce(pending.promise).mockResolvedValue('pending')
     const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
     await harness.controller.openQrCode(qrPayment())
     await vi.advanceTimersByTimeAsync(3_000)
     harness.controller[action]()
     pending.resolve('success')
     await vi.advanceTimersByTimeAsync(6_000)
-    expect(reader).toHaveBeenCalledOnce()
-    expect(harness.onTerminalState).not.toHaveBeenCalled()
+    expect(harness.onTerminalState).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }), expect.anything())
   })
 
-  it('does not turn a late response into success after the user manually closes the window', async () => {
+  it('keeps confirming in the background after the in-app close button, but not after destroy()', async () => {
+    const closed = createHarness(undefined, '', { createOrderStatusReader: () => async () => 'pending' })
+    await closed.controller.openQrCode(qrPayment())
+    closed.controller.close()
+    expect(closed.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'closed', tradeNo: 'sub2-qr-1', confirming: true }, inWindow)
+
+    const destroyed = createHarness(undefined, '', { createOrderStatusReader: () => async () => 'success' })
+    await destroyed.controller.openQrCode(qrPayment())
+    destroyed.controller.destroy()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(destroyed.onTerminalState).not.toHaveBeenCalled()
+  })
+
+  it('does not turn a late in-window response into success, but a fresh background query may confirm it', async () => {
     const pending = deferred<NewApiTopupOrderStatus>()
-    const harness = createHarness(undefined, '', { createOrderStatusReader: () => () => pending.promise })
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockReturnValueOnce(pending.promise).mockResolvedValue('pending')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
     await harness.controller.openQrCode(qrPayment())
     await vi.advanceTimersByTimeAsync(3_000)
     harness.window.close()
     pending.resolve('success')
-    await vi.advanceTimersByTimeAsync(6_000)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'closed', tradeNo: 'sub2-qr-1' })
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'closed', tradeNo: 'sub2-qr-1', confirming: true }, inWindow)
+    reader.mockResolvedValue('success')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(reader).toHaveBeenCalledTimes(2)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'success', tradeNo: 'sub2-qr-1' }, afterClose)
   })
 
   it('silently destroys the old payment window and stops polling when account ownership becomes stale', async () => {
@@ -525,7 +565,7 @@ describe('authenticated payment order monitoring', () => {
     harness.webContents.executeJavaScript.mockReturnValue(new Promise(() => undefined))
     await harness.controller.openQrCode({ ...qrPayment(), expiresAt: new Date(Date.now() + 5_000).toISOString() })
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'expired', tradeNo: 'sub2-qr-1' })
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'expired', tradeNo: 'sub2-qr-1' }, inWindow)
     expect(harness.window.destroy).toHaveBeenCalledOnce()
   })
 
@@ -558,6 +598,113 @@ describe('authenticated payment order monitoring', () => {
     await rejected
     await vi.advanceTimersByTimeAsync(3_000)
     expect(second.window.destroy).toHaveBeenCalledOnce()
-    expect(onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'new' })
+    expect(onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'new' }, inWindow)
+  })
+})
+
+describe('background order confirmation after the payment window closes', () => {
+  beforeEach(() => vi.useFakeTimers())
+
+  it('asks every 5 seconds for 2 minutes, then every 30 seconds, and never after 15 minutes', () => {
+    expect(paymentFollowUpDelayMs(0)).toBe(5_000)
+    expect(paymentFollowUpDelayMs(119_999)).toBe(5_000)
+    expect(paymentFollowUpDelayMs(120_000)).toBe(30_000)
+    expect(paymentFollowUpDelayMs(paymentFollowUpMaxMs - 10_000)).toBe(10_000)
+    expect(paymentFollowUpDelayMs(paymentFollowUpMaxMs)).toBeNull()
+    expect(paymentFollowUpDelayMs(Number.NaN)).toBeNull()
+  })
+
+  it('keeps asking at the slower cadence and reports settlement after the window is gone', async () => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockResolvedValue('pending')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    await harness.controller.openQrCode(qrPayment())
+    harness.window.close()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(reader).toHaveBeenCalledTimes(24)
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(reader).toHaveBeenCalledTimes(24)
+    reader.mockResolvedValue('success')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(reader).toHaveBeenCalledTimes(25)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'success', tradeNo: 'sub2-qr-1' }, afterClose)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(reader).toHaveBeenCalledTimes(25)
+  })
+
+  it.each(['failed', 'expired'] as const)('stops and reports %s from the account backend', async (status) => {
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => async () => status })
+    await harness.controller.openQrCode(qrPayment())
+    harness.window.close()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status, tradeNo: 'sub2-qr-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives up after 15 minutes with an unconfirmed result and never treats errors as payment', async () => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>()
+      .mockRejectedValueOnce(new Error('network down')).mockResolvedValue('unknown')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    await harness.controller.openQrCode(qrPayment())
+    harness.window.close()
+    await vi.advanceTimersByTimeAsync(paymentFollowUpMaxMs - 1)
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'unconfirmed', tradeNo: 'sub2-qr-1' }, afterClose)
+    const calls = reader.mock.calls.length
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(reader).toHaveBeenCalledTimes(calls)
+  })
+
+  it('stops silently when the account changed', async () => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockRejectedValue(new RealmAccountError('STALE'))
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    await harness.controller.openQrCode(qrPayment())
+    harness.window.close()
+    await vi.advanceTimersByTimeAsync(paymentFollowUpMaxMs)
+    expect(reader).toHaveBeenCalledOnce()
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
+  })
+
+  it('does not overlap queries while a background request is unresolved', async () => {
+    const pending = deferred<NewApiTopupOrderStatus>()
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockReturnValueOnce(pending.promise).mockResolvedValue('pending')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    await harness.controller.openQrCode(qrPayment())
+    harness.window.close()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(reader).toHaveBeenCalledOnce()
+    pending.resolve('pending')
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(reader).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops following the old order once a new payment opens', async () => {
+    const first = createHarness()
+    const second = createHarness()
+    const onTerminalState = vi.fn()
+    const oldReader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockResolvedValue('pending')
+    const controller = createPaymentWindowController({
+      createWindow: vi.fn().mockReturnValueOnce(first.window).mockReturnValueOnce(second.window),
+      createOrderStatusReader: (tradeNo) => tradeNo === 'old' ? oldReader : async () => 'pending',
+      onTerminalState,
+    })
+    await controller.openQrCode(qrPayment('old'))
+    first.window.close()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(oldReader).toHaveBeenCalledOnce()
+    await controller.openQrCode(qrPayment('new'))
+    oldReader.mockResolvedValue('success')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(oldReader).toHaveBeenCalledOnce()
+    expect(onTerminalState).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }), expect.anything())
+    controller.destroy()
+  })
+
+  it('says nothing about background confirmation when there is no order to ask about', async () => {
+    const harness = createHarness()
+    await harness.controller.open(paymentForm())
+    harness.controller.close()
+    harness.window.close()
+    expect(harness.onTerminalState).not.toHaveBeenCalled()
   })
 })

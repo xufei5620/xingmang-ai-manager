@@ -2,25 +2,43 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ProviderId } from './catalog'
+import { providerIds, type ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
-import type { NativeConfigInspection } from './config-files'
+import type { NativeConfigInspection, ProviderAccountMode } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
-import { relaySites } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, relaySites } from './relay-sites'
 import {
   clockSkewMs,
+  buildWindowsArmSummary,
   clockSyncGuidance,
   createDiagnosticsExport,
+  describeRelayRouteChange,
   describeRelocationTarget,
+  environmentAccountBaseUrls,
+  environmentOverrideNames,
   findRelocatedFolders,
+  homeFolderLeftoversOutcome,
   parseClashTunConfig,
   redactDiagnosticText,
+  operatingSystemSummary,
+  reconcileNodeRuntimeWithClis,
+  relayNetworkPassSummary,
+  relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
+  windowsProxySettingsOutcome,
+  withAppProxyRoute,
+  inspectAppProxyRoute,
+  type DiagnosticItem,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
+  type DiagnosticsRelayRoute,
+  type NodeTlsProbeInput,
 } from './diagnostics'
+import type { NodeTlsOutcome } from './certificate-trust-probe'
+import { readProjectInstructionsTemplate } from './project-instructions'
+import { macosShellOverrideVariables } from './system-service'
 
 const temporaryDirectories: string[] = []
 
@@ -102,6 +120,8 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     clashConfigPaths: [],
     env: {},
     inspectProxyVariables: async () => [],
+    // 绝不对生产站点真的握手（T12）。
+    probeNodeTls: async () => ({ outcome: 'ok', version: 'v22.19.0' }),
   }
 }
 
@@ -121,15 +141,99 @@ describe('diagnostics', () => {
     })
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'pass',
+      summary: 'Mac 不需要这一项',
       details: { required: false, installed: null, path: null },
     })
     expect(inspectPowerShell).not.toHaveBeenCalled()
   })
 
-  it('continues to mark unrecognized operating systems as unsupported', async () => {
+  it('names the terminal program Linux will open tools in, and fails with a fix when there is none', async () => {
+    const home = temporaryHome()
+    const inspectPowerShell = vi.fn(dependencies(home).inspectPowerShell)
+    const found = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'linux',
+      inspectPowerShell,
+      findLinuxTerminal: () => ({ id: 'deepin-terminal', label: '深度终端', executable: '/usr/bin/deepin-terminal' }),
+    })
+    const missing = await runDiagnostics({ ...dependencies(home), platform: 'linux', findLinuxTerminal: () => null })
+
+    expect(found.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
+      state: 'pass',
+      summary: '可用，会用「深度终端」打开工具',
+      details: { required: true, installed: true, terminal: 'deepin-terminal', path: expect.stringContaining('deepin-terminal') },
+    })
+    const failed = missing.items.find((item) => item.code === 'SYSTEM_POWERSHELL')
+    expect(failed).toMatchObject({ state: 'fail', details: { installed: false, terminal: null, path: null } })
+    expect(failed?.summary).toContain('应用商店')
+    expect(failed?.summary).not.toContain('Mac')
+    expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
+  it('explains an ARM laptop in plain words only when the chip is ARM', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    expect((await runDiagnostics(input)).items.some((item) => item.code === 'WINDOWS_ARM')).toBe(false)
+    input.windowsProcessor = 'x64'
+    expect((await runDiagnostics(input)).items.some((item) => item.code === 'WINDOWS_ARM')).toBe(false)
+
+    input.windowsProcessor = 'arm64'
+    const inspectExecutableMachine = vi.fn(async () => 'arm64' as const)
+    input.inspectExecutableMachine = inspectExecutableMachine
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WINDOWS_ARM')
+    expect(item).toMatchObject({ title: '电脑芯片', state: 'pass', details: { nodeMachine: 'arm64', appArch: 'x64' } })
+    expect(item?.summary).toContain('Node.js 已是 ARM 版')
+    expect(item?.summary).toContain('星芒本身暂时只有普通电脑版')
+    expect(item?.summary).not.toMatch(/arm64|x64|x86|模拟/i)
+    expect(inspectExecutableMachine).toHaveBeenCalledWith(path.join(home, 'bin', 'node.exe'))
+
+    input.platform = 'darwin'
+    expect((await runDiagnostics(input)).items.some((entry) => entry.code === 'WINDOWS_ARM')).toBe(false)
+  })
+
+  it('words the ARM notice for a missing, an emulated and an unknown Node.js', () => {
+    expect(buildWindowsArmSummary({ nodeInstalled: false, nodeMachine: null, appArch: 'arm64' }))
+      .toBe('这台电脑是 ARM 芯片，装 Node.js 时会自动装 ARM 版，之后装的工具跑起来更快、更省电')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: 'x64', appArch: 'arm64' }))
+      .toContain('现有的 Node.js 是给普通电脑用的版本，工具能正常用')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: null, appArch: 'arm64' })).toBe('这台电脑是 ARM 芯片')
+    for (const nodeMachine of [null, 'x64', 'arm64', 'x86'] as const) {
+      expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine, appArch: 'x64' })).not.toMatch(/arm64|x64|x86/i)
+    }
+  })
+
+  it('names the Linux distribution and counts Linux as supported now that it has its own build', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
     input.platform = 'linux'
+    input.arch = 'arm64'
+    input.readLinuxSystemName = async () => 'Ubuntu 24.04.1 LTS'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({
+      state: 'pass',
+      summary: 'Ubuntu 24.04.1 LTS（ARM 芯片）',
+      details: { supported: true },
+    })
+  })
+
+  it('still says Linux when the distribution cannot be read', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'linux'
+    input.arch = 'x64'
+    input.readLinuxSystemName = async () => { throw new Error('unreadable') }
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({ state: 'pass', summary: 'Linux（64 位）' })
+  })
+
+  it('continues to mark unrecognized operating systems as unsupported', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'freebsd'
 
     const report = await runDiagnostics(input)
 
@@ -179,12 +283,86 @@ describe('diagnostics', () => {
     expect(inspected.every(({ roots }) => roots === providerRoots)).toBe(true)
     expect(report.items.find((item) => item.code === 'CODEX_DOTENV')).toMatchObject({
       state: 'warn',
-      details: { exists: true, path: '[CODEX_HOME]/.env' },
+      details: { exists: true, path: '[CODEX_HOME]/.env', fix: 'set-aside-codex-dotenv' },
     })
     expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details?.file1)
       .toBe('[CODEX_HOME]/.codex/config.toml')
     expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE')?.details?.file1)
       .toBe('~/.claude/config.json')
+  })
+
+  // #941 第 2 节：工具配置里写的地址和星芒这会儿走的线路对不上时，导出的报告里写清两边各是哪条。两条线路连的
+  // 是同一个账号，所以检查页照常算通过，不提醒（yoyo 10-8：线路的事不要太多提示）。
+  describe('tool connection settings against the current line', () => {
+    const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+    const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+
+    function onLine(line: 'direct' | 'primary', settled: boolean, codexBaseUrl: string) {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const site = line === 'direct' ? directSite : primarySite
+      input.relaySite = site
+      input.relayRoute = { line, automatic: true, settled, primarySite, reportDirectFailure: vi.fn() }
+      input.inspectProvider = (provider) => ({
+        ...inspection(provider, home, 'sk-test'),
+        actualBaseUrl: provider === 'codex' ? codexBaseUrl : site.providerBaseUrls[provider],
+      })
+      return input
+    }
+
+    function codexItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+      return report.items.find((item) => item.code === 'PROVIDER_CODEX')
+    }
+
+    it('passes when a tool still points at the other line and names both lines for the report', async () => {
+      const item = codexItem(await runDiagnostics(onLine('direct', true, primarySite.providerBaseUrls.codex)))
+
+      expect(item).toMatchObject({
+        state: 'pass',
+        summary: '已连到当前账号',
+        details: { matchesRelay: true, routeLine: '默认线路', currentRouteLine: '直连' },
+      })
+      // 两条线路的名字里都不带地址，导出的报告照常可以发给客服。
+      expect(`${item?.details?.routeLine} ${item?.details?.currentRouteLine}`).not.toMatch(/https?:|solov/)
+    })
+
+    it('passes and names the line when the tool already uses the current one', async () => {
+      for (const line of ['direct', 'primary'] as const) {
+        const site = line === 'direct' ? directSite : primarySite
+        const item = codexItem(await runDiagnostics(onLine(line, true, `${site.providerBaseUrls.codex}/`)))
+
+        expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: line === 'direct' ? '直连' : '默认线路' } })
+        expect(item?.details).not.toHaveProperty('currentRouteLine')
+      }
+    })
+
+    it('does not compare while auto has not settled on a line yet', async () => {
+      const item = codexItem(await runDiagnostics(onLine('direct', false, primarySite.providerBaseUrls.codex)))
+
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号' })
+      expect(item?.details).not.toHaveProperty('routeLine')
+    })
+
+    it('does not compare when the run is not told which line the app is on', async () => {
+      const input = onLine('direct', true, primarySite.providerBaseUrls.codex)
+      delete input.relayRoute
+
+      const item = codexItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号' })
+      expect(item?.details).not.toHaveProperty('routeLine')
+    })
+
+    it('names only the current line for a retired address of it without guessing which line it is on', async () => {
+      const [retired] = relaySiteProviderBaseUrlVariants('solov', 'codex')
+        .filter((variant) => variant.endpointId === 'direct' && variant.baseUrl !== directSite.providerBaseUrls.codex)
+      expect(retired).toBeDefined()
+
+      const item = codexItem(await runDiagnostics(onLine('direct', true, retired.baseUrl)))
+
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { currentRouteLine: '直连' } })
+      expect(item?.details).not.toHaveProperty('routeLine')
+    })
   })
 
   it('flags project folder settings that override the current account, without values', async () => {
@@ -312,6 +490,63 @@ describe('diagnostics', () => {
       expect(log.mock.calls[0][3].raw).not.toBe('')
     })
 
+    // 第四十三批 B：检查页按查的是哪个站认出「换一条线路」救不救得回来。备用直连上又失败的，
+    // 查的仍是同一个站，检查页把人带回同一行线路设置，可以换回默认线路。
+    it('names the probed site on a connection failure, on either line of that site', async () => {
+      const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
+      const historical = relaySites.find((site) => site.accountBackend === 'sub2api')
+      const cases = [
+        { site: undefined, endpoint: 'https://xm.solov.cc/api/status', siteId: 'solov' },
+        { site: createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov'), endpoint: 'https://xm-direct.solov.cc/api/status', siteId: 'solov' },
+        { site: historical, endpoint: 'https://api.solov.cc/api/v1/settings/public', siteId: 'solov-api' },
+      ]
+      for (const { site, endpoint, siteId } of cases) {
+        const input = dependencies(temporaryHome())
+        input.relaySite = site
+        input.fetch = vi.fn(async () => { throw refused })
+
+        const report = await runDiagnostics(input)
+
+        expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+          state: 'fail',
+          summary: networkFailureMessages.refused,
+          details: { endpoint, reason: 'refused', siteId },
+        })
+      }
+    })
+
+    // 当地网络切断一条线路时，请求常常发出去就没人回。以前这算检查自己出错（「检查超时」），
+    // 检查页认不出这是连不上，也就给不了换线路的出路。
+    it('reports a probe that never answers as a connection timeout of the probed site', async () => {
+      const input = dependencies(temporaryHome())
+      input.timeoutMs = 20
+      input.fetch = vi.fn(async () => await new Promise<Response>(() => undefined))
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({
+        state: 'fail',
+        summary: networkFailureMessages.timeout,
+        details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'timeout', siteId: 'solov' },
+      })
+      expect(network?.summary).not.toBe('检查超时')
+    })
+
+    // 回完了话、卡在问加速开没开（要排在正开关加速的后面）：网络是通的，不能说成连接超时、
+    // 把人带去换线路，照旧是检查自己超时。
+    it('keeps a plain check timeout when the probe answered but the acceleration lookup stalls', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => await new Promise<boolean>(() => undefined)
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'error', summary: '检查超时' })
+      expect(network?.details).not.toHaveProperty('siteId')
+    })
+
     // #302 的误报：站点根路径本来就是网页前端，正常时也回 text/html。探测改打
     // 本来就回 JSON 的状态接口后，根路径长什么样不再影响结论。
     it('passes a healthy site whose home page is a web page but whose status endpoint answers JSON', async () => {
@@ -333,6 +568,32 @@ describe('diagnostics', () => {
       })
       expect(fetchImpl).toHaveBeenCalledTimes(1)
       expect(fetchImpl.mock.calls[0][0]).toBe('https://xm.solov.cc/api/status')
+    })
+
+    it('says the relay is reached directly while acceleration is on', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => true
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+        state: 'pass',
+        summary: '能连上星芒服务（开着加速时也直接连，不绕加速线路）',
+        details: { route: 'direct' },
+      })
+    })
+
+    it('keeps the plain verdict when the acceleration state cannot be read', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => { throw new Error('not ready') }
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
+      expect(network?.details).not.toHaveProperty('route')
     })
 
     it('treats a login page served in place of the status endpoint as interception', async () => {
@@ -448,6 +709,260 @@ describe('diagnostics', () => {
       })
       expect(log).not.toHaveBeenCalled()
     })
+
+    // 直连适配第二步：选「自动」、这会儿走直连时，直连没查通就当场查默认线路，查通了算能连上，
+    // 结论说清用的是哪条（方案第六节第 3 条原话）。
+    describe('on the line the account site uses right now', () => {
+      const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+      const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+
+      function refused(): TypeError {
+        return new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
+      }
+
+      function onRoute(route: Omit<DiagnosticsRelayRoute, 'primarySite' | 'reportDirectFailure'>) {
+        const input = dependencies(temporaryHome())
+        const reportDirectFailure = vi.fn<(reason: string) => void>()
+        input.relaySite = route.line === 'direct' ? directSite : primarySite
+        input.relayRoute = { ...route, primarySite, reportDirectFailure }
+        return { input, reportDirectFailure }
+      }
+
+      function networkItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+        return report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      }
+
+      // #941 第 2、7 节：「自动」最近一次换线路是什么时候、为什么，查得通查不通都写在这一项里。
+      it('tells when and why auto last changed the line, keeping the code that started it for the report', async () => {
+        const at = new Date(2026, 9, 7, 21, 14).getTime()
+        const { input } = onRoute({
+          line: 'primary', automatic: true, settled: true,
+          lastChange: { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ECONNRESET', at },
+        })
+        input.fetch = vi.fn(async () => statusJson())
+
+        expect(networkItem(await runDiagnostics(input))).toMatchObject({
+          state: 'pass',
+          details: { lastRouteChange: '10月7日 21:14，直连连着 3 次没连上，改走默认线路', lastRouteChangeTrigger: 'ECONNRESET' },
+        })
+      })
+
+      it('also tells the last line change when neither line answers', async () => {
+        const at = new Date(2026, 9, 7, 9, 5).getTime()
+        const { input } = onRoute({
+          line: 'direct', automatic: true, settled: true,
+          lastChange: { from: 'primary', to: 'direct', reason: 'recovered', at },
+        })
+        input.fetch = vi.fn(async () => { throw refused() })
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({ state: 'fail', details: { lastRouteChange: '10月7日 09:05，直连连着 10 分钟都能连上，换回直连' } })
+        expect(network?.details).not.toHaveProperty('lastRouteChangeTrigger')
+      })
+
+      it('says nothing about line changes when auto has not changed the line yet', async () => {
+        const { input } = onRoute({ line: 'direct', automatic: true, settled: true, lastChange: null })
+        input.fetch = vi.fn(async () => statusJson())
+
+        expect(networkItem(await runDiagnostics(input))?.details).not.toHaveProperty('lastRouteChange')
+      })
+
+      it('says the check used direct when auto is on direct and direct answers', async () => {
+        const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const fetchImpl = vi.fn(async (_url: string | URL | Request) => statusJson())
+        input.fetch = fetchImpl
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({
+          state: 'pass',
+          summary: '能连上星芒服务，用的是直连',
+          details: { endpoint: 'https://xm-direct.solov.cc/api/status', line: 'direct' },
+        })
+        expect(network?.details).not.toHaveProperty('fellBack')
+        expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(['https://xm-direct.solov.cc/api/status'])
+        expect(reportDirectFailure).not.toHaveBeenCalled()
+      })
+
+      it('checks the default line when direct cannot be reached under auto and says it moved there', async () => {
+        const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const log = vi.fn()
+        input.log = log
+        const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+          if (String(url) === 'https://xm-direct.solov.cc/api/status') throw refused()
+          return statusJson()
+        })
+        input.fetch = fetchImpl
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({
+          state: 'pass',
+          summary: '能连上星芒服务。直连这会儿连不上，已自动改走默认线路',
+          details: { endpoint: 'https://xm.solov.cc/api/status', line: 'primary', fellBack: true },
+        })
+        expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+          'https://xm-direct.solov.cc/api/status',
+          'https://xm.solov.cc/api/status',
+        ])
+        expect(reportDirectFailure).toHaveBeenCalledWith('ECONNREFUSED')
+        expect(log).toHaveBeenCalledWith('info', 'diagnostics.network.fallback', expect.any(String), { reason: 'refused' })
+      })
+
+      it('checks the default line when the direct share of the time runs out, and asks the line to check itself', async () => {
+        const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const signals: Array<AbortSignal | null | undefined> = []
+        input.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          signals.push(init?.signal)
+          if (String(url) === 'https://xm-direct.solov.cc/api/status') {
+            throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+          }
+          return statusJson()
+        })
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
+        // 状态接口只回几百字节，几秒里一个字都没回来就是这会儿不通：叫线路那边查一轮（#941 第 3 节）。
+        expect(reportDirectFailure).toHaveBeenCalledWith('timeout')
+        // 直连那一次另有一个更短的时限，默认线路用的是整项的时限。
+        expect(signals).toHaveLength(2)
+        expect(signals[0]).not.toBe(signals[1])
+      })
+
+      it('moves on from a gateway error page served on direct but not from an answer the service gave', async () => {
+        const gateway = onRoute({ line: 'direct', automatic: true, settled: true })
+        gateway.input.fetch = vi.fn(async (url: string | URL | Request) => String(url) === 'https://xm-direct.solov.cc/api/status'
+          ? new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } })
+          : statusJson())
+
+        expect(networkItem(await runDiagnostics(gateway.input))).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
+        expect(gateway.reportDirectFailure).toHaveBeenCalledWith('http-502')
+
+        const service = onRoute({ line: 'direct', automatic: true, settled: true })
+        const fetchImpl = vi.fn(async () => new Response('{"success":false,"message":"busy"}', {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }))
+        service.input.fetch = fetchImpl
+
+        const network = networkItem(await runDiagnostics(service.input))
+
+        expect(network).toMatchObject({ state: 'fail', details: { endpoint: 'https://xm-direct.solov.cc/api/status', status: 503 } })
+        expect(fetchImpl).toHaveBeenCalledTimes(1)
+        expect(service.reportDirectFailure).not.toHaveBeenCalled()
+      })
+
+      it('moves on when the proxy refuses the direct address or something other than the service answers on direct', async () => {
+        const answers: Array<{ direct: () => Response; reported: string }> = [
+          // 只放行老域名的公司网关：代理对直连域名的 CONNECT 回 403。
+          { direct: () => { throw new TypeError('fetch failed', { cause: new Error('net::ERR_TUNNEL_CONNECTION_FAILED') }) }, reported: 'ERR_TUNNEL_CONNECTION_FAILED' },
+          { direct: () => { throw new TypeError('fetch failed', { cause: new Error('unexpected redirect') }) }, reported: 'intercepted' },
+          { direct: () => new Response('<html>上网认证</html>', { status: 200, headers: { 'content-type': 'text/html' } }), reported: 'intercepted' },
+          { direct: () => new Response('请先认证', { status: 200, headers: { 'content-type': 'text/plain' } }), reported: 'intercepted' },
+          { direct: () => new Response('<html>Access denied</html>', { status: 403, headers: { 'content-type': 'text/html' } }), reported: 'intercepted' },
+        ]
+        for (const { direct, reported } of answers) {
+          const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+          input.fetch = vi.fn(async (url: string | URL | Request) => String(url) === 'https://xm-direct.solov.cc/api/status' ? direct() : statusJson())
+
+          expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
+          expect(reportDirectFailure).toHaveBeenCalledWith(reported)
+        }
+      })
+
+      it('keeps the direct verdict when the default line does not answer either', async () => {
+        const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        input.fetch = vi.fn(async () => { throw refused() })
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({
+          state: 'fail',
+          summary: networkFailureMessages.refused,
+          details: { endpoint: 'https://xm-direct.solov.cc/api/status', reason: 'refused', siteId: 'solov' },
+        })
+        expect(reportDirectFailure).toHaveBeenCalledTimes(1)
+      })
+
+      it('reports a connection timeout when direct served a gateway page and the default line never answers', async () => {
+        const { input } = onRoute({ line: 'direct', automatic: true, settled: true })
+        input.timeoutMs = 50
+        input.fetch = vi.fn(async (url: string | URL | Request) => String(url) === 'https://xm-direct.solov.cc/api/status'
+          ? new Response('<html>504</html>', { status: 504, headers: { 'content-type': 'text/html' } })
+          : await new Promise<Response>(() => undefined))
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({
+          state: 'fail',
+          summary: networkFailureMessages.timeout,
+          details: { endpoint: 'https://xm-direct.solov.cc/api/status', reason: 'timeout', siteId: 'solov' },
+        })
+      })
+
+      it('leaves a line the customer pinned alone', async () => {
+        const { input, reportDirectFailure } = onRoute({ line: 'direct', automatic: false, settled: true })
+        const fetchImpl = vi.fn(async () => { throw refused() })
+        input.fetch = fetchImpl
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({ state: 'fail', details: { endpoint: 'https://xm-direct.solov.cc/api/status', reason: 'refused' } })
+        expect(fetchImpl).toHaveBeenCalledTimes(1)
+        expect(reportDirectFailure).not.toHaveBeenCalled()
+      })
+
+      it('says auto already moved to the default line when it settled there earlier', async () => {
+        const { input } = onRoute({ line: 'primary', automatic: true, settled: true })
+        const fetchImpl = vi.fn(async (_url: string | URL | Request) => statusJson())
+        input.fetch = fetchImpl
+        input.inspectAccelerationActive = async () => true
+
+        const network = networkItem(await runDiagnostics(input))
+
+        expect(network).toMatchObject({
+          state: 'pass',
+          summary: '能连上星芒服务。直连这会儿连不上，已自动改走默认线路（开着加速也不绕加速线路）',
+          details: { endpoint: 'https://xm.solov.cc/api/status', line: 'primary', route: 'direct' },
+        })
+        expect(network?.details).not.toHaveProperty('fellBack')
+        expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(['https://xm.solov.cc/api/status'])
+      })
+
+      it('names the default line while auto has not settled yet and when the customer pinned it', async () => {
+        for (const route of [{ automatic: true, settled: false }, { automatic: false, settled: true }]) {
+          const { input } = onRoute({ line: 'primary', ...route })
+          input.fetch = vi.fn(async () => statusJson())
+
+          expect(networkItem(await runDiagnostics(input))).toMatchObject({
+            state: 'pass',
+            summary: '能连上星芒服务，用的是默认线路',
+            details: { line: 'primary' },
+          })
+        }
+      })
+
+      it('words each verdict exactly as approved, with the acceleration note last', () => {
+        expect(relayNetworkPassSummary(null, false)).toBe('能连上星芒服务')
+        expect(relayNetworkPassSummary(null, true)).toBe('能连上星芒服务（开着加速时也直接连，不绕加速线路）')
+        expect(relayNetworkPassSummary({ line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是直连')
+        expect(relayNetworkPassSummary({ line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是默认线路')
+        expect(relayNetworkPassSummary({ line: 'primary', fellBack: true }, false)).toBe('能连上星芒服务。直连这会儿连不上，已自动改走默认线路')
+        expect(relayNetworkPassSummary({ line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是直连（开着加速也不绕加速线路）')
+      })
+    })
+  })
+
+  describe('describeRelayRouteChange', () => {
+    it('says when the line changed, in local time, and why, without any address', () => {
+      const at = new Date(2026, 0, 3, 8, 0).getTime()
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，查到直连能连上，走直连')
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ETIMEDOUT', at }))
+        .toBe('1月3日 08:00，直连连着 3 次没连上，改走默认线路')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at })).toBe('1月3日 08:00，直连连着 10 分钟都能连上，换回直连')
+    })
   })
 
   describe('relayStatusProbeUrl', () => {
@@ -464,6 +979,25 @@ describe('diagnostics', () => {
     it('refuses to probe a site that is not served over https', () => {
       const site = { ...relaySites[0], providerBaseUrls: { ...relaySites[0].providerBaseUrls, claude: 'http://xm.solov.cc' } }
       expect(() => relayStatusProbeUrl(site)).toThrow('https')
+    })
+  })
+
+  describe('relaySiteStatusProbeUrls', () => {
+    const onDirect = { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: true } } as const
+
+    it('lists where to probe each entrance of the site an address belongs to, the one in use first', () => {
+      expect(relaySiteStatusProbeUrls('https://xm.solov.cc/api/status', onDirect))
+        .toEqual(['https://xm-direct.solov.cc/api/status', 'https://xm.solov.cc/api/status'])
+      expect(relaySiteStatusProbeUrls('https://xm-direct.solov.cc/v1/chat/completions', onDirect))
+        .toEqual(['https://xm-direct.solov.cc/api/status', 'https://xm.solov.cc/api/status'])
+      expect(relaySiteStatusProbeUrls('https://api-direct.solov.cc/api/v1/settings/public', onDirect))
+        .toEqual(['https://api.solov.cc/api/v1/settings/public', 'https://api-direct.solov.cc/api/v1/settings/public'])
+    })
+
+    it('knows nothing of addresses that are not an entrance of a site, the retired IP entry included', () => {
+      expect(relaySiteStatusProbeUrls('https://github.com/anthropics', onDirect)).toEqual([])
+      expect(relaySiteStatusProbeUrls('https://38.147.105.28:8443/api/status', onDirect)).toEqual([])
+      expect(relaySiteStatusProbeUrls('not a url', onDirect)).toEqual([])
     })
   })
 
@@ -573,9 +1107,21 @@ describe('diagnostics', () => {
 
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
-        summary: '没有会盖过当前账号配置的环境变量',
+        summary: '没有另外设过工具地址或密钥',
         details: { count: 0 },
       })
+    })
+
+    it('offers the one-click clear only on Windows and only while something clearable remains', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { ANTHROPIC_API_KEY: 'sk-must-not-leak' }
+      expect(overrideItem(await runDiagnostics({ ...input, platform: 'win32' }))?.details?.fix).toBe('clear-user-overrides')
+      expect(overrideItem(await runDiagnostics({ ...input, platform: 'darwin' }))?.details?.fix).toBeUndefined()
+      input.env = { CLAUDE_CONFIG_DIR: path.join(home, 'elsewhere') }
+      const folderOnly = overrideItem(await runDiagnostics({ ...input, platform: 'win32' }))
+      expect(folderOnly?.state).not.toBe('pass')
+      expect(folderOnly?.details?.fix).toBeUndefined()
     })
 
     it('names the variables it found without ever reading their values', async () => {
@@ -622,10 +1168,305 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'fail',
-        summary: `系统环境变量里设置了 ${name}，会让 ${tool} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+        summary: `电脑里另外设了 ${name}，会让 ${tool} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
         details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
       })
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
+    })
+
+    // Mac 上这些多半写在 ~/.zshrc 里，检查页看不见，靠启动脚本在用星芒账号时去掉（已知45）。
+    // 以后哪个变量实测改成会绕开当前账号，那边的名单得一起加上。
+    it('leaves every variable that takes a CLI off the current account to the macOS launcher to drop', async () => {
+      const home = temporaryHome()
+      const dropped = new Set(providerIds.flatMap((provider) => macosShellOverrideVariables(provider, 'relay')))
+      const breaking: string[] = []
+      for (const name of environmentOverrideNames) {
+        const input = dependencies(home)
+        input.env = { [name]: 'https://must-not-leak.example.com/elsewhere' }
+        if (overrideItem(await runDiagnostics(input))?.state === 'fail') breaking.push(name)
+      }
+
+      expect(breaking.length).toBeGreaterThan(0)
+      expect(breaking.filter((name) => !dropped.has(name))).toEqual([])
+    })
+
+    describe('on macOS', () => {
+      // 这几项要真建文件再经 readSafeUtf8File 读；Windows 上建链接要另给权限，而这一半本来就只在 Mac 上跑。
+      const posixHost = process.platform !== 'win32'
+
+      function macosInput(home: string, modes: Partial<Record<ProviderId, ProviderAccountMode>> = {}) {
+        const input = dependencies(home)
+        input.platform = 'darwin'
+        // 要读文件，给足时间，免得机器忙时这一项报「检查超时」。
+        input.timeoutMs = 2000
+        input.inspectProvider = (provider) => {
+          const mode = modes[provider] ?? 'relay'
+          return {
+            ...inspection(provider, home, 'sk-super-secret-value'),
+            ...(mode === 'relay' ? {} : { matchesRelay: false, hasApiKey: mode === 'unknown', apiKey: mode === 'unknown' ? 'sk-elsewhere' : '' }),
+          }
+        }
+        return input
+      }
+
+      function realHome(): string {
+        // macOS 的临时目录在 /var 下，而 /var 是指向 /private/var 的链接，readSafeUtf8File 不读穿过链接的路径。
+        return fs.realpathSync.native(temporaryHome())
+      }
+
+      function writeShellSettings(home: string, file: string, text: string): void {
+        const target = path.join(home, ...file.split('/'))
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.writeFileSync(target, text)
+      }
+
+      it.runIf(posixHost)('names a key the shell settings export, with the file but never the value', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', '# 别家中转的教程\nexport ANTHROPIC_API_KEY=sk-must-not-leak\n')
+
+        const item = overrideItem(await runDiagnostics(macosInput(home)))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          summary: '终端设置里另外设了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          details: { count: 1, variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）' },
+        })
+        expect(item?.details?.fix).toBeUndefined()
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it.runIf(posixHost)('lists every file a variable sits in and names each variable once', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-must-not-leak GEMINI_API_KEY=sk-must-not-leak\n')
+        writeShellSettings(home, '.zprofile', 'ANTHROPIC_API_KEY=sk-must-not-leak\nexport ANTHROPIC_API_KEY\n')
+        writeShellSettings(home, '.config/fish/config.fish', 'set -gx GOOGLE_GEMINI_BASE_URL https://must-not-leak.example.com\n')
+
+        const item = overrideItem(await runDiagnostics(macosInput(home)))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code、Gemini CLI 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          details: {
+            count: 4,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
+            variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zprofile）',
+            variable3: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.config/fish/config.fish）',
+            variable4: 'GEMINI_API_KEY（Gemini CLI，在 ~/.zshrc）',
+          },
+        })
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it.runIf(posixHost)('reads every startup file a login shell may run', async () => {
+        const home = realHome()
+        const files = ['.zshrc', '.zprofile', '.zshenv', '.zlogin', '.bash_profile', '.bash_login', '.profile', '.bashrc']
+        for (const file of files) writeShellSettings(home, file, 'export GEMINI_API_KEY=sk-shell\n')
+        writeShellSettings(home, '.config/fish/config.fish', 'set -gx GEMINI_API_KEY sk-shell\n')
+
+        const details = overrideItem(await runDiagnostics(macosInput(home)))?.details
+
+        expect(details).toMatchObject({ count: 9 })
+        expect(Object.entries(details ?? {}).filter(([key]) => key.startsWith('variable')).map(([, label]) => label)).toEqual([
+          ...files.map((file) => `GEMINI_API_KEY（Gemini CLI，在 ~/${file}）`),
+          'GEMINI_API_KEY（Gemini CLI，在 ~/.config/fish/config.fish）',
+        ])
+      })
+
+      it.runIf(posixHost)('shortens the names after three, as everywhere else', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', [
+          'export ANTHROPIC_API_KEY=sk-a CLAUDE_CONFIG_DIR=/elsewhere',
+          'export GOOGLE_GEMINI_BASE_URL=https://gateway.example.com GEMINI_API_KEY=sk-b',
+        ].join('\n'))
+
+        expect(overrideItem(await runDiagnostics(macosInput(home)))?.summary).toBe(
+          '终端设置里另外设了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR、GOOGLE_GEMINI_BASE_URL等 4 项：从星芒打开的工具不受影响，自己开终端直接用 Claude Code、Gemini CLI 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+        )
+      })
+
+      it.runIf(posixHost)('only looks for the four variables that take a tool off the account', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', environmentOverrideNames
+          .map((name) => `export ${name}=https://must-not-leak.example.com/elsewhere`)
+          .join('\n'))
+
+        const details = overrideItem(await runDiagnostics(macosInput(home)))?.details
+
+        expect(details).toMatchObject({ count: 4 })
+        expect(Object.entries(details ?? {}).filter(([key]) => key.startsWith('variable')).map(([, label]) => label)).toEqual([
+          'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
+          'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.zshrc）',
+          'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.zshrc）',
+          'GEMINI_API_KEY（Gemini CLI，在 ~/.zshrc）',
+        ])
+      })
+
+      it.runIf(posixHost)('leaves the shell settings alone on Windows and Linux', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell GEMINI_API_KEY=sk-shell\n')
+
+        for (const platform of ['win32', 'linux'] as const) {
+          expect(overrideItem(await runDiagnostics({ ...macosInput(home), platform }))).toMatchObject({
+            state: 'pass',
+            summary: '没有另外设过工具地址或密钥',
+            details: { count: 0 },
+          })
+        }
+      })
+
+      it.runIf(posixHost)('leaves a tool that is not on the 星芒 account alone', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-own CLAUDE_CONFIG_DIR=/own GEMINI_API_KEY=sk-own\n')
+
+        for (const mode of ['official', 'unknown'] as const) {
+          expect(overrideItem(await runDiagnostics(macosInput(home, { claude: mode, gemini: mode }))), mode).toMatchObject({
+            state: 'pass',
+            details: { count: 0 },
+          })
+        }
+        expect(overrideItem(await runDiagnostics(macosInput(home, { claude: 'official' })))).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'GEMINI_API_KEY（Gemini CLI，在 ~/.zshrc）' },
+        })
+      })
+
+      it.runIf(posixHost)('skips a value that points at the current account, the default Claude folder or nothing', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', [
+          'export CLAUDE_CONFIG_DIR=~/.claude',
+          'export CLAUDE_CONFIG_DIR="$HOME/.claude/"',
+          'export GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc',
+          'export ANTHROPIC_API_KEY=',
+          '# export GEMINI_API_KEY=sk-commented',
+          'GEMINI_API_KEY=sk-not-exported',
+        ].join('\n'))
+
+        expect(overrideItem(await runDiagnostics(macosInput(home)))).toMatchObject({
+          state: 'pass',
+          summary: '没有另外设过工具地址或密钥',
+          details: { count: 0 },
+        })
+      })
+
+      // 直连适配第二步：同进程环境那边一套判法，「自动」走直连时指着默认线路的也算当前账号。
+      it.runIf(posixHost)('takes the default line as the current account while auto runs on direct, but not direct once it fell back', async () => {
+        const home = realHome()
+        const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+        const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+        function onRoute(line: 'direct' | 'primary') {
+          const input = macosInput(home)
+          input.relaySite = line === 'direct' ? directSite : primarySite
+          input.relayRoute = { line, automatic: true, settled: true, primarySite, reportDirectFailure: vi.fn() }
+          return input
+        }
+
+        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc\n')
+        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
+
+        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm-direct.solov.cc\n')
+        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
+        expect(overrideItem(await runDiagnostics(onRoute('primary')))).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.zshrc）' },
+        })
+      })
+
+      it.runIf(posixHost)('reports a value it cannot work out, and one export that points away is enough', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', [
+          'export CLAUDE_CONFIG_DIR=~/.claude',
+          'use_other_relay() { export CLAUDE_CONFIG_DIR=$XDG_CONFIG_HOME/claude; }',
+        ].join('\n'))
+
+        expect(overrideItem(await runDiagnostics(macosInput(home)))).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.zshrc）' },
+        })
+      })
+
+      it.runIf(posixHost)('does not follow a linked shell settings file and notes why only in the log', async () => {
+        const home = realHome()
+        writeShellSettings(home, 'dotfiles/zshrc', 'export ANTHROPIC_API_KEY=sk-must-not-leak\n')
+        fs.symlinkSync(path.join(home, 'dotfiles', 'zshrc'), path.join(home, '.zshrc'))
+        const log = vi.fn()
+
+        const item = overrideItem(await runDiagnostics({ ...macosInput(home), log }))
+
+        expect(item).toMatchObject({ state: 'pass', details: { count: 0 } })
+        expect(log).toHaveBeenCalledWith('info', 'diagnostics.shell-settings.skipped', '终端设置文件没读', expect.objectContaining({ file: '~/.zshrc' }))
+        expect(JSON.stringify(log.mock.calls)).not.toMatch(/must-not-leak/)
+        expect(JSON.stringify(log.mock.calls)).not.toContain(home)
+      })
+
+      it.runIf(posixHost)('keeps one line per variable when the app environment and a shell file carry the same one', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell\n')
+        const input = macosInput(home)
+        input.env = { ANTHROPIC_API_KEY: 'sk-shell', GEMINI_API_KEY: 'sk-shell' }
+
+        expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+          state: 'warn',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
+            variable2: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+          },
+        })
+      })
+
+      // 星芒自己是从终端打开的、环境里就带着这几个时，从星芒打开的工具也已经不受影响（已知45 ③）。
+      it('says the same when the app itself was started with those variables', async () => {
+        const home = temporaryHome()
+        const input = macosInput(home)
+        input.env = { ANTHROPIC_API_KEY: 'sk-must-not-leak', GEMINI_API_KEY: 'sk-must-not-leak' }
+
+        const item = overrideItem(await runDiagnostics(input))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、GEMINI_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code、Gemini CLI 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+            variable2: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+          },
+        })
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it('keeps a variable the launcher still passes on a finding to handle, and names only those', async () => {
+        const home = temporaryHome()
+        const input = macosInput(home, { claude: 'official' })
+        input.env = { ANTHROPIC_API_KEY: 'sk-own', GEMINI_API_KEY: 'sk-shell' }
+
+        expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+          state: 'fail',
+          summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+            variable2: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+          },
+        })
+      })
+
+      it('calls a variable that takes a tool off the account a finding to handle exactly when the launcher passes it on', async () => {
+        const home = temporaryHome()
+        const checked: string[] = []
+        for (const name of environmentOverrideNames) {
+          const windows = dependencies(home)
+          windows.env = { [name]: 'https://must-not-leak.example.com/elsewhere' }
+          if (overrideItem(await runDiagnostics(windows))?.state !== 'fail') continue
+          for (const mode of ['relay', 'official', 'unknown'] as const) {
+            const input = macosInput(home, Object.fromEntries(providerIds.map((provider) => [provider, mode])))
+            input.env = { [name]: 'https://must-not-leak.example.com/elsewhere' }
+            const dropped = providerIds.some((provider) => macosShellOverrideVariables(provider, mode).includes(name))
+            expect(overrideItem(await runDiagnostics(input))?.state, `${name} ${mode}`).toBe(dropped ? 'warn' : 'fail')
+            checked.push(`${name} ${mode}`)
+          }
+        }
+        expect(checked).toHaveLength(12)
+      })
     })
 
     // 这些实测盖不过写入的配置，或只换模型、不换账号：留在需留意，不在开机时打扰。
@@ -644,7 +1485,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'warn',
-        summary: `系统环境变量里设置了 ${name}，可能会盖过当前账号写入的配置`,
+        summary: `电脑里另外设了 ${name}，可能会盖过当前账号的设置`,
       })
     })
 
@@ -656,6 +1497,59 @@ describe('diagnostics', () => {
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'pass',
         details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）' },
+      })
+    })
+
+    // 直连适配第二步：「自动」走直连时，照旧教程指着默认线路的地址不能被当成别家报「待处理」、给一键删除。
+    describe('on the line the account site uses right now', () => {
+      const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
+      const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
+
+      function onRoute(line: 'direct' | 'primary', automatic: boolean, env: NodeJS.ProcessEnv) {
+        const input = dependencies(temporaryHome())
+        input.relaySite = line === 'direct' ? directSite : primarySite
+        input.relayRoute = { line, automatic, settled: true, primarySite, reportDirectFailure: vi.fn() }
+        input.env = env
+        input.platform = 'win32'
+        return input
+      }
+
+      it('counts the default line and the direct line as the current account while auto runs on direct', async () => {
+        for (const url of ['https://xm.solov.cc', 'https://xm-direct.solov.cc']) {
+          const item = overrideItem(await runDiagnostics(onRoute('direct', true, { GOOGLE_GEMINI_BASE_URL: url, ANTHROPIC_BASE_URL: url })))
+
+          expect(item).toMatchObject({
+            state: 'pass',
+            details: {
+              count: 2,
+              variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
+              variable2: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）',
+            },
+          })
+          expect(item?.details?.fix).toBeUndefined()
+        }
+      })
+
+      it('adds the default line to the line in use only under auto', () => {
+        const route = { primarySite, automatic: true }
+
+        expect(environmentAccountBaseUrls(directSite, route)).toEqual([directSite.providerBaseUrls, primarySite.providerBaseUrls])
+        expect(environmentAccountBaseUrls(directSite, { ...route, automatic: false })).toEqual([directSite.providerBaseUrls])
+        expect(environmentAccountBaseUrls(directSite, undefined)).toEqual([directSite.providerBaseUrls])
+      })
+
+      it('flags an address on direct once auto has moved to the default line', async () => {
+        const item = overrideItem(await runDiagnostics(onRoute('primary', true, { GOOGLE_GEMINI_BASE_URL: 'https://xm-direct.solov.cc' })))
+
+        expect(item).toMatchObject({ state: 'fail', details: { count: 1, fix: 'clear-user-overrides' } })
+      })
+
+      it('keeps flagging the default line for someone who fixed the direct line', async () => {
+        const fixed = overrideItem(await runDiagnostics(onRoute('direct', false, { GOOGLE_GEMINI_BASE_URL: 'https://xm.solov.cc' })))
+        const direct = overrideItem(await runDiagnostics(onRoute('direct', false, { GOOGLE_GEMINI_BASE_URL: 'https://xm-direct.solov.cc' })))
+
+        expect(fixed).toMatchObject({ state: 'fail', details: { fix: 'clear-user-overrides' } })
+        expect(direct).toMatchObject({ state: 'pass' })
       })
     })
 
@@ -674,7 +1568,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'fail',
-        summary: '系统环境变量里设置了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号写入的配置，删掉后重新打开终端即可',
+        summary: '电脑里另外设了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
         details: {
           count: 3,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
@@ -693,7 +1587,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
-        summary: '检测到的环境变量都指向当前账号，不会盖过写入的配置',
+        summary: '电脑里另外设的工具地址也指向当前账号，不影响使用',
         details: {
           count: 2,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
@@ -781,7 +1675,7 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'warn',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；另外系统环境变量里设置了 OPENAI_API_KEY，可能会盖过当前账号写入的配置',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；电脑里另外设了 OPENAI_API_KEY，可能会盖过当前账号的设置',
         details: {
           count: 2,
           variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
@@ -807,6 +1701,59 @@ describe('diagnostics', () => {
     expect(node).toMatchObject({ state: 'error', summary: '检查超时' })
     expect(npm).toMatchObject({ state: 'pass' })
     expect(report.durationMs).toBeLessThan(500)
+  })
+
+  // 已知7：只用 Codex 桌面端的客户，首页运行环境卡说 Node.js「可选 · 未装」，检查页却是两行红色。
+  it('lowers a missing Node.js and npm to a reminder when no command-line tool is installed', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    const installed = new Set<DiagnosticToolId>(['python', 'git'])
+    input.inspectTool = async (tool) => installed.has(tool)
+      ? { installed: true, version: `${tool} 1.0.0`, path: path.join(home, 'bin', `${tool}.exe`) }
+      : { installed: false, version: null, path: null }
+
+    const report = await runDiagnostics(input)
+
+    for (const code of ['RUNTIME_NODE', 'RUNTIME_NPM']) {
+      expect(report.items.find((item) => item.code === code)).toMatchObject({ state: 'warn', summary: '未安装', details: { installed: false } })
+    }
+    expect(report.counts.warn).toBe(report.items.filter((item) => item.state === 'warn').length)
+    expect(report.counts.fail).toBe(report.items.filter((item) => item.state === 'fail').length)
+  })
+
+  it('keeps a missing Node.js and npm as failures while a command-line tool is installed', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    const installed = new Set<DiagnosticToolId>(['python', 'git', 'codex'])
+    input.inspectTool = async (tool) => installed.has(tool)
+      ? { installed: true, version: `${tool} 1.0.0`, path: path.join(home, 'bin', `${tool}.exe`) }
+      : { installed: false, version: null, path: null }
+
+    const report = await runDiagnostics(input)
+
+    for (const code of ['RUNTIME_NODE', 'RUNTIME_NPM']) {
+      expect(report.items.find((item) => item.code === code)).toMatchObject({ state: 'fail', details: { installed: false } })
+    }
+  })
+
+  describe('reconcileNodeRuntimeWithClis', () => {
+    function item(code: string, state: DiagnosticItem['state'], details?: DiagnosticItem['details']): DiagnosticItem {
+      return { code, title: code, state, summary: state === 'error' ? '检查超时' : '未安装', details, durationMs: 1 }
+    }
+    const missingClis = ['CLI_CLAUDE', 'CLI_CODEX', 'CLI_GEMINI', 'CLI_GROK'].map((code) => item(code, 'warn', { installed: false }))
+
+    // 查不出来装没装，就不能说用不到（同首页：没检测出来的工具算在用）。
+    it('keeps Node.js red when a command-line tool could not be detected', () => {
+      const items = [...missingClis.slice(1), item('CLI_CLAUDE', 'error', { reason: '单项检查超过 8000ms' }), item('RUNTIME_NODE', 'fail', { installed: false })]
+
+      expect(reconcileNodeRuntimeWithClis(items).find((entry) => entry.code === 'RUNTIME_NODE')?.state).toBe('fail')
+    })
+
+    it('leaves a timed out Node.js check and the other runtimes alone', () => {
+      const items = [...missingClis, item('RUNTIME_NODE', 'error', { reason: '单项检查超过 8000ms' }), item('RUNTIME_PYTHON', 'warn', { installed: false }), item('RUNTIME_GIT', 'warn', { installed: false })]
+
+      expect(reconcileNodeRuntimeWithClis(items)).toEqual(items)
+    })
   })
 
   it('turns a slow permission check into a reminder instead of a red timeout', async () => {
@@ -854,7 +1801,8 @@ describe('diagnostics', () => {
     const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
     expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
     expect(git?.summary).toContain('macOS 自带的 git 只是个空壳')
-    expect(git?.summary).toContain('xcode-select --install')
+    expect(git?.summary).toContain('「安装 Git」')
+    expect(git?.summary).not.toContain('终端')
     // PowerShell 那句只在 Windows 成立。
     expect(git?.summary).not.toContain('PowerShell')
     expect(python).toMatchObject({ state: 'warn' })
@@ -903,7 +1851,7 @@ describe('diagnostics', () => {
 
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'fail',
-      summary: expect.stringContaining('PowerShell 5.1'),
+      summary: expect.stringContaining('找不到打开工具要用的系统命令窗口'),
       details: { installed: false, path: null },
     })
   })
@@ -1039,7 +1987,9 @@ describe('diagnostics', () => {
   it('calmly passes an account whose ordinary token is already elevated', async () => {
     // The built-in Administrator (or a machine with the consent prompt turned off)
     // runs every program at High integrity with a default token, so the startup
-    // probe settled on same-user and there is no "normal start" to ask for.
+    // probe settled on same-user and there is no "normal start" to ask for. Codex
+    // Desktop opens on such an account too (full-trust package), so the row no
+    // longer warns about store apps either.
     const home = temporaryHome()
     const input = dependencies(home)
     input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
@@ -1055,7 +2005,7 @@ describe('diagnostics', () => {
       details: { elevated: true, required: false, alwaysElevated: true },
     })
     expect(item?.summary).toContain('不用处理')
-    expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator/)
+    expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator|商店|Codex/)
   })
 
   it('still advises a normal start when the app was explicitly elevated', async () => {
@@ -1488,6 +2438,63 @@ describe('diagnostics', () => {
   })
 })
 
+describe('the home folder leftovers check', () => {
+  const instructions = '个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+    + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。'
+
+  it('passes when nothing was left behind', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: [] })).toEqual({
+      state: 'pass',
+      summary: '没有早先留下的项目说明和信任设置',
+      details: { untouchedInstructions: false, trustedBy: null },
+    })
+  })
+
+  it('offers to move the instructions this app left and only mentions trust', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: [] })).toEqual({
+      state: 'warn',
+      summary: instructions,
+      details: { untouchedInstructions: true, trustedBy: null, fix: 'set-aside-home-agents-md' },
+    })
+    const trust = homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude'] })
+    expect(trust.summary).toBe('Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。')
+    expect(trust.details).not.toHaveProperty('fix')
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude', 'codex', 'gemini'] }).summary)
+      .toBe('Claude Code、Codex、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。')
+  })
+
+  it('runs both paragraphs together when both were left behind', () => {
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: ['claude', 'gemini'] })).toMatchObject({
+      state: 'warn',
+      summary: `${instructions}Claude Code、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。`,
+      details: { trustedBy: 'claude,gemini', fix: 'set-aside-home-agents-md' },
+    })
+  })
+
+  it('reads what is actually in the home folder and leaves an edited copy out', async () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const template = readProjectInstructionsTemplate(
+      path.join(__dirname, '..', 'bundled-catalog', 'project-instructions', 'AGENTS.zh-CN.md'),
+    )
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), template, 'utf8')
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
+    const input = dependencies(home)
+
+    const found = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(found).toMatchObject({
+      title: '个人文件夹里早先留下的设置',
+      state: 'warn',
+      details: { untouchedInstructions: true, trustedBy: 'claude', fix: 'set-aside-home-agents-md' },
+    })
+
+    fs.writeFileSync(path.join(home, 'AGENTS.md'), `${template}- 我自己的规矩\n`, 'utf8')
+    fs.rmSync(path.join(home, '.claude.json'))
+    const edited = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(edited).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置' })
+  })
+})
+
 describe('the disk space check', () => {
   const gigabyte = 1024 ** 3
 
@@ -1607,6 +2614,99 @@ describe('runDiagnostics AI output location', () => {
   })
 })
 
+describe('runDiagnostics documents folder', () => {
+  it('says where AI works went after documents refused them, with an open-folder hint', async () => {
+    const report = await runDiagnostics({
+      ...dependencies(temporaryHome()),
+      probeAiOutput: async () => undefined,
+      aiOutputPlacement: () => ({ movedFromDocuments: true, earlierWorksLeftInDocuments: true }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
+    expect(item).toMatchObject({ state: 'pass', details: { openFolder: 'ai-output' } })
+    expect(item?.summary).toContain('个人文件夹里的 XingmangAI')
+    expect(item?.summary).toContain('以前的作品还在')
+  })
+
+  it('checks the documents folder only on Windows and only when the host passes it', async () => {
+    const home = temporaryHome()
+    const inspectDocuments = vi.fn(() => ({ state: 'writable' as const }))
+    const linux = await runDiagnostics({ ...dependencies(home), platform: 'linux', documentsDirectory: path.join(home, 'Documents'), inspectDocuments })
+    const unset = await runDiagnostics({ ...dependencies(home), platform: 'win32', inspectDocuments })
+
+    expect(linux.items.some((entry) => entry.code === 'DOCUMENTS_WRITABLE')).toBe(false)
+    expect(unset.items.some((entry) => entry.code === 'DOCUMENTS_WRITABLE')).toBe(false)
+    expect(inspectDocuments).not.toHaveBeenCalled()
+  })
+
+  it('explains a refused documents folder in plain words, logs the raw reason and offers the projects folder', async () => {
+    const home = temporaryHome()
+    const log = vi.fn()
+    const report = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'win32',
+      log,
+      documentsDirectory: 'C:\\Users\\peaker\\Documents',
+      inspectDocuments: () => ({ state: 'denied', reason: 'EPERM: operation not permitted, open \'C:\\Users\\peaker\\Documents\\.write-check.tmp\'' }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
+    expect(item).toMatchObject({ state: 'warn', title: '「文档」文件夹能不能写', details: { openFolder: 'projects' } })
+    expect(item?.summary).toContain('受控文件夹访问')
+    expect(item?.summary).not.toMatch(/EPERM|权限位|%USERPROFILE%/)
+    expect(log).toHaveBeenCalledWith('warn', 'diagnostics.documents.unwritable', expect.any(String), expect.objectContaining({
+      kind: 'denied',
+      raw: expect.stringContaining('EPERM'),
+    }))
+  })
+
+  it('does not offer to move for a full disk', async () => {
+    const report = await runDiagnostics({
+      ...dependencies(temporaryHome()),
+      platform: 'win32',
+      documentsDirectory: 'C:\\Users\\peaker\\Documents',
+      inspectDocuments: () => ({ state: 'failed', reason: 'ENOSPC' }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('磁盘满')
+    expect(item?.details?.openFolder).toBeUndefined()
+  })
+
+  it('probes documents for real through the default inspector', async () => {
+    const home = temporaryHome()
+    const documents = path.join(home, 'Documents')
+    fs.mkdirSync(documents, { recursive: true })
+    const report = await runDiagnostics({ ...dependencies(home), platform: 'win32', documentsDirectory: documents })
+
+    // 测试机上的临时目录可写；Windows 路径规则下它不含 OneDrive，所以真的去写了一次。
+    expect(report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')?.state).toBe('pass')
+    expect(fs.readdirSync(documents)).toEqual([])
+  })
+})
+
+describe('runDiagnostics acceleration bundle', () => {
+  it('only reports the acceleration bundle when the installed app ships one', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    expect(report.items.some((entry) => entry.code === 'ACCELERATION_BUNDLE')).toBe(false)
+  })
+
+  it('passes when the bundle read intact at startup', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'intact' })
+    expect(report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')).toMatchObject({ title: '加速功能', state: 'pass' })
+  })
+
+  it('names antivirus quarantine in plain words when the bundle is damaged', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'damaged' })
+    const item = report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')
+    // warn, not fail: only people who use acceleration are affected, same as AI_OUTPUT.
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('多半是杀毒软件拦的')
+    expect(item?.summary).not.toMatch(/mihomo|内核|manifest|profile|聊天记录/)
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)
@@ -1675,9 +2775,375 @@ describe('diagnostics reusing the home page scan', () => {
   it('probes everything itself when no scan is handed in, as a manual re-check does', async () => {
     const p = probes(temporaryHome())
     await runDiagnostics(p.input)
-    expect(p.inspectTool).toHaveBeenCalledTimes(8)
+    // 「安全证书」一项也要问一次 Node.js 在哪（8 + 1）。
+    expect(p.inspectTool).toHaveBeenCalledTimes(9)
     expect(p.inspectPowerShell).toHaveBeenCalledOnce()
     expect(p.inspectCodexDesktop).toHaveBeenCalledOnce()
   })
 })
 
+
+describe('CERTIFICATE_TRUST', () => {
+  function withProbe(outcomes: { plain: NodeTlsOutcome, system: NodeTlsOutcome, version?: string }) {
+    const input = dependencies(temporaryHome())
+    const probeNodeTls = vi.fn(async (probe: NodeTlsProbeInput) => ({
+      outcome: probe.useSystemRoots ? outcomes.system : outcomes.plain,
+      version: outcomes.version ?? 'v22.19.0',
+    }))
+    input.probeNodeTls = probeNodeTls
+    return { input, probeNodeTls }
+  }
+
+  async function certificateItem(input: DiagnosticsDependencies) {
+    return (await runDiagnostics(input)).items.find((item) => item.code === 'CERTIFICATE_TRUST')
+  }
+
+  it('shakes hands once with and once without the switch, against the current account host only', async () => {
+    const { input, probeNodeTls } = withProbe({ plain: 'ok', system: 'ok' })
+    const item = await certificateItem(input)
+
+    expect(item).toMatchObject({
+      title: '安全证书',
+      state: 'pass',
+      summary: '工具用自带的证书就能连上星芒服务，这台电脑没有换过网页证书。',
+      details: { verdict: 'direct', defaultRoots: 'ok', systemRoots: 'ok', elevated: false, nodeVersion: 'v22.19.0' },
+    })
+    const host = new URL(relayStatusProbeUrl(relaySites[0])).hostname
+    expect(probeNodeTls.mock.calls.map(([probe]) => probe.useSystemRoots).sort()).toEqual([false, true])
+    for (const [probe] of probeNodeTls.mock.calls) {
+      expect(probe).toMatchObject({ host, port: 443, nodePath: expect.stringContaining('node') })
+    }
+  })
+
+  it('stays green and says so when only the computer store trusts the certificate', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'pass',
+      summary: expect.stringContaining('星芒已经让装工具和从星芒打开的工具信任它'),
+      details: { verdict: 'systemTrusted' },
+    })
+  })
+
+  it('blames an old Node.js and offers the install page when Node cannot read the store', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v22.12.0' })
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'fail',
+      summary: '这台电脑装了公司或安全软件的证书，电脑上的 Node.js 太旧，认不了它。点「去处理」换成新版。',
+      details: { verdict: 'outdatedNode', nodeVersion: 'v22.12.0' },
+    })
+  })
+
+  it('points at the network administrator when even the computer does not trust the certificate', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v24.6.0' })
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'fail',
+      summary: expect.stringContaining('公司电脑请找网络管理员'),
+      details: { verdict: 'untrusted' },
+    })
+  })
+
+  it('defers to the network item instead of blaming the certificate twice', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v24.6.0' })
+    input.fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) }) }
+    const report = await runDiagnostics(input)
+    expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')?.state).toBe('fail')
+    expect(report.items.find((item) => item.code === 'CERTIFICATE_TRUST')).toMatchObject({
+      state: 'fail',
+      summary: '工具连星芒服务时证书对不上，先看上面「星芒 AI 网络」那一项。',
+    })
+  })
+
+  it('does not guess when the handshake failed for reasons other than the certificate', async () => {
+    const { input } = withProbe({ plain: 'other', system: 'other' })
+    expect(await certificateItem(input)).toMatchObject({ state: 'pass', details: { verdict: 'unknown' } })
+  })
+
+  it('starts no process and asks for a normal start when running as administrator', async () => {
+    const { input, probeNodeTls } = withProbe({ plain: 'ok', system: 'ok' })
+    input.windowsExecution = { mode: 'trusted-only', elapsedMs: 5 }
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'warn',
+      summary: '星芒现在是以管理员身份打开的，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开。',
+      details: { verdict: 'elevated', elevated: true },
+    })
+    expect(probeNodeTls).not.toHaveBeenCalled()
+  })
+
+  it('leaves the row out when Node.js is not installed', async () => {
+    const { input, probeNodeTls } = withProbe({ plain: 'ok', system: 'ok' })
+    const inspectTool = input.inspectTool!
+    input.inspectTool = async (tool, signal) => tool === 'node'
+      ? { installed: false, version: null, path: null }
+      : inspectTool(tool, signal)
+    const report = await runDiagnostics(input)
+    expect(report.items.some((item) => item.code === 'CERTIFICATE_TRUST')).toBe(false)
+    expect(probeNodeTls).not.toHaveBeenCalled()
+  })
+
+  it('applies on macOS as well', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'darwin'
+    expect(await certificateItem(input)).toMatchObject({ details: { verdict: 'systemTrusted' } })
+  })
+
+  it('offers the user-wide switch on Windows only when a company certificate was found', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'win32'
+    const inspect = vi.fn(() => 'available' as const)
+    input.inspectUserWideCertificateTrust = inspect
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'pass',
+      summary: expect.stringContaining('可以点「让这台电脑上所有终端都信任」'),
+      details: { verdict: 'systemTrusted', userWide: 'available' },
+    })
+
+    input.inspectUserWideCertificateTrust = () => 'applied'
+    expect(await certificateItem(input)).toMatchObject({
+      summary: expect.stringContaining('你自己开的终端也已经设好'),
+      details: { userWide: 'applied' },
+    })
+
+    const direct = withProbe({ plain: 'ok', system: 'ok' })
+    direct.input.platform = 'win32'
+    const unused = vi.fn(() => 'available' as const)
+    direct.input.inspectUserWideCertificateTrust = unused
+    const item = await certificateItem(direct.input)
+    expect(item?.details).not.toHaveProperty('userWide')
+    expect(unused).not.toHaveBeenCalled()
+  })
+
+  it('does not mention the user-wide switch on macOS', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'darwin'
+    input.inspectUserWideCertificateTrust = () => 'available'
+    const item = await certificateItem(input)
+    expect(item?.details).not.toHaveProperty('userWide')
+    expect(item?.summary).not.toContain('所有终端')
+  })
+})
+
+describe('operatingSystemSummary', () => {
+  it('names the system the way customers know it', () => {
+    expect(operatingSystemSummary('win32', '10.0.22631', 'x64')).toBe('Windows 11（64 位）')
+    expect(operatingSystemSummary('win32', '10.0.19045', 'x64')).toBe('Windows 10（64 位）')
+    expect(operatingSystemSummary('darwin', '24.1.0', 'arm64')).toBe('macOS 15（Apple 芯片）')
+    expect(operatingSystemSummary('darwin', '20.6.0', 'x64')).toBe('macOS 11（Intel 芯片）')
+    expect(operatingSystemSummary('darwin', '25.0.0', 'arm64')).toBe('macOS 26（Apple 芯片）')
+  })
+
+  it('names a Linux machine by its distribution, never by the kernel number', () => {
+    expect(operatingSystemSummary('linux', '6.8.0-45-generic', 'x64', 'Ubuntu 24.04.1 LTS')).toBe('Ubuntu 24.04.1 LTS（64 位）')
+    expect(operatingSystemSummary('linux', '5.10.0', 'arm64', 'UOS Desktop 20')).toBe('UOS Desktop 20（ARM 芯片）')
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64')).toBe('Linux（64 位）')
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64', null)).toBe('Linux（64 位）')
+  })
+
+  it('falls back to the raw values it cannot map', () => {
+    expect(operatingSystemSummary('freebsd', '14.1', 'x64')).toBe('freebsd 14.1 (x64)')
+    expect(operatingSystemSummary('win32', '6.3.9600', 'x64')).toBe('win32 6.3.9600 (x64)')
+  })
+})
+
+describe('windowsProxySettingsOutcome', () => {
+  const closedOnly = async () => false
+  const openOnly = async () => true
+  const noScopes = async () => null
+
+  it('passes when no proxy is set', async () => {
+    expect(await windowsProxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
+      .toEqual({ state: 'pass', summary: '电脑里没有设代理，工具直接联网' })
+  })
+
+  it('offers to clear a current-user proxy that points at a closed local port', async () => {
+    const outcome = await windowsProxySettingsOutcome(
+      { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' },
+      closedOnly,
+      async () => ({ user: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' }, machine: {} }),
+    )
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。',
+      details: { HTTPS_PROXY: '本机 7890 端口（没开）', fix: 'clear-user-proxy', port: 7890 },
+    })
+    // The value may carry proxy credentials and is never copied into the report.
+    expect(JSON.stringify(outcome)).not.toContain('secret')
+  })
+
+  it('explains that a machine-wide setting needs an administrator and offers no button', async () => {
+    const outcome = await windowsProxySettingsOutcome(
+      { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+      closedOnly,
+      async () => ({ user: {}, machine: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }),
+    )
+    expect(outcome.state).toBe('warn')
+    expect(outcome.summary).toContain('这条设置是给整台电脑设的，要管理员才能改')
+    expect(outcome.details).not.toHaveProperty('fix')
+  })
+
+  it('still reports a closed proxy when the settings cannot be read', async () => {
+    const outcome = await windowsProxySettingsOutcome(
+      { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+      closedOnly,
+      async () => { throw new Error('powershell missing') },
+    )
+    expect(outcome.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+    expect(outcome.details).not.toHaveProperty('fix')
+  })
+
+  it('passes when the local proxy is running', async () => {
+    expect(await windowsProxySettingsOutcome({ HTTP_PROXY: 'http://127.0.0.1:7890' }, openOnly, noScopes)).toEqual({
+      state: 'pass',
+      summary: '电脑里设了代理（本机 7890 端口），工具会通过它联网。',
+      details: { HTTP_PROXY: '本机 7890 端口（开着）' },
+    })
+  })
+
+  it('warns gently about a proxy on another machine without echoing its address', async () => {
+    const outcome = await windowsProxySettingsOutcome({ HTTPS_PROXY: 'http://proxy.corp.example:8080' }, closedOnly, noScopes)
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器' },
+    })
+  })
+})
+
+describe('inspectAppProxyRoute', () => {
+  const url = 'https://xm.solov.cc'
+
+  it('treats a direct route or an unreadable answer as no proxy', async () => {
+    expect(await inspectAppProxyRoute(async () => 'DIRECT', url, async () => true)).toBeNull()
+    expect(await inspectAppProxyRoute(async () => { throw new Error('resolve failed') }, url, async () => true)).toBeNull()
+  })
+
+  it('asks for the account address and probes a local proxy port', async () => {
+    const resolve = vi.fn(async () => 'PROXY 127.0.0.1:7890;DIRECT')
+    const probe = vi.fn(async () => true)
+    expect(await inspectAppProxyRoute(resolve, url, probe)).toEqual({ reach: 'open', port: 7890 })
+    expect(resolve).toHaveBeenCalledWith(url)
+    expect(probe).toHaveBeenCalledWith({ host: '127.0.0.1', port: 7890 })
+  })
+
+  it('reports a local SOCKS proxy that is not running', async () => {
+    expect(await inspectAppProxyRoute(async () => 'SOCKS5 localhost:1080', url, async () => false))
+      .toEqual({ reach: 'closed', port: 1080 })
+  })
+
+  it('does not probe or echo a proxy on another machine', async () => {
+    const probe = vi.fn(async () => true)
+    expect(await inspectAppProxyRoute(async () => 'PROXY proxy.corp.example:8080', url, probe)).toEqual({ reach: 'remote' })
+    expect(probe).not.toHaveBeenCalled()
+  })
+})
+
+describe('withAppProxyRoute', () => {
+  it('keeps the outcome unchanged when the app connects directly', () => {
+    const outcome = { state: 'pass' as const, summary: '没有另外设过代理', details: {} }
+    expect(withAppProxyRoute(outcome, null)).toBe(outcome)
+  })
+
+  it('turns a clean result into a warning when the system proxy is on', () => {
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 })).toEqual({
+      state: 'warn',
+      summary: '电脑里开着代理（本机 7890 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
+      details: { systemProxy: '本机 7890 端口（开着）' },
+    })
+  })
+
+  it('says a local system proxy that is not running will block the account', () => {
+    const outcome = withAppProxyRoute({ state: 'pass', summary: '电脑里没有设代理，工具直接联网' }, { reach: 'closed', port: 7890 })
+    expect(outcome.state).toBe('warn')
+    expect(outcome.summary).toBe('电脑里开着代理（本机 7890 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。')
+  })
+
+  it('keeps the variable findings and the clear button next to the system proxy', () => {
+    const outcome = withAppProxyRoute({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy' },
+    }, { reach: 'remote' })
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
+        + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy', systemProxy: '别的机器' },
+    })
+  })
+
+  it('says the account already goes direct instead of telling the user to quit the proxy', () => {
+    // 已知30：代理开着、只是不转发星芒时，账号和 AI 对话已经自己改了直连，这半不再标黄。
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 }, true)).toEqual({
+      state: 'pass',
+      summary: '电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
+      details: { systemProxy: '本机 7890 端口（开着）' },
+    })
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'remote' }, true).summary)
+      .toBe('电脑里开着代理（用的是别的机器上的代理）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。')
+    // 另外设过代理的那半照旧标黄、照旧接在后面。
+    const withVariables = withAppProxyRoute({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器' },
+    }, { reach: 'open', port: 7890 }, true)
+    expect(withVariables.state).toBe('warn')
+    expect(withVariables.summary).toBe('电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。'
+      + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。')
+    // 代理没开的那种照旧：装工具这些还跟着系统代理走。
+    const closed = withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'closed', port: 7890 }, true)
+    expect(closed.state).toBe('warn')
+    expect(closed.summary).toContain('但它现在没开')
+  })
+})
+
+describe('diagnostics system proxy', () => {
+  function proxyItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+    return report.items.find((item) => item.code === 'PROXY_ENVIRONMENT')
+  }
+
+  it('warns on macOS when the system settings route the account through a proxy', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
+    input.probeLoopbackProxy = async () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      title: '电脑里的代理设置',
+      state: 'warn',
+      summary: '电脑里开着代理（本机 7897 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
+      details: { systemProxy: '本机 7897 端口（开着）' },
+    })
+  })
+
+  it('reports the direct account route the proxy bypass already took', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
+    input.probeLoopbackProxy = async () => true
+    input.siteDirectActive = () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      state: 'pass',
+      summary: '电脑里开着代理（本机 7897 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
+    })
+  })
+
+  it('does not count the acceleration proxy as another program', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    const resolveAppProxy = vi.fn(async () => 'PROXY 127.0.0.1:7897')
+    input.resolveAppProxy = resolveAppProxy
+    input.inspectAccelerationActive = async () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+    expect(resolveAppProxy).not.toHaveBeenCalled()
+  })
+
+  it('checks the system proxy on Windows too', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'win32'
+    input.readProxyScopes = async () => null
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:10809'
+    input.probeLoopbackProxy = async () => false
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      state: 'warn',
+      details: { systemProxy: '本机 10809 端口（没开）' },
+    })
+  })
+})

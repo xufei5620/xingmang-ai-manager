@@ -1,5 +1,5 @@
-import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
-import { matchAccountErrorMessage } from './account-errors'
+import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
+import { matchAccountError } from './account-errors'
 
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
 export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
@@ -152,40 +152,122 @@ export function validateRegistration(draft: RegistrationDraft, verificationRequi
   return errors
 }
 
+/** 找回密码第 3 步客户自己设的新密码：长度规则与注册同一套，账号服务那边也是 8 到 20 位。 */
+export function validateNewPassword(password: string, confirm: string): { password?: string; confirm?: string } {
+  const errors: { password?: string; confirm?: string } = {}
+  if (password.length < minPasswordLength) errors.password = `新密码至少 ${minPasswordLength} 位`
+  else if (password.length > maxPasswordLength) errors.password = `新密码不能超过 ${maxPasswordLength} 位`
+  if (!confirm) errors.confirm = '请再输一次新密码'
+  else if (password !== confirm) errors.confirm = '两次输入的新密码不一样'
+  return errors
+}
+
 export function remainingCooldown(deadline: number, now = Date.now()): number {
   return Math.max(0, Math.ceil((deadline - now) / 1000))
 }
 
-export function authErrorMessage(error: unknown, action: string): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+/**
+ * 登录、注册、找回密码失败后，红字下面该给客户哪种出口：
+ * - credentials：账号或密码不对 → 找回密码 / 去注册；
+ * - code：验证码、重置码不对或过期 → 重新获取；
+ * - taken：邮箱或用户名已经注册过 → 去登录 / 找回密码；
+ * - offline：这台电脑没网 → 网络回来自动提示，再试一次；
+ * - unreachable / network：连不上账号服务、当前网络有问题 → 再试一次；
+ * - support：封号、关了注册这类，重试没用 → 只给找客服；
+ * - wait：试得太频繁，要等一会儿，马上再点没用；
+ * - final：重试也没用、又不是客服能解的（本机存储满、需要去浏览器验证）；
+ * - unknown：说不清的兜底 → 再试一次。
+ */
+export type AuthFailureKind = 'credentials' | 'code' | 'taken' | 'offline' | 'unreachable' | 'network' | 'support' | 'wait' | 'final' | 'unknown'
+
+export interface AuthFailure {
+  message: string
+  kind: AuthFailureKind
+}
+
+// 超时、连接被切断这两种，客户那边最常见的真实原因是开着加速器或翻墙软件，
+// 和注册窗读设置那一路（registrationUnreachableMessage）同一个说法。
+export const authOfflineMessage = '这台电脑现在没连上网。连上网后再试一次。'
+export const authUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。'
+const authNetworkFallbackMessage = '连不上账号服务，请检查网络后再试一次。'
+
+/**
+ * 服务端或主进程已经写好的中文原话，去掉 IPC 包装后原样给客户看。只放行纯中文的：
+ * 带英文字母的多半是堆栈、地址或错误码，客户看不懂，这时宁可只说「没有成功」。
+ */
+function plainChineseReason(message: string): string | null {
+  const text = message.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(\w*Error:\s*)+/, '').trim().replace(/[。.！!，,；;\s]+$/, '')
+  if (!text || text.length > 80 || /[A-Za-z]/.test(text) || !/[\u4e00-\u9fff]/.test(text)) return null
+  return text
+}
+
+export function authFailure(error: unknown, action: string, online = true): AuthFailure {
+  const message = errorText(error)
   // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
-  if (/保存的账号已满/.test(message)) return '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。'
-  if (/账号安全存储不可用|本地账号存储/.test(message)) return '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
+  if (/保存的账号已满/.test(message)) return { message: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。', kind: 'final' }
+  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。', kind: 'support' }
   // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
   const twoFactor = twoFactorMessages.find((text) => message.includes(text))
-  if (twoFactor) return twoFactor
-  if (requiresBrowserAuthentication(error)) return '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。'
+  if (twoFactor) return { message: twoFactor, kind: 'final' }
+  if (requiresBrowserAuthentication(error)) return { message: '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。', kind: 'final' }
   // 主进程已经把受限网络下的失败分好类并写好了中文（DNS / 证书被替换 / 门户认证
   // 未完成 / 连接被切断），原样上屏。放在启发式之前：下面那几条正则宽到会把
   // 「证书被替换」也说成「连接超时」，那会让用户在一个换网络才能解决的问题上
-  // 一遍遍重试密码。文案只有 electron/network-failure.ts 一份，不在这里复述。
-  const network = matchNetworkFailureMessage(message)
-  if (network) return network
+  // 一遍遍重试密码。文案只有 electron/network-failure.ts 一份，不在这里复述；
+  // 只有没网、超时、被切断三种换成登录框自己的说法（上面两句）。没经主进程分类的
+  // 原始错误码（ECONNREFUSED、ENOTFOUND 这类）也按同一张表认。
+  const reason = classifyNetworkFailure(message)
+  if (!online || reason === 'offline') return { message: authOfflineMessage, kind: 'offline' }
+  if (reason === 'timeout' || reason === 'refused') return { message: authUnreachableMessage, kind: 'unreachable' }
+  if (reason) return { message: networkFailureMessages[reason], kind: 'network' }
   // The precise new-api table runs before the heuristics below: those are broad
   // enough to swallow a message whose real cause the server already named. A
   // change-password failure saying the original password is wrong would
   // otherwise hit /密码|password/ and come out as "账号或密码不正确".
-  const known = matchAccountErrorMessage(message)
-  if (known) return known
-  if (/429|频繁|too many|rate limit/i.test(message)) return '请求太频繁，请稍等一分钟再试'
-  if (/已存在|占用|already exists/i.test(message)) return '用户名或邮箱已被使用，请检查后重试'
-  if (/验证码|verification code/i.test(message)) return '验证码不正确或已过期，请重新获取'
-  if (/重置/.test(action) && /token|重置码|expired|过期/i.test(message)) return '重置码已失效，请重新获取邮件'
-  if (/用户名|密码|credential|password|unauthorized/i.test(message)) return '账号或密码不正确，请检查后重试'
-  if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return '连接星芒服务器超时，请检查网络后重试'
-  if (/turnstile|人机/i.test(message)) return '服务端需要完成安全验证，请在浏览器完成后再试'
-  return `${action}没有成功，输入已保留，请稍后重试`
+  const known = matchAccountError(message)
+  if (known) return { message: known.friendly, kind: known.kind ?? 'unknown' }
+  if (/429|频繁|too many|rate limit/i.test(message)) return { message: '请求太频繁，请稍等一分钟再试', kind: 'wait' }
+  if (/已存在|占用|already exists/i.test(message)) return { message: '用户名或邮箱已被使用，请检查后重试', kind: 'taken' }
+  if (/验证码|verification code/i.test(message)) return { message: '验证码不正确或已过期，请重新获取', kind: 'code' }
+  if (/重置/.test(action) && /token|重置码|expired|过期/i.test(message)) return { message: '重置码已失效，请重新获取邮件', kind: 'code' }
+  if (/用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
+  if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return { message: authNetworkFallbackMessage, kind: 'unreachable' }
+  if (/turnstile|人机/i.test(message)) return { message: '服务端需要完成安全验证，请在浏览器完成后再试', kind: 'final' }
+  const plain = plainChineseReason(message)
+  if (plain) return { message: `${action}没有成功：${plain}。`, kind: 'unknown' }
+  return { message: `${action}没有成功，输入已保留，请稍后重试`, kind: 'unknown' }
+}
+
+export function authErrorMessage(error: unknown, action: string): string {
+  return authFailure(error, action).message
+}
+
+/**
+ * 创建账号窗口一打开就要先读一次注册设置（要不要邮箱验证码），读不到「创建账号」就点不了。
+ * 读不到时怎么说、要不要自动再试，集中在这里：
+ * - 这台电脑本身没网：直说没网，等系统报「网络回来了」再自动重读，不叫人去点按钮；
+ * - 超时 / 被切断 / 域名解析不到：多半是一时的，先自动再试一次再报红；
+ * - 超时、被切断这两种最常见的真实原因是客户开着加速器或翻墙软件，所以只在注册窗里
+ *   多说一句「先关掉它」。network-failure.ts 那张表是全局共用的，不在那里改。
+ */
+export const registrationOfflineMessage = '这台电脑现在没连上网。连上网后会自动重新读取。'
+export const registrationUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再点「重新读取」。'
+
+export interface RegistrationStatusFailure {
+  message: string
+  /** 第一次失败时值得自动再试一次。 */
+  retry: boolean
+  /** 电脑本身没网：等 online 事件自动重读。 */
+  offline: boolean
+}
+
+export function registrationStatusFailure(error: unknown, online: boolean): RegistrationStatusFailure {
+  const reason = networkFailureReasonForMessage(errorText(error))
+  if (!online || reason === 'offline') return { message: registrationOfflineMessage, retry: false, offline: true }
+  const retry = reason === 'timeout' || reason === 'refused' || reason === 'dns'
+  if (reason === 'timeout' || reason === 'refused') return { message: registrationUnreachableMessage, retry, offline: false }
+  return { message: authErrorMessage(error, '读取账号设置'), retry, offline: false }
 }
 
 // 与 electron/new-api-client.ts 的原文一致（electron 不 import src，有意重复一份）。

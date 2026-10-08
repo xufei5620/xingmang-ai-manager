@@ -56,6 +56,25 @@ describe('launchWaitLabel', () => {
     expect(launchWaitLabel({ 'launch:codex': { label: '正在打开工具' } }, nameOf)).toBe('正在打开工具')
   })
 
+  it('lets desktop clients keep their own wording when nothing is queued ahead', () => {
+    expect(launchWaitLabel({}, nameOf, '正在打开客户端')).toBe('正在打开客户端')
+    expect(launchWaitLabel({ 'launch:claude': { label: '正在打开工具' } }, nameOf, '正在打开客户端')).toBe('正在打开客户端')
+  })
+
+  it('names the install a desktop client launch is waiting behind', () => {
+    expect(launchWaitLabel({ claude: { label: '正在安装' } }, nameOf, '正在打开客户端')).toBe('正在等 Claude Code 安装完，安装完马上打开')
+    expect(launchWaitLabel({ 'launch:opencode': { label: '正在打开客户端' }, workbuddy: { label: '正在安装' } }, nameOf, '正在打开客户端'))
+      .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
+  })
+
+  it('does not claim to wait for account switches or reminder repairs, which never join the install queue', () => {
+    expect(launchWaitLabel({ 'switch:claude': { label: '正在改用当前账号' } }, nameOf)).toBe('正在打开工具')
+    expect(launchWaitLabel({ 'repair-hooks:codex': { label: '正在修提醒设置' } }, nameOf, '正在打开客户端')).toBe('正在打开客户端')
+    expect(launchWaitLabel({ 'repair-config:codex': { label: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留' } }, nameOf)).toBe('正在打开工具')
+    expect(launchWaitLabel({ 'switch:claude': { label: '正在切回官方账号' }, workbuddy: { label: '正在安装' } }, nameOf))
+      .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
+  })
+
   it('names the install the launch is waiting behind', () => {
     expect(launchWaitLabel({ claude: { label: '正在安装' } }, nameOf)).toBe('正在等 Claude Code 安装完，安装完马上打开')
     expect(launchWaitLabel({ workbuddy: { label: '正在安装' } }, nameOf)).toBe('正在等 WorkBuddy 安装完，安装完马上打开')
@@ -66,7 +85,9 @@ describe('launchWaitLabel', () => {
     expect(launchWaitLabel({ claude: { label: '正在卸载' } }, nameOf)).toBe('正在等 Claude Code 卸载完，卸载完马上打开')
   })
 
-  it('talks about the runtime rather than a tool while Node.js or Python is being prepared', () => {
+  it('talks about the runtime rather than a tool while Node.js, Python or Git is being prepared', () => {
     expect(launchWaitLabel({ node: { label: '正在准备运行环境' } }, nameOf)).toBe('正在等运行环境准备好，好了马上打开')
+    expect(launchWaitLabel({ python: { label: '正在准备运行环境' } }, nameOf, '正在打开客户端')).toBe('正在等运行环境准备好，好了马上打开')
+    expect(launchWaitLabel({ git: { label: '正在准备安装 Git' } }, nameOf)).toBe('正在等运行环境准备好，好了马上打开')
   })
 })

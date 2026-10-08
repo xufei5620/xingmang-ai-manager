@@ -20,18 +20,37 @@ const projectRoot = path.resolve(__dirname, '..')
 // promoting one to a value import has to be a deliberate edit of this file.
 const valueImportable = [
   'electron/acceleration-contract',
+  // 「必须更新」那层提示的「打开下载页」，与主进程外链白名单共用一条网址。
+  'electron/app-download-page',
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
+  // 一句报错本身是不是中文（去掉引号段和路径再看），按钮操作的报错与主进程更新失败那句共用一份（第三十批 A）。
+  'electron/chinese-sentence',
+  // Windows 上 Claude Desktop 装不上那句话的开头和官网下载页，主进程与错误框共用一份。
+  'electron/claude-desktop-install-failure',
+  // 换型号提问里用的短名（Opus 5.5），与菜单共用一份（第十五批 6）。
   'electron/claude-model-picker',
+  // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
+  'electron/codex-desktop-install-failure',
+  'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
+  // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
+  'electron/disk-space-copy',
   'electron/external-url-blocked',
   'electron/git-runtime',
   'electron/ipc-contract',
+  // Mac 上一键装桌面端没装成的那几句话，主进程拼、错误框照它认出来配「看安装指南」。
+  'electron/macos-desktop-install-failure',
   'electron/network-failure',
+  // 错误框「给客服看的原话」和「复制给客服」要和日志、反馈报告用同一张 Key 打码表（第二十批 2、3）。
+  'electron/redaction-patterns',
   'electron/relay-quota-failure',
   'electron/relay-sites',
   'electron/running-tools',
+  'electron/subscription-summary',
+  // 「换成新版 Node.js」要和主进程用同一把尺子判断 Node.js 认不认证书（第十八批 4）。
+  'electron/system-certificate-trust',
   'electron/usage-date-range',
   'electron/versions',
 ]

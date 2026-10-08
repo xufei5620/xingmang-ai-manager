@@ -1,14 +1,101 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron'
 import type { TrayAccelerationEntry } from './tray-acceleration'
+import type { NewApiSubscriptionSelf } from './new-api-client'
+import type { UpdateSnapshot } from './updater'
+import { resolveUsableSubscription, subscriptionSummaryText } from './subscription-summary'
 
 export interface ApplicationTraySnapshot {
   accountLabel?: string | null
   balanceUsd?: number | null
+  /** 「剩余 USD 12.30 · 10 月 3 日到期」；没有能用的订阅时缺省，菜单就不多这一行。 */
+  subscriptionLabel?: string | null
   installedTools: readonly { id: string; label: string; enabled?: boolean }[]
-  updateAvailable?: boolean
-  updateVersion?: string | null
+  /** 缺省或 null：软件不知道有新版本，菜单里只有一项普通的「软件更新」。 */
+  update?: TrayUpdateEntry | null
   /** 缺省表示这个构建没有接加速，菜单里就不出现这两行。 */
   acceleration?: TrayAccelerationEntry | null
+  /** 星芒正挡着电脑自动睡眠时那一句（trayKeepAwakeLabel）；缺省或 null 时菜单和提示里都不出。 */
+  keepAwakeLabel?: string | null
+}
+
+export interface TrayKeepAwakeState {
+  /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
+  tools: readonly string[]
+  installing: boolean
+  downloadingUpdate: boolean
+}
+
+/**
+ * 星芒挡着电脑自动睡眠时，客户原本一点都不知道（已知35）。托盘里说一句，挡完就收起；
+ * 同一时间只说一件：终端里的工具在干活排最前，其次是装东西，最后是下载星芒新版本。
+ * Codex 自己挡睡眠，不归星芒管，不在这里说。
+ */
+export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
+  if (state.tools.length === 1) return `${state.tools[0]} 正在干活，暂不让电脑自动睡眠`
+  if (state.tools.length > 1) return 'AI 工具正在干活，暂不让电脑自动睡眠'
+  if (state.installing) return '正在安装，暂不让电脑自动睡眠'
+  if (state.downloadingUpdate) return '正在下载星芒新版本，暂不让电脑自动睡眠'
+  return null
+}
+
+/**
+ * 托盘上那一项更新跟着「软件知不知道有新版本」走，而不是只认 `available`：自动下载
+ * 开着时 `available` 只停留几秒就进了 `downloading`，常驻托盘的人几乎看不到它。
+ */
+export type TrayUpdateEntry =
+  | { kind: 'available'; version: string | null; waitingForDisk: boolean }
+  | { kind: 'downloading'; version: string | null }
+  /** systemInstaller：装这一步交给系统安装程序（Linux），软件只关掉、不会自己重开。 */
+  | { kind: 'downloaded'; version: string | null; systemInstaller?: true }
+  | { kind: 'failed'; version: string | null }
+
+export function resolveTrayUpdateEntry(
+  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall' | 'installMethod'>,
+): TrayUpdateEntry | null {
+  const version = snapshot.availableVersion
+  switch (snapshot.phase) {
+    case 'available':
+      return { kind: 'available', version, waitingForDisk: Boolean(snapshot.diskShortfall) }
+    case 'downloading':
+      return { kind: 'downloading', version }
+    case 'downloaded':
+      // 带错误的 downloaded 是安装器起过一次又失败了：updater 的安装闸已经关上，
+      // 再点「重启安装」会什么都不发生，只能带他去更新页看原因。
+      if (snapshot.error) return { kind: 'failed', version }
+      return snapshot.installMethod === 'system-installer' ? { kind: 'downloaded', version, systemInstaller: true } : { kind: 'downloaded', version }
+    case 'error':
+      // 只有下载失败时 availableVersion 才确定还是那个要装的版本；检查失败时它可能是上一轮留下的。
+      return snapshot.failedStep === 'download' && version ? { kind: 'failed', version } : null
+    default:
+      return null
+  }
+}
+
+function updateItem(
+  entry: TrayUpdateEntry | null | undefined,
+  install: TrayAction | undefined,
+  navigate: (target: TrayNavigationTarget) => void,
+  run: (action: TrayAction) => void,
+): MenuItemConstructorOptions {
+  const openPage = () => navigate('updates')
+  if (!entry) return { label: '软件更新', click: openPage }
+  const version = menuLabel(entry.version, '')
+  const named = version ? `新版本 ${version} ` : '新版本'
+  switch (entry.kind) {
+    case 'available':
+      return entry.waitingForDisk
+        ? { label: `软件更新：${named}等电脑腾出空间再下载`, click: openPage }
+        : { label: `软件更新：有${named}`.trimEnd(), click: openPage }
+    case 'downloading':
+      return { label: `软件更新：正在下载${named}`.trimEnd(), click: openPage }
+    case 'downloaded':
+      // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
+      return install
+        ? { label: `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
+        : { label: `软件更新：${named}已下载好`, click: openPage }
+    case 'failed':
+      return { label: `软件更新：${named}没更新成功，点开看看`, click: openPage }
+  }
 }
 
 export type TrayNavigationTarget = 'topup' | 'updates' | 'settings'
@@ -27,6 +114,8 @@ export interface ApplicationTrayOptions {
   onNavigate(target: TrayNavigationTarget): unknown | Promise<unknown>
   /** 菜单里那一项加速动作；缺省时那一项永远置灰。 */
   onAccelerationToggle?: TrayAction
+  /** 新版本已下载好时托盘里那一项「重启并安装」；缺省时那一项改为打开更新页。 */
+  onInstallUpdate?: TrayAction
   /** 用户刚打开托盘菜单：用来现读一次会过期的状态，不是定时轮询。 */
   onMenuOpen?: TrayAction
   onQuit: TrayAction
@@ -76,11 +165,18 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
     : '\u2014'
 }
 
+/** 托盘那一行订阅；和首页用同一个「能不能用」的判断，没有能用的订阅时 null。 */
+export function traySubscriptionLabel(self: NewApiSubscriptionSelf | null, quotaPerUnit: number, now: number): string | null {
+  const subscription = resolveUsableSubscription(self, { now, quotaPerUnit })
+  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel) : null
+}
+
 function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapshot {
   return {
     ...snapshot,
     installedTools: snapshot.installedTools.map((tool) => ({ ...tool })),
     ...(snapshot.acceleration ? { acceleration: { ...snapshot.acceleration } } : {}),
+    ...(snapshot.update ? { update: { ...snapshot.update } } : {}),
   }
 }
 
@@ -107,16 +203,19 @@ function accelerationItems(
 
 export function buildApplicationTrayMenu(
   snapshot: ApplicationTraySnapshot,
-  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle'>,
+  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
   const navigate = (target: TrayNavigationTarget) => run(async () => { await actions.onOpen(); await actions.onNavigate(target) })
+  const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
+    ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },
+    ...(snapshot.subscriptionLabel ? [{ label: `订阅：${menuLabel(snapshot.subscriptionLabel, '')}`, enabled: false }] : []),
     { type: 'separator' },
     {
       label: '已安装的工具',
@@ -130,12 +229,7 @@ export function buildApplicationTrayMenu(
     },
     ...accelerationItems(snapshot.acceleration, actions.onAccelerationToggle, run),
     { label: '充值', click: () => navigate('topup') },
-    {
-      label: snapshot.updateAvailable
-        ? `软件更新：${menuLabel(snapshot.updateVersion, '有可用更新')}`
-        : '软件更新',
-      click: () => navigate('updates'),
-    },
+    updateItem(snapshot.update, actions.onInstallUpdate, navigate, run),
     { label: '设置', click: () => navigate('settings') },
     { type: 'separator' },
     { label: '退出', click: () => run(actions.onQuit) },
@@ -204,7 +298,8 @@ export function createApplicationTray(
     try {
       snapshot = copySnapshot(next ?? options.getSnapshot())
       if (!checkAvailable() || !tray) return
-      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}`)
+      const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
+      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}${snapshot.subscriptionLabel ? `\n订阅：${snapshot.subscriptionLabel}` : ''}${keepAwake ? `\n${keepAwake}` : ''}`)
       tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName)))
     } catch (error) { unavailable(error) }
   }

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { replayCollectedPromise } from './fixture-readiness.mjs'
 import { createSmokeRuntime } from './smoke-runtime.mjs'
+import { verifySignedOutSmokeIsolation, withSignedOutSmokeIsolation } from './signed-out-smoke-isolation.mjs'
 
 const artifactDir = path.resolve('artifacts')
 const testRoot = path.join(artifactDir, '.e2e-ci-dashboard')
@@ -25,7 +26,7 @@ async function main() {
   await fs.mkdir(testCodexHomeDir, { recursive: true })
 
   progress('launching Electron')
-  const application = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
+  const application = await withDeadline('Electron launch', stepBudgetMs, async () => electron.launch(await withSignedOutSmokeIsolation({
     args: ['.', `--user-data-dir=${testUserDataDir}`],
     timeout: stepBudgetMs,
     env: {
@@ -35,7 +36,7 @@ async function main() {
       XINGMANG_CODEX_HOME_OVERRIDE: testCodexHomeDir,
       XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
     },
-  }))
+  }, testRoot)))
   const launchedPid = application.process().pid
   if (launchedPid) trackProcessIds([launchedPid])
 
@@ -110,6 +111,7 @@ async function main() {
     result.loginDialogReachable = await loginDialog.getByTestId('login-account').isVisible()
       && await loginDialog.getByTestId('login-password').isVisible()
     await loginDialog.getByTestId('login-cancel').click()
+    result.networkIsolation = await withDeadline('network isolation', stepBudgetMs, () => verifySignedOutSmokeIsolation(application))
 
     progress('capturing the window')
     // Chromium's CSS viewport screenshot can crop an Electron window after

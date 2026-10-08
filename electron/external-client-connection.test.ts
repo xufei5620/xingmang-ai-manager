@@ -44,25 +44,50 @@ async function check(
   })
 }
 
+function desktopInput(overrides: Partial<ExternalClientProbeInput> = {}): Partial<ExternalClientProbeInput> {
+  return { tool: 'claudeDesktop', baseUrl: xmSite.providerBaseUrls.claude, model: 'claude-opus-5-5', ...overrides }
+}
+
+function generation(): typeof globalThis.fetch {
+  return (async () => Response.json({
+    id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-opus-5-5',
+    content: [{ type: 'text', text: 'H' }], stop_reason: 'max_tokens',
+  })) as typeof globalThis.fetch
+}
+
 describe('buildExternalClientProbe', () => {
-  it('reads the model catalogue at the endpoint each client actually points at', () => {
-    const expected: Record<string, string> = {
-      workbuddy: 'https://xm.solov.cc/v1/models',
-      opencode: 'https://xm.solov.cc/v1/models',
-      claudeDesktop: 'https://xm.solov.cc/v1/models',
-    }
-    for (const tool of externalToolIds) {
-      const build = buildExternalClientProbe(input({
-        tool,
-        baseUrl: tool === 'claudeDesktop' ? xmSite.providerBaseUrls.claude : xmSite.providerBaseUrls.codex,
-      }))
+  it('reads the model catalogue at the endpoint the two codex-style clients point at', () => {
+    for (const tool of externalToolIds.filter((id) => id !== 'claudeDesktop')) {
+      const build = buildExternalClientProbe(input({ tool }))
       expect(build.kind).toBe('probe')
       if (build.kind !== 'probe') continue
-      expect(build.plan.url).toBe(expected[tool])
+      expect(build.plan.url).toBe('https://xm.solov.cc/v1/models')
       expect(build.plan.method).toBe('GET')
       expect(build.plan.body).toBeNull()
       expect(build.plan.headers.authorization).toBe(`Bearer ${apiKey}`)
     }
+  })
+
+  it('sends Claude Desktop the same one-character check its gateway sends on every launch', () => {
+    // Claude Desktop 2.9939.4 的网关探测：Bearer、anthropic-version、内容「.」、max_tokens 1。
+    // 它被拒（401 或 403）就是「Couldn't sign in to Gateway」那条横幅，所以形状一个字段都不改。
+    const build = buildExternalClientProbe(input(desktopInput()))
+    expect(build.kind).toBe('probe')
+    if (build.kind !== 'probe') return
+    expect(build.plan).toMatchObject({
+      protocol: 'anthropic-messages',
+      method: 'POST',
+      url: 'https://xm.solov.cc/v1/messages',
+      origin: 'https://xm.solov.cc',
+      model: 'claude-opus-5-5',
+    })
+    expect(build.plan.headers).toEqual({
+      authorization: `Bearer ${apiKey}`,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      accept: 'application/json',
+    })
+    expect(build.plan.body).toEqual({ model: 'claude-opus-5-5', max_tokens: 1, messages: [{ role: 'user', content: '.' }] })
   })
 
   it('probes the second site at its own origin', () => {
@@ -131,6 +156,43 @@ describe('runExternalClientCheck', () => {
     expect(await check(rejection(401, '无效的令牌'))).toMatchObject({ ok: false, layer: 'credential' })
     expect(await check(rejection(403, '当前分组额度不足'))).toMatchObject({ ok: false, layer: 'quota' })
     expect(await check(rejection(503, '当前分组下无可用渠道'))).toMatchObject({ ok: false, layer: 'group' })
+  })
+
+  it('posts the gateway check for Claude Desktop and says what it verified', async () => {
+    const sent: Array<{ url: string; init: RequestInit | undefined }> = []
+    const recorder: typeof globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), init })
+      return generation()(url, init)
+    }) as typeof globalThis.fetch
+    const result = await check(recorder, desktopInput())
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0].url).toBe('https://xm.solov.cc/v1/messages')
+    expect(sent[0].init?.method).toBe('POST')
+    expect(JSON.parse(String(sent[0].init?.body))).toEqual({ model: 'claude-opus-5-5', max_tokens: 1, messages: [{ role: 'user', content: '.' }] })
+    expect(result).toMatchObject({ tool: 'claudeDesktop', ok: true, status: 200, endpoint: 'https://xm.solov.cc/v1/messages' })
+    expect(result.summary).toBe('当前账号的密钥和模型 claude-opus-5-5 都可用')
+    expect(result.evidence).toBe('已照 Claude Desktop 启动时的检查，用它配置里的密钥向 claude-opus-5-5 发过一条一个字的测试消息，服务正常回复；客户端里实际发起的对话由客户端自己发出，本机测不到')
+    expect(JSON.stringify(result)).not.toContain(apiKey)
+  })
+
+  it('reports an empty balance that Claude Desktop shows as rejected credentials', async () => {
+    // new-api 查模型清单不走计费：余额不足时清单照样 200，这条消息却回 403。Claude Desktop 把
+    // 网关检查的 403 一律说成「The provider rejected your credentials」，这里要说出真正的原因。
+    const result = await check(rejection(403, '用户额度不足, 剩余额度: ＄0.000000 (request id: test)'), desktopInput())
+
+    expect(result).toMatchObject({ ok: false, layer: 'quota', status: 403, summary: '账号额度不足（HTTP 403）' })
+    expect(result.detail).toContain('用户额度不足')
+  })
+
+  it('reports a key the relay rejects for Claude Desktop on the credential layer', async () => {
+    expect(await check(rejection(401, '无效的令牌'), desktopInput())).toMatchObject({ ok: false, layer: 'credential', status: 401 })
+  })
+
+  it('does not take a model catalogue as an answer to the Claude Desktop check', async () => {
+    const result = await check(catalogue(['claude-opus-5-5']), desktopInput())
+
+    expect(result).toMatchObject({ ok: false, layer: 'protocol' })
   })
 
   it('reports a blocked build without sending anything', async () => {

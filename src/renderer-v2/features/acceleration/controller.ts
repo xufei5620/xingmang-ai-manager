@@ -46,6 +46,48 @@ function errorMessage(cause: unknown) {
   return sharedErrorMessage(cause, '加速状态更新失败，请重试。').slice(0, 300)
 }
 
+// 走表只改这三个字段：剩余、已连时长每秒一变，measuredAt 每次校准一变。外壳只关心连没
+// 连上、忙不忙、出没出错，拿它们一起比较会让整个界面跟着每秒重画一次。
+const clockFields = new Set<string>(['remainingSeconds', 'sessionSeconds', 'measuredAt'])
+
+function sameShallow(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, index) => Object.is(item, b[index]))
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) || Array.isArray(b)) return false
+  const left = Object.entries(a)
+  return left.length === Object.keys(b).length && left.every(([key, value]) => Object.hasOwn(b, key) && Object.is(value, (b as Record<string, unknown>)[key]))
+}
+
+/** 两份快照除走表字段外是否一样；每次状态读取都会换新对象，所以按字段比。 */
+export function sameAccelerationSnapshotIgnoringClock(a: AccelerationSnapshot, b: AccelerationSnapshot): boolean {
+  if (a === b) return true
+  if (a.busy !== b.busy || a.error !== b.error || a.mode !== b.mode) return false
+  if (a.state === b.state) return true
+  if (!a.state || !b.state) return false
+  const left: Record<string, unknown> = { ...a.state }
+  const right: Record<string, unknown> = { ...b.state }
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)])
+  for (const key of keys) {
+    if (clockFields.has(key)) continue
+    if (!sameShallow(left[key], right[key])) return false
+  }
+  return true
+}
+
+/**
+ * 给 useSyncExternalStore 用的读法：只有走表以外的字段变了才换一份新快照，否则一直
+ * 交回上一份，订阅它的组件就不会每秒重画。里面的剩余时长会停在那一刻，要显示秒数
+ * 的地方另外订阅 getSnapshot。
+ */
+export function createClockFreeSnapshotReader(read: () => AccelerationSnapshot): () => AccelerationSnapshot {
+  let last: AccelerationSnapshot | null = null
+  return function readClockFree() {
+    const next = read()
+    if (!last || !sameAccelerationSnapshotIgnoringClock(last, next)) last = next
+    return last
+  }
+}
+
 /** Display projection only: balances and actual connection lifetime belong to the host. */
 export function createAccelerationController(api: AccelerationClient, { now = () => performance.now(), schedule = scheduleTimeout }: ControllerOptions = {}): AccelerationController {
   let snapshot: AccelerationSnapshot = { state: null, busy: false, error: null, mode: 'system-proxy' }
@@ -77,9 +119,11 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     // No wall clock or interval accumulation: delayed callbacks and clock changes
     // cannot grant extra time. The next host read corrects sleep/transport drift.
     const elapsed = Math.max(0, now() - measuredAt) / 1000
+    // 软件替他连的（打开 Codex 桌面端时）不扣时长，剩余时长不往下走。
+    const billed = !source.autoStartedBy
     return {
       ...source,
-      remainingSeconds: source.remainingSeconds === null ? null : Math.max(0, source.remainingSeconds - elapsed),
+      remainingSeconds: source.remainingSeconds === null || !billed ? source.remainingSeconds : Math.max(0, source.remainingSeconds - elapsed),
       sessionSeconds: source.sessionSeconds + elapsed,
     }
   }
@@ -95,7 +139,7 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
   // 只有连着（或正在连、正在断）的时候才定时读：剩余时长要校准，托盘那边也可能把它断掉。
   // 没在加速就不轮询——绝大多数人一整天都不点加速，没必要每 15 秒跑一趟进程间往返。
   // 这时的状态靠进加速页、点开关、窗口回到前台这三个时机各读一次；窗口在后台时从托盘
-  // 或 Codex 桌面端连上的加速，要等窗口回到前台才显示出来。
+  // 连上的加速，要等窗口回到前台才显示出来。
   function schedulePoll() {
     cancelPoll?.()
     cancelPoll = undefined
@@ -108,7 +152,7 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     cancelExpiry?.()
     cancelExpiry = undefined
     const state = projected()
-    if (!disposed && !mutation && !expiryRequested && state?.phase === 'active' && state.remainingSeconds !== null) {
+    if (!disposed && !mutation && !expiryRequested && state?.phase === 'active' && !state.autoStartedBy && state.remainingSeconds !== null) {
       cancelExpiry = schedule(() => { cancelExpiry = undefined; tick() }, Math.max(0, state.remainingSeconds * 1000))
     }
   }
@@ -117,7 +161,7 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     if (disposed) return
     const state = projected()
     if (state !== snapshot.state) publish({ state })
-    if (!mutation && !expiryRequested && state?.phase === 'active' && state.remainingSeconds === 0) {
+    if (!mutation && !expiryRequested && state?.phase === 'active' && !state.autoStartedBy && state.remainingSeconds === 0) {
       expiryRequested = true
       void stop()
     }

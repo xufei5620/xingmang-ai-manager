@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
-import { Button, Dialog, useToast } from '../../ui'
+import { Button, Dialog, Notice, useToast } from '../../ui'
+import { markRestartPending, useRestartPending } from './restart-reminder'
 import { errorMessage, pendingBusinessOperations } from '../../business-common'
 
 /**
@@ -20,6 +21,8 @@ export function RuntimeRestartDialog({ onClose, restart }: { onClose: () => void
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const intro = useRef<HTMLDivElement>(null)
+  // 框一弹出来就记下「还差重启」，关掉框之后页顶那条提醒接着挂。
+  useEffect(() => { markRestartPending() }, [])
   function now() {
     if (busy) return
     if (pendingBusinessOperations().length > 0) {
@@ -51,4 +54,21 @@ export function RuntimeRestartDialog({ onClose, restart }: { onClose: () => void
     </div>
     {error && <p className="v2-business-notice is-error" role="alert" data-testid="runtime-restart-error">{error}</p>}
   </Dialog>
+}
+
+/**
+ * 关掉重启框之后挂在页顶的那一条：软件开着就一直在，点「现在重启」再弹一次同一个框，
+ * 走同样的两道闸。没记下「还差重启」时什么都不画。
+ */
+export function RestartReminder({ restart }: { restart: () => Promise<void> }) {
+  const pending = useRestartPending()
+  const [open, setOpen] = useState(false)
+  if (!pending) return null
+  return <>
+    <div className="v2-restart-reminder"><Notice tone="warn" icon={RotateCcw} title="还差重启一次电脑"
+      body="刚装好的运行环境要重启电脑后才算装完，重启之前装工具可能会失败。"
+      actions={<Button size="sm" icon={RotateCcw} onClick={() => setOpen(true)} testId="restart-reminder-now">现在重启</Button>}
+      testId="restart-reminder" /></div>
+    {open && <RuntimeRestartDialog onClose={() => setOpen(false)} restart={restart} />}
+  </>
 }

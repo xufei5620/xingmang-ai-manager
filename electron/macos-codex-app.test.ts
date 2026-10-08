@@ -8,6 +8,7 @@ import {
   commandTimeoutMs,
   deepVerificationTimeoutMs,
   inspectMacosCodexApp,
+  probeMacosCodexRunning,
   resetMacosCodexAppVerificationCache,
   resolveSystemCommandTimeoutMs,
   runSystemCommand,
@@ -465,7 +466,7 @@ describe('inspectMacosCodexApp', () => {
       throw new Error(`unexpected command: ${executable}`)
     })
     await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
-      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: failure === 'metadata' ? 'invalid bundle metadata' : expect.stringContaining('Mach-O') })
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: failure === 'metadata' ? 'invalid bundle metadata' : expect.stringContaining('Mach-O'), rejectedPaths: [fs.realpathSync(app)] })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
   })
 
@@ -479,7 +480,7 @@ describe('inspectMacosCodexApp', () => {
       throw new Error(`unexpected command: ${executable}`)
     })
     await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
-      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '已找到 Codex，但应用的可执行文件类型或权限无效' })
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '已找到 Codex，但应用的可执行文件类型或权限无效', rejectedPaths: [fs.realpathSync(path.join(systemApplicationsDirectory, 'Codex.app'))] })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
   })
 
@@ -511,6 +512,7 @@ describe('inspectMacosCodexApp', () => {
       app: null,
       detectionFailed: true,
       detectionError: '已找到 Codex，但应用架构与此 Mac 不兼容',
+      rejectedPaths: [fs.realpathSync(app)],
     })
   })
 
@@ -548,6 +550,86 @@ describe('inspectMacosCodexApp', () => {
       app: null,
       detectionFailed: true,
       detectionError: '命令执行失败（退出码 1）：codesign',
+      rejectedPaths: [fs.realpathSync(app)],
+    })
+  })
+
+  // 装 Codex 桌面端那一步靠它挑说法：没查完的说「检测未完成」，再查一次可能就过了；
+  // 这份自己不过关的照旧说不是官方原版，再查几次都一样。
+  it.each([
+    { failure: 'codesign timed out', rejected: false },
+    { failure: 'codesign never started', rejected: false },
+    { failure: 'the executable could not be read', rejected: false },
+    { failure: 'this Mac could not be asked what it runs', rejected: false },
+    { failure: 'the executable is missing', rejected: true },
+  ])('calls the bundle rejected only for its own failures, not for a check that never finished ($failure)', async ({ failure, rejected }) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'ChatGPT.app')
+    const infoPath = createApp(app, 0o755, failure === 'this Mac could not be asked what it runs' ? ['arm64'] : undefined)
+    const executablePath = fs.realpathSync(path.join(app, 'Contents', 'MacOS', 'ChatGPT'))
+    if (failure === 'the executable is missing') fs.rmSync(executablePath)
+    if (failure === 'the executable could not be read') {
+      vi.spyOn(fs.promises, 'lstat').mockImplementation((async (...args: Parameters<typeof nativeLstat>) => {
+        if (String(args[0]) === executablePath) throw Object.assign(new Error('executable access denied'), { code: 'EACCES' })
+        return process.platform === 'win32' ? fixtureLstat(...args) : nativeLstat(...args)
+      }) as typeof nativeLstat)
+    }
+    const runSystemCommand = async (executable: string, argv: readonly string[]): Promise<string> => {
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/codesign') {
+        if (failure === 'codesign timed out') throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：codesign')
+        if (failure === 'codesign never started') throw commandRunnerError('SPAWN_FAILED', '无法启动命令：codesign')
+        return ''
+      }
+      if (executable === '/usr/sbin/sysctl') throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：sysctl')
+      if (executable === '/usr/bin/mdfind') return ''
+      throw new Error(`unexpected command: ${executable}`)
+    }
+
+    await expect(inspectMacosCodexApp({
+      architecture: failure === 'this Mac could not be asked what it runs' ? 'x64' : process.arch,
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })).resolves.toEqual({
+      app: null,
+      detectionFailed: true,
+      detectionError: expect.any(String),
+      ...(rejected ? { rejectedPaths: [fs.realpathSync(app)] } : {}),
+    })
+  })
+
+  it('lists only the copies that were turned down, not one whose check never finished', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const installed = path.join(systemApplicationsDirectory, 'ChatGPT.app')
+    const downloaded = path.join(root, 'Downloads', 'ChatGPT.app')
+    const installedInfo = createApp(installed)
+    const downloadedInfo = createApp(downloaded)
+    const runSystemCommand = async (executable: string, argv: readonly string[]): Promise<string> => {
+      if (executable === '/usr/bin/plutil' && (argv.at(-1) === installedInfo || argv.at(-1) === downloadedInfo)) {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/codesign') {
+        if (argv.at(-1) === fs.realpathSync(installed)) throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：codesign')
+        throw commandRunnerError('EXIT_NON_ZERO', '命令执行失败（退出码 1）：codesign')
+      }
+      if (executable === '/usr/bin/mdfind') return `${downloaded}\n`
+      throw new Error(`unexpected command: ${executable}`)
+    }
+
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand })).resolves.toEqual({
+      app: null,
+      detectionFailed: true,
+      detectionError: '命令执行时间过长，已中止：codesign；命令执行失败（退出码 1）：codesign',
+      rejectedPaths: [fs.realpathSync(downloaded)],
     })
   })
 
@@ -1042,5 +1124,14 @@ describe('inspectMacosCodexApp', () => {
     await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
 
     expect(codesignCalls).toBe(2)
+  })
+})
+
+describe('macOS Codex running probe', () => {
+  it('answers yes, no, or unknown instead of folding failures into not running', async () => {
+    await expect(probeMacosCodexRunning(async () => 'true\n')).resolves.toBe(true)
+    await expect(probeMacosCodexRunning(async () => 'false\n')).resolves.toBe(false)
+    await expect(probeMacosCodexRunning(async () => 'execution error')).resolves.toBeNull()
+    await expect(probeMacosCodexRunning(async () => { throw new Error('osascript timed out') })).resolves.toBeNull()
   })
 })

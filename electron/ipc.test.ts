@@ -6,6 +6,7 @@ import type { SystemService, SystemSnapshot } from './system-service'
 import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
+import type { ConnectionCheckResult } from './connection-check'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
@@ -18,7 +19,7 @@ import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
-import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
+import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -31,6 +32,8 @@ const electronMocks = vi.hoisted(() => ({
   openExternal: vi.fn(),
   openPath: vi.fn(),
   writeText: vi.fn(),
+  readText: vi.fn(() => ''),
+  clearClipboard: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
@@ -50,10 +53,10 @@ vi.mock('electron', () => ({
     fromWebContents: electronMocks.browserWindowFromWebContents,
   },
   shell: { openExternal: electronMocks.openExternal, openPath: electronMocks.openPath },
-  clipboard: { writeText: electronMocks.writeText },
+  clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -83,16 +86,19 @@ function serviceStub(): SystemService {
     refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
+    inspectWindowsProcessor: vi.fn(async () => null),
     restartWindows: vi.fn() as never,
     installPythonRuntime: vi.fn() as never,
     installGitRuntime: vi.fn() as never,
     installCli: vi.fn() as never,
     cancelCliInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCli: vi.fn() as never,
+    cleanUninstallLeftovers: vi.fn() as never,
     inspectCliUpdate: vi.fn() as never,
     installCodexDesktop: vi.fn() as never,
     cancelCodexDesktopInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCodexDesktop: vi.fn() as never,
+    resetCodexDesktop: vi.fn() as never,
     inspectCodexDesktopUpdate: vi.fn() as never,
     launchProvider: vi.fn() as never,
     inspectCodexDesktop: vi.fn() as never,
@@ -104,10 +110,14 @@ function serviceStub(): SystemService {
     fetchAvailableModels: vi.fn() as never,
     configureExternalTool: vi.fn() as never,
     scanExternalClients: vi.fn(async () => []),
+    cachedExternalClients: vi.fn(async () => []),
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
+    onInstallationQueueChange: vi.fn(() => () => undefined),
+    cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
+    cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
     launchExternalClient: vi.fn(async () => undefined),
   }
 }
@@ -222,6 +232,8 @@ function updaterStub(): UpdaterService {
     download: vi.fn(async () => state),
     install: vi.fn(() => ({ accepted: true as const })),
     setServiceStatus: vi.fn(),
+    setLaunchInstallNotice: vi.fn(),
+    setInstallNeedsAdminPassword: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
   }
@@ -355,6 +367,9 @@ function register(
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
     openCanvasWindow: vi.fn(async () => undefined),
+    // 打开前试写只在 Windows 上跑，有自己的一组用例（write check before launching）；
+    // 其余用例不碰真磁盘，cli:launch 在各平台上都照旧同步交给 launchProvider。
+    workspaceWriteCheck: { platform: 'darwin', probe: async () => undefined },
     ...({ transformSystemSnapshot } as object),
     ...extraOptions,
   })
@@ -384,6 +399,9 @@ beforeEach(() => {
   electronMocks.openPath.mockReset()
   electronMocks.openPath.mockResolvedValue('')
   electronMocks.writeText.mockReset()
+  electronMocks.readText.mockReset()
+  electronMocks.readText.mockReturnValue('')
+  electronMocks.clearClipboard.mockReset()
   electronMocks.browserWindowFromWebContents.mockReset()
   electronMocks.browserWindowFromWebContents.mockReturnValue(undefined)
 })
@@ -449,6 +467,57 @@ describe('registerIpcHandlers', () => {
     const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'acceleration:get-state')
     expect(logged).toHaveLength(2)
     expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
+  })
+
+  it('keeps routine notice and subscription polling out of the feedback report but logs slow reads and recoveries', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(0)
+      const marker = `newapi-${'a'.repeat(64)}`
+      const accountService = accountServiceStub()
+      const getNotice = vi.fn(async () => null)
+      accountService.getNotice = getNotice
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 7, username: 'notice-reader', group: null, role: 1, quota: 100, usedQuota: 0 },
+      })
+      vi.mocked(accountService.getSubscriptionSelf).mockResolvedValue({ subscriptions: [] } as never)
+      const announcementReads = { sync: vi.fn(async (_scope: string, ids: string[]) => ids) }
+      const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { announcementReads })
+      const readNotice = electronMocks.handlers.get('account:get-notice')!
+      const readSubscription = electronMocks.handlers.get('account:get-subscription-self')!
+      const syncReads = electronMocks.handlers.get('account:sync-local-notice-reads')!
+
+      await readNotice(trustedEvent())
+      await syncReads(trustedEvent(), 'xm-account:7', [marker])
+      getNotice.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 3_500)
+        return null
+      })
+      await readNotice(trustedEvent())
+      getNotice.mockRejectedValueOnce(new Error('账号服务请求超时'))
+      await expect(readNotice(trustedEvent())).rejects.toThrow('账号服务请求超时')
+      // Another channel succeeding in between neither counts as nor clears the notice recovery.
+      await readSubscription(trustedEvent())
+      await readNotice(trustedEvent())
+      await readNotice(trustedEvent())
+
+      const polled = new Set(['account:get-notice', 'account:sync-local-notice-reads', 'account:get-subscription-self'])
+      const logged = vi.mocked(runtimeLog.log).mock.calls
+        .filter(([, , event]) => polled.has(event))
+        .map(([level, , event, , detail]) => [event, level, (detail as { recovered?: boolean }).recovered === true])
+      expect(logged).toEqual([
+        ['account:get-notice', 'debug', false],
+        ['account:sync-local-notice-reads', 'debug', false],
+        ['account:get-notice', 'info', false],
+        ['account:get-notice', 'error', false],
+        ['account:get-subscription-self', 'debug', false],
+        ['account:get-notice', 'info', true],
+        ['account:get-notice', 'debug', false],
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('builds the acceleration change key from state fields only, ignoring the ticking remaining time', () => {
@@ -748,20 +817,62 @@ describe('registerIpcHandlers', () => {
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })
 
-    it('isolates previews by sender and rejects an expired or superseded report before any output', async () => {
+    it('isolates previews by sender and regenerates an expired or superseded report instead of failing', async () => {
       const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feedback-ipc-'))
       try {
-        register()
+        const { runtimeLog } = register()
+        runtimeLog.captureFeedbackReport
+          .mockResolvedValueOnce({ text: 'owner first\n', entries: 1 })
+          .mockResolvedValueOnce({ text: 'other sender own\n', entries: 2 })
+          .mockResolvedValueOnce({ text: 'owner current\n', entries: 3 })
+          .mockResolvedValueOnce({ text: 'owner after superseded\n', entries: 4 })
+          .mockResolvedValueOnce({ text: 'owner after expiry\n', entries: 5 })
+          .mockResolvedValueOnce({ text: 'owner export after expiry\n', entries: 6 })
         const owner = trustedEvent()
         const getPreview = electronMocks.handlers.get('runtime-logs:preview-feedback')!
         const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
         const first = await getPreview(owner) as { id: string }
-        await expect(copy(trustedEvent(undefined, 102), first.id)).rejects.toThrow('已过期')
+        // Another window presenting the owner's id never receives the owner's text.
+        const foreign = await copy(trustedEvent(undefined, 102), first.id) as { regenerated: { text: string } }
+        expect(foreign.regenerated.text).toBe('other sender own\n')
+        expect(electronMocks.writeText).toHaveBeenLastCalledWith('other sender own\n')
         const current = await getPreview(owner) as { id: string }
-        await expect(copy(owner, first.id)).rejects.toThrow('已过期')
+        const superseded = await copy(owner, first.id) as { entries: number; regenerated: { id: string; text: string; entries: number } }
+        expect(superseded).toEqual({ entries: 4, regenerated: { id: expect.any(String), text: 'owner after superseded\n', entries: 4 } })
+        expect(superseded.regenerated.id).not.toBe(current.id)
         clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
-        await expect(copy(owner, current.id)).rejects.toThrow('已过期')
-        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, current.id)).rejects.toThrow('已过期')
+        const expired = await copy(owner, superseded.regenerated.id) as { regenerated: { id: string; text: string } }
+        expect(expired.regenerated.text).toBe('owner after expiry\n')
+        expect(electronMocks.writeText).toHaveBeenLastCalledWith('owner after expiry\n')
+        // The regenerated report is itself a live preview: copying it again reuses it.
+        await expect(copy(owner, expired.regenerated.id)).resolves.toEqual({ entries: 5 })
+        clock.mockReturnValue(100_000 + 61 * 60 * 1_000)
+        const outputPath = path.join(directory, 'report.txt')
+        electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
+        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, expired.regenerated.id)).resolves.toEqual({
+          outputPath,
+          regenerated: { id: expect.any(String), text: 'owner export after expiry\n', entries: 6 },
+        })
+        expect(fs.readFileSync(outputPath, 'utf8')).toBe('owner export after expiry\n')
+        expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+      } finally {
+        clock.mockRestore()
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
+
+    it('reports a failed regeneration without copying or opening the save dialog', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        const { runtimeLog } = register()
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        runtimeLog.captureFeedbackReport.mockRejectedValue(new Error('日志读取失败'))
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).rejects.toThrow('日志读取失败')
+        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, preview.id)).rejects.toThrow('日志读取失败')
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, 'x'.repeat(65))).rejects.toThrow('反馈报告标识')
         expect(electronMocks.writeText).not.toHaveBeenCalled()
         expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
       } finally { clock.mockRestore() }
@@ -783,6 +894,35 @@ describe('registerIpcHandlers', () => {
         await expect(exporting).resolves.toEqual({ outputPath })
         expect(fs.readFileSync(outputPath, 'utf8')).toBe('chosen preview A\n')
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('tells the window whether the report carries any self-check result, also after regenerating it', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        let checked = false
+        const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+          diagnosticsService: {
+            run: vi.fn(),
+            checkConnection: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            exportLatest: vi.fn(),
+            hasSelfCheckResult: () => checked,
+          },
+        })
+        runtimeLog.captureFeedbackReport
+          .mockResolvedValueOnce({ text: 'before checking\n', entries: 1 })
+          .mockResolvedValueOnce({ text: 'after checking\n', entries: 2 })
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        expect(preview).toEqual({ id: expect.any(String), text: 'before checking\n', entries: 1, selfChecked: false })
+        // The customer went to the check page and came back after the preview expired.
+        checked = true
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({
+          entries: 2,
+          regenerated: { id: expect.any(String), text: 'after checking\n', entries: 2, selfChecked: true },
+        })
+      } finally { clock.mockRestore() }
     })
 
     it('allows clipboard retry and save cancellation without changing the preview', async () => {
@@ -1001,6 +1141,8 @@ describe('registerIpcHandlers', () => {
 
   it('installs the bundled 星芒AI skill on key sync without returning the image key', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({
       authenticated: true,
@@ -1022,7 +1164,7 @@ describe('registerIpcHandlers', () => {
       key: `sk-cached-${provider}-not-for-ipc`,
     }))
     register(
-      serviceStub(),
+      service,
       'C:\\app-data\\logs',
       undefined,
       accountService,
@@ -1046,6 +1188,116 @@ describe('registerIpcHandlers', () => {
       expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
       const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
       expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it('hands a plain-language notice to the renderer when the image tool could not be registered', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({
+      authenticated: true,
+      account: { userId: 9 },
+    } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7,
+      name: input?.name ?? 'key',
+      key: 'sk-ipc-image-key-1234567890',
+    }))
+    const syncImageMcp = vi.fn(async () => [XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
+    const { runtimeLog } = register(
+      service,
+      'C:\\app-data\\logs',
+      undefined,
+      accountService,
+      undefined,
+      {
+        read: vi.fn(async () => []),
+        save: vi.fn(),
+        remove: vi.fn(),
+        captureRevision: vi.fn(() => 1),
+      },
+      {
+        xingmangAiSkill: {
+          bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')),
+          userHome,
+          syncImageMcp,
+        },
+      },
+    )
+
+    try {
+      const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent()) as { imageMcpWarning?: string; imageSkillWarning?: string }
+      expect(summary.imageMcpWarning).toContain('运行环境')
+      expect(summary.imageMcpWarning).not.toContain('Node.js')
+      expect(summary.imageSkillWarning).toBeUndefined()
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { active: 'primary' as const, pending: 'direct' as const, baseUrl: 'https://xm.solov.cc/v1', origin: 'https://xm.solov.cc' },
+    { active: 'direct' as const, pending: 'primary' as const, baseUrl: 'https://xm-direct.solov.cc/v1', origin: 'https://xm-direct.solov.cc' },
+  ])('binds Skill sync to the active main-process endpoint while ignoring pending and renderer URLs: $active', async ({ active, pending, baseUrl, origin }) => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.readStoredConfig).mockReturnValue({
+      ...stubStoredConfig, relayEndpointIds: { solov: pending }, activeRelayEndpointIds: { solov: active, 'solov-api': 'primary' },
+    })
+    vi.mocked(service.getConfig).mockReturnValue({
+      providers: { codex: { baseUrl, actualBaseUrl: 'https://attacker.invalid/v1' } },
+    } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7, name: input?.name ?? 'key', key: 'sk-ipc-fixture-only-skill-key',
+    }))
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      const result = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent(), {
+        baseUrl: 'https://attacker.invalid', relayEndpointIds: { solov: pending },
+      })
+      expect(result).not.toHaveProperty('imageSkillWarning')
+      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).baseUrl).toBe(origin)
+      expect(service.getConfig).toHaveBeenCalledWith(false)
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the image Skill out of the historical account realm', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm-direct.solov.cc/v1' } } } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov-api' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
+      expect(service.getConfig).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json'))).toBe(false)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
@@ -1106,6 +1358,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1119,7 +1372,7 @@ describe('registerIpcHandlers', () => {
       expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
       expect(extensionService.setRepositoryContext).toHaveBeenCalledWith(expected)
-      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String))
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String), { movedFromDocuments: false })
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(documents)
     } finally {
       fs.rmSync(documents, { recursive: true, force: true })
@@ -1140,6 +1393,7 @@ describe('registerIpcHandlers', () => {
         .mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
@@ -1164,6 +1418,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service, providerExtensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1185,6 +1440,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true })).resolves.toBeNull()
@@ -1200,12 +1456,93 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  // 已知40：首页第一次点「打开」先替用户建，建不成说完接着弹选择器，不让他再点一次又撞上同一个错。
+  it.runIf(process.platform !== 'win32')('opens the picker right after explaining a failed first-time starter folder', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-project-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(project)
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        message: '没能替你新建项目文件夹。',
+        detail: expect.stringContaining('接下来会重新打开文件夹选择窗口'),
+      }))
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('creates a first-time starter folder without ever showing the picker when that works', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(expected)
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  // 已知40：上一次建好、记下了，只是没打开成（终端没起来）。渲染层那份快照还不知道，再点「打开」
+  // 或错误框里的「重试」还会带着 firstOpen 来，这时用回它，不再建 my-project-2。
+  it('reuses the folder a failed first open already remembered instead of making another', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const remembered = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-remembered-')))
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+        homeDirectory: () => documents,
+      })
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: remembered })
+      const handler = electronMocks.handlers.get('workspace:choose')!
+
+      await expect(handler(trustedEvent(), { createStarter: true, firstOpen: true })).resolves.toBe(remembered)
+      expect(fs.readdirSync(documents)).toEqual([])
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+
+      // 记着的文件夹被删掉了就当没有，照旧新建。
+      fs.rmSync(remembered, { recursive: true, force: true })
+      await expect(handler(trustedEvent(), { createStarter: true, firstOpen: true }))
+        .resolves.toBe(path.join(documents, 'XingmangProjects', 'my-project'))
+      // 「新建项目文件夹并打开」本来就是要一个新的，不看记着的。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: path.join(documents, 'XingmangProjects', 'my-project') })
+      await expect(handler(trustedEvent(), { createStarter: true }))
+        .resolves.toBe(path.join(documents, 'XingmangProjects', 'my-project-2'))
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(remembered, { recursive: true, force: true })
+    }
+  })
+
   it('rejects workspace options it does not know, including a renderer-supplied path', async () => {
     register()
     const handler = electronMocks.handlers.get('workspace:choose')!
 
     await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, firstOpen: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
     await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择工作目录的参数无效')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })
@@ -1280,6 +1617,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1306,6 +1644,200 @@ describe('registerIpcHandlers', () => {
     }))
   })
 
+  // 已知39：首页「打开」用的是从会话记录推出来的目录，不经过选择器。客户自己在主目录开终端
+  // 用过 claude，按钮就写「打开 张三」，以前点了不问一句就在整个主目录开新对话。
+  it('asks before starting a new conversation in the home folder that skipped the picker', async () => {
+    const home = os.homedir()
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service, runtimeLog } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      title: '这个文件夹范围太大',
+      buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+      defaultId: 0,
+      cancelId: 1,
+    }))
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', home, 'new')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'workspace.guard.accepted', expect.any(String), { kind: 'home', policy: 'once' })
+
+    // 主目录不算记住（resolveRememberedWorkspace），下一次从首页「打开」照样问。
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a declined launch when the home folder question ends without a folder', async () => {
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const { service, runtimeLog } = register()
+
+    await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', os.homedir()))
+      .resolves.toEqual({ declined: true })
+    expect(service.launchProvider).not.toHaveBeenCalled()
+    expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.guard.declined', expect.any(String), { kind: 'home' })
+  })
+
+  it('checks that a folder picked instead of the home folder can be written to', async () => {
+    const project = path.join(os.homedir(), 'project')
+    const probe = vi.fn(async () => undefined)
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      workspaceWriteCheck: { platform: 'win32', probe },
+    })
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', os.homedir())
+    expect(probe).toHaveBeenCalledWith(project)
+    expect(service.launchProvider).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', project, 'new')
+    expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+  })
+
+  it('resumes a conversation in the home folder without asking', async () => {
+    const home = os.homedir()
+    const { service } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home, 'resumeLast')
+    expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', home, 'resumeLast')
+  })
+
+  it('does not ask twice when the picker just confirmed the desktop, then still checks it can be written to', async () => {
+    const desktop = path.join(os.homedir(), 'Desktop')
+    const probe = vi.fn(async () => undefined)
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [desktop] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      workspaceWriteCheck: { platform: 'win32', probe },
+    })
+
+    await electronMocks.handlers.get('workspace:choose')!(trustedEvent())
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', desktop)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(probe).toHaveBeenCalledWith(desktop)
+    expect(service.launchProvider).toHaveBeenCalledWith('gemini', desktop, 'new')
+
+    // 下一次从首页「打开」、托盘或快捷键再进桌面，照样问；点了「仍然打开」照旧先试写。
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', desktop)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(service.launchProvider).toHaveBeenCalledTimes(2)
+  })
+
+  describe('write check before launching', () => {
+    function denied(): Promise<void> {
+      return Promise.reject(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }))
+    }
+
+    it('launches straight away when the folder takes the probe', async () => {
+      const probe = vi.fn(async () => undefined)
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+      expect(probe).toHaveBeenCalledWith('C:\\projects\\demo')
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'new')
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({
+        result: 'writable',
+        durationMs: expect.any(Number),
+      }))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('demo')
+    })
+
+    it('does not probe outside Windows', async () => {
+      const probe = vi.fn(denied)
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'darwin', probe },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', '/Users/alex/demo')
+      expect(probe).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', '/Users/alex/demo', 'new')
+    })
+
+    it('still launches when the probe fails for a reason other than permissions', async () => {
+      const probe = vi.fn(async () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'new')
+    })
+
+    it('opens anyway when the user says so', async () => {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe: denied },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', 'C:\\projects\\demo')
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        title: '这个文件夹不让写入',
+        buttons: ['换到能写的位置', '照常打开', '先不打开'],
+        defaultId: 0,
+        cancelId: 2,
+      }))
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'new')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('moves to a new project folder that can be written to', async () => {
+      const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+      try {
+        electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+        const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+          documentsDirectory: () => documents,
+          homeDirectory: () => documents,
+          workspaceWriteCheck: { platform: 'win32', probe: denied },
+        })
+        const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+        await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+        expect(service.launchProvider).toHaveBeenCalledTimes(1)
+        expect(service.launchProvider).toHaveBeenCalledWith('claude', expected, 'new')
+        expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+        expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      } finally {
+        fs.rmSync(documents, { recursive: true, force: true })
+      }
+    })
+
+    it('reports a declined launch when the user keeps the folder closed', async () => {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe: denied },
+      })
+
+      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo'))
+        .resolves.toEqual({ declined: true })
+      expect(service.launchProvider).not.toHaveBeenCalled()
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.write-check.declined', expect.any(String), { provider: 'claude' })
+    })
+
+    it('only offers to open anyway or not when resuming a conversation', async () => {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe: denied },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo', 'resumeLast')
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        buttons: ['先不打开', '照常打开'],
+        defaultId: 1,
+        cancelId: 0,
+      }))
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'resumeLast')
+    })
+  })
+
   it('rejects calls from a sender outside the application URL policy', () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('system:scan')!
@@ -1324,9 +1856,18 @@ describe('registerIpcHandlers', () => {
       architecture: process.arch,
       isMac: process.platform === 'darwin',
     })
+    expect(handler(trustedEvent())).not.toHaveProperty('processElevated')
     expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow(
       '已拒绝来自非应用页面的操作请求',
     )
+  })
+
+  it('tells the renderer the app already runs with administrator rights, so it stops promising a consent window', () => {
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { windowsProcessElevated: true })
+    const handler = electronMocks.handlers.get('platform:get-capabilities')!
+
+    expect(handler(trustedEvent())).toMatchObject({ architecture: process.arch, processElevated: true })
+    expect(Object.isFrozen(handler(trustedEvent()))).toBe(true)
   })
 
   it('routes Python 3.12 installation through the trusted service and runtime log', async () => {
@@ -1407,6 +1948,43 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
   })
 
+  it('logs each tool whose detection failed with its reason, home folder redacted, so the feedback report carries it', async () => {
+    const service = serviceStub()
+    const reason = "EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'"
+    const ok = { installed: true, version: '1.0.0', path: null }
+    vi.mocked(service.scanSystem).mockResolvedValueOnce({
+      checkedAt: '2026-10-03T00:00:00.000Z',
+      runtime: { node: { installed: false, version: null, path: null, detectionFailed: true, detectionError: reason }, npm: ok, python: ok, git: ok },
+      clis: { claude: { installed: false, version: null, path: null, detectionFailed: true, detectionError: reason }, codex: ok, grok: ok, gemini: ok },
+      desktopApps: { codex: { installed: false, version: null, appVersion: null, mirrorVersion: null, mirrorUpdateAvailable: null, mirrorError: null, path: null, running: false, detectionFailed: true, detectionError: null } },
+    } as never)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      providerRoots: { userHome: 'C:\\Users\\yoyo', codexHome: 'C:\\Users\\yoyo\\.codex' },
+    })
+
+    await electronMocks.handlers.get('system:scan')!(trustedEvent(), true)
+
+    const redacted = "EPERM: operation not permitted, scandir '%USERPROFILE%\\AppData\\Roaming\\npm'"
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'cli.detection-failed', `Claude Code 检测失败：${redacted}`, { provider: 'claude' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'runtime.detection-failed', `Node.js 检测失败：${redacted}`, { tool: 'node' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'desktop.detection-failed', 'Codex 桌面端 检测失败：没有给出原因', {})
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => String(call[2]).endsWith('detection-failed'))).toHaveLength(3)
+  })
+
+  it('logs an external client whose detection failed, and nothing for the ones that were read', async () => {
+    const service = serviceStub()
+    vi.mocked(service.scanExternalClients).mockResolvedValueOnce([
+      { tool: 'workbuddy', detectionError: 'Code signature check failed' },
+      { tool: 'opencode', detectionError: null },
+    ] as never)
+    const { runtimeLog } = register(service)
+
+    await expect(electronMocks.handlers.get('external-clients:scan')!(trustedEvent(), true)).resolves.toHaveLength(2)
+
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'system', 'external-client.detection-failed', 'WorkBuddy 检测失败：Code signature check failed', { tool: 'workbuddy' })
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toHaveLength(1)
+  })
+
   it('answers the first home page read with the last saved scan, only when asked and never for a forced rescan', async () => {
     const service = serviceStub()
     const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }
@@ -1456,6 +2034,44 @@ describe('registerIpcHandlers', () => {
     await pendingUpdate
     expect(service.scanSystem).toHaveBeenCalledWith(false)
     expect(updaterService.startup).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs an update install request as handed over, not as installed', async () => {
+    const updaterService = updaterStub()
+    const { runtimeLog } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService })
+    await expect(Promise.resolve(electronMocks.handlers.get('update:install')!(trustedEvent()))).resolves.toEqual({ accepted: true })
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
+    expect(logged).toEqual([['info', 'ipc', 'update:install', '已把新版本交给安装程序，装没装上看下一条更新状态', expect.any(Object)]])
+  })
+
+  it('keeps the downloaded update when the user chooses to let a tool finish installing', async () => {
+    // 已知31：更新页带着 askIfInstalling 来，还有工具在装时先问一句，点了「继续安装」就这次不装，新版本留着。
+    const updaterService = updaterStub()
+    const confirmUpdateInstall = vi.fn(async () => false)
+    const { runtimeLog } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, confirmUpdateInstall })
+    const install = electronMocks.handlers.get('update:install')!
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true }))).resolves.toEqual({ accepted: true, postponed: true })
+    expect(updaterService.install).not.toHaveBeenCalled()
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'update:install')
+    expect(logged).toEqual([['info', 'ipc', 'update:install', '还有工具在装，这次没装新版本', expect.any(Object)]])
+    // 点了「仍然退出」（或者根本没在装）照常交给安装程序。
+    confirmUpdateInstall.mockResolvedValueOnce(true)
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true }))).resolves.toEqual({ accepted: true })
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
+  })
+
+  it('installs without asking when the caller does not ask, as the required-update gate and the rollback UI do', async () => {
+    // 「必须更新」那层提示等着的就是这次安装，问了点「继续安装」它会一直转圈；旧回滚界面也不认 postponed。
+    const updaterService = updaterStub()
+    const confirmUpdateInstall = vi.fn(async () => false)
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, confirmUpdateInstall })
+    const install = electronMocks.handlers.get('update:install')!
+    await expect(Promise.resolve(install(trustedEvent()))).resolves.toEqual({ accepted: true })
+    expect(confirmUpdateInstall).not.toHaveBeenCalled()
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: 'yes' }))).rejects.toThrow('安装参数格式错误')
+    await expect(Promise.resolve(install(trustedEvent(), { askIfInstalling: true, force: true }))).rejects.toThrow('安装参数格式错误')
+    expect(updaterService.install).toHaveBeenCalledTimes(1)
   })
 
   it('refreshes only the network location through trusted IPC', async () => {
@@ -1543,6 +2159,53 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), '../codex')).rejects.toThrow('未知的 CLI 类型')
   })
 
+  it('backs up each tool before filling template defaults and reports what was filled', async () => {
+    const service = serviceStub()
+    service.fillToolTemplateDefaults = vi.fn(async (backup?: (provider: 'codex') => void) => {
+      backup?.('codex')
+      return { filled: ['codex' as const] }
+    })
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: ['codex'] })
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+  })
+
+  it('fills nothing when the service cannot fill template defaults', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: [] })
+  })
+
+  it('passes a later try through as a retry and keeps a plain call as the startup round', async () => {
+    const service = serviceStub()
+    const fill = vi.fn(async (_backup?: (provider: 'codex') => void, _retry?: boolean) => ({ filled: [], pending: ['codex' as const] }))
+    service.fillToolTemplateDefaults = fill
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: [], pending: ['codex'] })
+    await handler(trustedEvent(), true)
+
+    expect(fill.mock.calls.map((call) => call[1])).toEqual([false, true])
+  })
+
+  it('rejects a retry flag that is not a boolean before touching any tool config', async () => {
+    const service = serviceStub()
+    const fill = vi.fn(async (_backup?: (provider: 'codex') => void, _retry?: boolean) => ({ filled: [] }))
+    service.fillToolTemplateDefaults = fill
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('补设置参数格式错误')
+    expect(fill).not.toHaveBeenCalled()
+  })
+
   it('skips the model check when the service cannot do it', async () => {
     register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.checkToolModels)!
@@ -1616,6 +2279,38 @@ describe('registerIpcHandlers', () => {
     )).rejects.toThrow('不允许打开该链接')
   })
 
+  it('opens the check page folders by name only, never by a renderer path', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-folder-home-')))
+    try {
+      const aiOutput = path.join(home, 'XingmangAI')
+      fs.mkdirSync(aiOutput)
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        homeDirectory: () => home,
+        aiOutputDirectory: () => aiOutput,
+      })
+      const handler = electronMocks.handlers.get(ipcInvokeChannels.openDiagnosticFolder)!
+
+      await expect(handler(trustedEvent(), 'projects')).resolves.toBe(true)
+      // 还没新建过项目时先建出空容器再打开。
+      expect(fs.statSync(path.join(home, 'XingmangProjects')).isDirectory()).toBe(true)
+      await expect(handler(trustedEvent(), 'ai-output')).resolves.toBe(true)
+      expect(electronMocks.openPath.mock.calls).toEqual([[path.join(home, 'XingmangProjects')], [aiOutput]])
+
+      await expect(handler(trustedEvent(), 'C:\\Windows')).rejects.toThrow('不认识要打开的文件夹')
+      await expect(handler(trustedEvent(), { target: 'projects' })).rejects.toThrow('不认识要打开的文件夹')
+      expect(electronMocks.openPath).toHaveBeenCalledTimes(2)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('reports the AI works folder as unavailable when the host did not say where it is', async () => {
+    register()
+
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.openDiagnosticFolder)!(trustedEvent(), 'ai-output')).resolves.toBe(false)
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
+  })
+
   it('opens the validated runtime log directory through the external shell proxy', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-shell-'))
     try {
@@ -1677,6 +2372,31 @@ describe('registerIpcHandlers', () => {
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
     await expect(handler(trustedEvent(), { ...base, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
     expect(service.saveConfig).not.toHaveBeenCalled()
+  })
+
+  // 首页「配置文件坏了」的「修好它」和配置里「重置为初始状态」选官方账号都走这条：
+  // 答应过先备份，备份页里就得找得回来（以前只留配置旁边会被挤掉的 .bak）。
+  it('keeps a restorable backup before an official reset and refuses to reset without one', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-to-official-account')!
+
+    await handler(trustedEvent(), 'codex', 'merge')
+    await handler(trustedEvent(), 'codex')
+    expect(create).not.toHaveBeenCalled()
+
+    await handler(trustedEvent(), 'codex', 'reset')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'reset')
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[2])
+
+    vi.mocked(service.switchToOfficialAccount).mockClear()
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
   })
 
   it('validates and forwards the official save mode while accepting legacy calls', async () => {
@@ -1892,6 +2612,55 @@ describe('registerIpcHandlers', () => {
     await expect(result).resolves.toMatchObject({ providers: {} })
   })
 
+  it('fixes stale reminder settings before reading a signed-in account\'s config, and still reads when that fails', async () => {
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+      read: vi.fn(async () => []), save: vi.fn(async () => undefined), remove: vi.fn(async () => undefined),
+    }
+    const order: string[] = []
+    const service = serviceStub()
+    const autoRepairStaleCliHooks = vi.fn(async () => { order.push('repair'); return ['codex' as const] })
+    Object.assign(service, { autoRepairStaleCliHooks })
+    vi.mocked(service.getConfig).mockImplementation(() => { order.push('read'); return { providers: {} } as never })
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys)
+    await electronMocks.handlers.get('config:get')!(trustedEvent())
+    expect(order).toEqual(['repair', 'read'])
+
+    autoRepairStaleCliHooks.mockRejectedValueOnce(new Error('disk full'))
+    await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.toEqual({ providers: {} })
+  })
+
+  it('passes the Mac uninstall request through with a per-tool backup and rejects anything else', async () => {
+    const create = vi.fn((provider: string) => {
+      if (provider === 'codex') throw new Error('没有配置')
+      return { id: `backup-${provider}` }
+    })
+    const uninstallApp = vi.fn(async (_request: unknown, backup: () => Promise<void>) => {
+      await backup()
+      return { trashed: true, leftovers: [] }
+    })
+    register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      uninstallApp,
+    })
+    const handler = electronMocks.handlers.get('window:uninstall-app')!
+    await expect(handler(trustedEvent(), { clearLoginRecords: true })).resolves.toEqual({ trashed: true, leftovers: [] })
+    expect(uninstallApp.mock.calls[0][0]).toEqual({ clearLoginRecords: true, removeManagedTools: false })
+    // 一家没配过不耽误其余几家的备份。
+    expect(create.mock.calls.map((call) => call[0])).toEqual([...providerIds])
+    await expect(handler(trustedEvent(), { clearLoginRecords: 'yes' })).rejects.toThrow('卸载选项格式错误')
+    await expect(handler(trustedEvent(), null)).rejects.toThrow('卸载选项格式错误')
+    expect(parseAppUninstallRequest({})).toEqual({ clearLoginRecords: false, removeManagedTools: false })
+    expect(uninstallApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses the in-app uninstall where the host does not offer one', async () => {
+    register()
+    const handler = electronMocks.handlers.get('window:uninstall-app')!
+    await expect(handler(trustedEvent(), { clearLoginRecords: false, removeManagedTools: false })).rejects.toThrow('这台电脑上请用系统自带的方式卸载星芒')
+  })
+
   it('passes the startup check\'s scan-reuse request through to diagnostics and rejects anything else', async () => {
     const run = vi.fn(async () => ({}) as never)
     register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
@@ -1906,6 +2675,31 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), 'reuse')).toThrow('诊断参数格式错误')
     expect(parseDiagnosticsRunOptions({ reuseRecentScan: false })).toEqual({})
     expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('only lets the update download skip the disk check when asked in exactly that shape', () => {
+    expect(parseUpdateDownloadOptions(undefined)).toEqual({})
+    expect(parseUpdateDownloadOptions({ ignoreDiskSpace: true })).toEqual({ ignoreDiskSpace: true })
+    expect(parseUpdateDownloadOptions({ ignoreDiskSpace: false })).toEqual({})
+    expect(() => parseUpdateDownloadOptions({ ignoreDiskSpace: 'yes' })).toThrow('下载参数格式错误')
+    expect(() => parseUpdateDownloadOptions({ ignoreDiskSpace: true, url: 'https://example.invalid' })).toThrow('下载参数格式错误')
+    expect(() => parseUpdateDownloadOptions('force')).toThrow('下载参数格式错误')
+  })
+
+  it('passes a confirmed Node.js replacement through and rejects anything else', async () => {
+    const service = serviceStub()
+    const installNodeRuntime = vi.fn(async () => ({ installed: true }) as never)
+    service.installNodeRuntime = installNodeRuntime
+    register(service)
+    const handler = electronMocks.handlers.get('runtime:install-node')!
+    await handler(trustedEvent())
+    await handler(trustedEvent(), { reason: 'certificate' })
+    expect(installNodeRuntime.mock.calls.map((call: unknown[]) => call[1])).toEqual([{}, { reason: 'certificate' }])
+    await expect(handler(trustedEvent(), { reason: 'always' })).rejects.toThrow('安装 Node.js 的参数无效')
+    await expect(handler(trustedEvent(), { reason: 'certificate', force: true })).rejects.toThrow('安装 Node.js 的参数无效')
+    await expect(handler(trustedEvent(), 'certificate')).rejects.toThrow('安装 Node.js 的参数无效')
+    expect(parseNodeRuntimeInstallRequest({})).toEqual({})
+    expect(installNodeRuntime).toHaveBeenCalledTimes(2)
   })
 
   describe('bootstrap reads under the startup account gate', () => {
@@ -2072,6 +2866,11 @@ describe('registerIpcHandlers', () => {
       await electronMocks.handlers.get('external-clients:launch')!(event, tool)
       expect(service.installExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
       expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool)
+      // 拒绝取消时那句原因要原样交给界面，按钮才不会像是坏了。
+      expect(electronMocks.handlers.get('external-clients:cancel-install')!(event, tool)).toEqual({
+        cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+      })
+      expect(service.cancelExternalClientInstall).toHaveBeenLastCalledWith(tool)
     }
     expect(service.scanExternalClients).toHaveBeenCalledOnce()
     expect(service.configureExternalTool).not.toHaveBeenCalled()
@@ -2081,21 +2880,23 @@ describe('registerIpcHandlers', () => {
   it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {
     const service = serviceStub()
     register(service)
-    for (const channel of ['external-clients:install', 'external-clients:launch']) {
+    for (const channel of ['external-clients:install', 'external-clients:cancel-install', 'external-clients:launch']) {
       for (const input of [undefined, null, {}, ['opencode'], 'codex', 'C:\\untrusted.exe', 'opencode --shell']) {
         expect(() => electronMocks.handlers.get(channel)!(trustedEvent(), input)).toThrow('未知的外部客户端类型')
       }
     }
     expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.cancelExternalClientInstall).not.toHaveBeenCalled()
     expect(service.launchExternalClient).not.toHaveBeenCalled()
   })
 
-  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
+  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:cancel-install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
     const service = serviceStub()
     register(service)
     expect(() => electronMocks.handlers.get(channel)!(trustedEvent('https://untrusted.example/'), 'opencode')).toThrow('已拒绝')
     expect(service.scanExternalClients).not.toHaveBeenCalled()
     expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.cancelExternalClientInstall).not.toHaveBeenCalled()
     expect(service.launchExternalClient).not.toHaveBeenCalled()
   })
 
@@ -2112,6 +2913,48 @@ describe('registerIpcHandlers', () => {
     busy = false
     finishRestore()
     await expect(result).resolves.toEqual([])
+  })
+
+  // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
+  it('answers the startup read of the last saved client rows without scanning or waiting for the account, and logs it as that read', async () => {
+    const restored = new Promise<void>(() => undefined)
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { throw new Error('switching') } })
+    const service = serviceStub()
+    const cached = [{ tool: 'workbuddy', detectionError: 'Code signature check failed', cachedAt: '2026-10-05T10:00:00.000Z' }]
+    vi.mocked(service.cachedExternalClients).mockResolvedValue(cached as never)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: restored })
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+
+    await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toBe(cached)
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toEqual([])
+    // Nothing was detected, so the feedback report must not read 「外部客户端检测完成」 here.
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan')).toEqual([
+      ['info', 'ipc', 'external-clients:scan', '已先显示上次的客户端检测结果，共 1 项', expect.any(Object)],
+    ])
+    vi.mocked(service.cachedExternalClients).mockResolvedValueOnce([])
+    await expect(handler(trustedEvent(), false, { cachedOnly: true })).resolves.toEqual([])
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan').at(-1)?.[3]).toBe('没有可先显示的上次客户端检测结果')
+    // A real scan still waits for the account to be restored.
+    void Promise.resolve(handler(trustedEvent(), false)).catch(() => undefined)
+    void Promise.resolve(handler(trustedEvent(), false, { cachedOnly: false })).catch(() => undefined)
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.cachedExternalClients).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects malformed client scan options', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+    for (const input of ['cachedOnly', { cachedOnly: 'yes' }, { cachedOnly: true, path: '/etc' }, [true]]) {
+      await expect(Promise.resolve().then(() => handler(trustedEvent(), false, input)), JSON.stringify(input)).rejects.toThrow('客户端检测参数格式错误')
+    }
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.cachedExternalClients).not.toHaveBeenCalled()
+    expect(parseExternalClientScanOptions(undefined)).toEqual({})
+    expect(parseExternalClientScanOptions({ cachedOnly: false })).toEqual({})
+    expect(parseExternalClientScanOptions({ cachedOnly: true })).toEqual({ cachedOnly: true })
   })
 
   it('resolves external-client keys in the main process and never accepts a renderer URL', async () => {
@@ -2305,9 +3148,16 @@ describe('registerIpcHandlers', () => {
     await handler(trustedEvent(), 'claude')
     expect(service.installCli).toHaveBeenLastCalledWith('claude', expect.anything(), undefined)
 
-    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /']) {
+    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /', '2.1.277+meta;calc', '2.1.277\n']) {
       await expect(handler(trustedEvent(), 'claude', rejected)).rejects.toThrow('CLI 版本号格式错误')
     }
+  })
+
+  it('accepts an exact CLI update target containing build metadata', async () => {
+    const service = serviceStub()
+    register(service)
+    await electronMocks.handlers.get('cli:install')!(trustedEvent(), 'codex', '0.158.0-beta.1+build.2')
+    expect(service.installCli).toHaveBeenCalledWith('codex', expect.anything(), '0.158.0-beta.1+build.2')
   })
 
   it('checks and uninstalls only the requested CLI', async () => {
@@ -2341,8 +3191,43 @@ describe('registerIpcHandlers', () => {
       outcome: 'uninstalled',
       previousVersion: 'grok 0.2.111',
     })
-    expect(service.uninstallCli).toHaveBeenCalledWith('grok')
+    expect(service.uninstallCli).toHaveBeenCalledWith('grok', {})
     await expect(electronMocks.handlers.get('cli:uninstall')!(trustedEvent(), 'unknown')).rejects.toThrow('未知的 CLI 类型')
+  })
+
+  it('passes the reinstall request of an uninstall through and rejects any other shape', async () => {
+    const service = serviceStub()
+    vi.mocked(service.uninstallCli).mockResolvedValue({ outcome: 'uninstalled', previousVersion: '2.1.276' })
+    register(service)
+    const handler = electronMocks.handlers.get('cli:uninstall')!
+
+    await handler(trustedEvent(), 'claude', { reinstall: true })
+    expect(service.uninstallCli).toHaveBeenLastCalledWith('claude', { reinstall: true })
+    await handler(trustedEvent(), 'claude', { reinstall: false })
+    expect(service.uninstallCli).toHaveBeenLastCalledWith('claude', {})
+    await expect(handler(trustedEvent(), 'claude', { reinstall: 'yes' })).rejects.toThrow('卸载参数格式错误')
+    await expect(handler(trustedEvent(), 'claude', { reinstall: true, path: '/tmp' })).rejects.toThrow('卸载参数格式错误')
+    await expect(handler(trustedEvent(), 'claude', 'reinstall')).rejects.toThrow('卸载参数格式错误')
+    expect(service.uninstallCli).toHaveBeenCalledTimes(2)
+  })
+
+  it('cleans uninstall leftovers by tool name only, ignoring any path the renderer adds', async () => {
+    const service = serviceStub()
+    vi.mocked(service.cleanUninstallLeftovers).mockResolvedValueOnce({ remaining: 1 }).mockResolvedValueOnce({ remaining: 0 })
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('cli:clean-uninstall-leftovers')!
+
+    await expect(handler(trustedEvent(), 'claude', 'C:\\Windows\\System32\\drivers\\etc\\hosts')).resolves.toEqual({ remaining: 1 })
+    expect(service.cleanUninstallLeftovers).toHaveBeenLastCalledWith('claude')
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', 'cli:clean-uninstall-leftovers',
+      'Claude Code 卸载残留还剩 1 个文件没删掉', expect.objectContaining({ provider: 'Claude Code' }))
+    await expect(handler(trustedEvent(), 'grok')).resolves.toEqual({ remaining: 0 })
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', 'cli:clean-uninstall-leftovers',
+      'Grok CLI 卸载残留已清理', expect.anything())
+
+    expect(() => handler(trustedEvent(), '/Users/alex/.grok/bin/grok-1.0.46')).toThrow('未知的 CLI 类型')
+    expect(() => handler(trustedEvent(), { provider: 'claude' })).toThrow('未知的 CLI 类型')
+    expect(service.cleanUninstallLeftovers).toHaveBeenCalledTimes(2)
   })
 
   it('exposes sanitized runtime logs and copies the feedback report', async () => {
@@ -2664,6 +3549,120 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseSettingsUpdate (settings:save)', () => {
+    it.each([
+      { solov: 'primary' as const },
+      { solov: 'direct' as const },
+      { solov: 'auto' as const },
+      { 'solov-api': 'primary' as const },
+      { 'solov-api': 'direct' as const },
+      { solov: 'auto' as const, 'solov-api': 'auto' as const },
+    ])('accepts a registered endpoint selection: %j', async (relayEndpointIds) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds }))
+        .resolves.toMatchObject({ relayEndpointIds })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds })
+    })
+
+    it.each([
+      null,
+      [],
+      'https://xm-direct.solov.cc',
+      { unknown: 'primary' },
+      { solov: 'https://other.example/v1' },
+      { solov: 'DIRECT' },
+      { solov: 'Auto' },
+      { 'solov-api': 'backup' },
+      { sub2api: 'auto' },
+    ])('rejects unsupported endpoint settings before persistence: %j', async (relayEndpointIds) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds })).rejects.toThrow(/连接线路/)
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('preserves the other site and the active startup lines when saving a pending choice', async () => {
+      const service = serviceStub()
+      const active: NonNullable<AppSettings['activeRelayEndpointIds']> = { solov: 'primary', 'solov-api': 'primary' }
+      const stored: AppSettings = { ...stubStoredConfig, relayEndpointIds: { 'solov-api': 'primary' }, activeRelayEndpointIds: active }
+      vi.mocked(service.readStoredConfig).mockReturnValue(stored)
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => ({
+        ...mergeAppSettings(stored, update), activeRelayEndpointIds: active,
+      }))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, relayEndpointIds: { solov: 'direct' } }))
+        .resolves.toMatchObject({
+          relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' }, activeRelayEndpointIds: active,
+        })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, relayEndpointIds: { solov: 'direct' } })
+    })
+
+    it('drops the live route lines a renderer echoes back instead of persisting them', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2, theme: 'light',
+        relayRouteLines: { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: false } },
+      })).resolves.toBeDefined()
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'light' })
+    })
+
+    it('accepts an unchanged legacy runtime snapshot echo without persisting it', async () => {
+      const service = serviceStub()
+      const active: NonNullable<AppSettings['activeRelayEndpointIds']> = { solov: 'direct', 'solov-api': 'primary' }
+      const stored: AppSettings = { ...stubStoredConfig, activeRelayEndpointIds: active }
+      vi.mocked(service.readStoredConfig).mockReturnValue(stored)
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => ({
+        ...mergeAppSettings(stored, update), activeRelayEndpointIds: active,
+      }))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        ...stored, theme: 'light', activeRelayEndpointIds: { 'solov-api': 'primary', solov: 'direct' },
+      })).resolves.toMatchObject({ theme: 'light', activeRelayEndpointIds: active })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({
+        version: 2, workspace: stored.workspace, theme: 'light',
+        checkUpdatesOnStartup: true, runDiagnosticsOnStartup: false,
+      })
+    })
+
+    it.each([
+      null,
+      [],
+      'https://xm-direct.solov.cc',
+      { solov: 'direct', 'solov-api': 'primary' },
+      { solov: 'primary' },
+      { solov: 'primary', unknown: 'primary' },
+      { solov: 'https://other.example/v1', 'solov-api': 'primary' },
+      { solov: 'primary', 'solov-api': 'direct' },
+    ])('rejects a changed or malformed runtime endpoint snapshot: %j', async (activeRelayEndpointIds) => {
+      const service = serviceStub()
+      vi.mocked(service.readStoredConfig).mockReturnValue({
+        ...stubStoredConfig, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      })
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, activeRelayEndpointIds })).rejects.toThrow('当前连接线路只读')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('rejects a runtime endpoint echo when the service has no matching snapshot', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'primary' },
+      })).rejects.toThrow('当前连接线路只读')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it('persists appearance updates without replacing unrelated settings', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
@@ -2682,6 +3681,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
       await expect(handler(trustedEvent(), { version: 2, ...fields })).rejects.toThrow()
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('carries the crash reporting notice marker and rejects a non-boolean one', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await handler(trustedEvent(), { version: 2, crashReportingNoticeShown: true, crashReporting: false })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, crashReportingNoticeShown: true, crashReporting: false })
+      vi.mocked(service.updateStoredConfig).mockClear()
+      await expect(handler(trustedEvent(), { version: 2, crashReportingNoticeShown: 'yes' })).rejects.toThrow('错误报告告知记录')
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
 
@@ -3574,6 +4584,44 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         .toThrow('CLI 启动方式错误')
       expect(() => handler(trustedEvent(), 'claude', 'C:\\workspace', ['--continue']))
         .toThrow('CLI 启动方式错误')
+    })
+  })
+
+  // Codex 的 resume --last 还按连接名过滤,切过账号就接不上;按记录 id 接。
+  describe('Codex resume by record id (cli:launch fourth argument)', () => {
+    it('resumes by the bare id once the record is found in the same folder', async () => {
+      const { service, providerSessionsService } = register()
+      providerSessionsService.resolveWorkspace.mockResolvedValueOnce('C:\\projects\\demo')
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+
+      expect(providerSessionsService.resolveWorkspace).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+    })
+
+    it('falls back to the latest one in the folder when the record is gone or elsewhere', async () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+      providerSessionsService.resolveWorkspace.mockRejectedValueOnce(new Error('未找到这条记录'))
+      await handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+
+      providerSessionsService.resolveWorkspace.mockResolvedValueOnce('C:\\projects\\other')
+      await handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+    })
+
+    it('rejects a record id for another tool, a new conversation or a malformed id', () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', 'C:\\w', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'codex', 'C:\\w', 'new', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
+      for (const bad of ['0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', 'codex:--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', 'claude:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', ['codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b']]) {
+        expect(() => handler(trustedEvent(), 'codex', 'C:\\w', 'resumeLast', bad)).toThrow('会话 ID 格式错误')
+      }
+      expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
+      expect(service.launchProvider).not.toHaveBeenCalled()
     })
   })
 
@@ -4605,6 +5653,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('diagnostics:probe-codex-responses', () => {
+    it('requires explicit billing acknowledgement and never accepts a URL or Key', async () => {
+      const probeCodexResponses = vi.fn(async (_expectedAccountScope: string) => ({
+        ok: true, layer: 'network' as const, verificationLevel: 'responses-tool-json' as const,
+        summary: 'm 能正常调用工具', nextStep: '无需处理',
+        endpoint: 'https://fixture.invalid/v1/responses', model: 'm', detail: null,
+        status: 200, durationMs: 5, checkedAt: '2026-09-28T00:00:00.000Z',
+      }))
+      register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, {
+        diagnosticsService: {
+          run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(),
+          probeCodexResponses, exportLatest: vi.fn(),
+        },
+      })
+      const handler = electronMocks.handlers.get('diagnostics:probe-codex-responses')!
+      expect(() => handler(trustedEvent(), false)).toThrow('请先勾选确认')
+      expect(() => handler(trustedEvent(), { key: 'sk-hostile', url: 'https://elsewhere.invalid' })).toThrow('请先勾选确认')
+      expect(() => handler(trustedEvent(), true, 'bad-scope')).toThrow('账号信息不对')
+      expect(probeCodexResponses).not.toHaveBeenCalled()
+      await expect(handler(trustedEvent(), true, 'xm-account:17')).resolves.toMatchObject({
+        ok: true, verificationLevel: 'responses-tool-json',
+      })
+      expect(probeCodexResponses).toHaveBeenCalledExactlyOnceWith('xm-account:17')
+    })
+  })
+
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
@@ -4841,7 +5915,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         accessedAt: null,
         ...overrides,
       })
-      function setup(key: AccountKeysPage['keys'][number] | Error, keyReplacements?: ManagedKeyReplacementStore, cached = true) {
+      function setup(
+        key: AccountKeysPage['keys'][number] | Error,
+        keyReplacements?: ManagedKeyReplacementStore,
+        cached = true,
+        extraOptions: Partial<Parameters<typeof registerIpcHandlers>[0]> = {},
+      ) {
         const service = serviceStub()
         const accountService = accountServiceStub()
         vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account })
@@ -4864,13 +5943,134 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
             { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
           ])
         }
-        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, keyReplacements ? { keyReplacements } : {})
+        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, {
+          ...extraOptions,
+          ...(keyReplacements ? { keyReplacements } : {}),
+        })
         return { accountService, service, managedCliKeys }
       }
       const configureCodex = () => electronMocks.handlers.get('account:configure-managed-clis')!(
         trustedEvent(),
         { providers: ['codex'], preferredModels: {}, intent: 'explicit', mode: 'merge' },
       )
+
+      function sourceSwitchOptions(): Partial<Parameters<typeof registerIpcHandlers>[0]> {
+        return {
+          backupStore: {
+            create: vi.fn(() => ({ id: 'before-source-switch' })),
+            restore: vi.fn(() => ({ provider: 'codex', restoredBackupId: 'before-source-switch', preRestoreBackupId: 'before-restore' })),
+          } as never,
+          diagnosticsService: {
+            run: vi.fn(),
+            exportLatest: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            checkConnection: vi.fn(async (): Promise<ConnectionCheckResult> => ({
+              provider: 'codex', siteId: 'solov', ok: true, layer: 'network',
+              summary: '模型清单检查通过', nextStep: '', endpoint: null, model: 'gpt-5.6-sol',
+              detail: null, status: 200, durationMs: 1, checkedAt: '2026-09-28T00:00:00.000Z',
+            })),
+          },
+        }
+      }
+
+      const switchCodexToAccount = () => electronMocks.handlers.get('config:switch-account-source')!(
+        trustedEvent(), 'codex', 'account',
+      )
+
+      it('inherits revoked key limits when switching the tool to the current account', async () => {
+        const { accountService, service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account', verified: true })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith({
+          name: codex.keyName, group: codex.group, remainQuota: 5_000, unlimitedQuota: false,
+          expiredTime: Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000), fresh: true,
+        })
+        expect(service.saveConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: 'codex' }), false, expect.any(Function),
+          { source: 'account', automatic: false },
+        )
+      })
+
+      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走重置。
+      it('resets a config the tool cannot read when switching it to the current account', async () => {
+        for (const [current, mode] of [
+          [{ configBroken: true }, 'reset'],
+          [{ codexAuthBroken: true }, 'reset'],
+          [{ configBroken: false, codexAuthBroken: false }, 'merge'],
+        ] as const) {
+          electronMocks.handlers.clear()
+          const { service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+          vi.mocked(service.getConfig).mockReturnValue({ workspace: 'C:\\workspace', providers: { codex: current } } as never)
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account', verified: true })
+
+          expect(service.saveConfig).toHaveBeenCalledWith(
+            expect.objectContaining({ provider: 'codex', mode }), false, expect.any(Function),
+            { source: 'account', automatic: false },
+          )
+        }
+      })
+
+      it('does not lift a used-up key cap through the account source switch', async () => {
+        const { accountService, service } = setup(accountKey({ remainQuota: 0, status: 4 }), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).rejects.toThrow(managedKeyQuotaExhaustedMessage)
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 1, unlimitedQuota: false, fresh: true,
+        }))
+        expect(service.saveConfig).not.toHaveBeenCalled()
+      })
+
+      it('does not silently replace an expired key through the account source switch', async () => {
+        const { accountService, service } = setup(accountKey({ expiredAt: '2020-01-01T00:00:00.000Z' }), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).rejects.toThrow('原来那把密钥已经到期了')
+
+        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName }))
+        expect(service.saveConfig).not.toHaveBeenCalled()
+      })
+
+      it('keeps pending key limits across a restart before switching account source', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-source-switch-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          setup(accountKey({}), createManagedKeyReplacementStore({ filePath }))
+          await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+          electronMocks.handlers.clear()
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ verified: true })
+
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+            name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+          }))
+          expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: {} })
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('does not discard unreadable limits when the user only switches account source', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-source-switch-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          fs.writeFileSync(filePath, '{ invalid limits')
+          const { accountService, service } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
+
+          await expect(switchCodexToAccount()).rejects.toThrow('没读到这个工具原来的额度设置')
+
+          expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+          expect(service.saveConfig).not.toHaveBeenCalled()
+          expect(fs.readFileSync(filePath, 'utf8')).toBe('{ invalid limits')
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
 
       it('gives the replacement the revoked key\'s remaining cap and expiry instead of an unlimited key', async () => {
         const { accountService } = setup(accountKey({}))
@@ -5724,6 +6924,25 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('account:copy-reset-password', () => {
+    it('writes the new password to the clipboard verbatim, without logging it or requiring a session', async () => {
+      const { runtimeLog } = register()
+      const password = ' Xm-reset-Secret9 '
+      await expect(electronMocks.handlers.get('account:copy-reset-password')!(trustedEvent(), password)).resolves.toBeUndefined()
+      expect(electronMocks.writeText).toHaveBeenCalledWith(password)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('Xm-reset-Secret9')
+    })
+
+    it('rejects anything that is not a short non-empty string', async () => {
+      register()
+      const handler = electronMocks.handlers.get('account:copy-reset-password')!
+      for (const value of ['', 'a'.repeat(257), 'a\0b', 42, undefined]) {
+        await expect(handler(trustedEvent(), value)).rejects.toThrow('新密码格式错误')
+      }
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+  })
+
   describe('account:copy-key', () => {
     it('uses the encrypted managed-key cache for both copy and reveal without contacting the server', async () => {
       const accountService = accountServiceStub()
@@ -5782,6 +7001,30 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.revealKey).toHaveBeenCalledWith(42)
       expect(electronMocks.writeText).toHaveBeenCalledWith(plaintextKey)
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('clears the copied key from the clipboard after sixty seconds unless the user copied something else', async () => {
+      vi.useFakeTimers()
+      try {
+        const { accountService } = register()
+        const plaintextKey = 'sk-ipc-auto-clear'
+        vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+        electronMocks.readText.mockReturnValue(plaintextKey)
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+
+        vi.advanceTimersByTime(59_999)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+        vi.advanceTimersByTime(1)
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+
+        electronMocks.clearClipboard.mockClear()
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+        electronMocks.readText.mockReturnValue('something the user copied')
+        vi.advanceTimersByTime(60_000)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('falls back to the server for an ordinary key that is absent from the managed cache', async () => {
@@ -5978,6 +7221,35 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
     })
 
+    it('keeps a restorable backup before an account-key reset and refuses to reset without one', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.revealKey).mockResolvedValue('sk-selected-account-key')
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const create = vi.fn(() => ({ id: 'backup-1' }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, {
+        backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      })
+      const handler = electronMocks.handlers.get('account:configure-cli-with-key')!
+      const input = { provider: 'codex', keyId: 88, model: 'gpt-5.6-sol' }
+
+      await handler(trustedEvent(), { ...input, mode: 'merge' })
+      expect(create).not.toHaveBeenCalled()
+
+      await handler(trustedEvent(), { ...input, mode: 'reset' })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+      vi.mocked(service.saveConfig).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
     it('rejects stale or malformed account-key CLI configuration before writing', async () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
@@ -6050,6 +7322,41 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         mode: mode ?? 'merge',
       }, false, expect.any(Function), { source: 'account', automatic: true })
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
+    })
+
+    it('keeps a restorable backup before a managed-key reset and refuses to reset without one', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const create = vi.fn(() => ({ id: 'backup-1' }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, {
+        backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      })
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+      const input = { providers: ['codex'], preferredModels: {}, intent: 'explicit' }
+
+      await handler(trustedEvent(), { ...input, mode: 'merge' })
+      expect(create).not.toHaveBeenCalled()
+
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).resolves.toEqual({ configured: ['codex'], failed: [] })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+      vi.mocked(service.saveConfig).mockClear()
+      vi.mocked(accountService.provisionCliKey).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
     it('rejects unknown save modes before provisioning or writing config', () => {
@@ -6255,6 +7562,21 @@ describe('exports:reveal-file', () => {
   })
 })
 
+describe('text export save dialogs', () => {
+  it('names the file type in Chinese for every report saved as text', async () => {
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { desktopDirectory: () => os.tmpdir() })
+    electronMocks.showSaveDialog.mockResolvedValue({ canceled: true })
+
+    await expect(electronMocks.handlers.get('diagnostics:export')!(trustedEvent())).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('chat-history:export-text')!(trustedEvent(), { title: '周报', text: '我：你好' })).resolves.toBeNull()
+
+    // Windows 保存窗口底下的「保存类型」显示的就是这个名字；诊断报告和反馈报告以前写的是英文 Text。
+    const textFilter = [{ name: '文本文件', extensions: ['txt'] }]
+    expect(electronMocks.showSaveDialog.mock.calls.map(([options]) => options.filters)).toEqual([textFilter, textFilter, textFilter])
+  })
+})
+
 describe('runtime-logs:preview-feedback size budget', () => {
   it('asks the log store to fit the report instead of failing on size', async () => {
     const { runtimeLog } = register()
@@ -6375,10 +7697,12 @@ describe('backup handlers and account key ownership', () => {
     register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ provider: 'codex' })
     expect(backupStore.restore).toHaveBeenCalledWith('b1', expect.objectContaining({ accountName: 'account-a' }))
-    const [provider, isAccountKey] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
+    const [provider, isAccountKey, adoptOptions] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
     expect(provider).toBe('codex')
     expect(isAccountKey('sk-managed-codex')).toBe(true)
     expect(isAccountKey('sk-someone-else')).toBe(false)
+    // Only a backup the user picked here may turn the skill off it restores into theirs.
+    expect(adoptOptions).toEqual({ fromBackupsPage: true })
   })
 
   it('stops trusting the key cache when the account changes during a restore', async () => {

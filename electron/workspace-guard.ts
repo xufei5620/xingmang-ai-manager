@@ -29,7 +29,8 @@ export type SensitiveWorkspaceKind =
   | 'provider-config'
 
 /**
- * once：沿用 #321，提示一次，用户点「仍然打开」后这个目录照常被记住。
+ * once：沿用 #321，在选择器里提示一次，用户点「仍然打开」后这个目录照常被记住；
+ * 不经过选择器开新对话时再问一次（sensitiveWorkspaceAsksAtLaunch）。
  * every-time：每次打开都提醒，也不记住。系统目录与四家工具存密钥的目录没有正当
  * 理由拿来当项目，在里面开 agent 等于把系统文件或明文 Key 交给它。
  */
@@ -97,6 +98,16 @@ export function sensitiveWorkspacePolicy(kind: SensitiveWorkspaceKind): Sensitiv
 }
 
 /**
+ * 没经过选择器、直接拿着这个目录来打开时，要不要先问一句。首页「打开」、「换一个目录」、
+ * 托盘和快捷键用的目录是从会话记录里推出来的：客户自己在主目录开终端用过 claude，按钮就写
+ * 「打开 张三」，以前点了不问一句就在整个主目录开新对话（已知39）。所以开新对话一律先问；
+ * 接着上次的对话只有「每次都提醒」的两类才问——就是在那儿聊的，换个文件夹也接不上。
+ */
+export function sensitiveWorkspaceAsksAtLaunch(kind: SensitiveWorkspaceKind, resuming: boolean): boolean {
+  return !resuming || sensitiveWorkspacePolicy(kind) === 'every-time'
+}
+
+/**
  * 选中的目录是不是「一份配置管全电脑」的那几类。返回 null 表示普通目录，
  * 按原有行为处理。
  */
@@ -140,6 +151,29 @@ export function classifyWorkspace(workspace: string, context: WorkspaceGuardCont
     if (isOneDriveContainer(relative[0], caseInsensitive)) return matchWellKnownFolder(relative[1], caseInsensitive)
   }
   return null
+}
+
+/**
+ * 首页「打开」拿来直接用、不再弹选择器的那个「上次选的文件夹」。存下来的 workspace
+ * 从没选过时是主目录（defaultAppSettings），所以主目录本身、以及任何敏感目录一律
+ * 不算记住——这些地方宁可再问一次，也不能不声不响地让 AI 在里面干活。主目录读不到
+ * 时认不出主目录，同样不给。
+ */
+export function resolveRememberedWorkspace(
+  workspace: string,
+  context: WorkspaceGuardContext & { defaultWorkspace: string },
+): string | null {
+  const impl = context.platform === 'win32' ? path.win32 : path.posix
+  if (typeof workspace !== 'string' || workspace.trim() === '' || !impl.isAbsolute(workspace)) return null
+  if (!usableHome(context.home, impl)) return null
+  const caseInsensitive = context.platform === 'win32' || context.platform === 'darwin'
+  if (
+    context.defaultWorkspace.trim() !== ''
+    && samePath(normalizeDirectory(workspace, impl), normalizeDirectory(context.defaultWorkspace, impl), caseInsensitive)
+  ) return null
+  if (classifyWorkspace(workspace, context)) return null
+  if (classifyWorkspace(workspace, { platform: context.platform, home: context.defaultWorkspace })) return null
+  return workspace
 }
 
 function isSystemFolder(name: string, platform: NodeJS.Platform): boolean {

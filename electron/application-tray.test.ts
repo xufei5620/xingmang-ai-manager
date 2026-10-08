@@ -4,7 +4,10 @@ import type { Menu, MenuItemConstructorOptions, NativeImage } from 'electron'
 import {
   buildApplicationTrayMenu,
   createApplicationTray,
+  resolveTrayUpdateEntry,
   trayBalanceLabel,
+  trayKeepAwakeLabel,
+  traySubscriptionLabel,
   type ApplicationTrayOptions,
   type ApplicationTrayRuntime,
   type ApplicationTraySnapshot,
@@ -46,6 +49,83 @@ function click(menu: MenuItemConstructorOptions[], label: string) {
   ;(item!.click as () => void)()
 }
 
+describe('tray update entry', () => {
+  const base = { availableVersion: '0.2.12', error: null, failedStep: null, diskShortfall: null } as const
+  const shortfall = { neededBytes: 300, freeBytes: 10 }
+
+  it('keeps an entry for every phase in which a newer version is known', () => {
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'available' })).toEqual({ kind: 'available', version: '0.2.12', waitingForDisk: false })
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'available', diskShortfall: shortfall }))
+      .toEqual({ kind: 'available', version: '0.2.12', waitingForDisk: true })
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'downloading' })).toEqual({ kind: 'downloading', version: '0.2.12' })
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'downloaded' })).toEqual({ kind: 'downloaded', version: '0.2.12' })
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'downloaded', installMethod: 'system-installer' }))
+      .toEqual({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })
+  })
+
+  it('does not offer a restart once the installer already failed or a download broke', () => {
+    const error = { code: 'install', message: '没装上' }
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'downloaded', error, failedStep: 'install' })).toEqual({ kind: 'failed', version: '0.2.12' })
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'error', error, failedStep: 'download' })).toEqual({ kind: 'failed', version: '0.2.12' })
+  })
+
+  it('shows nothing extra when no newer version is known', () => {
+    for (const phase of ['disabled', 'idle', 'checking', 'not-available', 'cancelled'] as const) {
+      expect(resolveTrayUpdateEntry({ ...base, phase })).toBeNull()
+    }
+    // A failed check may leave an older availableVersion behind; it is not a promise of a new version.
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'error', error: { code: 'network', message: '断网' }, failedStep: 'check' })).toBeNull()
+  })
+
+  it('labels each phase in plain words and installs through the supplied action only when downloaded', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
+    const label = (update: ApplicationTraySnapshot['update'], withInstall = true) => {
+      const menu = buildApplicationTrayMenu({ installedTools: [], update }, withInstall ? actions : { ...actions, onInstallUpdate: undefined }, (action) => { void action() })
+      return menu.map((entry) => entry.label).find((text) => typeof text === 'string' && /更新|安装新版本/.test(text))
+    }
+    expect(label(null)).toBe('软件更新')
+    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: false })).toBe('软件更新：有新版本 0.2.12')
+    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: true })).toBe('软件更新：新版本 0.2.12 等电脑腾出空间再下载')
+    expect(label({ kind: 'downloading', version: '0.2.12' })).toBe('软件更新：正在下载新版本 0.2.12')
+    expect(label({ kind: 'downloading', version: null })).toBe('软件更新：正在下载新版本')
+    expect(label({ kind: 'downloaded', version: '0.2.12' })).toBe('重启并安装新版本 0.2.12')
+    // Linux hands the package to the system installer: the app only closes, it does not restart itself.
+    expect(label({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })).toBe('安装新版本 0.2.12')
+    expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('软件更新：新版本 0.2.12 已下载好')
+    expect(label({ kind: 'failed', version: '0.2.12' })).toBe('软件更新：新版本 0.2.12 没更新成功，点开看看')
+  })
+
+  it('routes the downloaded entry to install and every other entry to the updates page', async () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
+    const pending: Promise<unknown>[] = []
+    const run = (action: () => unknown) => { pending.push(Promise.resolve(action())) }
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloaded', version: '0.2.12' } }, actions, run), '重启并安装新版本 0.2.12')
+    await Promise.all(pending)
+    expect(actions.onInstallUpdate).toHaveBeenCalledOnce()
+    expect(actions.onNavigate).not.toHaveBeenCalled()
+    expect(actions.onQuit).not.toHaveBeenCalled()
+
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloading', version: '0.2.12' } }, actions, run), '软件更新：正在下载新版本 0.2.12')
+    await Promise.all(pending)
+    expect(actions.onOpen).toHaveBeenCalledOnce()
+    expect(actions.onNavigate).toHaveBeenCalledExactlyOnceWith('updates')
+    expect(actions.onInstallUpdate).toHaveBeenCalledOnce()
+  })
+
+  it('strips control characters from a version before it reaches the native menu', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
+    const menu = buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloaded', version: '0.2.12\n恶意' } }, actions, () => undefined)
+    expect(menu.map((entry) => entry.label)).toContain('重启并安装新版本 0.2.12 恶意')
+  })
+
+  it('keeps its own copy of the update entry', () => {
+    const update = { kind: 'downloading' as const, version: '0.2.12' }
+    const { controller } = fixture({ getSnapshot: () => ({ installedTools: [], update }) })
+    update.version = '9.9.9'
+    expect(controller.getSnapshot().update).toEqual({ kind: 'downloading', version: '0.2.12' })
+  })
+})
+
 describe('tray summary and native menu', () => {
   it('distinguishes an unknown balance from a real zero', () => {
     expect(trayBalanceLabel(undefined)).toBe('\u2014')
@@ -62,9 +142,9 @@ describe('tray summary and native menu', () => {
     const menu = buildApplicationTrayMenu({
       accountLabel: 'user@example.com', balanceUsd: 4.25,
       installedTools: [{ id: 'codex', label: 'Codex CLI' }, { id: 'claude', label: 'Claude Code', enabled: false }],
-      updateAvailable: true, updateVersion: '0.2.0',
+      update: { kind: 'available', version: '0.2.0', waitingForDisk: false },
     }, actions, (action) => { void action() })
-    expect(menu.map((entry) => entry.label)).toEqual(expect.arrayContaining(['user@example.com', '余额：USD 4.25', '软件更新：0.2.0']))
+    expect(menu.map((entry) => entry.label)).toEqual(expect.arrayContaining(['user@example.com', '余额：USD 4.25', '软件更新：有新版本 0.2.0']))
     const installed = menu.find((entry) => entry.label === '已安装的工具')!.submenu as MenuItemConstructorOptions[]
     expect(installed.map((entry) => [entry.label, entry.enabled])).toEqual([['Codex CLI', true], ['Claude Code', false]])
     click(installed, 'Codex CLI')
@@ -238,5 +318,54 @@ describe('native tray lifecycle', () => {
     click(menu, '打开星芒AI管理工具')
     controller.updateSnapshot()
     expect(options.onOpen).not.toHaveBeenCalled()
+  })
+})
+
+describe('application tray subscription line', () => {
+  const now = Date.parse('2026-09-25T12:00:00Z')
+  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  const self = {
+    billingPreference: null, allSubscriptions: [],
+    activeSubscriptions: [{ id: 1, planId: 2, status: 'active', source: 'order', amountTotal: 10 * 500_000, amountUsed: 500_000, startedAt: '', endsAt, nextResetAt: null }],
+  }
+
+  it('summarises a usable subscription and stays empty without one', () => {
+    expect(traySubscriptionLabel(self, 500_000, now)).toBe('剩余 USD 9.00 · 10 月 3 日到期')
+    expect(traySubscriptionLabel(null, 500_000, now)).toBeNull()
+    expect(traySubscriptionLabel({ ...self, billingPreference: 'wallet_only' }, 500_000, now)).toBeNull()
+  })
+
+  it('adds the subscription row under the balance only when there is one', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
+    const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
+    expect(labels('剩余 USD 9.00 · 10 月 3 日到期').slice(3, 5)).toEqual(['余额：USD 0.00', '订阅：剩余 USD 9.00 · 10 月 3 日到期'])
+    expect(labels()).not.toContainEqual(expect.stringContaining('订阅'))
+  })
+})
+
+describe('application tray keep-awake line', () => {
+  it('says one thing at a time, with the tools working in a terminal first', () => {
+    const idle = { tools: [], installing: false, downloadingUpdate: false }
+    expect(trayKeepAwakeLabel(idle)).toBeNull()
+    expect(trayKeepAwakeLabel({ tools: ['Grok CLI'], installing: true, downloadingUpdate: true })).toBe('Grok CLI 正在干活，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code', 'Gemini CLI'], installing: true })).toBe('AI 工具正在干活，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, installing: true, downloadingUpdate: true })).toBe('正在安装，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, downloadingUpdate: true })).toBe('正在下载星芒新版本，暂不让电脑自动睡眠')
+  })
+
+  it('shows a greyed-out line under the open entry and at the end of the tooltip, and drops both once sleep is given back', () => {
+    const { controller, runtime, handle } = fixture()
+    const line = 'Claude Code 正在干活，暂不让电脑自动睡眠'
+    controller.updateSnapshot({ installedTools: [], balanceUsd: 8, subscriptionLabel: '剩余 USD 9.00 · 10 月 3 日到期', keepAwakeLabel: line })
+    const menu = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
+    expect(menu[0].label).toBe('打开星芒AI管理工具')
+    expect(menu[1]).toEqual({ label: line, enabled: false })
+    expect(menu[2].type).toBe('separator')
+    expect(handle.setToolTip).toHaveBeenLastCalledWith(`星芒AI管理工具\n余额：USD 8.00\n订阅：剩余 USD 9.00 · 10 月 3 日到期\n${line}`)
+    controller.updateSnapshot({ installedTools: [], balanceUsd: 8, keepAwakeLabel: null })
+    const after = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
+    expect(after[1].type).toBe('separator')
+    expect(after.some((entry) => entry.label?.includes('暂不让电脑自动睡眠'))).toBe(false)
+    expect(handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：USD 8.00')
   })
 })

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   CodexSessionsService,
+  type CodexSessionDeleteResult,
   type CodexSessionDetail,
   type CodexSessionPage,
   type CodexSessionsCapabilities,
@@ -33,6 +34,8 @@ export interface ProviderSessionCapability {
     exportMarkdown: boolean
     archive: boolean
     restore: boolean
+    /** 彻底删除这台电脑上的记录文件。缺省 = 不能删（旧行为）。 */
+    delete?: boolean
   }
 }
 
@@ -109,9 +112,15 @@ export interface ProviderSessionExportResult {
   truncated: boolean
 }
 
+export interface ProviderSessionDeleteResult {
+  id: string
+  provider: ProviderSessionProvider
+  deletedFiles: number
+}
+
 export interface CodexSessionReader {
   capabilities(): CodexSessionsCapabilities
-  list(query?: { archive?: 'all' | 'active' | 'archived'; page?: number; pageSize?: number }): CodexSessionPage
+  list(query?: { archive?: 'all' | 'active' | 'archived'; page?: number; pageSize?: number }): Promise<CodexSessionPage>
   detail(sessionId: string): Promise<CodexSessionDetail>
   exportMarkdown(sessionId: string, destinationPath: string): Promise<{
     sessionId: string
@@ -119,6 +128,7 @@ export interface CodexSessionReader {
     messages: number
     truncated?: boolean
   }>
+  delete(sessionId: string): Promise<CodexSessionDeleteResult>
 }
 
 export interface ProviderSessionsOptions {
@@ -338,15 +348,6 @@ export async function annotateWorkspaceExistence(
     }
     return { ...item, cwdExists: await pending }
   }))
-}
-
-function existingDirectorySync(root: string): boolean {
-  try {
-    const info = fs.lstatSync(root)
-    return info.isDirectory() && !info.isSymbolicLink()
-  } catch {
-    return false
-  }
 }
 
 async function safeRegularFileStat(filePath: string): Promise<fs.Stats> {
@@ -732,12 +733,26 @@ function finalizeExternalSummary(
   }
 }
 
+/**
+ * Codex 把会话标题原样存成第一句话。定时任务（Codex 的 Automation）那一句是整段任务说明：
+ * 「Automation: 每日制作头像 Automation ID: … Automation memory: … Last run: …」再接几百字的
+ * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名；其余标题收成一行、限长。
+ */
+export function codexSessionTitle(title: string, sessionId: string): string {
+  const automation = /^\s*Automation:\s*(.+?)\s+Automation ID:/s.exec(title)
+  if (automation) {
+    const name = cleanText(automation[1], 60)
+    if (name) return `定时任务：${name}`
+  }
+  return cleanText(title) || sessionId
+}
+
 function codexSummary(summary: CodexSessionPage['items'][number], readonly: boolean): ProviderSessionSummary {
   return {
     id: `codex:${summary.id}`,
     provider: 'codex',
     nativeId: summary.id,
-    title: summary.title,
+    title: codexSessionTitle(summary.title, summary.id),
     cwd: summary.cwd,
     model: summary.model,
     archived: summary.archived,
@@ -785,6 +800,141 @@ function providerFromId(id: string): ProviderSessionProvider {
   return provider as ProviderSessionProvider
 }
 
+interface DeletionTarget {
+  kind: 'file' | 'directory'
+  path: string
+}
+
+function providerLabel(provider: ProviderSessionProvider): string {
+  if (provider === 'claude') return 'Claude Code'
+  if (provider === 'gemini') return 'Gemini CLI'
+  if (provider === 'grok') return 'Grok CLI'
+  return 'Codex'
+}
+
+async function assertDeletableFile(realRoot: string, filePath: string): Promise<void> {
+  await safeRegularFileStat(filePath)
+  const realPath = await fsPromises.realpath(filePath)
+  if (
+    normalizePath(realPath) !== normalizePath(filePath)
+    || !isInside(realRoot, realPath)
+    || normalizePath(realPath) === normalizePath(realRoot)
+  ) {
+    throw new Error('要删除的记录文件不在该工具自己的记录目录里，已拒绝删除')
+  }
+}
+
+// A directory is only removed when it is a real directory strictly below the
+// root: never the root itself, never a symlink or junction standing in for one.
+async function isDeletableDirectory(realRoot: string, directory: string): Promise<boolean> {
+  let info: fs.Stats
+  try {
+    info = await fsPromises.lstat(directory)
+  } catch {
+    return false
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) return false
+  const realPath = await fsPromises.realpath(directory)
+  return normalizePath(realPath) === normalizePath(directory)
+    && isInside(realRoot, realPath)
+    && normalizePath(realPath) !== normalizePath(realRoot)
+}
+
+/**
+ * 和一条 Claude Code 记录并排、同名的那个文件夹。删记录时它跟着一起删，列记录时
+ * 它里面的 .jsonl 也就不另算一条：两处都从这里取，口径才对得上。
+ */
+function claudeCompanionDirectory(transcript: string): string {
+  return path.join(path.dirname(transcript), path.basename(transcript, path.extname(transcript)))
+}
+
+/**
+ * Claude Code 自己认对话，只认项目文件夹里按会话 id（UUID）起名的 .jsonl。一次对话
+ * 派出去的子任务另存一份过程：2.0 到 2.1 初期叫 agent-<id>.jsonl，和记录并排放在项目
+ * 文件夹里；之后挪进与记录同名的文件夹（<记录id>/subagents/agent-<id>.jsonl）。它们不是
+ * 客户的另一次对话，单列出来标题一般是 AI 交代给子任务的话，还会把首页「最近」挤满。在发现
+ * 这一步按名字跳过，连探测都省掉，也不占会话文件上限的名额。
+ */
+function isClaudeTranscriptFile(file: string): boolean {
+  return file.toLowerCase().endsWith('.jsonl') && !/^agent-/i.test(path.basename(file))
+}
+
+function insideAnyDirectory(file: string, directories: ReadonlySet<string>): boolean {
+  let current = path.dirname(file)
+  for (;;) {
+    if (directories.has(normalizePath(current))) return true
+    const parent = path.dirname(current)
+    if (parent === current) return false
+    current = parent
+  }
+}
+
+/**
+ * 同名文件夹里不叫 agent- 的 .jsonl（Claude Code 往里放的别种过程记录）同样属于那一次
+ * 对话，不另算一条。
+ */
+function claudeConversationFiles(files: readonly string[]): string[] {
+  const companions = new Set(files.map((file) => normalizePath(claudeCompanionDirectory(file))))
+  return files.filter((file) => !insideAnyDirectory(file, companions))
+}
+
+/**
+ * 一条记录在硬盘上都有哪些文件。Claude Code 把子任务和大段工具输出放在与
+ * 记录同名的文件夹里，Grok 一条记录就是一个文件夹；这些都是这条对话的内容，
+ * 只删主文件就谈不上「彻底」。Gemini 一条记录只有一个文件。
+ */
+async function deletionTargets(
+  candidate: SourceCandidate,
+  root: string,
+  siblings: readonly SourceCandidate[] = [],
+): Promise<DeletionTarget[]> {
+  const realRoot = await fsPromises.realpath(root)
+  const rootInfo = await fsPromises.lstat(root)
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error('未找到本地会话目录')
+  if (candidate.provider === 'grok') {
+    // A session folder that also holds another session's files is not this
+    // session's to remove wholesale; fall back to deleting only its own files.
+    const holdsOthers = siblings.some((other) => other !== candidate
+      && normalizePath(other.keyPath) !== normalizePath(candidate.keyPath)
+      && isInside(candidate.keyPath, other.keyPath))
+    if (!holdsOthers && await isDeletableDirectory(realRoot, candidate.keyPath)) {
+      await assertDeletableFile(realRoot, candidate.sourcePath)
+      if (candidate.summaryPath) await assertDeletableFile(realRoot, candidate.summaryPath)
+      return [{ kind: 'directory', path: candidate.keyPath }]
+    }
+    const files = [candidate.sourcePath, ...(candidate.summaryPath && candidate.summaryPath !== candidate.sourcePath ? [candidate.summaryPath] : [])]
+    for (const file of files) await assertDeletableFile(realRoot, file)
+    return files.map((file) => ({ kind: 'file', path: file }))
+  }
+  await assertDeletableFile(realRoot, candidate.sourcePath)
+  const targets: DeletionTarget[] = [{ kind: 'file', path: candidate.sourcePath }]
+  if (candidate.provider === 'claude') {
+    const companion = claudeCompanionDirectory(candidate.sourcePath)
+    if (await isDeletableDirectory(realRoot, companion)) targets.push({ kind: 'directory', path: companion })
+  }
+  return targets
+}
+
+async function countFiles(directory: string): Promise<number> {
+  let count = 0
+  const pending = [directory]
+  while (pending.length > 0) {
+    const current = pending.pop() as string
+    let entries: fs.Dirent[]
+    try {
+      entries = await fsPromises.readdir(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) pending.push(path.join(current, entry.name))
+      else count += 1
+      if (count >= 100_000) return count
+    }
+  }
+  return count
+}
+
 export class ProviderSessionsService {
   readonly codexService: CodexSessionReader
   readonly roots: ProviderRoots
@@ -822,7 +972,7 @@ export class ProviderSessionsService {
     })
   }
 
-  capabilities(): Record<ProviderSessionProvider, ProviderSessionCapability> {
+  async capabilities(): Promise<Record<ProviderSessionProvider, ProviderSessionCapability>> {
     const codex = this.codexService.capabilities()
     const codexReadable = codex.schema.readable
     const codexWritable = codex.schema.mutationsAllowed
@@ -840,23 +990,24 @@ export class ProviderSessionsService {
           exportMarkdown: codexReadable,
           archive: codexWritable,
           restore: codexWritable,
+          delete: codexWritable,
         },
       },
-      claude: this.externalCapability('claude', 'jsonl'),
-      gemini: this.externalCapability('gemini', 'json-jsonl'),
-      grok: this.externalCapability('grok', 'json-jsonl'),
+      claude: await this.externalCapability('claude', 'jsonl'),
+      gemini: await this.externalCapability('gemini', 'json-jsonl'),
+      grok: await this.externalCapability('grok', 'json-jsonl'),
     }
   }
 
   async list(query: ProviderSessionListQuery = {}): Promise<ProviderSessionPage> {
     const provider = query.provider ?? 'all'
     const selected = provider === 'all' ? [...providerSessionProviders] : [provider]
-    const capabilities = this.capabilities()
+    const capabilities = await this.capabilities()
     const items: ProviderSessionSummary[] = []
     for (const current of selected) {
       try {
         const providerItems = current === 'codex'
-          ? this.listCodexSessions()
+          ? await this.listCodexSessions()
           : await this.listExternalSessions(current)
         items.push(...providerItems)
         if (current !== 'codex') {
@@ -869,6 +1020,7 @@ export class ProviderSessionsService {
           capability.operations.list = capability.available
           capability.operations.detail = capability.available
           capability.operations.exportMarkdown = capability.available
+          capability.operations.delete = capability.available
         }
       } catch (error) {
         const capability = capabilities[current]
@@ -877,6 +1029,7 @@ export class ProviderSessionsService {
         capability.operations.list = false
         capability.operations.detail = false
         capability.operations.exportMarkdown = false
+        capability.operations.delete = false
       }
     }
 
@@ -950,7 +1103,7 @@ export class ProviderSessionsService {
   async resolveWorkspace(id: string): Promise<string> {
     const provider = providerFromId(id)
     if (provider === 'codex') {
-      const session = this.listCodexSessions().find((item) => item.id === id)
+      const session = (await this.listCodexSessions()).find((item) => item.id === id)
       if (!session) throw new Error('未找到这条记录')
       return session.cwd
     }
@@ -1008,11 +1161,55 @@ export class ProviderSessionsService {
     }
   }
 
-  private externalCapability(
+  /**
+   * 彻底删除一条记录在这台电脑上的文件。渲染层只传会话 id：要删的路径全部由
+   * 主进程从各工具自己的记录目录里重新发现出来，删之前逐个再校验一遍，任何一个
+   * 不在该工具记录目录之内、经过链接或是多链接文件，整条都不删。
+   */
+  async delete(id: string): Promise<ProviderSessionDeleteResult> {
+    const provider = providerFromId(id)
+    if (provider === 'codex') {
+      const nativeId = id.slice('codex:'.length)
+      if (!/^[0-9a-f-]{36}$/i.test(nativeId)) throw new Error('会话 ID 格式错误')
+      const removed = await this.codexService.delete(nativeId)
+      return { id, provider, deletedFiles: removed.deletedFiles }
+    }
+    // Deletion never trusts the cached id → path mapping: the root is swept
+    // again so the candidate is one discoverFiles just proved to be a
+    // single-link regular file reached without links from inside the root.
+    const candidates = await this.sourceCandidates(provider)
+    const candidate = candidates.find((entry) => stableSessionId(provider, this.roots[provider], entry.keyPath) === id)
+    if (!candidate) throw new Error('没找到这条记录，可能已经被删掉了')
+    const targets = await deletionTargets(candidate, this.roots[provider], candidates)
+    let deletedFiles = 0
+    for (const target of targets) {
+      try {
+        if (target.kind === 'file') {
+          await fsPromises.rm(target.path)
+          deletedFiles += 1
+        } else {
+          deletedFiles += await countFiles(target.path)
+          await fsPromises.rm(target.path, { recursive: true })
+        }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code === 'ENOENT') continue
+        throw new Error(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
+          ? `这条记录正被别的程序占用，请先关掉 ${providerLabel(provider)} 再删`
+          : `删除记录失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    this.candidateIndex.delete(id)
+    this.probeCache.delete(normalizePath(candidate.sourcePath))
+    void this.probeCache.persist()
+    return { id, provider, deletedFiles }
+  }
+
+  private async externalCapability(
     provider: Exclude<ProviderSessionProvider, 'codex'>,
     source: ProviderSessionCapability['source'],
-  ): ProviderSessionCapability {
-    const available = existingDirectorySync(this.roots[provider])
+  ): Promise<ProviderSessionCapability> {
+    const available = await existingDirectory(this.roots[provider])
     return {
       provider,
       available,
@@ -1026,22 +1223,23 @@ export class ProviderSessionsService {
         exportMarkdown: available,
         archive: false,
         restore: false,
+        delete: available,
       },
     }
   }
 
-  private listCodexSessions(): ProviderSessionSummary[] {
+  private async listCodexSessions(): Promise<ProviderSessionSummary[]> {
     let stable = new Map<string, CodexSessionPage['items'][number]>()
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const first = this.codexService.list({ archive: 'all', page: 1, pageSize: 100 })
+      const first = await this.codexService.list({ archive: 'all', page: 1, pageSize: 100 })
       const items = new Map(first.items.map((item) => [item.id, item]))
       for (let page = 2; page <= first.pages; page += 1) {
-        for (const item of this.codexService.list({ archive: 'all', page, pageSize: 100 }).items) {
+        for (const item of (await this.codexService.list({ archive: 'all', page, pageSize: 100 })).items) {
           items.set(item.id, item)
         }
       }
       stable = items
-      const finalTotal = this.codexService.list({ archive: 'all', page: 1, pageSize: 1 }).total
+      const finalTotal = (await this.codexService.list({ archive: 'all', page: 1, pageSize: 1 })).total
       if (items.size === finalTotal) break
     }
     const readonly = !this.codexService.capabilities().schema.mutationsAllowed
@@ -1068,8 +1266,8 @@ export class ProviderSessionsService {
   ): Promise<SourceCandidate[]> {
     const root = this.roots[provider]
     if (provider === 'claude') {
-      const discovery = await discoverFiles(root, (file) => file.toLowerCase().endsWith('.jsonl'), this.maxFilesPerProvider)
-      return discovery.files.map((sourcePath) => ({ provider, keyPath: sourcePath, sourcePath }))
+      const discovery = await discoverFiles(root, isClaudeTranscriptFile, this.maxFilesPerProvider)
+      return claudeConversationFiles(discovery.files).map((sourcePath) => ({ provider, keyPath: sourcePath, sourcePath }))
     }
     if (provider === 'gemini') {
       const discovery = await discoverFiles(
@@ -1204,10 +1402,17 @@ export class ProviderSessionsService {
         this.candidateIndex.delete(id)
       }
     }
+    return this.probeExternalSession(await this.discoverExternalCandidate(provider, id))
+  }
+
+  private async discoverExternalCandidate(
+    provider: Exclude<ProviderSessionProvider, 'codex'>,
+    id: string,
+  ): Promise<SourceCandidate> {
     const candidates = await this.sourceCandidates(provider)
     const candidate = candidates.find((entry) => stableSessionId(provider, this.roots[provider], entry.keyPath) === id)
     if (!candidate) throw new Error(`未找到 ${provider} 会话`)
-    return this.probeExternalSession(candidate)
+    return candidate
   }
 
   private async readExternalMessages(

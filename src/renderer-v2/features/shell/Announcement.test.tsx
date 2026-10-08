@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
   AnnouncementContent,
+  PromoBar,
+  PromoCard,
   announcementTextPreview,
   formatAnnouncementError,
   isSafeNativeAnnouncementCssValue,
@@ -101,5 +103,71 @@ describe('renderer-v2 announcement error mapping', () => {
     expect(isSafeNativeAnnouncementCssValue('url("data:text/html;base64,PHNjcmlwdD4=")')).toBe(false)
     expect(isSafeNativeAnnouncementCssValue('expression(alert(1))')).toBe(false)
     expect(isSafeNativeAnnouncementCssValue(String.raw`\75\72\6c(\68\74\74\70\73\3a//attacker.invalid/p.png)`)).toBe(false)
+  })
+})
+
+describe('renderer-v2 recharge promo card', () => {
+  const tiers = [
+    { amount: 110, pay: 100, percent: 10 },
+    { amount: 240, pay: 200, percent: 20 },
+    { amount: 4000, pay: 2000, percent: 100 },
+  ]
+
+  it('lists one box per bonus tier and marks the most generous one', () => {
+    const html = renderToStaticMarkup(<PromoCard title="国庆礼遇 · 中秋同庆｜充值满赠" deadline="10月8日 23:59 结束，还剩 8 天" tiers={tiers} lines={[]} others={[]}
+      onTopUp={() => undefined} onDetail={() => undefined} onDismiss={() => undefined} onSnooze={() => undefined} onOpenOther={() => undefined} />)
+    expect(html).toContain('data-testid="announcement-promo-card"')
+    expect(html).toContain('10月8日 23:59 结束，还剩 8 天')
+    expect(html).toContain('data-testid="announcement-promo-tier-110"')
+    expect(html).toContain('充 2,000')
+    expect(html).toContain('送 100%')
+    expect(html).toContain('到账 <strong>4,000</strong>')
+    expect(html.match(/送得最多/g)).toHaveLength(1)
+    expect(html).toContain('点一档直接去付款。')
+    for (const label of ['去充值', '活动详情', '这个活动不再提醒', '今天不再提醒']) expect(html).toContain(label)
+    expect(html).not.toContain('>知道了<')
+    expect(html).not.toContain('announcement-promo-lines')
+  })
+
+  it('shows the first body lines when no bonus tiers are configured', () => {
+    const html = renderToStaticMarkup(<PromoCard title="充值活动" deadline={null} tiers={[]} lines={['单笔充值最高送 100%', '额度永久有效']} others={[]}
+      onDetail={() => undefined} onDismiss={() => undefined} onSnooze={() => undefined} onOpenOther={() => undefined} />)
+    expect(html).toContain('<p>单笔充值最高送 100%</p><p>额度永久有效</p>')
+    expect(html).not.toContain('announcement-promo-tiers')
+    expect(html).not.toContain('announcement-promo-topup')
+    expect(html).not.toContain('announcement-promo-deadline')
+  })
+
+  it('keeps tiers readable but not clickable when the account cannot recharge in the app', () => {
+    const html = renderToStaticMarkup(<PromoCard title="充值活动" deadline={null} tiers={tiers} lines={[]} others={[]}
+      onDetail={() => undefined} onDismiss={() => undefined} onSnooze={() => undefined} onOpenOther={() => undefined} />)
+    expect(html).toContain('<div class="v2-promo-tier" data-testid="announcement-promo-tier-110">')
+    expect(html).not.toContain('点一档直接去付款')
+  })
+
+  it('folds the other running activities into one line at the bottom', () => {
+    const html = renderToStaticMarkup(<PromoCard title="充值满赠" deadline={null} tiers={tiers} lines={[]} others={[{ id: 'invite', title: '国庆礼遇 · 中秋同庆｜邀请有礼' }]}
+      onDetail={() => undefined} onDismiss={() => undefined} onSnooze={() => undefined} onOpenOther={() => undefined} />)
+    expect(html).toContain('还有 1 条活动：国庆礼遇 · 中秋同庆｜邀请有礼')
+    expect(html).toContain('announcement-promo-others-open')
+  })
+})
+
+describe('renderer-v2 activity bar', () => {
+  it('names each running activity with its deadline and offers top-up and a today-only close', () => {
+    const html = renderToStaticMarkup(<PromoBar items={[
+      { id: 'a', name: '充值满赠', deadline: '10月8日截止，还剩 8 天', onOpen: () => undefined },
+      { id: 'b', name: '邀请有礼', deadline: null, onOpen: () => undefined },
+    ]} onTopUp={() => undefined} onHide={() => undefined} />)
+    expect(html).toContain('data-testid="announcement-promo-bar"')
+    expect(html).toContain('充值满赠<small>10月8日截止，还剩 8 天</small>')
+    expect(html).toContain('邀请有礼</button>')
+    expect(html).toContain('去充值')
+    expect(html).toContain('aria-label="今天先收起活动提醒"')
+  })
+
+  it('leaves out top-up when the account cannot recharge in the app', () => {
+    const html = renderToStaticMarkup(<PromoBar items={[{ id: 'b', name: '邀请有礼', deadline: null, onOpen: () => undefined }]} onHide={() => undefined} />)
+    expect(html).not.toContain('announcement-promo-bar-topup')
   })
 })

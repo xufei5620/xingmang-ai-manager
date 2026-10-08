@@ -99,6 +99,12 @@ export interface CodexSessionMutationResult {
   operationId: string
 }
 
+export interface CodexSessionDeleteResult {
+  sessionId: string
+  /** 真正从硬盘上删掉的对话原文文件数；原文早已不在时为 0，只删了索引。 */
+  deletedFiles: number
+}
+
 export interface CodexSessionExportResult {
   sessionId: string
   outputPath: string
@@ -113,7 +119,7 @@ export interface CodexSessionsCapabilities {
   backupDirectory: string
   trashDirectory: string
   operationJournalPath: string
-  permanentDeleteAllowed: false
+  permanentDeleteAllowed: boolean
 }
 
 export type CodexSessionRecoveryWarningCode =
@@ -377,11 +383,14 @@ function mapThreadRow(row: Record<string, SQLOutputValue>): ThreadRow {
   }
 }
 
-function toSummary(row: ThreadRow, codexHome: string): CodexSessionSummary {
+// One lstat per listed thread. It runs asynchronously because the Records page
+// reads every Codex thread, and on Windows a few hundred synchronous stats
+// (each one inspected by antivirus) would freeze the whole window.
+async function toSummary(row: ThreadRow, codexHome: string): Promise<CodexSessionSummary> {
   let rolloutAvailable = false
   if (row.rolloutPath && isInside(codexHome, row.rolloutPath)) {
     try {
-      const info = fs.lstatSync(row.rolloutPath)
+      const info = await fs.promises.lstat(row.rolloutPath)
       rolloutAvailable = info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()
     } catch {
       rolloutAvailable = false
@@ -466,7 +475,7 @@ function extractMessage(value: unknown): CodexSessionMessage | null {
   if (!text) return null
   return {
     role,
-    text: text.length > DETAIL_TEXT_LIMIT ? `${text.slice(0, DETAIL_TEXT_LIMIT)}\n…` : text,
+    text,
     timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null,
   }
 }
@@ -849,13 +858,14 @@ export class CodexSessionsService {
   }
 
   capabilities(): CodexSessionsCapabilities {
+    const schema = this.schemaStatus()
     return {
-      schema: this.schemaStatus(),
+      schema,
       databasePath: this.databasePath,
       backupDirectory: this.backupDirectory,
       trashDirectory: this.trashDirectory,
       operationJournalPath: this.operationJournalPath,
-      permanentDeleteAllowed: false,
+      permanentDeleteAllowed: schema.mutationsAllowed,
     }
   }
 
@@ -869,7 +879,7 @@ export class CodexSessionsService {
     }
   }
 
-  list(query: CodexSessionListQuery = {}): CodexSessionPage {
+  async list(query: CodexSessionListQuery = {}): Promise<CodexSessionPage> {
     const page = positiveInteger(query.page, 1)
     const pageSize = positiveInteger(query.pageSize, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
     if (!databaseExists(this.databasePath)) {
@@ -880,6 +890,7 @@ export class CodexSessionsService {
       }
     }
 
+    let snapshot: Omit<CodexSessionPage, 'items'> & { rows: ThreadRow[] }
     const database = openReadOnly(this.databasePath)
     try {
       const schema = inspectSchema(database)
@@ -911,8 +922,8 @@ export class CodexSessionsService {
           ${schema.columns.has('tokens_used') ? 'COALESCE(SUM(tokens_used), 0)' : '0'} AS tokens_used
          FROM threads`,
       ).get() as Record<string, SQLOutputValue>
-      return {
-        items: rows.map((row) => toSummary(row, this.codexHome)),
+      snapshot = {
+        rows,
         total,
         page: safePage,
         pageSize,
@@ -929,6 +940,13 @@ export class CodexSessionsService {
     } finally {
       database.close()
     }
+    // Close the database before awaiting the rollout checks so no read-only
+    // handle stays open across the event loop while Codex writes to it.
+    const { rows, ...summary } = snapshot
+    return {
+      ...summary,
+      items: await Promise.all(rows.map((row) => toSummary(row, this.codexHome))),
+    }
   }
 
   async detail(sessionId: string): Promise<CodexSessionDetail> {
@@ -936,16 +954,23 @@ export class CodexSessionsService {
     if (!schema.status.readable) throw new Error(schema.status.reason)
     const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const messages: CodexSessionMessage[] = []
+    let textTruncated = false
     const messageStats = await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
-      messages.push(message)
+      // 预览上限只约束 IPC 返回内容；导出复用解析器，不能在解析阶段丢掉正文（#600）。
+      if (message.text.length > DETAIL_TEXT_LIMIT) {
+        textTruncated = true
+        messages.push({ ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` })
+      } else {
+        messages.push(message)
+      }
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
     })
     return {
-      session: toSummary(row, this.codexHome),
+      session: await toSummary(row, this.codexHome),
       messages,
       messageStats,
       // 跳过的坏行也是看不到的内容（#491），和只留最近若干条一样算「不完整」。
-      messagesTruncated: messageStats.total > messages.length || messageStats.invalidLines > 0,
+      messagesTruncated: textTruncated || messageStats.total > messages.length || messageStats.invalidLines > 0,
     }
   }
 
@@ -996,6 +1021,14 @@ export class CodexSessionsService {
 
   restore(sessionId: string): Promise<CodexSessionMutationResult> {
     return this.enqueueMutation(() => this.changeArchiveState(sessionId, false))
+  }
+
+  /**
+   * 彻底删除：从索引里删掉这一行，并删掉它的对话原文。刻意不做数据库备份——
+   * 用户要的就是这条记录从硬盘上消失，留一份带着它的备份等于没删。
+   */
+  delete(sessionId: string): Promise<CodexSessionDeleteResult> {
+    return this.enqueueMutation(() => this.deleteSession(sessionId))
   }
 
   private readThread(sessionId: string): { row: ThreadRow; schema: ThreadSchema } {
@@ -1355,6 +1388,82 @@ export class CodexSessionsService {
     )
     await fsPromises.mkdir(recoveredDirectory, { recursive: true })
     return availableTarget(recoveredDirectory, path.basename(sourcePath), row.id)
+  }
+
+  private async deleteSession(sessionId: string): Promise<CodexSessionDeleteResult> {
+    const { row, schema } = this.readThread(sessionId)
+    if (!schema.status.mutationsAllowed) throw new Error(schema.status.reason)
+    // An interrupted archive/restore of this session is recovered from its
+    // journal on the next start; deleting the row underneath it would turn a
+    // recoverable state into a permanent recovery warning.
+    let interrupted: RecoveryJournalEntry[]
+    try {
+      interrupted = this.interruptedOperations()
+    } catch {
+      throw new Error('Codex 会话操作日志无法安全读取，已暂停删除；请重启本工具后再试')
+    }
+    if (interrupted.some((entry) => entry.sessionId === row.id)) {
+      throw new Error('这条记录上次的整理还没收尾，请重启本工具后再删')
+    }
+    const rolloutPath = await this.deletableRollout(row)
+
+    const database = new DatabaseSync(this.databasePath, { allowExtension: false })
+    database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;')
+    let transaction = false
+    try {
+      database.exec('BEGIN IMMEDIATE')
+      transaction = true
+      const liveSchema = inspectSchema(database)
+      if (!liveSchema.status.mutationsAllowed) throw new Error(liveSchema.status.reason)
+      const liveRow = getThread(database, liveSchema, row.id)
+      if (normalizeForComparison(liveRow.rolloutPath) !== normalizeForComparison(row.rolloutPath)) {
+        throw new Error('会话在删除前已被 Codex 修改，请刷新后重试')
+      }
+      const removed = database.prepare('DELETE FROM threads WHERE id = ?').run(row.id)
+      if (Number(removed.changes) !== 1) throw new Error('会话索引删除失败')
+      // The file goes before COMMIT: if it cannot be removed (Codex or a
+      // scanner still holds it) the row is rolled back and nothing changed.
+      // A crash after the unlink leaves a row whose rollout is gone, which the
+      // next delete treats as "only the index is left".
+      if (rolloutPath) {
+        try {
+          await fsPromises.rm(rolloutPath)
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (code !== 'ENOENT') {
+            throw new Error(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
+              ? '这条记录正被别的程序占用，请先关掉 Codex 再删'
+              : `删除对话原文失败：${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+      }
+      database.exec('COMMIT')
+      transaction = false
+      return { sessionId: row.id, deletedFiles: rolloutPath ? 1 : 0 }
+    } catch (error) {
+      if (transaction) {
+        try { database.exec('ROLLBACK') } catch { /* Nothing was committed. */ }
+      }
+      throw error
+    } finally {
+      database.close()
+    }
+  }
+
+  // Missing rollouts are the only thing tolerated here: an index row whose
+  // transcript is already gone can still be removed. Every other refusal from
+  // validateRollout (outside CODEX_HOME, linked, identity mismatch) means the
+  // path does not provably belong to this session, so nothing is deleted.
+  private async deletableRollout(row: ThreadRow): Promise<string | null> {
+    if (!row.rolloutPath) return null
+    const candidate = ensureInside(this.codexHome, row.rolloutPath, 'rollout_path')
+    try {
+      await fsPromises.lstat(candidate)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+    return validateRollout(this.codexHome, row.rolloutPath, row.id)
   }
 
   private async changeArchiveState(sessionId: string, archived: boolean): Promise<CodexSessionMutationResult> {

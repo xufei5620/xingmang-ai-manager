@@ -15,8 +15,10 @@ import {
   type NodeRuntimeProcessPlan,
   type SystemWingetResolution,
 } from './node-runtime'
+import { downloadWithResume } from './download-retry'
 import { sameLocalPathIdentity } from './path-identity'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
@@ -70,6 +72,8 @@ export interface InstalledPythonRuntimeInspection {
 
 export interface PythonRuntimeInstallerDependencies {
   fetch: typeof globalThis.fetch
+  /** 测试接缝：下载断了以后等多久再在同一条线路上接着下，缺省按真实时间等。 */
+  waitBeforeResume?(milliseconds: number, signal?: AbortSignal): Promise<void>
   runProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult>
   resolveWingetExecutable(signal?: AbortSignal): Promise<SystemWingetResolution>
   inspectInstalledPythonRuntime(signal?: AbortSignal): Promise<InstalledPythonRuntimeInspection>
@@ -84,6 +88,11 @@ export interface InstallPythonRuntimeOptions {
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
   dependencies?: Partial<PythonRuntimeInstallerDependencies>
+  /**
+   * 退到 python.org 下安装包时才借下载专用线路。winget 自己下载、不走这条线路，
+   * 一开始就借只会让客户干等加速内核起来（第二十八批 D）。缺省 = 不借。
+   */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 const releaseIndexUrl = 'https://www.python.org/api/v2/downloads/release/?version=3&is_published=true'
@@ -102,21 +111,21 @@ function encodedPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-const signatureScript = [
+export const pythonInstallerSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
 ].join('; ')
 
-const installedRuntimeInspectionScript = [
+export const installedPythonInspectionScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   '$ErrorActionPreference = "Stop"',
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:XINGMANG_PYTHON_FILE_PATH).ProductVersion',
@@ -312,7 +321,7 @@ export function buildPythonRuntimeInstallPlan(
         '-ExecutionPolicy',
         'Bypass',
         '-EncodedCommand',
-        encodedPowerShellCommand(signatureScript),
+        encodedPowerShellCommand(pythonInstallerSignatureScript),
       ],
       timeoutMs: 60_000,
       acceptedExitCodes: [0],
@@ -422,47 +431,47 @@ async function downloadInstaller(
   const timeout = setTimeout(() => controller.abort(new Error('Python 安装包下载超时')), downloadTimeoutMs)
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
-  let file: fs.promises.FileHandle | null = null
+  const progress = (transferredBytes: number, message: string) => report(options, {
+    phase: 'downloading',
+    source: 'python-org',
+    message,
+    percent: Math.min(100, (transferredBytes / asset.fileSize) * 100),
+    transferredBytes,
+    totalBytes: asset.fileSize,
+  })
   try {
-    const response = await dependencies.fetch(asset.url, { redirect: 'error', signal: controller.signal })
-    if (!response.ok) throw new Error(`Python 安装包下载失败：HTTP ${response.status}`)
-    validatePythonResponseUrl(response.url || asset.url, asset.url)
-    const declaredHeader = response.headers.get('content-length')
-    const declared = declaredHeader === null ? null : Number(declaredHeader)
-    if (declared !== null && Number.isFinite(declared) && declared !== asset.fileSize) {
-      throw new Error('Python 安装包大小与官方发布信息不一致')
-    }
-    if (!response.body) throw new Error('Python 安装包响应没有可读取内容')
-    file = await fs.promises.open(filePath, 'wx')
-    const reader = response.body.getReader()
-    const hash = createHash('sha256')
-    let transferredBytes = 0
-    while (true) {
-      throwIfAborted(options.signal)
-      const { done, value } = await reader.read()
-      if (done) break
-      transferredBytes += value.byteLength
-      if (transferredBytes > asset.fileSize || transferredBytes > maximumInstallerBytes) {
-        throw new Error('Python 安装包超过官方声明大小')
-      }
-      hash.update(value)
-      await file.write(value)
-      report(options, {
-        phase: 'downloading',
-        source: 'python-org',
-        message: `正在下载 Python ${asset.version} 官方安装包`,
-        percent: Math.min(100, (transferredBytes / asset.fileSize) * 100),
+    const download = await downloadWithResume({
+      targetPath: filePath,
+      maximumBytes: Math.min(asset.fileSize, maximumInstallerBytes),
+      oversizeMessage: 'Python 安装包超过官方声明大小',
+      signal: controller.signal,
+      ...(dependencies.waitBeforeResume ? { wait: dependencies.waitBeforeResume } : {}),
+      request: async (headers, signal) => {
+        const response = await dependencies.fetch(asset.url, { redirect: 'error', signal, headers })
+        // 接着下的那一次也要落在同一个官方地址上，不接受被带去别处的续传。
+        validatePythonResponseUrl(response.url || asset.url, asset.url)
+        return response
+      },
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`Python 安装包下载失败：HTTP ${response.status}`)
+        const declaredHeader = response.headers.get('content-length')
+        const declared = declaredHeader === null ? null : Number(declaredHeader)
+        if (declared !== null && Number.isFinite(declared) && declared !== asset.fileSize) {
+          throw new Error('Python 安装包大小与官方发布信息不一致')
+        }
+        if (!response.body) throw new Error('Python 安装包响应没有可读取内容')
+        // 官方发布信息里的大小是可信的总长，没有 Content-Length 时也拿它核对续传。
+        return asset.fileSize
+      },
+      onProgress: (transferredBytes) => progress(transferredBytes, `正在下载 Python ${asset.version} 官方安装包`),
+      onResume: (transferredBytes) => progress(
         transferredBytes,
-        totalBytes: asset.fileSize,
-      })
-    }
-    if (transferredBytes !== asset.fileSize) throw new Error('Python 安装包下载不完整')
-    await file.sync()
-    await file.close()
-    file = null
-    return { filePath, sha256: hash.digest('hex') }
+        `网络断了一下，正在接着下载 Python ${asset.version} 官方安装包`,
+      ),
+    })
+    if (download.size !== asset.fileSize) throw new Error('Python 安装包下载不完整')
+    return { filePath, sha256: download.sha256.toString('hex') }
   } catch (error) {
-    await file?.close().catch(() => undefined)
     await fs.promises.rm(filePath, { force: true }).catch(() => undefined)
     throw error
   } finally {
@@ -515,7 +524,7 @@ export async function inspectInstalledPythonRuntime(
       '-ExecutionPolicy',
       'Bypass',
       '-EncodedCommand',
-      encodedPowerShellCommand(installedRuntimeInspectionScript),
+      encodedPowerShellCommand(installedPythonInspectionScript),
     ],
     timeoutMs: 60_000,
     acceptedExitCodes: [0],
@@ -643,8 +652,14 @@ export async function installPythonRuntime(
       message: '正在查询 Python 3.12 最新稳定安装包',
       percent: null,
     })
-    const asset = await resolveLatestInstaller(architecture, dependencies, options.signal)
-    const download = await downloadInstaller(asset, temporaryDirectory, options, dependencies)
+    // 线路只在真正联网的这两步握着：后面核签名、静默安装都在本机，早点还回去，加速内核早点停。
+    const fetchInstaller = async () => {
+      const asset = await resolveLatestInstaller(architecture, dependencies, options.signal)
+      return { asset, download: await downloadInstaller(asset, temporaryDirectory, options, dependencies) }
+    }
+    const { asset, download } = await (options.withDownloadRoute
+      ? options.withDownloadRoute(fetchInstaller)
+      : fetchInstaller())
     report(options, {
       phase: 'verifying',
       source: 'python-org',

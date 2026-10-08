@@ -17,6 +17,7 @@ import {
   sameAccountOrigin,
   switchAccountWithOptionalSync,
   type AccountSwitchSyncResult,
+  type AccountSyncCandidate,
 } from './account-switch-sync'
 import { tools } from './registry/tools'
 import { keySyncFailureText } from './features/tools/key-sync-failure'
@@ -29,10 +30,16 @@ export function SavedAccounts({
   api,
   onAccountChanged,
   onLogin,
+  variant = 'dialog',
 }: {
   api: V2Bridge
   onAccountChanged?: (result?: AccountSwitchSyncResult) => void
   onLogin?: (target?: LoginTarget) => void
+  /**
+   * card = 个人中心「我的账号」里那张卡：没有别的账号时只留一句话和「添加另一个账号」，
+   * 「同步到工具」默认收起，不把下面的卡挤到第二屏。缺省 = 「切换账号」框。
+   */
+  variant?: 'dialog' | 'card'
 }) {
   const load = useCallback(async () => {
     const [accounts, session] = await Promise.all([
@@ -49,30 +56,32 @@ export function SavedAccounts({
   const operation = useOperation()
   const syncLoad = useCallback(() => readAccountSyncContext(api), [api])
   const sync = useResource(syncLoad)
-  const [selected, setSelected] = useState<
-    Array<
-      Parameters<V2Bridge['configureManagedCliKeys']>[0]['providers'][number]
-    >
-  >([])
+  // 切换账号时，原本就在用账号密钥的工具默认一起换过去，不然切完工具还在花上一个
+  // 账号的钱（新手引导梳理 9-25 第 1 条）。自己填的密钥默认不动，要换就手动勾上。
+  // 记的是用户改过的那几项，勾选框的值由候选列表现算，检测结果晚到也不会丢默认勾选。
+  const [choices, setChoices] = useState<Partial<Record<SyncProvider, boolean>>>({})
   const [result, setResult] = useState<AccountSwitchSyncResult | null>(null)
   const restartHint = result ? accountSwitchRestartHint(result) : ''
   const candidates = sync.data ? accountSyncCandidates(sync.data) : []
+  const selected = defaultSyncSelection(candidates, choices)
   useEffect(() => {
-    setSelected([])
+    setChoices({})
     const userId = resource.data?.session.account?.userId
     if (userId && resource.data)
       setResult(previousAccountSwitchResult(resource.data.origin, userId))
   }, [resource.data?.origin, resource.data?.session.account?.userId])
-  useEffect(() => {
-    const allowed = new Set(
-      candidates.filter((item) => item.eligible).map((item) => item.provider),
-    )
-    setSelected((values) => values.filter((value) => allowed.has(value)))
-  }, [sync.data])
   const [remove, setRemove] = useState<string | null>(null)
   // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
   // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
   const [expired, setExpired] = useState<string | null>(null)
+  function isCurrent(account: { userId: number; origin: string }) {
+    return Boolean(
+      resource.data?.session.authenticated &&
+      account.userId === resource.data.session.account?.userId &&
+      sameAccountOrigin(account.origin, resource.data.origin),
+    )
+  }
+  const alone = variant === 'card' && Boolean(resource.data) && !resource.data?.accounts.some((account) => !isCurrent(account))
   return (
     <div data-testid="saved-accounts-list">
       <ResultNotice {...operation} />
@@ -130,125 +139,135 @@ export function SavedAccounts({
           testId="account-sync-result"
         />
       )}
-      <ListState
-        page="saved-accounts"
-        noun="保存的账号"
-        loading={resource.loading}
-        error={resource.error}
-        count={resource.data?.accounts.length ?? 0}
-        retry={() => void resource.reload()}
-      >
-        {resource.data?.accounts.map((account) => {
-          const current =
-            resource.data?.session.authenticated &&
-            account.userId === resource.data.session.account?.userId &&
-            sameAccountOrigin(account.origin, resource.data.origin)
-          return (
-            <ListRow
-              key={account.id}
-              testId={`saved-account-row-${account.id}`}
-              title={account.username}
-              desc={savedAccountSourceLabel(account.origin)}
-              badge={current && <Pill tone="ok">当前账号</Pill>}
-              actions={
-                <>
-                  <Button
-                    size="sm"
-                    disabled={current || Boolean(operation.busy)}
-                    loading={operation.busy === account.id}
-                    onClick={() =>
-                      void operation.execute(
-                        account.id,
-                        async () => {
-                          setExpired(null)
-                          const outcome = await switchAccountWithOptionalSync(
-                            api,
-                            account,
-                            selected,
-                            sync.data,
-                            resource.data?.origin ?? '',
-                          ).catch((error: unknown) => {
-                            if (savedAccountExpired(error)) setExpired(account.id)
-                            throw error
-                          })
-                          preserveAccountSwitchResult(outcome)
-                          setResult(outcome)
-                          setSelected([])
-                          await resource.reload()
-                          await sync.reload()
-                          onAccountChanged?.(outcome)
-                        },
-                        '',
-                      )
-                    }
-                  >
-                    切换
-                  </Button>
-                  {expired === account.id && !current && onLogin && (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={Boolean(operation.busy)}
-                      onClick={() => onLogin?.(savedAccountLoginTarget(account))}
-                      testId={`saved-account-relogin-${account.id}`}
-                    >
-                      重新登录这个账号
-                    </Button>
-                  )}
-                  {!current && (
-                    <Menu
-                      label={`账号 ${account.username} 的更多操作`}
-                      anchor={<MoreHorizontal size={18} />}
-                      items={[
-                        {
-                          label: '移除保存账号',
-                          icon: Trash2,
-                          danger: true,
-                          onSelect: () => setRemove(account.id),
-                        },
-                      ]}
-                    />
-                  )}
-                </>
-              }
-            />
-          )
-        })}
-      </ListState>
-      <details className="v2-business-account-sync">
-        <summary>同步到工具（可选）</summary>
-        <p>只有勾选的工具会改用目标账号的星芒密钥。</p>
-        <ResultNotice error={sync.error} />
-        {sync.loading && <p role="status">正在检查工具配置…</p>}
-        {candidates.map((candidate) => (
-          <Input
-            key={candidate.provider}
-            type="checkbox"
-            label={candidate.name}
-            hint={`${candidate.reason}${candidate.eligible ? '' : '，保持原配置'}`}
-            checked={
-              candidate.eligible && selected.includes(candidate.provider)
-            }
-            disabled={
-              !candidate.eligible || sync.loading || Boolean(operation.busy)
-            }
-            testId={`account-sync-${candidate.provider}`}
-            onChange={(event) =>
-              setSelected((values) =>
-                event.target.checked
-                  ? [...new Set([...values, candidate.provider])]
-                  : values.filter((value) => value !== candidate.provider),
+      {alone ? (
+        <div className="v2-business-card-inset v2-business-saved-alone" data-testid="saved-accounts-alone">
+          <p><strong>还没有保存别的账号。</strong></p>
+          <p>点下面的「添加另一个账号」，以后在这里一键切换。</p>
+          <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
+            添加另一个账号
+          </Button>
+        </div>
+      ) : (
+        <>
+          <ListState
+            page="saved-accounts"
+            noun="保存的账号"
+            loading={resource.loading}
+            error={resource.error}
+            count={resource.data?.accounts.length ?? 0}
+            retry={() => void resource.reload()}
+            emptyTitle="还没有保存别的账号"
+            emptyDescription="点下面的「添加另一个账号」，以后在这里一键切换。"
+          >
+            {resource.data?.accounts.map((account) => {
+              const current = isCurrent(account)
+              return (
+                <ListRow
+                  key={account.id}
+                  testId={`saved-account-row-${account.id}`}
+                  title={account.username}
+                  desc={savedAccountSourceLabel(account.origin)}
+                  badge={current && <Pill tone="ok">当前账号</Pill>}
+                  actions={
+                    <>
+                      <Button
+                        size="sm"
+                        disabled={current || Boolean(operation.busy)}
+                        loading={operation.busy === account.id}
+                        onClick={() =>
+                          void operation.execute(
+                            account.id,
+                            async () => {
+                              setExpired(null)
+                              const outcome = await switchAccountWithOptionalSync(
+                                api,
+                                account,
+                                selected,
+                                sync.data,
+                                resource.data?.origin ?? '',
+                              ).catch((error: unknown) => {
+                                if (savedAccountExpired(error)) setExpired(account.id)
+                                throw error
+                              })
+                              preserveAccountSwitchResult(outcome)
+                              setResult(outcome)
+                              setChoices({})
+                              await resource.reload()
+                              await sync.reload()
+                              onAccountChanged?.(outcome)
+                            },
+                            '',
+                          )
+                        }
+                      >
+                        切换
+                      </Button>
+                      {expired === account.id && !current && onLogin && (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={Boolean(operation.busy)}
+                          onClick={() => onLogin?.(savedAccountLoginTarget(account))}
+                          testId={`saved-account-relogin-${account.id}`}
+                        >
+                          重新登录这个账号
+                        </Button>
+                      )}
+                      {!current && (
+                        <Menu
+                          label={`账号 ${account.username} 的更多操作`}
+                          anchor={<MoreHorizontal size={18} />}
+                          items={[
+                            {
+                              label: '移除保存账号',
+                              icon: Trash2,
+                              danger: true,
+                              onSelect: () => setRemove(account.id),
+                            },
+                          ]}
+                        />
+                      )}
+                    </>
+                  }
+                />
               )
-            }
-          />
-        ))}
-      </details>
-      <div className="v2-business-card-inset">
-        <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
-          添加另一个账号
-        </Button>
-        <p>登录状态失效时需要重新登录。未勾选的工具保持原配置。</p>
-      </div>
+            })}
+          </ListState>
+          <details className="v2-business-account-sync" open={variant !== 'card'}>
+            <summary>同步到工具</summary>
+            <p>勾上的工具会一起换成要切过去的账号，不勾的保持原样。</p>
+            <ResultNotice error={sync.error} detail={sync.detail} />
+            {sync.loading && <p role="status">正在检查工具配置…</p>}
+            {candidates.map((candidate) => (
+              <Input
+                key={candidate.provider}
+                type="checkbox"
+                label={candidate.name}
+                hint={`${candidate.reason}${candidate.eligible ? '' : '，保持原配置'}`}
+                checked={
+                  candidate.eligible && selected.includes(candidate.provider)
+                }
+                disabled={
+                  !candidate.eligible || sync.loading || Boolean(operation.busy)
+                }
+                testId={`account-sync-${candidate.provider}`}
+                onChange={(event) =>
+                  setChoices((values) => ({
+                    ...values,
+                    [candidate.provider]: event.target.checked,
+                  }))
+                }
+              />
+            ))}
+          </details>
+          <div className="v2-business-card-inset">
+            <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
+              添加另一个账号
+            </Button>
+            <p>登录状态失效时需要重新登录。</p>
+          </div>
+        </>
+      )}
       <Dialog
         open={Boolean(remove)}
         title="移除保存账号？"
@@ -279,10 +298,25 @@ export function SavedAccounts({
         }
       >
         <p>只移除本机保存的登录信息。已写入工具的密钥不会改变。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </div>
   )
+}
+
+type SyncProvider = AccountSyncCandidate['provider']
+
+/**
+ * 切换账号时哪些工具要一起换。没动过的按默认：原本就是账号密钥的勾上，自己填的、
+ * 官方账号、别处的配置都不勾；动过的听用户的。不能换的一律不算。
+ */
+export function defaultSyncSelection(
+  candidates: readonly AccountSyncCandidate[],
+  choices: Partial<Record<SyncProvider, boolean>>,
+): SyncProvider[] {
+  return candidates
+    .filter((candidate) => candidate.eligible && (choices[candidate.provider] ?? candidate.reason === '星芒密钥'))
+    .map((candidate) => candidate.provider)
 }
 
 /**

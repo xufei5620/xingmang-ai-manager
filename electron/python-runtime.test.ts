@@ -194,4 +194,166 @@ describe.runIf(process.platform === 'win32')('Python 3.12 installation flow', ()
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(runProcess).toHaveBeenCalledTimes(3)
   })
+
+  it('continues a dropped python.org download on the same official address', async () => {
+    const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-python-test-'))
+    temporaryDirectories.push(directory)
+    const installerName = 'python-3.12.9-amd64.exe'
+    const installerUrl = `https://www.python.org/ftp/python/3.12.9/${installerName}`
+    const releaseIndex = JSON.stringify([{
+      name: 'Python 3.12.9',
+      resource_uri: 'https://www.python.org/api/v2/downloads/release/1234/',
+      is_published: true,
+      pre_release: false,
+    }])
+    const releaseFiles = JSON.stringify([{
+      name: 'Windows installer (64-bit)',
+      release: 'https://www.python.org/api/v2/downloads/release/1234/',
+      url: installerUrl,
+      filesize: minimumInstallerBytes,
+    }])
+    const cut = 3 * 1024 * 1024
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/release/?')) return response(releaseIndex, url)
+      if (url.includes('/release_file/?')) return response(releaseFiles, url)
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      if (range) {
+        const resumed = new Response(new Uint8Array(minimumInstallerBytes - cut), {
+          status: 206,
+          headers: { 'content-range': `bytes ${cut}-${minimumInstallerBytes - 1}/${minimumInstallerBytes}` },
+        })
+        Object.defineProperty(resumed, 'url', { value: installerUrl })
+        return resumed
+      }
+      let sent = false
+      return response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) {
+            controller.error(new TypeError('fetch failed'))
+            return
+          }
+          sent = true
+          controller.enqueue(new Uint8Array(cut))
+        },
+      }), installerUrl)
+    })
+    const runProcess = vi.fn<PythonRuntimeInstallerDependencies['runProcess']>(async (plan) => {
+      if (plan.executable === 'C:/winget.exe') throw new Error('winget unavailable')
+      const stdout = plan.executable.toLowerCase().includes('powershell')
+        ? JSON.stringify({ status: 'Valid', subject: 'CN=Python Software Foundation' })
+        : ''
+      return commandResult(plan.executable, plan.argv, stdout)
+    })
+    const messages: string[] = []
+
+    await expect(installPythonRuntime({
+      onProgress: (event) => messages.push(event.message),
+      dependencies: {
+        fetch: fetchMock,
+        runProcess,
+        resolveWingetExecutable: async () => ({ executable: 'C:/winget.exe', reason: null }),
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => directory,
+        removeTemporaryDirectory: async () => undefined,
+        waitBeforeResume: async () => undefined,
+      },
+    })).resolves.toMatchObject({ method: 'exe', source: 'python-org' })
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(messages).toContain('网络断了一下，正在接着下载 Python 3.12.9 官方安装包')
+  })
+
+  // winget 自己下载、不走下载专用线路，退到 python.org 时才借，下完就还（第二十八批 D）。
+  it('does not borrow the download route when winget installs Python', async () => {
+    let routeCalls = 0
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeCalls += 1
+      return operation()
+    }
+
+    await expect(installPythonRuntime({
+      withDownloadRoute,
+      dependencies: {
+        fetch: vi.fn<typeof globalThis.fetch>(),
+        runProcess: vi.fn<PythonRuntimeInstallerDependencies['runProcess']>(
+          async (plan) => commandResult(plan.executable, plan.argv),
+        ),
+        resolveWingetExecutable: async () => ({ executable: 'C:/winget.exe', reason: null }),
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => 'C:/Temp/unused',
+      },
+    })).resolves.toMatchObject({ method: 'winget' })
+    expect(routeCalls).toBe(0)
+  })
+
+  it('holds the download route only while fetching the python.org installer', async () => {
+    const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-python-test-'))
+    temporaryDirectories.push(directory)
+    const installerUrl = 'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe'
+    const releaseIndex = JSON.stringify([{
+      name: 'Python 3.12.9',
+      resource_uri: 'https://www.python.org/api/v2/downloads/release/1234/',
+      is_published: true,
+      pre_release: false,
+    }])
+    const releaseFiles = JSON.stringify([{
+      name: 'Windows installer (64-bit)',
+      release: 'https://www.python.org/api/v2/downloads/release/1234/',
+      url: installerUrl,
+      filesize: minimumInstallerBytes,
+    }])
+    let routeHeld = false
+    let routeCalls = 0
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeCalls += 1
+      routeHeld = true
+      try {
+        return await operation()
+      } finally {
+        routeHeld = false
+      }
+    }
+    const events: string[] = []
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input)
+      events.push(`${routeHeld ? 'route' : 'direct'} fetch`)
+      if (url.includes('/release/?')) return response(releaseIndex, url)
+      if (url.includes('/release_file/?')) return response(releaseFiles, url)
+      return response(new Uint8Array(minimumInstallerBytes), installerUrl)
+    })
+    const runProcess = vi.fn<PythonRuntimeInstallerDependencies['runProcess']>(async (plan) => {
+      const step = plan.executable === 'C:/winget.exe'
+        ? 'winget'
+        : plan.executable.toLowerCase().includes('powershell') ? 'signature' : 'install'
+      events.push(`${routeHeld ? 'route' : 'direct'} ${step}`)
+      if (step === 'winget') throw new Error('winget unavailable')
+      const stdout = step === 'signature'
+        ? JSON.stringify({ status: 'Valid', subject: 'CN=Python Software Foundation' })
+        : ''
+      return commandResult(plan.executable, plan.argv, stdout)
+    })
+
+    await expect(installPythonRuntime({
+      withDownloadRoute,
+      dependencies: {
+        fetch: fetchMock,
+        runProcess,
+        resolveWingetExecutable: async () => ({ executable: 'C:/winget.exe', reason: null }),
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => directory,
+        removeTemporaryDirectory: async () => undefined,
+      },
+    })).resolves.toMatchObject({ method: 'exe', source: 'python-org' })
+    expect(routeCalls).toBe(1)
+    expect(events).toEqual([
+      'direct winget',
+      'route fetch',
+      'route fetch',
+      'route fetch',
+      'direct signature',
+      'direct install',
+    ])
+  })
 })

@@ -47,6 +47,7 @@ import {
   type NewApiFetch,
 } from './new-api-client'
 import { managedCliKeyProfiles } from './catalog'
+import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
@@ -622,6 +623,20 @@ describe('getStatus', () => {
 })
 
 describe('login', () => {
+  it('keeps account credentials on the selected direct line', async () => {
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValueOnce(loginResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: userDetailData() }))
+    const client = createNewApiClient({ baseUrl: routing.require('solov').accountBaseUrl, fetchImpl })
+    await client.login({ username: 'tester', password: 'fixture-password' })
+    await client.getProfile()
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://xm-direct.solov.cc/api/user/login', 'https://xm-direct.solov.cc/api/user/self',
+    ])
+    expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc', 'New-Api-User': '42' })
+    expect(fetchImpl.mock.calls.every(([, init]) => init?.redirect === 'manual' && init.credentials === 'omit')).toBe(true)
+  })
+
   it('captures the access token and refresh cookie internally without leaking them in the result', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(loginResponse())
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
@@ -3653,5 +3668,117 @@ describe('shared public status reads', () => {
     failStatus = false
     await expect(client.getBalance()).resolves.toMatchObject({ quota: 1_000_000 })
     expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(2)
+  })
+})
+
+describe('createNewApiClient retry off a broken system proxy', () => {
+  function timedOut(): Promise<Response> {
+    return Promise.reject(new DOMException('aborted', 'AbortError'))
+  }
+
+  it('sends a read once more after the host switches to direct when the proxy is alive but not forwarding', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementationOnce(timedOut).mockResolvedValueOnce(statusResponse())
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.getStatus()).resolves.toBeTruthy()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(retryOffProxy).toHaveBeenCalledTimes(1)
+    expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason: 'timeout', method: 'GET', startedAt: expect.any(Number) }))
+  })
+
+  it('reports the original failure without a second request when no proxy is in the way', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementation(timedOut)
+    const retryOffProxy = vi.fn(async () => false)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.getStatus()).rejects.toMatchObject({ reason: 'timeout' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(retryOffProxy).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports the direct attempt\'s failure when going direct does not help either, and tries only once', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+      .mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+      .mockRejectedValueOnce(new Error('net::ERR_CONNECTION_RESET'))
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    const error = await client.getStatus().catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'refused' })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(retryOffProxy).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a throwing host hook as no retry', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementation(timedOut)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy: async () => { throw new Error('session gone') } })
+    await expect(client.getStatus()).rejects.toMatchObject({ reason: 'timeout' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['certificate', new Error('net::ERR_CERT_AUTHORITY_INVALID')],
+    ['name resolution', new Error('net::ERR_NAME_NOT_RESOLVED')],
+    ['unrecognised', new Error('本地安全存储不可用')],
+  ])('never asks to leave the proxy over a %s failure', async (_label, failure) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(failure)
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.getStatus()).rejects.toBeTruthy()
+    expect(retryOffProxy).not.toHaveBeenCalled()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('switches to direct but does not replay a login that timed out, since it may already have reached the service', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementationOnce(timedOut).mockResolvedValueOnce(loginResponse())
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.login({ username: 'tester', password: 'x' })).rejects.toMatchObject({ reason: 'timeout' })
+    expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason: 'timeout', method: 'POST' }))
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('replays a login the proxy refused outright, because it never left this machine', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+      .mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+      .mockResolvedValueOnce(loginResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy: async () => true })
+    await client.login({ username: 'tester', password: 'correct horse battery staple' })
+    expect(client.isAuthenticated()).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  // Both are GETs, yet each one that reaches the service mails a fresh code
+  // or link that supersedes the previous one.
+  const emailSends = [
+    ['verification code', (client: ReturnType<typeof createNewApiClient>) => client.sendEmailVerification('a@example.com')],
+    ['password reset', (client: ReturnType<typeof createNewApiClient>) => client.sendPasswordResetEmail('a@example.com')],
+  ] as const
+
+  describe.each(emailSends)('a %s email', (_label, send) => {
+    it.each([
+      ['timed out', timedOut, 'timeout'],
+      ['was cut off mid-flight', () => Promise.reject(new Error('net::ERR_CONNECTION_RESET')), 'refused'],
+    ] as const)('switches to direct but is not sent again when it %s, since the first one may already be on its way', async (_case, failure, reason) => {
+      const fetchImpl = vi.fn<NewApiFetch>()
+        .mockImplementationOnce(failure)
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+      const retryOffProxy = vi.fn(async () => true)
+      const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+      await expect(send(client)).rejects.toMatchObject({ reason })
+      expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason, method: 'GET' }))
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ['net::ERR_PROXY_CONNECTION_FAILED'],
+      ['net::ERR_TUNNEL_CONNECTION_FAILED'],
+    ])('is sent again after %s, because the proxy refused it before it left this machine', async (failure) => {
+      const fetchImpl = vi.fn<NewApiFetch>()
+        .mockRejectedValueOnce(new Error(failure))
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+      const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy: async () => true })
+      await expect(send(client)).resolves.toBeUndefined()
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+    })
   })
 })

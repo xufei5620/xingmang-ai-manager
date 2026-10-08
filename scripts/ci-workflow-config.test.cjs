@@ -39,12 +39,50 @@ function windowsShardCommands() {
   return workflow.jobs['windows-test'].strategy.matrix.include.map((entry) => entry.command)
 }
 
+// The Linux fixture browser job is a matrix of its own, cut along the same
+// deal as the Windows shards; its one test step runs the matrix command.
+function linuxFixtureShardCommands() {
+  return workflow.jobs['linux-renderer-v2-browser'].strategy.matrix.include.map((entry) => entry.command)
+}
+
 function windowsCommands() {
   return [...windowsShardCommands(), ...runSteps('windows-package')]
 }
 
 function shardStepIndex() {
   return workflow.jobs['windows-test'].steps.findIndex((step) => String(step.run || '').includes('matrix.command'))
+}
+
+// The npm scripts the Windows release build runs before it packages. They are
+// kept apart from windowsCommands(): several gates ask whether the release
+// build runs something the required CI job does not, and folding these in would
+// make every such question answer itself.
+function windowsReleaseGateCommands() {
+  const { buildReleaseSteps } = require('./run-release-build.cjs')
+  return buildReleaseSteps({ npmCli: 'npm-cli.js', releaseOutputDirectory: path.join(root, 'release-test'), unsignedReleaseMode: true })
+    .filter((step) => step.args[0] === 'npm-cli.js' && step.args[1] === 'run')
+    .map((step) => `npm run ${step.args[2]}`)
+}
+
+// The .mjs suites Windows actually runs: every file named by the commands
+// above, following `npm run` into package.json as far as it goes. The release
+// build counts too - test:ui runs on Windows only there, and that is where the
+// 0.2.17 build lost a single-navigation open to net::ERR_NO_BUFFER_SPACE.
+function windowsSuites() {
+  const suites = new Set()
+  const followed = new Set()
+  const visit = (command) => {
+    for (const part of command.split('&&').map((piece) => piece.trim())) {
+      const script = part.match(/^npm run ([\w:-]+)/)?.[1]
+      if (script) {
+        if (!followed.has(script)) { followed.add(script); visit(packageJson.scripts[script]) }
+        continue
+      }
+      for (const token of part.split(/\s+/)) if (/^(?:e2e|src)\/\S+\.mjs$/.test(token)) suites.add(token)
+    }
+  }
+  for (const command of [...windowsCommands(), ...windowsReleaseGateCommands()]) visit(command)
+  return [...suites].sort()
 }
 
 test('renderer v2 is the default and legacy remains an explicit rollback mode', () => {
@@ -82,12 +120,13 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
   }
 })
 
-test('browser-backed tests install Chromium first on every job that runs npm test', () => {
+test('browser-backed tests install Chromium first on every job that runs them', () => {
   for (const [jobName, testCommand, installCommand] of [
     ['macos-test', 'npm test', 'npx --no-install playwright install chromium'],
-    // Linux-only: --with-deps also apt-installs the shared libraries Chromium
-    // links against, which (unlike Windows/macOS) a bare runner image lacks.
-    ['linux-test', 'npm test', 'npx --no-install playwright install --with-deps chromium'],
+    // Linux also needs Chromium's apt libraries; that half is its own bounded
+    // step, pinned by the test below.
+    ['linux-test', 'npm test', 'npx --no-install playwright install chromium'],
+    ['linux-renderer-v2-browser', '${{ matrix.command }}', 'npx --no-install playwright install chromium'],
   ]) {
     const commands = runSteps(jobName)
     const installIndex = commands.indexOf(installCommand)
@@ -108,6 +147,48 @@ test('browser-backed tests install Chromium first on every job that runs npm tes
   assert.notEqual(installIndex, -1, 'the Windows shards must install Chromium')
   assert.notEqual(shardStepIndex(), -1, 'the Windows shards must run their matrix command')
   assert.ok(installIndex < shardStepIndex(), 'Chromium must be installed before any shard runs')
+})
+
+// #653 lost two whole linux-test runs to `playwright install --with-deps`
+// sitting in a wedged `apt-get update` until the 30-minute job cap cancelled
+// it. The apt half now carries its own bound, and each attempt a shorter one,
+// so a bad mirror ends in a retry and then a named failure.
+test('the Linux jobs bound and retry the apt install of Chromium system libraries', () => {
+  // The script's own worst case — every attempt, each one's kill grace, and the
+  // lock wait between them — has to fit under the step cap, or the cap fires
+  // mid-retry and the job reports a cancellation instead of a named failure.
+  const installer = fs.readFileSync(path.join(root, 'scripts', 'ci-install-chromium-deps.sh'), 'utf8')
+  const attempts = installer.match(/CI_APT_ATTEMPT_SECONDS:-([\d ]+)\}/)[1].trim().split(/\s+/).map(Number)
+  const lockWait = Number(installer.match(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)\}/)[1])
+  const killGrace = Number(installer.match(/timeout --kill-after=(\d+)s/)[1])
+  assert.equal(attempts.length, 2, 'one retry, matching the project rule of at most one re-run')
+  const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait
+
+  // Both Linux browser jobs install the libraries, so both carry the bound.
+  for (const [jobName, firstBrowserCommand] of [
+    ['linux-test', 'npm test'],
+    ['linux-renderer-v2-browser', '${{ matrix.command }}'],
+  ]) {
+    const job = workflow.jobs[jobName]
+    const steps = job.steps
+    const commands = runSteps(jobName)
+
+    assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
+      `${jobName}: the apt install must not ride along with the unbounded browser download`)
+
+    const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
+    assert.notEqual(depsIndex, -1, `${jobName} must install Chromium system libraries`)
+    assert.ok(depsIndex < steps.findIndex((step) => step.run === firstBrowserCommand),
+      `${jobName}: system libraries must be installed before ${firstBrowserCommand}`)
+
+    const depsStep = steps[depsIndex]
+    assert.equal(typeof depsStep['timeout-minutes'], 'number', `${jobName}: the apt step must carry its own bound`)
+    assert.ok(depsStep['timeout-minutes'] <= 13, `${jobName}: a wedged mirror must not eat the time the tests need`)
+    assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
+    assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
+    assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
+      `${jobName}: the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
+  }
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
@@ -200,17 +281,82 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
   assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
 
-  // test:v2:browser is dispatched whole, and must stay that way. Its files each
-  // build a Vite dev server on the same `configFile: false` root, so they share
-  // one on-disk node_modules/.vite dependency cache that the earlier files warm
-  // for the later ones. Split across runners, app-check.mjs — which runs last
-  // and benefits most — got a cold cache and blew its 90s fixture mount budget
-  // on a mid-run re-optimisation.
-  assert.ok(shardCommands.includes('npm run test:v2:browser'), 'the matrix must dispatch test:v2:browser whole')
-  assert.equal(scripts['test:v2:browser:1'], undefined, 'test:v2:browser must not be split across runners')
-  assert.match(scripts['test:v2:browser'], /--test-concurrency=1/, 'the browser suites must stay serialised')
-  assert.ok(scripts['test:v2:browser'].split(/\s+/).filter((token) => /\.mjs$/.test(token)).length > 0,
-    'test:v2:browser must still name its suites')
+  // quality.yml runs test:v2:browser whole nowhere (the release gates still run
+  // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
+  // runner of their own; the configFile:false browser-checks are
+  // test:v2:browser:fixture, which Windows and Linux each cut into numbered
+  // shares of their own below.
+  const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
+  for (const script of ['test:v2:browser', 'test:v2:browser:fixture', 'test:v2:browser:e2e']) {
+    assert.match(scripts[script], /^node --test --test-concurrency=1 /, `${script} must stay serialised`)
+    assert.ok(suites(script).length > 0, `${script} must still name its suites`)
+  }
+  assert.ok(shardCommands.includes('npm run test:v2:browser:e2e'), 'the matrix must dispatch test:v2:browser:e2e')
+  for (const whole of ['npm run test:v2:browser', 'npm run test:v2:browser:fixture']) {
+    assert.ok(!shardCommands.includes(whole), `${whole} must not also run whole on Windows`)
+  }
+  const whole = suites('test:v2:browser')
+  const fixture = suites('test:v2:browser:fixture')
+  const e2e = suites('test:v2:browser:e2e')
+  assert.deepEqual([...fixture, ...e2e].sort(), [...whole].sort(), 'the fixture and e2e runners must add up to exactly test:v2:browser')
+  for (const file of e2e) {
+    assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /cacheDir: 'node_modules\/\.vite-[\w-]+'/,
+      `${file} may only leave the fixture runners because it brings its own Vite cacheDir`)
+  }
+
+  // The Windows fixture shares. app-check.mjs alone is two thirds of the
+  // fixture time, so it deals its tests to every share through
+  // e2e/shard-tests.mjs and runs in all of them; every other file runs in
+  // exactly one. Each runner names its own share, and every share must be
+  // dispatched, or the tests dealt to a missing one would run nowhere.
+  const fixtureShards = Object.keys(scripts)
+    .filter((name) => /^test:v2:browser:fixture:\d+$/.test(name))
+    .sort((left, right) => Number(left.split(':').at(-1)) - Number(right.split(':').at(-1)))
+  assert.ok(fixtureShards.length >= 2, 'the fixture browser-checks must be cut into at least two Windows runners')
+  const dealtImport = /import \{ test \} from '(?:\.\.\/)+e2e\/shard-tests\.mjs'/
+  const dealt = fixture.filter((file) => dealtImport.test(fs.readFileSync(path.join(root, file), 'utf8')))
+  assert.ok(dealt.includes('src/renderer-v2/testing/app-check.mjs'), 'app-check.mjs must deal its tests across the fixture runners')
+  // Only hooks may come from node:test in a dealt file: test, it, describe or a
+  // default import would register tests past the deal, in every half.
+  const hooks = ['before', 'after', 'beforeEach', 'afterEach', 'mock']
+  for (const file of dealt) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8')
+    for (const { index } of source.matchAll(/\bfrom\s+'node:test'/g)) {
+      const clause = source.slice(source.lastIndexOf('import', index) + 'import'.length, index).trim()
+      const names = /^\{([^}]*)\}$/.exec(clause)?.[1].split(',').map((name) => name.trim()).filter(Boolean)
+      assert.ok(names && names.every((name) => hooks.includes(name)),
+        `${file} must register every test through the deal, so it may only take hooks from node:test, not ${clause}`)
+    }
+  }
+  // A file listed twice in one share still runs there once (node --test drops
+  // the repeat), so each share counts once per file. The Linux job deals the
+  // same files into shares of its own, cut by Linux's timings, under the same
+  // rules.
+  function assertFixtureShares(prefix, names, dispatched, where) {
+    const count = names.length
+    const placed = new Map(fixture.map((file) => [file, 0]))
+    names.forEach((name, index) => {
+      assert.equal(name, `${prefix}${index + 1}`, `${where} fixture shares must be numbered from 1 without gaps`)
+      assert.ok(dispatched.includes(`npm run ${name}`), `${where} must dispatch ${name}`)
+      assert.ok(scripts[name].startsWith(`cross-env XINGMANG_TEST_SHARD=${index + 1}/${count} node --test --test-concurrency=1 `),
+        `${name} must stay serialised and select share ${index + 1} of ${count}`)
+      for (const file of new Set(suites(name))) {
+        assert.ok(placed.has(file), `${name} runs ${file}, which test:v2:browser:fixture does not`)
+        placed.set(file, placed.get(file) + 1)
+      }
+    })
+    for (const [file, runs] of placed) {
+      assert.equal(runs, dealt.includes(file) ? count : 1,
+        dealt.includes(file) ? `${file} deals its tests, so every ${where} fixture share must run it` : `${file} must run in exactly one ${where} fixture share`)
+    }
+  }
+  assertFixtureShares('test:v2:browser:fixture:', fixtureShards, shardCommands, 'Windows')
+  const linuxShares = Object.keys(scripts)
+    .filter((name) => /^test:v2:browser:fixture:linux:\d+$/.test(name))
+    .sort((left, right) => Number(left.split(':').at(-1)) - Number(right.split(':').at(-1)))
+  assert.ok(linuxShares.length >= 2, 'the Linux fixture browser job must be cut into at least two runners')
+  assertFixtureShares('test:v2:browser:fixture:linux:', linuxShares, linuxFixtureShardCommands(), 'Linux')
+  assert.equal(linuxFixtureShardCommands().length, linuxShares.length, 'the Linux matrix must dispatch each of its shares once')
 
   // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
   // leaf added later that no shard dispatches fails here instead of silently
@@ -240,6 +386,56 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.deepEqual(named('test:browser', /\.cjs$/), [])
   assert.ok(named('test:browser', /\.mjs$/).length > 0, 'test:browser must still name its suites')
   assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
+})
+
+// test:scripts is a hand-kept list, and a suite missing from it is not reported
+// anywhere: three of them (the installer directory guard and both macOS
+// artifact-name suites) sat in scripts/ for weeks with neither npm test nor CI
+// running them. Every suite has to be named by some npm script; the macOS-only
+// ones count through test:mac:free-signing.
+test('every script suite is run by some npm script', () => {
+  const named = new Set(Object.values(packageJson.scripts).flatMap((command) => command.split(/\s+/)))
+  const suites = fs.readdirSync(path.join(root, 'scripts'))
+    .filter((name) => /\.test\.[cm]?js$/.test(name))
+    .map((name) => `scripts/${name}`)
+  assert.ok(suites.length > 0, 'scripts/ must still hold its suites')
+  assert.deepEqual(suites.filter((suite) => !named.has(suite)), [])
+})
+
+// The shares above only add up to the whole file while the deal gives every
+// test to exactly one share, and a misspelt share has to stop the run rather
+// than quietly register everything or nothing.
+test('dealing a file across the fixture shares runs each of its tests exactly once', async () => {
+  const shard = await import(require('node:url').pathToFileURL(path.join(root, 'e2e', 'shard-tests.mjs')).href)
+
+  assert.equal(shard.parseTestShard(undefined), null)
+  assert.equal(shard.parseTestShard(''), null)
+  assert.deepEqual(shard.parseTestShard('2/3'), { index: 2, total: 3 })
+  for (const malformed of ['0/2', '3/2', '1/0', '1', '1/2/3', ' 1/2', '-1/2', 'a/b']) {
+    assert.throws(() => shard.parseTestShard(malformed), /XINGMANG_TEST_SHARD must name one shard as index\/total/, malformed)
+  }
+
+  const names = Array.from({ length: 11 }, (_, index) => `case ${index}`)
+  function deal(value) {
+    const registered = []
+    const register = shard.createShardedTest(shard.parseTestShard(value), (name) => registered.push(name))
+    for (const name of names) register(name, () => {})
+    return registered
+  }
+  assert.deepEqual(deal(undefined), names, 'an unsharded run must register every test')
+  // Unsharded, a file gets node:test's own test, so local runs and the release
+  // gates' whole test:v2 still report each test at its own line rather than at
+  // the wrapper.
+  assert.equal(shard.test === test, !process.env.XINGMANG_TEST_SHARD, 'only a named shard may wrap test')
+  for (const total of [1, 2, 3]) {
+    const shares = Array.from({ length: total }, (_, index) => deal(`${index + 1}/${total}`))
+    assert.deepEqual(shares.flat().sort(), [...names].sort(), `${total} shares must add up to the whole file exactly once`)
+    const sizes = shares.map((share) => share.length)
+    assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 1, `${total} shares must split the file evenly`)
+  }
+  // Declaration order, not names: a test added in the middle moves the ones
+  // after it to the next share, and that is fine as long as every share runs.
+  assert.deepEqual(deal('1/2'), ['case 0', 'case 2', 'case 4', 'case 6', 'case 8', 'case 10'])
 })
 
 test('the release gate only runs smoke scripts the Windows required job also runs', () => {
@@ -307,17 +503,46 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   // M-03: test:v2 and test:canvas ran only on windows-latest, the slowest and
   // least reliable job in the matrix, so one Defender timeout took the renderer
   // that actually ships out of a pull request's coverage entirely.
-  const steps = workflow.jobs['linux-test'].steps
-  const commands = runSteps('linux-test')
-  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
-
-  assert.notEqual(dirtyCheckIndex, -1, 'linux-test must still guard against a dirty working tree')
-  for (const command of ['npm run test:v2', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2']) {
-    const index = commands.indexOf(command)
-    assert.notEqual(index, -1, `linux-test must run ${command}`)
-    assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
-      `${command} must run before the dirty-tree guard`)
+  //
+  // test:v2 itself is spread over two Linux jobs, because run back to back it
+  // made linux-test the pipeline's wall clock. The fixture browser suites run
+  // in linux-renderer-v2-browser along the seam the Windows matrix already
+  // uses, as shards of their own; the split test above pins that the shards
+  // add up to test:v2:browser:fixture.
+  const placement = {
+    'linux-test': ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2'],
+    'linux-renderer-v2-browser': ['${{ matrix.command }}'],
   }
+  for (const [jobName, expected] of Object.entries(placement)) {
+    const steps = workflow.jobs[jobName].steps
+    const commands = runSteps(jobName)
+    const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
+
+    assert.notEqual(dirtyCheckIndex, -1, `${jobName} must still guard against a dirty working tree`)
+    for (const command of expected) {
+      const index = commands.indexOf(command)
+      assert.notEqual(index, -1, `${jobName} must run ${command}`)
+      assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
+        `${command} must run before the dirty-tree guard`)
+    }
+  }
+  const linuxCommands = [...runSteps('linux-test'), ...runSteps('linux-renderer-v2-browser')]
+  const v2Leaves = packageJson.scripts['test:v2'].split('&&').map((part) => part.trim())
+  assert.deepEqual(v2Leaves, ['npm run test:v2:vitest', 'npm run test:v2:browser'])
+  // Neither the whole nor its browser half may also run whole, or the split
+  // would have doubled the minutes instead of halving the wall clock.
+  for (const whole of ['npm run test:v2', 'npm run test:v2:browser']) {
+    assert.equal(linuxCommands.includes(whole), false, `${whole} must not also run whole on Linux`)
+  }
+  for (const part of ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e']) {
+    assert.equal(linuxCommands.filter((command) => command === part).length, 1, `Linux must run ${part} exactly once`)
+  }
+  assert.equal(linuxCommands.includes('npm run test:v2:browser:fixture'), false,
+    'test:v2:browser:fixture must not also run whole on Linux beside its shards')
+  for (const command of linuxFixtureShardCommands()) {
+    assert.match(command, /^npm run test:v2:browser:fixture:linux:\d+$/, 'each Linux fixture shard runs one share and nothing else')
+  }
+  const commands = runSteps('linux-test')
 
   // T-S4: check:v2 only earns its place in front of that guard while it stays
   // report-free. Passing --report here would write three generatedAt-stamped
@@ -451,6 +676,44 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   }
 })
 
+test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
+  const commands = runSteps('windows-package')
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const smoke = 'node e2e/windows-powershell-probes-smoke.mjs'
+  const index = commands.indexOf(smoke)
+  assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+  assert.ok(index > commands.indexOf('npm run compile'), `${smoke} drives the compiled probe scripts`)
+  assert.ok(packageSteps.find((entry) => entry.run === smoke)['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+
+  // A cold Windows PowerShell start on a busy runner kept outlasting the unit
+  // test budgets (#458, #514, #517, #523 and the probes this smoke took over).
+  // Unit tests check the generated script text instead; a test that starts
+  // powershell.exe itself belongs in the smoke above.
+  const startsPowerShell = /(?:execFileSync|execFile|spawnSync|spawn|runCommand)\(\s*(?:\{\s*executable:\s*)?(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  const offenders = []
+  for (const directory of ['electron', 'src']) {
+    for (const entry of fs.readdirSync(path.join(root, directory), { recursive: true })) {
+      const relative = path.join(directory, String(entry))
+      if (!/\.test\.tsx?$/.test(relative)) continue
+      const source = fs.readFileSync(path.join(root, relative), 'utf8')
+      // The cold-start budget only ever existed for tests that ran a probe for
+      // real through the shipped function, which the pattern above cannot see.
+      if (startsPowerShell.test(source) || source.includes('XINGMANG_POWERSHELL_TEST_TIMEOUT_MS')) offenders.push(relative)
+    }
+  }
+  // The script suites run in the same kind of shard, many files at once. The
+  // recovery script's logic test ran out its 30 seconds there on #782 and now
+  // lives in the smoke above. A script suite that builds the system
+  // PowerShell's path and can start a process is the shape it had.
+  const buildsPowerShellPath = /'WindowsPowerShell',\s*'v1\.0',\s*'powershell\.exe'|(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  for (const entry of fs.readdirSync(path.join(root, 'scripts'))) {
+    if (!/\.test\.c?js$/.test(entry)) continue
+    const source = fs.readFileSync(path.join(root, 'scripts', entry), 'utf8')
+    if (source.includes("require('node:child_process')") && buildsPowerShellPath.test(source)) offenders.push(path.join('scripts', entry))
+  }
+  assert.deepEqual(offenders, [])
+})
+
 // T-G5: these two were the last never-wired smokes. The first used to pin CI to
 // an expectation the product contradicted at the time — it read the zoom floor
 // off window-preferences.ts (then 0.8) while the window that actually receives
@@ -494,6 +757,62 @@ test('the Windows job packages and exercises a hardened non-publishing build', (
   assert.match(buildCommand, /--publish never/)
 })
 
+test('every Linux architecture is built, installed, launched sandboxed and removed on its own hardware', () => {
+  const job = workflow.jobs['linux-package']
+  const commands = runSteps('linux-package')
+  const indexOf = (pattern) => commands.findIndex((command) => pattern.test(command))
+
+  // A deb cannot be installed on another architecture, and Electron under an
+  // emulator says nothing about a real machine, so each one gets a native
+  // runner. electron-builder names the arm64 unpacked directory differently.
+  assert.equal(job.strategy['fail-fast'], false)
+  assert.deepEqual(job.strategy.matrix.include, [
+    { arch: 'x64', runner: 'ubuntu-24.04', unpacked: 'linux-unpacked' },
+    { arch: 'arm64', runner: 'ubuntu-24.04-arm', unpacked: 'linux-arm64-unpacked' },
+  ])
+  assert.equal(job['runs-on'], '${{ matrix.runner }}')
+  // build:linux:ci packages the runner's own architecture only; anything
+  // else would make the matrix verify one deb twice.
+  assert.doesNotMatch(packageJson.scripts['build:linux:ci'], /--(x64|arm64)\b/)
+  assert.equal(job.env.PACKAGE_ARCH, '${{ matrix.arch }}')
+  assert.equal(job.env.UNPACKED_DIRECTORY, 'release/${{ matrix.unpacked }}')
+
+  const order = [
+    /^npm ci\b/,
+    /^npm run build:linux:ci$/,
+    /^node scripts\/verify-packaged-hardening\.cjs "\$UNPACKED_DIRECTORY"$/,
+    /^node scripts\/verify-linux-deb\.cjs release --arch "\$PACKAGE_ARCH"$/,
+    /apt-get install -y --no-install-recommends xvfb "\$deb"/,
+    /apparmor_restrict_unprivileged_userns=1/,
+    /^xvfb-run -a node e2e\/linux-deb-smoke\.mjs \/usr\/bin\/xingmang-ai-manager$/,
+    /^xvfb-run -a node e2e\/packaged-hardening-smoke\.mjs \/usr\/bin\/xingmang-ai-manager$/,
+    /apt-get remove -y xingmang-ai-manager/,
+  ].map(indexOf)
+  assert.ok(order.every((index) => index !== -1), `linux-package is missing a step: ${JSON.stringify(order)}`)
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'linux-package runs its steps out of order')
+
+  // The launches are what prove an ordinary user gets a sandboxed app. Under
+  // sudo Electron only starts with the sandbox off, which proves nothing.
+  for (const command of commands.filter((entry) => /node e2e\//.test(entry))) {
+    assert.doesNotMatch(command, /\bsudo\b/, command)
+  }
+  assert.doesNotMatch(JSON.stringify(job), /no-sandbox|disable-setuid-sandbox|ELECTRON_DISABLE_SANDBOX/)
+
+  // Each step that installs, launches or removes names itself if it hangs.
+  const bounded = job.steps.filter((step) => /apt-get|xvfb-run|build:linux/.test(String(step.run || '')))
+  assert.equal(bounded.length, 5)
+  for (const step of bounded) {
+    assert.ok(step['timeout-minutes'] > 0, `${step.name || step.run} needs its own bound`)
+  }
+  assert.ok(job['timeout-minutes'] > Math.max(...bounded.map((step) => step['timeout-minutes'])),
+    'linux-package must outlive its longest bounded step')
+
+  const removal = commands[order.at(-1)]
+  for (const leftover of ['/opt/xingmang-ai-manager', '/usr/bin/xingmang-ai-manager', '/etc/alternatives/xingmang-ai-manager', '/usr/share/applications/xingmang-ai-manager.desktop', '/etc/apparmor.d/xingmang-ai-manager']) {
+    assert.ok(removal.includes(leftover), `removal must check ${leftover}`)
+  }
+})
+
 test('a branch push with an open pull request triggers exactly one run', () => {
   // `on:` parses to the `true` key because YAML reads a bare `on` as a boolean.
   const triggers = workflow.on ?? workflow[true]
@@ -507,10 +826,44 @@ test('a branch push with an open pull request triggers exactly one run', () => {
 
 test('superseded runs are cancelled instead of billing a full matrix each', () => {
   assert.equal(workflow.concurrency.group, '${{ github.workflow }}-${{ github.ref }}')
-  // Includes main while the project is pre-release: a burst of merges would
-  // otherwise run the whole matrix once per merge with no way to supersede an
-  // obsolete one. Revisit once releases start.
+  // Includes main: every merge was checked as its pull request's merge commit
+  // before it landed, so a burst of merges only needs its final state run
+  // again. yoyo kept this once releases had started (2026-10-03).
   assert.equal(workflow.concurrency['cancel-in-progress'], true)
+})
+
+test('a burst of merges to main reaches the matrix once, and pull requests never wait', () => {
+  const job = workflow.jobs.changes
+  const [wait] = job.steps
+
+  // First in the only job everything else needs, so a newer merge cancels a
+  // runner that is asleep rather than one that has started checking.
+  assert.equal(wait.run, 'sleep 600')
+  assert.equal(wait.if, "github.event_name == 'push'", 'pull requests must not wait')
+  for (const [name, entry] of Object.entries(workflow.jobs)) {
+    if (name === 'changes') continue
+    assert.ok([].concat(entry.needs).includes('changes'), `${name} must not start before the wait is over`)
+  }
+  // The wait is spent inside the job's own bound; the rest took seconds.
+  assert.ok(job['timeout-minutes'] >= 13, 'the job bound must leave room after the ten-minute wait')
+  // The wait is only cheap if the next merge actually cancels it, and it is
+  // for merges to main, not a way to pace anything else.
+  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  const sleepers = Object.entries(workflow.jobs)
+    .filter(([, entry]) => entry.steps.some((step) => /\bsleep\b/i.test(String(step.run || ''))))
+    .map(([name]) => name)
+  assert.deepEqual(sleepers, ['changes'])
+
+  // The run that survives a burst stands in for every merge in it, but its
+  // push event only names the last one. A documentation-only merge landing
+  // last must not mark main green over the code merges it cancelled.
+  const { requiresCodeChecksForEvent } = require('./ci-change-scope.cjs')
+  assert.equal(requiresCodeChecksForEvent('push', ['docs/guide.md']), true)
+  assert.equal(requiresCodeChecksForEvent('pull_request', ['docs/guide.md']), false)
+  assert.equal(requiresCodeChecksForEvent('pull_request', ['electron/ipc.ts']), true)
+  assert.equal(requiresCodeChecksForEvent('pull_request', null), true)
+  const scopeSource = fs.readFileSync(path.join(root, 'scripts', 'ci-change-scope.cjs'), 'utf8')
+  assert.match(scopeSource, /const code = requiresCodeChecksForEvent\(process\.env\.GITHUB_EVENT_NAME, files\)/)
 })
 
 test('documentation-only changes do not build and package the app', () => {
@@ -518,7 +871,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -541,8 +894,8 @@ test('the change-scope job also gates the unreleased changelog fragments', () =>
   // The guard diffs both unreleased sections against the pull request base, so
   // the base commit has to be reachable...
   assert.equal(checkout.with['fetch-depth'], 0)
-  // ...and this is the only job without a documentation-only skip, which is
-  // exactly the shape a bare CHANGELOG.md edit has.
+  // ...and the job has no documentation-only skip, because that is exactly
+  // the shape a bare CHANGELOG.md edit has.
   assert.equal(job.if, undefined, 'the fragment gate must run for every change')
   // No npm ci here: the gate has to keep running on node builtins alone.
   assert.equal(commands.some((command) => command.startsWith('npm ci')), false)
@@ -560,7 +913,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit', 'cli-relay-probe'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -570,13 +923,14 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results) => {
     const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit']) {
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
     // The probe has its own trigger, so "skipped" is its normal state on a
     // pull request that leaves the verified-version list alone.
     jobs['cli-relay-probe'] = { result: results['cli-relay-probe'] || 'skipped' }
+    jobs['secret-scan'] = { result: results['secret-scan'] || 'success' }
     return run(source, jobs)
   }
   assert.equal(verify('true', 'success', {}), true)
@@ -589,14 +943,30 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('false', 'failure', {}), false)
   assert.equal(verify('', 'success', {}), false)
   assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure' }), false)
-  assert.equal(verify('false', 'success', Object.fromEntries(
-    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].map(name => [name, 'skipped']),
-  )), true)
+  // One red architecture fails the whole matrix job, which is what this sees.
+  assert.equal(verify('true', 'success', { 'linux-package': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'linux-package': 'skipped' }), false)
+  // The Linux fixture browser suites left linux-test for a job of their own;
+  // they still block exactly as they did when linux-test ran them.
+  assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'skipped' }), false)
+  const documentationOnly = Object.fromEntries(
+    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
+  )
+  assert.equal(verify('false', 'success', documentationOnly), true)
   // The relay probe runs only when the verified-version list moves, so its
   // skip is a pass; a red one is the whole reason it exists and must block.
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'success' }), true)
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'cancelled' }), false)
+  // A key pasted into Markdown leaks as surely as one in code: the secret scan
+  // has no documentation-only skip, so only its success passes, whatever the
+  // change touched.
+  assert.equal(verify('true', 'success', { 'secret-scan': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'secret-scan': 'skipped' }), false)
+  assert.equal(verify('true', 'success', { 'secret-scan': 'cancelled' }), false)
+  assert.equal(verify('false', 'success', { ...documentationOnly, 'secret-scan': 'failure' }), false)
+  assert.equal(verify('false', 'success', { ...documentationOnly, 'secret-scan': 'skipped' }), false)
 
   // The fold-in job itself: it is what keeps a single `test` check meaning
   // "Windows is green" after the matrix replaced the job that used to be it.
@@ -631,8 +1001,39 @@ test('change classification does not skip code, workflow, or unknown revisions',
   assert.equal(requiresCodeChecks(['electron/ipc.ts']), true)
   assert.equal(changedFiles({ before: '0'.repeat(40), after: 'a'.repeat(40) }, 'push'), null)
   assert.equal(changedFiles({ before: 'unsafe;command', after: 'a'.repeat(40) }, 'push'), null)
-  const values = changedFiles({ pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } } }, 'pull_request', (_cmd, argv) => { assert.equal(argv.at(-1), '--'); return 'docs/guide.md\0src/app.ts\0' })
+  const values = changedFiles({ pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } } }, 'pull_request', (_cmd, argv) => {
+    if (argv[0] === 'merge-base') return `${'c'.repeat(40)}\n`
+    assert.equal(argv.at(-1), '--')
+    return 'docs/guide.md\0src/app.ts\0'
+  })
   assert.deepEqual(values, ['docs/guide.md', 'src/app.ts'])
+})
+
+test('a pull request counts only its own commits, from where it left the base branch', () => {
+  const { changedFiles } = require('./ci-change-scope.cjs')
+  const base = 'a'.repeat(40)
+  const head = 'b'.repeat(40)
+  const fork = 'c'.repeat(40)
+  const pullRequest = { pull_request: { base: { sha: base }, head: { sha: head } } }
+  const calls = []
+  const git = (_cmd, argv) => {
+    calls.push(argv)
+    return argv[0] === 'merge-base' ? `${fork}\n` : 'docs/RELEASING.md\0'
+  }
+  // base.sha is main's tip when the event fired. Diffing it against the head
+  // directly also counted what main gained after the branch was cut, so a
+  // documentation-only pull request behind main ran every job (#926).
+  assert.deepEqual(changedFiles(pullRequest, 'pull_request', git), ['docs/RELEASING.md'])
+  assert.deepEqual(calls, [['merge-base', base, head], ['diff', '--name-only', '-z', fork, head, '--']])
+
+  calls.length = 0
+  changedFiles({ before: base, after: head }, 'push', git)
+  assert.deepEqual(calls, [['diff', '--name-only', '-z', base, head, '--']])
+
+  // No merge base (or nothing usable from git) leaves the range unknown, and
+  // an unknown range runs everything.
+  assert.equal(changedFiles(pullRequest, 'pull_request', () => { throw new Error('fatal: no merge base') }), null)
+  assert.equal(changedFiles(pullRequest, 'pull_request', (_cmd, argv) => (argv[0] === 'merge-base' ? '\n' : 'src/app.ts\0')), null)
 })
 
 test('the relay probe runs exactly when the verified-version list moves', () => {
@@ -662,6 +1063,27 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY, '${{ secrets.XINGMANG_CLI_PATROL_KEY }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
+})
+
+test('every change, documentation included, is scanned for leaked keys before it can merge', () => {
+  const job = workflow.jobs['secret-scan']
+  assert.equal(job.needs, 'changes')
+  // Unlike the build jobs it has no documentation-only skip: a key pasted into
+  // Markdown is as public as one in code once the branch is pushed.
+  assert.equal(job.if, undefined)
+  assert.equal(job['runs-on'], 'ubuntu-latest')
+  assert.ok(job['timeout-minutes'] > 0, 'a job that pulls an image and calls out to verify keys needs a bound')
+  const checkout = job.steps.find((step) => String(step.uses || '').includes('actions/checkout'))
+  // TruffleHog walks the change's own commits, so they and the base have to be
+  // in the checkout, not only the merge result.
+  assert.equal(checkout.with['fetch-depth'], 0)
+  assert.equal(checkout.with['persist-credentials'], false)
+  assert.deepEqual(runSteps('secret-scan'), ['node scripts/scan-new-commits-for-secrets.cjs'])
+  // No secret goes in, so the job runs the same on a fork's pull request. (The
+  // pattern wants the expression syntax: the script's own name ends in
+  // "secrets.cjs".)
+  assert.equal(/\$\{\{[^}]*secrets\./.test(JSON.stringify(job)), false)
+  assert.ok(packageJson.scripts['test:scripts'].includes('scripts/scan-new-commits-for-secrets.test.cjs'))
 })
 
 test('packaged Markdown and validation data always require code checks', () => {
@@ -826,6 +1248,7 @@ const fixtureReadinessConsumers = [
   'e2e/ui-interactions.test.mjs',
   'src/renderer-v2/testing/app-check.mjs',
   'src/renderer-v2/features/auth/browser-check.mjs',
+  'src/renderer-v2/features/tools/account-bound-launch.browser-check.mjs',
   'e2e/v2-business.test.mjs',
   'e2e/app-v3-interactions.test.mjs',
   'scripts/audit/renderer-v2-gap-audit.mjs',
@@ -851,6 +1274,10 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/ui/browser-check.mjs',
   'src/renderer-v2/styles/contrast.browser-check.mjs',
   'src/renderer-v2/features/shell/keyboard.browser-check.mjs',
+  // Opens its pages through the harness rather than browser.newPage(), so the
+  // scan below never saw it; it clicked straight after page.goto on a 7s action
+  // default. Found by the Windows-shard check further down.
+  'e2e/v2-local-avatar.test.mjs',
 ]
 
 // A hand-kept list only covers what someone remembered to add. These are the
@@ -961,11 +1388,20 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
   // fixture that is merely slow still mounts on its first navigation.
   assert.ok(slice > 22_400, 'a single navigation must still outlast the slowest observed green mount')
 
-  for (const consumer of ['src/renderer-v2/testing/app-check.mjs', 'e2e/v2-business.test.mjs',
-    'e2e/maintenance-layout.test.mjs', 'src/renderer-v2/features/chat/browser-check.mjs',
-    'src/renderer-v2/ui/browser-check.mjs']) {
-    const source = fs.readFileSync(path.join(root, consumer), 'utf8')
-    assert.match(source, /openFixturePage\(/, `${consumer} must open its fixture through the shared retry`)
+  // This used to be a hand-kept list of five suites, and the auth fixture was not
+  // on it: #806's Windows shard (quality run 37146053083) lost its one navigation
+  // to net::ERR_NO_BUFFER_SPACE, the second time that open had died there, and
+  // five more suites Windows runs were still on a single navigation. Every suite
+  // a Windows job runs that opens a browser page is now held to it.
+  const pageSuites = windowsSuites().filter((suite) => /\.newPage\(/.test(fs.readFileSync(path.join(root, suite), 'utf8')))
+  for (const expected of ['src/renderer-v2/testing/app-check.mjs', 'src/renderer-v2/features/auth/browser-check.mjs',
+    'e2e/v2-business.test.mjs', 'e2e/account-commerce-interactions.test.mjs',
+    'e2e/maintenance-pages-interactions.test.mjs']) {
+    assert.ok(pageSuites.includes(expected), `the Windows suite scan must still reach ${expected}`)
+  }
+  for (const suite of pageSuites) {
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    assert.match(source, /openFixturePage\(/, `${suite} runs on Windows and must open its fixture through the shared retry`)
   }
 
   // Structure is not enough: retrying is only free while every attempt shares

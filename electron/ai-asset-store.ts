@@ -664,6 +664,27 @@ export class AiAssetStore {
     return this.persist(userId, bytes, null, undefined, scopedLocalAssetId(this.outputRoot, userId, bytes))
   }
 
+  /**
+   * Reads a file the user chose in a native open dialog, under the same
+   * reparse, single-link and stable-size checks storeLocalFile applies.
+   */
+  async readLocalFile(filePath: string, maximumBytes: number): Promise<Buffer> {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || filePath.includes('\0')) {
+      throw new Error('本地图片路径无效')
+    }
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > this.maximumImageBytes) {
+      throw new Error('本地图片大小上限无效')
+    }
+    return readBoundedOwnedFile(filePath, maximumBytes)
+  }
+
+  /** Stores bytes the main process prepared itself, content-addressed like storeLocalFile. */
+  async storeLocalBytes(userId: number, bytes: Buffer): Promise<AiStoredAsset> {
+    assertUserId(userId)
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new Error('图片内容无效')
+    return this.persist(userId, bytes, null, undefined, scopedLocalAssetId(this.outputRoot, userId, bytes))
+  }
+
   async readOwned(userId: number, assetId: string): Promise<AiOwnedAssetRead> {
     const record = await this.resolveOwned(userId, assetId)
     const bytes = await readBoundedOwnedFile(record.filePath, this.maximumImageBytes)

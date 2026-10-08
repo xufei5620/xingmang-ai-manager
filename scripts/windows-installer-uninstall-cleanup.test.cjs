@@ -34,7 +34,9 @@ test('the cleanup runs only on a real uninstall, before any file is removed', ()
   const body = macroBody('customUnInstall')
   // An upgrade runs the previous uninstaller with --updated. Clearing the login
   // item there would silently switch off the user's autostart on every update.
-  assert.match(body, /\$\{IfNot\} \$\{isUpdated\}\s+Call un\.xingmangUninstallCleanup\s+\$\{EndIf\}/)
+  // The guard may hold other real-uninstall-only calls after this one (the
+  // fallback shortcut removal, pinned in windows-installer-shortcuts.test.cjs).
+  assert.match(body, /\$\{IfNot\} \$\{isUpdated\}\s+Call un\.xingmangUninstallCleanup\s+(?:Call un\.\w+\s+)*\$\{EndIf\}/)
   // electron-builder runs customUnInstall after CHECK_APP_RUNNING has stopped the
   // app and before customRemoveFiles; the cleanup needs the exe still on disk.
   assert.ok(include.indexOf('!macro customUnInstall') < include.indexOf('!macro customRemoveFiles'))

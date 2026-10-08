@@ -75,7 +75,7 @@ describe('managed CLI key safeStorage codec', () => {
     }
   })
 
-  it('rejects records with duplicate providers or a provider/group mismatch', () => {
+  it('rejects duplicate providers and keeps old unscoped records on their original group names', () => {
     const record = persistedRecord()
     const account = record.accounts[0]
     expect(isPersistedManagedCliKeys(record)).toBe(true)
@@ -86,6 +86,37 @@ describe('managed CLI key safeStorage codec', () => {
     expect(isPersistedManagedCliKeys({
       ...record,
       accounts: [{ ...account, keys: [{ ...account.keys[0], group: 'wrong-group' }] }],
+    })).toBe(false)
+  })
+
+  it('accepts safe renamed groups only with an explicit matching site', () => {
+    const record = persistedRecord()
+    record.siteId = 'solov'
+    record.accounts[0].keys[1].group = 'Codex-Professional-Relay'
+
+    expect(isPersistedManagedCliKeys(record, 'solov')).toBe(true)
+    expect(isPersistedManagedCliKeys(record, 'solov-api')).toBe(false)
+    expect(isPersistedManagedCliKeys({ ...record, siteId: undefined }, 'solov')).toBe(false)
+    expect(isPersistedManagedCliKeys({ ...record, siteId: 'unknown' }, 'solov')).toBe(false)
+  })
+
+  it('rejects unsafe dynamic groups without weakening the other key fields', () => {
+    const record = persistedRecord()
+    record.siteId = 'solov'
+    const original = record.accounts[0].keys[1]
+    for (const group of ['', ' Codex 专用', 'x'.repeat(129), 'Codex\u0000专用', 'Codex\u007f专用']) {
+      expect(isPersistedManagedCliKeys({
+        ...record,
+        accounts: [{ ...record.accounts[0], keys: [{ ...original, group }] }],
+      })).toBe(false)
+    }
+    expect(isPersistedManagedCliKeys({
+      ...record,
+      accounts: [{ ...record.accounts[0], keys: [{ ...original, id: 0 }] }],
+    })).toBe(false)
+    expect(isPersistedManagedCliKeys({
+      ...record,
+      accounts: [{ ...record.accounts[0], keys: [{ ...original, key: 'not-a-key' }] }],
     })).toBe(false)
   })
 
@@ -254,15 +285,55 @@ describe('ManagedCliKeyStore', () => {
 
 
 describe('managed key realm validation', () => {
-  it('persists Sub2API groups only in the explicitly selected realm store', async () => {
+  it('persists dynamic groups only in the explicitly selected realm store', async () => {
     const file = temporaryFilePath()
     const cipher = fakeSafeStorage()
-    const apiKeys = providerIds.map((provider) => ({ ...managedKey(provider), group: sub2ApiManagedCliKeyProfiles[provider].group }))
+    const apiKeys = providerIds.map((provider) => ({
+      ...managedKey(provider),
+      group: provider === 'codex' ? 'Codex-Professional-Relay' : sub2ApiManagedCliKeyProfiles[provider].group,
+    }))
     const api = new ManagedCliKeyStore(file, cipher, 'solov-api')
     await expect(api.save(7, apiKeys)).resolves.toBe(true)
     expect(await new ManagedCliKeyStore(file, cipher, 'solov-api').read(7)).toEqual(apiKeys)
     await expect(new ManagedCliKeyStore(file, cipher).read(7)).rejects.toThrow('已损坏或无法解密')
-    await expect(api.save(7, providerIds.map((provider) => managedKey(provider)))).rejects.toThrow('格式错误')
     expect(await api.read(7)).toEqual(apiKeys)
+  })
+})
+
+describe('ManagedCliKeyStore session-only mode (Linux without a keyring)', () => {
+  it('keeps keys for this run without a usable keyring and never creates the file', async () => {
+    const filePath = temporaryFilePath()
+    const store = new ManagedCliKeyStore(filePath, fakeSafeStorage({
+      isEncryptionAvailable: () => false,
+      getSelectedStorageBackend: () => 'basic_text',
+    }), 'solov', 'session-only')
+
+    await expect(store.save(42, [managedKey('codex'), managedKey('claude')])).resolves.toBe(true)
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex'), managedKey('claude')])
+    await store.remove(42, managedKey('codex').id)
+    await expect(store.read(42)).resolves.toEqual([managedKey('claude')])
+    await expect(store.read(7)).resolves.toEqual([])
+    expect(fs.existsSync(path.dirname(filePath))).toBe(false)
+  })
+
+  it('rejects a stale save the same way the file cache does', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage(), 'solov', 'session-only')
+    const revision = store.captureRevision()
+    await store.save(42, [managedKey('codex')])
+    await expect(store.save(42, [managedKey('gemini')], revision)).resolves.toBe(false)
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex')])
+  })
+
+  it('hands out copies, so a caller cannot edit the cached record', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage(), 'solov', 'session-only')
+    await store.save(42, [managedKey('codex')])
+    const [entry] = await store.read(42)
+    entry.key = 'sk-tampered-value-123456'
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex')])
+  })
+
+  it('keeps refusing in the default durable mode', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false }))
+    await expect(store.read(42)).rejects.toThrow('系统安全存储不可用')
   })
 })

@@ -1,4 +1,5 @@
 import type { ProviderId } from '../../../../electron/ipc-contract'
+import { relayEndpointForUrl, relayEndpointOrigin, relaySiteKnownOrigins } from '../../../../electron/relay-sites'
 
 export type SourceMarkerStorage = Pick<
   Storage,
@@ -16,18 +17,46 @@ export function getSourceMarkerStorage(): SourceMarkerStorage | null {
   }
 }
 
-/** Provider paths and relay-site aliases on one origin intentionally share a marker. */
+function markerOrigin(relayBaseUrl: string): string | null {
+  try {
+    const url = new URL(relayBaseUrl)
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : null
+  } catch {
+    return null
+  }
+}
+
+function markerKey(origin: string, provider: ProviderId): string {
+  return `${markerPrefix}:${encodeURIComponent(origin)}:${provider}`
+}
+
+/**
+ * Provider paths and relay-site aliases on one origin intentionally share a marker, and so do the
+ * lines of one site: under "auto" the line follows the network (relay-route-controller.ts), and
+ * a source the user chose must not vanish when the line moves.
+ */
 export function manualSourceMarkerKey(
   relayBaseUrl: string,
   provider: ProviderId,
 ): string | null {
-  try {
-    const url = new URL(relayBaseUrl)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
-    return `${markerPrefix}:${encodeURIComponent(url.origin)}:${provider}`
-  } catch {
-    return null
-  }
+  const origin = markerOrigin(relayBaseUrl)
+  if (!origin) return null
+  const endpoint = relayEndpointForUrl(origin)
+  return markerKey(endpoint ? relayEndpointOrigin(endpoint.siteId, 'primary') ?? origin : origin, provider)
+}
+
+/**
+ * 两条线路合用一个标记以前，按线路地址存的那几份：选了备用直连时按直连的地址存，直连还是 IP
+ * 测试入口那阵子按 IP 存。读的时候一起认，写的时候顺手删掉，只留合用的那一份。
+ */
+function formerMarkerKeys(relayBaseUrl: string, provider: ProviderId): string[] {
+  const origin = markerOrigin(relayBaseUrl)
+  const endpoint = origin ? relayEndpointForUrl(origin) : null
+  const key = manualSourceMarkerKey(relayBaseUrl, provider)
+  if (!endpoint) return []
+  return relaySiteKnownOrigins(endpoint.siteId)
+    .map((known) => markerKey(known, provider))
+    .filter((former) => former !== key)
 }
 
 export function readManualSourceMarker(
@@ -38,7 +67,7 @@ export function readManualSourceMarker(
   const key = manualSourceMarkerKey(relayBaseUrl, provider)
   if (!storage || !key) return false
   try {
-    return storage.getItem(key) === manualMarker
+    return [key, ...formerMarkerKeys(relayBaseUrl, provider)].some((candidate) => storage.getItem(candidate) === manualMarker)
   } catch {
     return false
   }
@@ -55,6 +84,7 @@ export function writeManualSourceMarker(
   try {
     if (manual) storage.setItem(key, manualMarker)
     else storage.removeItem(key)
+    for (const former of formerMarkerKeys(relayBaseUrl, provider)) storage.removeItem(former)
     return true
   } catch {
     return false

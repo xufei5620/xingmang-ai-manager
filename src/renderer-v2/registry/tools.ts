@@ -1,7 +1,7 @@
 import { cliCatalog, providerConfigDirectoryNames, type ProviderId } from '../../../electron/catalog';
 
 export type ToolFirstRun = { command: string; prompt: string };
-export type ToolDef = { id: ProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; firstRun?: ToolFirstRun; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
+export type ToolDef = { id: ProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'managed' | 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; firstRun?: ToolFirstRun; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
 
 // npm 包名与配置目录名都从主进程的单一真相源派生,而不是在这里再抄一份:
 // 抄过的字段会漂移——`keyWrite` 就漂过(grok 标成 'env',实际写的是
@@ -56,13 +56,19 @@ export const firstRunHints: Record<ProviderId, ToolFirstRun> = {
 
 // 新手引导第一步默认选中、标「推荐」的那一个（第十一批候选 1，协调者拍板）。
 // Codex 桌面端是六个里唯一不用准备运行环境、不用开终端的，也是教程主线；
-// Windows 与 Mac 用同一个，Mac 上它走「安装指南」。页面里不写这个字面量（T2）。
+// Windows 与 Mac 用同一个，两边都在首页点「安装」。页面里不写这个字面量（T2）。
 export const guideRecommendedTool: ToolDef['id'] = 'codexDesktop';
+
+// Linux 上没有桌面端（ui-spec/04-pages.md：Linux 走 Codex CLI 或直接聊天）。推荐 Codex CLI，
+// 和 Linux 版教程第一章同一条路；Node.js 由星芒自己准备，新手一路「下一步」照样走得完。
+export function guideRecommendedToolFor(os: 'win' | 'mac' | 'linux'): ToolDef['id'] {
+  return os === 'linux' ? 'codex' : guideRecommendedTool;
+}
 
 export const tools: ToolDef[] = [
   { id: 'claude', name: 'Claude Code', vendor: 'Anthropic', brandIcon: 'Claude', kind: 'cli', install: npmInstall('claude'), requires: ['node'], configPath: configPathsFor('claude'), sources: ['account', 'official', 'manual'], shortcutIndex: 1, firstRun: firstRunHints.claude },
   { id: 'codex', name: 'Codex CLI', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'cli', install: npmInstall('codex'), requires: ['node'], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 2, firstRun: firstRunHints.codex },
-  { id: 'codexDesktop', name: 'Codex 桌面端', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'desktop', install: { type: 'installer', win: 'managed', mac: 'external', linux: 'unavailable' }, requires: [], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 3, hidden: os => os === 'linux' },
+  { id: 'codexDesktop', name: 'Codex 桌面端', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'desktop', install: { type: 'installer', win: 'managed', mac: 'managed', linux: 'unavailable' }, requires: [], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 3, hidden: os => os === 'linux' },
   { id: 'gemini', name: 'Gemini CLI', vendor: 'Google', brandIcon: 'Gemini', kind: 'cli', install: npmInstall('gemini'), requires: ['node', 'python'], configPath: configPathsFor('gemini'), sources: ['account', 'official', 'manual'], shortcutIndex: 4, firstRun: firstRunHints.gemini },
   { id: 'grok', name: 'Grok CLI', vendor: 'xAI', brandIcon: 'Grok', kind: 'cli', install: npmInstall('grok'), requires: ['node'], configPath: configPathsFor('grok'), sources: ['account', 'official', 'manual'], shortcutIndex: 5, firstRun: firstRunHints.grok },
 ];

@@ -3,6 +3,12 @@ import type { WindowCloseReport } from './window-close-query'
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
+import type { StaleProxyClearResult } from './stale-proxy-environment'
+import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
+export type { StaleProxyClearResult } from './stale-proxy-environment'
+import type { UserWideCertificateTrustResult } from './user-certificate-trust'
+export type { UserWideCertificateTrustResult } from './user-certificate-trust'
+export type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -15,10 +21,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
+export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -49,6 +55,7 @@ import type {
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
 import type {
+  ProviderSessionDeleteResult,
   ProviderSessionDetail,
   ProviderSessionExportResult,
   ProviderSessionListQuery,
@@ -69,6 +76,7 @@ import type {
   CodexDesktopLocaleStatus as MainCodexDesktopLocaleStatus,
 } from './codex-desktop-locale'
 import type {
+  DiagnosticFolderTarget as MainDiagnosticFolderTarget,
   DiagnosticState as MainDiagnosticState,
   DiagnosticsReport as MainDiagnosticsReport,
   DiagnosticsRunOptions as MainDiagnosticsRunOptions,
@@ -82,6 +90,8 @@ export type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 export type { RunningToolsReport } from './running-tools'
 import type { ToolModelCheck } from './tool-model-check'
 export type { ToolModelCheck } from './tool-model-check'
+import type { ToolTemplateFillResult } from './tool-config-ownership'
+export type { ToolTemplateFillResult } from './tool-config-ownership'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -90,7 +100,9 @@ import type {
 import type {
   AppConfigSummary as MainAppConfigSummary,
   CliLaunchResult as MainCliLaunchResult,
+  CliLeftoverCleanupResult as MainCliLeftoverCleanupResult,
   CliStatus as MainCliStatus,
+  CliUninstallOptions as MainCliUninstallOptions,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
   CodexDesktopLaunchResult as MainCodexDesktopLaunchResult,
   CodexReadinessStatus as MainCodexReadinessStatus,
@@ -106,6 +118,8 @@ import type {
 } from './system-service'
 import type {
   InstalledRelease as MainInstalledRelease,
+  UpdateDiskShortfall as MainUpdateDiskShortfall,
+  UpdateDownloadOptions as MainUpdateDownloadOptions,
   UpdateFailedStep as MainUpdateFailedStep,
   UpdatePhase as MainUpdatePhase,
   UpdateSnapshot as MainUpdateSnapshot,
@@ -184,11 +198,16 @@ export {
   defaultRelaySiteId,
   privacyPolicyUrl,
   relaySites,
+  relaySiteEndpointChoices,
+  relaySiteEndpointIdForBaseUrl,
+  relayProviderBaseUrls,
+  relayProviderBaseUrlMatches,
   resolveRelaySite,
   resolveSupportServiceUrl,
   supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
+export type { RelayEndpoint, RelayEndpointId, RelayRouteLine, RelayRouteLines, RelayRoutePreference, RelayRoutePreferences } from './relay-sites'
 
 export type ProviderId = CatalogProviderId
 export type { RelaySite } from './relay-sites'
@@ -206,6 +225,32 @@ export interface WindowCapabilities {
   settingsSaveIssue?: SettingsSaveIssue
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
+  // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
+  unexpectedExit?: UnexpectedExitNotice
+  // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
+  claudeDesktopRepaired?: true
+  // Linux 发行版名字（「Ubuntu 24.04.1 LTS」），给「复制给客服」那一行用。只有 Linux 有，读不到也缺省。
+  systemLabel?: string
+}
+export interface UnexpectedExitNotice {
+  /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
+  relaunched: boolean
+  /** 最近几次退出，时间为毫秒时间戳，error 已在主进程打码。 */
+  exits: Array<{ at: number; error: string }>
+}
+/** 设置里「卸载星芒」（目前只有 Mac）。两项都默认不勾。 */
+export interface AppUninstallRequest {
+  /** 同时清除登录记录和聊天记录（和 Windows 卸载页那一项同一口径）。 */
+  clearLoginRecords: boolean
+  /** 连同星芒替你装的命令行工具一起删。 */
+  removeManagedTools: boolean
+}
+export type AppUninstallLeftover = 'cli-hooks' | 'login-item' | 'tools' | 'records'
+export interface AppUninstallResult {
+  /** true = 已移到废纸篓、正在退出；false = 程序还在，界面提示他自己拖。 */
+  trashed: boolean
+  /** 没收拾干净的几样，界面据此多说一句。 */
+  leftovers: AppUninstallLeftover[]
 }
 export interface SettingsSaveIssue {
   kind: 'disk-full' | 'blocked' | 'other'
@@ -213,9 +258,32 @@ export interface SettingsSaveIssue {
   drive?: string
 }
 export type { ExternalDeepLink } from './external-deep-links'
-export interface FeedbackReportPreview { id: string; text: string; entries: number }
+export interface FeedbackReportPreview {
+  id: string
+  text: string
+  entries: number
+  /**
+   * false = 这份报告里还没有任何检查结果，界面在报告上面提醒客户先去「检查」页查一次。
+   * 缺省 = 不知道，不提醒。
+   */
+  selfChecked?: boolean
+}
+// Present only when the previewed report had expired or been superseded and
+// the main process captured a fresh one; the renderer swaps its dialog text.
+export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
+export interface FeedbackReportExportResult { outputPath: string; regenerated?: FeedbackReportPreview }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
+export type UpdateDiskShortfall = MainUpdateDiskShortfall
+export type UpdateDownloadOptions = MainUpdateDownloadOptions
+/** `update:install` 的可选参数。缺省 = 旧行为：不问，直接交给安装程序。 */
+export interface UpdateInstallOptions {
+  /**
+   * 还有工具在装或排着队时，先问退出时那一句（已知31）。只有更新页「确认重启安装」带它；
+   * 「必须更新」那层提示和旧回滚界面不带，照旧直接装（托盘那条路在主进程里自己问）。
+   */
+  askIfInstalling?: boolean
+}
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -231,6 +299,7 @@ export type MultiProviderSessionSummary = ProviderSessionSummary
 export type MultiProviderSessionPage = ProviderSessionPage
 export type MultiProviderSessionDetail = ProviderSessionDetail
 export type MultiProviderSessionExportResult = ProviderSessionExportResult
+export type MultiProviderSessionDeleteResult = ProviderSessionDeleteResult
 export type ToolStatus = MainToolStatus
 export type CliStatus = MainCliStatus
 export type CliVersionAdvice = MainCliVersionAdvice
@@ -245,6 +314,8 @@ export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
+export type CliLeftoverCleanupResult = MainCliLeftoverCleanupResult
+export type CliUninstallOptions = MainCliUninstallOptions
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
 export type SavedAccount = SavedAccountSummary
@@ -253,9 +324,25 @@ export type RepositoryContext = CodexRepositoryContext
 /** `workspace:choose` 的可选参数。渲染层只能说「要新建」，路径永远由主进程决定。 */
 export interface ChooseWorkspaceOptions {
   createStarter?: boolean
+  /**
+   * 首页第一次点「打开」（已知40），和 createStarter 一起用。主进程已经记着一个还在的文件夹时
+   * 直接用它：上一次已经建好、只是没打开成，再点「打开」或「重试」不再建第二个。没有才新建；
+   * 建不成说一句，接着弹目录选择器，不然再点「打开」还是去建、还是建不成。
+   */
+  firstOpen?: boolean
+}
+
+/**
+ * `runtime:install-node` 的可选参数。缺省 = 旧行为：装着能用的 Node.js 就不动。
+ * reason 'certificate'：电脑上的 Node.js 认不了这台电脑装的证书（公司电脑），
+ * 客户已经确认要换成新版，这时即使它够装工具也照样装一份新的。
+ */
+export interface NodeRuntimeInstallRequest {
+  reason?: 'certificate'
 }
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
+export type DiagnosticFolderTarget = MainDiagnosticFolderTarget
 export type DiagnosticsRunOptions = MainDiagnosticsRunOptions
 export type ConnectionCheckLayer = MainConnectionCheckLayer
 export type ConnectionCheckResult = MainConnectionCheckResult
@@ -311,6 +398,11 @@ export interface AccountContextMetadata {
   siteId?: AccountSiteId
   realmId?: 'xm-account' | 'api-account'
   capabilities?: import('./relay-backend').RelayBackendCapabilities
+  /**
+   * 只在 Linux 上没有可用的系统密码保管时出现：照常能登录，但登录只留在主进程内存里，
+   * 软件关掉就没了，界面据此不给「记住密码」。缺省 = 登录会记住（旧行为）。
+   */
+  sessionOnly?: true
 }
 /**
  * 开机账号恢复超过启动画面的等待上限时，会话先按「未登录、正在恢复」作答。
@@ -336,8 +428,11 @@ export interface AccountTopupPaymentResult {
   tradeNo: string | null
 }
 export interface AccountPaymentWindowTerminalEvent {
-  status: 'success' | 'expired' | 'failed' | 'closed'
+  /** unconfirmed：窗口关掉后在后台问满 15 分钟仍没有结果。 */
+  status: 'success' | 'expired' | 'failed' | 'closed' | 'unconfirmed'
   tradeNo: string | null
+  /** 只出现在 closed 上：主进程还在后台确认这笔订单，结果会再发一次本事件。缺省 = 不再确认。 */
+  confirming?: boolean
 }
 export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
 export type AccountTopupOrdersPage = NewApiTopupOrdersPage
@@ -403,8 +498,8 @@ export interface AccountKeyCliConfigurationInput {
 }
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
-// home / chat / tasks / announcement 只由系统通知的点击发出（platform/notifications.ts）。
-export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement'
+// home / chat / tasks / announcement / usage / health 只由系统通知的点击发出（platform/notifications.ts）。
+export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'usage' | 'health'
 
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
@@ -444,6 +539,8 @@ export type AiChatRole = 'system' | 'user' | 'assistant'
 export interface AiChatMessageInput {
   role: AiChatRole
   content: string
+  /** 用户这条消息附带的图片（主进程存好后给的资产标识），只有 user 消息能带。 */
+  images?: string[]
 }
 
 export interface AiChatParametersInput {
@@ -593,6 +690,12 @@ export interface CodexDesktopStatusEvent {
   status: DesktopAppStatus
 }
 
+/** 打开 Codex 桌面端途中每隔几秒报一次等了多久（只有 Windows 会发）。 */
+export interface CodexDesktopLaunchProgress {
+  elapsedSeconds: number
+  message: string
+}
+
 export interface CodexDesktopInstallProgress {
   phase: 'downloading' | 'validating' | 'closing' | 'installing' | 'completed' | 'error'
   percent: number | null
@@ -603,6 +706,8 @@ export interface CodexDesktopInstallResult {
   action: 'installed' | 'updated' | 'unchanged'
   previousVersion: string | null
   installedVersion: string | null
+  /** 国内下载线路比微软商店慢一步、这次没更新到商店最新版时，商店那一版的版本号。 */
+  storeNewerVersion?: string
 }
 
 export interface IpcInvokeDefinition<
@@ -665,8 +770,10 @@ export interface XingmangInvokeContract {
     [tool: ExternalToolId, options: ExternalClientConfigRequest],
     ExternalClientConfigResult
   >
-  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
+  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean, options?: ExternalClientScanOptions], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
+  /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
+  cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
    * 切回官方订阅账号；merge 恢复对应来源配置，reset 重建初始配置。
@@ -688,6 +795,12 @@ export interface XingmangInvokeContract {
     AccountSourceSwitchResult
   >
   /**
+   * 首页「修好它」（提醒设置要修）：先备份，只把本软件写进这家配置、却指向旧位置的
+   * 钩子与状态行改成这次的路径（这台电脑写不出来就收回），写完再查一遍。Key、模型和
+   * 用户自己写的钩子不动。
+   */
+  repairCliHooks: IpcInvokeDefinition<'config:repair-cli-hooks', [provider: ProviderId], ConfigSaveResult>
+  /**
    * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
    * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
    */
@@ -701,12 +814,21 @@ export interface XingmangInvokeContract {
    * 悄悄刷新；默认模型用不了时只报回来，换不换由用户点。核对不成一律 skipped，不抛错。
    */
   checkToolModels: IpcInvokeDefinition<'tools:check-models', [provider: ProviderId], ToolModelCheck>
+  /**
+   * 开机恢复账号后，给当前账号写过、但模板版本落后的工具配置补缺省项（用户写过的值不动）。
+   * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。工具可能正开着、这次没动的
+   * 在 pending 里，渲染层隔一阵带 retry = true 再要一次，主进程只补那几样（第二十六批 E）。
+   */
+  fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [retry?: boolean], ToolTemplateFillResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
-  /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
+  /**
+   * options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹；
+   * 再带 firstOpen = 首页第一次点「打开」：记着的文件夹还在就用它，建不成时接着弹选择器。
+   */
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
-  installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
+  installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   /** Windows 上按当前用户静默安装钉死版本的 Git for Windows；其余平台直接报错。 */
@@ -715,18 +837,30 @@ export interface XingmangInvokeContract {
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId, version?: string], void>
   /** 中止正在进行的安装或更新;已经走到写入工具目录那一步时会被拒绝并给出原因。 */
   cancelCliInstall: IpcInvokeDefinition<'cli:cancel-install', [provider: ProviderId], InstallCancelResult>
-  uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
+  /** options 省略 = 只卸载；reinstall = 「换成星芒装的」那一次，主进程先看盘够不够装回来再动手。 */
+  uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId, options?: CliUninstallOptions], ToolUninstallResult>
+  /**
+   * 卸载框里的「帮我清理」（已知48）：只说是哪个工具。删哪几个文件由主进程按那次卸载自己记下的定，
+   * 删之前逐个再核对；不收渲染层给的路径。
+   */
+  cleanUninstallLeftovers: IpcInvokeDefinition<'cli:clean-uninstall-leftovers', [provider: ProviderId], CliLeftoverCleanupResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
   installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
+  /** Codex 桌面端打不开时的「重置 Codex」：只清它自己的应用数据，星芒写的连接设置不动。 */
+  resetCodexDesktop: IpcInvokeDefinition<'desktop:reset-codex', [], void>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
-  /** mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。 */
+  /**
+   * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
+   * sessionId 只给 Codex 的 resumeLast:那条记录自己的 id(`codex:<UUID>`),主进程在
+   * 记录里核对过、且就在 workspace 里才按 id 接,否则照旧按目录找最近一条。
+   */
   launchCli: IpcInvokeDefinition<
     'cli:launch',
-    [provider: ProviderId, workspace: string, mode?: CliLaunchMode],
+    [provider: ProviderId, workspace: string, mode?: CliLaunchMode, sessionId?: string],
     CliLaunchResult
   >
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>
@@ -760,6 +894,8 @@ export interface XingmangInvokeContract {
   getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
   /** 重开软件（显示方式要重开才生效）。true = 已经开始退出；用户在退出确认里点了返回则是 false。 */
   relaunchApp: IpcInvokeDefinition<'window:relaunch', [], boolean>
+  /** Mac 上卸载星芒：收回写进工具里的提醒设置，再把星芒移到废纸篓并退出。 */
+  uninstallApp: IpcInvokeDefinition<'window:uninstall-app', [request: AppUninstallRequest], AppUninstallResult>
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
   replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
@@ -770,8 +906,12 @@ export interface XingmangInvokeContract {
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
   checkForUpdates: IpcInvokeDefinition<'update:check', [], UpdateSnapshot>
-  downloadUpdate: IpcInvokeDefinition<'update:download', [], UpdateSnapshot>
-  installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true }>
+  downloadUpdate: IpcInvokeDefinition<'update:download', [options?: UpdateDownloadOptions], UpdateSnapshot>
+  /**
+   * postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装新版本（已知31）。
+   * 缺省 = 已经交给安装程序（旧行为）。
+   */
+  installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
   listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
   getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
   exportSession: IpcInvokeDefinition<
@@ -810,14 +950,20 @@ export interface XingmangInvokeContract {
     [sessionId: string],
     boolean
   >
+  /** 彻底删除这台电脑上的一条记录。入参只有会话 id：要删的文件由主进程重新找出并校验。 */
+  deleteProviderSession: IpcInvokeDefinition<
+    'provider-sessions:delete',
+    [sessionId: string],
+    MultiProviderSessionDeleteResult
+  >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
   saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
   runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [options?: DiagnosticsRunOptions], DiagnosticsReport>
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
-  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], { entries: number }>
-  exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], { outputPath: string } | null>
+  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], FeedbackReportCopyResult>
+  exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], FeedbackReportExportResult | null>
   /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
   revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>
   openRuntimeLogDirectory: IpcInvokeDefinition<'runtime-logs:open-directory', [], boolean>
@@ -897,6 +1043,7 @@ export interface XingmangInvokeContract {
   redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
   getAccelerationPreference: IpcInvokeDefinition<'acceleration:get-preference', [scope: string], import('./acceleration-contract').AccelerationPreference>
   saveAccelerationPreference: IpcInvokeDefinition<'acceleration:save-preference', [scope: string, update: import('./acceleration-contract').AccelerationPreferenceUpdate], import('./acceleration-contract').AccelerationPreference>
+  recheckAccelerationBundle: IpcInvokeDefinition<'acceleration:recheck-bundle', [], import('./acceleration-contract').AccelerationBundleCheck>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   submitTwoFactorCode: IpcInvokeDefinition<'account:submit-two-factor-code', [code: string], AccountLoginResult>
@@ -997,6 +1144,8 @@ export interface XingmangInvokeContract {
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
+  /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
+  copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
   revealAccountKey: IpcInvokeDefinition<'account:reveal-key', [id: number], string>
   listAccountKeyModels: IpcInvokeDefinition<'account:list-key-models', [id: number], string[]>
   saveConfigWithAccountKey: IpcInvokeDefinition<
@@ -1037,6 +1186,8 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
+  pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
@@ -1055,6 +1206,16 @@ export interface XingmangInvokeContract {
     ConnectionCheckResult
   >
   /**
+   * 「Codex 干活检查」：会花当前账号一点额度，所以只有用户勾选确认后才发两次
+   * Responses 请求（第一次让模型调用无副作用的测试工具，第二次把结果交回去）。
+   * 本通道不在配置保存、账号切换或普通连接自检中调用。
+   */
+  probeCodexResponses: IpcInvokeDefinition<
+    'diagnostics:probe-codex-responses',
+    [acknowledgeBilling: true, expectedAccountScope: string],
+    ConnectionProbeReport
+  >
+  /**
    * 外部客户端（WorkBuddy / Claude Desktop / OpenCode）的连接自检。与上面那条
    * 分成两条通道而不是合成一个联合入参：这一条的密钥来自客户端自己的配置文件、
    * 由主进程读出，渲染层既给不了也不该给（I3）；结论形状相同，身份换成客户端 id。
@@ -1065,6 +1226,33 @@ export interface XingmangInvokeContract {
     ExternalClientCheckResult
   >
   getAccountKeyOptions: IpcInvokeDefinition<'account:get-key-options', [provider: ProviderId], AccountKeyOptions>
+  /**
+   * 检查页「清掉这条旧设置」：只删当前 Windows 账号下指向没开的本机代理的那几条，
+   * 不碰整台电脑那一份、不提权。没有入参：清哪几条由主进程在点的那一刻重新读、重新试连来定。
+   */
+  clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
+  /**
+   * 检查页「让这台电脑上所有终端都信任」：把 Node.js 也信任这台电脑证书库的那一条
+   * 写进当前 Windows 账号的设置。没有入参；只在最近一次检查查出公司证书、且这条还没
+   * 设过时主进程才写（user-certificate-trust.ts）。
+   */
+  trustCertificatesUserWide: IpcInvokeDefinition<'diagnostics:trust-certificates-user-wide', [], UserWideCertificateTrustResult>
+  /**
+   * 检查页「打开文件夹」：「文档」不让写时，新项目或 AI 作品改放的那个文件夹。
+   * 入参只是「哪一个」，路径由主进程自己算（I5）。返回 false = 没打开。
+   */
+  openDiagnosticFolder: IpcInvokeDefinition<'diagnostics:open-folder', [target: DiagnosticFolderTarget], boolean>
+  /**
+   * 检查页里两颗「点这里就好」：挪开 Codex 文件夹里那份额外设置，或删掉当前 Windows
+   * 账号下盖过当前账号的工具地址、密钥。入参只是「哪一种」，要动的文件和名字由主进程
+   * 在点的那一刻自己算（I5）。
+   */
+  fixDiagnostic: IpcInvokeDefinition<'diagnostics:fix', [kind: DiagnosticFixKind], DiagnosticFixResult>
+  /**
+   * 外接工具精选里「允许 AI 读写的文件夹」那一项的「选择文件夹」：弹原生选择框，
+   * 返回用户选的文件夹，取消返回 null。选到的路径照旧随添加请求过主进程的参数校验。
+   */
+  chooseExtensionDirectory: IpcInvokeDefinition<'extensions:choose-directory', [], string | null>
 }
 
 export interface XingmangEventContract {
@@ -1098,12 +1286,27 @@ export interface XingmangEventContract {
     'desktop:codex-install-progress',
     CodexDesktopInstallProgress
   >
+  onCodexDesktopLaunchProgress: IpcEventDefinition<
+    'desktop:codex-launch-progress',
+    CodexDesktopLaunchProgress
+  >
   onUpdateState: IpcEventDefinition<'update:state-changed', UpdateSnapshot>
   onAccountPaymentWindowTerminal: IpcEventDefinition<
     'account:payment-window-terminal',
     AccountPaymentWindowTerminalEvent
   >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
+  /**
+   * 星芒替用户绕开连不上的代理、整个改了直连以后，代理软件又连得上了，已经改回跟随系统代理
+   * （electron/proxy-bypass.ts）。载荷为空：界面只拿它收起「已经改为直接联网」那条提示。
+   */
+  onProxyBypassEnded: IpcEventDefinition<'network:proxy-bypass-ended', undefined>
+  /**
+   * 选「自动」的站换了线路（electron/relay-route-controller.ts）：开机后第一次查出结论、直连
+   * 连不上改走默认线路、直连好了切回来。载荷为空：界面重读设置里的 relayRouteLines，再把
+   * 工具迁过去（开着的也迁，#941）。
+   */
+  onRelayRouteChanged: IpcEventDefinition<'network:relay-route-changed', undefined>
 }
 
 export type XingmangApi = {
@@ -1129,11 +1332,14 @@ export const ipcInvokeChannels = {
   configureExternalTool: 'config:configure-external-tool',
   scanExternalClients: 'external-clients:scan',
   installExternalClient: 'external-clients:install',
+  cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  repairCliHooks: 'config:repair-cli-hooks',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
+  fillToolTemplateDefaults: 'config:fill-template-defaults',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',
@@ -1143,11 +1349,13 @@ export const ipcInvokeChannels = {
   installCli: 'cli:install',
   cancelCliInstall: 'cli:cancel-install',
   uninstallCli: 'cli:uninstall',
+  cleanUninstallLeftovers: 'cli:clean-uninstall-leftovers',
   checkCliUpdate: 'cli:check-update',
   getCodexSetupStatus: 'setup:codex-status',
   installCodexDesktop: 'desktop:install-codex',
   cancelCodexDesktopInstall: 'desktop:cancel-install-codex',
   uninstallCodexDesktop: 'desktop:uninstall-codex',
+  resetCodexDesktop: 'desktop:reset-codex',
   checkCodexDesktopUpdate: 'desktop:check-update-codex',
   launchCli: 'cli:launch',
   getCodexDesktopStatus: 'desktop:codex-status',
@@ -1162,6 +1370,7 @@ export const ipcInvokeChannels = {
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
   relaunchApp: 'window:relaunch',
+  uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
@@ -1181,6 +1390,7 @@ export const ipcInvokeChannels = {
   getProviderSessionDetail: 'provider-sessions:detail',
   exportProviderSession: 'provider-sessions:export',
   openProviderSessionDirectory: 'provider-sessions:open-directory',
+  deleteProviderSession: 'provider-sessions:delete',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   runDiagnostics: 'diagnostics:run',
@@ -1231,6 +1441,7 @@ export const ipcInvokeChannels = {
   redeemAccelerationCode: 'acceleration:redeem-code',
   getAccelerationPreference: 'acceleration:get-preference',
   saveAccelerationPreference: 'acceleration:save-preference',
+  recheckAccelerationBundle: 'acceleration:recheck-bundle',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   submitTwoFactorCode: 'account:submit-two-factor-code',
@@ -1267,6 +1478,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
+  copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
   listAccountKeyModels: 'account:list-key-models',
   saveConfigWithAccountKey: 'account:configure-cli-with-key',
@@ -1287,14 +1499,22 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  pickAiChatImages: 'chat:pick-images',
+  pasteAiChatImage: 'chat:paste-image',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   exportAiChatConversation: 'chat-history:export-text',
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
   checkProviderConnection: 'diagnostics:check-connection',
+  probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
+  clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
+  trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
+  openDiagnosticFolder: 'diagnostics:open-folder',
+  fixDiagnostic: 'diagnostics:fix',
+  chooseExtensionDirectory: 'extensions:choose-directory',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -1314,9 +1534,12 @@ export const ipcEventChannels = {
   onInstallProgress: 'cli:install-progress',
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',
+  onCodexDesktopLaunchProgress: 'desktop:codex-launch-progress',
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onProxyBypassEnded: 'network:proxy-bypass-ended',
+  onRelayRouteChanged: 'network:relay-route-changed',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

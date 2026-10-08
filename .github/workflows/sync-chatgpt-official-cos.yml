@@ -1,0 +1,91 @@
+# 官方包的同步不发布星芒版本。只从 OpenAI 官方 HTTPS 源下载，经校验后保存到 COS。
+# cos-sync 环境限定 main 分支；自动任务不挂需要每次批准的 release 环境。
+name: sync-chatgpt-official-cos
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 要同步的 Windows/macOS 官方安装包（all 包含两种系统）
+        type: choice
+        default: all
+        options:
+          - all
+          - windows
+          - macos
+          - windows-x64
+          - windows-arm64
+          - macos-arm64
+          - macos-x64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cos-chatgpt-official-publish
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.platforms.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - id: platforms
+        env:
+          PLATFORM_REQUEST: ${{ inputs.platforms || 'all' }}
+        run: node scripts/cos-chatgpt-platform-matrix.cjs >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: select
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: windows-latest
+    environment: cos-sync
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Synchronize verified official ChatGPT packages to Tencent COS
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
+          XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
+          CHATGPT_SYNC_PLATFORMS: ${{ matrix.platform }}
+        run: node scripts/sync-chatgpt-official-cos.cjs
+
+  verify-index:
+    needs: [select, sync]
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Verify all selected public index entries after the serialized jobs
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          PLATFORM_REQUEST: ${{ inputs.platforms || 'all' }}
+        run: node scripts/verify-chatgpt-cos-index.cjs

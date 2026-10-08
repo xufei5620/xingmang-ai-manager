@@ -81,6 +81,15 @@ function catalogProbe(model: string, provider: ProviderId = 'codex'): Connection
 }
 
 describe('buildConnectionProbe', () => {
+  it('stops at the config layer when Codex would ignore the relay table', () => {
+    const build = buildConnectionProbe('codex', xmSite, inspection({ codexProviderShadowed: true, model: 'gpt-5.5' }, xmSite, 'codex'))
+    expect(build.kind).toBe('blocked')
+    if (build.kind !== 'blocked') return
+    expect(build.outcome.layer).toBe('config')
+    expect(build.outcome.summary).toContain('打开会连不上')
+    expect(build.outcome.nextStep).toContain('修好它')
+  })
+
   it('builds a one-token Messages request against the configured base URL', () => {
     const build = buildConnectionProbe('claude', xmSite, inspection())
     expect(build.kind).toBe('probe')
