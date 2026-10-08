@@ -776,13 +776,14 @@ describe('external clients follow the connection route the user selected (batch 
     // 还开着：只看了一眼进程，没有整轮检测，接着等。
     const scans = vi.mocked(f.runtime.scan).mock.calls.length
     f.routeTimers.splice(0)[0].callback()
-    await vi.waitFor(() => expect(f.routeTimers).toHaveLength(1))
+    await vi.waitFor(() => expect(f.routeTimers).toHaveLength(1), { timeout: 10_000 })
     expect(f.runtime.stillRunning).toHaveBeenCalledWith('claudeDesktop', claude.path)
     expect(vi.mocked(f.runtime.scan).mock.calls.length).toBe(scans)
 
+    // 这一轮要整轮检测再原子改写配置，Windows 跑道上常超过 waitFor 默认的 1 秒。
     claude.running = false
     f.routeTimers.splice(0)[0].callback()
-    await vi.waitFor(() => expect(f.routeFollowed).toHaveBeenCalled())
+    await vi.waitFor(() => expect(f.routeFollowed).toHaveBeenCalled(), { timeout: 10_000 })
     expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop')!.replaceAll(primaryOrigin, directOrigin))
     expect(f.routeTimers).toEqual([])
   })
@@ -797,7 +798,7 @@ describe('external clients follow the connection route the user selected (batch 
     expect(f.runtime.stillRunning).not.toHaveBeenCalled()
     f.routeClock.now += 2 * 60 * 1000
     service.recheckPendingExternalRoutes?.()
-    await vi.waitFor(() => expect(f.runtime.stillRunning).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(f.runtime.stillRunning).toHaveBeenCalledTimes(1), { timeout: 10_000 })
   })
 
   it('keeps asking for a manual recheck on the legacy account site', async () => {
