@@ -5,7 +5,7 @@ import { buildWindowsCliProcessProbeScript, windowsCliProcessProbeModules } from
 import { codexDesktopActivationModules, codexDesktopActivationScript } from './codex-desktop-cdp'
 import { buildClearProviderOverridesScript } from './diagnostic-fixes'
 import { buildDiagnosticsCodexDesktopProbeScript, diagnosticsCodexDesktopProbeModules } from './diagnostics'
-import { windowsExternalClientInventoryModules, windowsExternalClientInventoryScript } from './external-client-runtime'
+import { windowsExternalClientInventoryModules, windowsExternalClientInventoryModulesFor, windowsExternalClientInventoryScript } from './external-client-runtime'
 import {
   appInstallerQueryModules,
   appInstallerQueryScript,
@@ -74,6 +74,8 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['external client inventory with remembered signatures', windowsExternalClientInventoryScript([
     { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: 'CN=Tencent', version: '1.2.3' },
   ]), windowsExternalClientInventoryModules, 'by-name'],
+  ['external client inventory before opening WorkBuddy', windowsExternalClientInventoryScript([], 'workbuddy'), windowsExternalClientInventoryModulesFor('workbuddy'), 'by-name'],
+  ['external client inventory before opening Claude Desktop', windowsExternalClientInventoryScript([], 'claudeDesktop'), windowsExternalClientInventoryModulesFor('claudeDesktop'), 'by-name'],
   ['uninstall desktop account probe', uninstallAccountProbeScript, uninstallAccountProbeModules, 'by-name'],
   ['Claude desktop manifest reader', buildClaudeDesktopManifestInspectionScript(
     'C:\\Program Files\\WindowsApps\\Claude_1.0.0.0_x64__pzs8sxrjxfjjc\\AppxManifest.xml', '1.0.0.0', 'x64',
