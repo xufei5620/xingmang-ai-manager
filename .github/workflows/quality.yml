@@ -257,6 +257,12 @@ jobs:
         with:
           path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
+      # xm 三线路的工具同路径探测在主进程里读系统根证书（tls.getCACertificates）。
+      # Windows 读证书库这套平台代码只有这里能演：装一张一次性测试根进本机 Root
+      # 库（只动这台跑道机器），要求 Electron 主进程读得到、握手过得去，用完删掉。
+      - name: Verify the Electron main process reads system root certificates
+        timeout-minutes: 3
+        run: node e2e/system-ca-smoke.mjs
       # No `npx playwright install chromium` here on purpose: every smoke below
       # drives the application through _electron.launch, which uses the
       # Electron binary installed above, not a downloaded Chromium.
@@ -428,6 +434,11 @@ jobs:
         with:
           path: ~/Library/Caches/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
+      # 同 windows-package 那一步：这里演 macOS 读钥匙串那套平台代码，测试根装进
+      # 系统钥匙串，用完删掉。
+      - name: Verify the Electron main process reads system root certificates
+        timeout-minutes: 3
+        run: node e2e/system-ca-smoke.mjs
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
       - run: npm test
