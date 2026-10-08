@@ -13,7 +13,7 @@
 
 ## 验证方式
 
-<!-- 必填。vitest 基线：macOS / Linux / CI 为 0 失败；Windows 本机为 9 个，全是符号链接 EPERM（见 #40）。平台门控用例 skipped 不算。改动后失败数不能超过基线 -->
+<!-- 必填。三平台 vitest 基线均为 0 失败（平台门控用例 skipped 不算），改动前后失败数应均为 0 -->
 
 - [ ] `npm run typecheck` 通过
 - [ ] `npm test` 通过（平台：______，失败数 改动前 ___ / 改动后 ___）

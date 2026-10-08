@@ -6,7 +6,7 @@
 
 | 平台 | 已知失败 | 原因 | Issue |
 |---|---|---|---|
-| **Windows** | **9（环境相关）** | 9 个都是测试建符号链接时 `EPERM`：需要 `SeCreateSymbolicLinkPrivilege`，没开开发者模式、也不是管理员时没有。2026-09-24、09-25 两轮复核的分布是 backups 1、path-identity 1、relocated-folders 1、runtime-log 2、safe-local-data 4；2026-10-08 本机实测仍是 9 个、全是 EPERM。开发者模式开启的机器可以全绿（2026-08-08 本机 `npm test` 实测 0 失败、vitest 12.7s），CI 的 Windows 作业就开了开发者模式。早年另有 5 个卡 vitest 默认 5s 超时（真实磁盘两阶段提交 + Defender 实时扫描），`npm test` 改成串行 + 30s 超时后已不再出现 | **#40** |
+| **Windows** | **0~9（环境相关）** | 4 个需要 `SeCreateSymbolicLinkPrivilege`（未开发者模式且非管理员时 EPERM）；5 个可能卡 vitest 默认 5s 超时（真实磁盘两阶段提交 + Defender 实时扫描）。开发者模式开启且磁盘不忙的机器可以全绿（2026-08-08 本机 `npm test` 实测 0 失败、vitest 12.7s） | **#40** |
 | **macOS** | 0 | — | — |
 | **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `macos-platform.ts` 的 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对） | #2 已关闭 |
 

@@ -65,7 +65,7 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 
 **提交前必须两条都过**：`npm run typecheck` 和 `npm test`。动了 renderer-v2 的再加 `npm run check:v2` 和 `npm run test:v2`。
 
-**测试基线**：Windows 本机上有 9 个**环境相关**的已知失败，全是测试建符号链接时报 `EPERM`（没开开发者模式、也不是管理员时缺这项权限），**不是回归**（#40）；macOS、Linux 与 CI 应为 0（CI 的 Windows 作业开了开发者模式）。只有在 Windows 上、且怀疑基线不稳时，才需要改动前先跑一遍记下失败数做对比；Linux / CI 直接跑改后的即可。云端容器里 e2e 的 Playwright 用例会报 `Executable doesn't exist`，是容器 Chromium 版本问题不是回归。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
+**测试基线**：Windows 上有 0~9 个**环境相关**的已知失败（符号链接权限、Defender 超时），**不是回归**（#40）；macOS 与 Linux 应为 0。只有在 Windows 上、且怀疑基线不稳时，才需要改动前先跑一遍记下失败数做对比；Linux / CI 直接跑改后的即可。云端容器里 e2e 的 Playwright 用例会报 `Executable doesn't exist`，是容器 Chromium 版本问题不是回归。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
 
 ---
 

@@ -83,11 +83,11 @@ gh auth status     # 必须已登录，且对本仓库有 write 权限（能评�
 npm test 2>&1 | tail -5    # 记下失败数
 ```
 
-**当前基线**（2026-10-08 校准）：**macOS、Linux 与 CI 上 vitest 应全绿**（0 失败；平台门控用例显示 skipped，Windows 与 mac/Linux 跳过的是不同批）。**Windows 本机是 9 个失败**，全是测试建符号链接时报 `EPERM`（没开开发者模式、也不是管理员时缺这项权限，见 #40）。`quality.yml` 的 windows / macos / linux 三个 test job 常驻验证 CI 上的 0（Windows 作业开了开发者模式）；`npm test` 本身就是串行 + 30s 超时（为消除 Defender 扫描导致的假超时），三平台跑的是同一条命令。
+**当前基线**（2026-08-10 校准）：**三平台 vitest 应全绿**（0 失败；平台门控用例显示 skipped，Windows 与 mac/Linux 跳过的是不同批）。`quality.yml` 的 windows / macos / linux 三个 test job 常驻验证这一点；`npm test` 本身就是串行 + 30s 超时（为消除 Defender 扫描导致的假超时），三平台跑的是同一条命令。
 
-- 历史上的「Linux 1 失败」已随 `sameLocalPathIdentity` 重写清零；Windows 早年「4 个符号链接 + 5 个超时」里的 5 个超时已随串行 + 30s 超时消失，现在的 9 个都是符号链接 `EPERM`。
+- 历史上的「Windows 9 失败 / Linux 1 失败」基线已随批次 0 与 `sameLocalPathIdentity` 重写全部清零，相关旧表述作废。
 - 耗时差异仍在：**Windows 因 Defender 实时扫描明显慢于 Linux**，不是卡死。
-- **失败数超出你平台的基线 = 新失败**，先在干净基线上复跑确认，再排查自己的改动。
+- **你的平台上红了 = 新失败**，先在干净基线上复跑确认，再排查自己的改动。
 
 如果实际数字与上表不符：Windows 上报到 **#40**，Linux 上报到 **#2**，macOS 上**新开一个 issue**。不要直接开始改。
 
@@ -183,7 +183,7 @@ npm run typecheck
 npm test
 ```
 
-⚠️ **对比失败数，不要只看"红没红"**：先在干净的 `main` 上 `npm test` 记下失败数（基线见第 0.5 步），再在你的分支上对比。Windows 本机那 9 个符号链接 `EPERM` 是已知的。
+⚠️ **对比失败数，不要只看"红没红"**：先在干净的 `main` 上 `npm test` 记下失败数（基线见第 0.5 步），再在你的分支上对比。
 
 平台相关的改动，还要按 issue 要求做手工验证。
 

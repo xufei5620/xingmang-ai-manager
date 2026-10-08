@@ -165,13 +165,13 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | `npm run typecheck` | ✅ | ✅ | ✅ |
-| `npm test` | ⚠️ 本机 9 个已知失败（符号链接 `EPERM`，见下）；CI 全绿 | ✅ 全绿 | ✅ 全绿 |
+| `npm test` | ✅ 全绿 | ✅ 全绿 | ✅ 全绿 |
 | `npm run compile` | ✅ | ✅ | ✅ |
 | `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ❌ |
 | e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时设 `XINGMANG_E2E_CHROMIUM=<chromium 路径>` 复跑） |
 
-> （2026-10-08 校准：Windows 本机基线是 **9 个失败**，全是测试建符号链接时报 `EPERM`——没开开发者模式、也不是管理员时缺这项权限，见 #40 与 `docs/TEST-BASELINE.md`；CI 的 Windows 作业开了开发者模式，所以是 0。macOS、Linux 是 0，历史上 Linux 的 1 个已知失败已随 `sameLocalPathIdentity` 重写修复。）
-> 无论在哪个平台，**都要对比改动前后的失败数是否一致**——Windows 本机基线是 9，其他是 0，多出来的就是新失败。
+> （2026-08-10 校准：历史上 Linux 的 1 个已知失败已随 `sameLocalPathIdentity` 重写修复，三平台 vitest 应全绿。）
+> 无论在哪个平台，**都要对比改动前后的失败数是否一致**——现在基线是 0，红了就是新失败。
 
 ### 只能在特定平台验证的改动
 
@@ -239,7 +239,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 A：不用等。`ipc.test.ts` 排序后比对注册的通道和契约，新通道放在哪一行都行；三处（`ipc-contract.ts` / `ipc.ts` / `preload.ts`）保持一致即可，见 `AGENTS.md` T1。
 
 **Q：测试在我的平台上是红的，怎么判断是不是我改坏的？**
-A：Windows 本机基线是 9 个失败（全是符号链接 `EPERM`），macOS、Linux 与 CI 是 0（见 §5）。超出基线的先在干净的 `main` 上复跑确认，仍红即为环境或新回归，不要带着红提交。
+A：三平台基线均为全绿（2026-08-10 起）。先在干净的 `main` 上复跑确认，仍红即为环境或新回归，不要带着红提交。
 
 **Q：能不能顺手把某个不规范的地方改了？**
 A：不要。单开 Issue。混合改动会让 review 无法区分行为变化。
