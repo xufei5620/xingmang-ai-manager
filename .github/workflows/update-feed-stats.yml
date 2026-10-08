@@ -7,6 +7,10 @@
 name: update-feed-stats
 
 on:
+  # TEMPORARY: one real run from this branch before merge; removed in the next commit.
+  push:
+    branches: [claude/rollback-runbook-version-stats-pdehhc]
+    paths: [.github/workflows/update-feed-stats.yml]
   workflow_dispatch:
     inputs:
       days:
@@ -33,7 +37,7 @@ jobs:
       - name: Count clients per version from the status file requests
         env:
           CLOUDFLARE_ANALYTICS_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
-          DAYS: ${{ inputs.days }}
+          DAYS: ${{ inputs.days || '7' }}
         run: |
           set -euo pipefail
           node scripts/update-feed-stats.cjs --days "$DAYS" | tee -a "$GITHUB_STEP_SUMMARY"
