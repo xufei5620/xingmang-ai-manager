@@ -1215,11 +1215,14 @@ if (!hasSingleInstanceLock) {
     const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
     // 「自动」换了线路：界面重读设置、把工具迁过去（App.tsx，开着的也迁）。窗口还没建好时不用叫，
     // 首屏读设置时读到的就是新线路。
-    const unsubscribeRelayRoute = relayRouteController.subscribe(() => {
+    function notifyRelayRouteChanged(): void {
       if (!managedMainWindow || managedMainWindow.isDestroyed()) return
       if (managedMainWindow.webContents.isDestroyed()) return
       managedMainWindow.webContents.send(ipcEventChannels.onRelayRouteChanged, undefined)
-    })
+    }
+    const unsubscribeRelayRoute = relayRouteController.subscribe(() => notifyRelayRouteChanged())
+    // R6：换线路时工具配置怎么改，跟着服务状态文件（下面 serviceStatusMonitor 读到才改）；缺省定点只改地址。
+    let toolRouteRewriteMode: 'targeted' | 'merge' = 'targeted'
     relayRouteController.start()
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
@@ -1365,6 +1368,9 @@ if (!hasSingleInstanceLock) {
       getRelaySiteId: () => readAccountSiteId(),
       relayEndpointRouting: relayRouting,
       getExternalClientAccountId: () => readExternalClientAccountId(),
+      getToolRouteRewriteMode: () => toolRouteRewriteMode,
+      // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
+      onToolRouteFollowed: () => notifyRelayRouteChanged(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
       sweepInstallLeftovers,
@@ -1418,6 +1424,15 @@ if (!hasSingleInstanceLock) {
       },
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
       prepareCodexDesktopAcceleration: async () => { await codexDesktopAcceleration.ensureConnected() },
+    })
+    // 星芒账号的「自动」线路换了：主进程把四个工具配置里的地址定点改过去（xm 三线路 C9）。历史账号照旧
+    // 由界面收到上面那声以后走同步 Key。只有因为连不上换的才可能提示重开（C10）。
+    const unsubscribeToolRoutes = relayRouteController.subscribe((siteId) => {
+      if (siteId !== 'solov') return
+      void systemService.followToolRoutes?.({
+        reason: 'route-changed',
+        fault: relayRouteController.lastChange(siteId)?.reason === 'health-failed',
+      })
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -1865,8 +1880,10 @@ if (!hasSingleInstanceLock) {
         }),
         onChange: (status) => {
           updaterService.setServiceStatus(status)
+          toolRouteRewriteMode = status?.toolRouteRewrite === 'merge' ? 'merge' : 'targeted'
           runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
             maintenance: Boolean(status?.maintenance),
+            toolRouteRewrite: toolRouteRewriteMode,
           })
         },
       })
@@ -3219,6 +3236,8 @@ if (!hasSingleInstanceLock) {
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
       unsubscribeRelayRoute()
+      unsubscribeToolRoutes()
+      systemService.disposeToolRoutes?.()
       relayRouteController.dispose()
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
@@ -3678,6 +3697,8 @@ if (!hasSingleInstanceLock) {
       paymentWindow.destroy()
       canvasController.dispose()
     })
+    // 客户回到星芒窗口：等着外部客户端退出再换线路的，看一眼退了没有（xm 三线路 C11）。
+    mainWindow.on('focus', () => systemService.recheckPendingExternalRoutes?.())
     if (focusWhenWindowIsReady) {
       mainWindow.once('ready-to-show', () => {
         focusWhenWindowIsReady = false

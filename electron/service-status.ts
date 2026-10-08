@@ -43,6 +43,11 @@ export interface ServiceStatus {
    * 没写、写错一律是 null（不拦任何人）。只有 0.2.11 及以后的客户端认这一项。
    */
   minimumVersion?: string | null
+  /**
+   * 换线路时工具配置怎么改（xm 三线路 R6）：merge = 退回整份重写的老办法。没写、写错都是缺省的
+   * 只改地址。0.2.18 起的客户端认。
+   */
+  toolRouteRewrite?: 'merge'
 }
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
@@ -174,6 +179,7 @@ export function parseServiceStatus(text: string, now: Date): ServiceStatus {
     badVersions: readBadVersions(parsed.badVersions),
     rollout: readRollout(parsed.rollout),
     minimumVersion: readMinimumVersion(parsed.minimumVersion),
+    ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
   }
 }
 

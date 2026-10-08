@@ -5,6 +5,8 @@ import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { cliCatalog, managedCliKeyProfiles, providerIds } from './catalog'
 import type { RelayBackendClient } from './relay-backend'
+import { relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl } from './relay-sites'
+import { rewriteJsonStrings } from './tool-route-rewrite'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -835,6 +837,52 @@ export function describeImageMcpWarnings(warnings: readonly string[]): string | 
   const tools = providerIds.filter((provider) => warnings.some((warning) => warning.startsWith(`${provider}：`)))
   const where = tools.length ? tools.map((provider) => cliCatalog[provider].name).join('、') : 'AI 工具'
   return `星芒画图还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
+}
+
+/**
+ * 换线路时把生图技能 config.json 的 baseUrl 换到工具线路（xm 三线路 C9）。技能没有来源记录，
+ * 所以认人改看 Key：keyId 或 codexKeyId 是当前账号的 Key（本软件替这个账号签发过）才改；地址
+ * 只在它本来就是本站某条线路（含退役别名）或者缺省时才改，缺省的补写上。别的一律不碰。
+ * 只换 baseUrl 那一处，Key 和分组原样；不经过同步 Key，也不问后端。返回改了几份。
+ */
+export async function followXingmangAiSkillRoute(options: {
+  userHome: string
+  siteId: string
+  /** 工具线路上的 origin（技能脚本自己拼路径，和 Claude Code 的地址同形）。 */
+  baseUrl: string
+  ownedKeyIds: ReadonlySet<number>
+}): Promise<number> {
+  assertSafeBaseUrl(options.baseUrl)
+  let rewritten = 0
+  for (const directory of skillDirectoriesForConfig(options.userHome)) {
+    const filePath = path.join(directory, XINGMANG_AI_CONFIG_FILE)
+    const raw = await readSafeUtf8File(filePath, '星芒AI Skill 配置', 16 * 1024)
+    if (!raw) continue
+    let record: Record<string, unknown>
+    let existing: XingmangAiSkillConfig
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      existing = parseXingmangAiSkillConfig(parsed)
+      record = parsed as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const owned = [existing.keyId, existing.codexKeyId].some((id) => id !== undefined && options.ownedKeyIds.has(id))
+    if (!owned) continue
+    const stated = typeof record.baseUrl === 'string' && record.baseUrl.trim() ? record.baseUrl : null
+    if (stated !== null) {
+      if (relayProviderBaseUrlEquals(stated, options.baseUrl)) continue
+      if (relaySiteEndpointIdForBaseUrl(options.siteId, 'claude', stated) === null) continue
+    }
+    const next = stated === null
+      ? buildXingmangAiSkillConfig({ ...existing, baseUrl: options.baseUrl })
+      : rewriteJsonStrings(raw, [{ path: ['baseUrl'], value: options.baseUrl }])
+    if (next === null) continue
+    ensureSafeDataDirectory(directory, '星芒AI Skill 目录')
+    await writeAtomicSafeUtf8File(filePath, next, '星芒AI Skill 配置')
+    rewritten += 1
+  }
+  return rewritten
 }
 
 export async function clearXingmangAiSkillSecrets(userHome: string): Promise<number> {

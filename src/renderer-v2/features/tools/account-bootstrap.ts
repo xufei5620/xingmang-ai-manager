@@ -214,6 +214,9 @@ function accountRouteMigrationNeeded(
     || settings.officialProviders?.includes(provider)) return false
   const siteId = settings.relaySiteId ?? 'solov'
   if (siteId !== 'solov' && siteId !== 'solov-api') return false
+  // 星芒账号换线路由主进程定点只改地址（xm 三线路 C9，system-service 的 followToolRoutes），这里不再因为
+  // 「线路不同」整份重写；服务状态文件切回老办法（R6）时照旧。历史账号不变。
+  if (siteId === 'solov' && settings.toolRouteRewrite !== 'merge') return false
   const selected = settledRouteLine(settings, siteId)
   if (!selected) return false
   const expected = relayProviderBaseUrls(siteId, selected)[provider]

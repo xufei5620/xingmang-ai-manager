@@ -46,7 +46,12 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
     }),
     cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
     launch: vi.fn(async () => undefined),
+    stillRunning: vi.fn(async (tool: ExternalToolId) => runtimeStatuses.find((status) => status.tool === tool)?.running ?? null),
   }
+  // 外部客户端换线路的定时复查（C11）只记下来，由用例自己拨。
+  const routeTimers: { callback: () => void; delayMs: number }[] = []
+  const routeClock = { now: 1_000_000_000_000 }
+  const routeFollowed = vi.fn()
   const runtimeLog = { log: vi.fn<NonNullable<SystemServiceOptions['runtimeLog']>['log']>() }
   const serviceOptions: SystemServiceOptions = {
     providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
@@ -57,10 +62,18 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
     inspectClaudeDesktopStoreVirtualization,
     externalClientRuntime: runtime,
     runtimeLog,
+    scheduleToolRoute: (callback, delayMs) => {
+      const timer = { callback, delayMs }
+      routeTimers.push(timer)
+      return () => { if (routeTimers.includes(timer)) routeTimers.splice(routeTimers.indexOf(timer), 1) }
+    },
+    toolRouteNow: () => routeClock.now,
+    onToolRouteFollowed: routeFollowed,
     ...(options.snapshotCache ? { externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json') } : {}),
   }
   return {
     directory, userHome, managerDataDirectory, claudeProfileDirectory, store, relayFetch, assertClaudeDesktopUnmanaged, inspectClaudeDesktopStoreVirtualization, runtime, runtimeStatuses, runtimeLog,
+    routeTimers, routeClock, routeFollowed,
     service: createSystemService(store, serviceOptions),
     restart: () => createSystemService(store, serviceOptions),
     setSite(next: string) { site = next },
@@ -747,6 +760,56 @@ describe('external clients follow the connection route the user selected (batch 
     expect(moved).toMatchObject({ running: false, configured: true, configurationSource: 'xingmang' })
     expect(moved?.routePending).toBeUndefined()
     expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop')!.replaceAll(primaryOrigin, directOrigin))
+  })
+
+  // xm 三线路 C11：客户不用回来点「重新检测」，关掉客户端以后星芒自己换。
+  it('checks a pending client every five minutes and moves it by itself once it has quit', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    const claude = f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!
+    claude.running = true
+    expect((await service.scanExternalClients()).find((client) => client.tool === 'claudeDesktop'))
+      .toMatchObject({ routePending: true, routeRecheck: true })
+    expect(f.routeTimers.map((timer) => timer.delayMs)).toEqual([5 * 60 * 1000])
+
+    // 还开着：只看了一眼进程，没有整轮检测，接着等。
+    const scans = vi.mocked(f.runtime.scan).mock.calls.length
+    f.routeTimers.splice(0)[0].callback()
+    await vi.waitFor(() => expect(f.routeTimers).toHaveLength(1))
+    expect(f.runtime.stillRunning).toHaveBeenCalledWith('claudeDesktop', claude.path)
+    expect(vi.mocked(f.runtime.scan).mock.calls.length).toBe(scans)
+
+    claude.running = false
+    f.routeTimers.splice(0)[0].callback()
+    await vi.waitFor(() => expect(f.routeFollowed).toHaveBeenCalled())
+    expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop')!.replaceAll(primaryOrigin, directOrigin))
+    expect(f.routeTimers).toEqual([])
+  })
+
+  it('looks again when the window comes back, at most once every two minutes', async () => {
+    const f = fixture()
+    await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!.running = true
+    await service.scanExternalClients()
+    service.recheckPendingExternalRoutes?.()
+    expect(f.runtime.stillRunning).not.toHaveBeenCalled()
+    f.routeClock.now += 2 * 60 * 1000
+    service.recheckPendingExternalRoutes?.()
+    await vi.waitFor(() => expect(f.runtime.stillRunning).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps asking for a manual recheck on the legacy account site', async () => {
+    const f = fixture({ site: 'solov-api' })
+    await configureAll(f)
+    await f.store.update({ version: 2, relayEndpointIds: { 'solov-api': 'direct' } })
+    const service = f.restart()
+    f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!.running = true
+    const client = (await service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')
+    expect(client?.routePending).toBe(true)
+    expect(client?.routeRecheck).toBeUndefined()
+    expect(f.routeTimers).toEqual([])
   })
 
   it('does not write a client that was opened while the model list was being fetched', async () => {

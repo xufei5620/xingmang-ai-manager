@@ -104,7 +104,7 @@ interface PinnedExternalClientStatus {
   configurationError: string | null
 }
 
-type ExternalClientOptionalFields = 'officialDownloadUrl' | 'configurationReady' | 'routePending' | 'cachedAt'
+type ExternalClientOptionalFields = 'officialDownloadUrl' | 'configurationReady' | 'routePending' | 'routeRecheck' | 'cachedAt'
 
 function scrub(value: string | null): string | null {
   return value === null ? null : redactCommandText(value).slice(0, maximumStringLength)

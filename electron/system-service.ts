@@ -49,7 +49,7 @@ import {
   type OccupiedUpdateFailureInput,
   probeRunningCliProcesses,
 } from './cli-process-probe'
-import { cliProcessProbeRoots, inspectRunningTools as inspectRunningToolsWith, type RunningToolsReport } from './running-tools'
+import { cliProcessProbeRoots, emptyRunningToolsReport, inspectRunningTools as inspectRunningToolsWith, toolRouteRestartNeeds, type RunningToolsReport, type ToolRouteRestartHint } from './running-tools'
 import { createToolModelChecker, type ToolModelCheck, type ToolModelCheckTarget } from './tool-model-check'
 import {
   npmPrefixGlobalRoot,
@@ -106,6 +106,8 @@ import {
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
   saveProviderConfig,
+  applyProviderRouteFollow,
+  planProviderRouteFollow,
   fillRelayTemplateDefaults,
   forgetStaleGeminiUsageStatisticsRecord,
   relayTemplateDefaultsPending,
@@ -239,8 +241,8 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteEndpointIdForBaseUrl, relaySiteForProviderBaseUrl,
-  relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
+  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -285,7 +287,8 @@ import {
   type UninstallLeftoverOptions,
 } from './uninstall-leftovers'
 import { sameLocalPathIdentity } from './path-identity'
-import { adoptRestoredXingmangAiSkillOff, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
+import { adoptRestoredXingmangAiSkillOff, followXingmangAiSkillRoute, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
+import { createToolRouteFollowStore, recordToolRouteRevert, toolRouteHintDue, toolRouteRetryAllowed, toolRouteRetryDelayMs, type ToolRouteFollowRecord } from './tool-route-follow-state'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -626,6 +629,29 @@ export interface ConfigSavePayload {
   apiKey: string
   model: string
   mode: NativeConfigSaveMode
+}
+
+/** 换线路定点改写是哪一下起的（只进日志）。 */
+export type ToolRouteFollowReason = 'route-changed' | 'startup' | 'retry' | 'verify'
+
+export interface ToolRouteFollowRequest {
+  reason: ToolRouteFollowReason
+  /** 这次换线是因为连不上（relay-route-controller 的 health-failed）；只有这种才可能提示重开。 */
+  fault?: boolean
+  /** 只看这几个；缺省 = 四个都看。 */
+  providers?: readonly ProviderId[]
+}
+
+export interface ToolRouteFollowReport {
+  rewritten: ProviderId[]
+}
+
+/** ipc.ts 交进来的两件要账号信息的事。 */
+export interface ToolRouteAccountHooks {
+  /** 第一次定点改写之前整套备份一次（「备份」页里那份就是迁移前原件），带上账号信息。 */
+  backup(provider: ProviderId): Promise<void>
+  /** 当前账号签发过的 Key 的 id，生图技能据此认人；读不到 = 空集合。 */
+  ownedKeyIds(): Promise<ReadonlySet<number>>
 }
 
 export interface AppConfigSummary {
@@ -1076,6 +1102,17 @@ export interface SystemService {
    * 照常看。可选 = 旧实现不提供，调用方照旧等它做完。
    */
   stopTemplateFillWaits?(): () => void
+  /**
+   * 换线路时把星芒账号工具配置里的地址改到当前线路，只改那一处（xm 三线路 C9）；可选 = 旧实现不提供，
+   * 调用方当什么都没改。
+   */
+  followToolRoutes?(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport>
+  /** ipc.ts 注册时交进来，注销时交 null。 */
+  bindToolRouteAccount?(hooks: ToolRouteAccountHooks | null): void
+  /** 星芒窗口回到前台：等着外部客户端退出再换线路的，看一眼退了没有（同一个客户端两次至少隔 2 分钟）。 */
+  recheckPendingExternalRoutes?(): void
+  /** 退出时停掉换线路的几个定时器。 */
+  disposeToolRoutes?(): void
   /** routed：星芒自己用的（AI 工作区），「自动」时直连没走通当场改走默认线路；缺省查的是工具会用的那条线路。 */
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean; routed?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
@@ -2562,8 +2599,21 @@ export interface SystemServiceOptions {
   relayEndpointRouting?: RelayEndpointRoutingSnapshot
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
+  /**
+   * R6：换线路时工具配置怎么改。缺省 targeted = 主进程定点只改地址；merge = 退回整份写入的老路
+   * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
+   */
+  getToolRouteRewriteMode?: () => 'targeted' | 'merge'
+  /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
+  onToolRouteFollowed?: () => void
+  /** 测试注入：换线路那几个定时器；缺省 setTimeout（unref）。 */
+  scheduleToolRoute?: (callback: () => void, delayMs: number) => () => void
+  /** 测试注入：换线路那几处用的时钟；缺省 Date.now。 */
+  toolRouteNow?: () => number
   /** 开机补模板缺省项前问「哪些工具开着」的那一步；缺省 = 真去查进程，测试里替换掉。 */
   inspectRunningToolsForTemplateFill?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
+  /** 换线路重开提示问「哪几个开着」用的；缺省走 inspectRunningTools。测试注入用。 */
+  inspectRunningToolsForRouteHint?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
   platform?: NodeJS.Platform
@@ -3038,6 +3088,7 @@ export function createSystemService(
   const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
   const projectInstructionsState = new ProjectInstructionsStateStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'project-instructions'))
   const cliUpdateHistory = new CliUpdateHistoryStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'cli-update-history'))
+  const toolRouteFollow = createToolRouteFollowStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-route-follow'))
   let configWriteQueue: Promise<unknown> = Promise.resolve()
   function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
     const next = configWriteQueue.then(operation, operation)
@@ -5833,6 +5884,9 @@ export function createSystemService(
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
       throw new Error('工作目录不存在，请重新选择')
     }
+    // 从星芒打开的窗口读的是现在的配置：之前标的「需重开生效」说的不是它了（C19 另按「开着」算 Gemini）。
+    toolLaunchedAt.set(provider, Date.now())
+    toolRouteRestartPending.delete(provider)
     if (provider === 'grok') await repairGrokHooksBeforeLaunch()
 
     const definition = cliCatalog[provider]
@@ -6550,6 +6604,72 @@ export function createSystemService(
    * 选过线路的人连读配置也排进队：同时有两次检测时，后一次要读到前一次换完的那份，不然
    * 首页会被它旧的结论盖回去。
    */
+  // C11：外部客户端开着、换线路要等它退出的，每 5 分钟只看一眼它的进程（runtime.stillRunning，不做整轮盘点），
+  // 星芒窗口回到前台时也看一眼（同一个客户端两次至少隔 2 分钟）；退了就整轮检测一次，换线路在那一轮里做，
+  // 写之前照旧再盘点一次（followExternalClientRoute 的 recheck）。一直看到换成、线路又变、换账号或星芒退出，
+  // 不设次数上限：Claude Desktop 往往整天开着。看不出开没开的（检测失败）退成每 15 分钟整轮检测一次。
+  const externalRoutePending = new Map<ExternalToolId, { path: string; checkedAt: number; scannedAt: number }>()
+  let cancelExternalRouteRecheck: (() => void) | null = null
+  const externalRouteRecheckMs = 5 * 60 * 1000
+  const externalRouteFocusGapMs = 2 * 60 * 1000
+  const externalRouteFullScanMs = 15 * 60 * 1000
+
+  function noteExternalRoutePending(statuses: readonly ExternalClientRuntimeStatus[], clients: readonly ExternalClientStatus[]): void {
+    const now = toolRouteNow()
+    for (const client of clients) {
+      const clientPath = statuses.find((status) => status.tool === client.tool)?.path ?? null
+      if (client.routePending && client.routeRecheck && clientPath) {
+        const known = externalRoutePending.get(client.tool)
+        externalRoutePending.set(client.tool, known?.path === clientPath ? known : { path: clientPath, checkedAt: now, scannedAt: now })
+      } else {
+        externalRoutePending.delete(client.tool)
+      }
+    }
+    if (!externalRoutePending.size) {
+      cancelExternalRouteRecheck?.()
+      cancelExternalRouteRecheck = null
+    } else if (!cancelExternalRouteRecheck) {
+      cancelExternalRouteRecheck = scheduleToolRouteTimer(() => {
+        cancelExternalRouteRecheck = null
+        void recheckExternalRoutes('timer')
+      }, externalRouteRecheckMs)
+    }
+  }
+
+  async function recheckExternalRoutes(trigger: 'timer' | 'focus'): Promise<void> {
+    const now = toolRouteNow()
+    let rescan = false
+    for (const [tool, entry] of [...externalRoutePending]) {
+      if (trigger === 'focus' && now - entry.checkedAt < externalRouteFocusGapMs) continue
+      entry.checkedAt = now
+      const running = await externalClientRuntime.stillRunning?.(tool, entry.path) ?? null
+      if (running === false || (running === null && now - entry.scannedAt >= externalRouteFullScanMs)) {
+        entry.scannedAt = now
+        rescan = true
+      }
+    }
+    if (rescan) {
+      const waiting = new Set(externalRoutePending.keys())
+      try {
+        await scanExternalClients(true)
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'external-client.route.recheck-failed', '外部客户端这次没检测成，稍后再看', { reason: credentialFailureReason(error) })
+      }
+      // 换成了的那几个界面要重读；没换成的照旧等。
+      if ([...waiting].some((tool) => !externalRoutePending.has(tool))) serviceOptions.onToolRouteFollowed?.()
+    }
+    if (externalRoutePending.size && !cancelExternalRouteRecheck) {
+      cancelExternalRouteRecheck = scheduleToolRouteTimer(() => {
+        cancelExternalRouteRecheck = null
+        void recheckExternalRoutes('timer')
+      }, externalRouteRecheckMs)
+    }
+  }
+
+  function recheckPendingExternalRoutes(): void {
+    if (externalRoutePending.size) void recheckExternalRoutes('focus')
+  }
+
   async function followExternalClientRoutes(statuses: readonly ExternalClientRuntimeStatus[]): Promise<ExternalClientStatus[]> {
     const describe = () => Promise.all(statuses.map(describeExternalClient))
     const to = relayRouting.selection(activeRelaySite().id)
@@ -6573,7 +6693,9 @@ export function createSystemService(
           })
         }
       }
-      return clients.map((client) => updated.get(client.tool) ?? client)
+      const result = clients.map((client) => updated.get(client.tool) ?? client)
+      noteExternalRoutePending(statuses, result)
+      return result
     }
     const task = externalConfigQueue.then(work, work)
     externalConfigQueue = task.catch(() => undefined)
@@ -6619,7 +6741,7 @@ export function createSystemService(
     }
     if (status.running) {
       runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
-      return { ...client, routePending: true }
+      return { ...client, routePending: true, ...(activeSite.id === 'solov' ? { routeRecheck: true } : {}) }
     }
     const latest = { status, moved: false }
     try {
@@ -6726,6 +6848,7 @@ export function createSystemService(
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
     const rememberedWorkspace = rememberedWorkspaceFor(stored.workspace)
+    const routeRecords = toolRouteFollow.read().providers
     const result = {
       workspace: stored.workspace,
       ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
@@ -6741,6 +6864,7 @@ export function createSystemService(
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
             ...cliHooksSummaryFields(hooks),
             ...cliHooksAutoRepairedField(!previewOnboarding && autoRepairedCliHooks.has(id), hooks?.stale === true),
+            ...(previewOnboarding ? {} : toolRouteSummaryFields(id, current, routeRecords)),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -7192,8 +7316,9 @@ export function createSystemService(
       const model = payload.model.trim()
       const activeSite = providerRelaySite(payload.provider, before)
       const previousRoute = relaySiteForProviderBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl)
-      // 线路换了、自动写入跟着换过去的那一笔。工具开着也照样改（#941）：开着的进程要重开才用上新地址，
-      // 由渲染层在写完以后看它开没开、提示客户重开；不改的话它会一直停在原来那条线路上。
+      // 线路换了、自动写入跟着换过去的那一笔（历史账号，和 R6 切回整份写入时的星芒账号）。工具开着也照样改
+      // （#941）：开着的进程要重开才用上新地址；不改的话它会一直停在原来那条线路上。星芒账号平时不走这里，
+      // 由 followToolRoutes 定点只改地址，重开提示也在那边（xm 三线路 C9、C10）。
       const followedRoute = ownership?.automatic === true && previousRoute !== null
         && previousRoute.providerBaseUrls[payload.provider] !== activeSite.providerBaseUrls[payload.provider]
         ? relayRouting.selection(activeSite.id)
@@ -7261,15 +7386,290 @@ export function createSystemService(
       if (followedRoute) {
         runtimeLog?.log('info', 'config', 'route.followed', '工具配置已换到当前连接线路', {
           provider: payload.provider,
+          kind: 'tool',
           from: relaySiteEndpointIdForBaseUrl(activeSite.id, payload.provider, before.actualBaseUrl),
           to: followedRoute,
+          mode: 'merge',
+          readback: relayProviderBaseUrlEquals(inspectNativeProviderConfig(payload.provider).actualBaseUrl, activeSite.providerBaseUrls[payload.provider]),
         })
+      }
+      // 整份写过一遍、来源重新记成了这次的：之前「被别的软件改回过」的结论作废，换线路照常跟。
+      if (toolRouteFollow.read().providers[payload.provider]?.managedElsewhere) {
+        await writeToolRouteRecord(payload.provider, ({ managedElsewhere: _managedElsewhere, reverts: _reverts, ...rest }) => rest)
       }
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
       return result
     })
+  }
+
+  // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
+  //
+  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
+  // relayRouting 这次运行生效的线路（开机定下的偏好，设置里改了没重启的不算），所以「改了设置没重启」
+  // 那段时间工具配置照样跟着当前生效的线路走（(f)）。和整份写入排同一个 serializeConfigWrite 队。
+  const toolRouteNow = serviceOptions.toolRouteNow ?? Date.now
+  function scheduleToolRouteTimer(callback: () => void, delayMs: number): () => void {
+    if (serviceOptions.scheduleToolRoute) return serviceOptions.scheduleToolRoute(callback, delayMs)
+    const timer = setTimeout(callback, delayMs)
+    timer.unref?.()
+    return () => clearTimeout(timer)
+  }
+  let toolRouteAccount: ToolRouteAccountHooks | null = null
+  // 这次运行从星芒打开过的工具（C19：从星芒打开的 Gemini 窗口按「开着」算）。
+  const toolLaunchedAt = new Map<ProviderId, number>()
+  // 改了以后要重开才生效、这回没弹提示的（24 小时内弹过、或客户关了提示），首页标「需重开生效」。
+  const toolRouteRestartPending = new Set<ProviderId>()
+  let toolRouteRestartHint: ToolRouteRestartHint | null = null
+  // 暂时性失败已经连着失败了几次；换线或重启从头算。
+  const toolRouteFailures = new Map<ProviderId, number>()
+  let cancelToolRouteRetry: (() => void) | null = null
+  let cancelToolRouteVerify: (() => void) | null = null
+  // 提示只在出来以后半小时内给界面：窗口晚开、重载时还能看到，过了就是旧事。
+  const toolRouteHintTtlMs = 30 * 60 * 1000
+  // 改完一分钟回头看一眼有没有被别的程序改回去（cc-switch 这类会在几秒内改回）。
+  const toolRouteVerifyDelayMs = 60 * 1000
+
+  function toolRouteRewriteMode(): 'targeted' | 'merge' {
+    return serviceOptions.getToolRouteRewriteMode?.() === 'merge' ? 'merge' : 'targeted'
+  }
+
+  async function writeToolRouteRecord(provider: ProviderId, update: (record: ToolRouteFollowRecord) => ToolRouteFollowRecord): Promise<void> {
+    try {
+      const state = toolRouteFollow.read()
+      state.providers[provider] = update(state.providers[provider] ?? {})
+      await toolRouteFollow.write(state)
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'route.record-failed', '换线路的跟随记录没能写下，不影响工具使用', { provider, reason: credentialFailureReason(error) })
+    }
+  }
+
+  type ToolRouteOutcome = 'rewritten' | 'on-target' | 'skipped' | 'retry'
+
+  /** 一个工具。已经在 serializeConfigWrite 里。 */
+  async function followProviderToolRoute(provider: ProviderId, owner: string, request: ToolRouteFollowRequest, attempt: number): Promise<ToolRouteOutcome> {
+    if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return 'skipped'
+    if (store.read().officialProviders?.includes(provider)) return 'skipped'
+    const site = activeRelaySite()
+    if (site.id !== 'solov') return 'skipped'
+    const before = inspectNativeProviderConfig(provider)
+    const record = toolRouteFollow.read().providers[provider] ?? {}
+    if (record.managedElsewhere) return 'skipped'
+    const ownership = configOwnership.read(provider, before, owner)
+    // 上回改完又变回改之前那一份（那一份当时确认是当前账号的）：多半是别的配置管理器在替客户维护它。
+    const reverted = ownership === 'changed' && record.revertIdentity === toolConfigIdentity(before)
+    // 来源不是当前账号（手填、被改过、看不出来）不自动改，重试多少次也一样，不排重试。
+    if (!reverted && ownership !== 'account') return 'skipped'
+    const templateRevision = configOwnership.templateRevision(provider, before)
+    const target = site.providerBaseUrls[provider]
+    let plan: ReturnType<typeof planProviderRouteFollow>
+    try {
+      plan = planProviderRouteFollow(provider, site.id, target, providerRoots)
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'route.follow-failed', '工具配置这次没读成，稍后再换线路', { provider, kind: 'tool', reason: credentialFailureReason(error), attempt })
+      return 'retry'
+    }
+    if (plan.status === 'unlocated') {
+      runtimeLog?.log('info', 'config', 'route.unlocated', '工具配置里找不到要改的那一处地址，这次不改', { provider })
+    }
+    if (reverted && plan.status === 'on-target') {
+      // 改回去的那份正好就在现在的线路上（线路也切回来了）：不算拉锯，把来源记回当前账号。
+      await configOwnership.write(provider, before, 'account', owner, templateRevision ?? undefined)
+      return 'on-target'
+    }
+    if (plan.status !== 'rewrite') return plan.status === 'on-target' ? 'on-target' : 'skipped'
+    if (reverted) {
+      // 再改一次；24 小时内第二次就停手，首页标「由其他工具管理」。
+      const next = recordToolRouteRevert(record, toolRouteNow())
+      await writeToolRouteRecord(provider, () => next)
+      if (next.managedElsewhere) {
+        runtimeLog?.log('warn', 'config', 'route.managed-elsewhere', '工具配置被别的软件改回过两次，不再自动换线路', { provider })
+        return 'skipped'
+      }
+      runtimeLog?.log('warn', 'config', 'route.reverted', '工具配置换完线路又被改了回去，再换一次', { provider })
+    }
+    // 迁移前原件：第一次定点改写之前整套备份一次，「备份」页里能找回。备份不成照旧换线路（连不上
+    // 的线路比少一份备份要紧），下回再补。
+    let originalKept = record.originalKept === true
+    if (!originalKept && toolRouteAccount) {
+      try {
+        await toolRouteAccount.backup(provider)
+        originalKept = true
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'route.original-backup-failed', '换线路前的原件没能备份，下次再补', { provider, reason: credentialFailureReason(error) })
+      }
+    }
+    // 同 saveConfig：写之前先记成「手动」，写到一半崩掉宁可多挡一次自动写入。模板版本号原样带回去，
+    // 不然下次开机会当成模板落后，再整套备份、补一遍缺省项、弹一句「已补齐」。
+    const restoreOwnership = configOwnership.remember(provider, before)
+    async function putOwnershipBack(): Promise<void> {
+      if (!restoreOwnership) return
+      await restoreOwnership().catch((error: unknown) => {
+        runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '换线路没成功，工具配置的来源记录也没能原样放回', { provider, reason: credentialFailureReason(error) })
+      })
+    }
+    await configOwnership.write(provider, before, 'manual', owner)
+    const from = relaySiteEndpointIdForBaseUrl(site.id, provider, plan.from)
+    const to = relaySiteEndpointIdForBaseUrl(site.id, provider, target)
+    const detail = { provider, kind: 'tool', from, to, reason: request.reason, ...(request.fault ? { fault: true } : {}), mode: 'targeted', attempt }
+    try {
+      applyProviderRouteFollow(provider, plan, providerRoots)
+    } catch (error) {
+      if (untouchedSince(provider, before)) await putOwnershipBack()
+      runtimeLog?.log('warn', 'config', 'route.follow-failed', '工具配置这次没换成线路，稍后再试', { ...detail, reason: credentialFailureReason(error) })
+      return 'retry'
+    }
+    const after = inspectNativeProviderConfig(provider)
+    if (!relayProviderBaseUrlEquals(after.actualBaseUrl, target)) {
+      await putOwnershipBack()
+      runtimeLog?.log('warn', 'config', 'route.followed', '工具配置写了，回读出来的地址不对，稍后再试', { ...detail, readback: false })
+      return 'retry'
+    }
+    await configOwnership.write(provider, after, 'account', owner, templateRevision ?? undefined)
+    await writeToolRouteRecord(provider, (current) => ({
+      ...current, revertIdentity: toolConfigIdentity(before), ...(originalKept ? { originalKept: true } : {}),
+    }))
+    // 客服从日志看得出工具配置是什么时候、从哪条线路换到哪条的：只记线路 id，不记地址。
+    runtimeLog?.log('info', 'config', 'route.followed', '工具配置已换到当前连接线路', { ...detail, readback: true })
+    return 'rewritten'
+  }
+
+  async function followSkillToolRoute(): Promise<void> {
+    const site = activeRelaySite()
+    if (site.id !== 'solov' || !toolRouteAccount) return
+    try {
+      const rewritten = await followXingmangAiSkillRoute({
+        userHome: providerRoots.userHome,
+        siteId: site.id,
+        baseUrl: new URL(site.providerBaseUrls.claude).origin,
+        ownedKeyIds: await toolRouteAccount.ownedKeyIds(),
+      })
+      if (rewritten) runtimeLog?.log('info', 'config', 'route.followed', '星芒画图的连接地址已换到当前线路', { provider: 'skill', kind: 'tool', count: rewritten, mode: 'targeted' })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'route.follow-failed', '星芒画图的连接地址这次没换成', { provider: 'skill', kind: 'tool', reason: credentialFailureReason(error) })
+    }
+  }
+
+  function scheduleToolRouteRetry(providers: readonly ProviderId[]): void {
+    const due = providers.filter((provider) => {
+      const failures = (toolRouteFailures.get(provider) ?? 0) + 1
+      toolRouteFailures.set(provider, failures)
+      if (toolRouteRetryAllowed(failures)) return true
+      runtimeLog?.log('warn', 'config', 'route.retry-exhausted', '工具配置换线路连着失败了 12 次，等下次换线或重启再试', { provider })
+      return false
+    })
+    if (!due.length || cancelToolRouteRetry) return
+    cancelToolRouteRetry = scheduleToolRouteTimer(() => {
+      cancelToolRouteRetry = null
+      void followToolRoutes({ reason: 'retry', providers: [...toolRouteFailures.keys()] })
+    }, toolRouteRetryDelayMs)
+  }
+
+  /**
+   * 因为连不上换的线路，开着的工具要重开才走新线路（C10）。同一个工具 24 小时最多弹一次，之后、或者
+   * 客户关了提示，只在首页标「需重开生效」。Claude Code 每次请求都重读配置，不提。
+   */
+  async function noteToolRouteRestart(rewritten: readonly ProviderId[]): Promise<boolean> {
+    const candidates = rewritten.filter((provider) => provider !== 'claude')
+    if (!candidates.length) return false
+    let report: RunningToolsReport
+    try {
+      report = await (serviceOptions.inspectRunningToolsForRouteHint ?? inspectRunningTools)(candidates)
+    } catch {
+      report = { ...emptyRunningToolsReport, unknown: [...candidates], codexDesktopRunning: candidates.includes('codex') ? null : false }
+    }
+    const needs = toolRouteRestartNeeds(candidates, report, { geminiLaunched: toolLaunchedAt.has('gemini'), platform })
+    const tools = (['codex', 'gemini', 'grok'] as const).filter((provider) => needs[provider] !== undefined)
+    if (!tools.length) return false
+    const now = toolRouteNow()
+    const enabled = store.read().toolRouteRestartHints !== false
+    const records = toolRouteFollow.read().providers
+    const hinted = tools.filter((provider) => enabled && toolRouteHintDue(records[provider], now))
+    for (const provider of tools) if (!hinted.includes(provider)) toolRouteRestartPending.add(provider)
+    if (!hinted.length) return true
+    const hint: ToolRouteRestartHint = { id: now }
+    if (hinted.includes('codex')) hint.codex = needs.codex
+    if (hinted.includes('gemini')) hint.gemini = needs.gemini
+    if (hinted.includes('grok')) hint.grok = needs.grok
+    toolRouteRestartHint = hint
+    for (const provider of hinted) await writeToolRouteRecord(provider, (current) => ({ ...current, hintAt: now }))
+    runtimeLog?.log('info', 'config', 'route.restart-hint', '连接线路因为连不上换了，提示客户重开工具', { providers: hinted, tagged: tools.filter((provider) => !hinted.includes(provider)) })
+    return true
+  }
+
+  async function followToolRoutes(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport> {
+    if (activeRelaySite().id !== 'solov' || toolRouteRewriteMode() === 'merge') return { rewritten: [] }
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (!owner) return { rewritten: [] }
+    if (request.reason === 'route-changed' || request.reason === 'startup') {
+      toolRouteFailures.clear()
+      cancelToolRouteRetry?.()
+      cancelToolRouteRetry = null
+    }
+    const rewritten: ProviderId[] = []
+    const failed: ProviderId[] = []
+    for (const provider of request.providers ?? providerIds) {
+      const attempt = request.reason === 'retry' ? toolRouteFailures.get(provider) ?? 0 : 0
+      let outcome: ToolRouteOutcome
+      try {
+        outcome = await serializeConfigWrite(() => followProviderToolRoute(provider, owner, request, attempt))
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'route.follow-failed', '工具配置这次没换成线路，稍后再试', { provider, kind: 'tool', reason: credentialFailureReason(error), attempt })
+        outcome = 'retry'
+      }
+      if (outcome === 'retry') failed.push(provider)
+      else toolRouteFailures.delete(provider)
+      if (outcome === 'rewritten') {
+        rewritten.push(provider)
+        // 这回又改了一次，之前那句「需重开生效」说的是上一条线路：因故障换的下面再按这次的标。
+        toolRouteRestartPending.delete(provider)
+      }
+    }
+    await followSkillToolRoute()
+    if (failed.length) scheduleToolRouteRetry(failed)
+    const hinted = request.fault === true && rewritten.length > 0 && await noteToolRouteRestart(rewritten)
+    if (rewritten.length) {
+      cancelToolRouteVerify?.()
+      const verify = [...rewritten]
+      cancelToolRouteVerify = scheduleToolRouteTimer(() => {
+        cancelToolRouteVerify = null
+        void followToolRoutes({ reason: 'verify', providers: verify })
+      }, toolRouteVerifyDelayMs)
+    }
+    if (rewritten.length || hinted) serviceOptions.onToolRouteFollowed?.()
+    return { rewritten }
+  }
+
+  function toolRouteSummaryFields(provider: ProviderId, current: NativeConfigInspection, records: ReturnType<typeof toolRouteFollow.read>['providers']): Pick<NativeConfigSummary, 'relayLine' | 'relayRouteState'> {
+    const site = activeRelaySite()
+    if (site.id !== 'solov' || !current.actualBaseUrl || !current.matchesRelay) return {}
+    if (store.read().officialProviders?.includes(provider)) return {}
+    const relayLine = relaySiteExactEndpointIdForBaseUrl(site.id, provider, current.actualBaseUrl)
+    const state = records[provider]?.managedElsewhere ? 'managed-elsewhere' as const
+      : toolRouteRestartPending.has(provider) ? 'restart' as const : undefined
+    return { relayLine, ...(state ? { relayRouteState: state } : {}) }
+  }
+
+  function toolRouteSnapshotFields(): { toolRouteRestartHint?: ToolRouteRestartHint; toolRouteRewrite?: 'merge' } {
+    const hint = currentToolRouteRestartHint()
+    return { ...(hint ? { toolRouteRestartHint: hint } : {}), ...(toolRouteRewriteMode() === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}) }
+  }
+
+  function disposeToolRoutes(): void {
+    cancelToolRouteRetry?.()
+    cancelToolRouteRetry = null
+    cancelToolRouteVerify?.()
+    cancelToolRouteVerify = null
+    cancelExternalRouteRecheck?.()
+    cancelExternalRouteRecheck = null
+  }
+
+  /** 设置快照里给界面的那条重开提示；过了半小时不再给。 */
+  function currentToolRouteRestartHint(): ToolRouteRestartHint | undefined {
+    if (!toolRouteRestartHint) return undefined
+    const age = toolRouteNow() - toolRouteRestartHint.id
+    return age >= 0 && age < toolRouteHintTtlMs ? toolRouteRestartHint : undefined
   }
 
   // 打开前的模型核对（tool-model-check.ts）。只认本软件用当前账号写的配置：官方账号、
@@ -7601,10 +8001,14 @@ export function createSystemService(
 
   return {
     readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.preferences },
-      relayRouteLines: relayRouting.lines(),
+      relayRouteLines: relayRouting.lines(), ...toolRouteSnapshotFields(),
       ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
     updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
-      relayRouteLines: relayRouting.lines() }),
+      relayRouteLines: relayRouting.lines(), ...toolRouteSnapshotFields() }),
+    followToolRoutes,
+    bindToolRouteAccount: (hooks) => { toolRouteAccount = hooks },
+    recheckPendingExternalRoutes,
+    disposeToolRoutes,
     inspectCodexReadiness,
     getConfig: buildConfigSummary,
     revealApiKey,
