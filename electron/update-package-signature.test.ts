@@ -85,6 +85,8 @@ describe('update package signature', () => {
   })
 
   it('pins only well-formed Ed25519 keys', () => {
+    // 名单空了，Windows 客户端会拒装所有更新，发布时的签名那一步也会失败。
+    expect(updateSigningPublicKeys.length).toBeGreaterThan(0)
     for (const key of updateSigningPublicKeys) {
       // Every Ed25519 SPKI DER key starts with the same 12-byte header.
       expect(key).toMatch(/^MCowBQYDK2VwAyEA[A-Za-z0-9+/]{43}=$/)

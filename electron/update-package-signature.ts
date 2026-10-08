@@ -14,6 +14,8 @@ import { createPublicKey, verify, type KeyObject } from 'node:crypto'
 // keep one quoted key per line between the two markers.
 // update-signing-keys:begin
 export const updateSigningPublicKeys: readonly string[] = [
+  // 2026-10-08 yoyo 生成，私钥只在 release 环境的 XINGMANG_UPDATE_SIGNING_KEY 里。
+  'MCowBQYDK2VwAyEAoPgUK8oEbKhzPMGpEAOmkOBaIjgSGazK/p0np8+nI5s=',
 ]
 // update-signing-keys:end
 
