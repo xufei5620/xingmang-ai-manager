@@ -1274,7 +1274,7 @@ export function createUpdaterService(
     // A signature only covers the manifest's digest; without recomputing the
     // digest it would vouch for nothing, so that pairing is refused outright.
     if (!verifyPackageDigest) {
-      rejectDownloadedUpdate('UPDATE_PACKAGE_DIGEST_FAILED', '安装包完整性校验没有配置，已阻止安装')
+      rejectDownloadedUpdate('UPDATE_PACKAGE_DIGEST_FAILED', '安装包完整性校验没有配置，已阻止安装。')
       return
     }
     const downloadedFile = typeof event.downloadedFile === 'string' ? event.downloadedFile.trim() : ''
@@ -1322,7 +1322,7 @@ export function createUpdaterService(
       const entry = manifestPackageEntry(event, downloadedFile)
       const verdict = entry
         ? verifyPackageSignature(String(event.version ?? ''), { ...entry })
-        : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服' }
+        : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
       if (!verdict.ok) {
         rejectDownloadedUpdate(verdict.code, verdict.message)
         return

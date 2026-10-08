@@ -1,5 +1,6 @@
-import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
+import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -88,5 +89,39 @@ describe('update package signature', () => {
       // Every Ed25519 SPKI DER key starts with the same 12-byte header.
       expect(key).toMatch(/^MCowBQYDK2VwAyEA[A-Za-z0-9+/]{43}=$/)
     }
+  })
+})
+
+describe('update package signature from publish to client', () => {
+  const load = createRequire(__filename)
+  const { signManifestText } = load(path.join(__dirname, '..', 'scripts', 'update-manifest-signature.cjs')) as {
+    signManifestText: (text: string, privateKey: KeyObject, pinnedKeys: readonly string[]) => string
+  }
+  // electron-updater 读清单用的就是这一个（js-yaml），发布脚本改写清单用的是 yaml：
+  // 两边对同一份文字解析出的版本号、地址和摘要必须一致，签名才验得过。
+  const { parseUpdateInfo } = load('electron-updater/out/providers/Provider') as {
+    parseUpdateInfo: (rawData: string, channelFile: string, channelFileUrl: URL) => { version: string, files: Record<string, unknown>[] }
+  }
+
+  it('accepts the manifest publish-release signs once electron-updater has parsed it', () => {
+    const { privateKey, publicKey } = keyPair()
+    const file = 'XingMang-AI-Manager-0.2.18-Setup.exe'
+    const sha512 = createHash('sha512').update('installer 0.2.18').digest('base64')
+    // electron-builder 写出来的样子：顶层 path/sha512 与 files[0] 重复，releaseDate 带引号。
+    const manifest = [
+      'version: 0.2.18',
+      'files:',
+      `  - url: ${file}`,
+      `    sha512: ${sha512}`,
+      '    size: 123456789',
+      `path: ${file}`,
+      `sha512: ${sha512}`,
+      "releaseDate: '2026-10-08T12:00:00.000Z'",
+      '',
+    ].join('\n')
+    const info = parseUpdateInfo(signManifestText(manifest, privateKey, [publicKey]), 'latest.yml', new URL('https://updates.example.test/latest.yml'))
+    expect(info.files).toHaveLength(1)
+    expect(verifyUpdateEntrySignature(info.version, info.files[0], [publicKey])).toEqual({ ok: true })
+    expect(verifyUpdateEntrySignature('0.2.19', info.files[0], [publicKey])).toMatchObject({ ok: false, code: 'UPDATE_SIGNATURE_INVALID' })
   })
 })

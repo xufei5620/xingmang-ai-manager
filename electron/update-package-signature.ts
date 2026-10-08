@@ -74,18 +74,18 @@ export function verifyUpdateEntrySignature(
 ): UpdateSignatureVerdict {
   const keys = publicKeys.map(parsePublicKey).filter((key): key is KeyObject => key !== null)
   if (keys.length === 0) {
-    return { ok: false, code: 'UPDATE_SIGNATURE_UNCONFIGURED', message: '这个版本没有配置更新包签名公钥，已阻止安装，请到官网下载新版安装包' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_UNCONFIGURED', message: '这个版本没有配置更新包签名公钥，已阻止安装，请到官网下载新版安装包。' }
   }
   const signature = entry[UPDATE_SIGNATURE_FIELD]
   if (signature === undefined || signature === null || signature === '') {
-    return { ok: false, code: 'UPDATE_SIGNATURE_MISSING', message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_MISSING', message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
   }
   const signatureBytes = decodeSignature(signature)
   const payload = typeof entry.url === 'string' && typeof entry.sha512 === 'string'
     ? buildUpdateSignaturePayload(version, { url: entry.url, sha512: entry.sha512 })
     : null
   if (!signatureBytes || payload === null) {
-    return { ok: false, code: 'UPDATE_SIGNATURE_INVALID', message: '更新包的发布者签名格式不对，已阻止安装。请联系客服' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_INVALID', message: '更新包的发布者签名格式不对，已阻止安装。请联系客服。' }
   }
   const data = Buffer.from(payload, 'utf8')
   const accepted = keys.some((key) => {
@@ -96,7 +96,7 @@ export function verifyUpdateEntrySignature(
     }
   })
   if (!accepted) {
-    return { ok: false, code: 'UPDATE_SIGNATURE_INVALID', message: '更新包的发布者签名校验没通过，可能被人替换过，已阻止安装。请联系客服' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_INVALID', message: '更新包的发布者签名校验没通过，可能被人替换过，已阻止安装。请联系客服。' }
   }
   return { ok: true }
 }
