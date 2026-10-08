@@ -197,6 +197,7 @@ import {
   type SystemSnapshot,
 } from './system-service'
 import { verifyUpdatePackageDigest } from './update-package-digest'
+import { verifyUpdateEntrySignature } from './update-package-signature'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdateRequestGuard } from './update-request-guard'
 import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed } from './update-feed-route'
@@ -1771,6 +1772,10 @@ if (!hasSingleInstanceLock) {
         return previousAutoInstallFailureMessage(process.platform)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // 未签名通道里只有 Windows 的清单由发布者 Ed25519 签过（update-package-signature.ts），
+      // 没有 Authenticode 就只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签；Linux 的 deb
+      // 同样走未签名通道，但它的清单还没签，接上会让所有 Linux 更新都被拒装。
+      ...(unsignedChannel && process.platform === 'win32' ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),
       // 盘快满的电脑上别每 3 小时下一次注定失败的安装包（第二十二批 2）。
       readFreeDiskBytes: async () => {
         const targets = updateDownloadProbeTargets(process.platform, {

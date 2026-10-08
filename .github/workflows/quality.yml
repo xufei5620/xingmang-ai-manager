@@ -457,6 +457,11 @@ jobs:
         # it overruns. This is the backstop for a hang that outlives even that.
         timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
+      - name: Verify the system settings bridge reaches the macOS renderer
+        # Settings → Notifications only offers its per-kind switches once
+        # window.xingmangPlatform answers; until now only Windows ran this.
+        timeout-minutes: 6
+        run: node e2e/renderer-v2-native.mjs
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
         # relative name, which lands as a stray directory in the repository

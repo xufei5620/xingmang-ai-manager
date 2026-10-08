@@ -74,10 +74,20 @@ export function installPlatformSystemApi(
     log: options.log,
   })
 
+  let disposed = false
   const onWindowCreated = (_event: Electron.Event, window: BrowserWindow) => {
+    // macOS applies the constructor's title only after this event has been
+    // emitted (Windows and Linux read it while building the native window), so
+    // the title check waits for the constructor to return. A microtask still
+    // runs before any page has loaded, so no page can have retitled the window.
+    queueMicrotask(() => {
+      if (!disposed && !window.isDestroyed()) captureMainWindow(window)
+    })
+  }
+
+  const captureMainWindow = (window: BrowserWindow) => {
     const contents = window.webContents
     if (owner && !owner.isDestroyed()) return
-    // Observe the native creation event before any page can change its title.
     const isMainWindow =
       options.isMainWindow ??
       ((candidate: BrowserWindow) =>
@@ -201,6 +211,7 @@ export function installPlatformSystemApi(
   }
   options.app.on('browser-window-created', onWindowCreated)
   const dispose = () => {
+    disposed = true
     options.app.removeListener('browser-window-created', onWindowCreated)
     options.app.removeListener('will-quit', dispose)
     unregisterHandlers()
