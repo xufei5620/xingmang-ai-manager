@@ -10,6 +10,7 @@
 - `electron/macos-grok.ts` — Grok 的 macOS 安装
 - `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；失败的那几句话主进程与渲染层共用
 - `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
+- `electron/shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
 - `src/platform-presentation.ts` — 渲染层的平台差异表达
 
@@ -51,10 +52,13 @@
 - `system-service.ts` (3751) — **最大模块**。`createSystemService` 之前是纯函数库（可直接单测），它之后是闭包工厂
 - `tool-installation.ts` (705) / `node-runtime.ts` (1198) / `grok-installer.ts` (662) / `grok-update.ts` (161)
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
+- `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面
 
 **配置与数据**
 - `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**；打开目录时替用户写下的工作区信任也在这里，字段实测记录见 `docs/WORKSPACE-TRUST.md`
+- `codex-config-syntax.ts` — 判断 Codex 自己读不读得了 `config.toml`（读不了时桌面端停在「无法加载组织设置」，首页写「配置文件坏了」）。本软件用的 `@iarna/toml` 只懂 TOML 0.5、Codex 读 TOML 1.1，所以只认两边都拒绝的那几类，比对记录在文件头
+- `cli-config-health.ts` — 判断 Claude Code、Gemini CLI 自己读不读得了 `settings.json`，Codex 读不读得了 `auth.json`（读不了时首页同样写「配置文件坏了」）。本软件自己的读法比这几个工具都宽，读得出 Key 不代表工具读得了；每条都拿真工具试过，版本写在各函数注释里
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
 - `claude-model-picker.ts` — Claude Code 的 `/model` 菜单：接当前账号时按 Key 实际可用的模型生成 `modelPicker` 与 `ANTHROPIC_DEFAULT_MODEL`、认出本软件写的菜单、切回官方时收回
 - `codex-model-catalog.ts` — Codex（命令行与桌面端共用）的型号名单：随包官方名单（`bundled-catalog/codex-models`，按 sha256 钉住）按账号挑出能用的型号，写成 `CODEX_HOME/xingmang-models.json` 并在 `config.toml` 顶层指向它；本机命令行或桌面端太旧、默认型号不在名单里就不写。何时重写见 `tool-model-check.ts`，版本变了在本机就地收回见 `system-service.ts` 的 `takeBackUnreadableCodexModelCatalog`

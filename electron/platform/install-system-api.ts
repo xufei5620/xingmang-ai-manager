@@ -19,7 +19,7 @@ import {
   detachHostNotifier,
   type HostNotifier,
 } from './host-notification-bridge'
-import { proxyBypassActive } from './proxy-bypass-bridge'
+import { proxyBypassActive, proxySiteDirectActive } from './proxy-bypass-bridge'
 import { trayAvailability } from './tray-availability-bridge'
 import { createLinuxAutostart } from '../linux-autostart'
 import {
@@ -170,6 +170,7 @@ export function installPlatformSystemApi(
           trayAvailable: trayAvailability,
           relaySiteId: () => existing.read().relaySiteId,
           proxyBypassed: proxyBypassActive,
+          proxySiteDirect: proxySiteDirectActive,
           resolveProxy: (url) => {
             if (!owner || owner.isDestroyed()) throw new Error('主窗口已关闭。')
             return owner.session.resolveProxy(url)

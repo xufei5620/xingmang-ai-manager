@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createSettingsQueue, diagnosticHasFix, diagnosticTarget } from './pages-maintenance'
+import { createSettingsQueue, diagnosticHasFix, diagnosticSection, diagnosticTarget } from './pages-maintenance'
 import {
+  accountHeadLead,
+  accountTabNeeds,
   buildAccountInviteLink,
   buildSubscriptionPaymentInput,
   passwordFormDirty,
@@ -8,18 +10,21 @@ import {
   paymentTerminalPresentation,
   buildTopupBonus,
   resetTopupQuoteForMethod,
+  subscriptionStateFor,
   subscriptionToolsNotice,
   validateTopupAmount,
   subscriptionPaymentMethods,
 } from './pages-account'
 import {
+  extensionInScope,
   extensionItemsForView,
+  extensionScopeLabel,
   filterExtensionMarkets,
   parseCommandArguments,
   parseEnvironmentVariables,
   readCodexExtensionMetadata,
 } from './pages-management'
-import { accountTimeRange } from './AccountFilters'
+import { accountTimeRange, hiddenFilterCount } from './AccountFilters'
 import {
   beginBusinessOperation,
   errorMessage,
@@ -111,8 +116,51 @@ describe('v2 business boundaries', () => {
     })
     expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
-      tone: 'warn', body: expect.stringContaining('重新写入 Key'),
+      tone: 'warn', body: expect.stringContaining('重新写入 Key'), action: 'health',
     })
+    expect(subscriptionToolsNotice({ followsPreference: true }).action).toBeUndefined()
+  })
+
+  it('names every subscription state in Chinese and never shows the raw server value', () => {
+    expect(subscriptionStateFor('active')).toEqual({ label: '生效中', tone: 'ok' })
+    expect(subscriptionStateFor('exhausted')).toEqual({ label: '额度已用完', tone: 'warn' })
+    expect(subscriptionStateFor('expired')).toEqual({ label: '已到期', tone: 'neutral' })
+    // 星芒账号后台作废的、历史账号删掉的和暂停的。
+    expect(subscriptionStateFor('cancelled')).toEqual({ label: '已撤销', tone: 'neutral' })
+    expect(subscriptionStateFor('revoked')).toEqual({ label: '已撤销', tone: 'neutral' })
+    expect(subscriptionStateFor('suspended')).toEqual({ label: '已停用', tone: 'neutral' })
+    for (const status of ['paused', '', 'ACTIVE', 'constructor', 'toString', '__proto__']) {
+      expect(subscriptionStateFor(status)).toEqual({ label: '待确认', tone: 'neutral' })
+    }
+  })
+
+  it('lets each account page wait only for the reads it actually shows', () => {
+    expect(accountTabNeeds('overview')).toEqual({ profile: true, balance: true })
+    expect(accountTabNeeds('invite')).toEqual({ profile: true, balance: true })
+    for (const tab of ['recharge', 'orders', 'devices'] as const) {
+      expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: false })
+    }
+    for (const tab of ['dashboard', 'usage', 'tasks', 'keys'] as const) {
+      expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: true })
+    }
+  })
+
+  it('names the current account in the page head and says plainly when its profile was not read', () => {
+    expect(accountHeadLead({ username: 'alice', email: 'a@example.test' })).toBe('当前账号：alice（a@example.test）')
+    expect(accountHeadLead({ username: 'alice', email: '' })).toBe('当前账号：alice')
+    expect(accountHeadLead(null)).toBe('当前账号的资料暂时没有读到')
+  })
+
+  it('counts only the folded filters that a query actually applied', () => {
+    const fields = [
+      { key: 'start', label: '开始时间' },
+      { key: 'modelName', label: '模型名称' },
+      { key: 'group', label: '分组' },
+      { key: 'tokenName', label: '令牌名称' },
+    ]
+    expect(hiddenFilterCount(fields, ['start', 'modelName'], {})).toBe(0)
+    expect(hiddenFilterCount(fields, ['start', 'modelName'], { start: '2026-10-01T00:00', modelName: 'gpt' })).toBe(0)
+    expect(hiddenFilterCount(fields, ['start', 'modelName'], { group: 'vip', tokenName: '', modelName: 'gpt' })).toBe(1)
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
@@ -182,6 +230,36 @@ describe('v2 business boundaries', () => {
     ).toEqual(['installed', 'available'])
     expect(extensionItemsForView(items, 'mcp', 'installed').map((entry) => entry.id))
       .toEqual(['mcp'])
+  })
+
+  it('names the detail scope in Chinese instead of the CLI scope keyword', () => {
+    expect(extensionScopeLabel('user')).toBe('我的（全局）')
+    expect(extensionScopeLabel('project')).toBe('当前项目')
+    expect(extensionScopeLabel('workspace')).toBe('当前工作区')
+    expect(extensionScopeLabel('builtin')).toBe('系统内置')
+    // Claude 的 local 只在这个项目里用；Gemini 扩展自带的技能装在用户目录里。
+    expect(extensionScopeLabel('local')).toBe('当前项目')
+    expect(extensionScopeLabel('extension')).toBe('我的（全局）')
+    expect(extensionScopeLabel(null)).toBe('未提供')
+    expect(extensionScopeLabel(undefined)).toBe('未提供')
+  })
+
+  it('files each item under the same scope filter its details name', () => {
+    // 详情写「当前项目」的，选「当前项目」就列出来；写「我的（全局）」的同理。
+    expect(extensionInScope('local', 'project')).toBe(true)
+    expect(extensionInScope('extension', 'user')).toBe(true)
+    expect(extensionInScope('project', 'project')).toBe(true)
+    expect(extensionInScope('user', 'user')).toBe(true)
+    expect(extensionInScope('workspace', 'workspace')).toBe(true)
+    expect(extensionInScope('builtin', 'builtin')).toBe(true)
+    expect(extensionInScope('local', 'user')).toBe(false)
+    expect(extensionInScope('extension', 'project')).toBe(false)
+    expect(extensionInScope('user', 'project')).toBe(false)
+    // 没带 scope 的只在「全部范围」里。
+    expect(extensionInScope(null, 'user')).toBe(false)
+    expect(extensionInScope(undefined, 'project')).toBe(false)
+    for (const scope of ['user', 'project', 'local', 'workspace', 'builtin', 'extension', null] as const)
+      expect(extensionInScope(scope, 'all')).toBe(true)
   })
 
   it('filters plugin markets by both display name and root path', () => {
@@ -277,10 +355,13 @@ describe('v2 business boundaries', () => {
       'WORKSPACE_CONFIG_OVERRIDE',
       'PROVIDER_ENVIRONMENT_OVERRIDE',
       // 以前跳「设置 → 网络」或首页，那里都没有能处理它们的东西，点了只会绕一圈。
+      // 网络那一项只有换线路救得回来时才翻到线路那一行（下一条），不带原因时照旧不给。
       'XINGMANG_NETWORK',
       'CLASH_VERGE_TUN',
       'CODEX_DOTENV',
       'CLAUDE_BYPASS_PERMISSIONS',
+      // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
+      'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
       'ADMINISTRATOR',
       'OPERATING_SYSTEM',
@@ -292,6 +373,44 @@ describe('v2 business boundaries', () => {
       expect(diagnosticTarget(code)).toBeNull()
       expect(diagnosticHasFix(code)).toBe(false)
     }
+  })
+  // 第四十三批 B：#872 以后「设置 → 网络」最上面就是「星芒账号线路」，被当地网络切断的
+  // 那几种连不上，「去处理」翻到那一行，选「备用直连」再重开就换过去了。直连适配第二步起
+  // 历史账号也能选直连，它那一行也给。
+  it('sends a cut-off line of the signed-in account to its route setting', () => {
+    for (const reason of ['dns', 'refused', 'timeout']) {
+      const details = { endpoint: 'https://xm.solov.cc/api/status', reason, siteId: 'solov' }
+      expect(diagnosticTarget('XINGMANG_NETWORK', details, 'solov')).toBe('settings')
+      expect(diagnosticHasFix('XINGMANG_NETWORK', details, 'solov')).toBe(true)
+      expect(diagnosticSection('XINGMANG_NETWORK', details, 'solov')).toBe('relay-route-solov')
+      const historical = { endpoint: 'https://api.solov.cc/api/v1/settings/public', reason, siteId: 'solov-api' }
+      expect(diagnosticTarget('XINGMANG_NETWORK', historical, 'solov-api')).toBe('settings')
+      expect(diagnosticHasFix('XINGMANG_NETWORK', historical, 'solov-api')).toBe(true)
+      expect(diagnosticSection('XINGMANG_NETWORK', historical, 'solov-api')).toBe('relay-route-solov-api')
+    }
+  })
+  it('keeps the network row without a fix where switching lines cannot help', () => {
+    const cases: Array<[string, Record<string, string | number> | undefined, string | null]> = [
+      // 没网、代理、证书、上网认证、服务维护：换线路救不了。
+      ...['offline', 'proxy', 'tls', 'certDate', 'intercepted', 'serviceUnavailable'].map((reason): [string, Record<string, string>, string] => [reason, { reason, siteId: 'solov' }, 'solov']),
+      // 网络通了、服务回了错误码：不带原因。
+      ['http status', { status: 503, siteId: 'solov' }, 'solov'],
+      // 访客。
+      ['guest', { reason: 'refused', siteId: 'solov' }, null],
+      // 开机恢复历史账号时查的是默认那个站；换过账号以后看的旧结果也一样，查的不是登着的这个。
+      ['another site', { reason: 'refused', siteId: 'solov' }, 'solov-api'],
+      // 旧版主进程给的结果不带站点。
+      ['no site', { reason: 'refused' }, 'solov'],
+      ['no details', undefined, 'solov'],
+    ]
+    for (const [label, details, accountSiteId] of cases) {
+      expect(diagnosticTarget('XINGMANG_NETWORK', details, accountSiteId), label).toBeNull()
+      expect(diagnosticHasFix('XINGMANG_NETWORK', details, accountSiteId), label).toBe(false)
+      expect(diagnosticSection('XINGMANG_NETWORK', details, accountSiteId), label).toBeUndefined()
+    }
+    // 代理软件那一项在设置里仍然没有能处理它的东西。
+    expect(diagnosticTarget('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeNull()
+    expect(diagnosticSection('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeUndefined()
   })
   it('sends only the outdated Node.js certificate verdict to the install page', () => {
     expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')
@@ -329,9 +448,9 @@ describe('v2 business boundaries', () => {
     )
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试或查看反馈日志。',
+      '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试或查看反馈日志。')
+    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

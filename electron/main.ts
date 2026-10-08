@@ -56,11 +56,11 @@ import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
-import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -70,7 +70,7 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
-import { providerIds, type ProviderId } from './catalog'
+import { cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -126,7 +126,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
-import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
@@ -134,26 +134,31 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
+import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   clearableEnvironmentOverrides,
   createDiagnosticsExport,
+  environmentAccountBaseUrls,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
+  relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
+  type DiagnosticsRelayRoute,
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
 } from './diagnostics'
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
-import { clearUserProviderOverrides, setAsideCodexDotenv, type DiagnosticFixKind } from './diagnostic-fixes'
+import { clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions, type DiagnosticFixKind } from './diagnostic-fixes'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
-import { removeMacLoginItem, removeMacManagedTools, runMacUninstall } from './macos-uninstall'
-import { clearLoginAndChatRecords, removeCliHooksFromConfigs } from './uninstall-cleanup'
+import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
+import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksFromConfigs, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -194,23 +199,26 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdateRequestGuard } from './update-request-guard'
-import { createUpdaterService } from './updater'
+import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed } from './update-feed-route'
+import { createUpdaterService, type UpdateSnapshot } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
-import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
-import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
+import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
+import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
 import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
 import {
   applyWindowTheme,
+  assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
   windowIconFileName,
+  type AssetMenuMediaType,
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
@@ -1113,6 +1121,22 @@ if (!hasSingleInstanceLock) {
     }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
+    // 线路选项开机时定下，这次运行里不再变（设置里改了要重启才生效）。选「自动」的站这次运行里会
+    // 换线路：先用上次存下的结论，开机后在后台查一次，直连连不上改走默认线路，好了再切回来
+    // （relay-route-controller.ts）。查线路走的是星芒自己连站点那条路（relayFetch，下面才建）。
+    const relayPreferences = resolveRelayRoutePreferences(settingsStore.read().relayEndpointIds)
+    const relayRouteController = createRelayRouteController({
+      preferences: relayPreferences,
+      ...createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json')),
+      probe: (siteId, line) => probeRelayLineHealth(relayFetch, relayStatusProbeUrl(requireRelaySite(siteId, line))),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    const relayRouting = createRelayEndpointRoutingSnapshot(relayPreferences, () => relayRouteController.lines())
+    // 客服要从日志看出这次走的是哪条：只记线路 id，不记地址。
+    runtimeLog.log('info', 'config', 'relay.route.active', '本次运行用的连接线路', {
+      preferences: relayRouting.preferences,
+      lines: relayRouting.lines(),
+    })
     let settingsSaveIssue: SettingsSaveIssue | undefined
     // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
     // 记录，而 settings.json 会整份交给渲染层，没必要把机器上每个账号的记录都
@@ -1138,23 +1162,65 @@ if (!hasSingleInstanceLock) {
       })
       return siteDirectProxy.then(() => siteDirectSession.fetch(input instanceof URL ? input.href : input, init))
     }
+    // 整个改了直连以后默认会话不再经过系统代理，看代理软件是不是又好了，得另走一个只跟随
+    // 系统代理的会话。同样是内存分区，只用来探那一下。
+    const systemProxySession = session.fromPartition('xingmang-system-proxy')
+    let systemProxyMode: Promise<void> | null = null
+    const systemProxyFetch: typeof fetch = (input, init) => {
+      systemProxyMode ??= systemProxySession.setProxy({ mode: 'system' }).catch((error: unknown) => {
+        systemProxyMode = null
+        throw error
+      })
+      return systemProxyMode.then(() => systemProxySession.fetch(input instanceof URL ? input.href : input, init))
+    }
     // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连，
+    // 代理软件好了以后再一起改回来。
     // AI 聊天画图、连通检查、查模型（relayFetch）都连星芒站点，账号请求（accountFetch）
     // 改直连时跟着一起改，它们自己不触发改直连；别的地址照旧走默认会话。建在这里是因为
     // relayFetch 马上就要用；站点设置、加速状态都是出了事才去读。
     const { bypass: proxyBypass, relayFetch, accountFetch } = createSiteRouting({
       probeUrl: () => {
-        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
+        try { return relayStatusProbeUrl(relayRouting.resolve(systemService.readStoredConfig().relaySiteId)) }
         catch { return null }
       },
+      // 同一个站的默认线路和直连算一个站点：「自动」中途换了线路，分去直连会话的请求照样分过去。
+      siteProbeUrls: (url) => relaySiteStatusProbeUrls(url, relayRouting.lines()),
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
       setProxy: (mode) => session.defaultSession.setProxy({ mode }),
       accelerationActive: accelerationRunning,
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
       sessionFetch,
       siteDirectFetch,
+      systemProxyFetch,
+      // 代理软件好了、改回跟随系统代理：界面上「已经改为直接联网」那条提示跟着收起。
+      // 窗口是后面才建的，改回最早也在改直连 5 分钟以后，那时早就建好了。
+      directEnded: () => {
+        if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+        if (managedMainWindow.webContents.isDestroyed()) return
+        managedMainWindow.webContents.send(ipcEventChannels.onProxyBypassEnded, undefined)
+      },
     })
+    // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
+    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
+    // 健康检查，换不换由它定（#941 第 3 节）：正文读得慢、客户点了「停止」不报；账号请求只会因为等到时限
+    // 才中止，连回应头都没等来就报（abortMeansNoAnswer）。工具相关的检查（写配置前查模型、工具自检）查的
+    // 正是工具会用的那条线路，不换不重发，直连上连不上只报给线路那边。
+    function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
+      runtimeLog.log(level, 'network', event, message, detail)
+    }
+    const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
+    const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansNoAnswer: true, log: logRelayLine })
+    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansNoAnswer: true, log: logRelayLine })
+    const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
+    // 「自动」换了线路：界面重读设置、把工具迁过去（App.tsx，开着的也迁）。窗口还没建好时不用叫，
+    // 首屏读设置时读到的就是新线路。
+    const unsubscribeRelayRoute = relayRouteController.subscribe(() => {
+      if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+      if (managedMainWindow.webContents.isDestroyed()) return
+      managedMainWindow.webContents.send(ipcEventChannels.onRelayRouteChanged, undefined)
+    })
+    relayRouteController.start()
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecution = await windowsCliExecutionModePromise
@@ -1165,6 +1231,7 @@ if (!hasSingleInstanceLock) {
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
       elapsedMs: windowsCliExecution.elapsedMs,
+      ...(windowsCliExecution.highIntegrity === undefined ? {} : { highIntegrity: windowsCliExecution.highIntegrity }),
       ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
     if (windowsCliExecution.probeFailure) {
@@ -1239,6 +1306,9 @@ if (!hasSingleInstanceLock) {
         : Promise.resolve({ status: 'unavailable' as const }),
       stopRoute: async (scope) => { await accelerationDownloadRoutes?.stopDownloadRoute(scope) },
       onRouteChanged: applyAcceleratedDownloadProxy,
+      // 没有临时线路时，下载和给 npm 的代理都按默认会话走（见下面的 downloadFetch 和
+      // resolveSubprocessProxyEnvironment）：整个改了直连，它就不再跟着系统代理。
+      downloadsFollowSystemProxy: () => !proxyBypass.active(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // 托盘与自动连接共用这一条：把用户在加速页上选过并落了盘的线路与模式，落到
@@ -1272,7 +1342,7 @@ if (!hasSingleInstanceLock) {
       // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
       // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
       onlyNeededAtStartup: () => codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
-        rootedOptions.system.providerRoots, resolveRelaySite(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
+        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
@@ -1290,14 +1360,19 @@ if (!hasSingleInstanceLock) {
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
+      relayEndpointRouting: relayRouting,
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
       sweepInstallLeftovers,
       ...(process.platform === 'win32'
-        ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
+        ? {
+            ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory),
+            removeWindowsUserPath: (directory: string) => removeDirectoryFromWindowsUserPath(directory),
+          }
         : {}),
       ...(process.platform === 'darwin'
         ? { ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({ reason }) }
@@ -1320,7 +1395,8 @@ if (!hasSingleInstanceLock) {
       // 只由主进程自己读，随 app.asar 走即可，不必像上面两个脚本那样拷进 extraResources。
       bundledCodexModelCatalogPath: resolveBundledCodexModelCatalogPath(app.getAppPath()),
       ...rootedOptions.system,
-      relayFetch,
+      relayFetch: observedRelayFetch,
+      relayRoutedFetch: routedRelayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
       // Re-read the existing session/system proxy selection without changing
       // the OS proxy or imposing a new Chromium proxy mode.
@@ -1384,11 +1460,26 @@ if (!hasSingleInstanceLock) {
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
     })
     let latestDiagnostics: DiagnosticsReport | null = null
+    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。
+    function diagnosticsRelayRoute(siteId: string | undefined): DiagnosticsRelayRoute | undefined {
+      const site = relayRouting.resolve(siteId)
+      if (site.id !== 'solov' && site.id !== 'solov-api') return undefined
+      const routeSiteId: RelayRouteSiteId = site.id
+      const { line, settled } = relayRouting.lines()[routeSiteId]
+      return {
+        line,
+        settled,
+        automatic: relayRouting.preferences[routeSiteId] === 'auto',
+        primarySite: requireRelaySite(routeSiteId),
+        reportDirectFailure: (reason) => relayRouteController.reportDirectFailure(routeSiteId, reason),
+        lastChange: relayRouteController.lastChange(routeSiteId),
+      }
+    }
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
     function codexProbeContext() {
-      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
       const inspection = inspectProviderConfig(
         'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
       )
@@ -1400,7 +1491,8 @@ if (!hasSingleInstanceLock) {
         return buildConnectionProbe('codex', site, inspection)
       },
       {
-        fetch: relayFetch,
+        // 查的是 Codex 自己那份配置里的地址：工具会走哪条就查哪条（observed，不换不重发）。
+        fetch: observedRelayFetch,
         // The Key stays in main-process memory. Re-reading it after the first
         // response prevents a second paid request after account/source changes.
         currentScope: () => {
@@ -1446,13 +1538,16 @@ if (!hasSingleInstanceLock) {
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
-          // Read fresh on every run rather than captured once at startup, so
-          // a settings change is reflected on the very next diagnostics run.
-          relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
+          // Read the account's site on every run; endpoint preferences take
+          // effect only after restart, matching the live account clients.
+          relaySite: relayRouting.resolve(systemService.readStoredConfig().relaySiteId),
+          relayRoute: diagnosticsRelayRoute(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
           // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
           // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
           resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
+          // 代理不转发星芒、账号和 AI 对话已经自己改了直连时，这一项照实说，不叫人去退代理软件。
+          siteDirectActive: () => proxyBypass.siteDirect(),
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
@@ -1462,25 +1557,29 @@ if (!hasSingleInstanceLock) {
         })
         return latestDiagnostics
       },
-      // 检查页两颗一键处理。要删哪几项在点的那一刻按当前环境和当前站点重算，
+      // 检查页的一键处理。要删哪几项、挪哪个文件在点的那一刻按当前环境和当前站点重算，
       // 不信渲染层给的任何名字或路径（I5）。
       fix: async (kind: DiagnosticFixKind) => {
         if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
-        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        if (kind === 'set-aside-home-agents-md') return setAsideHomeProjectInstructions(codexContext.userHome)
+        const siteId = systemService.readStoredConfig().relaySiteId
+        // 和检查页那一项同一套「指向当前账号」：「自动」走直连时指着默认线路的不删。
+        const accountBaseUrls = environmentAccountBaseUrls(relayRouting.resolve(siteId), diagnosticsRelayRoute(siteId))
         return clearUserProviderOverrides({
-          names: clearableEnvironmentOverrides(process.env, site.providerBaseUrls, codexContext.userHome),
+          names: clearableEnvironmentOverrides(process.env, accountBaseUrls, codexContext.userHome),
         })
       },
       // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
       // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
       // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
       checkConnection: async (provider: ProviderId) => {
-        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
         const result = await runConnectionCheck({
           provider,
           site,
           inspection: inspectProviderConfig(provider, rootedOptions.system.providerRoots, site.providerBaseUrls),
-          fetch: relayFetch,
+          // 测的是工具配置里写的那个地址，工具走哪条就测哪条（observed，不换不重发）。
+          fetch: observedRelayFetch,
         })
         latestConnectionChecks.set(provider, {
           ok: result.ok,
@@ -1529,6 +1628,26 @@ if (!hasSingleInstanceLock) {
       })
     }
     const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true
+    const updateConfigPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'app-update.yml')
+      : path.join(app.getAppPath(), 'dev-app-update.yml')
+    // 只有标准 Windows 正式版有直连那份更新目录（直连白名单里只有 Windows 的安装包）。星芒账号走
+    // 直连时更新也走直连；「自动」会在运行中换线路，所以每次检查前按这会儿的线路选（feedRoute）。
+    const directUpdateFeed = locateDirectUpdateFeed(updateConfigPath, {
+      activeSolovEndpointId: 'direct',
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      localBuild,
+    })
+    let updateFeedLine: RelayEndpointId = 'primary'
+    // setFeedURL only changes transport. Keep configOnDisk intact: electron-updater
+    // still reads publisherName and updaterCacheDirName there when verifying/installing.
+    function useUpdateFeedLine(line: RelayEndpointId): void {
+      if (!directUpdateFeed || line === updateFeedLine) return
+      autoUpdater.setFeedURL((line === 'direct' ? directUpdateFeed : packagedUpdateFeed()).feed)
+      updateFeedLine = line
+    }
+    useUpdateFeedLine(relayRouteController.route('solov').line)
     // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
     // electron-updater returns from verifySignature before the strict verifier
     // above is ever reached. The updater re-checks the manifest digest itself;
@@ -1562,12 +1681,36 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    // 更新页「确认重启安装」、托盘「重启并安装」前问那一句（主窗口建好后接上）；true = 照常装。
+    let confirmUpdateInstall: (() => Promise<boolean>) | null = null
     let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
+    // 开机自启时在后台装新版本（见下面打开时装），安装器把它重新拉起的这一次照开机自启
+    // 那样待在后台。这条记录只认一次，读到就清掉；已经装上的这一版也从记录里清掉，免得
+    // 装回旧版后被当成上次没装上（resolveRecordToWriteAtLaunch）。认「上次没装上」、打开时装
+    // 照旧看读到的原样：正在运行的这一版不会再被当成新版本下好，清没清对它们一样。
+    const relaunchedAfterBackgroundInstall = isRelaunchAfterBackgroundInstall(pendingUpdateAtLaunch, Date.now())
+    const recordToWriteAtLaunch = resolveRecordToWriteAtLaunch(pendingUpdateAtLaunch, app.getVersion())
+    if (recordToWriteAtLaunch) {
+      pendingUpdateRecord = recordToWriteAtLaunch
+      void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'pending.record-failed', cause)
+      })
+    }
+    // Windows 上这个账号在不在管理员组（第二十四批 2）。不在的话装更新时授权窗口要输一个管理员
+    // 账号的密码，自动装只会把软件关掉、再弹一个他填不了的窗口，所以打开时、退出时都不自动装。
+    // whoami 几十毫秒就答，启动就问，下好的版本摆出来之前一般早问完了；没问出来（'unknown'）
+    // 照旧自动装，不把管理员也拦住。问出来之前是 null：打开时装、退出时装都等它。
+    const updateAccountProbe: Promise<WindowsElevationCapability> = process.platform === 'win32'
+      ? inspectWindowsElevationCapability({ timeoutMs: 3_000 })
+      : Promise.resolve('unknown')
+    let updateAccount: WindowsElevationCapability | null = null
+    // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
+    let quitInstallAttempt: QuitInstallAttempt | null = null
     let previousAutoInstallFailureReported = false
     // Linux 只有 .deb 装的能自动更新，装这一步交给系统安装程序（linux-deb-update.ts）。
     const updateInstallMethod = process.platform === 'linux'
@@ -1650,7 +1793,8 @@ if (!hasSingleInstanceLock) {
       downloadReceivedAt: () => updateRequests?.lastReceivedAt() ?? null,
       abortDownloadRequests: (reason) => {
         const aborted = updateRequests?.abortAll(reason) ?? 0
-        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted })
+        // 检查挂住和下载停住都从这里掐，reason 分得清是哪个看门狗（UpdateCheckAborted / UpdateDownloadAborted）。
+        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted, reason: reason.name })
       },
       downloadStalled: (stall) => {
         runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
@@ -1688,6 +1832,22 @@ if (!hasSingleInstanceLock) {
       restoreProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'system' })
       },
+      feedRoute: directUpdateFeed
+        ? {
+            prepare: () => useUpdateFeedLine(relayRouteController.route('solov').line),
+            // 「自动」时直连那份没查通：换回包里那份当场再查一次。连不上一类的报给线路那边再查直连；
+            // 白名单 404 只是那一个文件的事，下次检查照样先走直连。
+            fallBack: (error) => {
+              if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
+              const failure = classifyDirectFeedFailure(error)
+              if (!failure) return false
+              if (failure.lineFailure) relayRouteController.reportDirectFailure('solov', failure.reason)
+              useUpdateFeedLine('primary')
+              runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在直连上没走通，改走默认线路再查一次', { reason: failure.reason })
+              return true
+            },
+          }
+        : undefined,
     })
     // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
     // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
@@ -1695,16 +1855,12 @@ if (!hasSingleInstanceLock) {
     // 要让他看到。
     const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
-      : locateServiceStatusUrl(
-        app.isPackaged
-          ? path.join(process.resourcesPath, 'app-update.yml')
-          : path.join(app.getAppPath(), 'dev-app-update.yml'),
-        { allowLocalHttp: !app.isPackaged },
-      )
+      : locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
+        // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
         read: () => readServiceStatus({
-          url: serviceStatusUrl,
+          url: directUpdateFeed && updateFeedLine === 'direct' ? directUpdateFeed.serviceStatusUrl : serviceStatusUrl,
           fetch: (url, init) => autoUpdater.netSession.fetch(url, init),
         }),
         onChange: (status) => {
@@ -1723,6 +1879,7 @@ if (!hasSingleInstanceLock) {
       ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
       signatureVerification: unsignedChannel ? 'none' : 'strict',
       requestGuard: updateRequests !== null,
+      updateFeedRoute: directUpdateFeed ? updateFeedLine : 'packaged',
     })
     if (unsignedChannel) {
       runtimeLog.log(
@@ -1742,6 +1899,8 @@ if (!hasSingleInstanceLock) {
     const cliKeepAwake = createCliKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+      // 托盘那行「暂不让电脑自动睡眠」跟着换（已知35）。
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     const cliHookEvents = createCliHookEventMonitor({
       directory: cliHookEventsDirectory(managerDataDirectory),
@@ -1754,6 +1913,7 @@ if (!hasSingleInstanceLock) {
     const installKeepAwake = createInstallKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'main', event, message, detail),
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     const unsubscribeInstallKeepAwakeQueue = systemService.onInstallationQueueChange((snapshot) => installKeepAwake.observeQueue(snapshot))
     installKeepAwake.observeQueue(systemService.inspectInstallationQueue())
@@ -1769,7 +1929,7 @@ if (!hasSingleInstanceLock) {
     // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
     // checkConnection），否则换过站的用户会被告知一份好配置「没指向当前账号」。
     runtimeLog.attachEnvironmentDescriber(async () => {
-      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
       return buildFeedbackEnvironmentLines({
         clis: latestTraySystem?.clis ?? null,
         readConfig: (provider) => inspectProviderConfig(
@@ -1798,6 +1958,7 @@ if (!hasSingleInstanceLock) {
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
+        relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
@@ -1835,9 +1996,133 @@ if (!hasSingleInstanceLock) {
       readAutoUpdate: () => updaterService.autoUpdateEnabled(),
     })
     const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
+    // 开机拉起时检测工具、检查更新、账号 Key 初始化这几件后台事都往后挪：窗口第一次显示或满
+    // 3 分钟才开始（见 login-launch.ts）。加速要还原的系统代理不在其中，照原来的顺序先做。
+    // 开机自启时在后台装新版、安装器重新拉起的那一次也照开机拉起办：装之前它就待在后台。
+    const launchedAtLogin = relaunchedAfterBackgroundInstall || resolveLoginLaunch({
+      platform: process.platform,
+      argv: process.argv,
+      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
+    })
+    // 打开时装只认开始查更新之后两分钟内下好的（LAUNCH_INSTALL_WINDOW_MS）：开机拉起的安静期
+    // 里不查（update:startup 等它结束），两分钟从安静期结束才开始算。
+    let launchInstallClockFrom: number | null = launchedAtLogin ? null : Date.now()
+    // 开机拉起、窗口一直没打开过的，打开时装改在后台装（resolveLaunchInstallMode）。
+    let mainWindowShown = false
+    const startupQuiet = createLoginQuietPeriod({
+      active: launchedAtLogin,
+      durationMs: loginQuietPeriodMs,
+      onEnd: (reason) => {
+        launchInstallClockFrom = Date.now()
+        runtimeLog.log('info', 'main', 'launch.quiet-ended', reason === 'window-shown' ? '开机安静期结束：窗口已打开' : '开机安静期结束：已到时间', { reason })
+      },
+    })
+    if (relaunchedAfterBackgroundInstall) {
+      runtimeLog.log('info', 'updater', 'install.background.relaunched', '后台装新版本后重新打开，照旧待在后台', {
+        version: pendingUpdateAtLaunch.backgroundInstall?.version ?? null,
+        current: app.getVersion(),
+      })
+    }
+    // 后台装没走到安装器重新拉起那一步（这次不装了、没装成、装的时候用户点开了窗口）：撤回
+    // 那条记录，不然之后用户自己退出再打开，会被当成重新拉起的那一次，窗口出不来。
+    const dropBackgroundInstall = () => {
+      if (!pendingUpdateRecord.backgroundInstall) return
+      pendingUpdateRecord = { ...pendingUpdateRecord, backgroundInstall: null }
+      void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'pending.record-failed', cause)
+      })
+    }
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
-    const launchedAt = Date.now()
     let launchInstallTried = false
+    // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
+    let launchInstallAwaitingWindow: string | null = null
+    const startLaunchInstall = (version: string, mode: Exclude<LaunchInstallMode, 'skip'>) => {
+      const background = mode === 'background'
+      const stillInstallable = () => shouldStillInstallAtLaunch({
+        version,
+        autoUpdate: updaterService.autoUpdateEnabled(),
+        snapshot: updaterService.getState(),
+        busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+        mode,
+        windowShown: mainWindowShown,
+        accelerationActive: acceleration?.hasPossibleSession() === true,
+      })
+      // 等到第一次打开窗口才装的，离开机可能已经过了几个小时，预告之前先看一眼。
+      if (mode === 'window' && !stillInstallable()) {
+        runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `第一次打开窗口时先不装 ${version}，留到退出时再装`, {
+          autoUpdate: updaterService.autoUpdateEnabled(),
+          accelerationActive: acceleration?.hasPossibleSession() === true,
+        })
+        return
+      }
+      if (mode === 'background') {
+        runtimeLog.log('info', 'updater', 'install.on-launch.background', `开机自启、窗口没打开过，在后台装上次下好的 ${version}，装好照旧待在后台`)
+      } else if (mode === 'window') {
+        runtimeLog.log('info', 'updater', 'install.on-launch.window-shown', `开机自启后第一次打开窗口，先预告再装上次下好的 ${version}`)
+      } else {
+        runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
+      }
+      // 后台装的另记一笔：安装器装好重新拉起新版本时，照它认出那一次，照旧待在后台。
+      pendingUpdateRecord = {
+        ...pendingUpdateRecord,
+        attemptedVersion: version,
+        ...(background ? { backgroundInstall: { version, startedAt: Date.now() } } : {}),
+      }
+      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。装之前先发
+      // 一条系统通知、等几秒：窗口刚出来就自己关掉、再凭空弹出授权窗口，看着像闪退中毒。
+      // 后台装的没人在看，不预告也不等。
+      void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
+        if (!background) {
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true)
+          desktopNotifications.announce(notice)
+          // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
+          updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
+          await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
+        }
+        if (!stillInstallable()) {
+          updaterService.setLaunchInstallNotice(null)
+          dropBackgroundInstall()
+          runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
+          return
+        }
+        updaterService.install()
+      }).catch((cause: unknown) => {
+        updaterService.setLaunchInstallNotice(null)
+        dropBackgroundInstall()
+        runtimeLog.exception('updater', 'install.on-launch.failed', cause)
+      })
+    }
+    const considerLaunchInstall = (state: UpdateSnapshot) => {
+      // 退出交接还没接上时（主窗口没建好）不装：那时安装器发起的退出会被当成用户关窗。
+      // 开机拉起的安静期还没过时，两分钟也还没开始算。账号是不是管理员还没问出来时也先不定，
+      // 问出来以后再看一遍（见下面 updateAccountProbe）。
+      if (launchInstallTried || !updateQuitHandoff || launchInstallClockFrom === null || updateAccount === null) return
+      const version = decideLaunchInstall({
+        autoUpdate: updaterService.autoUpdateEnabled(),
+        snapshot: state,
+        recordAtLaunch: pendingUpdateAtLaunch,
+        elapsedSinceLaunchMs: Date.now() - launchInstallClockFrom,
+        busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+        standardAccount: updateAccount === 'standard',
+      })
+      if (!version) return
+      launchInstallTried = true
+      const accelerationActive = acceleration?.hasPossibleSession() === true
+      const unattended = canInstallUnattended({
+        platform: process.platform,
+        installMethod: state.installMethod,
+        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
+      })
+      const mode = resolveLaunchInstallMode({ platform: process.platform, launchedAtLogin, windowShown: mainWindowShown, accelerationActive, unattended })
+      if (mode === 'skip' || mode === 'window') {
+        if (mode === 'window') launchInstallAwaitingWindow = version
+        runtimeLog.log('info', 'updater', 'install.on-launch.held', mode === 'window'
+          ? `开机自启、窗口没打开过，${version} 开机时不装，等第一次打开窗口时先预告再装`
+          : `开机自启、窗口没打开过，${version} 开机时不装，留到退出时再装`, { accelerationActive, unattended })
+        return
+      }
+      startLaunchInstall(version, mode)
+    }
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
       if (downloaded) {
@@ -1846,41 +2131,25 @@ if (!hasSingleInstanceLock) {
           runtimeLog.exception('updater', 'pending.record-failed', cause)
         })
       }
-      // 退出交接还没接上时（主窗口没建好）不装：那时安装器发起的退出会被当成用户关窗。
-      if (launchInstallTried || !updateQuitHandoff) return
-      const version = decideLaunchInstall({
-        autoUpdate: updaterService.autoUpdateEnabled(),
-        snapshot: state,
-        recordAtLaunch: pendingUpdateAtLaunch,
-        elapsedSinceLaunchMs: Date.now() - launchedAt,
-        busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
-      })
-      if (!version) return
-      launchInstallTried = true
-      runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
-      pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version }
-      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。装之前先发
-      // 一条系统通知、等几秒：窗口刚出来就自己关掉、再凭空弹出授权窗口，看着像闪退中毒。
-      void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
-        const notice = buildAutoInstallNotice(version, 'launch', process.platform)
-        desktopNotifications.announce(notice)
-        // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
-        updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
-        await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
-        // 等的这几秒里用户可能关了自动更新、开始装工具，或者这个版本被撤回了。
-        const still = updaterService.autoUpdateEnabled()
-          && resolveInstallableUpdateOnQuit(updaterService.getState())?.version === version
-          && resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) === null
-        if (!still) {
-          updaterService.setLaunchInstallNotice(null)
-          runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
-          return
-        }
-        updaterService.install()
-      }).catch((cause: unknown) => {
-        updaterService.setLaunchInstallNotice(null)
-        runtimeLog.exception('updater', 'install.on-launch.failed', cause)
-      })
+      if (isBackgroundInstallFailed(pendingUpdateRecord, state)) {
+        runtimeLog.log('info', 'updater', 'install.background.failed', '后台安装没装成，留到退出时再装')
+        dropBackgroundInstall()
+      }
+      considerLaunchInstall(state)
+    })
+    void updateAccountProbe.then((account) => {
+      updateAccount = account
+      if (account === 'standard') {
+        runtimeLog.log('info', 'updater', 'install.standard-account', '这台电脑的账号不是管理员：下好的新版本不自动装，等有管理员账号的人在更新页点「重启安装」')
+        // 界面据此改说要管理员密码。
+        updaterService.setInstallNeedsAdminPassword(true)
+      } else if (account === 'unknown' && process.platform === 'win32') {
+        runtimeLog.log('warn', 'updater', 'install.account-unknown', '没问出这台电脑的账号是不是管理员，照旧自动装更新')
+      }
+      // 下好的版本可能在问出来之前就摆出来了，那一下没定下来，问出来以后再看一遍。
+      considerLaunchInstall(updaterService.getState())
+    }).catch((cause: unknown) => {
+      runtimeLog.exception('updater', 'install.account-check-failed', cause)
     })
     const urlPolicy = applicationUrlPolicy()
     registerApplicationProtocol(urlPolicy)
@@ -1939,14 +2208,16 @@ if (!hasSingleInstanceLock) {
     // 改直连的是这个客户端连的站点：切账号时另一个站点的登录框也在发请求，它不一定是
     // 当前选中的那个。
     async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
-      const siteProbeUrl = relayStatusProbeUrl(resolveRelaySite(siteId))
+      const siteProbeUrl = relayStatusProbeUrl(relayRouting.resolve(siteId))
       const retry = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
       if (retry) {
-        // 直连那一路刚交还给系统代理时，重发走的是系统代理。
+        // 直连那一路刚交还给系统代理、或者代理只断了一下又连得上时，重发走的是系统代理。
         const scope = proxyBypass.active() ? 'app' : proxyBypass.siteDirect() ? 'site' : 'proxy'
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope === 'proxy'
-          ? '账号请求直接联网没走通，已改回跟随系统代理'
-          : '账号请求经系统代理没走通，已改直接联网', {
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope !== 'proxy'
+          ? '账号请求经系统代理没走通，已改直接联网'
+          : failure.reason === 'proxy'
+            ? '账号请求撞上系统代理断了一下，代理又连得上了，经系统代理重发'
+            : '账号请求直接联网没走通，已改回跟随系统代理', {
           reason: failure.reason,
           method: failure.method,
           scope,
@@ -1957,7 +2228,8 @@ if (!hasSingleInstanceLock) {
     const accounts = createRealmAccountService({
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
-        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: relayFetch, onSessionChange,
+        // 历史账号的客户端写死的是默认线路的地址（sub2api-relay-backend.ts 不改），走直连靠请求这一层换地址。
+        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch, onSessionChange,
           onCredentialRotation: (saved) => vault.updateSession(saved) })
         let client: ReturnType<typeof createNewApiClient>
         function saved(): RealmSavedAccount | null {
@@ -1967,7 +2239,8 @@ if (!hasSingleInstanceLock) {
             origin: 'https://xm.solov.cc', userId: String(persisted.userId), username: profile.username,
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
-        client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: accountFetch,
+        // 客户端认的一直是默认线路的地址（登录记录、凭据都按它记），这会儿走哪条线路由请求这一层换。
+        client = createNewApiClient({ baseUrl: requireRelaySite(siteId).accountBaseUrl, fetchImpl: routedAccountFetch,
           retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
@@ -2075,6 +2348,7 @@ if (!hasSingleInstanceLock) {
       }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
     }
     function createBusiness(siteId: RealmAccountSiteId) {
+      // AI 工作区的请求同样按默认线路的地址发，走哪条线路由 routedRelayFetch 换（「自动」会在运行中换线路）。
       const definition = requireSiteRuntimeDefinition(siteId)
       const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
       const accountService = createRealmServiceDispatch(() => {
@@ -2096,7 +2370,10 @@ if (!hasSingleInstanceLock) {
       const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
       const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId, credentialPersistence)
       const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence)
-      const chatCredentials = createChatCredentialCoordinator({ accountService, modelService: systemService, keyStore: chatKeyStore })
+      // AI 工作区查模型是星芒自己的请求：「自动」时直连没走通当场改走默认线路。
+      const chatCredentials = createChatCredentialCoordinator({ accountService, keyStore: chatKeyStore, modelService: {
+        fetchAvailableModels: (apiKey, options) => systemService.fetchAvailableModels(apiKey, { ...options, routed: true }),
+      } })
       // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
       const aiOutputPlacement = chooseAiOutputRoot({
         isPackaged: app.isPackaged,
@@ -2110,6 +2387,12 @@ if (!hasSingleInstanceLock) {
         runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.moved-from-documents', '「文档」不让写，AI 作品改存到个人文件夹', {
           earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
         })
+      }
+      // 以前这六个菜单出错时一行日志都不记，客服事后查不到；错误框里只说中文（assetMenuFailureDialog）。
+      function showAssetMenuFailure(source: 'ai-chat' | 'canvas', mediaType: AssetMenuMediaType, action: string, error: unknown): void {
+        runtimeLog.exception(source, 'asset.menu.failed', error, { mediaType, action })
+        const content = assetMenuFailureDialog(mediaType, error)
+        dialog.showErrorBox(content.title, content.message)
       }
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
@@ -2137,12 +2420,7 @@ if (!hasSingleInstanceLock) {
               id: item.id,
               label: item.label,
               click: () => {
-                void item.run().catch((error) => {
-                  dialog.showErrorBox(
-                    '图片操作失败',
-                    error instanceof Error ? error.message : '无法完成图片操作',
-                  )
-                })
+                void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'image', item.id, error))
               },
             })))
             menu.popup()
@@ -2174,7 +2452,7 @@ if (!hasSingleInstanceLock) {
           showContextMenu: (items) => {
             Menu.buildFromTemplate(items.map((item) => ({
               id: item.id, label: item.label,
-              click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) },
+              click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'video', item.id, error)) },
             }))).popup()
           },
         },
@@ -2188,7 +2466,7 @@ if (!hasSingleInstanceLock) {
           },
           revealInFolder: (filePath) => shell.showItemInFolder(filePath),
           showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'audio', item.id, error)) } }))).popup()
           },
         },
       })
@@ -2228,7 +2506,7 @@ if (!hasSingleInstanceLock) {
             showContextMenu: (items) => {
               Menu.buildFromTemplate(items.map((item) => ({
                 id: item.id, label: item.label,
-                click: () => { void item.run().catch((error) => dialog.showErrorBox('图片操作失败', error instanceof Error ? error.message : '无法完成图片操作')) },
+                click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'image', item.id, error)) },
               }))).popup()
             },
           },
@@ -2242,7 +2520,7 @@ if (!hasSingleInstanceLock) {
             },
             revealInFolder: (filePath) => shell.showItemInFolder(filePath),
             showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) } }))).popup()
+              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'video', item.id, error)) } }))).popup()
             },
           },
         })
@@ -2255,7 +2533,7 @@ if (!hasSingleInstanceLock) {
             },
             revealInFolder: (filePath) => shell.showItemInFolder(filePath),
             showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'audio', item.id, error)) } }))).popup()
             },
           },
         })
@@ -2323,7 +2601,7 @@ if (!hasSingleInstanceLock) {
         readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
         baseUrl: definition.aiBaseUrl,
         credentialCoordinator: chatCredentials,
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         emit: (senderId, event) => {
           const sender = BrowserWindow.getAllWindows()
             .map((window) => window.webContents)
@@ -2367,14 +2645,14 @@ if (!hasSingleInstanceLock) {
       })
       const imageService = createAiImageService({
         onRequestStarted: onAiRequestStarted,
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         assets: assetStore,
       })
       const canvasImageService = createAiImageService({
         onRequestStarted: onAiRequestStarted,
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         assets: {
@@ -2389,7 +2667,7 @@ if (!hasSingleInstanceLock) {
         rootDirectory: roots.canvasVideoTasksDirectory,
       })
       const videoService = createAiVideoService({
-        fetchImpl: relayFetch,
+        fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         tasks: videoTasks,
@@ -2600,23 +2878,6 @@ if (!hasSingleInstanceLock) {
     const accountSessionReady = accountRestore.then(() => undefined).catch((error) => {
       runtimeLog.exception('account', 'session.restore.failed', error)
     })
-    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
-    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
-    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
-    // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
-    // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
-    const launchedAtLogin = resolveLoginLaunch({
-      platform: process.platform,
-      argv: process.argv,
-      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
-    })
-    // 开机拉起时这几件后台事都往后挪：窗口第一次显示或满 3 分钟才开始（见 login-launch.ts）。
-    // 加速要还原的系统代理不在其中，照原来的顺序先做。
-    const startupQuiet = createLoginQuietPeriod({
-      active: launchedAtLogin,
-      durationMs: loginQuietPeriodMs,
-      onEnd: (reason) => runtimeLog.log('info', 'main', 'launch.quiet-ended', reason === 'window-shown' ? '开机安静期结束：窗口已打开' : '开机安静期结束：已到时间', { reason }),
-    })
     if (startupQuiet.active()) {
       runtimeLog.log('info', 'main', 'launch.quiet-started', '开机自动启动，检测和更新稍后再做', { durationMs: loginQuietPeriodMs })
       // 托盘在安静期里先用上次落盘的检测结果（能打开哪些工具），真扫描回来再换掉。
@@ -2624,6 +2885,11 @@ if (!hasSingleInstanceLock) {
         if (cached && !latestTraySystem) { latestTraySystem = cached; applicationTray?.updateSnapshot() }
       }).catch(() => undefined)
     }
+    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
+    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
+    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
+    // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
+    // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
     void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
@@ -2806,7 +3072,7 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
-    attachProxyBypassState(() => proxyBypass.active())
+    attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
@@ -2857,6 +3123,8 @@ if (!hasSingleInstanceLock) {
         }
         applicationTray?.updateSnapshot()
       },
+      // 自带 Administrator、关了 UAC、右键以管理员身份运行：装东西不弹授权窗口，界面别说会弹（已知19）。
+      windowsProcessElevated: windowsCliExecution.highIntegrity === true,
       getWindowCapabilities: () => ({
         tray: applicationTray?.available ?? false,
         notifications: desktopNotifications.getCapability().supported,
@@ -2868,6 +3136,7 @@ if (!hasSingleInstanceLock) {
         ...(linuxSystemLabel ? { systemLabel: linuxSystemLabel } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
@@ -2949,6 +3218,8 @@ if (!hasSingleInstanceLock) {
       unsubscribeInstallKeepAwakeQueue()
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
+      unsubscribeRelayRoute()
+      relayRouteController.dispose()
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
@@ -2992,7 +3263,24 @@ if (!hasSingleInstanceLock) {
       trayAvailable: applicationTray?.available ?? false,
     }))
     managedMainWindow = mainWindow
-    mainWindow.once('show', () => { startupQuiet.end('window-shown') })
+    mainWindow.once('show', () => {
+      mainWindowShown = true
+      // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。
+      dropBackgroundInstall()
+      startupQuiet.end('window-shown')
+      // Windows 上开机时没装、等着窗口的那一版：用户点开了窗口，人就在电脑前，先预告再装。
+      const awaiting = launchInstallAwaitingWindow
+      launchInstallAwaitingWindow = null
+      if (awaiting) startLaunchInstall(awaiting, 'window')
+    })
+    // Mac 的安装器打开新版本时会把它切到前台（ShipIt 用 NSWorkspaceLaunchDefault）：没有窗口，
+    // 菜单栏却换成了星芒的，这时按 Command + Q 退出的是星芒。后台装完重新拉起、窗口留在
+    // 菜单栏的这一次，把前台还给刚才在用的程序。
+    if (process.platform === 'darwin' && relaunchedAfterBackgroundInstall) {
+      mainWindow.once('ready-to-show', () => {
+        if (!mainWindowShown && !mainWindow.isVisible()) app.hide()
+      })
+    }
     // 拔掉外接显示器时正开着的窗口也挪回来；缩在托盘里的等下次显示时再挪。
     // 稍等一下再看：Windows 自己也会挪一部分窗口，别跟系统抢。
     let displayChangeTimer: ReturnType<typeof setTimeout> | undefined
@@ -3017,6 +3305,31 @@ if (!hasSingleInstanceLock) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
+    }
+    // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
+    const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
+      // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+      if (!mainWindow.isVisible()) showMainWindow()
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+        detail: task.count > 1
+          ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
+          : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+        buttons: ['继续安装', '仍然退出'],
+        defaultId: 0, cancelId: 0,
+      })
+      return result.response === 1
+    }
+    // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句。
+    // 点「继续安装」这次就不装，新版本留着，以后再点或下次退出时照常装（已知31）。
+    confirmUpdateInstall = async () => {
+      if (mainWindow.isDestroyed()) return true
+      const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
+      if (!task) return true
+      runtimeLog.log('info', 'updater', 'install.install-in-progress', `重启安装更新前确认：${task.key}`)
+      const proceed = await confirmInterruptingInstall(task)
+      if (!proceed) runtimeLog.log('info', 'updater', 'install.postponed', '还有工具在装，这次不装新版本，新版本留着')
+      return proceed
     }
     receiveDeepLink = (raw) => {
       if (!deepLinkInbox.accept(raw)) return
@@ -3070,22 +3383,15 @@ if (!hasSingleInstanceLock) {
         const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
         if (task) {
           runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
-          // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
-          if (!mainWindow.isVisible()) showMainWindow()
-          const result = await dialog.showMessageBox(mainWindow, {
-            type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
-            detail: task.count > 1
-              ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
-              : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
-            buttons: ['继续安装', '仍然退出'],
-            defaultId: 0, cancelId: 0,
-          })
           // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
-          return result.response === 1 ? 'quit' : 'cancel'
+          return await confirmInterruptingInstall(task) ? 'quit' : 'cancel'
         }
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
-        if (updaterService.autoUpdateEnabled()) {
+        // 账号不是管理员时退出不装也不问（decideQuitInstall），下面的撤回名单也就不用等。账号是不是
+        // 管理员一般早问出来了，刚打开就退出时最多再等几秒。
+        const standardAccount = updaterService.autoUpdateEnabled() && (updateAccount ?? await updateAccountProbe) === 'standard'
+        if (updaterService.autoUpdateEnabled() && !standardAccount) {
           // 自动更新开着、这一版还没在退出时自动试过，就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
           // 的版本会在这里被收回，最多等几秒，读不到就按上次读到的算。
           await Promise.race([
@@ -3097,17 +3403,33 @@ if (!hasSingleInstanceLock) {
         }
         const version = update.version
         const installMethod = updaterService.getState().installMethod
-        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod }) === 'install') {
+        // 上面等的那几秒里系统可能已经开始关机：不装、不问，也不记「退出时试过了」。
+        const decision = decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord, installMethod, systemShuttingDown: lifecycle.isSystemShuttingDown, standardAccount })
+        if (decision === 'later') {
+          runtimeLog.log('info', 'window', 'quit.update-later', `系统正在关机、重启或注销，这次不装 ${version ?? '新版本'}，下次打开再装`)
+          return 'quit'
+        }
+        if (decision === 'leave') {
+          runtimeLog.log('info', 'window', 'quit.update-left', `这台电脑的账号不是管理员，退出时不装 ${version ?? '新版本'}，等有管理员账号的人在更新页点「重启安装」`)
+          return 'quit'
+        }
+        if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true))
+          // 给系统一点时间把通知摆出来，再让安装器接手退出。
+          await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
+          if (lifecycle.isSystemShuttingDown) {
+            runtimeLog.log('info', 'window', 'quit.update-later', `系统正在关机、重启或注销，这次不装 ${version}，下次打开再装`)
+            return 'quit'
+          }
           // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
           // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
+          // 记在等完通知之后：等的那一下系统开始关机的话，这条记录会让下次打开不再自动装。
+          quitInstallAttempt = { version, previous: pendingUpdateRecord.quitAttemptedVersion ?? null }
           pendingUpdateRecord = { ...pendingUpdateRecord, quitAttemptedVersion: version }
           await pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
             runtimeLog.exception('updater', 'pending.record-failed', cause)
           })
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform))
-          // 给系统一点时间把通知摆出来，再让安装器接手退出。
-          await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           return 'install-update'
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
@@ -3173,10 +3495,24 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
-    // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：
-    // 退出时正在等安装器的，听到这一声就不等了。
+    // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：听到这一声，
+    // 接下来的退出和 Windows 关机一样不问、不装（下好的更新下次打开再装），开着的确认框和
+    // 正在等的安装器都不等了。Electron 只在系统发出关机通知时发它，Command + Q 不发。
     if (process.platform === 'darwin') {
-      const onPowerOff = () => { lifecycle.noteSystemPowerOff() }
+      const onPowerOff = () => {
+        runtimeLog.log('info', 'window', 'shutdown.power-off', '系统要关机、重启或注销')
+        lifecycle.noteSystemPowerOff()
+        // 刚退出、自动装已经记下「试过了」，安装器还没装完（装完它会自己结束进程）：关机会把
+        // 它一起结束。撤回这条记录，下次打开照常自动装；没来得及写成，就和以前一样提示上次没装上。
+        const undone = undoQuitInstallAttempt(pendingUpdateRecord, quitInstallAttempt)
+        quitInstallAttempt = null
+        if (!undone) return
+        pendingUpdateRecord = undone
+        runtimeLog.log('info', 'updater', 'install.quit-interrupted', '关机打断了退出时的安装，下次打开再装')
+        void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+          runtimeLog.exception('updater', 'pending.record-failed', cause)
+        })
+      }
       powerMonitor.on('shutdown', onPowerOff)
       app.once('will-quit', () => { powerMonitor.off('shutdown', onPowerOff) })
     }
@@ -3257,6 +3593,7 @@ if (!hasSingleInstanceLock) {
         trashItem: (target) => shell.trashItem(target),
         prepareQuit: async () => { await lifecycle.prepareUpdateQuit() },
         abortQuit: () => { lifecycle.abortUpdateQuit() },
+        removeUpdaterCache: () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
         clearLoginRecords: async () => {
           // 界面的本地存储由 Chromium 开着，先让它自己清，免得退出时把刚删的写回来。
           await session.defaultSession.clearStorageData({ storages: ['localstorage'] }).catch(() => undefined)
@@ -3313,14 +3650,19 @@ if (!hasSingleInstanceLock) {
           ],
           update: resolveTrayUpdateEntry(updaterService.getState()),
           acceleration: trayAcceleration?.entry() ?? null,
+          keepAwakeLabel: trayKeepAwakeLabel({
+            tools: cliKeepAwake.tools().map((tool) => isProviderId(tool) ? cliCatalog[tool].name : tool),
+            installing: installKeepAwake.reasons().includes('install'),
+            downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
+          }),
         }
       },
       onOpen: showMainWindow,
       onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
       onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
       onAccelerationToggle: () => trayAcceleration?.toggle(),
-      // 与更新页「确认重启安装」、IPC update:install 同一条路，退出交接与安装闸都在 install() 里。
-      onInstallUpdate: () => { updaterService.install() },
+      // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
+      onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },
       // 主窗口缩到托盘之后渲染层那边的加速轮询是停的，菜单弹出来这一刻是唯一
       // 能把剩余时长读新的时机；读一次，不起定时器。
       onMenuOpen: () => { trayAcceleration?.refresh() },

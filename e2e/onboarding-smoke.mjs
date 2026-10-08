@@ -3,6 +3,7 @@ import { _electron as electron } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { replayCollectedPromise } from './fixture-readiness.mjs'
+import { verifySignedOutSmokeIsolation, withSignedOutSmokeIsolation } from './signed-out-smoke-isolation.mjs'
 
 const artifactDir = path.resolve('artifacts')
 const testRoot = path.join(artifactDir, '.e2e-onboarding-user-data')
@@ -11,7 +12,7 @@ await fs.mkdir(artifactDir, { recursive: true })
 await fs.rm(testRoot, { recursive: true, force: true })
 await fs.mkdir(path.join(testHome, '.codex'), { recursive: true })
 
-const application = await electron.launch({
+const application = await electron.launch(await withSignedOutSmokeIsolation({
   args: ['.', `--user-data-dir=${path.join(testRoot, 'user-data')}`],
   env: {
     ...process.env,
@@ -21,7 +22,7 @@ const application = await electron.launch({
     XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
     XINGMANG_ONBOARDING_PREVIEW: '1',
   },
-})
+}, testRoot))
 // Same Windows-runner failure as electron-ci-smoke.mjs: V8 can collect the
 // inspector's promise wrapper while the main process is busy. The only call
 // routed through here reads window geometry, so replaying it changes nothing.
@@ -101,8 +102,9 @@ try {
   assert.ok(result.bounds.x >= result.workArea.x - windowFrameTolerance && result.bounds.y >= result.workArea.y - windowFrameTolerance)
   assert.ok(result.bounds.width <= result.workArea.width + windowFrameTolerance && result.bounds.height <= result.workArea.height + windowFrameTolerance)
   recordPass('window-stays-inside-work-area')
+  const networkIsolation = await verifySignedOutSmokeIsolation(application)
   await fs.writeFile(path.join(artifactDir, 'onboarding-smoke-result.json'), JSON.stringify({
-    ...result, pageErrors, horizontalOverflow: overflow, passedAssertions,
+    ...result, pageErrors, horizontalOverflow: overflow, passedAssertions, networkIsolation,
   }, null, 2) + '\n', 'utf8')
 } finally {
   await application.close()

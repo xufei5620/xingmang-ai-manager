@@ -20,7 +20,8 @@ const unavailableGroupPatterns: readonly RegExp[] = [
 export function keySyncFailureReason(message: string): string {
   const safe = userFacingErrorMessage(message).replace(/[。；;.\s]+$/, '')
   if (isAccountNotEnabledFailure(safe)) return '当前账号还不能用，需要的话请联系客服开通'
-  const hint = presentOperationError(safe)
+  // 写 Key 就是写工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
+  const hint = presentOperationError(safe, 'config')
   if (hint) return hint.title
   if (speaksChinese(safe)) return redactSecretPatterns(safe)
   return 'Key 没有写进去，点「重新同步」再试'
@@ -31,9 +32,14 @@ export function isAccountNotEnabledFailure(message: string): boolean {
   return unavailableGroupPatterns.some((pattern) => pattern.test(message))
 }
 
-/** 一条失败带上是哪个工具的；原话已经以工具名开头的不再重复。 */
+/**
+ * 一条失败带上是哪个工具的；原话已经以工具名开头的不再重复。Codex 桌面端和
+ * Codex CLI 共用一份配置，失败记在 codex 名下，原话点的是桌面端也算点过名，
+ * 不然会念成「Codex CLI：Codex 桌面端还开着……」（第四十三批 C）。
+ */
 export function keySyncFailureText(provider: string, message: string): string {
   const name = tools.find((tool) => tool.id === provider)?.name ?? provider
   const reason = keySyncFailureReason(message)
-  return reason.startsWith(name) ? reason : `${name}：${reason}`
+  const names = provider === 'codex' ? [name, ...tools.filter((tool) => tool.id === 'codexDesktop').map((tool) => tool.name)] : [name]
+  return names.some((named) => reason.startsWith(named)) ? reason : `${name}：${reason}`
 }

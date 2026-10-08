@@ -5,11 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildCliTerminalAccessPlan,
   buildEnsureUserPathScript,
+  buildRemoveUserPathScript,
   createCliTerminalAccess,
   ensureDirectoryOnWindowsUserPath,
   isNpmPowerShellShim,
   parseEnsureUserPathOutput,
+  parseRemoveUserPathOutput,
   pathListIncludesDirectory,
+  removeDirectoryFromWindowsUserPath,
   removeNpmPowerShellShim,
 } from './windows-cli-shell-access'
 
@@ -290,6 +293,81 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
   })
 })
 
+describe('buildRemoveUserPathScript', () => {
+  const script = buildRemoveUserPathScript()
+
+  // The old clean-up read and wrote PATH through [Environment], which stores the
+  // expanded text as REG_SZ and froze every %VAR% entry the user kept (已知48).
+  it('reads and writes the raw user PATH so the entries that stay keep their %VAR% form', () => {
+    expect(script).toContain('DoNotExpandEnvironmentNames')
+    expect(script).toContain('$key.SetValue("Path", ($kept -join ";"), $kind)')
+    expect(script).not.toContain('SetEnvironmentVariable("Path"')
+    expect(script).not.toContain('GetEnvironmentVariable("Path"')
+  })
+
+  it('expands an entry only to compare it, so a %USERPROFILE% spelling of the directory goes too', () => {
+    expect(script).toContain('[Environment]::ExpandEnvironmentVariables($entry.Trim().Trim(\'"\'))')
+  })
+
+  it('writes nothing when no entry matches', () => {
+    const bail = script.indexOf('if (-not $removed) { "absent"; return }')
+    expect(bail).toBeGreaterThan(-1)
+    expect(bail).toBeLessThan(script.indexOf('$key.SetValue('))
+  })
+
+  it('takes the directory from the environment instead of splicing it into the script', () => {
+    expect(script).toContain('$env:XINGMANG_REMOVE_PATH')
+  })
+
+  it('never touches the machine PATH or the execution policy', () => {
+    expect(script).not.toContain('LocalMachine')
+    expect(script).not.toContain('"Machine"')
+    expect(script).not.toMatch(/ExecutionPolicy/i)
+    expect(script).toContain('[Microsoft.Win32.Registry]::CurrentUser')
+  })
+})
+
+describe('parseRemoveUserPathOutput', () => {
+  it('takes the last non-empty line', () => {
+    expect(parseRemoveUserPathOutput('removed\r\n')).toBe('removed')
+    expect(parseRemoveUserPathOutput('\r\nabsent\r\n\r\n')).toBe('absent')
+  })
+
+  it('throws on anything else', () => {
+    expect(() => parseRemoveUserPathOutput('')).toThrow('无法确认')
+    expect(() => parseRemoveUserPathOutput('Access is denied.')).toThrow('无法确认')
+  })
+})
+
+describe('removeDirectoryFromWindowsUserPath', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('hands the directory to PowerShell through the trusted environment', async () => {
+    vi.stubEnv('NODE_OPTIONS', '--require C:\\Users\\Ann\\evil.js')
+    const runPowerShell = vi.fn(async (_script: string, _env: NodeJS.ProcessEnv) => 'removed\r\n')
+
+    await expect(removeDirectoryFromWindowsUserPath('C:\\Users\\Ann\\.grok\\bin', { runPowerShell })).resolves.toBe('removed')
+    expect(runPowerShell).toHaveBeenCalledTimes(1)
+    const [script, env] = runPowerShell.mock.calls[0]
+    expect(script).toBe(buildRemoveUserPathScript())
+    expect(env.XINGMANG_REMOVE_PATH).toBe('C:\\Users\\Ann\\.grok\\bin')
+    // The uninstall may run under an elevated token.
+    expect(env.NODE_OPTIONS).toBeUndefined()
+  })
+
+  it('rejects a directory that would split into several PATH entries', async () => {
+    const runPowerShell = vi.fn(async () => 'removed')
+
+    await expect(removeDirectoryFromWindowsUserPath('C:\\grok;C:\\Windows', { runPowerShell }))
+      .rejects.toThrow('命令行工具目录无效')
+    await expect(removeDirectoryFromWindowsUserPath('.grok\\bin', { runPowerShell }))
+      .rejects.toThrow('命令行工具目录无效')
+    expect(runPowerShell).not.toHaveBeenCalled()
+  })
+})
+
 describe('buildCliTerminalAccessPlan', () => {
   const base = {
     platform: 'win32' as const,
@@ -521,6 +599,29 @@ describe('createCliTerminalAccess', () => {
     expect(ensureShellProfile).toHaveBeenCalledTimes(2)
   })
 
+  it('on macOS says in the log that a login shell it does not handle was left alone', async () => {
+    const cases = [
+      ['added', '已让新开的终端可以直接敲工具名'],
+      ['present', '终端启动设置无需改动'],
+      ['already-handled', '终端启动设置无需改动'],
+      ['unsupported-shell', '登录 shell 不是 zsh、bash、fish，没改终端启动设置'],
+    ] as const
+    for (const [outcome, message] of cases) {
+      const log = vi.fn()
+      const access = createCliTerminalAccess({
+        platform: 'darwin',
+        executionMode: 'same-user',
+        isManaged: () => true,
+        ensureShellProfile: async () => outcome,
+        log,
+      })
+
+      await access.prepare({ provider: 'claude', installation: npmInstall('/Users/ann/Library/Application Support/XingMangAI/Cli/npm') }, 'install')
+
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', message, { provider: 'claude', reason: 'install', outcome }))
+    }
+  })
+
   it('does nothing on release outside Linux', async () => {
     const ensureShellProfile = vi.fn(async () => 'added')
     const syncTerminalCommands = vi.fn(async () => ({ outcome: 'removed', skipped: [] }))
@@ -531,6 +632,53 @@ describe('createCliTerminalAccess', () => {
       await access.prepare({ provider: 'claude', installation: npmInstall(binDirectory()) }, 'install')
     }
     expect(syncTerminalCommands).not.toHaveBeenCalled()
+  })
+
+  it('takes an uninstalled directory back out of PATH without waiting for it, and logs the outcome', async () => {
+    let finish: (outcome: 'removed' | 'absent') => void = () => undefined
+    const removeUserPath = vi.fn(() => new Promise<'removed' | 'absent'>((resolve) => { finish = resolve }))
+    const log = vi.fn()
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      removeUserPath,
+      log,
+    })
+
+    access.forgetUserPath('grok', 'C:\\Users\\Ann\\.grok\\bin')
+
+    await vi.waitFor(() => expect(removeUserPath).toHaveBeenCalledWith('C:\\Users\\Ann\\.grok\\bin'))
+    expect(log).not.toHaveBeenCalled()
+    finish('removed')
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.user-path.removed', expect.any(String), { provider: 'grok', outcome: 'removed' }))
+  })
+
+  it('only logs a PATH removal that failed, however the remover failed', async () => {
+    const failures = [
+      vi.fn(async (): Promise<'removed'> => { throw new Error('Command failed: powershell.exe') }),
+      vi.fn((): Promise<'removed'> => { throw new Error('Command failed: powershell.exe') }),
+    ]
+    for (const removeUserPath of failures) {
+      const log = vi.fn()
+      const access = createCliTerminalAccess({ platform: 'win32', executionMode: 'trusted-only', isManaged: () => false, removeUserPath, log })
+
+      expect(() => access.forgetUserPath('grok', 'C:\\Users\\Ann\\.grok\\bin')).not.toThrow()
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'cli.user-path.remove-failed', expect.any(String), {
+        provider: 'grok',
+        error: 'Command failed: powershell.exe',
+      }))
+    }
+  })
+
+  it('never touches PATH outside Windows', async () => {
+    const removeUserPath = vi.fn(async () => 'removed' as const)
+    for (const platform of ['darwin', 'linux'] as const) {
+      createCliTerminalAccess({ platform, executionMode: 'same-user', isManaged: () => false, removeUserPath })
+        .forgetUserPath('grok', '/home/ann/.grok/bin')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(removeUserPath).not.toHaveBeenCalled()
   })
 
   describe('on Linux', () => {

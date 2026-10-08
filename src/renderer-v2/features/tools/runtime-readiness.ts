@@ -67,10 +67,11 @@ export interface CliInstallPlan {
 
 /**
  * 以前缺 Node.js 时「安装」直接报错，用户得先去点运行环境那颗按钮、等它装完，
- * 再回来点一次「安装」，Gemini 还要多点一次 Python（第十一批 2）。能代装的平台
- * （Windows，platform-capabilities 的 'managed'）把缺的环境排进同一次安装里；
- * 代装不了的平台（macOS）仍旧拦下，由运行环境卡给出装法。版本过低、版本认不出
- * 同样归「缺」：重新准备一遍就是修法，用户不需要知道 PATH 是什么。
+ * 再回来点一次「安装」，Gemini 还要多点一次 Python（第十一批 2）。能代装的
+ * （platform-capabilities 的 'managed'：Node.js 三个平台都是，Python 只有 Windows）
+ * 把缺的环境排进同一次安装里；代装不了的仍旧拦下，由运行环境卡给出装法。版本过低、
+ * 版本认不出同样归「缺」：重新准备一遍就是修法，用户不需要知道 PATH 是什么。Mac 上
+ * 客户自己那份太旧时，准备好的那份当场就用上，以后不再重下（第三十四批 A）。
  */
 export function planCliInstall(input: {
   runtime: RuntimeSnapshot

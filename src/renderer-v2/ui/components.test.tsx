@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Button, Input, Menu, Pill, Progress, Segment, Switch, Tabs, Toast, toastDurationMs } from './components';
+import { Search } from 'lucide-react';
+import { Button, Card, Input, Menu, Notice, Pill, Progress, Segment, Switch, Tabs, Toast, toastDurationMs } from './components';
 import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
@@ -35,6 +36,21 @@ describe('renderer-v2 component contract', () => {
     expect(html).toContain('data-testid="login-password"');
     expect(html).not.toContain('大写锁定已开启');
     expect(html).not.toContain('login-password-caps');
+  });
+  it('marks errors and warnings with their own icon whatever icon the caller passed', () => {
+    const icon = (tone: 'bad' | 'warn' | 'accent') => renderToStaticMarkup(<Notice tone={tone} icon={Search} title="标题" body="说明" />).match(/class="lucide [^"]*"/)?.[0];
+    expect(icon('bad')).toBe('class="lucide lucide-circle-x"');
+    expect(icon('warn')).toBe('class="lucide lucide-triangle-alert"');
+    expect(icon('accent')).toBe('class="lucide lucide-search"');
+  });
+  it('keeps a short card note beside the title and moves a long one into the body', () => {
+    const short = renderToStaticMarkup(<Card title="你的工具" meta="3 个已装"><p>行</p></Card>);
+    expect(short).toContain('<h2>你的工具</h2><small title="3 个已装">3 个已装</small>');
+    expect(short).not.toContain('xm-card-lead');
+    const note = '用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。';
+    const long = renderToStaticMarkup(<Card title="连接自检" meta={note}><p>行</p></Card>);
+    expect(long).not.toContain('<small');
+    expect(long).toContain('class="xm-card-body"><p class="xm-card-lead">' + note + '</p><p>行</p>');
   });
   it('renders status and bounded progress', () => {
     const html = renderToStaticMarkup(<><Pill tone="ok" dot>已配好</Pill><Progress testId="progress" value={160} /></>);

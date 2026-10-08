@@ -4,8 +4,10 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
-import { relaySites } from './relay-sites'
-import { readBoundedUtf8FileSync } from './bounded-file'
+import { relayProviderBaseUrlMatches, relaySites } from './relay-sites'
+import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
+import { isCodexConfigBroken } from './codex-config-syntax'
+import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
 import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
 import {
@@ -38,7 +40,12 @@ import {
   isManagedCodexModelCatalogSetting,
   removeCodexRelayModelCatalog,
 } from './codex-model-catalog'
-import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
+import {
+  assertNoReparseComponents,
+  ensureSafeDataDirectory,
+  readSafeUtf8FileSync,
+  renameWithTransientRetrySync,
+} from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
   applyXingmangImageMcpToJson,
@@ -87,6 +94,18 @@ export interface NativeConfigInspection {
    * matchesRelay 认出「这是我们写的中转配置」，那部分判断必须照旧。
    */
   codexProviderShadowed?: boolean
+  /**
+   * 工具自己也读不了它的主配置（Codex 的 config.toml、Claude Code 与 Gemini CLI 的 settings.json；
+   * 判定见 codex-config-syntax.ts、cli-config-health.ts）：Codex 桌面端停在「无法加载组织设置」、
+   * 命令行报错，Claude Code 弹「Settings Error」整份不用，Gemini CLI 报错退出。这时读出来的 Key、
+   * 地址都不作数，首页据此说「配置文件坏了」并给「修好它」。Grok 不判；缺省 = 没发现。
+   */
+  configBroken?: boolean
+  /**
+   * Codex 读不了 auth.json（判定见 cli-config-health.ts）。它不报错，当成没登录：打开就要重新
+   * 登录。只给 Codex；缺省 = 没发现。
+   */
+  codexAuthBroken?: boolean
   /**
    * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
@@ -177,9 +196,25 @@ export interface NativeConfigWriteHooks {
   beforeReplace?: (targetPath: string, index: number) => void
 }
 
-export interface FilePlan {
+export type FilePlan = FileWritePlan | FileRemovePlan
+
+export interface FileWritePlan {
   path: string
   content: string
+}
+
+/**
+ * 整份拿掉这个文件，不留空壳：Codex 把 `{}` 这样的 auth.json 当成没有令牌的 ChatGPT 登录，
+ * 每次请求都报错，没登录只能是没有这个文件。和写入在同一次两阶段提交里：先留 .bak，再把它
+ * 挪成临时文件，全部提交成功才清掉；中途失败照旧从 .bak 放回。不在的文件跳过。
+ */
+export interface FileRemovePlan {
+  path: string
+  remove: true
+}
+
+function isRemovePlan(plan: FilePlan): plan is FileRemovePlan {
+  return 'remove' in plan
 }
 
 function normalizeProviderConfigRoots(
@@ -266,9 +301,40 @@ function readJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
+// 每个工具的主配置（providerConfigPaths 的第一份）它自己读不读得了；null = 不判。
+const mainConfigBrokenChecks: Record<ProviderId, ((content: Buffer) => boolean) | null> = {
+  codex: isCodexConfigBroken,
+  claude: isClaudeSettingsBroken,
+  gemini: isGeminiSettingsBroken,
+  grok: null,
+}
+
+// 判断编码要看原始字节（解码会把坏字节悄悄换成 U+FFFD），读不到、不是单链接普通文件都当没坏。
+function readFileBroken(filePath: string, broken: (content: Buffer) => boolean): boolean {
+  try {
+    const info = fs.lstatSync(filePath)
+    if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return false
+    return broken(readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
+  } catch {
+    return false
+  }
+}
+
+function readConfigFilesBroken(provider: ProviderId, paths: string[]): Pick<NativeConfigInspection, 'configBroken' | 'codexAuthBroken'> {
+  const check = mainConfigBrokenChecks[provider]
+  return {
+    ...(check && readFileBroken(paths[0], check) ? { configBroken: true } : {}),
+    ...(provider === 'codex' && readFileBroken(paths[1], isCodexAuthBroken) ? { codexAuthBroken: true } : {}),
+  }
+}
+
 function readToml(filePath: string): Record<string, unknown> | null {
   const content = readText(filePath)
   if (!content) return null
+  return parseTomlOrNull(content)
+}
+
+function parseTomlOrNull(content: string): Record<string, unknown> | null {
   try {
     return TOML.parse(content)
   } catch {
@@ -472,6 +538,18 @@ function skipClaudeWebFetchPreflight(parsed: Record<string, unknown>): void {
   parsed.skipWebFetchPreflight = true
 }
 
+/**
+ * 新客户的模板一直写「不逐条确认」。Claude Code 2.1.283 起接第三方中转、又没写
+ * permissions.defaultMode 的会话进自动模式，有些命令会停下来问「允许吗」；先装过 Claude
+ * Code 再接星芒的老客户走合并写入，以前没补这一项，升上去就会被问。没写才补，写过任何
+ * 模式的一律不动（2026-10-06 yoyo 定）。skipDangerousModePermissionPrompt 一并补上，
+ * 否则交互会话一打开先弹一屏英文的「绕过权限模式」确认。
+ */
+function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissions: Record<string, unknown>): void {
+  if (permissions.defaultMode === undefined) permissions.defaultMode = 'bypassPermissions'
+  if (parsed.skipDangerousModePermissionPrompt === undefined) parsed.skipDangerousModePermissionPrompt = true
+}
+
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
 // 在后台自更新，Gemini CLI 的 general.enableAutoUpdate 默认 true、启动就 npm install -g
 // 最新版，Codex 与 Grok 启动时催更并给出 npm 命令。装到的版本一旦被 CLI 自己换掉，名单
@@ -634,14 +712,19 @@ function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
 // 计费。当前型号本身若恰好在表里，不给它写改写，免得自己指向自己。
 //
 // 这张表出自 0.60.0 bundle 的 DEFAULT_MODEL_CONFIGS（aliases / modelIdResolutions），
-// 升级 Gemini CLI 推荐版本时要重新核一遍。
+// 升级 Gemini CLI 推荐版本时要重新核一遍。0.61.0 新增 gemini-3.8-flash 与
+// gemini-3.5-flash-lite 两个内置型号，/model 菜单里也列着它们，不补上的话用户在菜单里
+// 选了就直接发出官方型号名（沙箱实测 0.61.0）。0.62.0 的 DEFAULT_MODEL_CONFIGS 与 0.61.0
+// 逐字相同，表不用动。
 const geminiRelayHelperModels = [
   'gemini-3-flash-preview',
   'gemini-3-pro-preview',
   'gemini-3.1-pro-preview',
   'gemini-3.1-pro-preview-customtools',
   'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
   'gemini-3.5-flash',
+  'gemini-3.8-flash',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
@@ -695,16 +778,86 @@ function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void 
 // 交给了中转。国内连不上前者，后者对我们毫无用处。privacy.usageStatisticsEnabled = false
 // 两样一起去掉（沙箱实测 0.60.0），不影响任何功能。只在用户没表过态时补，切回 Google 账号
 // 时只收回本软件写的那一份。
+//
+// 「本软件写的」不能凭值猜：用星芒之前自己关掉统计的客户，文件里也是这一个 false，以前切回
+// Google 时被一并删掉，统计被悄悄打开（#834 F03）。所以写下它时在 settings.json 旁边记一笔，
+// 切回时只认这笔记录。有记录之前写下的那些分不清是谁的，切回时留着：关着统计不影响任何功能。
+export const geminiUsageStatisticsRecordName = 'xingmang-gemini-usage-statistics.json'
+const geminiUsageStatisticsRecordContent = jsonContent({ version: 1, usageStatisticsEnabled: false })
+
 function disableGeminiRelayUsageStatistics(parsed: Record<string, unknown>): void {
   const privacy = ensureRecord(parsed, 'privacy')
   if (privacy.usageStatisticsEnabled === undefined) privacy.usageStatisticsEnabled = false
 }
 
-function restoreGeminiUsageStatistics(parsed: Record<string, unknown>): void {
-  const privacy = parsed.privacy
-  if (isJsonRecord(privacy) && Object.keys(privacy).length === 1 && privacy.usageStatisticsEnabled === false) {
-    delete parsed.privacy
+/** privacy 不是一张表时按没设过算，与 disableGeminiRelayUsageStatistics 的判断一致。 */
+function geminiUsageStatisticsSetting(parsed: Record<string, unknown>): unknown {
+  return isJsonRecord(parsed.privacy) ? parsed.privacy.usageStatisticsEnabled : undefined
+}
+
+function geminiUsageStatisticsRecordPath(roots: ProviderConfigRoots): string {
+  return path.join(providerConfigRoot('gemini', roots), geminiUsageStatisticsRecordName)
+}
+
+function readGeminiUsageStatisticsRecord(roots: ProviderConfigRoots): string | null {
+  const recordPath = geminiUsageStatisticsRecordPath(roots)
+  assertSafeConfigPath(recordPath, providerConfigRoot('gemini', roots), 'file')
+  return requireConfigText(recordPath, '星芒写过的 Gemini 统计开关记录')
+}
+
+/** 记录读不懂就当没有：宁可留着一个关着的统计，也不替客户打开。 */
+function geminiUsageStatisticsWrittenByUs(record: string | null): boolean {
+  if (!record?.trim()) return false
+  try {
+    const parsed = JSON.parse(record) as unknown
+    return isJsonRecord(parsed) && parsed.version === 1 && parsed.usageStatisticsEnabled === false
+  } catch {
+    return false
   }
+}
+
+/** 写下统计开关时附上这笔记录；已经记着就不重写，免得每次保存多一份 .bak。 */
+function geminiUsageStatisticsRecordPlans(roots: ProviderConfigRoots): FilePlan[] {
+  if (geminiUsageStatisticsWrittenByUs(readGeminiUsageStatisticsRecord(roots))) return []
+  return [{ path: geminiUsageStatisticsRecordPath(roots), content: geminiUsageStatisticsRecordContent }]
+}
+
+/** 切回 Google 账号后这笔记录就用完了，写空（同 Claude 旧设置快照，不删文件）。 */
+function geminiUsageStatisticsRecordClearPlans(record: string | null, roots: ProviderConfigRoots): FilePlan[] {
+  return record?.trim() ? [{ path: geminiUsageStatisticsRecordPath(roots), content: '' }] : []
+}
+
+function restoreGeminiUsageStatistics(parsed: Record<string, unknown>, writtenByUs: boolean): void {
+  const privacy = parsed.privacy
+  if (!writtenByUs || !isJsonRecord(privacy) || privacy.usageStatisticsEnabled !== false) return
+  delete privacy.usageStatisticsEnabled
+  if (Object.keys(privacy).length === 0) delete parsed.privacy
+}
+
+/**
+ * 从备份恢复（切换没成功时的回滚、备份页里恢复）只还原 settings.json 和 .env，这笔记录不跟着
+ * 回去。恢复出来的 settings.json 里没有那个 false 了，记录就作废：留着的话，客户以后自己关掉
+ * 统计，切回 Google 时会被当成星芒写的收回去。返回是否改动了文件。
+ */
+export function forgetStaleGeminiUsageStatisticsRecord(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const record = readGeminiUsageStatisticsRecord(roots)
+  if (!record?.trim()) return false
+  const [settingsPath] = providerConfigPaths('gemini', roots)
+  let statistics: unknown
+  try {
+    assertSafeConfigPath(settingsPath, providerRoot, 'file')
+    statistics = geminiUsageStatisticsSetting(requireGeminiJson(settingsPath, '现有 Gemini settings.json').parsed)
+  } catch {
+    // 读不了就看不出那个 false 还在不在，按不在算：以后少收回一次，不会替客户打开统计。
+    statistics = undefined
+  }
+  if (statistics === false) return false
+  executeFilePlans(geminiUsageStatisticsRecordClearPlans(record, roots), {}, providerRoot)
+  return true
 }
 
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
@@ -801,6 +954,8 @@ function readProviderModel(provider: ProviderId, paths: string[]): string {
  * built-in `gemini-3.5-flash` alias. The relay exposes the current 3.7/3.8
  * tiers with an explicit suffix, bypassing that client-side rewrite. Always
  * report the actual stored ID: a tier suffix must not be hidden in the UI.
+ * 0.61.0 stopped that rewrite, but a customer may still be running an older
+ * install, so the suffix stays.
  */
 export function geminiCliCompatibleModel(model: string): string {
   return /^(gemini-3\.[78]-flash)$/i.test(model.trim()) ? `${model.trim()}-high` : model.trim()
@@ -905,9 +1060,8 @@ export function classifyCodexConfigProfile(
 
 function isKnownCodexRelayBaseUrl(baseUrl: string, siteBaseUrl: string): boolean {
   if (!baseUrl) return false
-  const normalized = normalizeUrl(baseUrl)
   return [siteBaseUrl, ...relaySites.map((site) => site.providerBaseUrls.codex)]
-    .some((candidate) => normalized === normalizeUrl(candidate))
+    .some((candidate) => relayProviderBaseUrlMatches('codex', baseUrl, candidate))
 }
 
 function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
@@ -1213,7 +1367,11 @@ function createCodexOfficialConfigPlans(
   const currentText = fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null
-  const currentParsed = currentText ? requireToml(paths.active, '现有 Codex config.toml') : null
+  // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「修好它」也走这里），登录 ChatGPT 的
+  // 客户也一样：坏文件照旧先备份再整份换掉。只更新（merge）仍然拒绝，不悄悄重置客户的设置。
+  const currentParsed = !currentText ? null
+    : mode === 'reset' ? parseTomlOrNull(currentText)
+      : requireToml(paths.active, '现有 Codex config.toml')
   if (currentText && classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
     plans.push({ path: paths.relay, content: withTrailingNewline(currentText) })
   }
@@ -1284,23 +1442,43 @@ export function snapshotCodexChatGptAuth(value: unknown): Record<string, unknown
   return snapshot
 }
 
-function createCodexRelayAuthPlans(apiKey: string, roots: ProviderConfigRoots): FilePlan[] {
+/**
+ * 读现有的 auth.json，好把里面的 ChatGPT 登录、Key 存进快照再换掉它。只更新（merge）读不懂就停，
+ * 指去重置；重置时读不懂不挡路（读不懂返回 null）：Codex 自己也读不了这样的文件，当成没登录，
+ * 里面没有它还认得的登录可留。换掉之前照旧先备份。
+ */
+function readCodexAuthForSave(filePath: string, mode: NativeConfigSaveMode): Record<string, unknown> | null {
+  if (!fs.existsSync(filePath)) return null
+  if (mode === 'merge') return requireJson(filePath, '现有 Codex auth.json', 'Codex')
+  const content = requireConfigText(filePath, '现有 Codex auth.json')
+  if (!content) return null
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return isJsonRecord(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function createCodexRelayAuthPlans(apiKey: string, roots: ProviderConfigRoots, mode: NativeConfigSaveMode): FilePlan[] {
   const paths = codexAuthSnapshotPaths(roots)
   const plans: FilePlan[] = []
-  if (fs.existsSync(paths.active)) {
-    const current = requireJson(paths.active, '现有 Codex auth.json')
-    const chatgpt = snapshotCodexChatGptAuth(current)
-    if (chatgpt) plans.push({ path: paths.chatgpt, content: jsonContent(chatgpt) })
-  }
+  const chatgpt = snapshotCodexChatGptAuth(readCodexAuthForSave(paths.active, mode))
+  if (chatgpt) plans.push({ path: paths.chatgpt, content: jsonContent(chatgpt) })
   const apikeyAuth = buildCodexApiKeyAuth(apiKey)
   plans.push({ path: paths.apikey, content: jsonContent(apikeyAuth) })
   plans.push({ path: paths.active, content: jsonContent(apikeyAuth) })
   return plans
 }
 
-function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
+// 拿掉 Key 和 auth_mode 之后只剩这些（或什么都不剩）时，留下的不是一份登录：Codex 0.159 把没写
+// auth_mode、又没有 Key 的 auth.json 当成 ChatGPT 登录，没有令牌就每次请求都报「plan type is
+// required for chatgpt authentication」，桌面端多半停在「无法加载组织设置」，也不会叫人重新登录。
+const codexAuthLeftovers: ReadonlySet<string> = new Set(['tokens', 'last_refresh'])
+
+function createCodexOfficialAuthPlans(roots: ProviderConfigRoots, mode: NativeConfigSaveMode): FilePlan[] {
   const paths = codexAuthSnapshotPaths(roots)
-  const current = fs.existsSync(paths.active) ? requireJson(paths.active, '现有 Codex auth.json') : null
+  const current = readCodexAuthForSave(paths.active, mode)
   const plans: FilePlan[] = []
   const currentKey = typeof current?.OPENAI_API_KEY === 'string' ? current.OPENAI_API_KEY.trim() : ''
   if (currentKey) {
@@ -1318,8 +1496,14 @@ function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
   if (current) {
     delete current.OPENAI_API_KEY
     delete current.auth_mode
-    plans.push({ path: paths.active, content: jsonContent(current) })
+    if (Object.keys(current).some((key) => !codexAuthLeftovers.has(key))) {
+      plans.push({ path: paths.active, content: jsonContent(current) })
+      return plans
+    }
   }
+  // 没有可换回的 ChatGPT 登录：和 Codex 自己退出登录一样不留这个文件，打开时它会叫人登录。
+  // 重置时读不懂的那份也走这里（readCodexAuthForSave 读成 null）。
+  if (current || mode === 'reset') plans.push({ path: paths.active, remove: true })
   return plans
 }
 
@@ -1545,14 +1729,18 @@ export function inspectProviderConfig(
     actualBaseUrl,
     exists: files.some((file) => file.exists),
     hasApiKey: Boolean(apiKey),
-    matchesRelay: Boolean(apiKey && actualBaseUrl && normalizeUrl(actualBaseUrl) === normalizeUrl(baseUrl)),
+    matchesRelay: Boolean(apiKey && actualBaseUrl && relayProviderBaseUrlMatches(provider, actualBaseUrl, baseUrl)),
     apiKey,
     model,
     ...(authType !== undefined ? { authType } : {}),
     officialAccountEmail: officialAccount.email,
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
-    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths), ...readCodexProviderSelection(paths, baseUrl) } : {}),
+    ...(provider === 'codex' ? {
+      codexAuthMode: readCodexAuthMode(paths),
+      ...readCodexProviderSelection(paths, baseUrl),
+    } : {}),
+    ...readConfigFilesBroken(provider, paths),
     ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
@@ -2148,6 +2336,107 @@ export function trustManagedWorkspace(
   }
 }
 
+/**
+ * 检查页「个人文件夹里早先留下的设置」（已知36）看哪几个工具记着「信任整个个人文件夹」。
+ * #321 以前客户选个人文件夹打开工具时，本软件替他写过 Claude Code 与 Gemini CLI 的信任；
+ * Codex 的来自配置窗口那颗按钮，或者 Codex 自己问过之后写下的。只读不改：信任是客户的
+ * 设置，这里只说一声。哪一家读不了、读不懂就当它没记着，那份配置坏没坏由那个工具自己
+ * 那一项去说，这一项不为它另报一条错。
+ */
+export type HomeFolderTrustProvider = Extract<ProviderId, 'claude' | 'codex' | 'gemini'>
+
+// Codex on Windows may record a folder in its verbatim form (\\?\C:\...);
+// strip that prefix so the same folder compares equal.
+function trustedFolderKey(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('\\\\?\\UNC\\')) return normalizeWorkspacePathKey(`\\\\${trimmed.slice(8)}`)
+  return normalizeWorkspacePathKey(trimmed.startsWith('\\\\?\\') ? trimmed.slice(4) : trimmed)
+}
+
+export function claudeRootConfigTrustsFolder(content: string | null, folder: string): boolean {
+  if (!content?.trim()) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content) as unknown
+  } catch {
+    return false
+  }
+  if (!isJsonRecord(parsed) || !isJsonRecord(parsed.projects)) return false
+  const wanted = trustedFolderKey(folder)
+  return Object.entries(parsed.projects).some(([key, entry]) =>
+    trustedFolderKey(key) === wanted && isJsonRecord(entry) && entry.hasTrustDialogAccepted === true)
+}
+
+export function codexConfigTrustsFolder(content: string | null, folder: string): boolean {
+  if (!content?.trim()) return false
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(content)
+  } catch {
+    return false
+  }
+  if (!isJsonRecord(parsed.projects)) return false
+  const wanted = trustedFolderKey(folder)
+  return Object.entries(parsed.projects).some(([key, entry]) =>
+    trustedFolderKey(key) === wanted && isJsonRecord(entry) && entry.trust_level === 'trusted')
+}
+
+// Gemini CLI trusts the parent of a TRUST_PARENT entry, so a project directly
+// under the home folder answered that way trusts the whole home folder.
+export function geminiTrustedFoldersTrustFolder(content: string | null, folder: string): boolean {
+  if (!content?.trim()) return false
+  let parsed: Record<string, unknown>
+  try {
+    parsed = parseGeminiJsonObject(content, 'Gemini CLI trustedFolders.json')
+  } catch {
+    return false
+  }
+  const wanted = trustedFolderKey(folder)
+  return Object.entries(parsed).some(([key, level]) => {
+    const trusted = trustedFolderKey(key)
+    if (level === 'TRUST_FOLDER') return trusted === wanted
+    if (level !== 'TRUST_PARENT') return false
+    const parent = /^[a-z]:\\|^\\\\/.test(trusted) ? path.win32.dirname(trusted) : path.posix.dirname(trusted)
+    return parent !== trusted && parent === wanted
+  })
+}
+
+function readTrustConfigText(filePath: string, root: string, label: string, maximumBytes?: number): string | null {
+  if (!fs.existsSync(filePath)) return null
+  assertSafeConfigPath(filePath, root, 'file')
+  return requireConfigText(filePath, label, maximumBytes)
+}
+
+export function inspectHomeFolderTrust(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): HomeFolderTrustProvider[] {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const home = roots.userHome
+  const codexConfig = codexConfigSnapshotPaths(roots).active
+  const geminiRoot = providerConfigRoot('gemini', roots)
+  const checks: ReadonlyArray<readonly [HomeFolderTrustProvider, () => boolean]> = [
+    ['claude', () => claudeRootConfigTrustsFolder(
+      readTrustConfigText(path.join(home, '.claude.json'), home, '现有 Claude Code ~/.claude.json', MAX_CLAUDE_ROOT_CONFIG_BYTES),
+      home,
+    )],
+    ['codex', () => codexConfigTrustsFolder(
+      readTrustConfigText(codexConfig, path.dirname(codexConfig), '现有 Codex config.toml'),
+      home,
+    )],
+    ['gemini', () => geminiTrustedFoldersTrustFolder(
+      readTrustConfigText(path.join(geminiRoot, 'trustedFolders.json'), geminiRoot, '现有 Gemini CLI trustedFolders.json'),
+      home,
+    )],
+  ]
+  return checks.filter(([, trusts]) => {
+    try {
+      return trusts()
+    } catch {
+      return false
+    }
+  }).map(([provider]) => provider)
+}
+
 function updateEnvContent(content: string, updates: Record<string, string>): string {
   const lines = content.split(/\r?\n/)
   if (lines.at(-1) === '') lines.pop()
@@ -2188,7 +2477,7 @@ function createPlans(
     case 'codex':
       return [
         ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook, codexModelCatalog),
-        ...createCodexRelayAuthPlans(apiKey, roots),
+        ...createCodexRelayAuthPlans(apiKey, roots, 'reset'),
       ]
     case 'claude': {
       const env: Record<string, unknown> = {
@@ -2227,6 +2516,7 @@ function createPlans(
       }
       if (cliHook) applyGeminiCliHooks(settings, cliHook)
       return [
+        ...geminiUsageStatisticsRecordPlans(roots),
         {
           path: paths[0],
           content: jsonContent(settings),
@@ -2307,7 +2597,7 @@ function createMergePlans(
     case 'codex':
       return [
         ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, codexModelCatalog),
-        ...createCodexRelayAuthPlans(apiKey, roots),
+        ...createCodexRelayAuthPlans(apiKey, roots, 'merge'),
       ]
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
@@ -2316,7 +2606,9 @@ function createMergePlans(
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
-      denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
+      const permissions = ensureRecord(parsed, 'permissions')
+      denyClaudeRelayTool(permissions)
+      skipClaudeCommandConfirmation(parsed, permissions)
       skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
@@ -2330,7 +2622,7 @@ function createMergePlans(
     case 'gemini': {
       const plans: FilePlan[] = []
       if (!fs.existsSync(paths[0])) {
-        plans.push(initial(paths[0]))
+        plans.push(...geminiUsageStatisticsRecordPlans(roots), initial(paths[0]))
       } else {
         const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json', 'Gemini CLI')
         // Gemini CLI keeps the auth strategy in settings.json. Updating only
@@ -2341,8 +2633,10 @@ function createMergePlans(
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
+        const statisticsUnset = geminiUsageStatisticsSetting(parsed) === undefined
         disableGeminiRelayUsageStatistics(parsed)
         if (cliHook) applyGeminiCliHooks(parsed, cliHook)
+        if (statisticsUnset) plans.push(...geminiUsageStatisticsRecordPlans(roots))
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -2390,7 +2684,7 @@ function backupSuffix(): string {
   return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 17)
 }
 
-interface PreparedFilePlan extends FilePlan {
+type PreparedFilePlan = FilePlan & {
   backupPath: string | null
   existed: boolean
   temporaryPath: string
@@ -2573,7 +2867,7 @@ function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFile
       backupPath: existed ? uniqueBackupPath(plan.path, suffix) : null,
       temporaryPath: `${plan.path}.xingmang-${randomUUID()}.tmp`,
     }
-  })
+  }).filter((plan) => plan.existed || !isRemovePlan(plan))
 }
 
 function rollbackCommittedPlans(
@@ -2589,8 +2883,11 @@ function rollbackCommittedPlans(
         assertSafeSourceAndTarget(plan.backupPath, rollbackPath, providerRoot)
         fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
         rollbackCopyCreated = true
-        assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot)
-        fs.renameSync(rollbackPath, plan.path)
+        renameWithTransientRetrySync(
+          rollbackPath,
+          plan.path,
+          () => assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot),
+        )
         rollbackCopyCreated = false
       } catch (error) {
         rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
@@ -2642,6 +2939,7 @@ export function executeFilePlans(
   try {
     // No target is touched until every new file has been written successfully.
     for (const plan of prepared) {
+      if (isRemovePlan(plan)) continue
       assertSafeConfigPath(plan.path, providerRoot, 'parent')
       fs.mkdirSync(path.dirname(plan.path), { recursive: true })
       writeDurableUtf8(plan.temporaryPath, plan.content, providerRoot)
@@ -2653,10 +2951,18 @@ export function executeFilePlans(
       }
     }
     for (const [index, plan] of prepared.entries()) {
-      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      hooks.beforeReplace?.(plan.path, index)
-      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
-      fs.renameSync(plan.temporaryPath, plan.path)
+      // Removal moves the file aside instead of deleting it, so the rollback
+      // below can still put the .bak copy back; the cleanup after a full commit
+      // deletes the moved-aside file together with the other temporaries.
+      const [source, target] = isRemovePlan(plan) ? [plan.path, plan.temporaryPath] : [plan.temporaryPath, plan.path]
+      assertSafeSourceAndTarget(source, target, providerRoot)
+      // A hook may re-read what this save was computed from (external-tool-config
+      // does), so it runs again before every retry: whoever held the file may
+      // have just saved its own change.
+      renameWithTransientRetrySync(source, target, () => {
+        hooks.beforeReplace?.(plan.path, index)
+        assertSafeSourceAndTarget(source, target, providerRoot)
+      })
       committed.push(plan)
     }
   } catch (error) {
@@ -2748,7 +3054,8 @@ export function saveProviderConfig(
 // 这个号记在工具配置来源记录里（tool-config-ownership.ts）：记录落后于它、来源又确认是
 // 当前账号的配置，开机时由 fillRelayTemplateDefaults 补一次缺省项。往下面那几个
 // fill*RelayTemplateDefaults 里加了新的一项，就把这个号加一，否则老客户拿不到。
-export const relayTemplateRevision = 1
+// 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
+export const relayTemplateRevision = 2
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
 function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -2771,6 +3078,7 @@ function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void 
   if (env && env.DISABLE_AUTOUPDATER === undefined) disableClaudeSelfUpdate(env)
   const permissions = fillableRecord(parsed, 'permissions')
   if (permissions && (permissions.deny === undefined || Array.isArray(permissions.deny))) denyClaudeRelayTool(permissions)
+  if (permissions) skipClaudeCommandConfirmation(parsed, permissions)
   if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
   ensureClaudeResponseLanguage(parsed)
   extendClaudeSessionRetention(parsed)
@@ -2849,7 +3157,11 @@ function relayTemplateDefaultsPlans(
       fillGeminiRelayTemplateDefaults(parsed, geminiCliCompatibleModel(readEnvValue(paths[1], 'GEMINI_MODEL')))
       dropEmptyCreatedTables(parsed, before)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return []
-      return [{ path: paths[0], content: geminiJsonContent(original, parsed) }]
+      const statisticsAdded = geminiUsageStatisticsSetting(before) === undefined && geminiUsageStatisticsSetting(parsed) === false
+      return [
+        ...(statisticsAdded ? geminiUsageStatisticsRecordPlans(roots) : []),
+        { path: paths[0], content: geminiJsonContent(original, parsed) },
+      ]
     }
     case 'grok': {
       if (requireConfigText(paths[0], '现有 Grok config.toml') === null) return []
@@ -3161,6 +3473,14 @@ export function managedProviderLaunchBlockedMessage(provider: ProviderId): strin
   }
 }
 
+// 读不懂时指路那句里的工具名，用首页那一行的叫法；Codex CLI 和桌面端共用一份配置，就叫「Codex」。
+const brokenConfigToolNames: Record<ProviderId, string> = {
+  codex: 'Codex',
+  claude: 'Claude Code',
+  gemini: 'Gemini CLI',
+  grok: 'Grok CLI',
+}
+
 /**
  * merge 只处理已存在的配置；显式 reset 可以建立当前账号来源的初始配置。
  * 官方登录和历史数据均独立保留，不属于重置范围。
@@ -3176,7 +3496,7 @@ function createOfficialAccountPlans(
     case 'codex':
       return [
         ...createCodexOfficialConfigPlans(roots, siteBaseUrls, mode),
-        ...createCodexOfficialAuthPlans(roots),
+        ...createCodexOfficialAuthPlans(roots, mode),
       ]
     case 'claude': {
       // 切回官方账号不收回自动更新开关：CLI 仍由本软件装、也由本软件更新。语言与记录
@@ -3192,7 +3512,7 @@ function createOfficialAccountPlans(
         return [...restore, { path: paths[0], content: jsonContent(settings) }]
       }
       if (!fs.existsSync(paths[0])) return []
-      const parsed = requireJson(paths[0], '现有 Claude settings.json')
+      const parsed = requireJson(paths[0], '现有 Claude settings.json', brokenConfigToolNames.claude)
       const env = parsed.env
       if (env && typeof env === 'object' && !Array.isArray(env)) {
         const envRecord = env as Record<string, unknown>
@@ -3212,8 +3532,10 @@ function createOfficialAccountPlans(
       return [...restore, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
+      const statisticsRecord = readGeminiUsageStatisticsRecord(roots)
       if (mode === 'reset') {
         return [
+          ...geminiUsageStatisticsRecordClearPlans(statisticsRecord, roots),
           {
             path: paths[0],
             content: jsonContent({
@@ -3230,12 +3552,13 @@ function createOfficialAccountPlans(
       }
       const plans: FilePlan[] = []
       if (fs.existsSync(paths[0])) {
-        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json', brokenConfigToolNames.gemini)
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
-        restoreGeminiUsageStatistics(parsed)
+        restoreGeminiUsageStatistics(parsed, geminiUsageStatisticsWrittenByUs(statisticsRecord))
         removeGeminiCliHooks(parsed)
+        plans.push(...geminiUsageStatisticsRecordClearPlans(statisticsRecord, roots))
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
@@ -3250,7 +3573,7 @@ function createOfficialAccountPlans(
     case 'grok': {
       if (mode === 'reset') return [{ path: paths[0], content: ['[cli]', 'auto_update = false', ''].join('\n') }]
       if (!fs.existsSync(paths[0])) return []
-      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      const parsed = requireToml(paths[0], '现有 Grok config.toml', brokenConfigToolNames.grok)
       removeGrokRelayConfig(parsed, siteBaseUrls.grok)
       disableGrokSelfUpdate(parsed)
       // 与 Claude / Gemini 同理钩子跟着收回；[compat.claude] 那一行留着，Claude Code 可能还接着当前账号。
@@ -3284,7 +3607,18 @@ export function switchProviderToOfficialAccount(
   // 切回，才能同时恢复官方 config.toml 与 auth.json。
   const knownCodexRelay = provider === 'codex'
     && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
-  const mode = knownCodexRelay ? 'relay' : providerAccountMode(inspection)
+  // 登录 ChatGPT 换来的那把 Key 常和令牌一起留在 auth.json 里（auth_mode 说了算，Codex 不用它），
+  // config.toml 又坏到 Codex 读不了：看着像「有 Key、地址不是星芒」的第三方，其实用的就是官方
+  // 账号。首页「配置文件坏了」的「修好它」走的是这条重置，先备份，坏文件里没有能用的设置可护。
+  const brokenChatgptLogin = provider === 'codex' && saveMode === 'reset'
+    && inspection.configBroken === true && inspection.codexAuthMode === 'chatgpt'
+  const mode = knownCodexRelay ? 'relay' : brokenChatgptLogin ? 'official' : providerAccountMode(inspection)
+  // 工具自己读不了的文件，读出来的「没有 Key」不说明在用官方账号（Claude Code 的 settings.json
+  // 坏了以前就被说成「无需切换」）。只更新要照着原文件改，指去重置；认得出是星芒中转的照常往下走，
+  // 读不懂的那一份由下面的计划报同一句。
+  if (mode !== 'relay' && saveMode !== 'reset' && (inspection.configBroken === true || inspection.codexAuthBroken === true)) {
+    throw new Error(describeBrokenConfig(brokenConfigToolNames[provider]))
+  }
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
@@ -3329,6 +3663,14 @@ const claudeForeignEnvKeys = [
   'CLAUDE_CODE_SUBAGENT_MODEL',
 ] as const
 const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
+
+/**
+ * 上面选型号的那几项。客户在系统设置或 ~/.zshrc 里设的同名环境变量 Claude Code 一样认，所以用星芒账号
+ * 从星芒打开 Claude Code 时也不交给它（system-service.ts 的 launchExcludedEnvironmentVariables，已知45 跟进），
+ * 范围靠这一处和这里挪开的对齐。ANTHROPIC_API_KEY 不在内：Windows、Linux 上它由检查页提示，Mac 的启动
+ * 脚本另外去掉（macosShellOverrideVariables）。
+ */
+export const claudeForeignModelEnvKeys: readonly string[] = claudeForeignEnvKeys.filter((key) => key !== 'ANTHROPIC_API_KEY')
 
 interface ClaudeForeignSettings {
   env: Record<string, unknown>

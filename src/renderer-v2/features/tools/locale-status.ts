@@ -5,8 +5,11 @@ import type { WindowOs } from '../app/window-os'
 // 只关窗口它还在后台跑，照样读不到（第二十九批 A）。
 const macQuitThenOpen = '先在 Codex 窗口里按 Command + Q 完全退出，再回星芒点「打开」。'
 
-/** 配置里「界面语言与文件夹权限」那段说明的 Mac 版：Mac 上不开那条本机通道，也不会替人重开 Codex。 */
-export const macLocaleNote = `点「启用中文界面」只是把设置改好，不会替你重开 Codex。Codex 开着的话，${macQuitThenOpen}`
+/**
+ * 配置里「界面语言与文件夹权限」那段说明的 Mac 版：Mac 上不开那条本机通道，也不会替人重开 Codex。
+ * Mac 上的中文全靠星芒打开前连上的加速让 Codex 拿到开关，从程序坞或启动台直接打开拿不到，所以先说这一句。
+ */
+export const macLocaleNote = `中文界面只在从星芒打开 Codex 时生效，直接点程序坞或启动台里的 ChatGPT 打开还是英文。点「启用中文界面」只是把设置改好，不会替你重开 Codex。Codex 开着的话，${macQuitThenOpen}`
 
 export function describeChineseLocale(status: CodexDesktopLocaleStatus, os: WindowOs): string {
   if (!status.installed) return 'Codex 桌面端尚未安装'

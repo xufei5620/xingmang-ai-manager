@@ -24,6 +24,38 @@ const PROJECT_INSTRUCTIONS_TEMPLATE_RELATIVE = [
 // not be written verbatim into a user's project tree.
 const MAX_TEMPLATE_BYTES = 64 * 1024
 
+/**
+ * 发出去过的每一版模板的摘要（换行统一成 \n 之后的 sha256）。检查页靠它认出个人文件夹里
+ * 那份 AGENTS.md 还是星芒早先放的、一字没改过（已知36）。改模板时把新版的摘要加在后面，
+ * 旧的一个都不删：老客户手里留着的是旧版。测试钉住当前随包的模板在这张表里。
+ */
+export const PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS: readonly string[] = [
+  // #288（2026-09-22）发出的第一版。
+  'ca1295d8cade9f6598e687d6650ccdc1488ff44d50d9e16ec70e84e229f38643',
+]
+
+export function projectInstructionsDigest(content: string): string {
+  return createHash('sha256').update(content.replace(/\r\n/g, '\n'), 'utf8').digest('hex')
+}
+
+/**
+ * 个人文件夹里那份 AGENTS.md 还是不是星芒早先放的、客户没改过（已知36）。#321 以前，
+ * 客户选个人文件夹打开工具时也会放这份模板，之后不再放，已经放下的还留在那里。
+ * 不是这份、读不了、是链接或大得不像模板，一律算不是：客户改过的算他的，检查页不提也不挪。
+ */
+export function hasUntouchedHomeProjectInstructions(home: string): boolean {
+  try {
+    const content = readSafeUtf8FileSync(
+      path.join(home, GENERATED_PROJECT_INSTRUCTION_FILENAME),
+      '个人文件夹里的项目说明',
+      MAX_TEMPLATE_BYTES,
+    )
+    return content !== null && PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS.includes(projectInstructionsDigest(content))
+  } catch {
+    return false
+  }
+}
+
 export function resolveProjectInstructionsTemplatePath(
   appPath: string,
   options: { packaged?: boolean; resourcesPath?: string } = {},

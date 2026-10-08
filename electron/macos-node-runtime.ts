@@ -7,7 +7,7 @@ import {
   type CommandResult,
 } from './command-runner'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
-import { managedNodeRuntimeRoot, managedProductRoot } from './managed-cli-paths'
+import { managedNodeRuntimeBinDirectory, managedNodeRuntimeRoot, managedProductRoot } from './managed-cli-paths'
 import {
   downloadNodeRuntimePackage,
   fetchNodeRuntimeText,
@@ -33,7 +33,8 @@ import { nodeVersionStatus } from './versions'
  *
  * 做法和四个命令行工具在 Mac 上的放法一样：不装进系统目录、不提权、不开终端，
  * 只把官方的 macOS 压缩包解到产品目录下的 Runtime/node。PATH 里这一份排在最后
- * （macos-platform.ts 的 darwinCommandPathCandidates），客户自己装过的永远优先。
+ * （macos-platform.ts 的 darwinCommandPathCandidates），客户自己装过的优先；只有他那份
+ * 太旧时，本软件自己干活才改用这一份（resolveDarwinPreferredNodeDirectory，第三十四批 A）。
  *
  * Trust chain, in order:
  * 1. The archive comes only from nodejs.org or npmmirror's fixed Node mirror, with
@@ -338,4 +339,40 @@ export async function installDarwinNodeRuntime(
   const message = darwinNodeRuntimeFailureMessage(failures)
   report(options, { phase: 'error', source: null, message, percent: null })
   throw new Error(message)
+}
+
+export interface DarwinPreferredNodeProbe {
+  /** 照平常的顺序先找到的那个 node：客户自己装的排在前面（darwinCommandPathCandidates）。 */
+  findNode(): Promise<string | null>
+  /** 这个 node 报的版本（`node --version` 那一行）；读不出给 null。 */
+  readVersion(executable: string): Promise<string | null>
+  /** 决定产品目录的环境变量（HOME）；缺省 process.env，测试用它指到临时目录。 */
+  environment?: NodeJS.ProcessEnv
+}
+
+/**
+ * 代下的那份排在客户自己那份后面（第十六批 2）。客户自己那份太旧（低于 20，或者读不出版本）
+ * 时，代下的那份永远轮不到：检测一直说没准备好，每次装工具都重下一遍，打开 Gemini 也还是
+ * 旧的在跑（第三十四批 A）。这种 Mac 上本软件自己检测、装工具、开工具改用代下的那份，这里
+ * 返回要排到最前的目录。客户自己的够新、代下的不在或不够新，都返回 null，顺序照旧。
+ *
+ * 只管本软件自己干活：从本软件打开的终端里交给工具的 PATH、客户自己开的终端都不改，客户
+ * 在工具里跑自己的项目时用的还是他自己那份。
+ */
+export async function resolveDarwinPreferredNodeDirectory(probe: DarwinPreferredNodeProbe): Promise<string | null> {
+  let directory: string
+  try {
+    directory = managedNodeRuntimeBinDirectory(probe.environment ?? process.env, 'darwin')
+  } catch {
+    return null
+  }
+  const managedNode = path.posix.join(directory, 'node')
+  // 绝大多数 Mac 上没有代下的那份（客户自己有能用的，就从来不下）：看一眼文件就回，不起进程。
+  const managed = await lstatOrNull(managedNode).catch(() => null)
+  if (!managed?.isFile()) return null
+  const found = await probe.findNode().catch(() => null)
+  if (!found || path.posix.resolve(found) === managedNode) return null
+  const versionStatus = async (executable: string) => nodeVersionStatus(await probe.readVersion(executable).catch(() => null))
+  if (await versionStatus(found) === 'supported') return null
+  return await versionStatus(managedNode) === 'supported' ? directory : null
 }

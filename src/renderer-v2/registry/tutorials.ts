@@ -1,6 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
+import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -60,6 +60,9 @@ export const updateDiskCleanupSteps = 'Windows：打开「设置 → 系统 → 
 export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。`;
 // Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
 export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
+
+// 技能页选到不能在这里导入的工具时，「看怎么放」打开技能那篇并展开这一条。
+export const skillImportTutorialExtra = 'Claude Code、Grok CLI 没有导入按钮？';
 
 export function updateDiskCleanupStepsFor(os: WindowOs): string {
   return os === 'linux' ? linuxUpdateDiskCleanupSteps : updateDiskCleanupSteps;
@@ -460,9 +463,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '查看、导出或归档记录',
-        where: '记录 → 查看记录 → 右侧详情',
+        where: '记录 → 点一行 → 右侧详情',
         detail: '先查看内容，需要保存一份就导出，不常用的记录可以归档。',
-        bullets: ['点「查看记录」，在右侧阅读对话。', '点「导出 Markdown」，按提示找到导出文件。', '不想放在当前列表时点「归档记录」，需要时再「恢复记录」。'],
+        bullets: ['点一行记录，在右侧阅读对话。', '点「导出」，按提示找到导出文件。', '不想放在当前列表时点「归档」，需要时再「恢复」。'],
         expected: '能阅读或导出对话，归档状态也能恢复。',
         extra: [{ title: '归档会影响继续聊天吗？', detail: '归档会把记录移出工具自己的目录，所以已归档记录不能「接着聊」。需要继续时先恢复，再核对它是否为该目录最近一条。' }],
         action: '打开记录查看详情',
@@ -472,7 +475,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '看懂不可续接和保留期',
         where: '记录 → 状态提示',
         detail: '显示「文件夹已不存在」时，原目录已删除或搬走，不能继续，但仍可查看和导出。',
-        bullets: ['按钮按不动时，先看旁边的文件夹状态。', '重要内容及时「导出 Markdown」，不要只依赖工具保留记录。'],
+        bullets: ['按钮按不动时，先看旁边的文件夹状态。', '重要内容及时「导出」，不要只依赖工具保留记录。'],
         expected: '知道不能续接的原因，也能保留需要的内容。',
         extra: [{ title: '记录会保留多久？', detail: '记录由各工具管理。由工具箱写配置的 Claude Code 与 Gemini CLI，默认保留期已从一个月延长到一年；你自己设置过的保留期仍按原设置。' }],
         action: '打开记录核对状态',
@@ -544,13 +547,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['未登录先点「登录领取免费体验」。', '查看剩余时长、页面下方「本次连接」和「累计使用」。'],
         expected: '读到剩余时长与线路状态。',
         illustration: 'acceleration',
-        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「免费体验已用完」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
+        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
         action: '打开游戏加速',
         page: 'acceleration',
       },
       {
         title: '连接前选择线路或智能分配',
-        where: '游戏加速 → 选择加速线路',
+        where: '游戏加速 → 换线路',
         detail: '不确定选哪条就用「智能分配」，连接时自动测速选可用线路。Ping 用来测线路的响应快慢。',
         bullets: ['展开线路列表，选择「智能分配」或具体线路。', '手选线路可点旁边「Ping」，数字越小通常越快。'],
         expected: '当前线路显示你的选择。',
@@ -584,7 +587,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
   {
-    id: 'cli',
+    id: cliTutorialTopic,
     title: '进阶：安装与使用命令行工具',
     lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。只用 Codex 桌面端可以跳过这一章。',
     category: 'advanced',
@@ -710,7 +713,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: 'Codex CLI 填本机技能文件夹，Gemini CLI 填技能来源。',
         bullets: ['点「导入技能」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
-        extra: [{ title: 'Claude Code、Grok CLI 没有导入按钮？', detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页重新加载；选择当前项目时先核对工作文件夹。' }],
+        extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
         action: '去导入技能',
         page: 'skills',
       },
@@ -779,7 +782,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '工具运行中安装的插件，可能需要重新打开工具才生效。',
         bullets: ['先保存当前工作，再重新打开工具。', '仍失败时，记录插件名称、工具版本和报错。'],
         expected: '重开后能使用插件，或已取得明确错误。',
-        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '「当前工具未提供市场管理接口」表示没有市场，现有插件仍在已安装列表。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
+        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '看到「没有插件市场」，表示这个工具没有市场，装好的插件仍在「已安装」里。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
         action: '打开插件检查状态',
         page: 'plugins',
       },
@@ -810,7 +813,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「更多」→「更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启安装」。'],
         expected: '重新打开后，更新页显示「已是最新版本」。',
         extra: [
-          { title: '不想让它自动装？', detail: '去「设置」→「启动与关闭」关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
+          { title: '不想让它自动装？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
           { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
           { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
           { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
@@ -1070,7 +1073,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '「已配好」说明设置保存了，还要点「打开」启动 Codex。',
         bullets: ['提示已运行时选「打开窗口」。', '刚改过配置时先保存任务，再选「重启 Codex」（Mac 上先按 Command + Q 退出 Codex，再点「打开」）。', '其他错误记下原文，不要连续重复点击。'],
         expected: '看到 Codex 窗口，或取得明确启动错误。',
-        extra: [{ title: '能打开，但还是英文？', detail: '在桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
+        extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
         action: '回首页检查 Codex 打开结果',
         page: 'home',
       },
@@ -1170,7 +1173,7 @@ const linuxSelfUpdateTutorialStep: TutorialStep = {
   bullets: ['点「安装新版本」，星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。', '装好后从应用菜单重新打开星芒。'],
   expected: '重新打开后，更新页显示「已是最新版本」。',
   extra: [
-    { title: '不想让它在后台下载？', detail: '去「设置」→「启动与关闭」关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
+    { title: '不想让它在后台下载？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
     { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
     { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
     { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
@@ -1214,7 +1217,7 @@ function linuxTutorialText(topic: TutorialTopic): TutorialTopic {
 function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
   if (topic.id === 'start') return [linuxStartTutorial];
   if (linuxHiddenTutorialTopics.has(topic.id)) return [];
-  if (topic.id === 'cli') {
+  if (topic.id === cliTutorialTopic) {
     return [linuxTutorialText({
       ...topic,
       lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。第一章走的是 Codex CLI，Claude Code、Gemini CLI 也是同样的装法。',

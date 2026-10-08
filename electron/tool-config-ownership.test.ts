@@ -4,10 +4,18 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
-import { codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, relayTemplateRevision, saveProviderConfig } from './config-files'
-import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership } from './system-service'
+import {
+  codexConfigSnapshotPaths,
+  geminiUsageStatisticsRecordName,
+  inspectProviderConfig,
+  providerConfigPaths,
+  relayTemplateRevision,
+  saveProviderConfig,
+} from './config-files'
+import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership, sameNativeConfigSnapshot } from './system-service'
 import type { RunningToolsReport } from './running-tools'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
+import { XINGMANG_AI_CODEX_SKILL_STATE_FILE, resolveXingmangAiCodexSkillPath } from './xingmang-ai-skill'
 
 const directories: string[] = []
 function fixture() {
@@ -316,6 +324,64 @@ describe('durable tool configuration ownership', () => {
     expect(fs.readFileSync(authPath, 'utf8')).toBe(original)
   })
 
+  // 保存在动任何文件之前就停下（和工具开着、文件被占用一样）：写之前记下的那条「手动」要原样
+  // 换回原来的记录，否则客户关掉工具再保存一次，「当前账号」就成了「手动」，以后换账号、换线路都不跟着换。
+  function blockNextWrite(f: ReturnType<typeof fixture>) {
+    const alias = path.join(f.root, 'relay-alias.toml')
+    fs.linkSync(codexConfigSnapshotPaths(f.roots).relay, alias)
+    return () => fs.unlinkSync(alias)
+  }
+
+  it('puts the account source back when a same-key save fails before touching the config, so the retry stays with the account', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    const record = fs.readFileSync(f.ownerFile(), 'utf8')
+    const unblock = blockNextWrite(f)
+    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('单链接普通文件')
+    expect(fs.readFileSync(f.ownerFile(), 'utf8')).toBe(record)
+    unblock()
+    await service.saveConfig({ ...f.payload, apiKey: '' }, false)
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    await service.saveConfig({ ...f.payload, apiKey: 'sk-account-rotated' }, false, undefined, { source: 'account', automatic: true })
+    expect(f.current().apiKey).toBe('sk-account-rotated')
+  })
+
+  it('lets the next automatic rotation through after one failed before touching the config', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    const rotated = { ...f.payload, apiKey: 'sk-account-rotated' }
+    const unblock = blockNextWrite(f)
+    await expect(service.saveConfig(rotated, false, undefined, { source: 'account', automatic: true })).rejects.toThrow('单链接普通文件')
+    unblock()
+    await service.saveConfig(rotated, false, undefined, { source: 'account', automatic: true })
+    expect(f.current().apiKey).toBe('sk-account-rotated')
+  })
+
+  it('leaves a manual source manual when its save fails', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false)
+    const record = fs.readFileSync(f.ownerFile(), 'utf8')
+    const unblock = blockNextWrite(f)
+    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('单链接普通文件')
+    unblock()
+    expect(fs.readFileSync(f.ownerFile(), 'utf8')).toBe(record)
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('manual')
+  })
+
+  it('leaves no record behind when the failed save was the first for a config nobody recorded', async () => {
+    const f = fixture()
+    saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const service = f.makeService()
+    const unblock = blockNextWrite(f)
+    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('单链接普通文件')
+    unblock()
+    expect(fs.readdirSync(path.join(f.data, 'tool-config-ownership'))).toEqual([])
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
+  })
+
   it('stops a restored backup from reading as changed and keeps it away from automatic writes', async () => {
     const f = fixture()
     const service = f.makeService()
@@ -350,6 +416,68 @@ describe('durable tool configuration ownership', () => {
     await f.makeService().adoptRestoredConfig('codex', () => true)
     expect(fs.existsSync(path.join(f.data, 'tool-config-ownership'))).toBe(false)
   })
+
+  it('forgets the Gemini usage statistics record a restored settings.json no longer carries', async () => {
+    const f = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', f.roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    saveProviderConfig('gemini', 'sk-fixture-user-secret', 'gemini-3.5-flash', 'reset', f.roots, {}, providerBaseUrls)
+    expect(fs.readFileSync(recordPath, 'utf8')).not.toBe('')
+
+    // The backup from before the switch comes back without the switch Xingmang wrote.
+    fs.writeFileSync(settingsPath, JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }), 'utf8')
+    await f.makeService().adoptRestoredConfig('gemini', () => false)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+  })
+
+  it('forgets that Gemini record even when the restored config cannot be registered', async () => {
+    const f = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', f.roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    saveProviderConfig('gemini', 'sk-fixture-user-secret', 'gemini-3.5-flash', 'reset', f.roots, {}, providerBaseUrls)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, privacy: {} }), 'utf8')
+    fs.mkdirSync(f.data, { recursive: true })
+    fs.writeFileSync(path.join(f.data, 'tool-config-ownership'), 'blocked', 'utf8')
+
+    await expect(f.makeService().adoptRestoredConfig('gemini', () => false)).rejects.toThrow()
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+  })
+
+  // On the ChatGPT account, with the record still saying the skill comes back
+  // on, a Xingmang config with the user's own off is put back.
+  async function restoredXingmangConfigWithSkillOff(f: ReturnType<typeof fixture>) {
+    saveProviderConfig('codex', 'sk-fixture-user-secret', 'fixture-model', 'reset', f.roots, {}, providerBaseUrls)
+    const skillPath = resolveXingmangAiCodexSkillPath(f.roots.userHome)
+    fs.appendFileSync(path.join(f.roots.codexHome, 'config.toml'), `\n[[skills.config]]\npath = ${JSON.stringify(skillPath)}\nenabled = false\n`, 'utf8')
+    const statePath = path.join(f.roots.codexHome, XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+    fs.writeFileSync(statePath, `${JSON.stringify({ version: 1, offByXingmang: true })}\n`, 'utf8')
+    await new AppSettingsStore(path.join(f.data, 'settings.json'), f.root).setOfficialProvider('codex', true)
+    return () => JSON.parse(fs.readFileSync(statePath, 'utf8')) as unknown
+  }
+
+  it('records the skill off in a Xingmang config restored on the backups page as the user\'s', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    await f.makeService().adoptRestoredConfig('codex', () => false, { fromBackupsPage: true })
+    expect(record()).toEqual({ version: 1, offByXingmang: false })
+  })
+
+  it('leaves the skill record alone when a failed switch is rolled back', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    await f.makeService().adoptRestoredConfig('codex', () => false)
+    expect(record()).toEqual({ version: 1, offByXingmang: true })
+  })
+
+  it('records that skill off even when the restored config cannot be registered', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    fs.writeFileSync(path.join(f.data, 'tool-config-ownership'), 'blocked', 'utf8')
+
+    await expect(f.makeService().adoptRestoredConfig('codex', () => false, { fromBackupsPage: true })).rejects.toThrow()
+    expect(record()).toEqual({ version: 1, offByXingmang: false })
+  })
 })
 
 describe('planRestoredConfigOwnership', () => {
@@ -373,6 +501,50 @@ describe('planRestoredConfigOwnership', () => {
 
   it('writes nothing when the restored config holds no key', () => {
     expect(planRestoredConfigOwnership({ ...base, hasApiKey: false })).toBeNull()
+  })
+})
+
+describe('remembering an ownership record to put it back', () => {
+  it('puts back exactly the record it saw, including no record at all', async () => {
+    const f = fixture()
+    saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const config = f.current()
+    const putBackNothing = f.ownership.remember('codex', config)
+    await f.ownership.write('codex', config, 'manual')
+    expect(putBackNothing).toBeTypeOf('function')
+    await putBackNothing?.()
+    expect(fs.readdirSync(path.join(f.data, 'tool-config-ownership'))).toEqual([])
+
+    await f.ownership.write('codex', config, 'account', JSON.stringify(['solov', 36]), relayTemplateRevision)
+    const record = fs.readFileSync(f.ownerFile(), 'utf8')
+    const putBack = f.ownership.remember('codex', config)
+    await f.ownership.write('codex', config, 'manual')
+    await putBack?.()
+    expect(fs.readFileSync(f.ownerFile(), 'utf8')).toBe(record)
+  })
+
+  it('declines when the record cannot be read safely', async () => {
+    const f = fixture()
+    saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const config = f.current()
+    await f.ownership.write('codex', config, 'manual')
+    fs.linkSync(f.ownerFile(), path.join(f.root, 'record-alias.json'))
+    expect(f.ownership.remember('codex', config)).toBeNull()
+  })
+})
+
+describe('sameNativeConfigSnapshot', () => {
+  it('counts a config as untouched only while its identity, modification time and model all match', () => {
+    const f = fixture()
+    saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const before = f.current()
+    expect(sameNativeConfigSnapshot(before, f.current())).toBe(true)
+    expect(sameNativeConfigSnapshot(before, { ...before, model: 'another-model' })).toBe(false)
+    expect(sameNativeConfigSnapshot(before, { ...before, apiKey: 'sk-another-key' })).toBe(false)
+    // 回滚会把内容照原样写回去，可修改时间变了：照「写到一半」算，不当没动过。
+    const later = new Date(Date.now() + 60_000)
+    fs.utimesSync(providerConfigPaths('codex', f.roots)[0], later, later)
+    expect(sameNativeConfigSnapshot(before, f.current())).toBe(false)
   })
 })
 

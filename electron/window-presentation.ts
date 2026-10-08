@@ -1,4 +1,5 @@
 import type { BrowserWindowConstructorOptions, MenuItemConstructorOptions } from 'electron'
+import { isChineseSentence } from './chinese-sentence'
 import type { RendererNavigationTarget } from './ipc-contract'
 
 export interface WindowThemePalette {
@@ -21,6 +22,24 @@ export function startupFailureMessage(error: unknown, platform: NodeJS.Platform)
   if (platform === 'win32') return '主程序初始化失败，Windows 未返回错误详情'
   if (platform === 'darwin') return '主程序初始化失败，macOS 未返回错误详情'
   return '主程序初始化失败，当前系统未返回错误详情'
+}
+
+export type AssetMenuMediaType = 'image' | 'video' | 'audio'
+
+const assetMenuFailureText: Record<AssetMenuMediaType, { title: string; fallback: string }> = {
+  image: { title: '图片操作失败', fallback: '无法完成图片操作' },
+  video: { title: '视频操作失败', fallback: '无法完成视频操作' },
+  audio: { title: '音频操作失败', fallback: '无法完成音频操作' },
+}
+
+// AI 图片、视频、音频的系统菜单（「更多操作」、右键，画布里右键素材也是它）先弹出来，点了某一项
+// 才去读文件。文件被挪走、删掉或被别的程序占着时，Node 的原话是英文，还带着完整路径和用户名
+// （ENOENT: no such file or directory, open 'C:\Users\张三\…'），以前原样当错误框正文（第三十六批 A）。
+// 主进程自己抛的中文（「账号已切换，请重新打开图片菜单」）照原样，其余换成兜底句，原话由调用处记进运行日志。
+export function assetMenuFailureDialog(mediaType: AssetMenuMediaType, error: unknown): { title: string; message: string } {
+  const { title, fallback } = assetMenuFailureText[mediaType]
+  const message = error instanceof Error ? error.message.trim() : ''
+  return { title, message: message && isChineseSentence(message) ? message : fallback }
 }
 
 // Linux 的 nativeImage 解不开 .ico，给它 .ico 窗口和任务栏就只剩一个空白方块；画布窗口

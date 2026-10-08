@@ -150,6 +150,32 @@ function collectFailureText(error: unknown): string {
   return parts.join(' ')
 }
 
+// Chromium 的错误码：net.fetch 只把它写在 message 里（net::ERR_TUNNEL_CONNECTION_FAILED），
+// 页面加载失败时另挂在 code 上。前面要有词边界：undici 的 UND_ERR_SOCKET 不是它。
+const chromiumErrorCode = /\bERR_[A-Z0-9_]{2,64}\b/
+// errno 只认挂在 code 上的那个词：message 里的大写英文（ERROR 之类）不是代码。
+const errnoCode = /^E[A-Z0-9_]{2,31}$/
+
+function causeChainErrno(error: unknown): string | null {
+  let current: unknown = error
+  for (let depth = 0; depth < maxCauseDepth && current !== null && typeof current === 'object'; depth += 1) {
+    const record = current as { code?: unknown; cause?: unknown }
+    if (typeof record.code === 'string' && errnoCode.test(record.code)) return record.code
+    current = record.cause
+  }
+  return null
+}
+
+/**
+ * 日志要分清同一类失败里是哪一种（代理软件没开是 ERR_PROXY_CONNECTION_FAILED，代理开着、
+ * 回绝了连星芒的请求是 ERR_TUNNEL_CONNECTION_FAILED，归类都是 proxy），又不能把原文记进去：
+ * 原文带地址，付款页那种还带着订单号和签名。所以只取一个代码词：Chromium 的 `ERR_…`，或者
+ * Node / undici 挂在 code 上的 errno（ECONNREFUSED、EAI_AGAIN）。取不到就是 null，不拿原文顶。
+ */
+export function networkFailureCode(error: unknown): string | null {
+  return chromiumErrorCode.exec(collectFailureText(error))?.[0] ?? causeChainErrno(error)
+}
+
 /**
  * 认出这个模块自己写过的那句中文。主进程抛出的错误跨过 IPC 之后只剩一句
  * message，日志侧要从这句话倒推回原因，靠的就是它。
@@ -237,6 +263,14 @@ export function isServiceUnavailableResponse(signals: ServiceResponseSignals): b
 /** 没读响应体的调用方用：按 content-type 近似「响应体是不是 JSON」。 */
 export function isJsonContentType(value: string | null | undefined): boolean {
   return typeof value === 'string' && /^\s*application\/(?:[\w.+-]+\+)?json\b/i.test(value)
+}
+
+/**
+ * 星芒的接口回的都是 JSON（流式的是 text/event-stream），回网页的是半路上别人答的：公司网的
+ * 拦截页、上网认证页、网关的错误页。
+ */
+export function isHtmlContentType(value: string | null | undefined): boolean {
+  return typeof value === 'string' && /^\s*(?:text\/html|application\/xhtml\+xml)\b/i.test(value)
 }
 
 /** 读完了响应体的调用方用：能解析成 JSON 对象（或数组）才算「是 JSON」。 */

@@ -22,6 +22,7 @@ import {
 } from './tool-installation'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
+import { renameWithTransientRetrySync } from './safe-local-data'
 import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
@@ -597,6 +598,22 @@ function writeUtf8Exclusive(filePath: string, content: string): void {
   }
 }
 
+// 不存在时返回 false；存在就必须是单链接普通文件，路径上也不能经过链接。
+function assertReplaceableTomlFile(filePath: string): boolean {
+  assertNoSymlinkComponents(filePath, 'Codex 配置路径')
+  let existing: fs.Stats
+  try {
+    existing = fs.lstatSync(filePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
+    throw new Error('Codex config.toml 必须是单链接普通文件')
+  }
+  return true
+}
+
 function performAtomicTomlMutation(
   filePath: string,
   mutate: (config: Record<string, unknown>) => void,
@@ -611,21 +628,16 @@ function performAtomicTomlMutation(
   let backupPath: string | null = null
   try {
     writeUtf8Exclusive(temporaryPath, content)
-    assertNoSymlinkComponents(filePath, 'Codex 配置路径')
-    let existing: fs.Stats | null = null
-    try {
-      existing = fs.lstatSync(filePath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    if (existing) {
-      if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
-        throw new Error('Codex config.toml 必须是单链接普通文件')
-      }
+    if (assertReplaceableTomlFile(filePath)) {
       backupPath = uniqueBackupPath(filePath)
       fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL)
     }
-    fs.renameSync(temporaryPath, filePath)
+    // Windows 上安全软件正扫着 config.toml 或刚写好的临时文件时，换过去会被拒
+    // （EPERM / EBUSY），过一会儿就好，等一下再试（第三十七批 C）。每次试之前再查一遍：
+    // 等的那一下，路径可能被换成联接，文件也可能多了硬链接。
+    renameWithTransientRetrySync(temporaryPath, filePath, () => {
+      assertReplaceableTomlFile(filePath)
+    })
   } finally {
     try {
       fs.rmSync(temporaryPath)
@@ -1015,7 +1027,12 @@ function moveToTrash(source: string, trashDirectory: string): string {
   )
   const sourceDirectory = path.dirname(source)
   try {
-    fs.renameSync(sourceDirectory, target)
+    // 安全软件正扫着 Skill 里的文件时，整个文件夹挪不动（EPERM），过一会儿就好，等一下
+    // 再试（第三十七批 C）；每次试之前照开头那样再查两边的路径。
+    renameWithTransientRetrySync(sourceDirectory, target, () => {
+      assertNoSymlinkComponents(source, 'Skill 路径')
+      assertNoSymlinkComponents(trashDirectory, '应用回收站路径')
+    })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
     validateSkillTree(sourceDirectory)

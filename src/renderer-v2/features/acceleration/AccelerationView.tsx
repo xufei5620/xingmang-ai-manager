@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
-import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
+import { ArrowUpRight, Check, CircleAlert, CircleHelp, Clock3, Globe2, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
 import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationBundleCheck, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Switch } from '../../ui'
 // 落点规则只有 operationLogPage 一份：加速这条线没有 tool，按它的口径永远落
@@ -32,7 +32,7 @@ interface AccelerationViewProps {
   onSelectLine(lineId: string | null): void
   onPingLine(lineId: string): void
   onRefreshLines(): void
-  /** 加速文件坏了时「重新检查」的进度与结果；null = 还没点过。 */
+  /** 加速文件坏了时「检查加速文件」的进度与结果；null = 还没点过。 */
   bundleCheck?: AccelerationBundleCheck | 'checking' | null
   onRecheckBundle?(): void
   onContactSupport?(): void
@@ -43,7 +43,7 @@ interface AccelerationViewProps {
 // 保留聊天记录和设置」：安装器是否保留还没实测过。
 const bundleDamagedLead = '加速用的文件被删掉或改动了，现在开不了加速。'
 const bundleDamagedGuide = '多半是杀毒软件把它当成了可疑文件。'
-  + '打开杀毒软件的「隔离区」或「恢复区」，把星芒的文件恢复，并把星芒加入信任，然后点「重新检查」。'
+  + '打开杀毒软件的「隔离区」或「恢复区」，把星芒的文件恢复，并把星芒加入信任，然后点「检查加速文件」。'
   + '也可以重新安装一次星芒，装在原来的位置就行。'
 
 export function bundleDamagedNotice(check: AccelerationBundleCheck | 'checking' | null | undefined): { title: string; body: string | null } {
@@ -87,6 +87,8 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   const [lineFocus, setLineFocus] = useState<string | null | undefined>(undefined)
+  // 点过「开始加速」、又回到准备就绪还挂着出错条：状态写「上次没连上」，再点「开始加速」或「重新检查」就恢复。
+  const [startTried, setStartTried] = useState(false)
   useEffect(() => {
     function updateVisibility() { setVisible(!document.hidden) }
     document.addEventListener('visibilitychange', updateVisibility)
@@ -109,6 +111,14 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const bundleDamaged = signedIn && unavailable && state?.unavailableReason === 'bundle-damaged'
   const damagedNotice = bundleDamaged ? bundleDamagedNotice(bundleCheck) : null
   const exhausted = phase === 'exhausted'
+  const failedStart = startTried && phase === 'idle' && Boolean(notice) && !busy
+  useEffect(() => { if (phase === 'active') setStartTried(false) }, [phase])
+  function start() { setStartTried(true); onStart() }
+  function startAnyway() { setStartTried(true); onStartAnyway() }
+  function refresh() { setStartTried(false); onRefresh() }
+  // 免费时长用完：不再给换线路；主按钮直接去「帮助与客服」。
+  const linePickerShown = !active && signedIn && !exhausted
+  const contactInstead = exhausted && signedIn && Boolean(onContactSupport)
   const lineLocked = active || phase === 'connecting' || phase === 'stopping' || busy
   const lineOptionIds: Array<string | null> = [null, ...lines.map(line => line.id)]
   // 只有一行留在 Tab 序列里（roving tabindex）：默认是选中的那行；选中的线路已不在列表里时退回「智能分配」。
@@ -137,10 +147,11 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const totalMinutes = total / 60
   const ratio = remaining === null || total <= 0 ? 0 : Math.min(1, Math.max(0, remaining / total))
   const used = remaining === null ? null : Math.max(0, total - remaining)
-  const phaseLabel = bundleDamaged ? '加速文件损坏' : describePhase(phase, signedIn)
-  const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开始加速'
-  const actionDisabled = signedIn && (busy || transitioning || unavailable || exhausted || !state)
-  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
+  const phaseLabel = bundleDamaged ? '加速文件损坏' : failedStart ? '上次没连上' : describePhase(phase, signedIn)
+  const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : contactInstead ? '联系客服' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开始加速'
+  const actionDisabled = signedIn && !contactInstead && (busy || transitioning || unavailable || exhausted || !state)
+  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '免费体验已经用完，后续服务请联系客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
+  const action = !signedIn ? onLogin : active || stopRetry ? onStop : contactInstead && onContactSupport ? onContactSupport : start
 
   return <section className="acceleration-page" data-testid="acceleration-page" data-phase={phase ?? 'loading'} data-motion={visible ? 'running' : 'paused'}>
     <header className="acceleration-heading">
@@ -148,46 +159,14 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
       <Button variant="ghost" icon={CircleHelp} onClick={onHelp} testId="acceleration-help-open">使用帮助</Button>
     </header>
 
-    <div className="acceleration-workbench">
-      <section className="acceleration-stage" aria-label="网络连接状态">
-        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span></div>
-        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
-        <div className="acceleration-orb"><Globe /></div>
-        <div className="acceleration-route-info">
-          <div className="acceleration-route-icon"><Route size={18} aria-hidden="true" /></div>
-          <div className="acceleration-route-name"><span>加速线路</span><strong data-testid="acceleration-line-current">{displayLine?.name ?? '智能分配'}{displayLine?.region && <small>{displayLine.region}</small>}</strong></div>
-          <div className="acceleration-route-latency"><span>连接延迟</span><strong>{displayLine?.latencyMs == null ? '—' : <>{displayLine.latencyMs}<small> ms</small></>}</strong></div>
-        </div>
-        {!active && signedIn && <div className="acceleration-line-picker"><Button variant="ghost" size="sm" icon={Route} disabled={lineLocked} onClick={() => setLinePickerOpen(value => !value)} aria-expanded={linePickerOpen} testId="acceleration-line-picker-toggle">{linePickerOpen ? '收起线路' : '选择加速线路'}</Button>{rememberedLine && !linePickerOpen && <span className="acceleration-line-remembered" data-testid="acceleration-line-remembered">已选中你上次用的线路</span>}{linePickerOpen && <div className="acceleration-line-list" role="listbox" aria-label="加速线路选择">
-          <div className="acceleration-line-list-head"><span>{linesBusy ? '正在检测线路…' : `${lines.length} 条可用线路`}</span><Button variant="ghost" size="xs" icon={RefreshCw} onClick={onRefreshLines} loading={linesBusy} aria-label="刷新线路列表" /></div>
-          <div className={`acceleration-line-option acceleration-line-auto${selectedLineId === null ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === null} data-testid="acceleration-line-auto" {...lineOptionProps(null)}>
-            <button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(null)}><strong>智能分配</strong><small>连接时自动测速，选择最快可用线路</small></button>
-            {selectedLineId === null && <Check size={16} aria-hidden="true" />}
-          </div>
-          {lines.map(line => <div className={`acceleration-line-option${selectedLineId === line.id ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === line.id} data-testid={`acceleration-line-option-${line.id}`} key={line.id} {...lineOptionProps(line.id)}><button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(line.id)}><strong>{line.name}</strong><small>{line.region}</small></button><span>{line.latencyMs == null ? '未检测' : `${line.latencyMs} ms`}</span><Button variant="ghost" size="xs" disabled={lineLocked} onClick={() => { void onPingLine(line.id) }} loading={linesBusy} aria-label={`检测${line.name}延迟`}>Ping</Button></div>)}
-          {linesError && <span className="acceleration-line-error" role="alert">{linesError}</span>}
-        </div>}</div>}
-        <div className="acceleration-stage-bottom"><span role="status"><span className="acceleration-status-dot" />{phaseLabel}</span>{bundleDamaged ? <span>照下面的办法处理后点「重新检查」</span> : (unavailable || exhausted) && signedIn ? <Button variant="ghost" size="sm" icon={exhausted ? ArrowUpRight : RefreshCw} loading={busy} onClick={exhausted ? onHelp : onRefresh} testId="acceleration-status-refresh">{exhausted ? '帮助与客服' : '刷新线路状态'}</Button> : <span>{!state?.line ? '线路信息将在连接后显示' : active ? '连接状态由服务实时确认' : '等待建立连接'}</span>}</div>
-      </section>
-
-      <section className="acceleration-console" aria-label="免费加速额度与操作">
-        <div className="acceleration-console-top"><span><Zap size={15} aria-hidden="true" />{localDevelopment ? '本机测试额度' : '免费体验'}</span><span className="acceleration-quota-badge">{totalMinutes} 分钟</span></div>
-        <div className="acceleration-quota">
-          <svg className="acceleration-quota-ring" viewBox="0 0 220 220" aria-hidden="true"><circle className="acceleration-quota-track" cx="110" cy="110" r="96" /><circle className="acceleration-quota-ticks" cx="110" cy="110" r="85" /><circle className="acceleration-quota-progress" cx="110" cy="110" r="96" pathLength="100" strokeDasharray={`${ratio * 100} 100`} transform="rotate(-90 110 110)" /></svg>
-          <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
-        </div>
-        <div className="acceleration-primary-action"><Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : Power} loading={signedIn && (busy || transitioning)} disabled={actionDisabled} onClick={!signedIn ? onLogin : active || stopRetry ? onStop : onStart} testId={active || stopRetry ? 'acceleration-session-stop' : 'acceleration-session-start'}>{actionLabel}</Button></div>
-        <p className="acceleration-quota-note">{quotaNote}</p>
-      </section>
-    </div>
-
+    {/* 出错、冲突、加速文件坏了这三种提示条放在工作台上面：窗口矮时放在下面，第一屏看不到。 */}
     {conflicts.length > 0 && <div className="acceleration-conflict" role="alert" data-testid="acceleration-conflict">
       <ShieldAlert size={16} aria-hidden="true" />
       <div className="acceleration-conflict-text">
         <strong>{accelerationConflictNotice}</strong>
         <span>{conflicts.map(kind => accelerationConflictDescriptions[kind]).join('；')}。关掉之后再点「开始加速」会重新检测。</span>
       </div>
-      <Button variant="secondary" size="sm" icon={Power} onClick={onStartAnyway} disabled={actionDisabled} testId="acceleration-conflict-force">仍然连接</Button>
+      <Button variant="secondary" size="sm" icon={Power} onClick={startAnyway} disabled={actionDisabled} testId="acceleration-conflict-force">仍然连接</Button>
     </div>}
 
     {damagedNotice && <div className="acceleration-conflict acceleration-bundle-damaged" role="alert" data-testid="acceleration-bundle-damaged">
@@ -198,11 +177,45 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
       </div>
       {bundleCheck === 'repaired'
         ? onRelaunch && <Button variant="secondary" size="sm" icon={Power} onClick={onRelaunch} testId="acceleration-bundle-relaunch">现在重新打开</Button>
-        : onRecheckBundle && <Button variant="secondary" size="sm" icon={RefreshCw} loading={bundleCheck === 'checking'} onClick={onRecheckBundle} testId="acceleration-bundle-recheck">重新检查</Button>}
+        : onRecheckBundle && <Button variant="secondary" size="sm" icon={RefreshCw} loading={bundleCheck === 'checking'} onClick={onRecheckBundle} testId="acceleration-bundle-recheck">检查加速文件</Button>}
       {onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-bundle-support">联系客服</Button>}
     </div>}
 
-    {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span>{onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}<Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button>{phase === 'error' && onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-error-support">联系客服</Button>}</div>}
+    {notice && <div className="acceleration-error" role="alert" data-testid="acceleration-error"><CircleAlert size={16} aria-hidden="true" /><span>{notice}</span>{onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}<Button variant="ghost" size="sm" icon={RefreshCw} onClick={refresh} disabled={busy}>重新检查</Button>{phase === 'error' && onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-error-support">联系客服</Button>}</div>}
+
+    <div className="acceleration-workbench">
+      <section className="acceleration-stage" aria-label="网络连接状态">
+        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> 游戏加速</span></div>
+        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
+        <div className="acceleration-orb"><Globe /></div>
+        <div className="acceleration-route-info">
+          <div className="acceleration-route-icon"><Route size={18} aria-hidden="true" /></div>
+          <div className="acceleration-route-name"><span>加速线路</span><strong data-testid="acceleration-line-current">{displayLine?.name ?? '智能分配'}{displayLine?.region && <small>{displayLine.region}</small>}</strong>{linePickerShown && rememberedLine && !linePickerOpen && <span className="acceleration-line-remembered" data-testid="acceleration-line-remembered">已选中你上次用的线路</span>}</div>
+          <div className="acceleration-route-latency"><span>连接延迟</span><strong>{displayLine?.latencyMs == null ? '—' : <>{displayLine.latencyMs}<small> ms</small></>}</strong></div>
+          {linePickerShown && <Button variant="ghost" size="xs" disabled={lineLocked} onClick={() => setLinePickerOpen(value => !value)} aria-expanded={linePickerOpen} testId="acceleration-line-picker-toggle">{linePickerOpen ? '收起' : '换线路'}</Button>}
+          {linePickerShown && linePickerOpen && <div className="acceleration-line-list" role="listbox" aria-label="加速线路选择">
+          <div className="acceleration-line-list-head"><span>{linesBusy ? '正在检测线路…' : `${lines.length} 条可用线路`}</span><Button variant="ghost" size="xs" icon={RefreshCw} onClick={onRefreshLines} loading={linesBusy} aria-label="刷新线路列表" /></div>
+          <div className={`acceleration-line-option acceleration-line-auto${selectedLineId === null ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === null} data-testid="acceleration-line-auto" {...lineOptionProps(null)}>
+            <button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(null)}><strong>智能分配</strong><small>连接时自动测速，选择最快可用线路</small></button>
+            {selectedLineId === null && <Check size={16} aria-hidden="true" />}
+          </div>
+          {lines.map(line => <div className={`acceleration-line-option${selectedLineId === line.id ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === line.id} data-testid={`acceleration-line-option-${line.id}`} key={line.id} {...lineOptionProps(line.id)}><button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(line.id)}><strong>{line.name}</strong><small>{line.region}</small></button><span>{line.latencyMs == null ? '未检测' : `${line.latencyMs} ms`}</span><Button variant="ghost" size="xs" disabled={lineLocked} onClick={() => { void onPingLine(line.id) }} loading={linesBusy} aria-label={`检测${line.name}延迟`}>Ping</Button></div>)}
+          {linesError && <span className="acceleration-line-error" role="alert">{linesError}</span>}
+        </div>}
+        </div>
+        <div className="acceleration-stage-bottom"><span role="status" data-testid="acceleration-phase"><span className="acceleration-status-dot" />{phaseLabel}</span>{bundleDamaged ? <span>照下面的办法处理后点「检查加速文件」</span> : unavailable && signedIn ? <Button variant="ghost" size="sm" icon={RefreshCw} loading={busy} onClick={refresh} testId="acceleration-status-refresh">刷新线路状态</Button> : exhausted && signedIn ? null : <span>{!state?.line ? '线路信息将在连接后显示' : active ? '连接状态由服务实时确认' : '等待建立连接'}</span>}</div>
+      </section>
+
+      <section className="acceleration-console" aria-label="免费加速额度与操作">
+        <div className="acceleration-console-top"><span><Zap size={15} aria-hidden="true" />{localDevelopment ? '本机测试额度' : '免费体验'}</span><span className="acceleration-quota-badge">{totalMinutes} 分钟</span></div>
+        <div className="acceleration-quota">
+          <svg className="acceleration-quota-ring" viewBox="0 0 220 220" aria-hidden="true"><circle className="acceleration-quota-track" cx="110" cy="110" r="96" /><circle className="acceleration-quota-ticks" cx="110" cy="110" r="85" /><circle className="acceleration-quota-progress" cx="110" cy="110" r="96" pathLength="100" strokeDasharray={`${ratio * 100} 100`} transform="rotate(-90 110 110)" /></svg>
+          <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
+        </div>
+        <div className="acceleration-primary-action"><Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : contactInstead ? ArrowUpRight : Power} loading={signedIn && !contactInstead && (busy || transitioning)} disabled={actionDisabled} onClick={action} testId={active || stopRetry ? 'acceleration-session-stop' : contactInstead ? 'acceleration-contact-support' : 'acceleration-session-start'}>{actionLabel}</Button></div>
+        <p className="acceleration-quota-note">{quotaNote}</p>
+      </section>
+    </div>
 
     <div className="acceleration-details" aria-label="加速使用信息">
       <div><span className="acceleration-detail-icon"><Timer size={19} aria-hidden="true" /></span><div><span>本次连接</span><strong data-testid="acceleration-session-duration">{formatDuration(signedIn && state ? state.sessionSeconds : null)}</strong></div><small>{active ? '已连接时长' : '连接后开始计时'}</small></div>

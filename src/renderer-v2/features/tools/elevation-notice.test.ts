@@ -26,6 +26,22 @@ describe('elevatedInstallNotice', () => {
     expect(elevatedInstallNotice('node', 'windows', 'external')).toBeNull()
     expect(elevatedInstallNotice('node', undefined, undefined)).toBeNull()
   })
+
+  it('stays silent when the app already runs with administrator rights, because no consent window pops up', () => {
+    // 已知19：自带 Administrator、关了 UAC、右键以管理员身份运行。
+    for (const subject of ['node', 'codexDesktop'] as const) {
+      expect(elevatedInstallNotice(subject, 'windows', 'managed', true)).toBeNull()
+      expect(elevatedInstallShortNotice(subject, 'windows', 'managed', true)).toBeNull()
+      expect(elevatedInstallNotice(subject, 'windows', 'managed', false)).toContain('管理员授权')
+    }
+    // The optional home paragraph loses only its consent half; "一般不用单独点" still answers whether to click.
+    expect(homeNodeElevationNotice('windows', 'managed', true, true)).toBe('Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。')
+    expect(homeNodeElevationNotice('windows', 'managed', false, true)).toBeNull()
+    for (const optional of [true, false]) {
+      expect(homeNodeElevationNotice('windows', 'managed', optional, false)).toContain('授权窗口')
+      expect(homeNodeElevationNotice('macos', 'managed', optional, true)).toBeNull()
+    }
+  })
 })
 
 describe('elevatedInstallShortNotice', () => {

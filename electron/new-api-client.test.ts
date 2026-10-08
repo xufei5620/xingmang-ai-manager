@@ -47,6 +47,7 @@ import {
   type NewApiFetch,
 } from './new-api-client'
 import { managedCliKeyProfiles } from './catalog'
+import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
@@ -622,6 +623,20 @@ describe('getStatus', () => {
 })
 
 describe('login', () => {
+  it('keeps account credentials on the selected direct line', async () => {
+    const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValueOnce(loginResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: userDetailData() }))
+    const client = createNewApiClient({ baseUrl: routing.require('solov').accountBaseUrl, fetchImpl })
+    await client.login({ username: 'tester', password: 'fixture-password' })
+    await client.getProfile()
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://xm-direct.solov.cc/api/user/login', 'https://xm-direct.solov.cc/api/user/self',
+    ])
+    expect(fetchImpl.mock.calls[1][1]?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc', 'New-Api-User': '42' })
+    expect(fetchImpl.mock.calls.every(([, init]) => init?.redirect === 'manual' && init.credentials === 'omit')).toBe(true)
+  })
+
   it('captures the access token and refresh cookie internally without leaking them in the result', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(loginResponse())
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })

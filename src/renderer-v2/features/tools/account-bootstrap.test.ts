@@ -8,18 +8,24 @@ import type {
 import {
   KeyRewriteSkippedError,
   accountBootstrapPlan,
+  accountKeyChangeInProgress,
   accountKeyChangePending,
+  accountRoutesPending,
   bootstrapAccountTools,
+  bootstrapOnlyFollowedRoute,
   configurationFailure,
   configurationFailureMessages,
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
+  sessionChangeKeepsBootstrap,
   skippedNamedProviders,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
   type AccountBootstrapResult,
 } from './account-bootstrap'
 import { networkFailureMessages } from '../../../../electron/network-failure'
+import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
+import type { RunningToolsReport } from '../../../../electron/running-tools'
 import {
   readManualSourceMarker,
   sourceMarkerWriteWarning,
@@ -702,6 +708,18 @@ describe('account key changes before the startup scan finishes', () => {
     expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: { ...syncing, error: '账号 Key 初始化没有完成' } }, 'claude')).toBe(false)
   })
 
+  it('after the scan waits only while a key sync round is actually running', () => {
+    // Switching saved accounts skips the round, and a restore that cannot reach the
+    // account service keeps retrying without one: neither may lock tools until a relaunch.
+    expect(accountKeyChangeInProgress(null, 'claude')).toBe(false)
+    expect(accountKeyChangeInProgress(syncing, 'claude')).toBe(true)
+    const bootstrap = { phase: 'configuring' as const, label: '正在为 1 个已安装工具写入 Key', percent: 65, connectedKeyChanges: ['claude' as ProviderId] }
+    expect(accountKeyChangeInProgress(bootstrap, 'claude')).toBe(true)
+    expect(accountKeyChangeInProgress(bootstrap, 'codex')).toBe(false)
+    expect(accountKeyChangeInProgress({ ...bootstrap, result: { readyKeys: [], configured: ['claude'], failed: [], skipped: [], warnings: [], networkBlocked: false } }, 'claude')).toBe(false)
+    expect(accountKeyChangeInProgress({ ...bootstrap, error: '账号 Key 初始化没有完成' }, 'claude')).toBe(false)
+  })
+
   it('names the regrouped connected tools before it waits for the scan on a restore', async () => {
     const current = config()
     current.providers.claude = connected()
@@ -761,6 +779,183 @@ describe('account key changes before the startup scan finishes', () => {
 
     expect(progress.every((entry) => !('connectedKeyChanges' in entry))).toBe(true)
     expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'] }))
+  })
+})
+
+describe('explicit applied connection routes on restore', () => {
+  const primary = relayProviderBaseUrls('solov', 'primary')
+  const direct = relayProviderBaseUrls('solov', 'direct')
+  const applied: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+  function routedConfig(provider: ProviderId = 'codex'): AppConfigSummary {
+    const current = config()
+    current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true,
+      baseUrl: direct[provider], actualBaseUrl: primary[provider], model: 'kept-model', configurationOwnership: 'account',
+      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) }
+    return current
+  }
+  function fixture() {
+    const current = routedConfig()
+    // 桥上问得出 Codex 开着，这一轮也不问：开着照样改（#941），线路的事不提示（yoyo 10-8）。
+    const open: RunningToolsReport = { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
+    const api = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, siteId: 'solov' as const, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['codex'])),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      getSettings: vi.fn(async () => applied),
+      inspectRunningTools: vi.fn(async () => open),
+      configureManagedCliKeys: vi.fn(async () => {
+        current.providers.codex.actualBaseUrl = current.providers.codex.baseUrl
+        return { configured: ['codex' as ProviderId], failed: [] }
+      }),
+    }
+    return { current, api }
+  }
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] as const)('plans an owned %s config for the explicitly applied route and keeps its model', (provider) => {
+    expect(accountBootstrapPlan(system([provider]), routedConfig(provider), applied, 'restore', null)).toMatchObject({
+      targets: [provider], preferredModels: { [provider]: 'kept-model' },
+    })
+  })
+
+  it('migrates the retired IP test entry even though its endpoint id is also direct', () => {
+    const current = routedConfig()
+    current.providers.codex.actualBaseUrl = 'https://38.147.105.28:8443/v1'
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual(['codex'])
+    current.providers.codex.actualBaseUrl = `${direct.codex}/`
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+  })
+
+  it('migrates back only after an explicit primary choice was applied at startup', () => {
+    const current = routedConfig()
+    current.providers.codex = { ...current.providers.codex, baseUrl: primary.codex, actualBaseUrl: direct.codex }
+    const restoredPrimary: AppSettingsV2 = { ...applied, relayEndpointIds: { solov: 'primary' }, activeRelayEndpointIds: { solov: 'primary' } }
+    expect(accountBootstrapPlan(system(['codex']), current, restoredPrimary, 'restore', null).targets).toEqual(['codex'])
+  })
+
+  it.each([
+    ['no explicit selection', { ...applied, relayEndpointIds: undefined }],
+    ['only a pending selection', { ...applied, activeRelayEndpointIds: { solov: 'primary' as const } }],
+    ['no startup route snapshot', { ...applied, activeRelayEndpointIds: undefined }],
+  ])('keeps a compatible old route with %s', (_name, preferences) => {
+    expect(accountBootstrapPlan(system(['codex']), routedConfig(), preferences, 'restore', null).targets).toEqual([])
+  })
+
+  it.each(['manual', 'changed', 'unknown'] as const)('does not use route selection to take over %s ownership', (ownership) => {
+    const current = routedConfig()
+    current.providers.codex = { ...current.providers.codex, configurationOwnership: ownership, configurationAccountMatched: true }
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+  })
+
+  it('does not migrate foreign sites or a summary whose expected route disagrees with the active selection', () => {
+    const current = routedConfig()
+    current.providers.codex.actualBaseUrl = 'https://api.solov.cc/v1'
+    current.providers.codex.matchesRelay = false
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+    current.providers.codex = { ...routedConfig().providers.codex, baseUrl: primary.codex, actualBaseUrl: direct.codex }
+    expect(accountBootstrapPlan(system(['codex']), current, applied, 'restore', null).targets).toEqual([])
+    expect(accountBootstrapPlan(system(['codex']), routedConfig(), { ...applied, officialProviders: ['codex'] }, 'restore', null).targets).toEqual([])
+  })
+
+  it('writes a route change through ordinary automatic configure and holds launch while the scan is pending', async () => {
+    const { current, api } = fixture()
+    const progress: AccountBootstrapProgress[] = []
+    api.scanSystem.mockImplementation(async () => {
+      expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: progress.at(-1)! }, 'codex')).toBe(true)
+      return system(['codex'])
+    })
+    const result = await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, null)
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({ providers: ['codex'], preferredModels: { codex: 'kept-model' } })
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result).toMatchObject({ configured: ['codex'], failed: [], routeFollowed: ['codex'] })
+  })
+
+  // #941：以前开着的工具先不改，客户不关工具、不点「重新同步」，它就一直停在原来那条线路上。
+  it('follows the line while the tool is open without asking which tools are open', async () => {
+    const { current, api } = fixture()
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(api.inspectRunningTools).not.toHaveBeenCalled()
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result).toMatchObject({ configured: ['codex'], failed: [], routeFollowed: ['codex'] })
+    expect(describeAccountBootstrapResult('restore', result).message).toContain('跟着换了连接线路：Codex CLI')
+  })
+
+  it('rejects a reported success that did not move the route with the ordinary address wording', async () => {
+    const { current, api } = fixture()
+    api.configureManagedCliKeys.mockImplementation(async () => ({ configured: ['codex' as ProviderId], failed: [] }))
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'codex', message: configurationFailureMessages.relayMismatch }])
+    expect(result).not.toHaveProperty('routeFollowed')
+  })
+
+  it('does not count a round as following the line when no route changed', async () => {
+    const { current, api } = fixture()
+    current.providers.codex.actualBaseUrl = direct.codex
+    api.getConfig.mockImplementation(async () => structuredClone(current))
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
+    expect(api.configureManagedCliKeys).toHaveBeenCalled()
+    expect(result.configured).toEqual(['codex'])
+    expect(result).not.toHaveProperty('routeFollowed')
+    expect(bootstrapOnlyFollowedRoute(result)).toBe(false)
+  })
+
+  it('says a round only followed the line when every tool it wrote just changed its line', () => {
+    const configured: ProviderId[] = ['claude', 'codex']
+    expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['claude', 'codex'] })).toBe(true)
+    // 有一个是真写了 Key（新装的、换了分组的），首页照常说「已完成…」。
+    expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['codex'] })).toBe(false)
+    expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['claude', 'codex'], regrouped: ['claude'] })).toBe(false)
+    expect(bootstrapOnlyFollowedRoute({ configured })).toBe(false)
+    expect(bootstrapOnlyFollowedRoute({ configured: [], routeFollowed: ['codex'] })).toBe(false)
+  })
+})
+
+// 直连适配第二步：「自动」的线路由主进程查出来（relayRouteLines），查出结论以后工具配置才跟着迁。
+describe('automatic connection route', () => {
+  const primary = relayProviderBaseUrls('solov', 'primary')
+  const direct = relayProviderBaseUrls('solov', 'direct')
+  const automatic: AppSettingsV2 = {
+    ...settings,
+    relaySiteId: 'solov',
+    activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'auto' },
+    relayRouteLines: { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: false } },
+  }
+  function ownedOn(expected: string, actual: string): AppConfigSummary {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true,
+      baseUrl: expected, actualBaseUrl: actual, model: 'kept-model', configurationOwnership: 'account' }
+    return current
+  }
+
+  it('moves an owned config to the line auto settled on', () => {
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(direct.codex, primary.codex), automatic, 'restore', null).targets).toEqual(['codex'])
+    expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), automatic, memoryStorage())).toBe(true)
+  })
+
+  it('moves it back to the default line after auto fell back', () => {
+    const fellBack: AppSettingsV2 = { ...automatic, relayRouteLines: { ...automatic.relayRouteLines!, solov: { line: 'primary', settled: true } } }
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(primary.codex, direct.codex), fellBack, 'restore', null).targets).toEqual(['codex'])
+  })
+
+  it('leaves the old line alone until auto has settled, or while another choice waits for a restart', () => {
+    const unsettled: AppSettingsV2 = { ...automatic, relayRouteLines: { ...automatic.relayRouteLines!, solov: { line: 'primary', settled: false } } }
+    const pending: AppSettingsV2 = { ...automatic, relayEndpointIds: { solov: 'primary' } }
+    for (const preferences of [unsettled, pending, { ...automatic, relayRouteLines: undefined }]) {
+      expect(accountBootstrapPlan(system(['codex']), ownedOn(primary.codex, direct.codex), preferences, 'restore', null).targets).toEqual([])
+      expect(accountRoutesPending(ownedOn(primary.codex, direct.codex), preferences, memoryStorage())).toBe(false)
+    }
+  })
+
+  it('has nothing pending once every owned config is on the current line', () => {
+    expect(accountRoutesPending(ownedOn(direct.codex, direct.codex), automatic, memoryStorage())).toBe(false)
+    expect(accountRoutesPending(config(), automatic, memoryStorage())).toBe(false)
+  })
+
+  it('treats a pinned line as settled even without the live route lines', () => {
+    const pinned: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+    expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), pinned, memoryStorage())).toBe(true)
   })
 })
 
@@ -884,5 +1079,27 @@ describe('account bootstrap configuration preflight', () => {
     await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
     expect(getConfig).toHaveBeenCalledTimes(3)
     expect(configureManagedCliKeys).not.toHaveBeenCalled()
+  })
+})
+
+describe('session changes while an account bootstrap runs', () => {
+  const member = { userId: 7, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 }
+
+  it('keeps the bootstrap when the event names the account it runs for', () => {
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov', account: member })).toBe(true)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, account: member })).toBe(true)
+    expect(sessionChangeKeepsBootstrap('api-account:7', { authenticated: true, siteId: 'solov-api', realmId: 'api-account', account: member })).toBe(true)
+  })
+
+  it('drops the bootstrap after a logout or a switch to another account or site', () => {
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: false, account: null })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: false, siteId: 'solov', account: member })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov', account: { ...member, userId: 18 } })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov-api', realmId: 'api-account', account: member })).toBe(false)
+  })
+
+  it('has nothing to keep when no bootstrap is running', () => {
+    expect(sessionChangeKeepsBootstrap(undefined, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
+    expect(sessionChangeKeepsBootstrap(null, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
   })
 })

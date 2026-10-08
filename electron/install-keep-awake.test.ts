@@ -156,4 +156,62 @@ describe('createInstallKeepAwake', () => {
     expect(keepAwake.holding()).toBe(false)
     expect(running.size).toBe(0)
   })
+
+  it('says why it holds and tells the tray only when the reasons change', () => {
+    const { blocker } = fakeBlocker()
+    const onChange = vi.fn()
+    const keepAwake = createInstallKeepAwake({ blocker, now: () => 0, onChange })
+    expect(keepAwake.reasons()).toEqual([])
+    keepAwake.observeQueue({ activeKey: 'runtime:node', pendingKeys: [] })
+    expect(keepAwake.reasons()).toEqual(['install'])
+    expect(onChange).toHaveBeenCalledTimes(1)
+    keepAwake.observeQueue({ activeKey: 'runtime:node', pendingKeys: ['cli:install:claude'] })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    keepAwake.observeUpdate({ phase: 'downloading' })
+    // Download progress keeps reporting the same phase; the tray line stays put.
+    keepAwake.observeUpdate({ phase: 'downloading' })
+    expect(keepAwake.reasons()).toEqual(['install', 'update-download'])
+    expect(onChange).toHaveBeenCalledTimes(2)
+    keepAwake.observeQueue({ activeKey: null, pendingKeys: [] })
+    expect(keepAwake.reasons()).toEqual(['update-download'])
+    expect(onChange).toHaveBeenCalledTimes(3)
+    keepAwake.observeUpdate({ phase: 'downloaded' })
+    expect(keepAwake.reasons()).toEqual([])
+    expect(onChange).toHaveBeenCalledTimes(4)
+  })
+
+  it('stops naming a reason once the cap gives sleep back or the system refuses to block it', () => {
+    vi.useFakeTimers()
+    let clock = 0
+    const { blocker } = fakeBlocker()
+    const onChange = vi.fn()
+    const keepAwake = createInstallKeepAwake({ blocker, now: () => clock, maxHoldMs: 10 * 60_000, onChange })
+    keepAwake.observeQueue({ activeKey: 'runtime:git', pendingKeys: [] })
+    expect(keepAwake.reasons()).toEqual(['install'])
+    clock = 10 * 60_000
+    vi.advanceTimersByTime(60_000)
+    expect(keepAwake.reasons()).toEqual([])
+    expect(onChange).toHaveBeenCalledTimes(2)
+    keepAwake.dispose()
+
+    const refusedChange = vi.fn()
+    const refused = createInstallKeepAwake({
+      blocker: { start: () => { throw new Error('denied') }, stop: () => undefined },
+      now: () => 0,
+      onChange: refusedChange,
+    })
+    refused.observeUpdate({ phase: 'downloading' })
+    expect(refused.reasons()).toEqual([])
+    expect(refusedChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps installing when the tray cannot follow', () => {
+    const log = vi.fn()
+    const { blocker } = fakeBlocker()
+    const keepAwake = createInstallKeepAwake({ blocker, now: () => 0, log, onChange: () => { throw new Error('tray gone') } })
+    expect(() => keepAwake.observeQueue({ activeKey: 'runtime:node', pendingKeys: [] })).not.toThrow()
+    expect(keepAwake.holding()).toBe(true)
+    expect(log).toHaveBeenCalledWith('warn', 'install.keep-awake.notify-failed', expect.any(String), expect.any(Object))
+    keepAwake.dispose()
+  })
 })

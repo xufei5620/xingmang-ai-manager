@@ -116,6 +116,25 @@ test('macOS targets produce per-architecture DMG and ZIP candidates', () => {
   assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }])
 })
 
+test('every macOS build explains each privacy prompt in plain Chinese', () => {
+  // 已知34：系统弹「想要访问“文稿”文件夹中的文件」时，标题下面那行说明取自这几项；
+  // 免费自签、本机、发布哪种包都得带上。
+  const expected = {
+    NSDocumentsFolderUsageDescription: '星芒把 AI 画的图、做的视频存进“文稿”里的 XingmangAI 文件夹；你放在“文稿”里的项目，也要读得到才能帮你打开。',
+    NSDesktopFolderUsageDescription: '你放在桌面上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+    NSDownloadsFolderUsageDescription: '你放在“下载”里的项目，星芒要读得到才能帮你用 AI 工具打开。',
+    NSRemovableVolumesUsageDescription: '你放在 U 盘、移动硬盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+    NSNetworkVolumesUsageDescription: '你放在共享盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  }
+  for (const mode of [
+    {},
+    { localBuildMode: true },
+    { releaseMode: true },
+    { unsignedRelease: true },
+    { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' },
+  ]) assert.deepEqual(loadConfig(mode).mac.extendInfo, expected)
+})
+
 test('current package builds embed the new R2 update feed by default', () => {
   assert.equal(loadConfig().publish.url, NEW_UPDATE_URL)
 })

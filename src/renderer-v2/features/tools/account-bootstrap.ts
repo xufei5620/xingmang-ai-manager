@@ -1,9 +1,11 @@
-import { accountSiteId, type AccountSiteId } from '../../account-context'
+import { accountScope, accountSiteId, type AccountSiteId } from '../../account-context'
 import {
   providerIds,
+  type AccountSessionState,
   type AppConfigSummary,
   type AppSettingsV2,
   type ProviderId,
+  type RelayEndpointId,
   type RendererLogLevel,
   type SystemSnapshot,
   type XingmangApi,
@@ -13,6 +15,7 @@ import { codexNeedsRepair, connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
 import { networkBlockedFailures } from './online-resync'
 import { keySyncFailureText } from './key-sync-failure'
+import { relayProviderBaseUrls, relaySiteEndpointIdForBaseUrl } from '../../../../electron/relay-sites'
 import {
   applyManualSourceMarker,
   getSourceMarkerStorage,
@@ -37,7 +40,7 @@ export interface AccountBootstrapProgress {
   percent: number
   /**
    * 开机恢复这一档问完服务端以后才填：已经连好的工具里，这一轮还要换 Key 的那几家
-   * （Key 换了分组）。没填 = 还不知道，或者是会重写已连好工具的登录、点名重写两档。
+   * （Key 换了分组，或用户选的连接线路已重启生效）。没填 = 还不知道，或者是会重写已连好工具的登录、点名重写两档。
    */
   connectedKeyChanges?: ProviderId[]
 }
@@ -57,7 +60,19 @@ export function accountKeyChangePending(
 ): boolean {
   const { bootstrap } = account
   if (!bootstrap) return account.signedIn || account.restoring
-  if (bootstrap.result || bootstrap.error) return false
+  return accountKeyChangeInProgress(bootstrap, provider)
+}
+
+/**
+ * 检测跑完以后：这一轮账号同步正在给这个工具换 Key、改线路，这时打开工具会读走旧配置。
+ * 和上面不同，同步还没开始的不算——切完账号不再跑这一轮，开机恢复联不上时登录会一直搁着，
+ * 照上面那样算「说不准」，这几种情况下工具就一直打不开，得重开星芒。
+ */
+export function accountKeyChangeInProgress(
+  bootstrap: (AccountBootstrapProgress & { result?: unknown; error?: string }) | null,
+  provider: ProviderId,
+): boolean {
+  if (!bootstrap || bootstrap.result || bootstrap.error) return false
   return bootstrap.connectedKeyChanges?.includes(provider) ?? true
 }
 
@@ -109,6 +124,11 @@ export interface AccountBootstrapResult {
   repairedShadowed?: ProviderId[]
   /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
   regrouped?: ProviderId[]
+  /**
+   * 这一轮跟着连接线路改了配置的工具，开没开都算（#941）。只换了线路的那几个首页不说「已完成…」
+   * （bootstrapOnlyFollowedRoute），运行日志照记。缺省 = 这一轮没改线路。
+   */
+  routeFollowed?: ProviderId[]
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -123,6 +143,28 @@ export type AccountBootstrapBridge = Pick<
 
 function nameOf(provider: ProviderId) {
   return tools.find((tool) => tool.id === provider)?.name ?? provider
+}
+
+/**
+ * 这一轮写好的全是跟着连接线路换个地址的：Key 没换、客户也没点什么，首页就不说「已完成…」（yoyo 10-8：
+ * 线路的事不要太多提示）。换了分组的不算，那是 Key 真换了。
+ */
+export function bootstrapOnlyFollowedRoute(result: Pick<AccountBootstrapResult, 'configured' | 'routeFollowed' | 'regrouped'>): boolean {
+  return result.configured.length > 0
+    && result.configured.every((provider) => result.routeFollowed?.includes(provider) && !result.regrouped?.includes(provider))
+}
+
+/**
+ * 主进程说「会话变了」时，正在跑的那一轮 Key 同步还算不算数：还是同一个账号就接着算，换了账号、
+ * 退出登录才作废。登录成功后主进程要把手上的事忙完才发这一条，常常晚于界面已经开跑的那一轮登录同步；
+ * 以前一律作废，那一轮的结果被扔掉，引导页一直停在「正在同步账号专属 Key」、按钮全灰，要等别的事
+ * 碰巧再跑一轮才解开。
+ */
+export function sessionChangeKeepsBootstrap(
+  inFlightScope: string | null | undefined,
+  next: Pick<AccountSessionState, 'authenticated' | 'account' | 'siteId' | 'realmId'>,
+): boolean {
+  return Boolean(inFlightScope && next.authenticated && next.account && accountScope(next) === inFlightScope)
 }
 
 function installedState(system: SystemSnapshot, provider: ProviderId) {
@@ -142,6 +184,55 @@ function installedState(system: SystemSnapshot, provider: ProviderId) {
       !desktop.installed &&
       (cli.detectionFailed === true || desktop.detectionFailed === true),
   }
+}
+
+function sameNativeRelayUrl(left: string, right: string): boolean {
+  try { return new URL(left).href.replace(/\/+$/, '') === new URL(right).href.replace(/\/+$/, '') }
+  catch { return false }
+}
+
+/**
+ * 工具配置可以迁到的线路：设置里的选项已经重启生效，而且线路定下来了（写死一条，或者「自动」
+ * 已经查出结论）。「自动」第一次开机还没查出来时不迁，认得出的旧地址原样留着。
+ */
+function settledRouteLine(settings: AppSettingsV2, siteId: 'solov' | 'solov-api'): RelayEndpointId | null {
+  const preference = settings.relayEndpointIds?.[siteId] ?? 'auto'
+  if (preference !== settings.activeRelayEndpointIds?.[siteId]) return null
+  if (preference !== 'auto') return preference
+  const route = settings.relayRouteLines?.[siteId]
+  return route?.settled ? route.line : null
+}
+
+/** Alias recognition restores identity; only an applied, settled line permits migration. */
+function accountRouteMigrationNeeded(
+  current: AppConfigSummary['providers'][ProviderId],
+  provider: ProviderId,
+  settings: AppSettingsV2,
+  storage: SourceMarkerStorage | null,
+): boolean {
+  if (current.configurationOwnership !== 'account' || sourceFor(current, provider, storage) !== 'account'
+    || settings.officialProviders?.includes(provider)) return false
+  const siteId = settings.relaySiteId ?? 'solov'
+  if (siteId !== 'solov' && siteId !== 'solov-api') return false
+  const selected = settledRouteLine(settings, siteId)
+  if (!selected) return false
+  const expected = relayProviderBaseUrls(siteId, selected)[provider]
+  if (!sameNativeRelayUrl(current.baseUrl, expected)
+    || relaySiteEndpointIdForBaseUrl(siteId, provider, current.actualBaseUrl) === null) return false
+  // The retired IP test entry shares the direct id with the domain; the actual address must still migrate.
+  return !sameNativeRelayUrl(current.actualBaseUrl, expected)
+}
+
+/**
+ * 有没有星芒替当前账号写的工具配置还停在这个站另一条线路上、该迁过去（规矩同上）。「自动」
+ * 换了线路时用它挑要不要跑一轮迁移：没有要迁的就不去同步 Key。没装的工具也算，多跑一轮不改什么。
+ */
+export function accountRoutesPending(
+  config: AppConfigSummary,
+  settings: AppSettingsV2,
+  storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+): boolean {
+  return providerIds.some((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
 }
 
 export function accountBootstrapPlan(
@@ -244,9 +335,9 @@ export function accountBootstrapPlan(
       })
       continue
     }
-    // 已连好的工具开机时不重写，除非它的 Key 刚换了分组：买了订阅（或订阅到期），
-    // 配置里那把旧 Key 扣的已经不是该扣的额度了。
-    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage) && !regrouped.includes(provider)) {
+    // 已连好的工具开机时不重写，除非 Key 换了分组，或显式选择的线路已经重启生效。
+    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage)
+      && !regrouped.includes(provider) && !accountRouteMigrationNeeded(current, provider, settings, storage)) {
       skipped.push({
         provider,
         reason: 'configured',
@@ -336,18 +427,13 @@ export async function bootstrapAccountTools(
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  // 开机恢复这一档问完服务端就定了：已经连好的工具只有换了分组的还要换 Key（见
-  // accountBootstrapPlan）。下面要等检测跑完才写，首页这几秒按它决定哪几行能先打开。
-  const keyChanges = mode === 'restore' ? { connectedKeyChanges: [...(synchronized?.regrouped ?? [])] } : {}
+  // 先读本次启动的线路与新鲜配置，再宣布哪些工具能先打开，避免带着旧地址抢跑。
+  const [config, settings] = await Promise.all([api.getConfig(), api.getSettings()])
+  const routeChanges = providerIds.filter((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
+  const keyChanges = mode === 'restore' ? { connectedKeyChanges: [...new Set([...(synchronized?.regrouped ?? []), ...routeChanges])] } : {}
   onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40, ...keyChanges })
-  const [system, config, settings] = await Promise.all([
-    // 这里只读「装没装、探测有没有失败」，而 scanSystem 从不缓存安装状态——
-    // force 清掉的是 npm 最新版与网络位置那几份缓存，跟这份计划无关，白清一次
-    // 就是开机时多打七八个外网请求、Windows 上多读一遍 Appx 清单。
-    api.scanSystem(),
-    api.getConfig(),
-    api.getSettings(),
-  ])
+  // scanSystem 从不缓存安装状态，无需强制清掉下载源与网络位置缓存。
+  const system = await api.scanSystem()
   await assertAccount(api, expectedUserId, expectedSiteId)
   const planned = accountBootstrapPlan(system, config, settings, mode, storage, synchronized?.regrouped ?? [])
   const permitted = onlyProviders ? new Set(onlyProviders) : null
@@ -355,6 +441,8 @@ export async function bootstrapAccountTools(
     ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
     : planned
 
+  // 换了连接线路的工具开着也照样改（#941）：以前开着的先不改，客户不关工具、不点「重新同步」，它就一直
+  // 停在原来那条线路上。开着的进程重开以后就走新地址；线路的事不在首页提示（yoyo 10-8）。
   let outcome: Awaited<ReturnType<AccountBootstrapBridge['configureManagedCliKeys']>> = {
     configured: [],
     failed: [],
@@ -389,9 +477,14 @@ export async function bootstrapAccountTools(
       failed.push({ provider, message: reported.message || '账号 Key 配置失败' })
       continue
     }
-    const problem = outcome.configured.includes(provider)
+    let problem = outcome.configured.includes(provider)
       ? configurationFailure(verified, provider, storage)
       : '账号 Key 配置未返回成功结果'
+    // 说是写好了、地址却还在原来那条线路上：照「服务地址没对上」说，不另提线路（yoyo 10-8）。
+    if (!problem && routeChanges.includes(provider)
+      && !sameNativeRelayUrl(verified.providers[provider].actualBaseUrl, config.providers[provider].baseUrl)) {
+      problem = configurationFailureMessages.relayMismatch
+    }
     if (problem) {
       failed.push({ provider, message: problem })
       continue
@@ -405,6 +498,7 @@ export async function bootstrapAccountTools(
     )
     if (markerWarning) markerWarnings.push(`${nameOf(provider)}：${markerWarning}`)
   }
+  const followed = configured.filter((provider) => routeChanges.includes(provider))
 
   const readyKeys = synchronized?.ready.map((entry) => entry.provider) ?? []
   // 没装的工具 Key 签不下来，用户在首页什么也做不了，点「重新同步」也还是那句；
@@ -455,6 +549,7 @@ export async function bootstrapAccountTools(
     ...(synchronized?.regrouped?.length
       ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
       : {}),
+    ...(followed.length ? { routeFollowed: followed } : {}),
   }
 }
 
@@ -499,6 +594,7 @@ export function describeAccountBootstrapResult(
     parts.push(`跳过 ${result.skipped.map((entry) => `${nameOf(entry.provider)}（${skipReasonLabels[entry.reason]}）`).join('、')}`)
   }
   if (result.repairedShadowed?.length) parts.push(`顺手修好 ${result.repairedShadowed.map(nameOf).join('、')} 认不出的连接设置`)
+  if (result.routeFollowed?.length) parts.push(`跟着换了连接线路：${result.routeFollowed.map(nameOf).join('、')}`)
   if (result.networkBlocked) parts.push('被网络拦住，联网后会自动补跑')
   return {
     level: result.failed.length || result.networkBlocked ? 'warn' : 'info',

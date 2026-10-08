@@ -30,6 +30,7 @@ function fixture(overrides: Partial<MacUninstallDependencies> = {}) {
     trashItem: async (target) => { calls.push(`trash:${target}`) },
     prepareQuit: async () => { calls.push('prepare-quit') },
     abortQuit: () => { calls.push('abort-quit') },
+    removeUpdaterCache: async () => { calls.push('update-cache'); return true },
     clearLoginRecords: async () => { calls.push('records'); return true },
     quit: () => { calls.push('quit') },
     ...overrides,
@@ -63,6 +64,7 @@ describe('runMacUninstall', () => {
       'login-item',
       'prepare-quit',
       'trash:/Applications/星芒AI管理工具.app',
+      'update-cache',
       'quit',
     ])
   })
@@ -77,6 +79,7 @@ describe('runMacUninstall', () => {
       'tools',
       'prepare-quit',
       'trash:/Applications/星芒AI管理工具.app',
+      'update-cache',
       'records',
       'quit',
     ])
@@ -115,6 +118,20 @@ describe('runMacUninstall', () => {
       const result = await runMacUninstall(dependencies, { clearLoginRecords: true, removeManagedTools: false })
       expect(result).toEqual({ trashed: false, leftovers: ['records'] })
       expect(calls).toEqual(['backup', 'hooks', 'login-item'])
+    }
+  })
+
+  it('only logs an update cache it could not remove, without counting it as left over', async () => {
+    for (const [removeUpdaterCache, logged] of [
+      [async () => false, []],
+      [async () => { throw new Error('busy') }, ['update cache: busy']],
+    ] as const) {
+      const lines: string[] = []
+      const { calls, dependencies } = fixture({ removeUpdaterCache, report: (line) => { lines.push(line) } })
+      const result = await runMacUninstall(dependencies, { clearLoginRecords: true, removeManagedTools: false })
+      expect(result).toEqual({ trashed: true, leftovers: [] })
+      expect(calls.slice(-2)).toEqual(['records', 'quit'])
+      expect(lines).toEqual(logged)
     }
   })
 

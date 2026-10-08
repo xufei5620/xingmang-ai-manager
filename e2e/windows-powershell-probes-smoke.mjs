@@ -37,7 +37,8 @@ const {
 const { parseWindowsProcessesJson } = compiled('codex-desktop')
 const { windowsExternalClientInventoryScript } = compiled('external-client-runtime')
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
-const { trustedCommandEnvironment } = compiled('command-runner')
+const { trustedCommandEnvironment, windowsSystemExecutable } = compiled('command-runner')
+const { applyWindowsRootHardening } = compiled('trusted-temp')
 const {
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAvailability,
@@ -103,6 +104,27 @@ async function runMockedCodexProcessProbe(scope) {
   return { calls, processIds: parseWindowsProcessesJson(lines.join('\n')).map((entry) => entry.processId) }
 }
 
+// Three uninstall roots holding one key each whose Get-ItemProperty fails the
+// way a malformed value makes it fail; the key's own GetValue answers with
+// `values`, a PowerShell body over $name. The current-user Claude AppX package
+// is there, so the verified result is seen to survive either way.
+function malformedUninstallKeyMocks(values) {
+  return String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem {
+  param([string]$LiteralPath)
+  $key = [pscustomobject]@{ PSPath='malformed-key'; PSChildName='nbi-nb-all-8.0.2.0' }
+  $key | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($name) ${values} }
+  $key
+}
+function Get-ItemProperty { param([string]$LiteralPath) throw [System.InvalidCastException]::new('Specified cast is not valid.') }
+function Get-Process { @() }
+function Get-AppxPackage {
+  [pscustomobject]@{ PackageFamilyName='Claude_pzs8sxrjxfjjc'; InstallLocation='C:\Program Files\WindowsApps\Claude_2.110.1.0_x64__pzs8sxrjxfjjc'; Version='2.110.1.0'; Publisher='CN="Anthropic, PBC", O="Anthropic, PBC", C=US' }
+}
+`
+}
+
 const externalClientSubjects = {
   workbuddy: 'CN=Tencent Technology (Shenzhen) Company Limited, O=Tencent Technology (Shenzhen) Company Limited, C=CN',
   opencode: 'CN="Anomaly Innovations, Inc https://anoma.ly/", O="Anomaly Innovations, Inc https://anoma.ly/", C=US',
@@ -162,11 +184,60 @@ function Get-AppxPackage {
     assert.equal(data.clients[0].tool, 'claudeDesktop')
     assert.equal(data.clients[0].version, '2.110.1.0')
     assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
+    // The mocked key cannot be read value by value either; why goes to the log, once per root.
+    assert.deepEqual(data.registryFailures.map((failure) => failure.reason), Array(3).fill('Access denied to unrelated registry item'))
+  }],
+  // An installer that writes a malformed value (an 8-byte REG_DWORD, say) makes
+  // Get-ItemProperty fail its whole key. The key is then read again for just the
+  // values the matching uses: here they read, so nothing is unreadable, and the
+  // check below has one of those values malformed too.
+  ['external client inventory reads past a value Get-ItemProperty cannot convert in an unrelated uninstall key', async () => {
+    const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' }") + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.equal(data.clients.length, 1)
+    assert.equal(data.clients[0].tool, 'claudeDesktop')
+    assert.deepEqual(data.errors, {})
+    assert.deepEqual(data.registryFailures, [])
+  }],
+  ['external client inventory still cannot tell when one of the values it reads is malformed as well', async () => {
+    const output = await runEncoded(malformedUninstallKeyMocks("if ($name -eq 'DisplayName') { 'NetBeans IDE 8.0.2' } elseif ($name -eq 'DisplayVersion') { [long]8 }") + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.equal(data.clients.length, 1)
+    assert.equal(data.errors.workbuddy, '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测')
+    assert.deepEqual(data.registryFailures, Array(3).fill({ entry: 'nbi-nb-all-8.0.2.0', reason: 'Specified cast is not valid.' }))
+  }],
+  // The row on the home page says only the Chinese sentence; what PowerShell said
+  // comes back beside it for the runtime log (external-client-runtime.test.ts reads it).
+  ['external client inventory keeps what PowerShell said out of the sentence when AppX cannot be read', async () => {
+    const output = await runEncoded(String.raw`
+function Test-Path { param([string]$LiteralPath) return $false }
+function Get-Process { @() }
+function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }
+` + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.deepEqual(data.clients, [])
+    assert.deepEqual(data.errors, { claudeDesktop: '无法读取当前用户 Claude 桌面端的 AppX 注册信息' })
+    assert.deepEqual(data.errorDetails, { claudeDesktop: 'The AppX Deployment Service is not running.' })
+  }],
+  ['external client inventory keeps what PowerShell said out of the sentence when a signature cannot be read', async () => {
+    const output = await runEncoded(String.raw`
+function Test-Path { param([string]$LiteralPath) return $true }
+function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' } }
+function Get-ItemProperty { param([string]$LiteralPath) [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
+function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=1; LastWriteTimeUtc=[datetime]::UtcNow; CreationTimeUtc=[datetime]::UtcNow } }
+function Get-AuthenticodeSignature { param([string]$LiteralPath) throw 'The signature service is not available.' }
+function Get-Process { @() }
+function Get-AppxPackage { @() }
+` + windowsExternalClientInventoryScript())
+    const data = JSON.parse(output.trim())
+    assert.deepEqual(data.clients, [])
+    assert.deepEqual(data.errors, { workbuddy: '无法读取客户端数字签名' })
+    assert.deepEqual(data.errorDetails, { workbuddy: 'The signature service is not available.' })
   }],
   ['external client inventory decodes every remembered signature', async () => {
     const known = [
-      { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: externalClientSubjects.workbuddy },
-      { path: "C:\\Users\\Tester\\AppData\\Local\\Open'Code\\OpenCode.exe", stamp: '4:5:6', status: 'Valid', subject: externalClientSubjects.opencode },
+      { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: externalClientSubjects.workbuddy, version: '1.0.0' },
+      { path: "C:\\Users\\Tester\\AppData\\Local\\Open'Code\\OpenCode.exe", stamp: '4:5:6', status: 'Valid', subject: externalClientSubjects.opencode, version: "1.0'0" },
     ]
     const output = await runEncoded(String.raw`
 function Test-Path { param([string]$LiteralPath) return $false }
@@ -175,6 +246,29 @@ function Get-AppxPackage { @() }
 ` + windowsExternalClientInventoryScript(known) + "\n'KNOWN:' + (@($knownSignatures.Keys | Sort-Object) -join '|')")
     const line = output.split(/\r?\n/).find((entry) => entry.startsWith('KNOWN:'))
     assert.equal(line, `KNOWN:${known.map((entry) => entry.path).sort().join('|')}`)
+  }],
+  // 已知68：打开之前那次认这份记住的结果，所以文件或卸载信息里的版本一变，就得真的再验一次。
+  ['external client inventory reuses a remembered signature only while the file and its registered version are unchanged', async () => {
+    const exe = 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe'
+    // 只让当前用户那一处卸载记录在：三处都给的话，同一个客户端会出来三行。
+    const mocks = String.raw`
+function Test-Path { param([string]$LiteralPath) return $LiteralPath -like 'Registry::HKEY_CURRENT_USER\*' }
+function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' } }
+function Get-ItemProperty { param([string]$LiteralPath) [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
+function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=7; LastWriteTimeUtc=[datetime]::new(638000000000000000, [System.DateTimeKind]::Utc); CreationTimeUtc=[datetime]::new(637000000000000000, [System.DateTimeKind]::Utc) } }
+function Get-AuthenticodeSignature { param([string]$LiteralPath) throw 'verified anew' }
+function Get-Process { @() }
+function Get-AppxPackage { @() }
+`
+    const stamp = '7:638000000000000000:637000000000000000'
+    const remembered = { path: exe, stamp, status: 'Valid', subject: externalClientSubjects.workbuddy, version: '1.0.0' }
+    const reused = JSON.parse((await runEncoded(mocks + windowsExternalClientInventoryScript([remembered]))).trim())
+    assert.deepEqual(reused.clients.map((client) => [client.path, client.signatureStatus, client.signatureStamp]), [[exe, 'Valid', stamp]])
+    for (const changed of [{ version: '1.0.1' }, { version: '' }, { stamp: '8:638000000000000000:637000000000000000' }]) {
+      const fresh = JSON.parse((await runEncoded(mocks + windowsExternalClientInventoryScript([{ ...remembered, ...changed }]))).trim())
+      assert.deepEqual(fresh.clients, [], JSON.stringify(changed))
+      assert.deepEqual(fresh.errorDetails, { workbuddy: 'verified anew' }, JSON.stringify(changed))
+    }
   }],
 ]
 
@@ -453,6 +547,183 @@ for (const [name, limit, run] of trustedProbes) {
   }])
 }
 
+// The managed-root hardening, run for real once, under ProgramData where the
+// real root lives. A fresh folder there inherits ProgramData's Users
+// create/write ACE, so this reproduces the standard-user write window; the unit
+// tests pin the icacls ORDER, and this proves that on a real runner the window
+// is gone the instant the first step (harden the root) returns, before the
+// contents reset and setowner run, and that the contents reset's `\*` wildcard
+// and the whole sequence produce a tree only SYSTEM/Administrators can write.
+// Needs the elevated runner, as /setowner Administrators does.
+checks.push(['the managed-root hardening closes the standard-user write window under ProgramData', async () => {
+  const icacls = windowsSystemExecutable('icacls.exe', process.env, 'win32', machinePaths)
+  const trusted = new Set(['S-1-5-18', 'S-1-5-32-544'])
+  const usersWrite = new Set(['S-1-5-32-545', 'S-1-1-0', 'S-1-5-11'])
+  const rootWriters = (dir) => inspectWindowsDirectoryTreeAcl(dir, machinePaths)
+    .entries[0].allowWriteSids.map((sid) => String(sid).toUpperCase())
+  const root = path.join(machinePaths.programData, `xingmang-probe-smoke-harden-${process.pid}`)
+  fs.rmSync(root, { recursive: true, force: true })
+  try {
+    fs.mkdirSync(path.join(root, 'Cli', 'npm', 'node_modules'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'Cli', 'npm', 'node_modules', 'payload.js'), '// content')
+
+    // The window's premise: before hardening, a standard user can write the
+    // root. Asserted closed below only when this runner's ProgramData actually
+    // grants it (a locked-down ProgramData would not, and is not a failure).
+    const writableBefore = rootWriters(root).some((sid) => usersWrite.has(sid))
+    console.log(`info managed-root hardening: fresh ProgramData child writable by a standard user before = ${writableBefore}`)
+
+    let afterHarden = null
+    let step = 0
+    await applyWindowsRootHardening(root, async (args, timeoutMs) => {
+      await new Promise((resolve, reject) => {
+        const child = execFile(icacls, args, { env: trustedCommandEnvironment(), windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error) => error ? reject(error) : resolve())
+        child.stdin?.end()
+      })
+      step += 1
+      // Right after the harden step, before the reset and setowner run.
+      if (step === 1) afterHarden = rootWriters(root)
+    })
+    assert.ok(afterHarden, 'the harden step did not run')
+    for (const sid of afterHarden) assert.ok(trusted.has(sid), `${sid} can still write the root right after hardening`)
+    if (writableBefore) console.log('info managed-root hardening: the pre-harden write window is closed the instant the root is hardened')
+
+    const snapshot = inspectWindowsDirectoryTreeAcl(root, machinePaths)
+    assert.ok(snapshot.entries.length > 0)
+    for (const entry of snapshot.entries) {
+      assert.ok(trusted.has(String(entry.ownerSid).toUpperCase()), `${entry.ownerSid} owns a hardened item`)
+      assert.equal(entry.reparsePoint, false)
+      for (const sid of entry.allowWriteSids) {
+        assert.ok(trusted.has(String(sid).toUpperCase()), `${sid} can write a hardened item`)
+      }
+    }
+    return `${snapshot.entries.length} entr(ies), window reproduced=${writableBefore}, root locked after harden`
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}])
+
+function runFile(executable, argv) {
+  return new Promise((resolve, reject) => {
+    execFile(executable, argv, { encoding: 'utf8', windowsHide: true, timeout: probeBudgetMs }, (error, stdout, stderr) => {
+      if (error) reject(new Error(`${error.message}\n${stderr}`))
+      else resolve(stdout)
+    })
+  })
+}
+
+// The malformed value of the mocked checks above, in a real uninstall key under
+// this runner's HKCU for the length of the check: an 8-byte REG_DWORD, which
+// Windows stores as written and reg import takes in the hex(4) form regedit
+// exports it in. It shows the premise holds (Get-ItemProperty fails the key) and
+// that the shipped script, run as the app runs it, reads the key all the same.
+checks.push(['external client inventory reads a real uninstall key that holds a malformed DWORD', async () => {
+  const name = `XingmangProbeSmoke${process.pid}`
+  const key = `HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${name}`
+  const registryFile = path.join(scratch, 'malformed-uninstall-key.reg')
+  const contents = ['Windows Registry Editor Version 5.00', '', `[${key}]`, '"DisplayName"="Xingmang probe smoke"', '"NoModify"=hex(4):01,00,00,00,00,00,00,00', ''].join('\r\n')
+  fs.writeFileSync(registryFile, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(contents, 'utf16le')]))
+  const reg = path.join(machinePaths.system32, 'reg.exe')
+  try {
+    // Inside the try: an import that fails halfway may still have created the key.
+    await runFile(reg, ['import', registryFile])
+    const premise = (await runEncoded(String.raw`
+$ErrorActionPreference = 'Stop'
+try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catch { 'failed: ' + $_.Exception.Message }
+`)).trim()
+    assert.match(premise, /^failed: /, `Get-ItemProperty read the malformed key, so this check no longer stands for the customer's case: ${premise}`)
+    const script = windowsExternalClientInventoryScript()
+      + `\n'SMOKE:' + @($registry | Where-Object { [string]$_.PSChildName -eq '${name}' }).Count + ':' + @($registryFailures | Where-Object { $_.entry -eq '${name}' }).Count`
+    const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
+    assert.equal(output.split(/\r?\n/).find((line) => line.startsWith('SMOKE:')), 'SMOKE:1:0', output)
+    console.log(`info malformed uninstall key: Get-ItemProperty ${premise}; the inventory read it`)
+  } finally {
+    await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete the malformed uninstall key (left behind, unless the import never created it): ${error.message}`))
+  }
+}])
+
+// The CLI terminal itself stays closed, but the step of its launch that reads
+// the folder's name runs here. The broker's Start-Process resolves
+// -WorkingDirectory as a wildcard, so a project folder such as 作业[1] used to
+// fail on every open. The broker the app builds for such a folder runs as built,
+// except that its Start-Process starts a hidden, waited-for cmd.exe in place of
+// the terminal, so the runner keeps no window; cmd records where it was started.
+// Unescaped, the same broker must still fail: that is the premise of the
+// escaping, and the failure is the one the customer's error dialog quotes, so it
+// must come back as the cause alone, in plain text that reads back as UTF-8.
+// Both shells the app may pick are tried.
+const {
+  buildCliLaunchPlan,
+  decodeWindowsPowerShellCommand,
+  describeWindowsCliLaunchError,
+  parseStartedWindowsProcessId,
+  powerShellLiteral,
+  windowsPowerShellCandidates,
+} = compiled('windows-elevation')
+const launchBrokerMarker = path.join(scratch, 'launch-broker-cwd.txt')
+
+function withLaunchedCmd(broker) {
+  const cmd = path.join(machinePaths.system32, 'cmd.exe')
+  // /u: cmd writes what `cd` prints as UTF-16, so the folder's Chinese name survives the file.
+  const argumentList = ['/d', '/u', '/c', `cd > "${launchBrokerMarker}"`].map(powerShellLiteral).join(', ')
+  const launched = / -FilePath '(?:[^']|'')*' -ArgumentList @\([^)]*\) -WorkingDirectory /
+  const shown = ' -WindowStyle Normal -PassThru;'
+  assert.ok(launched.test(broker) && broker.includes(shown), 'the broker no longer reads the way this check expects')
+  return broker
+    .replace(launched, () => ` -FilePath ${powerShellLiteral(cmd)} -ArgumentList @(${argumentList}) -WorkingDirectory `)
+    .replace(shown, () => ' -WindowStyle Hidden -Wait -PassThru;')
+}
+
+function runLaunchBroker(shell, script, cwd) {
+  return new Promise((resolve) => {
+    const child = execFile(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)], {
+      cwd, env: trustedEnv(), encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
+    child.stdin?.end()
+  })
+}
+
+checks.push(['the CLI launch broker opens a folder whose name has brackets, and reports a failure by its cause', async () => {
+  const folder = path.join(scratch, '作业[1]', 'a`[b]')
+  fs.mkdirSync(folder, { recursive: true })
+  const shells = windowsPowerShellCandidates(process.env, 'win32', machinePaths).filter((shell) => fs.existsSync(shell))
+  assert.ok(shells.length > 0)
+  for (const shell of shells) {
+    const name = path.basename(shell)
+    const broker = withLaunchedCmd(decodeWindowsPowerShellCommand(buildCliLaunchPlan({ executable: process.execPath, workspace: folder, title: 'smoke' }, shell).argv.at(-1)))
+    const shipped = / -WorkingDirectory ('(?:[^']|'')*') /.exec(broker)?.[1]
+    assert.ok(shipped && shipped !== powerShellLiteral(folder), 'the broker no longer escapes the folder')
+
+    fs.rmSync(launchBrokerMarker, { force: true })
+    const startedAt = Date.now()
+    const opened = await runLaunchBroker(shell, broker, folder)
+    const elapsed = Date.now() - startedAt
+    assert.equal(opened.error, null, `${name}: ${opened.stderr}`)
+    assert.ok(parseStartedWindowsProcessId(opened.stdout), `${name} printed no process id: ${opened.stdout}`)
+    // Both sides resolved, so a short 8.3 temp path still compares equal.
+    const recorded = fs.readFileSync(launchBrokerMarker, 'utf16le').trim()
+    assert.equal(fs.realpathSync.native(recorded).toLowerCase(), fs.realpathSync.native(folder).toLowerCase())
+
+    const unescapedBroker = broker.replace(shipped, () => powerShellLiteral(folder))
+    const unescaped = await runLaunchBroker(shell, unescapedBroker, folder)
+    assert.ok(unescaped.error, `${name} opened the folder unescaped, so escaping it no longer matches what PowerShell does`)
+    // The broker's catch wrote the cause, not PowerShell: no error view in CLIXML. A CLIXML
+    // header alone may still come first, when the host reported progress before the catch ran.
+    assert.ok(!unescaped.stderr.includes('<S S="Error">'), `${name} reported the failure itself: ${unescaped.stderr}`)
+    assert.match(unescaped.stderr, /wildcard|通配符/i, `${name}: ${unescaped.stderr}`)
+    assert.ok(unescaped.stderr.includes('作'), `${name} did not report the folder's name as UTF-8: ${unescaped.stderr}`)
+    // What the error dialog would say, given what execFileAsync hands launchCliPowerShell.
+    const dialog = describeWindowsCliLaunchError(Object.assign(unescaped.error, { stdout: unescaped.stdout, stderr: unescaped.stderr }))
+    assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
+    assert.doesNotMatch(dialog, /Command failed|EncodedCommand|CLIXML|<S /, `${name}: ${dialog}`)
+
+    // Printed only: whether this runner would garble the same cause without the switch.
+    const withoutSwitch = await runLaunchBroker(shell, unescapedBroker.slice(unescapedBroker.indexOf('Import-Module')), folder)
+    const header = unescaped.stderr.startsWith('#< CLIXML') ? 'after a CLIXML header' : 'as plain text'
+    console.log(`info CLI launch broker on ${name}: opened the folder in ${elapsed}ms; unescaped the cause came back ${header} and the dialog would read ${JSON.stringify(dialog)}, and without the UTF-8 switch the folder's name ${withoutSwitch.stderr.includes('作') ? 'still comes through' : 'is lost'}`)
+  }
+}])
+
 // The Codex debugging port owner lookup reads the TCP table with netstat.exe
 // now, not PowerShell, so it is checked against a port whose owners are known
 // rather than an empty one. This process listens on the port, and its end
@@ -576,6 +847,124 @@ checks.push(['the compiled fallback reads the system proxy exactly as the in-mem
   const primary = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], env)).trim())
   assert.deepEqual(parseWindowsProxySnapshot(fallback.snapshot), parseWindowsProxySnapshot(primary.snapshot))
   console.log(`info system proxy reading through the compiled fallback: flags=${parseWindowsProxySnapshot(fallback.snapshot).flags} (${elapsed}ms; the app gives a call ${windowsSystemProxyCommandTimeoutMs}ms)`)
+}])
+
+// The customer recovery script's restore logic, with every registry and native
+// read and write stubbed, so nothing here touches the real proxy. It ran in the
+// node --test shard until a cold start there ran out its 30 seconds (#782).
+// scripts/windows-acceleration-recovery.test.cjs keeps its static checks.
+const recoveryPath = path.join(repo, 'scripts', 'windows-acceleration-recovery.ps1')
+checks.push(['the customer recovery script keeps bypass edits and refuses conflicting or unverified proxy writes', async () => {
+  const source = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+. '${recoveryPath.replaceAll("'", "''")}'
+$script:checks = 0
+function Check([bool]$condition, [string]$name) {
+  if (-not $condition) { throw ('CHECK FAILED: ' + $name) }
+  $script:checks++
+}
+function Fails([scriptblock]$action, [string]$message) {
+  $caught = $null
+  try { & $action } catch { $caught = $_.Exception.Message }
+  Check ($caught -ceq $message) ('expected failure ' + $message + ', actual ' + $caught)
+}
+function Clone-Snapshot($value) { return $value | ConvertTo-Json -Depth 12 | ConvertFrom-Json }
+$applied = @'
+{"flags":3,"server":"http=127.0.0.1:57448;https=127.0.0.1:57448","bypass":"<local>;localhost;127.0.0.1;[::1]","autoConfigUrl":"","registry":{"ProxyEnable":1,"ProxyServer":"http=127.0.0.1:57448;https=127.0.0.1:57448","ProxyOverride":"<local>;localhost;127.0.0.1;[::1]","AutoConfigURL":null}}
+'@ | ConvertFrom-Json
+$before = @'
+{"flags":3,"server":"http://localhost:15236","bypass":"old-bypass","autoConfigUrl":"","registry":{"ProxyEnable":1,"ProxyServer":"http://localhost:15236","ProxyOverride":null,"AutoConfigURL":null}}
+'@ | ConvertFrom-Json
+$journal = [pscustomobject]@{version=1;id='aaaabbbb-cccc-4ddd-8eee-ffffffffffff';owner=[pscustomobject]@{pid=44300;startedAt='134022112340000000'};before=$before;applied=$applied}
+$lease = [pscustomobject]@{version=1;id=$journal.id;owner=(Clone-Snapshot $journal.owner)}
+Check ((Assert-RecoveryJournal $journal $lease) -eq 57448) 'valid journal'
+Check ((Assert-RecoveryJournal $journal $null) -eq 57448) 'missing lease is recoverable'
+Check (Same-State (Get-ProxyRestoreTarget $applied $journal) $before) 'unchanged proxy restores original including absent registry'
+$current = Clone-Snapshot $applied
+$current.registry.ProxyOverride = 'added.example.test;<local>'
+$desired = Get-ProxyRestoreTarget $current $journal
+Check ($desired.registry.ProxyOverride -ceq $current.registry.ProxyOverride) 'customer registry-only bypass edit retained'
+Check ($desired.bypass -ceq $before.bypass) 'unmodified native bypass restores original'
+Check ($desired.server -ceq $before.server) 'previous localhost proxy retained'
+$current = Clone-Snapshot $applied
+$current.bypass = ''
+$desired = Get-ProxyRestoreTarget $current $journal
+Check ($desired.bypass -ceq '') 'native empty bypass edit retained'
+Check ($null -eq $desired.registry.ProxyOverride) 'unchanged registry restores absent value'
+foreach ($override in @($null, '', 'new-bypass')) {
+  $current = Clone-Snapshot $applied
+  $current.bypass = 'native-new'
+  $current.registry.ProxyOverride = $override
+  $desired = Get-ProxyRestoreTarget $current $journal
+  Check ($desired.bypass -ceq 'native-new' -and $desired.registry.ProxyOverride -ceq $override) 'distinct native/registry bypass edits retained'
+}
+foreach ($field in @('flags', 'server', 'autoConfigUrl')) {
+  $current = Clone-Snapshot $applied
+  if ($field -eq 'flags') { $current.flags = 7 } else { $current.$field = 'external-change' }
+  Fails { Get-ProxyRestoreTarget $current $journal } 'settings-changed-beyond-bypass'
+}
+foreach ($field in @('ProxyEnable', 'ProxyServer', 'AutoConfigURL')) {
+  $current = Clone-Snapshot $applied
+  if ($field -eq 'ProxyEnable') { $current.registry.ProxyEnable = 0 } else { $current.registry.$field = 'external-change' }
+  Fails { Get-ProxyRestoreTarget $current $journal } 'settings-changed-beyond-bypass'
+}
+$bad = Clone-Snapshot $lease
+$bad.owner.startedAt = '134022112340000001'
+Fails { Assert-RecoveryJournal $journal $bad } 'lease-journal-mismatch'
+$bad = Clone-Snapshot $journal
+$bad.applied.registry.ProxyOverride = 'tampered'
+Fails { Assert-RecoveryJournal $bad $lease } 'noncanonical-owned-snapshot'
+$bad = Clone-Snapshot $journal
+$bad.before = Clone-Snapshot $applied
+Fails { Assert-RecoveryJournal $bad $lease } 'original-proxy-still-uses-owned-port'
+Check (Test-ProxyEndpoint $applied '127.0.0.1:57448') 'detect owned endpoint'
+Check (-not (Test-ProxyEndpoint $before '127.0.0.1:57448')) 'previous proxy is independent'
+$disabled = Clone-Snapshot $applied
+$disabled.flags = 1
+$disabled.registry.ProxyEnable = 0
+Check (-not (Test-ProxyEndpoint $disabled '127.0.0.1:57448')) 'disabled proxy is independent'
+
+# Stub all registry/native reads and writes. No test changes the real proxy.
+function Read-State { return Clone-Snapshot $script:state }
+function Write-State($value) {
+  $script:writes++
+  if ($script:failure -eq 'before') { $script:failure = ''; throw 'synthetic-write-denied' }
+  $script:state = Clone-Snapshot $value
+  if ($script:failure -eq 'after') { $script:failure = ''; throw 'synthetic-notify-failed' }
+  if ($script:failure -eq 'external') { $script:failure = ''; $script:state.server = 'other.example.test:8080' }
+}
+$script:state = Clone-Snapshot $applied
+$script:writes = 0
+$script:failure = ''
+Invoke-ProxyRestore $applied $before
+Check ((Same-State $script:state $before) -and $script:writes -eq 1) 'confirmed restoration'
+$script:state = Clone-Snapshot $before
+$script:writes = 0
+Fails { Invoke-ProxyRestore $applied $before } 'proxy-changed-before-write'
+Check ($script:writes -eq 0) 'CAS refuses concurrent edits'
+$script:state = Clone-Snapshot $applied
+$script:writes = 0
+$script:failure = 'before'
+Fails { Invoke-ProxyRestore $applied $before } 'proxy-restore-not-confirmed'
+Check ((Same-State $script:state $applied) -and $script:writes -eq 1) 'failed write leaves owned endpoint recoverable'
+$script:state = Clone-Snapshot $applied
+$script:writes = 0
+$script:failure = 'after'
+Fails { Invoke-ProxyRestore $applied $before } 'proxy-restore-not-confirmed'
+Check ((Same-State $script:state $applied) -and $script:writes -eq 2) 'notification failure safely rolls back'
+Invoke-ProxyRestore $applied $before
+Check (Same-State $script:state $before) 'retry after rollback succeeds'
+$script:state = Clone-Snapshot $applied
+$script:writes = 0
+$script:failure = 'external'
+Fails { Invoke-ProxyRestore $applied $before } 'proxy-restore-not-confirmed'
+Check ($script:state.server -ceq 'other.example.test:8080' -and $script:writes -eq 1) 'readback mismatch never overwrites a third-party change'
+Write-Output ('RECOVERY_CHECKS=' + $script:checks)
+`
+  const output = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodeWindowsPowerShellCommand(source)])
+  assert.match(output, /RECOVERY_CHECKS=33/)
 }])
 
 // The same probes with autoloading switched off right after their imports, so

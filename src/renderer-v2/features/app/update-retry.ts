@@ -47,9 +47,23 @@ export function updateNeedsManualReinstall(update: Pick<UpdateSnapshot, 'error'>
  * 一直收不了尾。有的公司网关、带下载查毒的代理会先把整个安装包扣住查完才放行，这种网络里再点
  * 「重新下载」多半还是一样，得让客户去下载页用浏览器下安装包。「重新下载」照留：换个网络、
  * 过一会儿再点也可能就好了。
+ *
+ * 检查挂住同理（主进程 updater.ts 的 reportCheckFailure，45 秒没动静被看门狗掐断）：连更新
+ * 清单都拿不回来的网络，再点「重试」多半一样，给一条去下载页的退路，「重试」照留。
  */
 export function updateOffersDownloadPage(update: Pick<UpdateSnapshot, 'error'> | null | undefined): boolean {
-  return updateNeedsManualReinstall(update) || update?.error?.code === 'UPDATE_DOWNLOAD_STALLED'
+  const code = update?.error?.code
+  return updateNeedsManualReinstall(update) || code === 'UPDATE_DOWNLOAD_STALLED' || code === 'UPDATE_CHECK_STALLED'
+}
+
+/**
+ * 首页右上角的更新提示该不该为这次失败弹出来。开机和每 3 小时自己跑的那次检查没查成
+ * （主进程在 error 上标了 automatic），客户什么都没点：断网时顶上已经挂着断网横幅，网络
+ * 抖一下也不该凭空冒出一条红色「失败」。更新页照常显示这次失败和「重试」，客户要看随时能看；
+ * 客户自己点「检查更新」没查成的照旧弹。下载、安装失败不受影响。
+ */
+export function updateFailureBubbleQuiet(update: Pick<UpdateSnapshot, 'error'> | null | undefined): boolean {
+  return update?.error?.automatic === true
 }
 
 /**

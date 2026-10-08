@@ -6,11 +6,12 @@ import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
+import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
 import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
 
-interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; timeline?: TimelineMeta }
+interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; publishedAt?: string; timeline?: TimelineMeta }
 type Announcement = Omit<RelayNotice, 'entries'> & { localEntries?: boolean; entries?: AnnouncementEntry[] }
 interface Props {
   scope: string
@@ -860,6 +861,11 @@ function TimelineTag({ type }: { type: TimelineMeta['type'] }) {
   return <span className={`v2-announcement-tag is-${type}`}>{timelineTypeLabels[type]}</span>
 }
 
+// 时间线公告的日期跟着类型标签走；历史账号的公告没有类型，只带发布日期。
+function entryPublishedAt(entry: AnnouncementEntry): string | undefined {
+  return entry.timeline?.publishedAt ?? entry.publishedAt
+}
+
 export function formatAnnouncementError(cause: unknown): AnnouncementError {
   // Chromium/Electron wraps rejected IPC calls with the channel name. That
   // implementation detail is useful in logs but confusing and noisy in the
@@ -1075,6 +1081,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }, [selectedId])
   const entries = announcement?.entries
   const selected = entries?.find((entry) => entry.id === selectedId)
+  const selectedPublishedAt = selected && entryPublishedAt(selected)
   const [seenKeys, setSeenKeys] = useState(() => readSeenAnnouncementKeys(scope))
   const attentionKeys = useMemo(() => announcementAttentionKeys(announcement, readId), [announcement, readId])
   // 一条公告只提醒一次：打开过公告或关掉过横条，就不再占一整行、铃铛也不再亮红点，
@@ -1094,7 +1101,10 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const [barHiddenDay, setBarHiddenDay] = useState(() => readPromoBarHiddenDay(scope))
   // 首页大卡片已经在说活动时不再挂活动条；卡片收起后（不管点的哪个按钮）和别的页面都挂，
   // 点过 × 只收起当天。没有永久关掉的按钮：活动一截止自己消失。
-  const promoBarShown = !open && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
+  // 断网条和公告条、活动条共用顶栏下面那一个位置：断网时只挂断网条，这两条先藏起来，
+  // 铃铛上的红点照旧，联网后自己回来。
+  const { offline } = useOnlineStatus()
+  const promoBarShown = !offline && !open && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
   // 活动没结束前铃铛一直留着红点，点过「这个活动不再提醒」也一样，免得客户找不回活动。
   useEffect(() => { onUnread(unseen || allPromos.length > 0) }, [unseen, allPromos.length, onUnread])
   const [topupOffers, setTopupOffers] = useState<TopupOffers | null>(null)
@@ -1239,7 +1249,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   // 首页卡片或活动条已经在说的活动，细横条不再重复说一遍。
   const coveredPromoIds = promoCardShown || promoBarShown ? allPromos.map((item) => item.id) : []
-  const bannerShown = unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
+  const bannerShown = !offline && unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
   const unreadEntries = entries?.filter((entry) => !entry.read && !coveredPromoIds.includes(entry.id))
   const promoOthers = promoCardShown && promo ? allPromos.filter((item) => item.id !== promo.id).map((item) => ({ id: item.id, title: stripSiteAddresses(item.title) || '活动' })) : []
   const soonestExplicitEnd = Math.min(...allPromos.filter((item) => item.endsExplicitly).map((item) => item.endsAt))
@@ -1251,7 +1261,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   })) : []
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
-    {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
+    {!offline && !open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
     {promoBarShown && <PromoBar items={promoBarItems} onHide={hidePromoBar}
       onTopUp={onTopUp && promos.length ? () => { promos.forEach((item) => acknowledgePromoEntry(item.id)); onTopUp() } : undefined} />}
     {promoCardShown && promo && <PromoCard title={stripSiteAddresses(promo.title) || '充值活动'} deadline={formatPromoDeadline(promo, now)}
@@ -1272,9 +1282,9 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       {loading ? <p role="status">正在读取公告</p> : announcement ? entries ? selected ? (
         <article className="v2-announcement-entry" data-testid="announcement-detail" key={selected.id}>
           <h2 tabIndex={-1} ref={detailHeading}>{selected.title}</h2>
-          {selected.timeline && <p className="v2-announcement-meta" data-testid="announcement-detail-meta">
-            <TimelineTag type={selected.timeline.type} />
-            <time dateTime={selected.timeline.publishedAt}>{formatTimelineDate(selected.timeline.publishedAt, Date.now())}</time>
+          {selectedPublishedAt && <p className="v2-announcement-meta" data-testid="announcement-detail-meta">
+            {selected.timeline && <TimelineTag type={selected.timeline.type} />}
+            <time dateTime={selectedPublishedAt}>{formatTimelineDate(selectedPublishedAt, Date.now())}</time>
           </p>}
           {markingIds.includes(selected.id) && <p className="v2-announcement-read-status" role="status">正在保存已读状态…</p>}
           {readErrors[selected.id] && <div className="v2-announcement-error" role="alert">
@@ -1288,17 +1298,17 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
         </article>
       ) : (
         <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
-          {entries.map((entry) => <li key={entry.id}>
+          {entries.map((entry) => { const publishedAt = entryPublishedAt(entry); return <li key={entry.id}>
             <button type="button" className="v2-announcement-row" data-testid={`announcement-item-${entry.id}`}
               ref={(element) => { if (element) rows.current.set(entry.id, element); else rows.current.delete(entry.id) }}
               onClick={() => openEntry(entry)} title={entry.title}>
               {entry.timeline && <TimelineTag type={entry.timeline.type} />}
               <span className="v2-announcement-title">{entry.title}</span>
-              {entry.timeline && <time className="v2-announcement-date" dateTime={entry.timeline.publishedAt}>{formatTimelineDate(entry.timeline.publishedAt, Date.now()).slice(5, 10)}</time>}
+              {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineDate(publishedAt, Date.now()).slice(5, 10)}</time>}
               <span className={`v2-announcement-read-state${entry.read ? '' : ' is-unread'}`}>{entry.read ? '已读' : '未读'}</span>
               <ChevronRight size={16} aria-hidden="true" />
             </button>
-          </li>)}
+          </li> })}
         </ul>
       ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} /> : !error && <p>暂无公告</p>}
     </Dialog>}

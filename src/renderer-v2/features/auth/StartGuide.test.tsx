@@ -189,18 +189,24 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toContain('在应用外安装')
   })
 
-  it('offers the one-click runtime button on Linux when the installed tool needs a newer Node.js', () => {
-    stubResumedGuide('claude', 'prepare')
-    const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: true })], { platform: 'linux', onInstallRuntime: async () => undefined })
-    expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*一键安装/)
-    expect(markup).toContain('命令行工具需要运行环境')
-    expect(markup).not.toContain('安装指南')
+  // Mac 上 Node.js 也是本软件准备的（第十六批 2）：这一行以前照旧叫人去应用外装，点下去其实是
+  // 星芒自己去下（已知9）。现在和 Linux 一样按能力判断。
+  it('offers the one-click runtime button on Linux and Mac when the installed tool needs a newer Node.js', () => {
+    for (const platform of ['linux', 'mac'] as const) {
+      stubResumedGuide('claude', 'prepare')
+      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: true })], { platform, onInstallRuntime: async () => undefined })
+      expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*一键安装/)
+      expect(markup).toContain('命令行工具需要运行环境')
+      expect(markup).not.toContain('安装指南')
+      expect(markup).not.toContain('在应用外安装')
+      vi.unstubAllGlobals()
+    }
   })
 
-  it('keeps the by-hand wording on Linux when the app cannot prepare Node.js, and on a Mac as before', () => {
-    for (const [platform, runtimeAutoPrepare] of [['linux', false], ['mac', true], ['mac', false]] as const) {
+  it('keeps the by-hand wording on Linux and Mac when the app cannot prepare Node.js', () => {
+    for (const platform of ['linux', 'mac'] as const) {
       stubResumedGuide('claude', 'prepare')
-      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare })], { platform, onInstallRuntime: async () => undefined })
+      const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: false })], { platform, onInstallRuntime: async () => undefined })
       expect(markup).toContain('在应用外安装完成后回来重新检测')
       expect(markup).toMatch(/data-testid="guide-node"[^>]*>.*安装指南/)
       vi.unstubAllGlobals()
@@ -331,6 +337,21 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python').message).toContain('写不进安装目录')
   })
 
+  it('tells a switch that could not write the config file what to close and which buttons to press (known 29)', () => {
+    // 以前叫人去查安装目录的写入权限，可「改用当前账号」写的是工具的配置文件；
+    // 目录里那句说的「重试」「找客服」在引导里叫「再试一次」「复制给客服」。
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。"
+    const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
+    expect(failure.message).toBe('改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.reason).toBe('写不进配置文件')
+    expect(failure.detail).toContain('EPERM')
+    expect(failure.detail).not.toContain('alice')
+    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/关掉正在用这个工具的窗口后点「再试一次」，还不行就点「需要帮助」。$/)
+    expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
+    // 装东西的几步照旧是安装目录。
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python', true).reason).toBe('写不进安装目录')
+  })
+
   it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
     expect(guideStepFailure(new Error('请先确认账号连接，再打开工具。'), '打开工具').message).toBe('请先确认账号连接，再打开工具。')
     expect(guideStepFailure(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接').message).not.toContain('alice')
@@ -416,18 +437,20 @@ describe('guide default route', () => {
 })
 
 describe('guide choose step runtime wording', () => {
-  it('says the app prepares the runtime on Linux only when it really does', () => {
-    const managed = render([guideTool({ runtimeAutoPrepare: true })], { platform: 'linux' })
-    expect(managed).toContain('命令行，会自动帮你准备运行环境')
-    expect(managed).not.toContain('要先按提示准备运行环境')
-    const external = render([guideTool({ runtimeAutoPrepare: false })], { platform: 'linux' })
-    expect(external).toContain('命令行，要先按提示准备运行环境')
+  // Mac 跟 Linux 一样按能力判断（已知9）：Node.js 由本软件准备时，不再说「要先按提示准备」。
+  it('says the app prepares the runtime on Linux and Mac only when it really does', () => {
+    for (const platform of ['linux', 'mac'] as const) {
+      const managed = render([guideTool({ runtimeAutoPrepare: true })], { platform })
+      expect(managed).toContain('命令行，会自动帮你准备运行环境')
+      expect(managed).not.toContain('要先按提示准备运行环境')
+      const external = render([guideTool({ runtimeAutoPrepare: false })], { platform })
+      expect(external).toContain('命令行，要先按提示准备运行环境')
+    }
   })
 
-  it('keeps the Windows and Mac wording unchanged', () => {
+  it('keeps the Windows wording unchanged', () => {
     expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
     expect(render([guideTool({ runtimeAutoPrepare: false })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
-    expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'mac' })).toContain('命令行，要先按提示准备运行环境')
   })
 })
 
@@ -518,5 +541,11 @@ describe('guide switch failure exits', () => {
     expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits('不过账号余额不足，充值后再试。').map((action) => action.id)).toEqual(['recharge'])
     expect(guideFailureExits(new Error('something odd'))).toEqual([])
+  })
+
+  it('keeps the same buttons when the switch could not write the config file (known 29)', () => {
+    // 改的只是那句话：按钮照旧是「再试一次」「复制给客服」和这里的「查看日志」，不多出「找客服」。
+    expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
+      .toEqual([{ id: 'log', label: '查看日志' }])
   })
 })

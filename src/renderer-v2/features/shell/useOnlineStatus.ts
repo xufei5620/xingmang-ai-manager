@@ -8,7 +8,7 @@ export interface OnlineStatus {
   cause?: OfflineCause
   /** 代理连不上、星芒已经改成直连，且用户还没点「知道了」。 */
   proxyBypassNotice?: boolean
-  /** 「重新检测」正在跑。 */
+  /** 「检查网络」正在跑。 */
   checking: boolean
   recheck(): void
   openNetworkSettings?(kind: NetworkSettingsKind): void

@@ -160,6 +160,8 @@ const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
 /** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
 const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。'
+/** Mac 上检测没做完，说不准装没装：点「打开」和点「安装」时都照这句说。 */
+const codexDesktopDetectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
 // 之后既打不开也更新不了。这是拒绝取消时给用户看的原因。
 const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。'
@@ -2457,7 +2459,10 @@ export interface CodexDesktopServiceOptions {
   getuid?: () => number
   /** Mac 上按哪种芯片挑安装包；缺省 = process.arch，测试换成假的。 */
   architecture?: NodeJS.Architecture
-  /** Optional seams used by tests; production uses the constrained CDP module. */
+  /**
+   * Optional seams used by tests; production uses the constrained CDP module,
+   * with the CDP activation wrapped only to log why it failed.
+   */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
   getAvailableLoopbackPort?: typeof getAvailableLoopbackPortDefault
@@ -3028,7 +3033,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
-    const current = await detectMacosCodexApp().catch(() => null)
+    let current = await detectMacosCodexApp().catch(() => null)
+    // 检测没做完（深度核对签名超时、某条命令没起来，或者检测本身出错）不等于没装。照「没装」往下走的话，
+    // 「应用程序」里客户自己装好的正版 ChatGPT 会被安装那一步当成认不出来的同名应用，叫客户移到废纸篓。
+    // 所以再检测一次：慢多半是一时的（刚开机、别的程序在抢磁盘），首页同一时间的扫描核对过了，这次也直接
+    // 用它记下的结果（macos-codex-app.ts 的 verifiedBundles）。还没做完就照旧往下走，不在这里停下：没做完
+    // 的原因不一定和 ChatGPT.app 有关（Spotlight 查不了、扫应用目录超时），一律停下会让这些 Mac 再也装不上。
+    if (!current || (!current.app && current.detectionFailed)) {
+      // 检测慢正是客户会点「取消」的时候，点了就不再多等一次检测。
+      cancellation?.throwIfCancelled()
+      current = await detectMacosCodexApp().catch(() => null)
+    }
     if (current?.app) {
       sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
       return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
@@ -3038,6 +3053,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (getuid() === 0) {
       throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
     }
+    // 两次都没做完时，安装那一步看到「应用程序」里占着名字、又自称是正版的那份，就说「检测未完成」：
+    // 它多半是客户装好的正版，只是没来得及核对，说「不是官方原版」、叫客户移到废纸篓就错了。
+    // 检测核对过、确定不过关的那份（签名不对、架构不兼容、可执行文件坏了）不算：再测几次都一样，
+    // 照旧说不是官方原版，客户才知道要把它挪走。别处另一份不过关的不连累它（rejectedPaths 按路径记）。
+    const detectionUnfinished = !current || current.detectionFailed
     const architecture = await resolveMacosInstallArchitecture()
     cancellation?.throwIfCancelled()
     const signal = cancellation?.signal
@@ -3057,6 +3077,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         message: event.message,
       }),
       ...(signal ? { signal } : {}),
+      ...(detectionUnfinished
+        ? { detectionUnfinished: { message: codexDesktopDetectionUnfinishedMessage, rejectedPaths: current?.rejectedPaths ?? [] } }
+        : {}),
     })
     const installed = await withDownloadRoute(install)
     sendCodexDesktopInstallProgress(target, {
@@ -3366,10 +3389,21 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     // 句柄在入队之前登记：排在别的安装后面等待时也要能取消。
     const cancellation = installCancellations.begin(codexDesktopInstallKey)
+    let started = false
     return installationQueue.enqueue(
       codexDesktopInstallKey,
-      () => installCodexDesktopOperationWithProgress(target, cancellation),
-    ).finally(() => cancellation.release())
+      () => {
+        started = true
+        return installCodexDesktopOperationWithProgress(target, cancellation)
+      },
+      { signal: cancellation.signal },
+    ).catch((error: unknown) => {
+      if (started) throw error
+      // 排着队时取消的那次直接出队，不用等前面那项装完；它没跑过，取消的那句和进度在这里补上。
+      const cancelled = new InstallCancelledError('Codex 桌面端安装已取消')
+      sendCodexDesktopInstallProgress(target, { phase: 'error', percent: null, message: cancelled.message })
+      throw cancelled
+    }).finally(() => cancellation.release())
   }
 
   function cancelCodexDesktopInstall(): InstallCancellationOutcome {
@@ -3535,7 +3569,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // Reuse the bundle/architecture/OpenAI-signature verifier and bind
       // LaunchServices to that exact app, rather than a PATH or bundle alias.
       const desktopApp = await inspectCodexDesktop()
-      if (desktopApp.detectionFailed) throw new Error('Codex 桌面端检测未完成，请重新检测后再试')
+      if (desktopApp.detectionFailed) throw new Error(codexDesktopDetectionUnfinishedMessage)
       if (!desktopApp.installed || !desktopApp.path) {
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }

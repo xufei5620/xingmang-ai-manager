@@ -30,7 +30,8 @@ describe('renderer-v2 offline banner', () => {
     expect(markup).toContain('data-testid="offline-banner"')
     expect(markup).toContain('现在连不上网。已经装好的 AI 工具照常能用；充值、聊天、安装和更新要等网络恢复。')
     expect(markup).toContain('data-testid="offline-banner-recheck"')
-    expect(markup).toContain('重新检测')
+    expect(markup).toContain('>检查网络<')
+    expect(markup).not.toContain('重新检测')
   })
 
   it('points a broken proxy at the system proxy settings', () => {
@@ -59,7 +60,7 @@ describe('renderer-v2 offline banner', () => {
     expect(markup).toContain('打开系统代理设置')
     expect(markup).toContain('data-testid="proxy-bypass-banner-dismiss"')
     expect(markup).toContain('知道了')
-    expect(markup).not.toContain('重新检测')
+    expect(markup).not.toContain('检查网络')
   })
 
   it('sits at the top of the shell and relabels the balance failure', () => {

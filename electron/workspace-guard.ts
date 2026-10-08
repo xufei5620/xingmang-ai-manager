@@ -29,7 +29,8 @@ export type SensitiveWorkspaceKind =
   | 'provider-config'
 
 /**
- * once：沿用 #321，提示一次，用户点「仍然打开」后这个目录照常被记住。
+ * once：沿用 #321，在选择器里提示一次，用户点「仍然打开」后这个目录照常被记住；
+ * 不经过选择器开新对话时再问一次（sensitiveWorkspaceAsksAtLaunch）。
  * every-time：每次打开都提醒，也不记住。系统目录与四家工具存密钥的目录没有正当
  * 理由拿来当项目，在里面开 agent 等于把系统文件或明文 Key 交给它。
  */
@@ -94,6 +95,16 @@ export function sensitiveWorkspaceLabel(kind: SensitiveWorkspaceKind): string {
 
 export function sensitiveWorkspacePolicy(kind: SensitiveWorkspaceKind): SensitiveWorkspacePolicy {
   return sensitiveWorkspacePolicies[kind]
+}
+
+/**
+ * 没经过选择器、直接拿着这个目录来打开时，要不要先问一句。首页「打开」、「换一个目录」、
+ * 托盘和快捷键用的目录是从会话记录里推出来的：客户自己在主目录开终端用过 claude，按钮就写
+ * 「打开 张三」，以前点了不问一句就在整个主目录开新对话（已知39）。所以开新对话一律先问；
+ * 接着上次的对话只有「每次都提醒」的两类才问——就是在那儿聊的，换个文件夹也接不上。
+ */
+export function sensitiveWorkspaceAsksAtLaunch(kind: SensitiveWorkspaceKind, resuming: boolean): boolean {
+  return !resuming || sensitiveWorkspacePolicy(kind) === 'every-time'
 }
 
 /**

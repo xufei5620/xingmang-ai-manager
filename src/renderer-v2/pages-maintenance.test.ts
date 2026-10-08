@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, TutorialPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialTopicsFor } from './registry/tutorials'
@@ -22,6 +22,44 @@ describe('paid Codex check in HealthPage', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
     expect(markup).toContain('这一条证明你现在能用')
+  })
+})
+
+describe('health page order', () => {
+  it('puts the export next to re-check in the page head and the two explanation cards after the results', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    const head = markup.indexOf('导出检查报告')
+    expect(head).toBeGreaterThan(-1)
+    expect(head).toBeLessThan(markup.indexOf('重新检查'))
+    expect(markup.indexOf('重新检查')).toBeLessThan(markup.indexOf('xm-card-none'))
+    expect(markup.indexOf('xm-card-none')).toBeLessThan(markup.indexOf('连接自检'))
+  })
+
+  it('lists problems before warnings before passing items and keeps the order within each', () => {
+    const items = [
+      { code: 'A', state: 'pass' }, { code: 'B', state: 'warn' }, { code: 'C', state: 'fail' },
+      { code: 'D', state: 'pass' }, { code: 'E', state: 'error' }, { code: 'F', state: 'warn' },
+    ]
+    expect(sortDiagnosticsBySeverity(items).map((item) => item.code)).toEqual(['C', 'E', 'B', 'F', 'A', 'D'])
+    expect(items.map((item) => item.code)).toEqual(['A', 'B', 'C', 'D', 'E', 'F'])
+  })
+
+  it('labels each self-check row 正常, 有问题 or 没测成 and keeps an unconfigured tool grey', () => {
+    const base = { siteId: 'solov', endpoint: null, model: null, detail: null, status: null, durationMs: 1, checkedAt: '2026-10-04T00:00:00Z', nextStep: '照着做' }
+    const ok = { ...base, provider: 'claude' as const, ok: true, layer: 'network' as const, summary: '连接正常' }
+    const broken = { ...base, provider: 'codex' as const, ok: false, layer: 'credential' as const, summary: '密钥不对' }
+    const service = { ...base, provider: 'grok' as const, ok: false, layer: 'service' as const, summary: '服务在维护' }
+    const unconfigured = { ...base, provider: 'gemini' as const, ok: false, layer: 'unconfigured' as const, summary: '还没配' }
+    expect(connectionRowStatus({ result: ok })).toEqual({ label: '正常', tone: 'ok' })
+    expect(connectionRowStatus({ result: broken })).toEqual({ label: '有问题', tone: 'bad' })
+    expect(connectionRowStatus({ result: service })).toEqual({ label: '有问题', tone: 'warn' })
+    expect(connectionRowStatus({ result: unconfigured })).toEqual({ label: '未配置', tone: 'neutral' })
+    expect(connectionRowStatus({ result: null })).toEqual({ label: '没测成', tone: 'bad' })
+    const rows = [
+      { id: 'claude', result: ok }, { id: 'gemini', result: unconfigured }, { id: 'codex', result: broken },
+      { id: 'workbuddy', result: null }, { id: 'grok', result: service },
+    ]
+    expect(sortConnectionRows(rows).map((row) => row.id)).toEqual(['codex', 'grok', 'workbuddy', 'gemini', 'claude'])
   })
 })
 
@@ -278,6 +316,57 @@ describe('tutorial topics', () => {
   })
 })
 
+describe('settings page lead', () => {
+  it('says changes save themselves and how to search, with the Mac shortcut on a Mac', () => {
+    expect(settingsPageLead('win')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
+    expect(settingsPageLead('linux')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
+    expect(settingsPageLead('mac')).toBe('改完自动保存。找不到某一项，按 ⌘K 搜它的名字。')
+  })
+})
+
+describe('settings page before the settings arrive', () => {
+  it('says it is still reading instead of claiming anything is unsupported', () => {
+    const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
+    expect(markup).toContain('正在读取设置…')
+    expect(markup).not.toContain('此版本暂不支持')
+    expect(markup).toContain('>更新与关于</button>')
+    expect(markup).not.toContain('>关于</button>')
+  })
+})
+
+describe('updates page startup switches', () => {
+  it('replaces the 去设置 button with the two switches, greyed out until the settings are read', () => {
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('去设置')
+    expect(markup).toContain('启动时检查新版本')
+    expect(markup).toContain('发现新版本会提醒你')
+    expect(markup).toMatch(/data-testid="updates-check-on-startup"[^>]*>[^]*?disabled=""/)
+  })
+
+  it('shows the saved values the app already holds', () => {
+    const settings = { checkUpdatesOnStartup: false, autoUpdate: true } as Parameters<typeof UpdatesPage>[0]['appSettings']
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge, appSettings: settings }))
+    expect(markup).toMatch(/aria-checked="false"[^>]*aria-label="启动时检查新版本"/)
+  })
+})
+
+describe('updates page layout', () => {
+  it('lines the current version up with the other rows and writes it in body text', () => {
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+    const row = markup.match(/<div class="xm-list-row"[^>]*data-testid="updates-current-version"[^>]*>.*?<\/div><div class="xm-row-actions">/)?.[0] ?? ''
+    expect(row).toContain('当前版本')
+    expect(row).not.toContain('xm-row-icon')
+    expect(row).toContain('class="v2-update-version"')
+  })
+
+  it('shows what to know before installing without a fold', () => {
+    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('<details')
+    expect(markup).toContain('<h3>安装前需要知道</h3>')
+    expect(markup).toMatch(/data-testid="updates-install-note"[^>]*><h3>安装前需要知道<\/h3><p>装之前先保存工具里没做完的东西。/)
+  })
+})
+
 describe('settings onboarding entries', () => {
   it('offers both 「再看一遍」 and 「重看导览」 when the app can drive them', () => {
     const markup = renderToStaticMarkup(
@@ -300,16 +389,42 @@ describe('settings onboarding entries', () => {
     expect(markup).toContain('data-testid="settings-start-guide"')
     expect(markup).not.toContain('data-testid="settings-replay-tour"')
   })
+
+  it('marks both rows so the top search can scroll to them', () => {
+    const markup = renderToStaticMarkup(
+      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
+    )
+    expect(markup).toContain('data-anchor="guide"')
+    expect(markup).toContain('data-anchor="tour"')
+  })
 })
 
 describe('withElevationNotice', () => {
   it('hangs the notice off the line the row already shows, with the same separator', () => {
-    // ToolStatusReason 把后面的原因也用 ' · ' 接上，这里换个分隔符会让一行里出现两种。
     expect(withElevationNotice('OpenAI', '这一步需要管理员授权')).toBe('OpenAI · 这一步需要管理员授权')
   })
 
   it('leaves the row untouched where nothing elevates', () => {
     expect(withElevationNotice('命令行工具需要的运行环境', null)).toBe('命令行工具需要的运行环境')
+  })
+})
+
+describe('installGuideTopic', () => {
+  it('sends each maintenance row to the chapter that installs it instead of the first chapter', () => {
+    const title = (id: string) => tutorialTopics.find((entry) => entry.id === id)?.title
+    expect(title(installGuideTopic('codexDesktop', 'macos'))).toBe('Mac 上装桌面端')
+    expect(title(installGuideTopic('codexDesktop', 'windows'))).toBe('Codex 桌面端怎么安装？')
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+      expect(title(installGuideTopic(provider, 'macos'))).toBe('进阶：安装与使用命令行工具')
+      expect(title(installGuideTopic(provider, 'windows'))).toBe('进阶：安装与使用命令行工具')
+    }
+    for (const runtime of ['node', 'python'] as const) {
+      expect(title(installGuideTopic(runtime, 'macos'))).toBe('Mac 上准备 Node.js 和 Python')
+      expect(title(installGuideTopic(runtime, 'windows'))).toBe('进阶：安装与使用命令行工具')
+      expect(title(installGuideTopic(runtime, 'linux'))).toBe('进阶：安装与使用命令行工具')
+      // 还没读到是哪种电脑时不猜 Mac。
+      expect(title(installGuideTopic(runtime, undefined))).toBe('进阶：安装与使用命令行工具')
+    }
   })
 })
 
@@ -324,5 +439,37 @@ describe('installResultMessage', () => {
 
   it('says nothing when the customer turned down switching the official-installer copy', () => {
     expect(installResultMessage('declined')).toBeNull()
+  })
+})
+
+describe('installJobRunning', () => {
+  // 首页的卸载也挂在工具编号下；「安装卸载」页那一行不能把它当成在装，标「安装中」。
+  it('counts a Home job as an install unless it is an uninstall', () => {
+    expect(installJobRunning(undefined)).toBe(false)
+    expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
+    expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
+  })
+})
+
+describe('maintenanceRowJobKeys', () => {
+  // 第四十一批 B：首页那份任务里，只有这一页有行的几个跑完时才要重读本页。
+  it('keeps only the Home jobs this page draws a row for', () => {
+    const job = { label: '正在安装', log: [] }
+    expect(maintenanceRowJobKeys(undefined)).toEqual([])
+    expect(maintenanceRowJobKeys({
+      gemini: job, codexDesktop: job, node: job, python: job,
+      git: job, 'launch:codexDesktop': job, workbuddy: job,
+    })).toEqual(['gemini', 'codexDesktop', 'node', 'python'])
+  })
+})
+
+describe('maintenanceJobsFinished', () => {
+  it('reports a finish only when a job that was running is gone', () => {
+    expect(maintenanceJobsFinished([], [])).toBe(false)
+    expect(maintenanceJobsFinished([], ['gemini'])).toBe(false)
+    expect(maintenanceJobsFinished(['gemini'], ['gemini'])).toBe(false)
+    expect(maintenanceJobsFinished(['gemini'], ['gemini', 'node'])).toBe(false)
+    expect(maintenanceJobsFinished(['node', 'gemini'], ['gemini'])).toBe(true)
+    expect(maintenanceJobsFinished(['claude'], [])).toBe(true)
   })
 })

@@ -36,8 +36,8 @@ describe('external client saved notice', () => {
   })
 
   it('says the key list failed to load without a doubled full stop', () => {
-    expect(accountKeyListFailureText('操作没有成功，请重试或查看反馈日志。'))
-      .toBe('账号密钥列表读取失败：操作没有成功，请重试或查看反馈日志。可以使用已有工具密钥或自行填写。')
+    expect(accountKeyListFailureText('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。'))
+      .toBe('账号密钥列表读取失败：操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。可以使用已有工具密钥或自行填写。')
     expect(accountKeyListFailureText('连不上星芒服务器，请检查网络后重试'))
       .toBe('账号密钥列表读取失败：连不上星芒服务器，请检查网络后重试。可以使用已有工具密钥或自行填写。')
   })

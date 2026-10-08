@@ -177,6 +177,37 @@ describe('cli process probe', () => {
     expect(classifyOperationError(message!)).toBe('toolRunning')
   })
 
+  it('says it was the uninstall that the running tool stopped', () => {
+    // 卸载撞上的是同一把锁（npm 先把包目录挪开再删），客户看到的还是同一句，只是
+    // 动作说成「卸载」（第三十三批 C）。
+    const detail = '命令执行失败（退出码 1）：node.exe（EPERM；Error: EPERM: operation not permitted, rename）'
+    const counted = describeOccupiedUpdateFailure({
+      toolName: 'Codex CLI',
+      action: '卸载',
+      error: detail,
+      probe: checkedProbe(1),
+      detail,
+    })
+    expect(counted).toBe(
+      'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+        + `原始报错：${detail}`,
+    )
+    expect(classifyOperationError(counted!)).toBe('toolRunning')
+
+    const busy = '命令执行失败（退出码 1）：node.exe（EBUSY；Error: EBUSY: resource busy or locked, rename）'
+    const uncounted = describeOccupiedUpdateFailure({
+      toolName: 'Codex CLI',
+      action: '卸载',
+      error: busy,
+      probe: { status: 'checked', processes: [] },
+      detail: busy,
+    })
+    expect(uncounted).toBe(
+      'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+        + `原始报错：${busy}`,
+    )
+  })
+
   it('only warns before the update when it really saw something', () => {
     expect(describeRunningCliProcessWarning('Claude Code', checkedProbe(3))).toContain('3 个进程')
     expect(describeRunningCliProcessWarning('Claude Code', { status: 'checked', processes: [] })).toBeNull()

@@ -1,11 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Home, lowBalanceText, type HomeProps } from './Home'
-import type { ToolboxSnapshot } from './model'
+import { describe, expect, it } from 'vitest'
+import { Home, bootstrapNoticeExpiresAt, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { presentTools, type ToolboxSnapshot } from './model'
+import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import type { AccountBootstrapResult } from './account-bootstrap'
+import { configurationFailureMessages, type AccountBootstrapResult } from './account-bootstrap'
 
 const cliStatus: Record<string, unknown> = {
   installed: true, version: '1.2.3', path: 'C:\\fixture\\bin', installDirectory: 'C:\\fixture',
@@ -137,7 +138,7 @@ describe('renderer-v2 home install cancellation', () => {
   it('reports that the cancel request is still being handled', () => {
     const markup = render({ claude: { label: '正在安装', log: [], cancellable: true, cancelling: true } })
     expect(markup).toContain('data-testid="tool-claude-cancel"')
-    expect(markup).toContain('取消中')
+    expect(markup).toContain('正在停止')
   })
 
   it('leaves an install that cannot be cancelled without the button', () => {
@@ -191,49 +192,76 @@ describe('renderer-v2 home install cancellation', () => {
 })
 
 describe('renderer-v2 home first-run suggestion', () => {
-  afterEach(() => { vi.unstubAllGlobals() })
-
-  function dismissedStorage(value: string) {
-    return { localStorage: { getItem: () => value, setItem: () => undefined, removeItem: () => undefined } }
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const noRecords = new Set<ProviderId>()
+  function installedTools(clis: Record<string, unknown> = allTools, from = snapshot(clis)) {
+    return presentTools(from, null).filter((tool) => tool.status.installed)
   }
 
-  it('offers the first command and prompt once a tool is installed and connected', () => {
-    const markup = render({})
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).toContain('试试第一条命令')
-    expect(markup).toContain('data-testid="home-first-run-steps-command"')
-    expect(markup).toContain('>claude<')
-    expect(markup).toContain('data-testid="home-first-run-steps-copy-command"')
-    expect(markup).toContain('data-testid="home-first-run-steps-copy-prompt"')
-    expect(markup).toContain('data-testid="home-first-run-dismiss"')
+  // 记录还没读回来就先给卡，读完发现早就用过又收走，老用户会看到它一闪而过。
+  it('waits for the records before offering the card', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], null)).toBeUndefined()
+    expect(render({})).not.toContain('data-testid="home-first-run"')
+  })
+
+  it('offers the first command once a tool is installed and connected', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], noRecords)?.id).toBe('claude')
   })
 
   it('moves on to the next tool once its card has been closed', () => {
-    vi.stubGlobal('window', dismissedStorage('["claude"]'))
-    const markup = render({})
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).toContain('Codex CLI')
-    expect(markup).toContain('>codex<')
-    expect(markup).not.toContain('>claude<')
+    expect(pickFirstRunTool(installedTools(), {}, ['claude'], noRecords)?.id).toBe('codex')
   })
 
   it('stays gone once every tool has been closed', () => {
-    vi.stubGlobal('window', dismissedStorage('["claude","codex","gemini","grok"]'))
-    expect(render({})).not.toContain('data-testid="home-first-run"')
+    expect(pickFirstRunTool(installedTools(), {}, ['claude', 'codex', 'gemini', 'grok'], noRecords)).toBeUndefined()
   })
 
   // 还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
   it('waits until the tool is actually connected', () => {
-    const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus },
-      { snapshot: unreadableConfig(), failures: configFailure })
-    expect(markup).not.toContain('data-testid="home-first-run"')
+    expect(pickFirstRunTool(installedTools(allTools, unreadableConfig()), {}, [], noRecords)).toBeUndefined()
   })
 
   it('keeps the card off a tool that is still installing', () => {
-    const markup = render({ claude: { label: '正在安装', log: [] } })
-    expect(markup).toContain('data-testid="home-first-run"')
-    expect(markup).not.toContain('>claude<')
-    expect(markup).toContain('>codex<')
+    expect(pickFirstRunTool(installedTools(), { claude: { label: '正在安装', log: [] } as unknown as ToolJob }, [], noRecords)?.id).toBe('codex')
+  })
+
+  // 「最近」里已经有它的记录，说明早就用起来了。
+  it('skips a tool that already shows up in the records', () => {
+    expect(pickFirstRunTool(installedTools(), {}, [], new Set<ProviderId>(['claude', 'codex']))?.id).toBe('grok')
+  })
+})
+
+// 「最近」卡在静态渲染里还没读到记录，按钮本身由 app-check.mjs 的浏览器用例盯着；这里只盯判断。
+describe('renderer-v2 home recent resume for tools that are not installed (第四十一批 A)', () => {
+  const allTools = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }
+  const missing = { ...cliStatus, installed: false, version: null, path: null }
+
+  it('offers it for an installed tool', () => {
+    expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'claude')).toBe(true)
+  })
+
+  // 点下去走的是同一个「打开」，只会弹「工具尚未安装，请先完成准备。」。
+  it('drops it for a tool that is not installed', () => {
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: missing }), null), 'claude')).toBe(false)
+  })
+
+  // 只装了 Codex 桌面端：记录在 Codex 名下，接着聊开的却是 Codex CLI。
+  it('looks at Codex CLI rather than the desktop app for a Codex record', () => {
+    const desktopOnly = { ...snapshot({ ...allTools, codex: missing }), platform: { codexDesktop: { launch: true } } } as unknown as ToolboxSnapshot
+    const tools = presentTools(desktopOnly, null)
+    expect(tools.find((tool) => tool.id === 'codexDesktop')?.status.installed).toBe(true)
+    expect(recentResumeOffered(tools, 'codex')).toBe(false)
+  })
+
+  // 检测失败不当没装（A4）：按钮照旧给，点了说检测失败的原因。
+  it('keeps it when detection failed instead of calling the tool missing', () => {
+    const failed = { ...missing, detectionFailed: true, detectionError: 'npm 查询超时' }
+    expect(recentResumeOffered(presentTools(snapshot({ ...allTools, claude: failed }), null), 'claude')).toBe(true)
+  })
+
+  // 检测结果还没回来：照旧摆着、灰着等，回来是没装的再收走。
+  it('keeps it while the scan has not come back yet', () => {
+    expect(recentResumeOffered([], 'claude')).toBe(true)
   })
 })
 
@@ -358,6 +386,54 @@ describe('renderer-v2 home before the startup scan finishes', () => {
     const markup = whileChecking({ account, bootstrap })
     expect(disabled(markup, 'tool-claude-primary')).toBe(true)
     expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+  })
+
+  it.each(['configuring', 'verifying'] as const)('keeps only the changing tool and its workspace menu waiting after the scan while %s', (phase) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const bootstrap = { phase, label: '正在更新连接', percent: 65, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(true)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(true)
+    expect(disabled(markup, 'tool-codex-primary')).toBe(false)
+    expect(disabled(markup, 'tool-codex-workspaces')).toBe(false)
+  })
+
+  it.each(['official', 'manual'] as const)('keeps an existing %s connection openable during another account sync after the scan', (source) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project', providers: {
+      ...base.config.providers,
+      claude: { ...base.config.providers.claude, ...(source === 'official'
+        ? { hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
+        : { configurationOwnership: 'manual' as const }) },
+    } } }
+    const bootstrap = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it.each([
+    ['after switching saved accounts', { account }],
+    ['while a startup restore keeps retrying', { accountRestoring: true }],
+  ] as const)('keeps account tools openable after the scan with no key sync running %s', (_case, state) => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const markup = render({}, undefined, { snapshot: current, loading: false, bootstrap: null, ...state })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
+  })
+
+  it('releases the migrated tool and its workspace menu after verification finishes', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project' } }
+    const bootstrap = {
+      phase: 'verifying' as const, label: '连接已更新', percent: 100, scope: 'scope', connectedKeyChanges: ['claude' as const],
+      result: { readyKeys: [], configured: ['claude' as const], failed: [], skipped: [], warnings: [], networkBlocked: false },
+    }
+    const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
+    expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    expect(disabled(markup, 'tool-claude-workspaces')).toBe(false)
   })
 
   it('opens once the account key round has finished', () => {
@@ -507,6 +583,82 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).toContain('账号 Key 初始化没有完成：星芒账号已变化，已停止本次 Key 配置')
     expect(markup).not.toContain(offline)
   })
+
+  // 已知12：「已完成 N 组…」只是说一声做完了，照右下角提示条的读完时长摆着就收起，不再整场挂着。
+  it('lets the all-done line go after the toast reading time', () => {
+    const done = { phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', result: bootstrapResult({ configured: ['claude', 'codex'] }) }
+    // 「已完成 2 组工具的 Key 配置。」去掉空格 14 个字：2400 + 2 × 200。
+    expect(bootstrapNoticeExpiresAt({ ...done, finishedAt: 1_000 })).toBe(1_000 + 2_800)
+    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() } })).toContain('已完成 2 组工具的 Key 配置。')
+    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() - 60_000 } })).not.toContain('已完成 2 组工具的 Key 配置。')
+    // 外壳没说什么时候做完的（旧调用方）就照旧一直摆着。
+    expect(bootstrapNoticeExpiresAt(done)).toBeNull()
+    expect(render({}, undefined, { bootstrap: done })).toContain('已完成 2 组工具的 Key 配置。')
+  })
+
+  it('keeps the line up while something still needs the user', () => {
+    const finishedAt = Date.now() - 60_000
+    const failed = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt,
+        result: bootstrapResult({ configured: ['claude'], failed: [{ provider: 'gemini', message: '当前分组未返回可用模型' }] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(failed).toContain('已完成 1 组工具的 Key 配置。')
+    expect(failed).toContain('当前分组未返回可用模型')
+    const warned = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', finishedAt,
+        result: bootstrapResult({ configured: ['claude'], warnings: ['Key 同步阶段：fixture'] }),
+      },
+    })
+    expect(warned).toContain('Key 同步阶段：fixture')
+    expect(bootstrapNoticeExpiresAt({
+      phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt,
+      result: bootstrapResult({ networkBlocked: true, configured: ['claude'] }),
+    })).toBeNull()
+  })
+
+  // yoyo 10-8：线路的事不要太多提示。跟着连接线路改工具配置的那一轮首页不摆进度、只换了线路也不说「已完成…」，
+  // 出了错照常说；首页也不再有切线路的黄条和「要重开」那句。
+  const followedRoute = (overrides: Partial<AccountBootstrapResult> = {}) => ({
+    phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', quiet: true,
+    result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'], ...overrides }),
+  })
+
+  it('shows no progress while it quietly moves the tools to the current line', () => {
+    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在为 1 个已安装工具写入 Key', percent: 65, scope: 'scope', quiet: true } })
+    expect(markup).not.toContain('正在为 1 个已安装工具写入 Key')
+    expect(markup).not.toContain('v2-bootstrap-notice')
+  })
+
+  it('still says when the quiet round did not finish', () => {
+    const markup = render({}, undefined, {
+      bootstrap: { phase: 'syncing', label: '正在同步账号专属 Key', percent: 5, scope: 'scope', quiet: true, error: '星芒账号已变化，已停止本次 Key 配置' },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('role="alert"')
+    expect(markup).toContain('>重新同步<')
+  })
+
+  it('does not announce a round that only moved the tools to the current line', () => {
+    expect(render({}, undefined, { bootstrap: followedRoute() })).not.toContain('v2-bootstrap-notice')
+    // 开机那一轮不是悄悄的那一轮，只换了线路也一样不说。
+    expect(render({}, undefined, { bootstrap: { ...followedRoute(), quiet: undefined } })).not.toContain('v2-bootstrap-notice')
+    // 同一轮里真写了 Key 的照常说。
+    expect(render({}, undefined, { bootstrap: followedRoute({ configured: ['claude', 'codex'] }) })).toContain('已完成 2 组工具的 Key 配置。')
+  })
+
+  it('still shows the failures of a round that moved the tools, without a word about the line', () => {
+    const markup = render({}, undefined, {
+      bootstrap: followedRoute({ configured: [], routeFollowed: undefined, failed: [{ provider: 'codex', message: configurationFailureMessages.relayMismatch }] }),
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain(configurationFailureMessages.relayMismatch)
+    expect(markup).toContain('>重新同步<')
+    expect(markup).not.toContain('连接线路')
+  })
 })
 
 /**
@@ -585,7 +737,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: gitMissingOn('macos') })
     expect(markup).toContain('data-testid="home-runtime-git"')
     const hint = markup.slice(markup.indexOf('data-testid="home-runtime-git-hint"'))
-    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('苹果自己的安装窗口')
+    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('在苹果弹出的窗口里点“安装”')
     expect(markup).not.toMatch(/xcode-select|brew install git/)
   })
 
@@ -685,6 +837,21 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('这一步需要管理员授权')
   })
 
+  it('keeps the elevation notices off a Windows app that already runs with administrator rights', () => {
+    // 已知19：自带 Administrator 之类，装 Node.js 和 Codex 桌面端都不弹授权窗口。
+    const base = runtimeSnapshot('windows', { node: true })
+    const elevated = {
+      ...base,
+      platform: { ...base.platform, processElevated: true, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: { ...base.system, desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null } } },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: elevated })
+    expect(markup).toContain('准备 Node.js')
+    expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
+    expect(markup).not.toContain('管理员授权')
+    expect(markup).not.toContain('授权窗口')
+  })
+
   it('stays quiet when the probe failed, because then nobody knows whether it is installed', () => {
     const base = runtimeSnapshot('macos', { node: true })
     const failed = {
@@ -694,8 +861,9 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: failed })
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
     expect(markup).not.toContain('data-testid="home-runtime-node-managed"')
-    // 按钮照旧在，想重新准备一次还是能点。
-    expect(markup).toContain('准备 Node.js')
+    // 检测失败给「重新检测」：说不准装没装，不先劝人去装。
+    expect(markup).toContain('data-testid="home-runtime-rescan"')
+    expect(markup).not.toContain('data-testid="home-runtime-node"')
   })
 
   it('says nothing about installing runtimes once both are present', () => {
@@ -770,6 +938,147 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
       expect(markup).not.toContain('data-testid="tool-claude-repair-codex"')
       expect(markup).toContain('已配好')
+    })
+  })
+
+  // 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml，命令行和桌面端都打不开。
+  // 原来首页把它当成没有配置，写的是「还没配 Key」。
+  describe('a configuration the tool itself cannot read', () => {
+    const brokenDetail = 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留'
+    function brokenSnapshot(codex: Record<string, unknown> = {}): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, codex: { ...providerConfig, configurationOwnership: 'account', configBroken: true, ...codex } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+    function rowButton(markup: string, testId: string): string {
+      const index = markup.indexOf(`data-testid="${testId}"`)
+      return index < 0 ? '' : markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('</button>', index))
+    }
+    function toolRow(markup: string, tool: string): string {
+      const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+      const next = markup.indexOf('data-testid="tool-row-', start + 1)
+      return start < 0 ? '' : markup.slice(start, next < 0 ? undefined : next)
+    }
+
+    it('says the file is broken on both Codex rows and offers the fix on each', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        const row = toolRow(markup, tool)
+        expect(row, tool).toContain('配置文件坏了')
+        expect(row, tool).toContain(`>${brokenDetail}<`)
+        const button = rowButton(row, `tool-${tool}-repair-config`)
+        expect(button, tool).toContain('title="改之前会先备份原来的设置"')
+        expect(button, tool).toContain('修好它')
+      }
+      expect(markup).not.toContain('solov')
+    })
+
+    it('no longer reports a file it cannot parse as a missing key', () => {
+      const unparsed = brokenSnapshot({ matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' })
+      const markup = render({}, undefined, { snapshot: unparsed, onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(toolRow(markup, tool), tool).toContain('配置文件坏了')
+        expect(toolRow(markup, tool), tool).not.toContain('还没配 Key')
+        expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
+      }
+    })
+
+    it('says so on a ChatGPT login too, instead of calling it the official account', () => {
+      const chatgpt = brokenSnapshot({ hasApiKey: false, matchesRelay: false, actualBaseUrl: '', codexAuthMode: 'chatgpt', configurationOwnership: 'missing' })
+      const markup = render({}, undefined, { snapshot: chatgpt, onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(toolRow(markup, tool), tool).toContain('配置文件坏了')
+        expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
+      }
+    })
+
+    it('puts the broken file ahead of the fixes that would have to read it', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot({ codexProviderShadowed: true }), onRepairConfig: () => undefined, onSwitchAccount: () => undefined })
+      expect(toolRow(markup, 'codex')).toContain('配置文件坏了')
+      expect(markup).not.toContain('连接设置要修')
+      expect(markup).not.toContain('data-testid="tool-codex-repair-codex"')
+    })
+
+    it('leaves the other tools on their usual state', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
+      expect(toolRow(markup, 'claude')).toContain('已配好')
+      expect(toolRow(markup, 'claude')).not.toContain('data-testid="tool-claude-repair-config"')
+    })
+
+    it('shows the state without a button when the host offers no fix', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot() })
+      expect(toolRow(markup, 'codex')).toContain('配置文件坏了')
+      expect(markup).not.toContain('-repair-config"')
+    })
+
+    // 两行读的是同一份配置：从哪一行点的，两行都是「修复中」，菜单收起，不会再叠一次重置。
+    it('keeps both Codex rows busy while the fix runs', () => {
+      const markup = render({ 'repair-config:codex': { label: brokenDetail, log: [brokenDetail] } }, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        expect(rowButton(markup, `tool-${tool}-primary`), tool).toContain('修复中')
+        expect(toolRow(markup, tool), tool).not.toContain('aria-haspopup="menu"')
+      }
+      expect(rowButton(markup, 'tool-claude-primary')).not.toContain('修复中')
+    })
+
+    // 已知44：星芒自己也读不出 Key 时，原来按「文件在、没 Key」把 Claude Code、Gemini CLI 写成「官方账号」。
+    const unreadable = { hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
+    function withConfig(providers: Record<string, Record<string, unknown>>): ToolboxSnapshot {
+      const base = brokenSnapshot({ configBroken: false })
+      const entries = Object.entries(providers).map(([id, value]) => [id, { ...providerConfig, ...value }])
+      return { ...base, config: { ...base.config, providers: { ...base.config.providers, ...Object.fromEntries(entries) } } } as unknown as ToolboxSnapshot
+    }
+
+    it('says a Claude Code or Gemini CLI settings file is broken instead of calling it the official account', () => {
+      const broken = withConfig({ claude: { ...unreadable, configBroken: true }, gemini: { ...unreadable, configBroken: true } })
+      const markup = render({}, undefined, { snapshot: broken, onRepairConfig: () => undefined })
+      for (const [tool, name] of [['claude', 'Claude Code'], ['gemini', 'Gemini CLI']]) {
+        const row = toolRow(markup, tool)
+        expect(row, tool).toContain('配置文件坏了')
+        expect(row, tool).toContain(`>${name} 读不了这份配置，打开会报错。修之前会先备份，历史会话保留<`)
+        expect(row, tool).not.toContain('官方账号')
+        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('修好它')
+      }
+      expect(toolRow(markup, 'codex')).toContain('已配好')
+    })
+
+    it('says Codex cannot read its login on both Codex rows', () => {
+      const markup = render({}, undefined, { snapshot: withConfig({ codex: { ...unreadable, codexAuthBroken: true } }), onRepairConfig: () => undefined })
+      for (const tool of ['codex', 'codexDesktop']) {
+        const row = toolRow(markup, tool)
+        expect(row, tool).toContain('配置文件坏了')
+        expect(row, tool).toContain('>Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留<')
+        expect(row, tool).not.toContain('官方账号')
+        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('修好它')
+      }
+    })
+
+    it('says the config file first when Codex can read neither file', () => {
+      const markup = render({}, undefined, { snapshot: brokenSnapshot({ codexAuthBroken: true }), onRepairConfig: () => undefined })
+      expect(toolRow(markup, 'codex')).toContain(`>${brokenDetail}<`)
+      expect(markup).not.toContain('读不了登录信息')
+    })
+
+    it('still calls a readable setup without a key the official account', () => {
+      const markup = render({}, undefined, { snapshot: withConfig({ claude: unreadable }), onRepairConfig: () => undefined })
+      expect(toolRow(markup, 'claude')).toContain('官方账号')
+      expect(toolRow(markup, 'claude')).not.toContain('配置文件坏了')
+    })
+
+    // 开机先画的是上次的检测结果，文件可能已经被改好了，等这次的结果再说。
+    it('waits for this run\'s check before calling the file broken', () => {
+      const base = brokenSnapshot()
+      const cached = { ...base, system: { ...base.system, cachedAt: '2026-10-06T00:00:00.000Z' } } as unknown as ToolboxSnapshot
+      const markup = render({}, undefined, { snapshot: cached, onRepairConfig: () => undefined })
+      expect(markup).toContain('data-testid="tool-row-codex"')
+      expect(markup).not.toContain('配置文件坏了')
+      expect(markup).not.toContain('-repair-config"')
     })
   })
 
@@ -1178,7 +1487,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(node).toContain('可选 · 未装')
     expect(node).not.toContain('is-warn')
     expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
-    expect(markup).not.toContain('Claude Code 的一部分功能')
+    expect(markup).not.toContain('Claude Code 的部分功能')
     const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
     expect(elevation).toContain('is-quiet')
     expect(elevation).toContain(optionalElevation)
@@ -1189,6 +1498,18 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(markup).toContain('data-testid="home-runtime-git"')
   })
 
+  it('keeps saying Node.js needs no separate click when the app already runs with administrator rights', () => {
+    // 已知19：不弹授权窗口，只去掉弹窗那半句。
+    const base = machine('windows')
+    const elevated = { ...base, platform: { ...base.platform, processElevated: true } } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: elevated })
+    const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
+    expect(elevation).toContain('is-quiet')
+    expect(elevation).toContain('Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。')
+    expect(markup).not.toContain('授权窗口')
+    expect(markup).not.toContain('管理员授权')
+  })
+
   it('keeps the warning and names the step by the home button once Claude Code is installed', () => {
     const markup = render({}, undefined, { snapshot: machine('windows', { claude: cliStatus }) })
     const node = opening(markup, 'home-runtime-row-node', '</div>')
@@ -1196,7 +1517,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     expect(node).not.toContain('可选')
     expect(node).toContain('is-warn')
     expect(markup).toContain('data-testid="home-runtime-git-hint"')
-    expect(markup).toContain('Claude Code 的一部分功能')
+    expect(markup).toContain('Claude Code 的部分功能')
     const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
     expect(elevation).not.toContain('is-quiet')
     expect(elevation).toContain(requiredElevation)
@@ -1251,5 +1572,72 @@ describe('Home balance card while a saved login is being restored', () => {
     expect(restoring).toContain('登录恢复后自动显示用量')
     expect(restoring).not.toContain('登录后查看用量')
     expect(render({})).toContain('登录后查看用量')
+  })
+})
+
+describe('Home sections and balance labels', () => {
+  function section(markup: string, testId: string): string {
+    const at = markup.indexOf(`data-testid="${testId}"`)
+    if (at < 0) return ''
+    return markup.slice(markup.lastIndexOf('<', at), markup.indexOf('</section>', at))
+  }
+
+  it('keeps a tool whose detection failed under 你的工具 and says how many were not detected', () => {
+    // 主进程探测失败时回的就是 installed:false + detectionFailed（buildToolStatusFromSettled）。
+    const failed = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null, detectionFailed: true, detectionError: '命令入口无法安全执行' }
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: failed })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
+    const yours = section(markup, 'home-your-tools')
+    expect(yours).toContain('data-testid="tool-row-gemini"')
+    expect(yours).toMatch(/\d+ 个已装 · \d+ 个已连接 · 1 个没检测出来/)
+    expect(section(markup, 'home-available')).not.toContain('data-testid="tool-row-gemini"')
+  })
+
+  it('says what the balance card is waiting for instead of claiming nothing was read', () => {
+    const account = { id: 7, username: 'peaker', displayName: 'peaker', group: 'default', quota: 0, usedQuota: 0, requestCount: 0 } as unknown as HomeProps['account']
+    const reading = render({}, undefined, { account })
+    expect(section(reading, 'home-balance')).toContain('—')
+    expect(reading).toContain('正在读取余额')
+    expect(reading).not.toContain('暂时没有读到')
+    expect(render({}, undefined, { accountRestoring: true })).toContain('正在恢复登录')
+  })
+})
+
+// v0.1.31 的旧界面在 Codex 卡片上挂过「套餐 Plus」「续期 4天后」，重做新界面后只剩「官方账号」。
+describe('renderer-v2 home official ChatGPT plan', () => {
+  function officialSnapshot(codex: Record<string, unknown>): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      config: {
+        ...base.config,
+        providers: { ...base.config.providers, codex: { ...providerConfig, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', configurationOwnership: 'missing', codexAuthMode: 'chatgpt', ...codex } },
+      },
+    } as unknown as ToolboxSnapshot
+  }
+  function toolRow(markup: string, tool: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    return start < 0 ? '' : markup.slice(start, next < 0 ? undefined : next)
+  }
+
+  it('puts the plan and the renewal on both Codex rows', () => {
+    const renewsAt = new Date(Date.now() + 4 * 86_400_000 + 3_600_000)
+    const markup = render({}, undefined, { snapshot: officialSnapshot({ officialAccountPlan: 'Plus', officialAccountRenewsAt: renewsAt.toISOString() }) })
+    const date = `${renewsAt.getFullYear()}年${renewsAt.getMonth() + 1}月${renewsAt.getDate()}日续期`
+    for (const tool of ['codex', 'codexDesktop']) {
+      const row = toolRow(markup, tool)
+      expect(row, tool).toContain('官方账号 · Plus · 4天后续期')
+      expect(row, tool).toContain(date)
+    }
+  })
+
+  it('keeps the plain wording when the plan was not read', () => {
+    const markup = render({}, undefined, { snapshot: officialSnapshot({ officialAccountPlan: null, officialAccountRenewsAt: null }) })
+    const row = toolRow(markup, 'codex')
+    expect(row).toContain('官方账号')
+    expect(row).not.toContain('续期')
   })
 })

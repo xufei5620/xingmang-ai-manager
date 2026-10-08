@@ -64,11 +64,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.277',
-      verifiedAt: '2026-09-18',
+      version: '2.1.291',
+      verifiedAt: '2026-10-06',
       verifiedSites: [],
-      note: '当前 npm latest,且修复了 2.1.275 引入的「指向网关时每个请求 400」回归',
-      userNote: '修好了一个会让每次提问都失败的问题',
+      note: '当前 npm latest;2.1.278~2.1.291 没有新的网关回归,修了中转断流被当成完成、重复流事件让工具调用跑两遍、工具返回非文本后每轮 400、网关拒收 structured outputs 时标题与记忆失败、网关拒收 beta 头时请求失败,2.1.291 修了 2.1.288 起退出时丢最后几条消息;2.1.285 起接自定义 ANTHROPIC_BASE_URL 时上下文按 1M 算(以前 200K),中转支持 1M,配置不压',
+      userNote: '修好了几个会让回答中途断掉、或者每次提问都失败的问题',
     },
     blocked: [
       {
@@ -85,11 +85,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   codex: {
     recommended: {
-      version: '0.156.1',
-      verifiedAt: '2026-09-23',
+      version: '0.160.1',
+      verifiedAt: '2026-10-06',
       verifiedSites: [],
-      note: '当前 npm latest,自带 GPT-6 Sol / Luna 的模型资料;0.155.1 用这两个模型会报「Model metadata not found」并退回旧版提示词与工具',
-      userNote: '能正常用 GPT-6 Sol 和 GPT-6 Luna 两个新模型',
+      note: '当前 npm latest,随包型号名单 rust-v0.160.0 与 rust-v0.160.1 逐字相同;0.157~0.160.1 修了 Windows 沙箱在普通路径上失败、后台程序弹黑色窗口、重连后排队消息重复发送,未见与自定义 model_providers / base_url 相关的回归;0.157.0 起默认起后台服务,模板的 daemon_auto_start = false 与启动参数 --no-daemon 在 0.160.1 上仍然认',
+      userNote: 'Windows 上不再一闪一闪冒出黑色窗口，断线重连后没发出去的话也会接着发',
     },
     blocked: [
       {
@@ -101,21 +101,21 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   grok: {
     recommended: {
-      version: '1.0.44',
-      verifiedAt: '2026-09-30',
+      version: '1.0.46',
+      verifiedAt: '2026-10-05',
       verifiedSites: [],
-      note: '当前 npm latest 与 xAI stable;本地假接口上核过出图地址、型号名单、标题型号与钩子四项配置仍然生效',
-      userNote: '画图、起标题都走当前账号，用法不变',
+      note: '当前 npm latest 与 xAI stable;没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效',
+      userNote: '跟上官方最新的稳定版，画图、起标题照旧走当前账号',
     },
     blocked: [],
   },
   gemini: {
     recommended: {
-      version: '0.60.0',
-      verifiedAt: '2026-09-21',
+      version: '0.62.0',
+      verifiedAt: '2026-10-05',
       verifiedSites: [],
-      note: '当前 npm latest;0.57~0.60 四个正式版全是安全加固,未发现与第三方 base URL 相关的回归',
-      userNote: '加强了安全防护，用法不变',
+      note: '当前 npm latest;0.61.0 起不再把名字以 flash 结尾的自选型号换成 gemini-3.5-flash,但会把恰好叫 gemini-3.5-flash / gemini-3-flash / gemini-3.1-flash-lite 的型号改发成 3.8-flash / 3.5-flash-lite;0.62.0 的 DEFAULT_MODEL_CONFIGS 与出网改名函数和 0.61.0 逐字相同',
+      userNote: '自己选的型号不会再被悄悄换成别的，菜单里新出的几个型号也照样走当前账号',
     },
     blocked: [],
   },

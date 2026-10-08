@@ -3,9 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import {
   CuratedDetails,
   CuratedShelf,
+  backupMatchesQuery,
   curatedPlaceholderField,
   curatedRuntimeCommand,
   curatedVersionText,
+  extensionFailureTarget,
   extensionRowState,
   fillCuratedPlaceholders,
   findNativeSkill,
@@ -40,16 +42,20 @@ function mcpInstall(id: string) {
 }
 
 describe('curated extension shelf', () => {
-  it('lists one row per curated entry with its risk badges and network need', () => {
+  // 联网说明以前在每一行右边各写一遍，把说明挤成两行；点「安装」后的确认框里本来就有。
+  it('lists one row per curated entry with its risk badges and leaves the network need to the confirm dialog', () => {
     const markup = renderToStaticMarkup(
       <CuratedShelf items={curatedItemsFor('mcp', 'claude')} onPick={() => {}} />,
     )
     expect(markup).toContain('星芒精选')
+    expect(markup).toContain('我们挑过的，装之前会先给你看它要什么权限')
     expect(markup).toContain('data-testid="curated-row-files"')
     expect(markup).toContain('data-testid="curated-install-browser"')
     expect(markup).toContain('会改你的文件')
     expect(markup).toContain('需要先登录')
-    expect(markup).toContain('第一次使用时需要联网下载')
+    expect(markup).not.toContain('第一次使用时需要联网下载')
+    expect(markup).not.toContain('点「安装」会先让你确认一次')
+    expect(renderToStaticMarkup(<CuratedDetails item={item('files')} />)).toContain('第一次使用时需要联网下载')
   })
 
   it('renders nothing on the pages that have no curated entries yet', () => {
@@ -91,7 +97,8 @@ describe('curated extension shelf', () => {
     expect(markup).toContain('data-testid="curated-install-commit-commands"')
     expect(markup).toContain('会多用额度')
     expect(markup).toContain('会动 Git 仓库')
-    expect(markup).toContain('安装时需要联网下载一次')
+    expect(markup).not.toContain('安装时需要联网下载一次')
+    expect(renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)).toContain('安装时需要联网下载一次')
   })
 
   // 装插件要先保证官方市场在册，所以确认框里是两条命令；钉不住版本这件事也必须写出来。
@@ -379,6 +386,16 @@ function extensionApi() {
   }
 }
 
+describe('extension failure wording', () => {
+  it('treats every extension change as a config write except installing Python', () => {
+    // 已知29：MCP、技能、插件改的都是工具自己的配置；「安装 Python」装的是运行环境。
+    for (const failed of ['enable', 'uninstall', 'curated', 'add', 'marketplace-ensure', 'market-update', 'market-delete', 'delete', 'auth'])
+      expect([failed, extensionFailureTarget(failed)]).toEqual([failed, 'config'])
+    expect(extensionFailureTarget('python')).toBeUndefined()
+    expect(extensionFailureTarget('')).toBeUndefined()
+  })
+})
+
 describe('extension row actions', () => {
   it('sends the scope a project copy was listed under, so the user copy is left alone', async () => {
     const api = extensionApi()
@@ -542,5 +559,29 @@ describe('curated folder placeholders', () => {
   it('explains a pasted Windows path in Chinese instead of surfacing the JSON parser error', () => {
     expect(() => parseCommandArguments('["C:\\Users"]')).toThrow('选择文件夹')
     expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('环境变量的格式不对')
+  })
+})
+
+describe('backup search', () => {
+  const now = new Date(2026, 9, 4, 15, 0).getTime()
+  const createdAt = new Date(2026, 9, 2, 18, 5).toISOString()
+
+  it('finds a backup by the date the list shows', () => {
+    expect(backupMatchesQuery(createdAt, '10月2日', now)).toBe(true)
+    expect(backupMatchesQuery(new Date(2026, 9, 4, 9, 30).toISOString(), '今天', now)).toBe(true)
+  })
+
+  it('also finds it by the full time shown on hover', () => {
+    expect(backupMatchesQuery(createdAt, '18:05', now)).toBe(true)
+    expect(backupMatchesQuery(createdAt, ' 2026/10/2 ', now)).toBe(true)
+  })
+
+  it('keeps everything for an empty search and drops what does not match', () => {
+    expect(backupMatchesQuery(createdAt, '  ', now)).toBe(true)
+    expect(backupMatchesQuery(createdAt, '9月30日', now)).toBe(false)
+  })
+
+  it('no longer matches the backup id the list does not show', () => {
+    expect(backupMatchesQuery(createdAt, 'backup-1', now)).toBe(false)
   })
 })

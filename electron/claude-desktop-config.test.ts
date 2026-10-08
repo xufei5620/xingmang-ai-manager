@@ -42,6 +42,16 @@ function snapshot(files: readonly string[]): Map<string, string> {
 function expectSnapshot(previous: ReadonlyMap<string, string>): void {
   for (const [file, content] of previous) expect(fs.readFileSync(file, 'utf8'), file).toBe(content)
 }
+// What a rename reports on Windows while a scanner or the indexer holds the file.
+function heldError(code: 'EPERM' | 'EBUSY'): NodeJS.ErrnoException {
+  const message = code === 'EPERM' ? 'EPERM: operation not permitted, rename' : 'EBUSY: resource busy or locked, rename'
+  return Object.assign(new Error(message), { code })
+}
+function expectNoStagedFiles(f: ReturnType<typeof fixture>): void {
+  for (const directory of [f.profileDirectory, path.dirname(f.metadataPath), f.developerDirectory]) {
+    expect(fs.readdirSync(directory).filter((file) => file.endsWith('.tmp')), directory).toEqual([])
+  }
+}
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -314,6 +324,67 @@ describe('Claude Desktop in-app third-party configuration', () => {
     expect(fs.readFileSync(result.path, 'utf8')).toBe(gatewayBefore)
   })
 
+  // 已知20：每次保存都给改到的文件留一份带旧 Key 的 .bak，以前从来不清。
+  it('keeps the five newest backups of each saved file and leaves backups it did not name alone', async () => {
+    const f = fixture()
+    const first = await f.service.saveGateway(input)
+    const directory = path.dirname(first.path)
+    const name = path.basename(first.path)
+    const seeded = Array.from({ length: 6 }, (_, index) => {
+      const file = path.join(directory, `${name}.bak.00000000-0000-4000-8000-00000000000${index}`)
+      fs.writeFileSync(file, `old ${index}`)
+      // Oldest first: index 0 is the backup from long ago.
+      fs.utimesSync(file, new Date(2026, 0, index + 1), new Date(2026, 0, index + 1))
+      return file
+    })
+    // Someone's own copy, another file's backup and a directory that only looks like one.
+    const manual = path.join(directory, `${name}.bak.manual`)
+    const otherFile = path.join(directory, `${otherId}.json.bak.00000000-0000-4000-8000-000000000009`)
+    const lookalike = path.join(directory, `${name}.bak.00000000-0000-4000-8000-000000000008`)
+    fs.writeFileSync(manual, 'manual')
+    fs.writeFileSync(otherFile, 'other')
+    fs.mkdirSync(lookalike)
+    fs.utimesSync(lookalike, new Date(2025, 0, 1), new Date(2025, 0, 1))
+    const before = fs.readFileSync(first.path, 'utf8')
+
+    const next = await f.service.saveGateway({ ...input, apiKey: 'sk-replacement' })
+    expect(next.backups).toHaveLength(1)
+    expect(fs.readFileSync(next.backups[0], 'utf8')).toBe(before)
+    expect(seeded.map((file) => fs.existsSync(file))).toEqual([false, false, true, true, true, true])
+    for (const kept of [manual, otherFile, lookalike]) expect(fs.existsSync(kept), kept).toBe(true)
+
+    // Saves keep coming: five backups of the profile stay, the newest five.
+    const backups = [next.backups[0]]
+    for (const apiKey of ['sk-third', 'sk-fourth', 'sk-fifth', 'sk-sixth', 'sk-seventh']) {
+      backups.push(...(await f.service.saveGateway({ ...input, apiKey })).backups)
+    }
+    const remaining = fs.readdirSync(directory).filter((file) => file.startsWith(`${name}.bak.`) && file !== path.basename(manual) && fs.lstatSync(path.join(directory, file)).isFile())
+    expect(remaining.sort()).toEqual(backups.slice(-5).map((file) => path.basename(file)).sort())
+    expect(fs.readFileSync(backups.at(-1)!, 'utf8')).toContain('sk-sixth')
+  })
+
+  it('removes no backup when the save does not complete', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    const directory = path.dirname(result.path)
+    const seeded = Array.from({ length: 6 }, (_, index) => {
+      const file = path.join(directory, `${path.basename(result.path)}.bak.00000000-0000-4000-8000-00000000000${index}`)
+      fs.writeFileSync(file, `old ${index}`)
+      fs.utimesSync(file, new Date(2026, 0, index + 1), new Date(2026, 0, index + 1))
+      return file
+    })
+    // Two files change, and the second one cannot be put in place.
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const rename = fs.renameSync.bind(fs)
+    let writes = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (++writes === 2) throw new Error('blocked')
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    for (const file of seeded) expect(fs.existsSync(file), file).toBe(true)
+  })
+
   it('rolls back all committed files when a later rename fails, retaining backups', async () => {
     const f = fixture()
     const result = await f.service.saveGateway(input)
@@ -357,6 +428,90 @@ describe('Claude Desktop in-app third-party configuration', () => {
     await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('未覆盖外部改动')
     expect(read(result.path)).toEqual({ concurrent: 'replacement' })
     expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
+  })
+
+  it('waits out a scanner briefly holding a file while saving', async () => {
+    const f = fixture()
+    const rename = fs.renameSync.bind(fs)
+    let held = 2
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (held > 0 && path.resolve(String(target)) === path.resolve(f.configPath)) {
+        held -= 1
+        throw heldError('EPERM')
+      }
+      rename(source, target)
+    })
+    const result = await f.service.saveGateway(input)
+    expect(held).toBe(0)
+    expect(read(f.configPath)).toEqual({ deploymentMode: '3p' })
+    expect(read(result.path)).toEqual(buildClaudeDesktopGatewayConfig(input))
+    expectNoStagedFiles(f)
+  })
+
+  it('keeps the original wording and the previous files when a file stays held', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const previous = snapshot(result.files)
+    const rename = fs.renameSync.bind(fs)
+    let attempts = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (path.resolve(String(target)) === path.resolve(f.configPath)) {
+        attempts += 1
+        throw heldError('EPERM')
+      }
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    expect(attempts).toBe(5)
+    expectSnapshot(previous)
+    expectNoStagedFiles(f)
+  })
+
+  it('checks the files again before retrying a held save', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const gatewayBefore = fs.readFileSync(result.path, 'utf8')
+    const rename = fs.renameSync.bind(fs)
+    let held = false
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (!held && path.resolve(String(target)) === path.resolve(f.configPath)) {
+        held = true
+        // Claude Desktop saves its own change while the toolbox waits.
+        write(f.configPath, { deploymentMode: '1p', concurrent: true })
+        throw heldError('EPERM')
+      }
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    expect(held).toBe(true)
+    expect(read(f.configPath)).toEqual({ deploymentMode: '1p', concurrent: true })
+    expect(fs.readFileSync(result.path, 'utf8')).toBe(gatewayBefore)
+  })
+
+  it('waits out a briefly held file while putting the previous files back', async () => {
+    const f = fixture()
+    const result = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    const previous = snapshot(result.files)
+    const rename = fs.renameSync.bind(fs)
+    let rollbackHeld = 1
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (String(source).includes('.xingmang-rollback-')) {
+        if (rollbackHeld > 0) {
+          rollbackHeld -= 1
+          throw heldError('EBUSY')
+        }
+      } else if (path.resolve(String(target)) === path.resolve(f.configPath)) {
+        throw new Error('rename failure sk-do-not-echo')
+      }
+      rename(source, target)
+    })
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-new' })).rejects.toThrow('原配置已保留或恢复')
+    expect(rollbackHeld).toBe(0)
+    expectSnapshot(previous)
+    expectNoStagedFiles(f)
   })
 
   it('cleans partially written staged files without changing any target', async () => {
@@ -507,5 +662,100 @@ describe('Claude Desktop legacy model list repair', () => {
     const saved = await f.service.saveGateway({ ...input, baseUrl: 'https://api.solov.cc/', models: legacyModels })
     expect(await f.service.repairLegacyModelList(relayBaseUrls)).toMatchObject({ status: 'repaired', model: 'claude-sonnet-5' })
     expect(read(saved.path).inferenceModels).toEqual(['claude-sonnet-5'])
+  })
+})
+
+describe('Claude Desktop connection route follow (batch 43 A)', () => {
+  const from = 'https://xm.solov.cc'
+  const to = 'https://xm-direct.solov.cc'
+  const belongs = (key: string) => key === input.apiKey
+
+  it('changes only the gateway address of the toolbox profile and keeps the models and authentication the customer set', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    // 客户在 Claude Desktop 里加了型号、留着 x-api-key，还有自己的设置。
+    write(saved.path, { ...read(saved.path), inferenceModels: ['claude-opus-5', { name: 'claude-sonnet-5', displayName: 'Sonnet' }], custom: { preserved: true } })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    const others = snapshot([f.metadataPath, f.configPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json'), path.join(f.developerDirectory, 'developer_settings.json')])
+    expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl: from, apiKey: input.apiKey, model: 'claude-opus-5' })
+
+    const result = await f.service.followRoute(from, to, input.apiKey)
+    expect(result.path).toBe(saved.path)
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${from}"`, `"${to}"`))
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(before)
+    expectSnapshot(others)
+    expect(JSON.stringify(result)).not.toContain(input.apiKey)
+    expect(await f.service.inspectConnection(to, belongs)).toMatchObject({ configured: true, configurationReady: true, model: 'claude-opus-5' })
+  })
+
+  it('keeps the layout Claude Desktop wrote the profile in and a profile that lets Claude Desktop discover models', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    // Claude Desktop 自己重写过这份：四个空格缩进、CRLF、没有末尾换行、型号清单删了（自动获取）。
+    const { inferenceModels: _models, ...gateway } = read(saved.path)
+    const before = JSON.stringify(gateway, null, 4).replaceAll('\n', '\r\n')
+    fs.writeFileSync(saved.path, before, 'utf8')
+    expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl: from, apiKey: input.apiKey, model: null })
+
+    await f.service.followRoute(from, to, input.apiKey)
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${from}"`, `"${to}"`))
+  })
+
+  it('checks the policy before the caller looks at the client a last time, and writes nothing when that look says no', async () => {
+    const order: string[] = []
+    const assertUnmanaged = vi.fn(async () => { order.push('policy') })
+    const f = fixture({ assertUnmanaged })
+    const saved = await f.service.saveGateway(input)
+    const previous = snapshot([saved.path])
+    order.length = 0
+    await expect(f.service.followRoute(from, to, input.apiKey, async () => {
+      order.push('recheck')
+      throw new Error('Claude Desktop 还开着，已保留原配置')
+    })).rejects.toThrow('还开着')
+    expect(order).toEqual(['policy', 'recheck'])
+    expectSnapshot(previous)
+
+    await f.service.followRoute(from, to, input.apiKey, async () => { order.push('recheck') })
+    expect(read(saved.path).inferenceGatewayBaseUrl).toBe(to)
+  })
+
+  it('does not take over a copy the customer applied in Claude Desktop, even with the same address and key', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const copyPath = path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`)
+    write(copyPath, read(saved.path))
+    const metadata = read(f.metadataPath) as { entries: unknown[] }
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '星芒 AI 副本' }] })
+    const previous = snapshot([saved.path, copyPath, f.metadataPath, f.configPath])
+    // 连接自检照旧认它（地址、Key 都对得上），换线路不认：那份不是星芒的。
+    expect(await f.service.inspectGatewayCredential(from, belongs)).not.toBeNull()
+    expect(await f.service.inspectOwnedRoute()).toBeNull()
+    await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('在换线路前已变化')
+    expectSnapshot(previous)
+  })
+
+  it.each([
+    ['points elsewhere', { inferenceGatewayBaseUrl: 'https://gateway.example' }],
+    ['uses another key', { inferenceGatewayApiKey: 'sk-hand-edited' }],
+    ['switched to a dynamic credential', { inferenceCredentialKind: 'oidc' }],
+  ])('writes nothing when the toolbox profile now %s', async (_case, edit) => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    write(saved.path, { ...read(saved.path), ...edit })
+    const previous = snapshot([saved.path, f.metadataPath, f.configPath, markerPath(f)])
+    await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('在换线路前已变化')
+    expectSnapshot(previous)
+    expect(fs.readdirSync(path.dirname(saved.path)).filter((file) => file.includes('.bak.'))).toEqual([])
+  })
+
+  it('stops before writing when the account changes', async () => {
+    let switched = false
+    const f = fixture({ assertBeforeWrite: () => { if (switched) throw new Error('account switched') } })
+    const saved = await f.service.saveGateway(input)
+    const previous = snapshot([saved.path])
+    switched = true
+    await expect(f.service.followRoute(from, to, input.apiKey)).rejects.toThrow('账号已切换')
+    expectSnapshot(previous)
   })
 })

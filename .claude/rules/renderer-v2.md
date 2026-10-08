@@ -17,7 +17,7 @@ paths:
 - **旧界面已于 2026-09-19 冻结**（`R-S12`，yoyo 拍板）：只接受安全修复，新功能与一般缺陷只在 `src/renderer-v2/` 做，代码和 `compile:legacy` / `dev:legacy` 不删。口径见 `AGENTS.md` T14 与 `.claude/rules/legacy-renderer.md`。
 - 页面只读 `renderer-v2/registry`；组件遵守 `ui-spec/20-component-api.md`，颜色、字体、版式遵守 token 与当前原型。原型未覆盖的旧功能使用最近的现有模板并记录差异。
 - 新界面使用 React 19；旧回滚界面的 React 18 依赖在 `tooling/legacy-renderer/` 隔离。安装、Key、账号、支付、原 IPC、画布引擎保持原实现，平台新增只在 `electron/platform/` 与明确接入点。
-- 固定 1280 逻辑宽，按 DIP 用 `setZoomFactor` 整体缩放；不添加响应式断点。保留所有旧 `data-testid`，新增采用 `page-component-action`。
+- 外壳铺满窗口，页面内容区最宽 1000、在侧栏右侧居中；按 DIP 用 `setZoomFactor` 整体缩放照旧。只有两个断点：逻辑宽小于 1280 时侧栏自动收成 60 宽窄条（不改用户自己的展开/收起记录），逻辑高小于 660 时侧栏行高 36→32。不加别的断点。这句是 yoyo 2026-10-04 回「都按推荐」改的，换掉了原来的「固定 1280 逻辑宽，不添加响应式断点」，见 `ui-spec/03-layout-window.md`。原型的窗口框最宽 1280，这个宽度下新旧两种摆法一样，原型没有跟着重建，窄窗口和宽窗口以规范文字为准。保留所有旧 `data-testid`，新增采用 `page-component-action`。
 - **组件目录是集中式的，不是一个组件一个文件夹**（`R-B3`，2026-09-19）：新组件加进 `ui/core.tsx`、`fields.tsx`、`modal.tsx`、`floating.tsx`、`feedback.tsx`、`brand.tsx`、`guidance.tsx` 里对应的那个，再由 `components.tsx` / `index.ts` 导出，不要新建 `ui/<Name>/` 目录。`ui-spec/reference/` 里那条「一个组件一个文件夹」的目录要求属于设计包原稿，未被采用。
 - **行尾分号只在 `ui/`、`registry/` 与 `gallery*.tsx` 里写**（`R-B5`，2026-09-19）：那几处是照原型抄下来的既成事实，`features/`、`pages-*.tsx` 等一律不加。`scripts/verify-renderer-style.test.cjs` 会红。模块顶层用 `function` 声明，测试夹具除外。
 - 自动化测试只用本地 mock/隔离临时数据，不请求生产服务、不执行真实付费生成。Windows 无签名发布设置保持不变。

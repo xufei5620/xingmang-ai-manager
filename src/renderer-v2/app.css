@@ -1,10 +1,12 @@
 .v2-page { width: 100%; min-width: 0; padding: 0; }
+/* 上下相邻的卡片、提示框统一空 16：原来首尾贴在一起，读不到时的红框直接压在卡片上。 */
+.v2-page > :is(.xm-card, .xm-notice, .v2-business-notice) + :is(.xm-card, .xm-notice, .v2-business-notice) { margin-top: 16px; }
 .v2-bootstrap-notice { display: flex; align-items: center; gap: 8px; min-height: 36px; margin: -10px 0 16px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small); }
 .v2-bootstrap-notice > span:nth-child(2) { flex: 1; min-width: 0; }
 .v2-bootstrap-notice.is-warn { color: var(--warn); background: var(--warn-soft); }
 .v2-home-grid { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 18px; align-items: start; }
 .v2-home > .xm-page-head .xm-btn { font-size: var(--font-small-compact); }
-.v2-home-main, .v2-home-aside { display: grid; gap: 18px; min-width: 0; }
+.v2-home-main, .v2-home-aside { display: grid; gap: 16px; min-width: 0; }
 /* 「打开」记住上次目录后，按钮上多了一个目录名和一个下拉箭头（N7）。
    只有带下拉的那些行把按钮列放宽，其余工具行保持原来的 92px；每一行的总宽一样，
    按钮和「…」仍然贴着行尾对齐，看不出错位。 */
@@ -84,9 +86,14 @@
 .v2-official-summary { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line-2); border-radius: var(--radius-card); }
 .v2-official-summary > div { flex: 1; min-width: 0; }
 .v2-official-summary p { color: var(--text-2); font-size: var(--font-small); }
-.v2-support { display: grid; justify-items: center; gap: 12px; }
+/* 帮助与客服：左边扫码，右边复制身份；常用去向在下面一行。 */
+.v2-support { display: grid; grid-template-columns: 232px minmax(0, 1fr); align-items: center; gap: 20px; }
+/* 左栏那句一行放得下；开了大字放不下时两行折得一样长，不剩一个孤字。 */
+.v2-support-contact { display: grid; justify-items: center; gap: 8px; text-align: center; text-wrap: balance; }
 .v2-support img { width: 160px; height: 160px; }
 .v2-support h3, .v2-support p { margin: 0; }
+.v2-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.v2-support-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-support-identity { display: grid; gap: 6px; width: 100%; }
 .v2-support-identity > p { color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-support-identity > div { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }

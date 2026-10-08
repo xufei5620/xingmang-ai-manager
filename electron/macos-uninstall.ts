@@ -29,6 +29,8 @@ export interface MacUninstallDependencies {
   prepareQuit(): Promise<void>
   /** 移不进废纸篓时撤回 prepareQuit 置下的「正在退出」，窗口照常能关、能缩到菜单栏。 */
   abortQuit(): void
+  /** 删掉自动更新下好的安装包（~/Library/Caches 下的更新缓存）。 */
+  removeUpdaterCache(): Promise<boolean>
   clearLoginRecords(): Promise<boolean>
   quit(): void
   report?(line: string): void
@@ -121,6 +123,9 @@ export async function runMacUninstall(
     dependencies.abortQuit()
     return stayOpen()
   }
+  // 程序确实挪走了才删：挪不动时人还要用它，下好的新版留着照样能装。没删掉只记日志，
+  // 不算进 leftovers——那只占地方，不值得在提示里多说一句。
+  await attempt(dependencies, 'update cache', () => dependencies.removeUpdaterCache())
   if (request.clearLoginRecords && !await attempt(dependencies, 'login records', () => dependencies.clearLoginRecords())) {
     leftovers.push('records')
   }

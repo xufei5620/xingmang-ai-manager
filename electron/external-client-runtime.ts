@@ -8,7 +8,7 @@ import {
 import { describeClaudeDesktopMsixDownload, installClaudeDesktopFromOfficial } from './claude-desktop-msix-installer'
 import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
-  type CommandSpec, type RunCommandOptions,
+  type CommandErrorCode, type CommandSpec, type RunCommandOptions,
 } from './command-runner'
 import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
@@ -40,6 +40,13 @@ const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
 export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
+// Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
+const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
+// winget 自己的软件源坏了：源数据没有（多半是之前那次更新源没下下来），或者下下来的
+// 源数据对不上。两种都出在打开源的时候，那时连客户端的清单都还没读到，安装程序一步没动。
+const wingetSourceDataFailures = [0x8a15000f, 0x8a15003f]
+// 检测脚本最多交回几条读不出来的安装记录（只进运行日志）。
+const maximumRegistryFailures = 10
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
 // 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
 const defaultScanCacheTtlMs = 5 * 60_000
@@ -64,8 +71,13 @@ interface LocatedClient {
 }
 interface Inspection { clients: LocatedClient[]; errors: Partial<Record<ExternalToolId, string>> }
 interface InspectionScope {
-  /** 只给展示用的检测：可以认几分钟内验过、文件没变的签名。装、打开从不传。 */
+  /** 只给展示用的检测：可以认之前验过、文件没变的签名（Mac 上只认几分钟内的）。装、打开从不传。 */
   reuseSignatures?: boolean
+  /**
+   * Windows 上打开之前那次检测（已知68）：只认之前验过并且通过、文件和版本都没变的签名，
+   * 没验过的、上次没通过的照旧现验。装从不传；Mac 上不看它，打开照旧现验。
+   */
+  reuseVerifiedSignatures?: boolean
   /** Mac 上只看这一个客户端（打开它之前）。Windows 的清点是一整段脚本，照旧全看。 */
   only?: ExternalToolId
 }
@@ -105,19 +117,61 @@ export interface ExternalClientRuntimeOptions {
   now?: () => number
   /** 系统 winget 用不了的原因只进运行日志，不上屏。 */
   onWingetUnavailable?: (reason: string) => void
+  /** Windows 上哪几条安装记录读不出来、为什么，只进运行日志；内容和上一次一样就不再调。 */
+  onRegistryIncomplete?: (failures: ExternalClientRegistryFailure[]) => void
+  /** Mac 上苹果的签名核对没过时它自己说的原因，只进运行日志；同一个应用包原因没变就不再调。 */
+  onMacVerificationFailed?: (failure: ExternalClientMacVerificationFailure) => void
+  /**
+   * Windows 上 AppX 注册信息、数字签名读不出时 PowerShell 给的原话（多是系统英文），只进运行日志：
+   * 首页那一行只说前半句中文（已知3）。同一个客户端内容没变就不再调。
+   */
+  onDetectionErrorDetail?: (failure: ExternalClientDetectionErrorDetail) => void
+}
+
+/** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
+export interface ExternalClientRegistryFailure {
+  // 不叫 key：运行日志把名字正好是 key 的字段当凭据打码（runtime-log.ts 的 SENSITIVE_KEY），
+  // 叫了它，客服在日志里就只看得到 [REDACTED]。
+  entry: string
+  reason: string
+}
+
+/** 检测失败时首页那句中文（reason），和 PowerShell 给的原话（message）。 */
+export interface ExternalClientDetectionErrorDetail {
+  tool: ExternalToolId
+  reason: string
+  message: string
+}
+
+/** spctl 或 codesign 没放行时的那几项；output 是它们写在标准错误里的原话。 */
+export interface ExternalClientMacVerificationFailure {
+  tool: ExternalToolId
+  /** 被核对的那个应用包（「应用程序」和主目录下的「应用程序」里可能各有一个）。 */
+  path: string
+  command: string
+  code: CommandErrorCode
+  exitCode: number | null
+  output: string
 }
 
 export interface ExternalClientScanOptions {
   /** 用户亲手点「重新检测」：不用缓存里那份，但仍与正在跑的那次合并。 */
   force?: boolean
+  /**
+   * 要一轮这次调用之后才开始的盘点（换线路动客户端配置之前看它开没开）：正在跑的那次可能是在
+   * 客户端打开之前起的，等它跑完，再并进那之后起的一轮或者另起一轮。不用缓存。
+   */
+  fresh?: boolean
 }
 
-/** A signature verdict the inventory script may reuse while the file stamp is unchanged. */
+/** A signature verdict the inventory script may reuse while the file stamp and registered version are unchanged. */
 export interface KnownExternalClientSignature {
   path: string
   stamp: string
   status: string
   subject: string
+  /** 验签那次卸载信息里登记的版本（DisplayVersion，没有就是空串）；对不上就现验。 */
+  version: string
 }
 
 function errorText(error: unknown): string {
@@ -144,6 +198,13 @@ function wingetNetworkFailure(error: unknown): boolean {
   if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.exitCode === null || error.signal) return false
   // WinINet timeout, name resolution, connection and connection-reset failures.
   return [0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(error.exitCode >>> 0)
+}
+
+/** 连不上微软的软件下载源，或者连上了但 winget 自己的软件源坏了：这两种都还没开始装。 */
+function wingetSourceUnavailable(error: unknown): boolean {
+  if (wingetNetworkFailure(error)) return true
+  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO' && error.exitCode !== null && !error.signal
+    && wingetSourceDataFailures.includes(error.exitCode >>> 0)
 }
 
 function wingetCancelled(error: unknown): boolean {
@@ -184,6 +245,42 @@ function record(value: unknown): Record<string, unknown> {
 function localWindowsPath(value: string): boolean {
   return /^[a-z]:\\/i.test(value) && !/[<>"|?*\x00-\x1f]/.test(value) && !value.slice(2).includes(':')
 }
+function scriptLogText(value: unknown, limit: number): string {
+  return typeof value === 'string' ? cleanCommandOutput(value).replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, limit) : ''
+}
+/** 检测脚本交回的读不出来的安装记录。格式不对就当没有：少的只是一行日志，检测结论照旧。 */
+function registryFailures(value: unknown): ExternalClientRegistryFailure[] {
+  if (!Array.isArray(value)) return []
+  try {
+    return value.slice(0, maximumRegistryFailures).map((raw) => {
+      const item = record(raw)
+      return { entry: scriptLogText(item.entry, 260), reason: scriptLogText(item.reason, 500) }
+    })
+  } catch { return [] }
+}
+/** 检测脚本交回的 PowerShell 原话，按客户端。格式不对同样当没有。 */
+function scriptErrorDetails(value: unknown): Partial<Record<ExternalToolId, string>> {
+  const details: Partial<Record<ExternalToolId, string>> = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return details
+  for (const tool of tools) {
+    const message = scriptLogText((value as Record<string, unknown>)[tool], 500)
+    if (message) details[tool] = message
+  }
+  return details
+}
+/** spctl 退出码 3 是 Gatekeeper 拒绝；codesign 1 是核对没过，3 是签名完好但不满足钉住的要求（团队、包名）。 */
+function macSignatureRefused(error: unknown): boolean {
+  if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.signal) return false
+  const command = path.posix.basename(error.executable)
+  return command === 'spctl' ? error.exitCode === 3 : command === 'codesign' && (error.exitCode === 1 || error.exitCode === 3)
+}
+function describeMacVerificationFailure(tool: ExternalToolId, bundle: string, error: unknown): ExternalClientMacVerificationFailure | null {
+  if (!(error instanceof CommandRunnerError)) return null
+  return {
+    tool, path: bundle, command: path.posix.basename(error.executable), code: error.code, exitCode: error.exitCode,
+    output: cleanCommandOutput(error.stderr || error.stdout).trim().slice(0, 500),
+  }
+}
 
 export async function verifyExternalClientPath(candidate: string, kind: 'file' | 'directory' | 'appx-file'): Promise<string> {
   if (kind === 'appx-file') {
@@ -203,11 +300,19 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 // Read registry metadata and current-user AppX registration only. Never execute a
 // discovered application's --version, uninstall string, or registry command line.
 //
-// `knownSignatures` lets a display-only scan skip Get-AuthenticodeSignature for an
-// executable whose size and timestamps are unchanged since it was last verified.
-// The list is passed as base64 JSON so no path or subject text ever becomes
-// PowerShell source. A same-user attacker can forge those timestamps, so install
-// and launch never pass this list: anything that acts on the file verifies anew.
+// `knownSignatures` lets a scan skip Get-AuthenticodeSignature for an executable
+// whose size, timestamps and registered version are unchanged since it was last
+// verified. The list is passed as base64 JSON so no path, subject or version text
+// ever becomes PowerShell source. A same-user attacker can forge those timestamps,
+// so install never passes this list: what it installs is verified anew.
+//
+// Launch passes only the entries that verified as Valid. This is a deliberate
+// relaxation (已知68, approved in writing by yoyo on 2026-10-06): every 「打开」
+// used to wait several seconds for a full signature check. It stays narrow: the
+// launch goes through Explorer, which starts the client as the signed-in user,
+// so a forged stamp runs nothing that user could not already run; the registry
+// and path checks still run on every launch, and the remembered subject must
+// still name the official publisher.
 //
 // The script runs under trustedCommandEnvironment(), where one cmdlet left to
 // autoloading costs the whole System32 module scan (20 s and more on the CI
@@ -223,7 +328,7 @@ export const windowsExternalClientInventoryModules = [
 export const externalClientSystemCommandTimeoutMs = 15_000
 
 export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = []): string {
-  const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject }) => ({ path: file, stamp, status, subject }))), 'utf8').toString('base64')
+  const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject, version }) => ({ path: file, stamp, status, subject, version }))), 'utf8').toString('base64')
   return String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModules)}
@@ -237,6 +342,9 @@ foreach ($entry in $knownList) {
 }
 $clients = [System.Collections.Generic.List[object]]::new()
 $errors = @{}
+# The screen gets only the Chinese sentence in $errors; what PowerShell said, most
+# often system English, goes back beside it for the runtime log alone.
+$errorDetails = @{}
 $registry = [System.Collections.Generic.List[object]]::new()
 function Test-LocalExecutablePath([string]$candidate) {
   # Registry entries are user writable. Reject remote paths, alternate streams
@@ -257,15 +365,40 @@ function Test-LocalExecutablePath([string]$candidate) {
 }
 $roots = @('Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
 $registryIncomplete = $false
+$registryFailures = [System.Collections.Generic.List[object]]::new()
+# Get-ItemProperty converts every value of a key, and a single malformed one fails
+# the whole key: some installers write an 8-byte REG_DWORD (NetBeans' NoModify, for
+# one), which the registry provider cannot cast, so that key throws on every scan.
+# A key that throws is read again for just the values matched below, straight from
+# the key; it counts as unreadable only when one of those is not readable as text.
+function Read-UninstallValues($key) {
+  $entry = [ordered]@{ PSChildName = [string]$key.PSChildName }
+  foreach ($name in @('DisplayName', 'InstallLocation', 'DisplayIcon', 'DisplayVersion')) {
+    $value = $key.GetValue($name)
+    if ($null -ne $value -and $value -isnot [string]) { throw "$name is not text" }
+    $entry[$name] = $value
+  }
+  [pscustomobject]$entry
+}
 foreach ($root in $roots) {
   try {
     if (Test-Path -LiteralPath $root) {
       foreach ($key in Get-ChildItem -LiteralPath $root) {
         try { $registry.Add((Get-ItemProperty -LiteralPath $key.PSPath)) }
-        catch { $registryIncomplete = $true }
+        catch {
+          $failure = $_
+          try { $registry.Add((Read-UninstallValues $key)) }
+          catch {
+            $registryIncomplete = $true
+            if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=[string]$key.PSChildName; reason=[string]$failure.Exception.Message }) }
+          }
+        }
       }
     }
-  } catch { $registryIncomplete = $true }
+  } catch {
+    $registryIncomplete = $true
+    if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=$root; reason=[string]$_.Exception.Message }) }
+  }
 }
 $processes = @(Get-Process -Name WorkBuddy,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })
 $products = @(
@@ -280,7 +413,7 @@ try {
       $clients.Add([pscustomobject]@{ tool='claudeDesktop'; path=$exe; version=[string]$package.Version; running=($processes -contains $exe); family=[string]$package.PackageFamilyName; publisher=[string]$package.Publisher; installLocation=[string]$package.InstallLocation; applicationId='Claude_pzs8sxrjxfjjc!Claude' })
     }
   }
-} catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息：' + $_.Exception.Message }
+} catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'; $errorDetails.claudeDesktop = [string]$_.Exception.Message }
 foreach ($product in $products) {
   if ($registryIncomplete -and !$errors.ContainsKey($product.tool)) {
     $errors[$product.tool] = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
@@ -299,7 +432,7 @@ foreach ($product in $products) {
         $file = Get-Item -LiteralPath $exe -Force
         $stamp = '{0}:{1}:{2}' -f $file.Length, $file.LastWriteTimeUtc.Ticks, $file.CreationTimeUtc.Ticks
         $known = $knownSignatures[$exe]
-        if ($known -and [string]$known.stamp -ceq $stamp) {
+        if ($known -and [string]$known.stamp -ceq $stamp -and [string]$known.version -ceq [string]$entry.DisplayVersion) {
           $signatureStatus = [string]$known.status
           $signatureSubject = [string]$known.subject
         } else {
@@ -308,11 +441,11 @@ foreach ($product in $products) {
           $signatureSubject = [string]$signature.SignerCertificate.Subject
         }
         $clients.Add([pscustomobject]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp })
-      } catch { $errors[$product.tool] = '无法读取客户端数字签名：' + $_.Exception.Message }
+      } catch { $errors[$product.tool] = '无法读取客户端数字签名'; $errorDetails[$product.tool] = [string]$_.Exception.Message }
     }
   }
 }
-@{ clients=@($clients.ToArray()); errors=$errors } | ConvertTo-Json -Depth 5 -Compress
+@{ clients=@($clients.ToArray()); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures.ToArray()) } | ConvertTo-Json -Depth 5 -Compress
 `.trim()
 }
 
@@ -355,9 +488,10 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   let scanGeneration = 0
   const knownSignatures = new Map<string, KnownExternalClientSignature>()
   // The macOS half of knownSignatures: a Gatekeeper/codesign pass is remembered
-  // against the bundle fingerprint for a few minutes, passes only. As on Windows,
-  // a same-user attacker can forge those timestamps, so only display-only scans
-  // may reuse it; install and launch act on the bundle and always verify anew.
+  // against the bundle fingerprint for a few minutes, passes only. A same-user
+  // attacker can forge those timestamps, so only display-only scans may reuse it;
+  // install and launch act on the bundle and always verify anew (the Windows
+  // launch exception above does not extend to macOS).
   const verifiedBundles = new Map<string, { fingerprint: string; verifiedAt: number }>()
 
   const environment = () => trustedCommandEnvironment(options.env, platform === 'win32' ? resolveMachinePaths() : undefined, platform)
@@ -381,25 +515,62 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     lastWingetReason = reason
     return winget
   }
+  // 读不出来的安装记录、苹果没放行的原因同理：每次检测都会再碰到一次，内容没变就不重复记。
+  let lastRegistryFailures: string | null = null
+  const lastMacVerificationFailures = new Map<string, string>()
+  const lastDetectionErrorDetails = new Map<ExternalToolId, string>()
+  function noteRegistryFailures(failures: ExternalClientRegistryFailure[]) {
+    const signature = failures.length ? JSON.stringify(failures) : null
+    if (signature && signature !== lastRegistryFailures) options.onRegistryIncomplete?.(failures)
+    lastRegistryFailures = signature
+  }
+  function noteMacVerificationFailure(tool: ExternalToolId, bundle: string, error: unknown) {
+    const failure = describeMacVerificationFailure(tool, bundle, error)
+    if (!failure) return
+    const signature = JSON.stringify(failure)
+    if (lastMacVerificationFailures.get(bundle) === signature) return
+    lastMacVerificationFailures.set(bundle, signature)
+    options.onMacVerificationFailed?.(failure)
+  }
+  // 这一次没有原话（检测成了，或失败的是别的原因）就忘掉，下次同样的原话再来时照样记。
+  function noteDetectionErrorDetail(tool: ExternalToolId, reason: string | undefined, message: string | undefined) {
+    if (!reason || !message) { lastDetectionErrorDetails.delete(tool); return }
+    const signature = JSON.stringify([reason, message])
+    if (lastDetectionErrorDetails.get(tool) === signature) return
+    lastDetectionErrorDetails.set(tool, signature)
+    options.onDetectionErrorDetail?.({ tool, reason, message })
+  }
 
   function rememberSignature(item: Record<string, unknown>) {
     const file = textValue(item.path)
     const stamp = textValue(item.signatureStamp)
     if (!file || !stamp || !/^\d{1,20}:\d{1,20}:\d{1,20}$/.test(stamp)) return
+    // 版本原样记（不 trim）：脚本拿它和卸载信息里的 DisplayVersion 逐字比，差一个空格也现验。
+    // 太长的不记，这个文件之前记的也忘掉：截短或记成空串，就和别的版本、没登记版本分不开了。
+    const version = item.version
+    if (typeof version !== 'string' || version.length > 256) {
+      knownSignatures.delete(file.toLowerCase())
+      return
+    }
     if (knownSignatures.size >= maximumKnownSignatures) knownSignatures.clear()
-    knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '' })
+    knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '', version })
   }
 
-  async function inspectWindows(reuseSignatures: boolean): Promise<Inspection> {
-    const script = windowsExternalClientInventoryScript(reuseSignatures ? [...knownSignatures.values()] : [])
+  async function inspectWindows(scope: InspectionScope): Promise<Inspection> {
+    const remembered = [...knownSignatures.values()]
+    const script = windowsExternalClientInventoryScript(scope.reuseSignatures === true ? remembered
+      : scope.reuseVerifiedSignatures === true ? remembered.filter((entry) => entry.status === 'Valid') : [])
     const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, systemOptions())
     const data = record(JSON.parse(cleanCommandOutput(result.stdout).trim()) as unknown)
     if (!Array.isArray(data.clients)) throw new Error('客户端安装检测未返回有效列表')
+    noteRegistryFailures(registryFailures(data.registryFailures))
     const errors: Inspection['errors'] = {}
     if (data.errors !== undefined) {
       const rawErrors = record(data.errors)
       for (const tool of tools) if (textValue(rawErrors[tool])) errors[tool] = textValue(rawErrors[tool])!
     }
+    const scriptErrors = { ...errors }
+    const details = scriptErrorDetails(data.errorDetails)
     const clients: LocatedClient[] = []
     for (const raw of data.clients.slice(0, 100)) {
       const item = record(raw)
@@ -424,12 +595,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             || path.win32.relative(location, canonical).toLowerCase() !== 'app\\claude.exe') throw new Error('Claude 桌面端 AppX 身份或安装路径不可信')
           applicationId = claudeApplicationId
         } else if (item.signatureStatus !== 'Valid' || !publisherPatterns[tool].test(textValue(item.signatureSubject) ?? '')) {
-          throw new Error('客户端数字签名无效或签名发布者与官方发布者不一致')
+          throw new Error(signatureMismatchMessage)
         }
         clients.push({ tool, path: canonical, version: versionValue(item.version), running: item.running === true, ...(applicationId ? { applicationId } : {}) })
       } catch (error) { errors[tool] = errorText(error) }
     }
     for (const client of clients) delete errors[client.tool]
+    // 原话只配脚本自己说的那句：这一行最后报的要是这边核对路径、签名时另起的错，它就对不上了。
+    for (const tool of tools) noteDetectionErrorDetail(tool, errors[tool] === scriptErrors[tool] ? errors[tool] : undefined, details[tool])
     return { clients, errors }
   }
 
@@ -482,8 +655,11 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             } catch (error) {
               // 现验没过就忘掉上次那份：不然下一次展示用的检测会拿旧的「通过」把它报成好的。
               verifiedBundles.delete(canonical)
-              throw error
+              noteMacVerificationFailure(tool, canonical, error)
+              // 苹果说的原话只进运行日志；它明说不放行的，首页那一行说的和 Windows 上签名不对时同一句。
+              throw macSignatureRefused(error) ? new Error(signatureMismatchMessage) : error
             }
+            lastMacVerificationFailures.delete(canonical)
             if (fingerprint !== null) verifiedBundles.set(canonical, { fingerprint, verifiedAt: now() })
           }
           const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, { ...systemOptions(), trustedOnly: false })
@@ -500,7 +676,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   }
 
   async function inspect(scope: InspectionScope = {}): Promise<Inspection> {
-    try { return platform === 'win32' ? await inspectWindows(scope.reuseSignatures === true) : platform === 'darwin' ? await inspectMac(scope) : { clients: [], errors: {} } }
+    try { return platform === 'win32' ? await inspectWindows(scope) : platform === 'darwin' ? await inspectMac(scope) : { clients: [], errors: {} } }
     catch (error) { return { clients: [], errors: Object.fromEntries(tools.map((tool) => [tool, errorText(error)])) } }
   }
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
@@ -522,8 +698,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     cachedScan = null
   }
   function scan(scanOptions: ExternalClientScanOptions = {}): Promise<ExternalClientRuntimeStatus[]> {
+    if (inFlightScan && scanOptions.fresh) {
+      // 正在跑的那次一结束（它自己先清掉 inFlightScan），之后再有正在跑的也是这次调用之后起的。
+      const after = () => scan({ force: true })
+      return inFlightScan.then(after, after)
+    }
     if (inFlightScan) return inFlightScan
-    if (!scanOptions.force && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
+    if (!scanOptions.force && !scanOptions.fresh && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
     const generation = scanGeneration
     const promise = Promise.all([inspect({ reuseSignatures: true }), resolveWinget()]).then(([inspection, winget]) => {
       const statuses = tools.map((tool) => status(tool, inspection, winget))
@@ -596,10 +777,18 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     // 句柄在入队之前登记：排在别的安装后面等待时也要能取消（同命令行工具）。重复点击
     // 走上面的 existing，不会再登记第二个把这一个挤掉。
     const cancellation = installCancellations.begin(installKey(tool))
+    // 取消是客户自己按的，不是装失败：换成统一的一句，界面认得出来，不弹错误框。
+    const cancelled = () => {
+      const error = new InstallCancelledError(`${definitions[tool].name} 安装已取消`)
+      report('error', error.message)
+      return error
+    }
+    let started = false
     report('queued', `${definitions[tool].name} 已加入安装队列`)
     job.promise = queue.enqueue(installKey(tool), async () => {
+      started = true
       try {
-        // 排队等待期间点的取消在这里生效：什么都还没动。
+        // 排着队时点的取消已经让这一项直接出队了；这里兜底，这时什么都还没动。
         cancellation.throwIfCancelled()
         report('checking', `正在检测 ${definitions[tool].name}`)
         const [before, winget] = await Promise.all([inspect(), resolveWinget()])
@@ -638,7 +827,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             // Claude 官网的离线安装包是 MSIX：Windows 的应用部署要么整个装上、要么什么都不留，
             // 前一路装到一半也不会和它打架，所以除了客户自己取消，怎么没装上都换它接着装。
             const claudeFallback = tool === 'claudeDesktop' && !wingetCancelled(error)
-            if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetNetworkFailure(error))) throw installationError(wingetFailureMessage(error), error)
+            if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetSourceUnavailable(error))) throw installationError(wingetFailureMessage(error), error)
             sourceFailure = error
             // 换星芒自己下官方安装包的那一路：下载时又能取消了。
             cancellation.unseal()
@@ -674,16 +863,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         report('completed', `${definitions[tool].name} 安装完成`, 100)
         return after
       } catch (error) {
-        // 取消是客户自己按的，不是装失败：换成统一的一句，界面认得出来，不弹错误框。
-        if (cancellation.cancelled || isInstallCancelledError(error)) {
-          const cancelled = new InstallCancelledError(`${definitions[tool].name} 安装已取消`)
-          report('error', cancelled.message)
-          throw cancelled
-        }
+        if (cancellation.cancelled || isInstallCancelledError(error)) throw cancelled()
         report('error', errorText(error))
         throw error
       }
-    }).finally(() => cancellation.release())
+    }, { signal: cancellation.signal })
+      // 排着队时点的取消让这一项直接出队，不用等前面那项装完。上面的任务没跑过，
+      // 取消的那句在这里补上。
+      .catch((error: unknown) => { throw started ? error : cancelled() })
+      .finally(() => cancellation.release())
     jobs.set(tool, job)
     void job.promise.then(() => { jobs.delete(tool) }, () => { jobs.delete(tool) })
     // 装成、装失败都作废：失败的安装器也可能已经留下了一半的文件。
@@ -697,7 +885,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
     const launched = queue.enqueue(`external-client:launch:${tool}`, async () => {
       // 只现验要打开的这一个（Mac）：没点的那几家跟这次打开无关，不该让人多等它们的签名核对。
-      const inspection = await inspect({ only: tool })
+      // Windows 上验过并且通过、文件和版本都没变的不再现验（已知68，理由见 windowsExternalClientInventoryScript 上面）。
+      const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32' })
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       if (platform === 'win32') {

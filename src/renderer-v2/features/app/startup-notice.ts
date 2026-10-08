@@ -3,6 +3,7 @@ import type { PageId } from '../../registry/pages'
 import { tools } from '../../registry/tools'
 import type { Tone } from '../../ui'
 import type { SupportFailure } from './SupportIdentity'
+import { firstProblemAnchor } from './row-focus'
 
 /**
  * 启动时应用自己跑的后台检查。用户没有点任何东西，所以它们的坏消息不许挡路：
@@ -21,7 +22,8 @@ export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
  * 有的只是告知一件事，按钮就是「知道了」。
  */
-export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true } | { label: string; dismiss: true }
+/** page 的 section：落到那一页里的哪一组或哪一行，同外壳的 navigate；缺省 = 只跳页。 */
+export type StartupNoticeAction = { label: string; page: PageId; section?: string } | { label: string; login: true } | { label: string; dismiss: true }
   | { label: string; displayCompat: 'keep' | 'restore' } | { label: string; relaunch: true }
   | { label: string; crashReporting: 'keep' | 'off' } | { label: string; supportFailure: SupportFailure }
 
@@ -71,6 +73,11 @@ function countOf(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
+/** 检查页「待处理」的项数；状态栏最左那项和开机那条提示都按这个数。 */
+export function diagnosticsIssueCount(counts: StartupDiagnosticsCounts): number {
+  return countOf(counts.fail) + countOf(counts.error)
+}
+
 /**
  * 只有「待处理」（fail / error）才值得在开机时说一句。「需留意」（warn）里多半是
  * 用不到的东西没装：另外几家 CLI、Codex 桌面端、Python、Git。把它们数进去，只用
@@ -79,7 +86,7 @@ function countOf(value: number): number {
  * 和待处理一起出现时只在正文里轻带一句。
  */
 export function startupDiagnosticsIssues(counts: StartupDiagnosticsCounts): StartupNotice | null {
-  const issues = countOf(counts.fail) + countOf(counts.error)
+  const issues = diagnosticsIssueCount(counts)
   if (issues < 1) return null
   const warnings = countOf(counts.warn)
   return {
@@ -90,7 +97,8 @@ export function startupDiagnosticsIssues(counts: StartupDiagnosticsCounts): Star
     body: warnings
       ? `不影响继续使用，有空时到「检查」页看一下就行。另有 ${warnings} 项可留意。`
       : '不影响继续使用，有空时到「检查」页看一下就行。',
-    action: { label: '去看看', page: 'health' },
+    // 检查页把有问题的排在最前；从这里点进去再翻到第一项问题，免得落在上次看到的位置。
+    action: { label: '去看看', page: 'health', section: firstProblemAnchor },
   }
 }
 

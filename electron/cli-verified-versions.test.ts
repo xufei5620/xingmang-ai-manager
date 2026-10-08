@@ -95,28 +95,41 @@ describe('versionInBlockedRange', () => {
 })
 
 describe('cliVerifiedVersions coverage', () => {
+  it('pins Claude Code past both gateway regressions', () => {
+    // 2.1.278-2.1.291 shipped no new third-party base URL regression, and the
+    // range fixes stream handling behind proxies (a cleanly closed stream reported
+    // as complete, duplicated stream events running a tool call twice). A sandbox
+    // capture against a local fake endpoint sent the same request fields and the
+    // same tool list as 2.1.277.
+    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.291')
+    expect(findBlockedCliVersion('claude', '2.1.291')).toBeNull()
+    expect(findBlockedCliVersion('claude', '2.1.276')?.fixed).toBe('2.1.277')
+  })
+
   it('pins Codex and blocks the release that asks the relay for reasoning summaries', () => {
     // 0.155.0 (2026-09-17) turned detailed reasoning summaries on by default and
     // providers that do not support them reject the request outright; OpenAI
     // shipped 0.155.1 the next day. Codex had no list at all until then, so a
     // customer who pressed "更新" in that window installed exactly 0.155.0.
     // 0.156.1 is the first release whose bundled catalog knows gpt-6-sol and
-    // gpt-6-luna; on 0.155.1 they run on fallback metadata.
-    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.156.1')
+    // gpt-6-luna; on 0.155.1 they run on fallback metadata. 0.160.1 ships the
+    // same models.json as rust-v0.160.0, the tag the bundled model catalog was
+    // copied from (codex-model-catalog.ts).
+    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.160.1')
     expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
     expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()
     expect(findBlockedCliVersion('codex', '0.154.0')).toBeNull()
   })
 
   it('pins Gemini without blocking anything', () => {
-    expect(cliVerifiedVersions.gemini.recommended?.version).toBe('0.60.0')
+    expect(cliVerifiedVersions.gemini.recommended?.version).toBe('0.62.0')
     expect(cliVerifiedVersions.gemini.blocked).toEqual([])
   })
 
   it('pins Grok to a release that is both npm latest and the xAI stable channel', () => {
-    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.44')
+    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.46')
     expect(cliVerifiedVersions.grok.blocked).toEqual([])
-    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.44', source: 'recommended' })
+    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.46', source: 'recommended' })
     expect(resolveCliInstallVersion('grok', { alwaysLatest: true })).toEqual({ version: 'latest', source: 'latest' })
   })
 })
@@ -228,7 +241,7 @@ describe('buildCliVersionAdvice', () => {
 
   it('tells a Codex user on the blocked release to move forward, not back', () => {
     const advice = buildCliVersionAdvice('codex', '0.155.0')
-    expect(advice.recommendedVersion).toBe('0.156.1')
+    expect(advice.recommendedVersion).toBe('0.160.1')
     expect(advice.blockedReason).toMatch(/拒绝/)
     expect(advice.rollbackAvailable).toBe(true)
     expect(advice.recommendedIsNewer).toBe(true)

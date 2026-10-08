@@ -12,6 +12,59 @@
 // new-api-client.ts today.
 import { providerBaseUrls, type ProviderId } from './catalog'
 
+export type RelayEndpointId = 'primary' | 'direct'
+
+/**
+ * 设置里存的线路偏好：「自动」由星芒自己在直连和默认线路之间挑，另外两个写死一条。
+ * 没存过的算「自动」；#872 起存下的 primary / direct 原样当「只用默认线路」「只用直连」。
+ */
+export type RelayRoutePreference = 'auto' | RelayEndpointId
+
+/** 能选线路的两个站，同时是设置里 relayEndpointIds 的键。 */
+export type RelayRouteSiteId = 'solov' | 'solov-api'
+
+export const relayRouteSiteIds: readonly RelayRouteSiteId[] = Object.freeze(['solov', 'solov-api'] as const)
+
+export interface RelayRoutePreferences {
+  solov?: RelayRoutePreference
+  'solov-api'?: RelayRoutePreference
+}
+
+/** 一个站这会儿走的线路。 */
+export interface RelayRouteLine {
+  line: RelayEndpointId
+  /**
+   * 是不是定下来的：写死的偏好、上次存下的结论、这次探出来的都算，星芒账号没有结论时开机直接定在
+   * 直连也算（relay-route-controller.ts）。历史账号「自动」第一次开机还没探出结论时先走默认线路，
+   * 这时为 false，工具配置不跟着它迁。
+   */
+  settled: boolean
+}
+
+export type RelayRouteLines = Readonly<Record<RelayRouteSiteId, Readonly<RelayRouteLine>>>
+
+export interface RelayEndpoint {
+  id: RelayEndpointId
+  label: string
+  origin: string
+  /** Retained native configuration identities; never automatic account failover targets. */
+  aliases?: readonly string[]
+}
+
+export interface RelayEndpointRoutingSnapshot {
+  /** 开机时生效的偏好，这次运行里不变：设置里改了要重启才生效。 */
+  readonly preferences: Readonly<Required<RelayRoutePreferences>>
+  /** 每个站这会儿走的线路。「自动」会在运行中改线路，所以每次现读。 */
+  lines(): RelayRouteLines
+  resolve(siteId: string | null | undefined): RelaySite
+  require(siteId: unknown): RelaySite
+  /**
+   * 工具配置可以迁到的那条线路：写死的偏好，或者「自动」已经定下的那条。「自动」还没定下来时
+   * 是 undefined，认得出的旧地址照旧原样留着。
+   */
+  selection(siteId: unknown): RelayEndpointId | undefined
+}
+
 export interface RelaySite {
   /** Stable identifier persisted in AppSettings.relaySiteId. Never reused for a different site. */
   id: string
@@ -116,6 +169,219 @@ export function relayApiProbeBaseUrl(site: RelaySite): string {
 
 export const defaultRelaySiteId: string = relaySites[0].id
 
+const siteEndpoints = new Map<string, readonly RelayEndpoint[]>([
+  ['solov', Object.freeze([
+    Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://xm.solov.cc' }),
+    // 直连走自己的域名（证书是公共签发的，照常校验），服务器 IP 只在服务端 DNS 里，换 IP 不用发版。
+    // 38.147.105.28:8443 是服务端的临时测试入口，域名版发出去以后关掉：只留作别名，认得出、迁得走
+    // 按它写过的旧配置，新配置一律写域名，加速规则也不带它。
+    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://xm-direct.solov.cc',
+      aliases: Object.freeze(['https://38.147.105.28:8443']) }),
+  ])],
+  ['solov-api', Object.freeze([
+    Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://api.solov.cc' }),
+    // 历史账号的直连：服务端给的域名，白名单里放着星芒用到的历史账号接口（sub2api-relay-backend.ts
+    // 写死的是默认线路的地址，改走直连靠 relay-line-fetch.ts 换请求地址，那个文件不动）。
+    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://api-direct.solov.cc' }),
+  ])],
+])
+
+/** URLs never come from settings or IPC: each backend owns an exact endpoint set. */
+export function relaySiteEndpointChoices(siteId: unknown): readonly RelayEndpoint[] {
+  return typeof siteId === 'string' ? siteEndpoints.get(siteId) ?? [] : []
+}
+
+function requireRelayEndpoint(siteId: string, endpointId: unknown): RelayEndpoint {
+  const endpoint = relaySiteEndpointChoices(siteId).find((candidate) => candidate.id === (endpointId ?? 'primary'))
+  if (!endpoint) throw new Error('所选站点的连接线路无效')
+  return endpoint
+}
+
+export function relayProviderBaseUrls(siteId: unknown, endpointId: RelayEndpointId = 'primary'): Record<ProviderId, string> {
+  const site = requireRelaySiteIdentity(siteId)
+  if (endpointId === 'primary') return { ...site.providerBaseUrls }
+  const { origin } = requireRelayEndpoint(site.id, endpointId)
+  return providerUrlsForOrigin(origin)
+}
+
+function providerUrlsForOrigin(origin: string): Record<ProviderId, string> {
+  return { claude: origin, codex: `${origin}/v1`, gemini: origin, grok: `${origin}/v1` }
+}
+
+function knownEndpointOrigins(endpoint: RelayEndpoint): readonly string[] {
+  return [endpoint.origin, ...endpoint.aliases ?? []]
+}
+
+/**
+ * Every address one provider of a site is known by, aliases included, with the
+ * line it belongs to. Recognition only: a configuration found on an alias moves
+ * to the line's own origin, nothing is ever written to an alias.
+ */
+export function relaySiteProviderBaseUrlVariants(siteId: unknown, provider: ProviderId): { endpointId: RelayEndpointId; baseUrl: string }[] {
+  return relaySiteEndpointChoices(siteId).flatMap((endpoint) => knownEndpointOrigins(endpoint)
+    .map((origin) => ({ endpointId: endpoint.id, baseUrl: providerUrlsForOrigin(origin)[provider] })))
+}
+
+function withRelayEndpoint(site: RelaySite, endpointId: unknown): RelaySite {
+  const endpoint = requireRelayEndpoint(site.id, endpointId)
+  if (endpoint.id === 'primary') return site
+  return Object.freeze({ ...site, accountBaseUrl: endpoint.origin,
+    providerBaseUrls: Object.freeze(relayProviderBaseUrls(site.id, endpoint.id)) })
+}
+
+function normalizedRelayBaseUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    if (url.username || url.password || url.search || url.hash) return null
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, '')}`
+  } catch { return null }
+}
+
+export function relaySiteEndpointIdForBaseUrl(siteId: unknown, provider: ProviderId, value: string): RelayEndpointId | null {
+  const normalized = normalizedRelayBaseUrl(value)
+  if (!normalized) return null
+  for (const endpoint of relaySiteEndpointChoices(siteId)) {
+    for (const origin of knownEndpointOrigins(endpoint)) {
+      if (normalizedRelayBaseUrl(providerUrlsForOrigin(origin)[provider]) === normalized) return endpoint.id
+    }
+  }
+  return null
+}
+
+/** Preserve a recognized native route until the user explicitly selects a line. */
+export function relaySiteForProviderBaseUrl(siteId: unknown, provider: ProviderId, value: string): RelaySite | null {
+  const normalized = normalizedRelayBaseUrl(value)
+  if (!normalized) return null
+  for (const endpoint of relaySiteEndpointChoices(siteId)) {
+    for (const origin of knownEndpointOrigins(endpoint)) {
+      if (normalizedRelayBaseUrl(providerUrlsForOrigin(origin)[provider]) !== normalized) continue
+      const site = requireRelaySiteIdentity(siteId)
+      return Object.freeze({ ...site, accountBaseUrl: origin, providerBaseUrls: Object.freeze(providerUrlsForOrigin(origin)) })
+    }
+  }
+  return null
+}
+
+/** A selected backend may recognize its own aliases, never another site's origin. */
+export function relayProviderBaseUrlMatches(provider: ProviderId, actual: string, expected: string): boolean {
+  const normalized = normalizedRelayBaseUrl(actual)
+  if (!normalized) return false
+  if (normalized === normalizedRelayBaseUrl(expected)) return true
+  for (const site of relaySites) {
+    if (relaySiteEndpointIdForBaseUrl(site.id, provider, expected) !== null) {
+      return relaySiteEndpointIdForBaseUrl(site.id, provider, actual) !== null
+    }
+  }
+  return false
+}
+
+/** The configuration names exactly this address: the line's own origin, never one of its aliases. */
+export function relayProviderBaseUrlEquals(actual: string, expected: string): boolean {
+  const normalized = normalizedRelayBaseUrl(actual)
+  return normalized !== null && normalized === normalizedRelayBaseUrl(expected)
+}
+
+/** A preference names 'auto' or a line of that site; no setting can borrow another site's line or name a site without lines. */
+export function relayRoutePreferenceAllowed(siteId: unknown, value: unknown): value is RelayRoutePreference {
+  const endpoints = relaySiteEndpointChoices(siteId)
+  return endpoints.length > 0 && (value === 'auto' || endpoints.some((endpoint) => endpoint.id === value))
+}
+
+/**
+ * The site and line a request URL is addressed to, by exact origin. Only each line's own origin
+ * counts: an alias is a retired entry kept for recognizing old configurations, never a target.
+ */
+export function relayEndpointForUrl(value: string): { siteId: RelayRouteSiteId; endpointId: RelayEndpointId } | null {
+  let origin: string
+  try { origin = new URL(value).origin } catch { return null }
+  for (const siteId of relayRouteSiteIds) {
+    const endpoint = relaySiteEndpointChoices(siteId).find((candidate) => candidate.origin === origin)
+    if (endpoint) return { siteId, endpointId: endpoint.id }
+  }
+  return null
+}
+
+/** The origin a site's line is reached at; null when the site has no such line. */
+export function relayEndpointOrigin(siteId: unknown, endpointId: RelayEndpointId): string | null {
+  return relaySiteEndpointChoices(siteId).find((endpoint) => endpoint.id === endpointId)?.origin ?? null
+}
+
+/**
+ * Every address a site has been reached at: each line's own origin and its retired aliases.
+ * Recognition only, like knownEndpointOrigins: lets a record kept per address be found again.
+ */
+export function relaySiteKnownOrigins(siteId: unknown): readonly string[] {
+  return relaySiteEndpointChoices(siteId).flatMap(knownEndpointOrigins)
+}
+
+function requireRelayRoutePreference(siteId: RelayRouteSiteId, value: unknown): RelayRoutePreference {
+  if (value === undefined) return 'auto'
+  if (!relayRoutePreferenceAllowed(siteId, value)) throw new Error('所选站点的连接线路无效')
+  return value
+}
+
+/** Every site gets a preference: one not stored is 'auto'; a stored one must be that site's own choice. */
+export function resolveRelayRoutePreferences(value: RelayRoutePreferences = {}): Readonly<Required<RelayRoutePreferences>> {
+  return Object.freeze({
+    solov: requireRelayRoutePreference('solov', value.solov),
+    'solov-api': requireRelayRoutePreference('solov-api', value['solov-api']),
+  })
+}
+
+function resolveRouteLine(siteId: RelayRouteSiteId, preference: RelayRoutePreference, reported: RelayRouteLine | undefined): RelayRouteLine {
+  if (preference !== 'auto') return { line: preference, settled: true }
+  if (reported && relaySiteEndpointChoices(siteId).some((endpoint) => endpoint.id === reported.line)) {
+    return { line: reported.line, settled: reported.settled === true }
+  }
+  // 「自动」还没有结论：照旧走默认线路，也不拿它去迁工具配置。
+  return { line: 'primary', settled: false }
+}
+
+/**
+ * Preferences freeze at process startup; saving one cannot mutate live clients. Under 'auto' the line
+ * itself may move during the run, so every read asks `currentLines` (relay-route-controller.ts).
+ * Without it, 'auto' stays on the primary line, unsettled: nothing migrates, as before #872.
+ */
+export function createRelayEndpointRoutingSnapshot(
+  value: RelayRoutePreferences = {},
+  currentLines?: () => Partial<Record<RelayRouteSiteId, RelayRouteLine>>,
+): RelayEndpointRoutingSnapshot {
+  const preferences = resolveRelayRoutePreferences(value)
+  const sites = new Map(relaySites.flatMap((identity) => relaySiteEndpointChoices(identity.id).map((endpoint) => {
+    const selected = withRelayEndpoint(identity, endpoint.id)
+    return [`${identity.id}:${endpoint.id}`, Object.freeze({ ...selected, providerBaseUrls: Object.freeze({ ...selected.providerBaseUrls }) })] as const
+  })))
+  function lines(): RelayRouteLines {
+    const reported = currentLines?.() ?? {}
+    return Object.freeze({
+      solov: Object.freeze(resolveRouteLine('solov', preferences.solov, reported.solov)),
+      'solov-api': Object.freeze(resolveRouteLine('solov-api', preferences['solov-api'], reported['solov-api'])),
+    })
+  }
+  function lineOf(siteId: string): RelayRouteLine | undefined {
+    return siteId === 'solov' || siteId === 'solov-api' ? lines()[siteId] : undefined
+  }
+  function siteOn(identity: RelaySite): RelaySite | undefined {
+    return sites.get(`${identity.id}:${lineOf(identity.id)?.line ?? 'primary'}`)
+  }
+  return Object.freeze({
+    preferences,
+    lines,
+    resolve(siteId: string | null | undefined) {
+      return siteOn(resolveRelaySite(siteId)) ?? sites.get(`${defaultRelaySiteId}:primary`)!
+    },
+    require(siteId: unknown) {
+      const selected = siteOn(requireRelaySiteIdentity(siteId))
+      if (!selected) throw new Error('未知中转站点')
+      return selected
+    },
+    selection(siteId: unknown) {
+      const current = lineOf(requireRelaySiteIdentity(siteId).id)
+      return current?.settled ? current.line : undefined
+    },
+  })
+}
+
 /**
  * Retired site ids that older settings files may still name, mapped to the
  * site they always denoted. 'sub2api' was a duplicate registry entry for xm
@@ -137,13 +403,13 @@ const retiredRelaySiteIds = new Map<string, string>([['sub2api', 'solov']])
  * version that removed a site. A settings file must never be able to make
  * the app fail to start, so this never throws.
  */
-export function resolveRelaySite(id: string | null | undefined): RelaySite {
+export function resolveRelaySite(id: string | null | undefined, endpointId: RelayEndpointId = 'primary'): RelaySite {
   if (typeof id === 'string') {
     const canonical = retiredRelaySiteIds.get(id) ?? id
     const found = relaySites.find((site) => site.id === canonical)
-    if (found) return found
+    if (found) return withRelayEndpoint(found, endpointId)
   }
-  return relaySites[0]
+  return withRelayEndpoint(relaySites[0], endpointId)
 }
 
 /**
@@ -157,12 +423,16 @@ export function resolveRelaySite(id: string | null | undefined): RelaySite {
  * validate the sender and bind the site to a main-process-owned active
  * identity before accessing credentials or starting account work.
  */
-export function requireRelaySite(id: unknown): RelaySite {
+function requireRelaySiteIdentity(id: unknown): RelaySite {
   const site = typeof id === 'string'
     ? relaySites.find((candidate) => candidate.id === id)
     : undefined
   if (!site) throw new Error('未知中转站点')
   return site
+}
+
+export function requireRelaySite(id: unknown, endpointId: RelayEndpointId = 'primary'): RelaySite {
+  return withRelayEndpoint(requireRelaySiteIdentity(id), endpointId)
 }
 
 /**
@@ -198,6 +468,19 @@ export function relaySiteExternalUrls(sites: readonly RelaySite[]): string[] {
  * Lowercased and deduplicated; non-https URLs are skipped.
  */
 export function relayDirectHosts(sites: readonly RelaySite[] = relaySites): string[] {
+  return relayDirectAddresses(sites).filter((host) => !isLiteralIpHost(host))
+}
+
+/** Fixed IP endpoints need IP-CIDR rules; DNS-only rule inputs remain strict. */
+export function relayDirectIps(sites: readonly RelaySite[] = relaySites): string[] {
+  return relayDirectAddresses(sites).filter(isLiteralIpHost).map((host) => host.replace(/^\[|\]$/g, ''))
+}
+
+function isLiteralIpHost(host: string): boolean {
+  return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.startsWith('[')
+}
+
+function relayDirectAddresses(sites: readonly RelaySite[]): string[] {
   const hosts = new Set<string>()
   for (const site of sites) {
     for (const url of [...Object.values(site.providerBaseUrls), site.accountBaseUrl, site.websiteUrl, site.keysPageUrl]) {
@@ -205,6 +488,8 @@ export function relayDirectHosts(sites: readonly RelaySite[] = relaySites): stri
       const parsed = new URL(url)
       if (parsed.protocol === 'https:') hosts.add(parsed.hostname.toLowerCase())
     }
+    // 只带各条线路自己的地址：别名只用来认旧配置，旧的 IP 测试入口要关掉，不该还出现在加速规则里。
+    for (const endpoint of relaySiteEndpointChoices(site.id)) hosts.add(new URL(endpoint.origin).hostname.toLowerCase())
   }
   return [...hosts]
 }

@@ -113,6 +113,38 @@ describe('userFacingErrorMessage', () => {
       .toBe('拒绝写入：本地配置文件')
   })
 
+  it('redacts the whole path when the account name has spaces in it', () => {
+    // 以前到第一个空格就停，账户名的后半截跟着上屏，也进了「复制给客服」。
+    const leak = new Error(
+      "Error invoking remote method 'config:switch-account-source': Error: "
+      + "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\Zhang San\\.claude\\settings.json'。已恢复到切换前的配置。",
+    )
+    expect(userFacingErrorMessage(leak)).toBe("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件。已恢复到切换前的配置。")
+    expect(userFacingErrorMessage(new Error('C:\\Users\\Mary Ann Smith\\.codex\\config.toml 写不进去'))).toBe('本地配置文件 写不进去')
+    expect(userFacingErrorMessage(new Error('拒绝写入：C:\\Users\\张 三\\.gemini\\settings.json，请重试'))).toBe('拒绝写入：本地配置文件，请重试')
+    expect(userFacingErrorMessage(new Error('\\\\?\\C:\\Users\\Zhang San\\x.json 打不开'))).toBe('本地配置文件 打不开')
+  })
+
+  it('redacts folder names with spaces on macOS, Linux and network shares', () => {
+    expect(userFacingErrorMessage(new Error("EACCES: permission denied, open '/Users/zhangsan/Library/Application Support/xingmang-ai-manager/backups/a.json'")))
+      .toBe("EACCES: permission denied, open '本地配置文件")
+    expect(userFacingErrorMessage(new Error("EACCES: permission denied, mkdir '/home/zhangsan/Pictures/星芒 AI 作品/user-7'")))
+      .toBe("EACCES: permission denied, mkdir '本地配置文件")
+    expect(userFacingErrorMessage(new Error('拒绝写入：\\\\fileserver\\Shared Docs\\张三\\config.toml')))
+      .toBe('拒绝写入：本地配置文件')
+  })
+
+  it('keeps the words after a path with spaces in it', () => {
+    // 过了最后一个分隔符，空格照旧算路径结束：后面的错误码、中文原因、下一个路径都还在。
+    expect(userFacingErrorMessage(new Error('spawn C:\\Program Files\\nodejs\\node.exe ENOENT'))).toBe('spawn 本地配置文件 ENOENT')
+    expect(userFacingErrorMessage(new Error('读取 /Users/yoyo/Library/Application Support/config.json 失败'))).toBe('读取 本地配置文件 失败')
+    expect(userFacingErrorMessage(new Error('C:\\Users\\Zhang San\\a.json 与 C:\\Users\\Zhang San\\b.json 都写不进去')))
+      .toBe('本地配置文件 与 本地配置文件 都写不进去')
+    expect(userFacingErrorMessage(new Error("EPERM: operation not permitted, rename 'C:\\Users\\Zhang San\\a.tmp' -> 'C:\\Users\\Zhang San\\a.json'")))
+      .toBe("EPERM: operation not permitted, rename '本地配置文件 -> '本地配置文件")
+    expect(userFacingErrorMessage(new Error('磁盘 C:\\ 已满'))).toBe('磁盘 C:\\ 已满')
+  })
+
   it('keeps the sentence that follows the path intact', () => {
     expect(userFacingErrorMessage(new Error('配置路径越过 Provider 根目录，已拒绝写入：C:\\Users\\张三\\x.toml，请重新选择目录')))
       .toBe('配置路径越过 Provider 根目录，已拒绝写入：本地配置文件，请重新选择目录')
@@ -171,7 +203,7 @@ describe('errorMessage', () => {
   })
 
   it('keeps its own generic fallback when the caller passes none', () => {
-    expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试或查看反馈日志。')
+    expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
   })
 
   it('does not take an English failure for Chinese because of a redacted path', () => {
@@ -188,7 +220,7 @@ describe('errorMessage', () => {
     ]
     for (const reason of failures) {
       expect(errorMessage(ipc(reason), '保存配置没有成功')).toBe('保存配置没有成功')
-      expect(errorMessage(ipc(reason))).toBe('操作没有成功，请重试或查看反馈日志。')
+      expect(errorMessage(ipc(reason))).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
     }
   })
 
@@ -282,7 +314,7 @@ describe('detectionFailureMessage', () => {
   it('does not take an English error for Chinese because of the path placeholder or a Chinese user name', () => {
     // 脱敏把路径换成了「本地配置文件」，中文用户名也只在路径里：句子本身还是英文。
     expect(detectionFailureMessage("EPERM: operation not permitted, scandir 'C:\\Users\\张三\\AppData\\Roaming\\npm'")).toBe(permission)
-    // 用户名带空格时脱敏只剥到空格为止，剩下那截路径里的中文也不算。
+    // 用户名带空格时整段路径照样换掉，句子本身还是英文。
     expect(detectionFailureMessage("EACCES: permission denied, open 'C:\\Users\\张 三\\AppData\\Roaming\\npm'")).toBe(permission)
     expect(detectionFailureMessage('spawn C:\\Users\\张 三\\AppData\\Roaming\\npm\\codex.cmd ENOENT')).toBe(missing)
   })
@@ -343,7 +375,7 @@ describe('failureWithDetail', () => {
   it('keeps the generic banner sentence and hands the redacted original over for classification', () => {
     // useOperation 交给页头红条的两样东西：上屏那句照旧，原话只拿来认类别。
     const failure = failureWithDetail(new Error("EBUSY: resource busy or locked, rename 'C:\\Users\\yoyo\\.codex\\config.toml' api_key=abc123"))
-    expect(failure.message).toBe('操作没有成功，请重试或查看反馈日志。')
+    expect(failure.message).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
     expect(failure.detail).toContain('EBUSY: resource busy or locked')
     expect(failure.detail).not.toMatch(/yoyo|abc123/)
   })
@@ -351,6 +383,6 @@ describe('failureWithDetail', () => {
   it('leaves no detail when the shown sentence already explains the cause', () => {
     expect(failureWithDetail(new Error('配置文件写入失败：磁盘只读'))).toEqual({ message: '配置文件写入失败：磁盘只读' })
     expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
-    expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试或查看反馈日志。' })
+    expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。' })
   })
 })

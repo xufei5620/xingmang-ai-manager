@@ -16,6 +16,1329 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.17 - 2026-10-07
+
+- 按 #941（`docs/DIRECT-ROUTE-RELAY-SUPPLEMENT.md`）第 2～4 节修直连的三处问题，只动 new-api（xm）这一侧的共用逻辑，sub2api 直连
+  的专属代码没动，没加线路选项，中转地址不进仓库。
+- yoyo 10-8「xm 站点这边全部走直连，线路这些问题不需要有太多提示」「CF 用来兜底」：`relay-route-controller.ts` 里星芒账号（solov）
+  这台电脑上还没有结论时开机直接定在直连（`unconcludedStart`，算定下来），工具配置一开始就写直连；直连健康检查连败照旧退回默认
+  线路、恢复后切回，都不提示。历史账号（solov-api）照旧先走默认线路、查出结论再迁。
+- 界面不再说线路的事：去掉首页「自动」退回默认线路的黄条（直连适配第六节第 4 条那句）、跟着换线路以后「要关掉重开」那句和它的
+  「帮我重开 Codex 桌面端」「知道了」；跟着线路却没改成的工具改说现成的「服务地址尚未与当前账号匹配」（去掉 `routeMismatch`）。
+  `App.tsx` 的 `followRelayRoute` 那一轮带 `quiet`，首页不摆进度；只换了线路的一轮（`bootstrapOnlyFollowedRoute`，开机那一轮也算）
+  不说「已完成…」，没写成的照常说，运行日志记「跟着换了连接线路：…」。另外三个客户端开着时那一行的「连接线路暂未改动，完全
+  退出后点「重新检测」」照旧留着：它们开着时星芒照第四十三批 A 的规矩不改，去掉这句就没人知道要先关掉它。
+- 第 2 节，工具配置跟着当前线路：「自动」换线路时，以前开着（或看不出开没开）的工具一律先不改、等客户关掉再「重新同步」；Mac 上
+  Codex 桌面端关了窗口还在后台跑，Codex 几乎总被算成开着，配置就一直停在原来那条线路上（线上 A、B、C 三位的成因，推测）。现在
+  不再问开没开，`system-service.ts` 照样按两阶段提交改好配置，开着的进程重开以后就走新地址。
+- 第 3 节，线路好坏只看健康检查：`relay-route-controller.ts` 重写成一轮三次——直连连着 3 次（隔 15 秒）健康检查没通过、默认线路
+  通才切走；两条都不通不切、5 分钟后再查。走直连时每 5 分钟查一次；退回后每 2 分钟查一次直连，连着 6 次（10 分钟）都通才切回；
+  两次切换至少隔 5 分钟，没到点就等到点再查一轮。每个站最近一次切换（从哪到哪、原因、起因的错误码）记进 `relay-route-lines.json`
+  的 `changes`，版本号不变，旧文件照读。`relay-line-fetch.ts` 去掉 3 秒没回话就报和「中止算连不上」：超时、调用方中止、
+  `/api/notice` 一律不报；报上去的只有网络层失败（`reportedRelayLineFailure`：断网、解析不出、TLS、证书日期、拒绝连接、代理回绝、
+  连接超时码）、回话的不是星芒，以及「到时限一个字都没回来」（`abortMeansNoAnswer` / `noAnswerFailure`：账号请求 10 秒
+  放弃时连回应头都没等到，直连被丢包就是这样，Chromium 自己要二三十秒到两分钟才报连接超时），而且只是叫控制器开一轮
+  检查（30 秒里最多一次）。请求本身照旧当场换线路重发。检查页（`diagnostics.ts`）直连那几秒没回话同样报一轮；更新源
+  （`update-feed-route.ts`）下得慢照旧不报。切换间隔用的是系统时钟：钟被往回拨过就从当下重新算一整段，不会一轮轮等到
+  钟追上来。
+- 第 4 节，公告：`new-api-client.ts` 给 `/api/notice` 单独 60 秒时限；跟着余额刷新的那一路读到过就一直用那份，没读下来的十分钟里
+  不再下、报上次的失败；打开公告、点重新读取照旧当场读；两路撞在一起只下一份。公告的成败不影响线路判断（上一条）。
+- 第 2、7 节，检查页：工具连接设置那几项的配置地址和当前线路对不上时照常算通过，导出的报告里写 `routeLine`、`currentRouteLine`；
+  「星芒 AI 网络」那项导出的报告里写最近一次换线路（`lastRouteChange`）和起因的错误码（`lastRouteChangeTrigger`）。检查页的
+  详情抽屉不列这几个键。
+- 登录后引导页锁住：主进程那条「会话变了」要等手上的事和本机凭据写完才发（`realm-account-service.ts` 的 `requestChanged`），
+  常常晚于界面已经开跑的那一轮登录同步；`App.tsx` 收到它一律作废正在跑的同步，那一轮的结果被扔掉，引导页一直是「正在同步
+  账号专属 Key」、按钮全灰，要等别的事碰巧再跑一轮才解开（`realm-account-smoke` 在 Windows 打包那项上就卡在这）。现在说的
+  还是同一个账号就接着算（`sessionChangeKeepsBootstrap`），换了账号、退出登录照旧作废。main 上同样有这个先后，本机跑这项
+  冒烟在第一次登录就卡住。
+- 冒烟（`realm-account-smoke`、`signed-out-smoke-isolation`）的星芒账号那一侧，直连和默认线路两个地址照同一套答；星芒账号的
+  登录、找回密码按直连地址核对。
+- 0.2.17 发版运行的 Windows 出包作业连挂两次，都是测试不稳：`test:ui` 十个套件的夹具页一律改走 `openFixturePage`（`ERR_NO_BUFFER_SPACE` 丢导航时在同一 90 秒预算里重开），`ci-workflow-config.test.cjs` 找 Windows 套件时把 `run-release-build.cjs` 跑的 npm 脚本也算进去（`test:ui` 只在发版时上 Windows，原门禁看不到）；`provider-sessions.test.ts` 等后台写探测缓存的 `vi.waitFor` 从默认 1 秒放到 10 秒。
+
+- PR #834 核实的 F10：`electron/proxy-bypass.ts` 因为系统代理指着一个关掉的代理，把本次运行整个改成直连（默认会话 `mode: 'direct'`，
+  不会自己撤回）以后，用户再开加速（加速页点的，或者从星芒打开 Codex 桌面端时自动连的），`startDownloadRoute` 回
+  `system-proxy-active`，`download-acceleration.ts` 照旧记成已加速、不给端点。于是 `downloadFetch` 走默认会话直连，
+  `resolveSubprocessProxyEnvironment` 给 npm 的也是直连，`system-service.ts` 的 `inspectNetworkRegion` 却因为
+  `acceleratedDownloads > 0` 改成官方优先，进度里写「已为本次下载启用加速线路」「已启用下载加速，优先使用官方源」。
+- 协调者加可选的 `downloadsFollowSystemProxy`，`main.ts` 接 `() => !proxyBypass.active()`：`system-proxy-active` 时答 false 就不算加速，
+  回空租约、记 `acceleration.download.direct`，安装源照区域探测排，国内仍先走镜像；别的下载正握着的那份可能是改直连之前给的，
+  沿用前也再看一次。下载临时线路（`ready`）给下载专用会话明着设回环代理，不看系统代理，不受影响。
+- 没改成让下载真的走用户那次加速（下载专用会话改跟随系统代理）：Codex 桌面端顺带连的加速约 2 分钟就断，断开时系统代理当场改回
+  那个关掉的代理，下到一半的会接着撞上它；用户自己停加速也一样。没在真机上演过。
+- `account-switch-sync.ts` 跨账号类型切换（星芒账号 ↔ 历史账号）时，上一个账号的工具地址改按那个站登记过的线路认
+  （`relaySiteEndpointIdForBaseUrl`：默认线路、备用直连和它的别名），新账号报的地址也按登记过的线路认。原来两头都只认
+  默认线路的地址，选了备用直连以后勾上的工具全被跳过（#872 写的「没做」第一条）。
+- 测试夹具加 `?routedSwitch`：切换账号时像主进程一样按新账号生效的线路重报地址、重算 `matchesRelay`，归属变成
+  `unknown`；浏览器用例演备用直连下切到历史账号，两个工具都换过去。
+- 安全修复：以管理员身份运行星芒时，收紧 `ProgramData\XingMangAI`（装、更新、卸载工具，或准备安装临时目录时都会走一遍）的顺序留了个可写空窗。`protectWindowsDirectory`（`electron/trusted-temp.ts`）原来先 `icacls /reset /T` 整棵树、再单独加固根：`/reset /T` 这一步会让根重新继承 `ProgramData` 的 ACL（对 Users 可写），到下一步加固根之前，普通账户能在根里新建文件；随后的 `/setowner /T` 把这些文件的属主一律改成 Administrators，而作者在建文件时就能把 DACL 设成只有 SYSTEM/Administrators，于是最后的逐项核对放行——等于普通用户把自己的文件塞进提权执行路径，还带着一副可信的 ACL。
+- 改法：把加固根挪到第一步（断继承、只给 SYSTEM/Administrators），根从这一刻起就不再对普通用户可写；再用 `icacls <root>\*`（只针对内容、绝不碰根本身）重置子项，让它们重新继承、并修掉历史空 DACL；最后 `/setowner /T` 改属主。检查一条不少，只是换了顺序，没有放宽任何校验。空目录没有内容要重置、`\*` 通配符会报错，所以加了一道「有内容才重置」的判断（读不出目录按空处理，根已加固、最后的逐项核对仍兜底）。
+- icacls 这三步抽成 `applyWindowsRootHardening`（纯函数，按序调用注入的 runIcacls），顺序即安全契约。`windowsAclResetArguments` 改名 `windowsAclResetContentsArguments`、目标带 `\*`。并发串行的注释改掉了「`/reset /T` 让根短暂可写」那段旧理由。
+- 测试：`trusted-temp.test.ts` 新增两条（各平台都跑）——加固根必须先于重置内容、且没有一条 icacls 把根本身 `/reset`；空目录只跑加固与改属主两步。`windows-powershell-probes-smoke.mjs` 新增一条在真 Windows 上跑整套加固，证明 `\*` 通配符真能跑、且加固根那一步一返回，根就已经只给 SYSTEM/Administrators。普通权限的 Windows、Mac、Linux 不走这条路，不受影响。
+- Sub2API 公告条目带上 `publishedAt`（`RelayNotice.entries` 新增可选字段，开始时间与创建时间取较晚者，缺时间就不带），
+  `Announcement.tsx` 的列表日期和详情时间改为「时间线的发布时间，没有就用条目自己的」，沿用 `formatTimelineDate`，
+  不新增文案；历史账号没有类型，所以详情里只有时间、没有类型标签。
+- `electron/updater.ts`：检查失败的 `error` 多一个可选 `automatic`，开机、每 3 小时、晚到的开机那次失败（`check()` 没带 `manual`）都标上，开机 8 秒超时的 `STARTUP_UPDATE_TIMEOUT` 也标；只跟着 error 走，错误清掉就没了，缺省＝客户点的，旧行为。
+- `src/renderer-v2/features/app/update-retry.ts` 新增 `updateFailureBubbleQuiet`，`App.tsx` 首页气泡据此不弹；更新页不变，仍显示「检查更新失败」与「重试」。下载、安装失败不受影响。
+- 第二十五批候选 ①，yoyo 2026-10-06 回「没算进去的拍板也按照你的推荐做」。
+- 第二十四批 2：Windows 安装包是 perMachine，装更新一定弹 UAC；账号不在 Administrators 组时 UAC 要别人的
+  管理员密码，打开时装、第一次打开窗口时装（#881）、退出时装都只会把软件关掉、再弹一个填不了的窗口。`main.ts`
+  启动时用 `inspectWindowsElevationCapability`（whoami /groups，3 秒上限）问一次，问出 'standard' 时：
+  `decideLaunchInstall` 新入参 `standardAccount` 返回 null；`decideQuitInstall` 在自动更新开着时返回新值 'leave'，
+  不装也不弹「顺手装上吗」，直接退出（日志 `quit.update-left`），自动更新关着时照旧问。问出来之前打开时装先不定，
+  问出来后用 `considerLaunchInstall` 再看一遍；退出时最多等这一次问完，'standard' 时也不再等撤回名单。问不出来
+  （'unknown'）照旧自动装（Windows 上记一条 `install.account-unknown`）。
+- 更新快照加可选的 `installNeedsAdminPassword`（`updater.setInstallNeedsAdminPassword`，只在问出 'standard' 时出现，
+  Windows 管理员账号和 Mac、Linux 的快照不变）。渲染层据此换字：首页气泡和更新页（下好时，`standardAccountUpdateNotice`）、
+  系统通知（下好时换键 `<版本>:downloaded:admin-password`，问出来之前已经弹过的那条会被收掉；正在下载时）、更新页顶上、
+  「自动更新」开关说明（更新页和设置页）、重启安装确认框、强制更新门。文字是 yoyo 2026-10-06 批的原话；主进程和
+  渲染层各有一份下好时那句，两边测试都钉住原句。
+- 第三十一批 B（yoyo 2026-10-04 点头）：官方安装器（`installSource: 'native'`）装的 Claude Code 以前首页只给一句
+  「用它原来的方式更新」，可 `config-files.ts` 写的 `DISABLE_AUTOUPDATER` 不看安装方式，连它的自更新也关了，客户就停在
+  旧版本上。新增 `canSwitchToManagedInstall`（Claude、native、`uninstall.available`）与 `updatesOutsideApp`，后者替换
+  首页、安装卸载页、新版本通知里原来看 `isExternallyManagedInstall` 的地方，能换的这一种照给「更新」「更新到推荐版本」；
+  `toolUpdateOffer().manualHint` 对它变成 null，新手引导的「更新」按钮和结果页「建议更新到 X」那句跟着一起变。其他来源的
+  Claude / Gemini、官方安装器装的 Codex 不变。
+- `App.tsx` 的 `install()`：先过原有的断网、运行环境检查，再弹 `managed-switch-confirm`（三句话在 `managed-switch.ts`，
+  照点过头的原话），客户同意后在同一个安装任务里依次准备运行环境、卸载、安装，卸完到装上的空档最短，运行环境要重启电脑时
+  官方那份也还在。版本由 `managedSwitchVersion` 定下（点名的 → 钉住的推荐版本 → 最新版 → 推荐版本），确认框写哪一版就点名
+  装哪一版。点「取消」或关框返回新的 `ToolInstallOutcome` `'declined'`，什么都不动，安装卸载页也不出提示。这一份已经在换
+  （任务还在跑）时再点不重复问，按已在装处理。真动手卸之前再看一眼网（`offlineNow`，确认框可能开了好一阵），断了就先不卸。
+  卸载这一步不能取消（现成的「这一步已经不能取消了。」），安装那一步照旧走取消通道；卸载留下被占用的旧版本文件
+  （`manual-required`）时照常装上并弹原有的清理说明；卸载转交给普通窗口时和「卸载」一样刷新一次；卸载后安装失败或被取消时
+  刷新一次，这一行回到「安装」。
+- IPC `cli:uninstall` 加可选第二个参数 `CliUninstallOptions`（`{ reinstall?: boolean }`），`ipc-contract.ts`、`preload.ts`、
+  `ipc.ts` 三处一致，没加新通道、注册顺序不变；`parseCliUninstallOptions` 只认 undefined 或只带布尔 `reinstall` 的对象，
+  别的形状报「卸载参数格式错误」。带 `reinstall` 时 `system-service.ts` 的 `uninstallCliOperation` 动手前先跑
+  `assertInstallDiskSpace`（和安装同一句、同一个门槛），盘不够就一个文件都不删。
+- 文档：`docs/CLI-NATIVE-INSTALLS.md` 的识别口径补上这个例外；`docs/CLI-VERIFIED-VERSIONS.md` 记下 `DISABLE_AUTOUPDATER`
+  对官方安装器那份生效这一条已在沙箱用真二进制演过（Windows / Mac 真机没演过）。
+- 第三十二批 A：`electron/system-snapshot-cache.ts` 不再因为 appVersion 不同就扔掉上次的检测结果（#403 起换了版本就不认，
+  每次更新后的第一次打开，首页「你的工具」都只剩一条进度条）。格式版本号对、形状校验过就认，不管是哪一版写的。
+  别的版本写的文件，每家 CLI 去掉 `versionAdvice`、`revertVersion`，`latestVersion` 记 null、`updateAvailable` 记 false、
+  `updateState` 记 unknown（`withoutVersionVerdicts`）：前几项是上一版按它自带的推荐版本名单下的判断，`latestVersion` 会被
+  「更新」当成点名的版本；首页先摆上次结果的那几秒里「更新」「更新到推荐版本」能点，点下去版本号原样交给主进程、按点名的
+  版本装，新版本的名单换了推荐版本就会装错。桌面端照留（它的「更新」不点名版本）。同一版本写的照旧原样用。
+- 新加类型钉子 `SnapshotShapePins`：快照每一层（SystemSnapshot、ToolStatus、CliStatus、DesktopAppStatus、
+  NetworkLocationStatus、CliUninstallCapability）的必填字段连同类型照抄一份，加、删、改必填字段（包括必填改可选）
+  `npm run typecheck` 就过不去，注释写明改清单的同时把 `SYSTEM_SNAPSHOT_CACHE_VERSION` 加一。按 tag 比过 v0.2.10～v0.2.14
+  和 main，必填字段一个没变，格式版本号保持 1。另有 `CliOptionalFieldsSorted`：CliStatus 新加可选字段也过不去，逼着先判断它
+  算不算上一版的版本判断、要不要进 `withoutVersionVerdicts`（只为分类，不用加格式版本号）。`system-snapshot-cache.test.ts`
+  用 `@ts-expect-error` 钉住这几道检查本身真会报错。
+- 第三十二批 B：`electron/platform/notifications.ts` 里 `cliUpdate` 的通知标题、`src/renderer-v2/registry/business.ts` 里设置项的说明去掉「命令行」。
+  这条通知按 `pendingToolUpdates` 算，Codex 桌面端镜像有新包时也算在里面；Windows 客户反馈报告里真发过一条
+  `cli-update:codexDesktop.26.928.3736.0`，当时四家 CLI 一个没装。正文、哪些工具算进这条通知、点通知去哪一页都不变。
+- 第三十三批 D（0.2.15 发版前回归检查建议 g 的前一半）：`electron/codex-desktop-service.ts` 的 `installCodexDesktopOnMac`
+  第一次检测没做完（`detectionFailed`，或者检测本身抛错）时再检测一次，认出来就照已装好的那条路结束，不下载。以前没做完
+  和「查过了，没装」一样往下走，`installMacosDesktopApp` 看到「应用程序」里有 ChatGPT.app，只认得出旧版聊天程序
+  （com.openai.chat），正版 com.openai.codex 也落到「不是官方原版」那句。
+- 第二次还没做完就照旧往下走，不一律停下：`detectionFailed` 也包括 Spotlight 查不了、扫应用目录超时这类和 ChatGPT.app
+  无关的情况，停下会让这些 Mac 再也装不上。第一次检测期间客户点了「取消」就不测第二次，直接按取消收场。
+- 两次都没做完时告诉安装那一步（`installMacosDesktopApp` 新加的 `detectionUnfinished`）：「应用程序」里占着名字的那份
+  自称 com.openai.codex，就报现成的「Codex 桌面端检测未完成，请重新检测后再试」（和 Mac 上点「打开」时检测没做完同一句），
+  不说「不是官方原版」、叫客户移到废纸篓。只换说法，照样不装、不动它；旧版聊天程序、别的 bundle id、读不出来的照旧，
+  检测做完了还没认出来的那份也照旧说不是官方原版。
+- 「没做完」只算没查完的：`detectionFailed` 以前把两种情况混在一起，`inspectMacosCodexApp` 新加 `rejectedPaths` 分开，记下
+  自称是 Codex、核对下来确定不过关的那几份（codesign、plutil 跑完了退出码非 0，可执行文件缺了、不是能跑的 Mach-O、类型权限
+  不对、架构不兼容）。安装那一步占着名字的正是其中一份（按 realpath 比）就照旧说不是官方原版，再测几次都一样，客户得知道要把
+  它挪走；别处另一份不过关不连累它。命令超时、没起来，文件读不了，问不出这台 Mac 跑什么架构，才算没查完。`app`、
+  `detectionFailed` 本身和首页的显示都没变。
+- 沙箱用真的 `createCodexDesktopService`（darwin）和真的 `installMacosDesktopApp` 演过（「应用程序」换成临时目录，里面放
+  plutil 读出 com.openai.codex 的 ChatGPT.app，第一次检测给签名核对超时）：改前说「不是官方原版」；改后第二次认出来时
+  提示已经装好、安装器一次都没调。两次都没做完的那种由 `codex-desktop-service.test.ts` 用真的安装函数钉住。
+- 开机自启时「打开时装」从来不会发生：`update:startup` 要等开机安静期（3 分钟）过了才查更新，`decideLaunchInstall`
+  只认从进程启动算两分钟内下好的。现在开机拉起的从安静期结束才开始算这两分钟（`main.ts` 的 `launchInstallClockFrom`），
+  普通打开照旧从启动算。`launchedAtLogin` 和 `startupQuiet` 挪到打开时装的订阅之前建，别的用法不变。
+- `auto-update-install.ts` 新增 `resolveLaunchInstallMode`：开机拉起、窗口一直没显示过的，能无人值守装（`canInstallUnattended`）
+  又没开着加速就在后台装（'background'：不发预告通知、不摆卡、不等 5 秒），否则开机时不装（'skip'，日志 `install.on-launch.held`），
+  其余照旧先预告再装（'notice'）。Windows 的 NSIS 是 perMachine，安装器每次都要 UAC 授权窗口，所以 Windows 窗口没打开过时开机不装；
+  Mac 照 Squirrel.Mac 的 `launchPrivileged`（SQRLUpdater.m：解开符号链接后 .app 或它所在的文件夹不可写就要管理员密码）看一遍，
+  从磁盘映像或系统的只读临时副本里运行的也不装。
+- 自动更新记录加可选的 `backgroundInstall {version, startedAt}`：后台装、安装器 10 分钟内重新拉起的那一次
+  （`isRelaunchAfterBackgroundInstall`；ShipIt 装没装成都会拉起，所以不看版本）照开机拉起办，窗口留在菜单栏、走安静期，
+  日志 `install.background.relaunched`；读到就清掉，只认一次。没走到重新拉起那一步的（装之前情况变了、没装成
+  `isBackgroundInstallFailed`、装的时候用户点开了窗口）当场撤回这条记录，免得之后用户自己打开时窗口出不来。旧版本读这份
+  记录会忽略这个字段。ShipIt 用 NSWorkspaceLaunchDefault 打开会把程序切到前台，这一次在 ready-to-show 后 `app.hide()`
+  把前台还回去。装之前那一眼抽成了纯函数 `shouldStillInstallAtLaunch`，后台装的另看窗口有没有被点开、加速有没有开。
+- 第三十三批 A：Mac 的 powerMonitor 'shutdown' 现在和 Windows 的 query-session-end / session-end 一样算「系统要关机」。
+  `window-lifecycle.ts` 的 `confirmedQuit` 关机时不调 confirmQuit、不拉安装器；关机通知之后系统来让程序退出（before-quit）时，
+  开着的关窗询问框、退出确认框不等回答直接按退出走（`answerUnlessPowerOff`）。以前 Mac 关机照「退出时顺手装」那一套先写
+  `quitAttemptedVersion`、拉起 Squirrel 又不等它，安装器被一起结束，之后每次打开都说「新版本上次没装上」，这一版也不再自动装；
+  关着自动更新时确认框还会拦住关机。Electron 43.6.0 只在 NSWorkspaceWillPowerOffNotification 时发 'shutdown'，Command + Q 和
+  程序坞「退出」走 terminate: 不发（对过 electron_application_delegate.mm、electron_application.mm），普通退出照旧装。
+- 关机被别的程序拦下取消时 Electron 不再通知，所以关机只管通知后 60 秒内开始的退出（`powerOffQuitWindowMs`），之后照常问、
+  照常装；只听到通知、系统没来让程序退出时，开着的框留给用户答，答了照样算数，只是不再拉起安装器。
+- `decideQuitInstall` 加 `systemShuttingDown`，关机时回 'later'（不装、不问、不记）；`main.ts` 的 confirmQuit 等完撤回名单、
+  等完通知各看一次新加的 `lifecycle.isSystemShuttingDown`，`quitAttemptedVersion` 挪到等完通知之后才写。刚退出、记录已写、
+  安装器还没装完时才关机的：收拾那一两秒里不再拉起安装器，`onPowerOff` 用 `undoQuitInstallAttempt` 撤回这次写的记录
+  （尽力而为，没写成就和以前一样）。下次打开走现成的启动时自动装。
+- 第三十三批 C：`system-service.ts` 的 `uninstallCliOperation` 里 npm 卸载那一步以前不接失败，原样抛 `CommandRunnerError`
+  （Windows 上是「命令执行失败（退出码 1）：node.exe」，npm 报的 EPERM / EBUSY 只在 stderr 里），渲染层只能归成「操作没有完成」。
+  现在照安装那条路：新增 `describeNpmUninstallFailure` 把 npm 的要点接到原话后面，再经 `describeOccupiedCliFailure` 按这个工具的
+  包目录数进程。EBUSY / ETXTBSY，或 EPERM / EACCES 且数到进程，说「{工具} 卸载失败：文件被占用，……」（渲染层归「工具正在运行」）；
+  其余说「{工具} 卸载失败：{原话（npm 要点）}」（EPERM 归「写不进安装目录」）。不借 `describeNpmCommandFailure`：它把超时说成
+  「下载超时」，卸载不下载东西，借过来会被归成下载超时、叫客户换源重试。
+- 卸载失败时 Mac 不数进程：Mac 挪得动、删得掉正开着的程序文件，那边的 EPERM / EACCES 只会是权限不够（比如用 sudo
+  装进 `/usr/local` 的那份），数到进程就会叫客户去关窗口，关了照样卸不掉。Mac 上照旧归「写不进安装目录」。
+- `cli-process-probe.ts` 的 `action` 加「卸载」；`cli.file-locked` 那条日志按动作说（以前首次安装撞上占用也写「更新时」）。
+  卸载抛出的错误把原来的 `CommandRunnerError` 挂成可枚举的 `cause`：运行日志只记可枚举字段，npm 的原始输出照旧进日志。
+  卸载前先查工具开没开、错误框加「重试」都要动 `App.tsx`，这次不做。
+- 第三十三批 B（0.2.15 发版前回归检查建议 i）：`electron/updater.ts` 的 `check()` 改等 `checkWatched()`。
+  `updateCheckStallMs`（45 秒，和下载停住同一个数）里 update-request-guard 一个响应头、一个字节都没看到，就调
+  `abortDownloadRequests` 掐断还开着的更新请求，以 `UPDATE_CHECK_STALLED` 加更新那张表里「超时」那句报检查失败。
+  electron-updater 6.8.9 上一次检查没收场时再调，交回来的是同一个 Promise（AppUpdater.js 的 `checkForUpdatesPromise`），
+  出错才清掉；以前开机检查 8 秒超时后请求一直挂着，「重试」和三小时那次都接回它，整次运行停在「正在检查」，
+  最低版本那道门里只剩「联系客服」。掐断后那次检查以掐断用的错误收场，electron-updater 丢掉它，下一次检查重新发请求。
+- 开机那次已经报了 `STARTUP_UPDATE_TIMEOUT`、之后没人再点检查的，掐断后保留那句话。接回同一个挂住请求的检查共用一个
+  看门狗、同一个结果。掐断时之后又开始了一次检查的，只让最新那一次报（`latestCheck`），免得它还在读服务状态文件时先闪一句
+  「检查更新失败」。electron-updater 为掐断的请求发的 error 事件不上屏（同下载那边的 `UpdateDownloadAborted`）。
+  宿主掐不到请求时，再等 `updateDownloadCancelWaitMs` 照样报超时。main.ts 只在 `download.requests.aborted` 那条日志里
+  多记一个 `reason`（`UpdateCheckAborted` / `UpdateDownloadAborted`），分得清掐的是检查还是下载。
+- 沙箱用 Electron 43.6.0 加真的 NsisUpdater，对着只接连接、不回话的本地服务器演过（HTTP/1.1、HTTP/2 各一遍，计时缩短）：
+  掐得断、连接关掉，下一次检查、开机超时后的「重试」、定时检查都重新发请求；只回响应头不回内容的也掐得断；每 2 秒来一个
+  字节、总时长超过门槛的慢服务器不误判。改前的代码同样演法：检查一直挂着，「重试」和定时检查都不发新请求。
+- 第三十四批 C：`electron/macos-shell-profile.ts` 按账号的登录 shell 选文件（`planMacosShellProfileTarget`）。zsh 照旧
+  `~/.zprofile`；bash 追加到 `~/.bash_profile`、`~/.bash_login`、`~/.profile` 里第一个存在的那个（bash 登录 shell 只读它），
+  三个都没有才新建 `~/.profile`，从不建 `~/.bash_profile`。「存在」照 bash 自己的判法：失效的链接跳过，活的链接、文件夹、
+  读不了的文件都算，于是被拒绝，不退到一个 bash 根本不读的 `~/.profile`。fish 写自己的 `conf.d/xingmang-ai-manager.fish`
+  （认 `XDG_CONFIG_HOME`），不改 `config.fish`，同名文件不是我们写的就不动。三种用同一对标记、同样三个目录接在 PATH 最后。
+- 其余照 zsh 那一套：只追加不重写、已有标记就不动、符号链接或多链接的文件拒绝并只记日志（I8）、打开软件只补一次
+  （`terminal-commands-added`）。以前 bash、fish 账号在判断 shell 那一步就返回、没留记录，升级后第一次打开软件就会补上。
+  `isZshLoginShell` 换成 `resolveMacosLoginShell`。
+- 日志：`cli.shell-profile.checked` 在登录 shell 不是 zsh、bash、fish 时改说「登录 shell 不是 zsh、bash、fish，没改终端
+  启动设置」，以前也落进「终端启动设置无需改动」；出错时的说明带上是哪个文件（如「终端启动设置（~/.bash_profile）」）。
+- 测试：`macos-shell-profile.test.ts` 补 bash 三种文件情况、失效链接、fish（含 `XDG_CONFIG_HOME`、同名文件）、tcsh、
+  符号链接和硬链接，另有真 zsh、bash（三种文件情况和失效链接）、fish 登录 shell 里按名字找到命令的端到端用例（系统自带的
+  或 Homebrew 装的，有哪个跑哪个；CI 的 Mac 上有 zsh 和 bash）；`windows-cli-shell-access.test.ts` 补四种结果各自的日志。
+- 第三十四批 B：macOS 打开工具时「终端」先起客户的登录 shell（读 `~/.zprofile`、`~/.zshrc`），再在里面跑 `launch.zsh`，
+  `export https_proxy=http://127.0.0.1:7890` 这类设置一路带给工具；星芒从访达启动，自己的环境里没有这几行，
+  `withoutDeadLoopbackProxies`（第十六批 5、Linux 版拆分 ②）管不到。补上 CHANGELOG 里「macOS 仍不绕」的打开工具那一半；
+  npm 那一半在 Mac 上本来碰不到 `~/.zshrc`，不动。
+- `macos-platform.ts` 新增 `buildMacosClosedProxyGuard`，`buildMacosTerminalScript` 把它插在 export 之后、启动工具之前：
+  只看 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 的大写、小写两种写法，只认指向 localhost、127.x.x.x、[::1] 且写了端口的，
+  用 `/usr/bin/nc -z -n -G 1` 试连（localhost 试 127.0.0.1 和 ::1），连不上的这一次 `unset`；开着的、指向别的机器的、
+  认不出的不动，同一个目标只探一次。nc 不在、`zsh/regex` 载不进来时什么都不动；nc 自己报了错（不是单纯连不上）算探不准，
+  也不动。函数里 `setopt localoptions noerrexit unset`，中途出错只当没探，返回后 `set -eu` 照旧；整段的错误输出丢掉，
+  终端里不多出字，也不加新字。启动脚本写不进星芒的运行日志，所以没有日志。
+- 和 `stale-proxy-environment.ts` 对齐：名字表用 `Record<StaleProxyVariableName, true>` 钉住（`import type`，不引入
+  command-runner → macos-platform 的循环引用），那边加减名字这边编译不过；单测把同一张写法表交给 zsh 和
+  `parseLoopbackProxyTarget`，认出的目标要一样。不同处：大小写两份各判各的（Mac 上本来是两个变量，去掉没开的、留下开着的）；
+  写出来的 http `:80`、https `:443` 这里照样探，那边的 URL 解析当成没写端口；`127.1`、`[0:0:0:0:0:0:0:1]` 这类简写
+  那边还原成本机地址，这里不认、照旧带上。
+- 沙箱（Linux，装了 zsh 5.9）用假 nc 跑过新加的几条单测（`LANG=en_US.UTF-8`，断言 stderr 为空）；也把整份启动脚本里的 nc
+  换成认 `-z -n -G 1`、真去连端口的假程序跑过：没开的端口被去掉、开着的留着、别的机器的留着，工具照常启动，退出提示照旧，
+  stderr 为空，连 Node 启动约 50 毫秒；换成一调用就报用法错的 nc 时几个代理全留着，工具照常启动。用真 `/usr/bin/nc` 的
+  那条单测只在 CI 的 macos-test 里跑；没在真机上演过。
+- 第三十四批 A（只 Mac）：代下的 Node.js（`~/Library/Application Support/XingMangAI/Runtime/node`）在 PATH 里排在客户自己那份
+  后面（第十六批 2）。客户那份低于 20 或读不出版本时，代下的那份永远轮不到：检测一直判成太旧，`planCliInstall` 每次装工具都把
+  Node.js 排进准备步骤重下一遍，新手引导停在「准备工具」，装工具用的 npm 也落在旧 node 上（首页和检查页的
+  Node.js 一行只显示客户那份的版本号，不提示过低）。这是对「客户自己的 Node 优先」的一处有意例外。
+- `macos-node-runtime.ts` 新加 `resolveDarwinPreferredNodeDirectory`：代下那份不是普通文件就直接回 null，不起进程（绝大多数 Mac
+  走这条）；照平常顺序先找到的 node 就是代下那份、或者版本够新，回 null；否则代下那份够新才回它的 bin 目录。
+- `system-service.ts` 的 `preferredNodeDirectories` 把这个目录经 `additionalPaths` 排到最前，只用在本软件自己干活的地方：找 node、
+  npm、npx 和问版本（`findInstalledExecutable`、`inspectTool`），`npm root --global`（新加的 `resolveServiceNpmGlobalRoot`），装工具
+  找 npm 和跑 npm 的环境（`findNpmForCliInstall`、`resolveNpmBaseEnvironment`），打开工具时 `resolveCliCommand` 新加的
+  `nodeDirectories`（JS 写的工具先在这里找 node）。判断结果 15 秒内共用（`scanReuseMs`），强制重新检测、装完 Node.js 后重新判断，
+  缺代下那份的下好当场就用上。交给终端的环境、`~/.zprofile`、客户 node 够新的 Mac、Windows 和 Linux 都不动。
+- `diagnostics.ts` 检查页的 Node.js、npm 两项同样先看代下那份，和首页一致。
+- 不在这次范围：卸载工具用的 npm、画图 MCP 写进配置的 node（`main.ts`）、Codex 扩展管理（`codex-extensions.ts`）仍按原来的顺序找 node。
+- 测试：`macos-node-runtime.test.ts` 钉判断规则；`tool-installation.test.ts` 钉 `nodeDirectories` 与 `npm root --global` 的 PATH；
+  `system-service.test.ts` 按 darwin 跑检测、装 Node.js（已有不重下、缺的下好当场切换）、装工具的 npm 与 PATH、打开工具的
+  `nodeDirectories` 与终端 PATH（Windows 主机上不跑）。
+- 第三十五批 A：`electron/windows-elevation.ts` 打开工具的中转脚本用 `Start-Process -WorkingDirectory` 起终端，这个参数没有
+  -LiteralPath 写法，PowerShell 一律按通配符解析（`PathUtils.ResolveFilePath` 不带 isLiteralPath），文件夹名带 `[` `]` 时报
+  「the wildcard path … did not resolve to a file」，旁边碰巧有对得上的文件夹（`作业1`）才打得开。新增 `escapePowerShellWildcard`，
+  在 TypeScript 里给 `` ` `` `[` `]` `*` `?` 各加一个反引号（与 PowerShell 7.6 起的 `[WildcardPattern]::Escape` 同一组字符；
+  Windows PowerShell 5.1 和 7.5 及以前的不转义反引号，所以不在脚本里调它），再照旧包 `powerShellLiteral`。只用在
+  `-WorkingDirectory`；终端里的 `Set-Location -LiteralPath` 和 `execFile` 的 `cwd` 照原样。
+- 中转脚本开头补上 UTF-8 输出（`[Console]::OutputEncoding`，try/catch 包住，设不上照旧往下走）。`-EncodedCommand` 起、标准错误被
+  重定向时，PowerShell 把报错写到 `Console.Error`，编码跟着 `[Console]::OutputEncoding`；中文 Windows 默认 GBK，`launchCliPowerShell`
+  按 UTF-8 读回是乱码，`describeWindowsCliLaunchError` 里按中文认原因的几条也认不上。终端窗口那段早就有这句，中转脚本漏了。
+  报错外面那层 CLIXML（`#< CLIXML <Objs …>`）和 Node 附上的「Command failed: …」这次没动，认不出原因时错误框照旧原样带出来。
+- `e2e/windows-powershell-probes-smoke.mjs` 加一项：按 App 给 ``作业[1]\a`[b]`` 造的中转脚本，执行到 `Start-Process` 为止都照原样，
+  只把要起的终端换成隐藏、等它结束的 cmd.exe，确认能起、而且起在这个文件夹里；不转义的同一脚本必须仍然失败，报错里的中文按 UTF-8
+  读得出来。Windows PowerShell 5.1 和 PowerShell 7 都跑。单测按 PowerShell 的 `WildcardPattern` 规则核对转义后读回来是原路径。
+- 第三十五批 C：`electron/ipc.ts` 里 `diagnostics:export`、`runtime-logs:export-feedback` 两个保存窗口的类型名从 `'Text'`
+  换成 `chat-history:export-text` 早就在用的 `'文本文件'`。`ipc.test.ts` 新增一条用例，钉住这三个存 .txt 的保存窗口都用这个名字。
+- 第三十五批 D（yoyo 2026-10-06 点头）：Windows Installer 同一时间只让装一个安装包，别的程序正在装时 msiexec 以 1618 退出
+  （ERROR_INSTALL_ALREADY_RUNNING）。`electron/node-runtime.ts` 的 `errorText` 以前只认 1602、1925、1603，1618 落到原话
+  「命令执行失败（退出码 1618）」；下载源循环又把它当成这个源的问题，换下一个源把几十 MB 的安装包再下一遍，结果还是 1618。
+  现在 `errorText` 认出 1618 时说「Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先
+  重启电脑再试」（写法照 1603 那句），`installNodeRuntime` 的下载源循环认出它就直接停，不再换源。别的失败（1603 等）照旧
+  换到下一个源；winget 那一步没改。
+- `node-runtime.test.ts` 新增两条 Windows 用例，真走查询、下载、校验、安装这一路，只把联网和起进程换成假的：1618 只从国内镜像
+  下一份、安装只跑一次、进度里不再出现「正在尝试备用下载源」；1603 照旧换到官方源。
+- 第三十五批 B：Windows 上 Defender、索引服务正好开着目标文件或刚写好的临时文件时，「临时文件换过去」那一步会报
+  EPERM / EACCES / EBUSY，过几十毫秒就好。`safe-local-data.ts` 早为画布自动保存在这一步加了重试，这次把那段循环抽成
+  `renameWithTransientRetry`，另加同步版 `renameWithTransientRetrySync`（只在出错后用 `Atomics.wait` 等，最多共 300 毫秒），
+  规矩不变（`isTransientReplaceError` 认的几种错误，等 20/40/80/160 毫秒，最多 5 次），用在 `config-files.ts` 的
+  `executeFilePlans` 换文件、回滚两处和 `app-settings.ts` 换设置文件、换备份两处。
+- 每次尝试前都重跑原来的路径检查（`assertSafeSourceAndTarget` / `assertSafeDataFile`）和 `beforeReplace` 钩子，等的时候被换成
+  联接、硬链接的照旧拒绝；OpenCode、WorkBuddy 正好在等的那一下存了自己的改动时，`external-tool-config.ts` 钩子里那道「保存前
+  已变化」照旧拦下，不会盖掉。5 次都失败就原样抛出最后那个错误，后面「写不进安装目录」这些说法和写进去的内容都不变。
+  `writeAtomicSafeFile` 的行为不变（用尽后仍说「写入被系统占用」）。同类的 `backups.ts`、`claude-desktop-local-transaction.ts`、
+  `codex-extensions.ts` 这次没动。
+- 沙箱里用 Electron 43.6.0 确认过主进程能用 `Atomics.wait`（Linux）。
+- 第三十六批 A：`electron/main.ts` 里聊天和画布共用的三个系统菜单、画布项目文件夹的三个系统菜单，出错时把 `error.message` 直接当
+  `dialog.showErrorBox` 正文。菜单先弹、点了才读文件，文件被挪走或占用时 `fs.promises.open` 抛的 Node 原话是英文，还带完整路径和
+  用户名；这六处也不写日志。新增 `window-presentation.ts` 的 `assetMenuFailureDialog`：报错本身是中文（`isChineseSentence`，先去掉
+  路径和引号段再看）照原样，其余换成这几个错误框里原有的「无法完成图片/视频/音频操作」，标题不变。六处改走 `showAssetMenuFailure`，
+  先 `runtimeLog.exception(…, 'asset.menu.failed', …)` 记原话（带媒体类型和菜单项），再弹框。菜单本身、读文件和链接检查都没动。
+- `window-presentation.test.ts` 钉住英文原话换兜底句、主进程自己的中文原样、main.ts 六处都走这个函数且不再有错误框直接用 `error.message`。
+- 第三十六批 D（10-5 拍板清单第 3 条，10-6 照推荐「改」）：自动更新记录 `pending-update.json` 里的「下好了」`downloadedVersion`、
+  「打开时试过了」`attemptedVersion`、「退出时试过了」`quitAttemptedVersion` 装成功以后从来不清。客户装回旧版后，旧版查到、
+  下好同一个新版本时，`resolvePreviousAutoInstallFailure` 照「试过了、还不是正在运行的版本」把它认成上次没装上，弹
+  「新版本上次没装上…」；`decideLaunchInstall`、`decideQuitInstall` 也因为「试过了」不再自动装，只在退出时问。
+- `auto-update-install.ts` 新增 `resolveRecordToWriteAtLaunch`：启动时把记录里等于正在运行版本的三项清掉，连同原来就只认一次的
+  `backgroundInstall`，`main.ts` 照它写一次（原来只在有 `backgroundInstall` 时写）。三项都要清：只清两个「试过了」，旧缓存里
+  还留着新版安装包时，装回旧版第一次打开就会被打开时装装回去。认「上次没装上」、打开时装照旧看读到的原样：electron-updater
+  不会把正在运行的版本当成新版本（`isUpdateAvailable` 先比 `semver.eq`），清没清对它们一样。
+- 只清等于正在运行版本的，不清比它旧的（候选文件写的是「不高于」）：本机版本被撤回时 `allowDowngrade` 打开，会往回退到更旧的
+  那一版（回退工作流就是这么退的）；那一版退出时没装上，要是下次打开就清掉，之后每次退出都会再去装、授权窗口一直弹。
+- 清记录这一步在自动更新装上的那一版里跑：从带这个改动的版本装回任何旧版都不再误报；已经卡在这种状态的客户（今天开着旧版、
+  记录里留着新版的「试过了」）分不出是装成功又退回来的还是真没装上，这次修不到，等他们点一次「重新安装」。装回旧版、开着
+  「自动更新」的客户，新版本下好后下次退出就会被自动装回去（关机时没装的，下次打开时装）；客服让客户退版时，要同时让他
+  关掉「自动更新」。
+- 第三十六批 C：`build/installer.nsh` 新增 `un.xingmangRemoveFallbackShortcuts`，`customUnInstall` 在真卸载（`${IfNot} ${isUpdated}`）
+  里、卸载清理之后调用：按所有用户安装时切到当前用户，删掉 `customInstall` 补建的 `$DESKTOP\${SHORTCUT_NAME}.lnk` 和开始菜单里的
+  `${SHORTCUT_NAME}.lnk`（定义了 `MENU_FILENAME` 时删文件夹里那个，再不带 /r 地 RMDir 那个文件夹），再用
+  `xingmangRestoreShellVarContext` 切回。electron-builder 的卸载模板只删 `setLinkVars` 在 all 上下文里算出的 `$oldDesktopLink` /
+  `$oldStartMenuLink`，补建在当前用户那里的一直没人删；`customInstall` 又只在路径上没有文件时才补，指向旧文件夹的图标还在就不补。
+- 跟模板删公共图标的做法一致：带 `--keep-shortcuts` 不删，`DO_NOT_CREATE_*` 关掉的那一类跳过，删之前先 `WinShell::UninstShortcut`。
+  只删这几个固定路径，不用通配符、不带 /r。升级（--updated）时不跑：新版不补图标，这时删了图标就真没了。卸载详情里不加新句子。
+- 卸载程序是提权跑的，这两个图标却在当前用户自己能改的地方，所以不用 `Delete`，删除交给 `un.xingmangDeleteFallbackShortcut`：
+  `CreateFileW` 带 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，`GetFinalPathNameByHandleW` 给的路径必须和要删的一字不差（路径里有一段被联接、
+  符号链接转走就对不上），不是文件夹、不是 name surrogate 类重解析点（符号链接、联接），才经同一个句柄用 `FileDispositionInfo` 删；
+  哪一条不对都不删。两种图标都不建时这个函数不定义（没人调用的函数在 makensis -WX 下是编译错误）。
+- `scripts/windows-installer-shortcuts.test.cjs` 加四条：卸载删的路径与 `customInstall` 在当前用户那里补建的逐条对上（顺手建的文件夹同理）；
+  只在真卸载里调，守着 `--keep-shortcuts` 和 `DO_NOT_CREATE_*`，函数只进卸载程序那一遍；切到 current 以后每条路都切回；
+  删除只经核对过的句柄（不跟最后一段链接、比对最终路径、拒文件夹和指向别处的重解析点、句柄每条路都关、寄存器原样还回）。
+  `windows-installer-uninstall-cleanup.test.cjs` 那条正则放宽到 isUpdated 守卫里可以跟着别的调用。
+- `windows-uninstall-smoke.yml` 加一步 `scripts/windows-uninstall-shortcuts-smoke.ps1`：真装真卸。先用 icacls 拒绝所有人往公共桌面和
+  公共开始菜单里加文件，让安装程序自己把图标补建在当前用户那里，旁边再复制一个别的名字的；覆盖安装、带 --updated 的升级各一次后都还在；
+  真卸载后补建的两个没了、别的名字那个还在；再装到另一个文件夹，两个图标又补出来。第二次卸载前把当前用户的桌面位置指到一个联接上
+  （联接后面放一个同名图标），开始菜单那个换成指向别处的符号链接：卸完联接后面的、符号链接本身和它指向的文件都还在。最后把桌面位置
+  和两个文件夹的权限改回去。
+- 这次不管的两种：普通账号输别的管理员密码代为安装和卸载（补建、删除都在那个管理员那里，两头对称）；不先卸载、直接拿新安装包覆盖安装
+  又换了文件夹（旧卸载程序带 --updated 跑，不删；新安装程序看见旧图标在，也不补）。
+- 第三十六批 B：electron-builder 的安装程序每次安装都把自己拷到 `%LOCALAPPDATA%\xingmang-ai-manager-updater\installer.exe`
+  （模板 `installer.nsh` 的 `APP_INSTALLER_STORE_FILE`，留作增量更新的底），electron-updater 把下好的新版放在同一目录的
+  `pending` 里；Mac 上是 `~/Library/Caches/xingmang-ai-manager-updater`（`pending` 加一份留作增量底的 `update.zip`）。
+  卸载模板一次都不碰 `LOCALAPPDATA`，卸载清理以前也不管它。
+- `uninstall-cleanup.ts` 加 `updaterCacheDirectoryName`、`resolveUpdaterCacheDirectory` 和 `clearUpdaterCache`。位置照
+  electron-updater 的 `getAppCacheDir`，Mac 是 `~/Library/Caches`；Windows 的卸载清理带着管理员身份，不让环境变量决定去哪里删
+  （同不读 `CODEX_HOME`）：用 `os.userInfo().homedir`（系统登记的用户目录，只有管理员改得了）下的 `AppData\Local`，
+  `LOCALAPPDATA` 和它对不上、或者不是带盘符的完整路径就不删。删法是把原来的 `removeChatHistoryTree` 抽成带名字、带层数上限的
+  `removeOwnedTree`，聊天记录和更新缓存共用：每一级过 `assertNoReparseComponents`，文件走 `removeSafeDataFile`，碰到符号链接、
+  目录联接和多链接文件就留在原地、其余照删（I8），不用整棵删。聊天记录那半的行为和报告文字不变。
+- `startUninstallCleanup` 一开头调 `configureRelocatedFolderAccess('trusted-only')`：这一支本来就没打开「C 盘搬家」的跟随，
+  现在钉死，以后谁在它前面打开了也不会在提权删除时跟着联接走。
+- Windows：`runUninstallCleanup` 在代理还原之前删（还原可能等到超时，没有代理记录时也要删到）；删不掉只往报告里写一行
+  `update cache: …`，不加退出码，卸载程序给客户看的几句不变。另一个管理员账号卸载（退出码 32）时照旧什么都不动；
+  升级安装带 `--updated` 不跑卸载清理，不会删到正在用的安装包。`startUninstallCleanup` 多一个可替换的参数，测试里不碰跑测试
+  那台电脑上真的更新缓存。
+- Mac：`macos-uninstall.ts` 在程序确实挪进废纸篓之后、退出之前删，挪不动就不删（下好的新版还能装）；没删掉只记日志，
+  不算进 `leftovers`，提示不变。`main.ts` 接上这一步。
+- `scripts/windows-uninstall-cleanup-smoke.ps1`：每次装完先查 `installer.exe` 确实拷进了更新缓存，每轮清理前放一份假的
+  下好的更新，清理后查整个目录没了；第一轮直接清理时缓存里另放一个目录联接，查联接和它指向的文件原样留着、旁边的照删，
+  清理退出码仍是 0。
+- 第三十七批 C（第三十五批 B、#847 的后续）：#847 抽出的 `renameWithTransientRetrySync` 用到同类的几处换文件上，规矩不变
+  （EPERM / EACCES / EBUSY / EAGAIN，等 20/40/80/160 毫秒，最多 5 次；用尽就原样抛出最后那个错误，后面的说法不变）。
+  `backups.ts`：做备份最后把临时文件夹改名成正式备份（「改用当前账号」「备份并重置」、修提醒设置、开机补设置、备份页
+  「创建备份」、恢复前那份都先走这一步，刚写进文件的文件夹被安全软件扫着时改不了名），恢复时挪开当前配置、换上备份、
+  失败时往回换（单个文件里一处、整次回滚一处）；`claude-desktop-local-transaction.ts`：换文件和往回换；
+  `codex-extensions.ts`：改写 config.toml（`setSkillEnabled`、`setPluginEnabled` 都走这里；新界面「技能」页开关 Codex
+  技能用的是前者，「插件」页开关 Codex 插件走 CLI，不经过这里）和删 Skill 时把文件夹挪进回收站。
+- 每次尝试前都重做原来的检查（原有检查的先后不变）：备份目录（`ensureSafeDataDirectory`，开头查过的那项，改名前
+  再查）；恢复时的路径（`assertSafeTargetPath`）、回滚位置还空着、当前配置和快照一致、临时文件的快照和 SHA-256；
+  Claude Desktop 的账号（`assertContext`）、各文件快照、暂存文件归属、目标文件；Codex config.toml 的路径和「单链接
+  普通文件」检查（抽成 `assertReplaceableTomlFile`，备份前、每次换文件前各查一遍）；删 Skill 时两边的路径。等的时候
+  被换成联接、多了硬链接的，照旧拒绝；恢复备份和 Claude Desktop 这两处还比对快照，被别的程序存了改动的也照旧拒绝、
+  不盖掉。
+- 整次回滚把挪开的那份放回去之前，多确认一次原位置空着（恢复上去的那份刚删掉）：等着重试的那一下若有程序在这儿新写了
+  文件，不拿挪开的那份盖它，照旧按「回滚失败」把挪开的那份留着。
+- `safe-local-data.ts` 没改。测试照 #847 的写法用 `vi.spyOn(fs, 'renameSync')` 模拟被占住：占一两下能等过去；一直占着照旧报
+  原来的错、往回换照旧；等的时候被改了照旧拦下。
+- 第三十七批 D：`npm ci` 那一步外面加一个 `npmDownloadHeartbeatMs`（15 秒）的计时器，发 stage 'download'、带 elapsedMs 的
+  安装进度，原话是新的 `npmDownloadHeartbeatMessage`：「仍在从国内 npm 镜像下载…（已用时 3 分 05 秒）」、走官方源时
+  「仍在从 npm 官方源下载…（已用时 3 分 05 秒）」（2026-10-06 拍板的原话；「从」后面接 npm 时空一格，所以不拼
+  `npmRegistryLabel`）。写法照解析依赖图那一步的心跳，只报已用时，不写百分比。
+- renderer-v2 没改：带 elapsedMs 的 'download' 进度本来就把进度那一行换成现成的「还在下载，已经等了 …」，原话进安装日志；
+  `sendInstallProgress` 不把带 elapsedMs 的记进运行日志，每 15 秒一条、最长 30 分钟也不会刷屏。
+- 计时从这一轮 `npm ci` 起算，换源从零算；下完、卡住被掐（第三十七批 A 的看门狗）、客户取消都在同一个 finally 里停。
+- 第三十七批 B：托管目录（Mac、Linux，Windows 按管理员身份运行时）的装和更新在 `npm-cache/npm-transaction-XXXXXX` 里做，
+  正在用的工具目录先挪成里面的 `previous-prefix`，新版换上、检查通过、报完成，最后 `finally` 才删整个事务目录。删完之前退出、
+  关机、崩掉，或者删到一半失败，下次装、更新、卸载任何一个工具开头的恢复（`managed-cli.ts`）只看到 `previous-prefix`，分不清
+  新版检查过没有，一律退回旧版，删了一半时退回来的还是残缺的。
+- `replaceManagedNpmPrefixAtomically` 检查通过后把 `previous-prefix` 改名成 `superseded-prefix`（用传进来的
+  `operations.rename`，EPERM / EACCES / EBUSY / EAGAIN 照 `safe-local-data.ts` 的规矩等 20/40/80/160 毫秒，最多 5 次），
+  返回 `{ backupRetired }`；改不成就留原名、和以前一样，只记一条 `cli.install.backup-retire-failed`。恢复的判断不动
+  （本来就只认 `previous-prefix`），加了注释，最后删事务目录那一下也加了重试。检查没过、检查前就断了的退回保护不变。
+- `install-leftovers.ts` 多扫托管 npm 缓存目录（`managedNpmCacheRoot`；普通权限的 Windows 不扫）里的 `npm-transaction-`
+  加 6 位随机串，照旧 6 小时以上才删、不跟链接；新加的 `preserveIfContains` 让还有 `previous-prefix` 的事务再旧也不删，
+  留给恢复（恢复做完剩下的 `interrupted-prefix` 照删）。Windows 按管理员身份运行时，要这次运行已经加固并核过那个目录的
+  ACL（`isRegisteredTrustedManagedWindowsPath`）才交给清理。`finally` 的删除加 `maxRetries: 2, retryDelay: 200`，删不掉记
+  `cli.install.transaction-cleanup-failed`（路径去掉用户目录）。
+- 测试：Linux 上真走一遍更新、让收尾删除失败、再准备托管目录，改前 Codex 被退回 0.1.0，改后保持新版，6 小时后残留被清掉；
+  `managed-cli.test.ts` 新加的两条在三个平台上都跑。
+- 第三十七批 A：`npm ci` 那一步以前用 `npmDownloadTimeoutMs`（5 分钟）当总时长，命令运行器到点就结束整棵进程；每个源、每次安装
+  都用新的 attempt-N 目录和缓存，所以换源、重试都从零开始，每秒不到 0.3～0.5 MB 的客户永远下不完（Claude Code 约 100 MB、
+  Codex 约 130～160 MB）。npm 自己不掐慢而不断的下载（@npmcli/agent 的 fetch-timeout 管的是连接空闲多久）。
+- 现在这一步看进展：`createNpmDownloadStallWatch` 每 `npmDownloadProgressCheckMs`（15 秒）用 `measureDirectoryBytes` 量一次这一轮的
+  attempt-N 目录（不跟链接和目录联接、顺序走，根目录读不了就报错、不当成 0），大小连续 `npmDownloadStallTimeoutMs`（3 分钟）没变才中止，`npmDownloadCeilingMs`
+  （30 分钟）交给命令运行器当总上限兜底。make-fetch-happen 边下边把数据分一路写进 cacache 的临时文件、tar 边读边解进 node_modules，
+  目录大小就是 npm 不打印的进度；变小也算在动（npm 自己重试前会丢掉下坏的半截），量不出来的那一拍也算在动，时钟用单调的
+  `performance.now()`。`executeNpm` 加一个可选的 signal，和取消信号用 `AbortSignal.any` 合在一起；是看门狗掐的就抛
+  「下载超时，长时间没有完成，已中止」（和 TIMED_OUT 共用一个常量），后面换源、拼报错、渲染层归成「下载超时」都不变；客户点取消照旧报
+  「安装已取消」。卡住被掐时运行日志记 `cli.install.download-stalled`（源、已用时、目录大小）。
+- 后面带 `--offline` 的「装到本机」那一步不动，还是 5 分钟。一个源失败后先删掉它的 attempt-N 目录再换下一个源，删不掉就留给
+  结束时的 finally。没有改 `command-runner.ts`，没有新写界面文字（下载时的进度提示是第三十七批 D，要另外点头）。
+- 第三十八批 C：按管理员身份运行时，开机安静期过后再等 2 分钟的那一轮清理，会去删 `ProgramData\XingMangAI\InstallerCache`
+  里 6 小时以前留下的临时文件夹，删之前不确认这个文件夹只有管理员能写。ProgramData 默认允许普通用户在里面建东西，第一次加固
+  中途断掉的也停在「属主是管理员、但 Users 能写」的样子；这时普通进程可以在查完、正删的时候把里面的子文件夹换成联接，让管理员
+  权限的删除落到别处（同 I8）。#854 给托管 npm 缓存补过这一判，安装缓存这一处漏了。
+- `system-service.ts` 的 `resolveInstallLeftoverLocations` 照 #854 那一判：Windows 上安装缓存根没通过
+  `isRegisteredTrustedManagedWindowsPath`（这次运行亲手加固、核过 ACL）就不交给清理，核过以后那一轮再清。装、卸工具准备托管
+  目录或建安装用的临时目录时会把整个 `ProgramData\XingMangAI` 加固一遍，所以装完工具那一轮照清，开机那一轮一般跳过。普通权限
+  的 Windows、Mac、Linux 不受影响。
+- 测试：`system-service.install-leftovers.test.ts` 加两条：Windows 管理员身份下这次运行没核过就不扫安装缓存、登记以后扫（只在
+  Windows 上跑）；不是 Windows 时照旧扫安装缓存（各平台都跑）。
+- 第三十八批 A：`proxy-bypass.ts` 以前一撞上「代理连不上」（ERR_PROXY_*、ERR_TUNNEL_CONNECTION_FAILED）就整个改直连，`active` 只有
+  改成 true 的地方，本次运行再也改不回来。代理软件换节点、重启内核、开机比星芒晚起几秒的那一下，就让装工具、拉插件、下官方安装包、
+  `downloadsFollowSystemProxy` 一直走直连到退出，「重新检测」走的 `tryBypass()` 也只答「已经直连」。
+- 改直连之前再看一眼：账号请求报 proxy（`recoverFailedRequest`）和站点直连期间每 5 分钟那次检查（`checkSystemProxy`）都先等
+  `proxyRecheckDelayMs`（3 秒）经默认会话再探一次，几个请求一起撞上只探一次（`lookAgainAtProxy`）。探通了不改直连，那次请求经系统
+  代理重发（运行日志 `proxy-bypass.proxy-back`）；还是 proxy 才照旧整个改直连；换成别的错（超时、连接被断、没网）先什么都不改、
+  不重发（`proxy-bypass.proxy-unclear`，探测自己等满的 TimeoutError 记成 timeout）。没有代理、加速开着时照旧当场答不重发，不等这
+  3 秒；等的时候有人在试整个改直连就等它试完，试过、直连也不通的不接着再试一遍。`new-api-client.ts` 里 `retryOffProxy` 的约定注释
+  补上「代理只是在重启、又连得上了」这一种。
+- 改了直连以后能改回去：整个改直连期间 `routeSiteRequest` 也借连星芒的请求的时机，隔 `systemProxyCheckIntervalMs`（5 分钟）在后台经
+  新加的 `probeSystemProxy` 探一次（`main.ts` 照 `xingmang-site-direct` 的写法另建只跟随系统代理的内存分区 `xingmang-system-proxy`）。
+  连得上、且星芒自己的加速没开（读不到按开着算；只用 `bypassBlocker` 判加速的那一半，判 DIRECT 的那一半看的是默认会话，直连时总答
+  DIRECT），就把默认会话改回 `system`、`active = false`，记 `proxy-bypass.direct-ended`。`site` 一并清掉、`siteHandedBack` 记一笔，
+  这之前在直连上发出、后来失败的请求换系统代理重发一次，不回头再探直连。#578 / #841 的加速取舍不动，`downloadsFollowSystemProxy`
+  改回后跟着变回 true。
+- 不在一次下载或请求进行到一半时换线路：在 Electron 43.6.0（Linux）上实测过，会话中途从直连改成跟随系统代理、反过来也一样，正在传的
+  HTTP 和经 CONNECT 的 HTTPS 请求照原来的路传完，不会被掐断，只有新发的请求走新的路；npm 子进程的代理环境变量启动时就定了。
+- 改回时顶上「已经改为直接联网」那条横幅自己收起：`proxy-bypass.ts` 加可选依赖 `directEnded`，改回那一刻调用；`main.ts` 接上它，
+  给主窗口发新的事件通道 `network:proxy-bypass-ended`（`onProxyBypassEnded`，载荷为空，`ipc-contract.ts` 与 `preload.ts` 两份通道表
+  同步加），`renderer-v2/App.tsx` 收到就把 `proxyBypassNotice` 置回 false。没加新字。
+- `main.ts` 的 `proxy-bypass.account-retry` 日志在「代理只断了一下、经系统代理重发」时改成如实的一句。没做：没登录、也一直不连
+  星芒的时候，要等下一次连星芒才看；
+  代理软件活着但不转发星芒的（#796/#822 那类），整个改了直连以后经代理探不通星芒，照旧直连到退出，和以前一样（要改得照站点那一路
+  只让星芒直连、别的改回代理）；余额连着被拒、界面自动替用户试直连（`App.tsx`）那条路不经过「再看一眼」，改了以后同样能改回。
+  没在真机上演过。
+- 第三十八批 A 的后续：整个改直连以后，`proxy-bypass.ts` 的 `restoreSystemProxy` 以前只认「经只跟随系统代理的会话连得上星芒」，
+  代理软件起来了、只是不转发星芒的（#796/#822 那类）探不通，就一直直连到退出。现在按探测失败的原因分：proxy 类、offline、
+  认不出来的照旧接着直连；超时、连接被断、回了别的东西，说明代理软件起来了，再经站点专用的直连会话探一次，通了、加速也
+  没开（探完直连才判，探的那几秒里加速开了也不改），就改回 `system`、`active = false`，同时开一轮站点直连（和
+  `divertSiteRequests` 一样），记 `proxy-bypass.direct-ended`（detail 带 `failure`），调 `directEnded` 收起横幅。之后每 5 分钟那次 `checkSystemProxy` 照旧：代理软件还在就不动，代理没了再整个改直连，
+  不会来回切。
+- 在 Electron 43.6.0 上实测过 `session.fetch` 经 HTTP 代理的几种失败：代理端口没开是 ERR_PROXY_CONNECTION_FAILED；代理对 CONNECT
+  回 502、403 是 ERR_TUNNEL_CONNECTION_FAILED；回 200 以后断开是 ERR_CONNECTION_CLOSED、ERR_CONNECTION_RESET；回 200 以后不再回话、
+  或者一直不回 CONNECT，都是探测自己等满的 TimeoutError。探测失败的分类（TimeoutError 记 timeout）提成顶层的 `probeFailure`，
+  `lookAgain` 一起用。
+- 没做：代理对星芒直接回 4xx、5xx 的（ERR_TUNNEL_CONNECTION_FAILED）从撞上那一刻就按「代理连不上」整个改直连，改回也照旧要等它
+  连得上星芒；它在别处也都按代理连不上算，只在改回这里放过去，5 分钟后会再改直连、来回切。要分开得让账号请求那边把失败原文
+  带过来，这次没动。没在真机上演过。
+- 第三十九批 B：`electron/provider-sessions.ts` 列 Claude Code 记录时把 `~/.claude/projects` 下每个 `.jsonl` 都算一条，Claude Code
+  派出去的子任务（subagent）也各占一条：标题一般是 AI 交代给子任务的话，首页「最近」的三条容易被它们占满，「N 条记录」和 Claude Code
+  那一栏的条数虚高。删记录时却把与记录同名的文件夹（子任务就在里面）当作这条记录的一部分一起删，列和删两个口径。
+- 现在发现这一步按名字跳过 `agent-*.jsonl`（`isClaudeTranscriptFile`），再去掉落在某条记录同名文件夹里的 `.jsonl`
+  （`claudeConversationFiles`；同名文件夹和删记录共用 `claudeCompanionDirectory`）。子任务文件不再探测，也不占 5 万个会话文件的
+  上限；探测缓存里它们的旧条目在下一次整轮列表时清掉。依据是 npm 上的 Claude Code 安装包：2.0.30、2.0.77、2.1.0 把子任务写成项目
+  文件夹里的 `agent-<id>.jsonl`，2.1.30 起（核到 2.1.289）写进 `<记录id>/subagents/[子目录/]agent-<id>.jsonl`；2.0.30、2.0.77、
+  2.1.289 自己列会话都只认按 UUID 起名的文件。
+- 删记录、看记录、导出不变。旧存法（2.0 到 2.1 初期）下子任务文件和记录并排，删记录原来就不连它们一起删，这次也没改；Claude Code
+  默认 30 天清一次旧记录，这种文件一般早已被清掉。
+- 测试：`provider-sessions.test.ts` 加三条：两种存法的子任务都不列、也不打开；普通子文件夹里的、名字里只是带 agent 的照列；子任务
+  不占文件上限。删记录那条补上「列表里只有一条」。
+- 第三十九批 A：`quit-blocking-tasks.ts` 的 `describeInstallTask` 多认 `runtime:git`（「正在安装 Git」）和
+  `external-client:install:<客户端>`（`isExternalToolId` 认得的才算，名字取 `externalClientNames`，「正在安装 WorkBuddy」这类）。
+  以前只认 `cli:install:*`、`runtime:node`、`runtime:python`、`desktop:codex:install`：装 Git（含 Windows 上装完 Claude Code
+  自动接着装的那一段）和三个外部客户端时，托盘 / 菜单「退出」不拦；打开时自动装新版本拿同一个函数判 busy，也不等它们。
+  认不得的 key 照旧返回 null，退出不会被拼错的 key 挡住。退出确认框的整句、`main.ts`、`auto-update-install.ts` 都没动。
+- 测试：`quit-blocking-tasks.test.ts` 加 Git 和三个客户端的说法、畸形客户端 key 返回 null、Git 后面排着 WorkBuddy 时计数为 2；
+  另加一条把程序里会进安装队列的每种 key 列一遍，断言退出拦截认的范围和防睡（`install-keep-awake.ts` 的
+  `isKeepAwakeInstallKey`）一致。
+- 第四十批 C（第三十九批「不收」第 2 条）：首页、「安装卸载」页的一次安装比主进程那一段长。主进程装完，界面还要同步 Key、
+  整轮重新检测；Windows 上装 Claude Code 时，主进程装完它还接着装 Git（`installGitAlongsideClaude`）。这两段那一行的「取消」
+  还亮着，点了回的是 `install-cancellation.ts` 找不到句柄时那句「这个工具当前没有正在进行的安装。」。
+- `App.tsx` 的 `install()` 多一个 `finishing` 标记，`toolsApi.install` 回来以后置上；`cancel` 和换装时卸载那一步一样直接回现成的
+  「这一步已经不能取消了。」，不再问主进程。Codex 桌面端走同一个函数，一起改好。
+- `system-service.ts` 的 `installCli`：Windows 上的 Claude Code 改由新的顶层函数 `finishClaudeInstallWithGit` 收尾。Claude Code
+  那一项装成后先把取消句柄封住（`gitAlongsideClaudeSealReason`，还是那一句），Git 那段结束（装上、没装上都算）再从登记表注销；
+  Claude Code 自己失败或被取消就不进 Git 这段，照旧马上注销。别的工具、别的平台照旧在出队时注销。Git 那段句柄还登记着，
+  这时再装一次 Claude Code 会走「已登记」那一支、另排一次取消不了的安装；界面上 `useToolbox` 的 `run` 按工具加锁，碰不到，
+  注释里写明了。装 Git 本身仍接不上取消（`installGitRuntime` 不收 signal），这次没动。
+- 测试：`system-service.install-cancel.test.ts` 加四条：Git 那段取消被拒、也不真的停；Git 抛错也注销；Claude Code 自己被取消或
+  失败时不装 Git、马上注销。注入的 platform 管不到 `installCliOperation` 里读真实 `process.platform` 的几处，在 Linux / macOS
+  主机上走不通 Windows 那条安装，所以只测这一段，三个平台都跑。`app-check.mjs` 加首页和「安装卸载」页各一条：用 `holdNextScan`
+  停在同步那几秒，点「取消」说「这一步已经不能取消了。」，也没有再调 `cancelCliInstall`，放开后照常装完。
+- 第四十批 B：记录页「接着聊」（`pages-management.tsx` 的 `SessionsPage` 里的 `resume`）直接调 `api.launchCli(…, 'resumeLast')`，
+  `App.tsx` 的 `launch()` 打开前那几道关一道没过：检测出错或没装、Codex 老配置先修（#650）、没连好账号先开配置框、每天第一次打开时
+  核对默认模型（#520，第十二批 5）。后两样加进 `launch()` 时记录页这条没跟上；主进程 `cli:launch` 只拦自定义地址和文件夹不在，
+  没 Key 的配置当官方账号放行。
+- 那一段原样提成 `prepareToolLaunch(id, epoch)`：返回打开前读到的快照和配置，`null` = 不往下走（问话框里关掉了、中途换了账号），
+  换账号以后抛出来的错也按 `null` 收掉，和 `launch()` 原来的规矩一样；`launch()` 先调它，后面照旧。`BusinessPage` 多转一个可选的
+  `beforeResume`，记录页在 `launchCli` 之前先等它：返回 false 就什么都不打开、不报错、不说「已打开」；过不了的原因（比如「请先确认
+  账号连接，再打开工具。」）照常挂在记录页页顶。记录页自己的成功提示、文件夹刚被删时那句实话、通知首页重读「最近」都不变。
+- 换模型那一问以前只有首页、托盘一条路，`launchRequest` 保证同一时刻只有一问。记录页不走那条路：它那一问开着时从托盘再打开工具，
+  后来的一问会盖掉前一问的回答函数，记录页一直转圈，关窗口时还当有任务没做完。现在新的一问先替用户关掉旧的一问（等于那次先不打开）。
+- 只用现成的问话框、配置框和句子，不新写字。记录页「接着聊」可能多一次联网核对模型：每个工具每天第一次，最多等 5 秒，核对不成照常打开。
+- 测试：`testing/app-check.mjs` 补 6 条浏览器回归：检查都过时照常接着聊，且打开前核过模型；默认模型用不了时先问，点「换成」先存模型
+  再接着聊；关掉问话框什么都不打开、不报错，「照旧打开」不改配置照常接上；没连好账号时打开配置框、页顶写原因、不打开；问话框开着时
+  换账号什么都不打开；问话框开着时从托盘打开工具，记录页那次不打开、按钮恢复能点。换回改前的代码这 6 条都红；只去掉「先关掉旧的一问」
+  那一行，托盘那条红。
+- 第四十批 A：托盘「已安装的工具」（`main.ts` 发 `window:launch-tool`）和 Ctrl / Command + 1～5 交给 `requestLaunch` 的只有工具名，
+  不带文件夹，`launch()` 拿不到 `remembered` 就弹 `chooseWorkspace`。#702 只给首页那颗按钮接上了「记住上次的文件夹」
+  （`Home.tsx` 先用 `launchWorkspaces` 挑好再交出去），这两个入口没跟上；第七批「看过但不列」以为托盘已经覆盖，那句不对。
+- `App.tsx` 加 `requestLaunchInLastWorkspace`：Codex 桌面端照旧直接 `requestLaunch`；四个命令行工具先读 `toolsApi.recent()`
+  （首页那份 60 秒缓存，读不到当没有记录），按 `launchWorkspaces(记录, providerFor(id), snapshot.config.rememberedWorkspace)[0]`
+  挑文件夹，挑得到就走 `launchRemembered`（文件夹不在了提示「上次用的目录已经找不到了，请重新选择。」再弹选择框），挑不到照旧弹。
+  读记录那一下换了账号就不接着打开，同 `launch()` 的 epoch。不新写字，不加 IPC 通道，主进程不改。
+- 测试：`testing/app-check.mjs` 加三条：托盘和 Ctrl+2 用首页按钮上的文件夹、没记录也没选过的 Ctrl+5 照旧弹、托盘开 Codex 桌面端不变；
+  首页选过一次后托盘和 Ctrl+1 不再问，记录读不到时也一样；记住的文件夹不在了先提示再弹。夹具 `launchCli` 加 `?workspaceGone`
+  （打开 `C:\work\my-app` 时报主进程那句「工作目录不存在，请重新选择」）。三条在没改 `App.tsx` 时都红。
+- 第四十一批 C：首页「最近」的 60 秒缓存（#314）在打开工具时只作废（`api.ts` 的 `launch`），没人叫首页重读；首页读记录的 effect
+  只看 `props.api`、`recentAttempt`、`recentRevision`，首页一直开着又不会重新挂载。所以从首页打开工具、聊完回来，「最近」那三行、
+  哪一行给「接着聊」（`latestSessionIdsByWorkspace`）、工具那一行「打开 xx」挑的文件夹（`launchWorkspaces`）都停在打开前。
+  三家按文件夹续接（`--continue`、`--resume latest`），点被挤下去那一行的「接着聊」接上的是刚聊的那条。0.2.9 的更新说明对客户说的是
+  「打开工具……之后仍然立刻刷新」。
+- `Home.tsx` 加一个 effect：窗口 `focus`，或 `visibilitychange` 且不是 hidden 时，`recentAttempt` 加一（和「重新加载」同一个开关）。
+  读的还是 `toolsApi.recent()`：一分钟内又没作废就回同一个对象，不读盘、页面不变；打开过工具（已作废）或过了一分钟才真去读。
+  重读时不先清空列表，不闪「正在读取最近记录」。`App.tsx` 不改：打开那一下终端里还没聊，那时叫 `refreshRecent()` 读回来的还是旧的，
+  反倒把旧的缓存一分钟。顺带改正两处说「打开工具会让首页重读」「60 秒后自己会重读」的注释。不新写字。
+- 测试：`testing/app-check.mjs` 补 2 条浏览器回归：一分钟内回到窗口不重读；打开工具、在同一文件夹聊了一条、回到窗口，刚聊的排第一，
+  「接着聊」从 my-app 更早那条挪到它身上；换个文件夹聊完，窗口藏着时不读，再显示时工具那一行「打开」换成那个文件夹。夹具 `v2Test`
+  加 `addRecentSession`（往记录最前面插一条）。去掉 `Home.tsx` 那个 effect，这 2 条都红。
+- 第四十一批 A（10-5 拍板清单第 5 条）：首页「最近」卡的「接着聊」只看 `latestSessionIdsByWorkspace` 和归档，不看那家工具装没装；
+  点下去走首页同一个「打开」（`App.tsx` 的 `prepareToolLaunch`），没装就抛「工具尚未安装，请先完成准备。」，「重试」还是这句。
+  工具卸了记录还在（卸载确认框写着「历史记录会保留」）；只装 Codex 桌面端时，桌面端里聊的对话多半也在 Codex 的 threads 表里、
+  记成 `provider: 'codex'`（推测，没在只装桌面端的真机上看过）。开机先摆上次结果那几秒 `resumeReadyBeforeScan` 要已装，按钮灰着，
+  检测一跑完反倒亮了。
+- `Home.tsx` 加顶层纯函数 `recentResumeOffered(tools, provider)`，卡片上那颗按钮多这一个条件：按工具 id 找（Codex 的记录看 Codex CLI，
+  不看桌面端）；找不到（检测结果还没回来）照旧给、照旧灰着等；装了，或者检测失败（A4，点了照旧说检测失败的原因）给；其余不给。
+  「打开文件夹」「查看」、那一行的字、哪条算最近那条都不变，不新写字。记录页同样的按钮不在这次范围里。
+- 测试：`Home.test.tsx` 补 5 条单测（装了、没装、只装桌面端时的 Codex 记录、检测失败、检测还没回来）；`testing/app-check.mjs` 补 1 条
+  浏览器回归：`desktopOnly` 下加一条 Codex 记录，三行都没有「接着聊」，「打开文件夹」「查看」还在；首页装上 Claude Code 以后它那条的
+  按钮回来、点了照 #292 接着聊，Codex 那条照旧没有。
+- 第四十一批 B 的余项：`MaintenancePage` 取消被拒时把原因放进 `cancelNotice`，和检测失败、操作失败共用页顶那条
+  `ResultNotice`（`resource.error || operation.error || cancelNotice`）。以前只在下一次点「安装」或「取消」时才清，装好以后
+  红条一直挂着、旁边弹的却是「安装完成，工具状态已更新」；没装上时 `operation.error` 先盖住它，等下一次别的操作清掉
+  `operation.error`，那句「这一步已经不能取消了。」又冒出来。
+- `install` 两条路（接了 `installTool` 的、没接时自己调 `api.installCli` / `api.installCodexDesktop` 的）收尾的 `finally` 里
+  一起清掉 `cancelNotice`，和那里已经在清的取消标记、「正在停止」是同一件事：这次安装结束了。不新写字。
+- 测试：`testing/app-check.mjs` 接着第四十批 C 那条加一条浏览器回归：用 `holdNextScan` 停在「安装完成，正在同步账号 Key 并
+  刷新状态」那几秒点「取消」，页顶写「这一步已经不能取消了。」；放开后弹「安装完成，工具状态已更新」，这一行写「已安装」，
+  页顶不再有红条。换回改前的代码这条红。
+- 第四十一批 B（R-G3 的余项）：「安装卸载」页自己另读一份检测结果（`useResource(readMaintenanceStatus)`），去过的页只藏不卸。
+  R-G3 只补了这一页装工具后叫 App 写 Key、重新检测（`onToolsChanged`）；卸载工具、装 Node.js / Python、「换成新版」Node.js 以后
+  只重读本页，首页那份不动。反过来，首页的任务（#845 让这一页跟着画「安装中」「正在卸载」）一跑完，这一行回到本页那份旧结果。
+- `BusinessActions` 多一个可选的 `onSystemChanged`，`App.tsx` 接成首页「重新检测」那一套（`refreshRecent()` + `toolbox.refresh(true)`，
+  不含外部客户端）。`MaintenancePage` 卸载（含「要手动清理」那条）、装运行环境、换新版 Node.js 以后先叫它、再读本页：本页那次
+  `scanSystem(false)` 接上 App 刚起的那一轮（`createScanCoalescer`），不另起一轮探测。
+- 首页那份任务里本页有行的几个（`maintenanceRowJobKeys`：四个命令行工具、`codexDesktop`、`node`、`python`），上次在、这次没了
+  （`maintenanceJobsFinished`）就重读本页。首页装好的那次在任务里已经重新检测过，主进程直接给那一轮；卸掉、装好运行环境时 App
+  在任务结束后紧接着重新检测，本页接上那一轮（那一轮跑完之前这一行还是旧样子，首页那一行也一样，以前是一直不对）。没装上、取消了时
+  首页一般不重新检测（先装过运行环境、换装的除外），本页这次读自己起一轮。首页那条安装要先装运行环境时，运行环境那段一结束本页就重读
+  （Node.js 那一行不再写回「未安装」），也是自己起一轮。本页自己走 `installTool` 的那次安装会多读一次，接上的是刚做完的那一轮。
+- 不新写字；回调缺省 = 旧行为（只刷新本页）。
+- 测试：`pages-maintenance.test.ts` 加两个纯函数的用例；`testing/app-check.mjs` 加四条浏览器回归：「安装卸载」页卸掉 Claude Code 后
+  首页把它放进「还可以装」、按钮是「安装」；只装桌面端时在「安装卸载」页装 Node.js，首页「运行环境」写 v24.0.0；先去过「安装卸载」页，
+  首页装 Gemini CLI（停在半路时这一行写「安装中」），放行后这一行写「已安装」、2.0.0、按钮是「重新安装」；首页卸掉 Grok CLI 后这一行写
+  「未安装」，「…」里没有「卸载工具」。换回改前的代码这四条都红。
+- 第四十二批 A：去过的页面只藏不卸（`App.tsx` 的 `visitedPages`，第四批定的），检查、反馈、备份三页的 `useResource` 只在挂上时
+  读一次，之后只有点页头那颗按钮才再读。错误框和引导的出口（「检查网络」「打开检查页」「查看日志」「去备份页」、帮助框的「去反馈页」）
+  正是把人往这几页带：检查页右上还写「上次检查 3 小时前」，运行日志里没有刚出的错，改用失败、自动恢复也没成功时错误框叫人恢复的
+  「改用之前的那一份」（`account-source-switch.ts` 在改用那一刻才备）不在备份列表里。
+- `business-common.tsx` 加 `useReloadWhenShown(active, reload)`：`active` 从 false 变成 true 时叫一次 `reload`；第一次挂上不叫
+  （`useResource` 自己在读），`active` 缺省什么都不做（旧行为）。用 layout effect：再显示的头一帧 `loading` 就已经为真。
+- `BusinessActions` 多一个可选的 `active`，`App.tsx` 传 `page === id`，`pages-business.tsx` 给备份页转一下。检查页还在查时不再起
+  一轮，「装没装 Codex」（那张 Codex 检查卡）一起重读；`useRowFocus` 的 ready 改成「有结果且不在查」：去过检查页以后再从设置
+  「网络检查」「企业证书」点「去检查页」、开机提示点「去看看」，等新结果出来再翻到那一项，不先在旧结果上亮。「安装卸载」页这次不接。
+- 不新写字。重读和点页头那颗按钮一样：有内容时先摆着、读回来再换（不闪「正在读取」），筛选、搜索词、滚动、展开的那一项照旧。
+- 测试：`testing/app-check.mjs` 加四条浏览器回归：检查页换走再回来多查一轮、换上新结果，查着的时候换走再回来不多起一轮；去过检查页后
+  从设置「网络检查」进来，新结果回来之前哪一项都不亮、回来以后网络那一项亮；反馈页回来时刚记下的错误在最上面；备份页回来时列表里有
+  藏着时新留的那一份。去掉 `App.tsx` 传的 `active` 这四条都红；`useRowFocus` 改回只看有没有结果，或者 hook 改用 `useEffect`，
+  「点名翻到那一项」那条红。
+- 第四十二批 B：记录页（`SessionsPage`）的两份 `useResource`（列表本身按筛选、页码读 20 条；定「接着聊」挂在哪条上的不带筛选的
+  最新 100 条）只在挂上时读，去过的页面只藏不卸，本页「接着聊」成功后也只作废首页那份「最近」。所以在终端里聊完回来，列表和
+  `latestSessionIdsByWorkspace` 都是第一次进来时那份：三家按文件夹续接（`--continue`、`--resume latest`，#292），「接着聊」挂在
+  被挤下去的那条上，点下去接上的是刚聊的那条。换个筛选时列表那份重读了、最新 100 条那份没读，新的那条出现却没有「接着聊」。
+- `SessionsPage` 收 `active`（`pages-business.tsx` 转 `BusinessActions.active`，第四十二批 A 加的）：再显示时（`useReloadWhenShown`）、
+  显示着窗口回到前面时（`window` 的 focus，或 `visibilitychange` 且不是 hidden，只在 `active` 时挂监听，同聊天页）两份列表一起重读，
+  详情开着的话连详情。窗口那一下离上次读不到 30 秒就不读（同 `useNetworkLocation`）；本页「接着聊」真打开了（不是「先不打开」）
+  就把这 30 秒清零，从终端回来头一次切回窗口一定重读。`active` 缺省 = 旧行为。
+- 详情里的「正在读取对话…」只在还没有内容时摆：重读时正读着的对话先摆着、读回来再换，翻到的位置不丢。不新写字。
+- 测试：`testing/app-check.mjs` 加三条浏览器回归：换走再回来两份各多读一次，刚聊的排第一、带「接着聊」，同文件夹更早那条不再带；
+  停在记录页时半分钟内回到窗口不读、过了半分钟读、马上再回来不读、窗口藏着不读、换到别的页以后不读；在详情里点「接着聊」以后回到窗口
+  马上重读，详情里多出刚问的那句，中间没闪「正在读取对话…」。去掉 `pages-business.tsx` 传的 `active` 这三条都红；详情改回只看
+  `loading`，或者「接着聊」以后不清零，第三条红。
+- 第四十三批 E：`proxy-bypass.ts` 改直连那两条日志（`proxy-bypass.direct`、`proxy-bypass.unreachable`）带上 `failureCode`，是改直连
+  之前再看那一眼经系统代理撞上的错误码。代理软件没开（ERR_PROXY_CONNECTION_FAILED）和代理开着、回绝了连星芒的请求
+  （ERR_TUNNEL_CONNECTION_FAILED）归类都是 proxy，以前日志里分不出。「重新检测」那条路没再看，记 null。再看那一眼（`lookAgain`）
+  的结果改成带错误码的对象，两处内部调用把错误码交给 `tryBypass`；对外的 `tryBypass()` 签名不变，判断一处没改。
+- 整个改了直连以后，每 5 分钟那一眼（`restoreSystemProxy`）还是 proxy 时以前什么都不记，现在记 `proxy-bypass.still-proxy`，带错误码。
+  同一个错误码一次运行只记一条，换了错误码再记一条：代理软件后来起来了、却回绝连星芒的请求，要从日志里看出来的正是这种。没网、
+  说不清怎么失败的照旧不记。
+- `network-failure.ts` 新导出 `networkFailureCode`：只取一个代码词，Chromium 的 `ERR_…`，或者 cause 链上挂在 code 上的 errno
+  （ECONNREFUSED、EAI_AGAIN）。message 里的大写英文不算，取不到回 null，不记原文和地址。纯函数，进渲染包也不碍事（I6）。
+- 第四十四批 C：`runtime-log.ts` 的 `sanitizeValue` 记 Error 时把 `cause` 一起记下。`new Error(msg, { cause })` 设的 cause 不可枚举，
+  `Object.entries` 取不到，被包了一层的报错（新建项目文件夹失败、Mac 上 Claude Code / Codex / Grok 没过签名核对、npm 安装恢复失败、
+  卸载回滚不完整等）日志里只有外面那句中文。cause 照样逐字段打码，受同一个深度上限（套住自己时到上限记 `[TRUNCATED]`），反馈报告
+  导出时照样换掉主目录（I13）。自己用 `this.cause =` 赋值的（`RealmAccountError`）本来就记得下，不重复记。没有 cause 的错误记出来
+  和以前一字不差。
+- 付款窗口（`payment-window.ts`）加载失败时，cause 换成只带错误码的 `{ code }`：Electron 的原错误把整个付款地址写在 message 和 url
+  上，订单号、签名都在里面（二维码那页的地址里还有付款码图片），而付款这边的日志一向只记 origin。ipc 记失败时的 `networkFailure`
+  照样认得出。其余挂了 cause 的地方都过了一遍，挂的是文件、命令、下载的原错误，没有带签名或订单号的网址。
+- Mac 上点「打开」「接着聊」没打开（`system-service.ts` 的 darwin 分支）、点「安装 Git」苹果的安装窗口没弹出来（`macos-git-install.ts`），
+  这两处以前连 cause 都没挂，现在挂上原错误，`open` / `xcode-select` 的退出码和标准错误随这次失败进运行日志。Mac 上没有另记
+  `terminal.failed`。
+- 第四十三批 D（拍板第 8 条）：开机按设置定下线路以后（`main.ts` 里 `createRelayEndpointRoutingSnapshot` 那一行）记一条
+  `relay.route.active`，带 `active`（这次生效的）和 `selected`（设置里选过的），只有 `primary`、`direct` 这样的 id，没有地址。
+  反馈报告「运行环境」段「网络位置」下面多一行「连接线路: 默认线路」或「连接线路: 备用直连」，写当前账号那个站这次运行实际走的
+  线路（`feedback-environment.ts` 新导出 `resolveFeedbackRelayRoute`，读开机时定下的那份，设置里刚改、还没重启的不算），
+  词是设置里线路选择框现成的选项名，不带地址和站点名。`FeedbackRuntimeInput` 加可选 `relayRoute`，缺省时这一行不出。
+- 除了反馈报告多的那一行，只多记日志：界面上不加字，联网路线和各处判断都不变。没在真机上演过。
+- 第四十三批 A：外部客户端检测（`system-service.ts` 的 `scanExternalClients`）先过 `followExternalClientRoutes`。规矩照 #872 给
+  四个命令行工具定的，四条都满足才写：用户明确选过线路并已重启生效（`relayRouting.selection`）、配置地址是这个站登记过的另一条线路、
+  归属对得上当前账号（`externalOwnership.matches` 按旧地址核；Claude Desktop 还要正在用的就是星芒标记的那一份，`inspectOwnedRoute`）、
+  客户端装着且没开着。先在新线路上查一次模型清单，Key 认、型号还在才换（Claude Desktop 没写型号、由它自己取的那份，Key 认就换）。
+  动文件之前再盘点一次客户端开没开：`external-client-runtime.ts` 的 `scan` 新增 `fresh`，不用缓存，正在跑的那轮等它跑完再盘点一轮，
+  拉清单那几秒里被打开的看得到；Claude Desktop 那边放在管理策略查完之后（`followRoute` 的 `beforeCommit`），之后到写完都是同步的。
+  盘点认不准（`detectionError`、没认出装着）也不写。
+- 只换地址，不走保存配置那一条：保存会把 Claude Desktop 的型号收成一个、认证方式改回 bearer，WorkBuddy 也只更新选中的那一条。
+  新加 `external-tool-config.ts` 的 `followExternalToolRoute`（WorkBuddy 把地址在旧线路、Key 是这一把的每一条的 `url` 换掉；OpenCode
+  换星芒那段 provider 生效的 `baseURL` 和所选型号自己覆盖的那一处，改的是最后定义它的那个文件，不往别的文件加字段，npm 包和型号不碰）
+  和 `claude-desktop-config.ts` 的 `followRoute`（用 jsonc-parser 只改 `inferenceGatewayBaseUrl`，缩进、字段顺序、换行符照原样）。
+  两边都逐个字段改、文件末尾有没有换行照旧，写之前重读、再认一遍，对不上就一个字不写；原子写入、备份、快照比对照旧。一次改两个 OpenCode
+  文件时，写前核对拿前一个文件这次写进去的内容比。换完不再另发连接自检：新线路上那次模型清单已经证明这把 Key 能用。
+- 客户端开着就不写，状态带 `routePending`（`ExternalClientConnectionStatus` 新增可选字段），首页灰字在「运行中」后面接那句提示、
+  不摆模型名。选过线路的人连读配置也排进 `externalConfigQueue`，两次检测同时跑时后一次读得到前一次换完的那份。没选过线路、历史账号、
+  手改过 Key 或地址、别的账号写的、客户在 Claude Desktop 里复制出来的那份，都不写、不发请求；查清单那几秒里换了账号或站点也不写。
+  换完归属记在新地址上，不会来回改；换完又回到旧那份（推测是客户端退出时写回）只记一次日志。地址换好了、归属没记上的，下次检测看到
+  地址已经在当前线路上、归属还在旧线路，只补记归属。日志 `external-client.route.followed / deferred / failed / reverted / recorded`
+  只记客户端和线路 id，不记地址和 Key。
+- 第四十三批 C：`account-bootstrap.ts` 新增 `routeDeferredMessage`，换线路先不迁 Codex 时按 `inspectRunningTools` 的结果挑说法：
+  Codex CLI 自己在跑或看不出来照旧；Mac 上只确定桌面端开着时说 Command + Q；其余只是桌面端开着时把工具名换成「Codex 桌面端」。
+  什么时候先不迁一点没变。`keySyncFailureText` 让已经点了「Codex 桌面端」的原话不再被加上「Codex CLI：」。
+- 测试：`external-client-service.test.ts` 加一组（换过去、换回来、开着不动且标 `routePending`、拉清单那几秒里被打开或被客户改了都不写、
+  写之前那次盘点认不准不写、拉清单时换了账号或站点不写、客户在客户端里加的型号 / 认证方式 / 注释 / 别家条目原样留着、Claude Desktop
+  没写型号也换、复制出来的 Claude Desktop 配置不认、没选过线路 / 别的账号 / 手改过 Key / 历史账号不动、拉不到模型或模型没了下次再试、
+  写回旧配置不来回改、归属没记上下次补记）；`external-client-runtime.test.ts` 补 `fresh` 不用缓存、等正在跑的那轮；
+  `external-tool-config.test.ts`、`claude-desktop-config.test.ts` 补只换地址的单测（两个 OpenCode 文件各改各的、Claude Desktop
+  四格缩进 / CRLF / 没有末尾换行逐字节对得上、管理策略查完才最后盘点）；`external-model.test.ts`、`account-bootstrap.test.ts`、
+  `key-sync-failure.test.ts` 补对应用例。
+- 第四十三批 B（10-6 拍板清单第 9 条，照推荐做）：检查页「星芒 AI 网络」的「去处理」是新手引导梳理 9-25 第 2 条拿掉的，理由是
+  「设置 → 网络」里没有能处理它的东西；#872 以后那一组最上面就是「星芒账号线路」。`diagnosticTarget` 对 `XINGMANG_NETWORK`
+  只在 `details.reason` 是 `dns` / `refused` / `timeout`、`details.siteId` 就是登着的那个账号的站、这个站不止一条线路时回
+  `settings`；新的 `diagnosticSection` 给出那一行（`relay-route-solov`），外壳现成的「是一行就打开它那一组再翻过去」接着做。
+  代理软件那一项（`CLASH_VERGE_TUN`）照旧不给。不加字。
+- 「登着」用新的 `signedInSiteId`（`account-context.ts`）：已登录的看会话；开机恢复没结束或联不上搁着的（登录还在）看正在恢复的
+  那个账号，线路被切断时开机恢复多半也联不上；访客不给。开机恢复历史账号时会话的 `siteId` 和主进程查的站都还是默认那个，靠这一条
+  才不会把历史账号带去星芒账号的线路。`HealthPage` 从 `BusinessPage` 收 `accountSession`，缺省按访客算（旧行为）。
+- `diagnostics.ts`：这一项归类出网络原因时 details 多带 `siteId`（新界面的「查看详情」不摆这个键；旧回滚版照原样摆出详情里的
+  每个键，本来就摆着地址）。`timeoutOutcome` 可以是函数，超时那一刻再定结论：这一次请求 8 秒还没回完话，从 `error`「检查超时」
+  改成 `fail` + `networkFailureMessages.timeout`，带 `endpoint`、`reason: 'timeout'` 和 `siteId`；回完了话、卡在问加速开没开
+  （要排在正开关加速的后面）的，网络是通的，照旧「检查超时」。连带一处现成行为：同一次检查里「安全证书」判成「电脑自己也不认」时，
+  超时这种也改说「先看上面「星芒 AI 网络」那一项」（`reconcileCertificateTrustWithNetwork` 认的是 `fail`），和别的连不上一样。
+- 测试：`diagnostics.test.ts` 三条（默认线路、备用直连、历史账号三种站失败时都带对 `siteId`；探测一直不回是 `fail` 加超时那句；
+  回完了话、问加速状态卡住照旧「检查超时」）；`business.test.ts` 两条（三种原因翻到 `relay-route-solov`；别的原因、HTTP 状态、
+  历史账号、访客、查的不是登着的这个站、不带站点都不给）；`account-context.test.ts` 一条；`testing/app-check.mjs` 三条浏览器回归
+  （登着星芒账号点「去处理」到设置「网络」、那一行亮且选择框拿到焦点、选「备用直连」出「现在重开」；开机恢复中照样给；历史账号、
+  开机恢复历史账号、没登录进首页的都不给），夹具 `restoring=solov-api` 恢复的是历史账号。
+- 第四十三批 F：「外接工具」页（`ExtensionsPage`）的「自动安装 Python」装完只重读本页，首页那份检测结果没动：#871 给「安装卸载」页
+  接的 `BusinessActions.onSystemChanged` 这一页没接上。`ExtensionsPage` 收可选的 `onSystemChanged`（缺省 = 只刷新本页），
+  `pages-business.tsx` 给 MCP 页转 `actions.onSystemChanged`；装完先叫它、再读本页（同「安装卸载」页）。不新写字。
+- 测试：夹具加 `pythonMissing` 和 `installPythonRuntime`（装完下一轮检测就有 3.13.7）；`testing/app-check.mjs` 加一条浏览器回归：
+  首页 Python 写「可选 · 未装」，进「外接工具」添加 `python` 启动的连接、点「自动安装 Python」，关掉添加框回首页，那一行是 3.13.7、
+  没有安装按钮。去掉 `pages-business.tsx` 传的 `onSystemChanged` 就红。
+- 第四十四批 A：`external-client-runtime.ts` 的检测脚本用 `Get-ItemProperty` 整条读卸载信息，它会把一条记录的所有值都转换一遍，
+  碰上别的安装程序写的 8 字节 REG_DWORD（NetBeans 的 NoModify 那种）整条抛「Specified cast is not valid」，以前就记「读不全」，
+  三家没装的永远「检测失败」、一键安装也被拦。现在这一条退一步用 `$key.GetValue` 只读匹配要用的 DisplayName、InstallLocation、
+  DisplayIcon、DisplayVersion，四个都是文字（或没有）才算读到；读不出来的（整条打不开、或坏的正是这四个之一）照旧记「读不全」、
+  照旧不说没装。读不出来的记录名和 PowerShell 给的原因（最多 10 条）随结果交回，`onRegistryIncomplete` 接到运行日志
+  `external-client.registry-incomplete`（原因按主目录脱敏，内容没变不重复记）。签名、路径那几道核对一行没动。
+- 第四十四批 B：WorkBuddy 换腾讯官方安装包的条件，从只认 WinINet 那五个连不上的码，扩到 winget 自己的软件源坏了的
+  0x8A15000F（源数据没有，多半是之前更新源没下下来）和 0x8A15003F（源数据对不上）。对过 winget-cli 源码：这两个只在打开源、
+  读源里的清单时抛，安装程序还没动。安装程序已开始、客户取消、超时照旧不换；OpenCode 那句报错不变。进度用现成的那句，不新写字。
+- 第四十四批 D：Mac 上 spctl 退出码 3（Gatekeeper 拒绝）、codesign 退出码 1 / 3（核对没过、不满足钉住的要求）时，首页那一行改说
+  Windows 签名不对时那句现成的话（只按退出码判，不看输出）；超时和别的退出码照旧原样。哪个应用包、哪条命令、退出码、
+  标准错误（截 500 字）经 `onMacVerificationFailed` 进运行日志 `external-client.mac-verification-failed`，路径按主目录脱敏，
+  同一个应用包原因没变不重复记。
+- 测试：`external-client-runtime.test.ts` 加读不出的记录进日志（去重、换内容再记、读全以后忘掉、最多 10 条且截长）、
+  两个源坏了的码换腾讯官方（安装程序已开始不换、OpenCode 照旧报错）、Mac 上 spctl 3 和 codesign 1 / 3 换那句话并只记一次
+  （放行以后再拒会再记、打开也被同一句拦）、超时和别的退出码照旧原样但照样记日志。`e2e/windows-powershell-probes-smoke.mjs`
+  （Windows 打包那一步真跑 PowerShell）加两条模拟坏值的（我们不用的值坏了读得出、我们用的值也坏了照旧那句），再在本机
+  当前用户下用 `reg import` 建一条带 8 字节 REG_DWORD 的真卸载信息，先证实 `Get-ItemProperty` 确实读不了它，再跑真检测脚本
+  确认这条读到了、没进读不出名单，最后删掉。`system-service.external-client-log.test.ts` 把这两行日志写进一份真的运行日志
+  再读回来：记录名的字段不叫 `key`（运行日志把正好叫 key 的字段当凭据打码），读回来还在，主目录已脱敏。
+- 新增 `cli-config-health.ts`：Claude Code 2.1.277、Gemini CLI 0.60.0、Codex 0.159.0-alpha.12.1（桌面端 26.930 自带）各自读不读得了
+  自己的 JSON 文件，每条都在沙箱里拿真工具试过：Claude Code 弹「Settings Error」整份不用的写法，Gemini CLI 退出码 52 的写法，
+  Codex 不报错、当成没登录的 `auth.json`。本软件自己的读法更宽（去掉 BOM、坏字节换成 U+FFFD），读得出 Key 不代表工具读得了。
+- `config-files.ts`：`codexConfigBroken` 改名 `configBroken`，Claude Code、Gemini CLI 的 `settings.json` 也判（Grok CLI 不判）；新增
+  `codexAuthBroken`。reset 遇到读不懂的 `auth.json` 先备份再照常重建，merge 照旧报错、指去重置。新增 `FileRemovePlan`：同一次两阶段
+  提交里整份拿掉一个文件，提交时先挪到临时名，后面的文件提交失败照样从 `.bak` 放回。`createCodexOfficialAuthPlans` 在没有可换回的
+  ChatGPT 登录、文件里只剩 `tokens` `last_refresh` 或什么都不剩时拿掉 `auth.json`，和 Codex 自己退出登录一样：实测 Codex 把 `{}`
+  当成 ChatGPT 登录，`codex exec` 报 plan type is required for chatgpt authentication。`switchProviderToOfficialAccount` 遇到读不懂的
+  文件，merge 改说 `describeBrokenConfig` 那句，不再说「无需切换」；Claude Code、Gemini CLI、Grok CLI 切回官方读不懂时也用这句。
+- `ipc.ts`：一键切换（`config:switch-account-source`）改用当前账号时，文件读不懂就用 reset，切换开头已经在「备份」页留过一份
+  （第三十批跟进项「来源未确认时点不到重置」）。
+- 首页：`brokenConfigOf` 分出四种坏文件（Codex 的 `config.toml` `auth.json`，Claude Code、Gemini CLI 的 `settings.json`），各一句小字；
+  坏了时模型那一格不写「官方账号」。`brokenConfigRepairTarget` 按坏的是哪份决定「修好它」走哪边：Codex 登录 ChatGPT、或只坏了
+  `auth.json` 且 `config.toml` 没有别的服务地址、Gemini CLI 读得出 Google 登录的走官方重置，其余按当前账号。配置窗口遇到坏文件、
+  官方账号只是推出来的，默认选「使用星芒账号」，展开「高级」重置就和「修好它」一样。
+- 测试：`cli-config-health.test.ts` 钉住三个工具读得了和读不了的写法；`config-files.test.ts` 加首页标记、坏 `auth.json` 的两种重置、
+  切回官方不留空文件、留着别的内容就不拿掉、拿掉后回滚放回、Claude Code 与 Gemini CLI 切回官方读不懂时指去重置；`ipc.test.ts`
+  加一键切换遇到坏文件走 reset；`Home.test.tsx`、`model.test.ts` 加三种新坏法、优先级与修的方向；`app-check.mjs` 两条浏览器回归
+  （夹具 `?claudeBroken`、`?codexAuthBroken`）。
+- Windows 的 renderer-v2 夹具浏览器分片从一片拆成两片（`renderer-v2-browser-1` / `-2`，各 18 分钟上限不变）。
+  原来那片正常机器要跑 11～14 分钟，碰上慢机器（#873 三轮都是，同样的用例总耗时是 #871 的 1.55 倍上下）
+  就在 18 分钟处被掐，用例一条没红。`app-check.mjs` 一个文件占这片三分之二的时间、每天还多二十条上下，
+  按文件拆总有一片背着它整个，所以新加 `e2e/shard-tests.mjs`：设了 `XINGMANG_TEST_SHARD=第几份/共几份`
+  就按声明顺序轮流登记，各片只登记自己那份，合起来每条正好跑一次；没设（本地、Linux）照旧全跑。
+  其余夹具文件按实测耗时分到两片。Linux 的 `linux-renderer-v2-browser` 仍整份跑 `test:v2:browser:fixture`。
+- 原来「app-check 必须排最后、靠前面的文件暖 Vite 依赖缓存」那条规矩撤掉：`node --test` 会把文件按路径排序再跑，
+  app-check 从来不是最后一个；auth、chat 两份用另一套 Vite 配置，换配置时 Vite 会把缓存整个删掉重来；冷启动时
+  Vite 扫遍仓库所有 html 入口，第一页加载前依赖就齐了（本地删光缓存单跑 app-check，290 条全过，中途没有重新打包）；
+  当初那次 90 秒超时（run 35420361508）是第 59 条丢导航，现在 `openFixturePage` 会重新导航。
+  `ci-workflow-config.test.cjs` 改为钉住：每一片都派发、份数连续、发牌的文件每片都跑且只从 `node:test` 拿钩子、
+  其余文件只在一片、合起来等于 `test:v2:browser:fixture`，并单测发牌本身不重不漏、没设片号时 `test` 就是
+  `node:test` 原来那个（本地和 Linux 报错位置仍指向用例自己那一行）。
+- `electron/cli-verified-versions.ts` 把 Claude Code 的 `recommended` 从 2.1.277 抬到 2.1.291（npm latest，取代 #460 的 2.1.281）；2.1.278~2.1.291 上游 changelog 没有新的第三方端点回归，沙箱本地假接口对照 2.1.277 的请求体与工具列表一致，依据写进 `docs/CLI-VERIFIED-VERSIONS.md`。
+- 2.1.285 起接自定义 `ANTHROPIC_BASE_URL` 时上下文按 1M 算（以前 200K），沙箱 `/context` 实测确认。中转支持 1M 上下文（2026-10-06 yoyo 确认），配置不压；渠道只收 200K 时的退路是 `env` 写 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`。
+- `electron/config-files.ts`：合并写入与开机补默认（`fillRelayTemplateDefaults`）在 Claude 的 `permissions.defaultMode` 缺省时补 `bypassPermissions`、`skipDangerousModePermissionPrompt` 缺省时补 `true`，写过的一律不动（新客户模板一直这么写）。上游 2.1.283 起接第三方中转又没写 `defaultMode` 的会话进自动模式，#858 把推荐版本抬到 2.1.291 后老客户会碰到。2026-10-06 yoyo 回「补」。
+- `relayTemplateRevision` 1 → 2，已记过版本 1 的老客户开机补一次。
+- 每周巡检（2026-10-05，合并前 10-06 追到 npm latest）：`electron/cli-verified-versions.ts` 的 Codex 推荐版本 `0.156.1` → `0.160.1`，Grok `1.0.44` → `1.0.46`，
+  `verifiedSites` 仍为空（探测 secret 没配，没在中转上实测）。Codex 依据是 `rust-v0.157.0` 到 `rust-v0.160.1` 的 release note，没有对自定义
+  provider 的回归；0.160.1 的型号名单与随包的 `rust-v0.160.0` 逐字相同，名单不用换。Grok 没有可读的变更记录，在本地假接口上把出图地址、型号名单、标题型号、
+  钩子四项重核了一遍。依据与实测细节写在 `docs/CLI-VERIFIED-VERSIONS.md`「名单今天覆盖到哪」。
+- 同一份文档的「谁来跑：每周巡检」改成四家版：例程已改名「四家 CLI 新版每周巡检」，每家读哪里的变更记录、已有 PR 在抬时怎么办。
+- 同一次巡检把 Claude Code（2.1.291）与 Gemini CLI（0.62.0）也一并抬了，取代 #460、#462，各自的分片见 `claude-code-2.1.291.md`、`gemini-cli-0.62.0.md`。
+- `electron/codex-desktop-cdp.ts`：中文注入前核对调试端口归属，从 PowerShell 的 `Get-NetTCPConnection` 换成
+  System32 下的 `netstat.exe -a -n -o`（`windowsSystemExecutable` 给绝对路径，`trustedCommandEnvironment`，
+  `execFile` argv 数组，单次 10 秒限时不变，输出上限 8 MB）。两者读的是同一张 TCP 归属表。旧写法是 Windows 打包
+  检查里唯一走 NetTCPIP 模块和 WMI 网络连接提供程序的探针：2026-10-03 的 44 轮 windows-package 里中位 1.1 秒，
+  6 轮超过 3 秒，#796（10.4 秒）、#816（10.0 秒）两轮超过上限被杀，这 44 轮里同样走 CIM 查进程的三项最慢 1.3 秒
+  （10-1 #745 也是这一项）。具体卡在系统哪一层，CI 日志看不出来。
+- 解析照旧「查不清就不放行」：只认本地端口相同、且远端是 `0.0.0.0:0` / `[::]:0` 或状态是 `LISTENING` 的 TCP 行
+  （德文等系统的状态列会翻译，地址不会）；IPv4、IPv6 和任意本地地址上的监听者都算，只要有一个不是 Codex 就判
+  被占用；监听行读不出 PID（缺列、PID 为 0）整次查询算失败，不当成没有监听。`TIME_WAIT`（PID 0）、已建立连接、
+  别的进程从同一端口号连出去的行都不算监听。旧写法会把 PID 0 的监听行直接丢掉，新写法更严。
+- 不靠表头和英文状态词：表头不读，认监听看远端地址（`LISTENING` 只是多一种认法），PID 取最后一列。中文版 Windows
+  的表头按控制台代码页（GBK）写出，经 `execFile` 按 UTF-8 解码后是一串替换字符；德文版连状态也翻译（`ABHÖREN`，
+  850 代码页）。单测按这两种系统写出的原始字节、再照 `execFile` 的方式解码来造样本（照格式手写，不是从真机抓的），
+  并让中文、德文两张表走完整个换中文流程。一行 TCP 都认不出来的输出算这次没查到（Windows 自己总在 135 等端口上
+  监听，不会是空表），连续三次就放弃，不再当成「没人监听」白等满 20 秒。
+- `e2e/windows-powershell-probes-smoke.mjs`：这项不再对着没人监听的 1 号端口查，改成真开端口：本进程监听并先
+  关掉一条连接留下 `TIME_WAIT`，另一个进程从 127.0.0.2 用同一端口号连进来（不该算），第三个进程在 `[::1]` 上
+  监听同一端口（该算），每次查询都按 App 给的 10 秒卡。runner 上建不出 127.0.0.2 连接或 IPv6 监听时只打印、跳过
+  那一步。`powershell-module-imports` 的测试清单和 cmdlet 表去掉这条脚本与 `Get-NetTCPConnection`。
+- Codex 桌面端的中文要 OpenAI 下发的 `enable_i18n` 开关，Codex 每次冷启动头几秒才拉；星芒只在自己「打开」的那一下帮它拿到
+  （两个系统都先连加速，Windows 选过「显示中文」的再走本机调试端口补丁，`codex-desktop-cdp.ts`），开机后从开始菜单、任务栏、
+  程序坞直接打开拿不到，`config.toml` 的 `localeOverride = "zh-CN"` 单独不管用，界面是英文。以前界面上没说过这一点，客户会以为
+  汉化掉了。上游同一现象见 openai/codex#50377（26.930.2377.0，启动时开关没拿到，简体中文设置还在、界面成了英文）。
+- 只改文字，三处：`App.tsx` 第一次打开 Codex 的「要让 Codex 的界面显示中文吗？」询问框第一段末尾加一句；`ConfigDialog.tsx` 的
+  「界面语言与文件夹权限」Windows 第一段、`locale-status.ts` 的 `macLocaleNote`（Mac 那段）各在开头加一句；`registry/tutorials.ts`
+  「出问题怎么办」里「能打开，但还是英文？」先说从哪打开，再说「检查中文界面」。不动启动逻辑、加速和本机通道。
+- 测试：`locale-status.test.ts` 钉住 `macLocaleNote` 全文；`registry/tutorials.test.ts` 钉住那条问答提到从星芒和托盘「已安装的工具」
+  打开；`testing/app-check.mjs` 的两条既有浏览器用例补断言：询问框正文带新加的那句，Windows 配置里语言那段第一段是新文字。
+- 新增 `codex-config-syntax.ts` 的 `isCodexConfigBroken`：只在确定 Codex 也会拒绝时才算坏，即不是 UTF-8、有 TOML 不许的控制字符或孤立回车，
+  或者 `@iarna/toml` 报的是键或表重复、写到一半、不认识的字符、`\u` 写错、`\e` `\x` 以外的未知转义。`@iarna/toml` 是 TOML 0.5，Codex 读 TOML 1.1：
+  类型混合的数组、跨行或带注释的内联表、`\e` `\x`、不带秒的时间这些 Codex 认、`@iarna/toml` 不认，一律不报。拿桌面端 26.930 自带的
+  Codex 0.159.0-alpha.12.1 逐条比对过。
+- `config-files.ts`：`inspectProviderConfig` 给 Codex 加 `codexConfigBroken`，读原始字节（`bounded-file.ts` 拆出 `readBoundedFileSync`，
+  解码会把坏字节悄悄换成 U+FFFD）。`createCodexOfficialConfigPlans` 在 reset 时容忍读不懂的旧文件，先备份再整份换掉，和中转那边的 reset 一样；
+  merge 照旧报错。原来登录 ChatGPT 的客户在配置里点「重置为初始状态」也会报读不懂。`switchProviderToOfficialAccount` 在 reset、
+  文件坏了、`auth_mode` 是 chatgpt 时按官方处理：登录换来的 Key 常和令牌一起留在 `auth.json` 里，原来会被当成第三方拒掉；
+  读得懂的第三方配置照旧拒绝。
+- `ipc.ts`：重置前在「备份」页留一份（全面检测 Q18）原来只做在 `config:save` 上，选的账号 Key、自动准备的 Key、官方账号这三条重置的路
+  只留配置旁边会被挤掉的 `.bak`。抽成 `backupBeforeReset`，四个入口都走，留不下就不重置；首页「修好它」走的正是后两条。
+- 首页（`Home.tsx`）新状态 `configBroken`，排在「配置暂未读到」之后、所有按来源的判断之前，开机先画上次结果时不下结论。「修好它」
+  （`App.tsx` 的 `repairBrokenToolConfig`）就是配置「高级」里的「重置为初始状态」：登录 ChatGPT 的走官方重置，其余按当前账号
+  （`configureManaged(…, 'reset')`，没登录先去登录），成功后清掉「自己填写密钥」的本机标记。任务按工具家族登记成 `repair-config:codex`，
+  两行 Codex 共用一份配置，修的时候两行都是「修复中」，不会叠两次重置；`launch-notice.ts` 也不拿它说「正在等 … 安装完」。
+  三处文字照 yoyo 2026-10-06 回「改」的原话，悬停提示与成功提示用现成的。
+- 测试：`codex-config-syntax.test.ts` 钉住两边都拒绝与只有 Codex 认的写法；`config-files.test.ts` 加首页标记、ChatGPT 登录下重置坏文件
+  （含 `auth.json` 里还留着 Key 的）、读得懂的第三方照旧拒绝；`launch-notice.test.ts` 加一条；
+  `bounded-file.test.ts` 加原始字节；`ipc.test.ts` 三条：官方账号、自动准备的 Key、选的 Key 重置前都先备份，备份不成就不写；
+  `Home.test.tsx` 与 `model.test.ts` 加两行状态、按钮、优先级、两行一起忙与缓存期不下结论；`app-check.mjs` 两条浏览器回归（夹具 `?codexBroken`）：
+  从桌面端那一行点「修好它」走当前账号的重置，ChatGPT 登录的走官方重置。
+- 新界面 `features/tools/model.ts` 加 `officialAccountSubtitle`，首页 Codex 两行在官方来源时把主进程已经读出的 `officialAccountPlan` / `officialAccountRenewsAt` 接在「官方账号」后面；续期日已过或读不到就不写。`ui/core.tsx` 的 `ToolRow` 加可选 `modelHint`，悬停时在整行文字下面补一行具体日期。v0.1.31 旧界面的「套餐 / 续期」标签在 #117 重做新界面时收进了「官方账户额度」弹窗，这次照设计稿 G05 放回卡片上，弹窗不动。
+- 新界面配置窗口（`src/renderer-v2/features/tools/ConfigDialog.tsx`）打开、或在窗口里换到另一个工具时，满足「已登录 + 来源是星芒账号 +
+  选的是保持当前密钥 + 工具里有 Key 且属于当前站」就调一次 `listConfiguredModels`（Key 只在主进程里用，不跨 IPC，I3），把结果放进
+  下拉框。不调 `change()`：选中的模型不动，草稿不算改过，关窗口不问放弃；不设 `busy`：窗口不锁，读的时候照样能改。转圈沿用
+  「检测模型」按钮的 `loading`。失败不写 `error`，「检测模型」照旧报「模型检测未完成」或主进程给的原因。
+- 竞态：和手动检测共用 `request` 编号，换工具、换来源、换 Key、填密钥都会作废在途的那次（T6）；转圈按编号清，晚到的旧结果关不掉
+  新一次的转圈。开发模式下 StrictMode 会连发两遍，正式包只发一次；主进程按 Key 缓存模型列表两分钟。
+- 没登录不读：这时窗口里账号相关的选项都是灰的；`e2e/macos-visual-qa.mjs` 用占位 Key、不登录打开 Codex 配置，读了就会请求正式服务。
+  手动填写、官方账号、来源未确认（别的站或别的账号的 Key）、自动准备都不读。
+- 测试：`app-check.mjs` 新加打开即读、读失败不出红字、读的时候窗口能用且换工具丢掉旧结果、三种不该读的情形；夹具加
+  `holdConfiguredModels` / `releaseConfiguredModels`。「自动准备」那条用例改成只看改选之后不再读。
+- `electron/system-service.ts` 的 `saveConfig` 写文件前先把来源记成 `manual`（防写到一半崩掉），以前写失败后不改回去，下一次保存
+  把 `manual` 当成原来的来源，`account` 就永久变成了 `manual`，开机同步 Key、换账号、换连接线路这些自动写入都被「来源未经确认」
+  挡住（症状和已知43 一样，但还在不断产生新的）。现在写之前用新的 `ToolConfigOwnershipStore.remember` 原样记下那条记录
+  （没有记录也算），写失败、账号没换、配置也一点没动时原样放回；动过了、账号中途换了、或者记录本来就读不出来，都照旧留着 `manual`。
+- 「一点没动」抽成顶层纯函数 `sameNativeConfigSnapshot`（身份、修改时间、型号都和保存前一样），「检测模型期间配置变了」也改用它。
+  回滚会照原样写回内容但修改时间会变，按「写到一半」算，不放回。
+- 测试：`tool-config-ownership.test.ts` 新加同 Key 保存失败后重试仍跟账号、自动换 Key 失败后下一次照常换、手动来源和没有记录的
+  配置失败后原样不变、`remember` 的放回与读不出时放弃，以及 `sameNativeConfigSnapshot` 的口径。
+- 接手 #864（Codex 提的两笔提交原样带上）：引入每个账号服务的固定入口注册表与线路 ID（`relay-sites.ts`）；运行态使用启动快照
+  （`createRelayEndpointRoutingSnapshot`），持久偏好在重启后统一生效。账号凭据的 canonical realm 与 vault 身份保持不变，不接受任意
+  子域名或自定义凭据目的地址。
+- 为经实际客户电脑验证的 HTTPS IP 入口保留证书校验，账号与四个 provider 使用同一选定 origin；加速内核从注册表派生精确 IP-CIDR
+  直连规则。
+- 保留原有配置所有权、原子写入、账号切换和未保存内容保护；更新备用传输（`update-feed-route.ts`）仅适用于精确匹配默认正式更新源的
+  Windows 安装包，保留 SHA-512、签名、撤回状态及自定义更新源行为。
+- 启动恢复区分「同一后端」与「实际地址已更新」：仅迁移当前账号拥有、且用户明确选择并已重启生效的线路；写前检查工具运行状态并复核
+  实际地址。主进程在异步准备结束后再次检查运行状态，避免启动与写入竞态。
+- 「账号连接还在同步就先别打开」那道关放在 #866 拆出来的 `prepareToolLaunch` 里，首页「打开」「换目录」「接着聊」、托盘、快捷键和
+  记录页「接着聊」都先过它；`launch()` 排队真打开前再查一次。检测跑完以后只认这一轮同步真在跑（新的
+  `accountKeyChangeInProgress`）：#864 原来沿用 `accountKeyChangePending`，同步还没开始也算「说不准」，切换账号（故意不再跑开机
+  那一轮）和开机恢复登录一直联不上时，账号来源的工具会一直打不开、只能重开星芒。
+- 画图技能同步从主进程当前站点配置取得生效 origin；MCP 生产目的地址改为固定 HTTPS origin 全等校验，包含登记的备用入口并拒绝其他
+  主机和端口。
+- 欢迎页和首次向导冒烟测试在应用入口前模拟公共账号状态，并阻断其余网络出口，避免登录框探测访问生产账号接口；保留原有界面断言。
+- #864 里把版本号改成 0.2.16、把分片汇总进 `CHANGELOG.md` 和 `release-notes.md` 的部分没带，留给定版时做。
+- 腾讯云 COS 同步改成传得完、断了能接着传（0.2.15 同步在 60 分钟的 publish 作业里超时、补传又被一次 HEAD 超时打断）：`publish-release` 的 COS 同步从 publish 作业末尾拆成单独的 `cos-sync` 作业（挂 `cos-sync` 环境、不多一次批准、限 330 分钟，和 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，后者也从 `update-feed` 挪过来、放宽到 330 分钟），失败后单独重跑这个作业（Re-run this job）、不用再批，已传好的文件跳过上传。publish 多一个 `outputs.linux`，记下这次实际发没发 Linux，`cos-sync` 照它决定同不同步 Linux，不在几天后重跑时再看开关。
+- 新增 `scripts/cos-transfer-retry.cjs`：读取（HEAD、完整回读、读 latest）最多 12 次、写入最多 10 次，指数退避加一半随机抖动，放弃前读取至少等约 3.5 分钟、写入至少约 5 分钟；只重试超时、连接断开、429/5xx 和分块请求上 COS 诊断出的慢网络 400。Init 和分块按这些条件重试，Complete 与可覆盖的 latest 只在连接根本没建立时重发，不可变单次 PUT 只在回读 404 后重发；分块等待中其它分块失败会立刻被叫醒停下。星芒正式发布与手动导入单个安装包的分块期限放宽到 120 分钟。
+- 新增仓库变量 `XINGMANG_COS_ACCELERATE`（默认关）：存储桶开了全球加速后设 `true`，四条 COS 工作流的上传改走 `<桶名>.cos.accelerate.myqcloud.com`，回读核对和客户下载仍用上海地址。`[manager-sync]` 日志新增 `retry` 行和传安装包时每 30 秒一行的 `stage-wait`。见 `docs/COS-SYNC.md`「网络不稳时」。
+- 2026-10-06 新出的三条依赖公告让 quality 的 `audit`（`npm run audit:ci`）在 main 179cdfe 上报红，所有 PR 都卡在 quality-gate。
+  锁文件把 source-map-js 从 1.2.1 升到 1.2.2（GHSA-68fv-2mgg-jv7q，vite → postcss 带进来）、joi 从 18.2.8 升到 18.2.9
+  （GHSA-wr44-6hxh-3jwq，wait-on 带进来），两处都在原来声明的范围内，`package.json` 不动。
+- katex 从 0.16.47 升到 0.19.0（GHSA-238p-pmpm-9mq7，修在 0.18.2）。它是 AI 聊天显示公式用的（`features/chat/math.ts`），
+  会打进渲染层。npm audit 连带报的另外 5 条（@lobehub/ui、mermaid、rehype-katex、remark-math、micromark-extension-math）
+  都是 @lobehub/icons 的 peer 依赖 @lobehub/ui 带进来的，各自最新版仍只认 katex 0.16.x（mermaid 12.1.0 要 `^0.16.47`、
+  micromark-extension-math 3.1.0 要 `^0.16.0`），升不出修好的版本，所以 `overrides` 加 `"katex": "$katex"`，整棵树只留一份 0.19.0。
+  这几个包本仓源码一个也没 import（只从 @lobehub/icons 引单个图标组件），渲染层打包产物里没有 mermaid。没加白名单，
+  `scripts/audit-development-dependencies.cjs` 没改。
+- katex 0.17～0.19 的不兼容改动（内部 `__defineFunction`、HTML 输出的 CSS 类名加前缀、缺字形改走 `strict`）碰不到这里的用法：
+  只要 MathML、`strict: 'ignore'`、样式只认 `.chat-math math`。46 条常见公式（含中文、emoji、矩阵、对齐、`\href`、`\htmlClass`）
+  两版输出对比，43 条逐字节相同，另外 3 条是新版多认得 `\reflectbox`、`\mapsfrom` 和 gather 环境末行不再丢。
+- katex 0.19.0 自带的 commander 从 8 升到 15，要求 Node 22.12 以上；只有 katex 的命令行用它，CI 用的 Node 22 满足。
+- 直连适配第二步（yoyo 10-6 回「改」，方案 `/mnt/project-files/直连线路适配/方案.md` 第三节第 2 步，界面文字照第六节原话）。
+- 线路表：历史账号加直连 `https://api-direct.solov.cc`。设置里存的是偏好 `auto` / `direct` / `primary`，什么都没存 = `auto`，以前存的
+  `primary` / `direct` 照旧是写死那一条（`relay-sites.ts` 的 `resolveRelayRoutePreferences`、`app-settings.ts`）。设置快照多带
+  `relayRouteLines`（每个站这会儿的线路、定下来没有），只读不存。
+- `relay-route-controller.ts` 定「自动」走哪条：开机先用上次的结论（`relay-route-lines.json`，只存线路 id），没有就先走默认线路、不算
+  定下来；后台查 `/api/status`（历史账号查 `/api/v1/settings/public`），200 加 JSON 才算通。直连通用直连；直连不通、默认线路通就退回；
+  两条都不通不改，5 分钟后再查。退回以后每 5 分钟查一次直连，连续两次通才切回。请求报上来的直连失败 30 秒里只查一次。
+- `relay-line-fetch.ts`：星芒自己的请求（账号、余额、AI 工作区）按这会儿的线路换地址。「自动」走直连时，连不上一类的失败（断网、
+  解析不出、TLS、证书日期、拒绝连接、超时、代理回绝了直连这个地址 `ERR_TUNNEL_CONNECTION_FAILED`、被跳转到别处）、直连回的网页
+  形式的 502/503/504、别的网页或 opaqueredirect（拦截页、上网认证，报 `intercepted`），以及白名单挡下的网页形式 404，当场改走默认
+  线路重发一次；会改动数据的请求只在肯定没送到服务器时才重发（代理回绝算没送到，被跳转、回了网页不算），带流式正文的不重发。代理
+  软件本身没开（`ERR_PROXY_CONNECTION_FAILED`）换哪条都一样，照旧归 `proxy-bypass.ts`。回了话以后正文读到一半断了（AI 回复写到
+  一半）用 `response-body-watch.ts` 报给控制器查一次直连，这一次不重发；调用方自己中止的不报（账号请求除外）。只读请求 3 秒没回话
+  就报给控制器查一次直连，线路换了就中止、改走默认线路重发。写进工具配置前查模型、工具自检用 `createRelayObservedFetch`：不换地址、
+  不重发，只报直连上的失败（同上，含拦截页和正文断了）。
+- `proxy-bypass.ts`：同一个站的默认线路和直连算一个站点（新依赖 `siteProbeUrls`，main.ts 用 `relaySiteStatusProbeUrls` 接）。分去
+  站点直连会话、交还、交还后重发都按这个站全部入口认，再看、看代理软件还在不在探的是这个站这会儿用的那个入口。以前只认分过去时
+  那个入口的 origin，「自动」中途换了线路，换过去的请求又被送回不转发星芒的代理。
+- 工具配置等线路定下来（写死的，或者「自动」查出结论）才迁。「自动」换了线路主进程发 `onRelayRouteChanged`：界面重读设置、外部
+  客户端重新检测，四个命令行工具和 Codex 桌面端照 #872 的规矩迁，开着的先不改；退回默认线路、还有工具开着时首页说一句总的、
+  横幅里不再逐个工具说，点「重新检测」再迁一次。
+- 来源标记（「就用现在这份」）同一个站的两条线路合用一份，按默认线路的地址存；以前按直连地址或 IP 存的照样认，下次写入时挪过去。
+- 检查页「星芒 AI 网络」写明用的是哪条线路；「自动」走直连没查通时（直连那一次最多等 4 秒；代理回绝、回网页、回了 200 却不是
+  JSON 也算）当场查默认线路，查通算能连上并报给控制器。历史账号连不上时「去处理」也给了，翻到「历史账号线路」那一行（以前那一行
+  是灰的，不给）。反馈报告「连接线路」一行按第六节第 5 条。Windows 正式版每次检查更新前按星芒账号这会儿的线路选更新地址，直连
+  那份没查通（连不上、网关错误、白名单 404）当场换回包里那份再查一次。
+- 没做：下载更新到一半直连断了不当场换线路（下次检查会换）；工具里正在进行的对话换不了线路（方案第四节）；Mac 更新照旧不走直连。
+  系统代理不转发星芒的电脑（#796 那类）还没分去直连会话、开机时上次的结论又是直连，这时直连那边正好停了：经代理两条都查不通，
+  照「两条都不通不改」接着用直连，要等直连恢复。没在真机上演过。
+- 直连适配第一步：星芒账号的「备用直连」从服务端的临时 IP 测试入口 `https://38.147.105.28:8443` 换成 `https://xm-direct.solov.cc`
+  （公共签发的证书，照常校验；服务器 IP 只在服务端的 DNS 里，换 IP 不用发版）。IP 退成别名（`relay-sites.ts` 的 `aliases`），只用来认
+  按它写过的旧配置；新写的配置、账号请求、更新检查、画图技能都用域名。服务端在这一版发出以后关掉 IP 入口。
+- 迁移照 #872 的规矩：选过线路的，四个命令行工具和 Codex 桌面端开机时从 IP 改到域名（工具开着的先不改）。Claude Desktop、WorkBuddy、
+  OpenCode 的换线路（第四十三批 A）也认别名：新加 `relaySiteProviderBaseUrlVariants` 列出每条线路连同别名的地址，
+  `externalClientRouteCredential` 按它找星芒那一份，归属记在 IP 上的照样换到域名，只换地址。没选过线路、自己手写成 IP 的，认得出
+  是星芒直连，但照「只有明确选过线路才迁」不替他改。
+- 选过备用直连的客户点过的「就用现在这份」（新界面的来源标记，按地址存在本机）以前按 IP 存：换成域名以后照样认，下次写入时挪到
+  域名那一份（`relayEndpointAliasOrigins` 只认那条线路自己的别名）。
+- Windows 正式版走直连时的更新源换成 `https://xm-direct.solov.cc/xingmang-manager/`；Mac 照旧不走直连。
+- 加速内核的直连规则只带各条线路自己的地址、不带别名，IP 测试入口不再进 IP-CIDR 规则；画图技能（`mcp-server.mjs`）的放行名单
+  去掉 IP。测试里 IP 换成别名的那一边，补了外部客户端和命令行工具从 IP 迁到域名、加速规则不带 IP 的用例。没在真机上演过。
+- `cli-verified-versions.ts` 的 Gemini 推荐版本 0.60.0 → 0.62.0（取代 #462 的 0.61.0）。0.61.0 起上游 #29252 不再把 `*-flash` 型号改发成 `gemini-3.5-flash`；`geminiRelayHelperModels` 补上 0.61.0 新增的 `gemini-3.8-flash` / `gemini-3.5-flash-lite`。0.61.0 新加的出网改名会把恰好叫 `gemini-3.5-flash` / `gemini-3-flash` / `gemini-3.1-flash-lite` 的型号改发。0.62.0 的 `DEFAULT_MODEL_CONFIGS` 与出网改名函数和 0.61.0 逐字相同。沙箱实测与依据见 `docs/CLI-VERIFIED-VERSIONS.md`。
+- `src/renderer-v2/features/tools/Home.tsx`：命令行工具行（Codex 桌面端那一行同一颗按钮）的取消按钮在 `cancelling` 时由「取消中」
+  改成「正在停止」，和同页客户端行（#829）、安装卸载页一致，也就是 `ui-spec/06-copy-guide.md` 的「取消时写“正在停止”」。
+  只动这一个词，`Home.test.tsx` 那条断言跟着改。
+- #834 核实 F05：`xingmang-ai-mcp.ts` 以前每次登录同步（已登录时每次打开星芒的账号恢复、首页「重新同步」都会走
+  `account:sync-managed-cli-keys`）都整条重建 `xingmang-image`。Codex / Grok 只认用户的 `enabled = false`，Codex 的
+  `tools.generate_image.approval_mode` 改回 `approve`，`disabled_tools`、`startup_timeout_sec`、自加的环境变量全丢；
+  Gemini 改回 `trust: true`，`excludeTools` 丢。画一张图要扣余额，改成先问的人每次打开都变回不问就画。
+- 现在默认值（`enabled`、`tool_timeout_sec` / Gemini `timeout`、Codex 的 `approve`、Gemini 的 `trust`）只在第一次登记时写；
+  登记过的条目每次只对齐启动方式：`command`、`args`、`env.XINGMANG_IMAGE_CONFIG_PATH`（env 里别的变量保留），Claude Code
+  另对齐 `type = "stdio"`。其余键原样保留，缺了也不补：这一套默认值从 #679 第一次上线起没变过，已有条目里缺的只会是用户删的，
+  或者 Codex 自己改写条目时省掉的 `enabled = true`。
+- Claude Code 的免确认是 `settings.json` 里 `permissions.allow` 的一条规则，缺了照旧每次补上，这次没改。要它先问得写进
+  `permissions.ask`：写进 ask / deny 的本来就不碰，2.1.277 判断权限时 ask 规则排在 `bypassPermissions` 前面，免确认模式下也会问
+  （读程序确认）。只从 allow 里删掉那条，在非免确认模式下下次同步会补回来，这一点留着没改，`docs/NATIVE-IMAGE-MCP.md` 写明了。
+- #834 F07 的收尾：技能记录 `xingmang-ai-skill-state.json` 不跟着备份恢复。选着 ChatGPT 账号、记录还记着「切回星芒时打开」时，
+  在备份页恢复一份星芒配置、里面技能关着，改用当前账号会原样拿它当星芒配置，以前会把客户的关打开一次。
+  `adoptRestoredConfig` 加可选的 `fromBackupsPage`（只有 `backups:restore` 传），这时调
+  `adoptRestoredXingmangAiSkillOff` 把记录改成 false，和 Gemini 那笔一样放在登记来源之前。切换失败的回滚不传：
+  它恢复的是切换前那一刻，记录本来就对得上。在星芒下记着 true 说明上次没打开成，那个关多半就在恢复出来的这份里，照旧打开。
+- #834 核实 F07（已知17）：`syncXingmangAiSkillCodexAvailability` 以前开关直接等于「不是 ChatGPT 账号」。开机时 `main.ts` 的默认安装、
+  登录同步、保存配置、切回星芒都会走到它，用户自己在 Codex 里关掉的技能每次都被打开。现在在 config.toml 旁边记
+  `xingmang-ai-skill-state.json`（`offByXingmang`）：ChatGPT 账号下关技能时记「切回星芒时配置里的关是不是这里星芒关的」，按
+  `xingmang-config-relay.toml` 定：那份里技能本来就关着就是用户的（记 false），没有那份（切回时会把 ChatGPT 配置整份带过去）或里面没关
+  才记 true；已经记着 true 的不改（上次在星芒下没打开成时，那个关会被原样存进那份）。切回星芒时只打开记着 true 的那个关，
+  并把 `xingmang-config-relay.toml` 里同一条一起打开，免得切换失败回滚（只还原 config.toml）后再切过来又带回这个关。
+  没有记录的老配置：星芒下的关算用户的，ChatGPT 账号下的关同样按 `xingmang-config-relay.toml` 定。
+  `applyXingmangAiSkillEnabledFlag` 遇到同一技能写了好几条时一起改。
+- #834 核实 F03（已知15）：Gemini 的 `privacy.usageStatisticsEnabled = false` 以前切回 Google 时只要 privacy 里就这一项就整段删，
+  分不清是星芒写的还是用户自己写的。现在星芒写下它时（保存配置、重置、开机补缺省）在 settings.json 旁边记
+  `xingmang-gemini-usage-statistics.json`，和 settings.json 同一次两阶段提交；切回 Google 只收回有记录的那一项，再把记录写空。
+  有记录之前写下的那些分不清是谁的，切回时留着：关着统计不影响任何功能。备份只还原 settings.json 和 .env，所以
+  `adoptRestoredConfig`（切换失败的回滚、备份页恢复都走它）在登记来源之前调 `forgetStaleGeminiUsageStatisticsRecord`：恢复出来的
+  settings.json 里没有那个 false 了，记录就作废。
+- #834 核实 F04（已知16）：`removeCodexContextLimits` 只删值和老模板（#104 加、#124 撤）一样的 `model_context_window = 1000000`、
+  `model_auto_compact_token_limit = 900000`，用户设的别的值留着；`docs/CODEX-ACCOUNT-CONFIG.md` 跟着改。升过 0.2.5 的机器早就跑完了
+  这次一次性清理，只影响先在 Codex 里设过这两项、后来才第一次装星芒的人。
+- 已知1：`pages-account.tsx` 订阅卡状态不是 active 时原样显示 `subscription.status`。新增 `registry/business.ts` 的
+  `subscriptionStates` 和 `pages-account.tsx` 的 `subscriptionStateFor`：new-api 的 active / expired / cancelled、Sub2API 的
+  active / expired / suspended / revoked（对过 new-api v1.0.0-rc.24 与 Sub2API 270eac6 的源码），加上界面规范里的 exhausted；
+  cancelled、revoked 用 Key 状态现成的「已撤销」，suspended 用「已停用」，其余值用订单那边现成的「待确认」，查表走 `Object.hasOwn`。
+- 已知2：`pages-management.tsx` 详情抽屉「范围」原样显示 scope。新增 `extensionScopeLabel`，按 `scopeOptions` 现成标签显示；
+  Claude 的 local 显示「当前项目」，Gemini 扩展自带技能的 extension（装在用户目录）显示「我的（全局）」，没有 scope 照旧「未提供」。
+- 已知8：`AccountInvite` 的转入金额只在挂上时算一次。转出一部分后资料重读、这张卡不重挂，再点开还是旧数（或上次手填的数），
+  比剩下的多时照着确认会报「转入金额不能超过可用返利」。改成每次点开按当时的可转余额重算。
+- 已知18：`AccelerationView.tsx` 的眉标 GAME CONNECT 换成现成的页面名「游戏加速」，`ui-spec/06-copy-guide.md` 第一段同步（原型没改）。
+- 测试：`business.test.ts` 钉住两个映射（含 `constructor`、`__proto__` 这类原型链上的键）；`e2e/v2-business.test.mjs` 加订阅五种状态、
+  转出一部分后再点开对话框两条；加速 `browser-check.mjs` 断言眉标。
+- 已知10（第三十三批跟进项）：`App.tsx` 的确认框（卸载、退出登录、重置 Codex 桌面端）做的事失败时，错误框只设原因、不带 `retry`，
+  目录里 toolRunning 那条「先关掉……再重试」的「重试」被 `operationErrorActions` 滤掉。确认框的执行抽成 `runConfirmed`，失败时带上
+  `retry: () => runConfirmed(pending)`：已经确认过，重试直接再做一遍、不再问；确认框一直开在错误框后面，重试时照样转圈，做成了一起关掉。
+  `app-check.mjs` 加一条：卸载撞上「文件被占用」→ 错误框有「重试」→ 点了再卸一次，确认框和错误框都关掉。
+- 已知21（第三十批「看过但不列」）：`features/chat/state.ts` 的 `attachmentErrorMessage` 以前从第一个汉字截起。英文的写入失败
+  （EPERM、ENOSPC）里汉字只在路径上时（Windows 中文用户名、Mac 上的中文文件夹）会把半截路径端上屏，中文原话开头的「AI」也会被截掉。
+  改成先 `userFacingErrorMessage`（剥 IPC 前缀、脱路径）再按 `speaksChinese` 判：中文原话打码后整句上屏，英文换成原有的
+  「图片没有加上，请再试一次」。
+- 已知2 跟进：`pages-management.tsx` 的「范围」筛选只比原样的 scope，详情写「当前项目」的 local 插件在「当前项目」下看不到，
+  写「我的（全局）」的 Gemini 扩展自带技能（extension）在「我的（全局）」下也看不到，只有「全部范围」里有。新增 `extensionInScope`，
+  和 `extensionScopeLabel` 共用 `extensionShownScope` 这一套归类；增删改照旧交回原样的 scope。
+- ui-spec：加速页原型模块 `99z-acceleration.js` 的眉标改成「游戏加速」并重建原型 HTML，06 去掉「原型未同步」那半句；
+  22 订阅一行补 cancelled / revoked / suspended 和兜底「待确认」；04 技能插件一节写明 local、extension 的归类；CHANGELOG 记一行受控。
+- 测试：`business.test.ts` 钉住 `extensionInScope`；`e2e/v2-business.test.mjs` 加一条：筛「当前项目」「我的（全局）」时，
+  local 插件和扩展自带技能出现在详情写的那一档（旧代码上红在等 local 插件那一行）。
+- 已知25：Codex 桌面端「中文增强启动失败」和它里面那层「AppX 激活失败」（`codex-desktop-cdp.ts`）挂上 `cause`。启动那边接住这个失败
+  以后改走普通启动、只往控制台打一句，打包版不留控制台，原因以前哪儿都看不到。现在 `system-service.ts` 用新导出的
+  `withCodexDesktopCdpFailureReport` 把这一步包一层，失败时记一条 `codex-desktop.chinese-launch.failed`（warn），`error` 下面顺着
+  cause 记到 PowerShell 那层的退出码和标准错误（#880 让运行日志记 cause）。启动行为不变，失败照旧往外抛。
+- 已知24：`scripts/windows-installer-install-directory.test.cjs`、`scripts/macos-artifact-names.test.cjs`、
+  `scripts/rename-macos-chip-artifacts.test.cjs` 接进 `test:scripts`，以前 npm test 和 CI 都不跑；接上以后 19 条都过。
+  `ci-workflow-config.test.cjs` 加一道门禁：`scripts/` 下每个测试文件都得有某条 npm 脚本点名（只在 Mac 上跑的经 `test:mac:free-signing`）。
+- 已知22：短提示 2.4 秒后自己消失，浏览器用例直接等它上屏的话，慢机器上会错过、卡满 30 秒。#198 只改了 app-check 的保存用例；
+  这次把那份提示记录挪进 `e2e/toast-recording.mjs` 共用，还在直接等提示的 21 处改成认记录：`e2e/v2-business.test.mjs` 16 处、
+  聊天的 `browser-check.mjs` 2 处、app-check 3 处，认的还是原来那句话（原来只写半句的补成整句）。找法写在那个文件开头：让短提示一出来就隐藏、1 毫秒后消失，
+  跑新界面全部浏览器用例，只有测提示本身的两条该红。
+- 已知26：`docs/RELEASING.md` 改正 Mac 换签名证书以后的说法：不是「每 3 小时重试」，停在「已下载」时定时检查直接跳过，重装只是把
+  下好的同一个包再交给 Squirrel。
+- 已知3：`external-client-runtime.ts` 的检测脚本在 AppX 注册信息、数字签名两处 catch 里把 `$_.Exception.Message` 直接拼在
+  中文后面，首页那一行就带着系统英文。现在 `errors` 只留中文那句，原话另放 `errorDetails` 交回，经 `onDetectionErrorDetail`
+  进运行日志 `external-client.detection-error-detail`（路径按主目录脱敏；同一个客户端原因和原话都没变不重复记；这一行最后
+  报的是这边核对路径、签名时另起的错时不配这句原话）。不新写字。
+- 已知13：照 CLI 那份 `system-snapshot-cache.ts` 的做法，新增 `external-client-snapshot-cache.ts`：每次真检测完把三家各一条的
+  整份结果写进本机数据目录的 `external-client-snapshot.json`（原子写、只认三家齐全的整份、`running` 一律记成没开、字符串过
+  `redactCommandText` 并截长、下载页只认白名单那一条），下次开机首页先拿它把那几行画出来，每条带 `cachedAt`。要落盘的字段
+  用类型钉住（必填字段连同类型、可选字段名，改了就过不了类型检查，提醒加格式版本号）。读取复用 `external-clients:scan`，
+  第二个参数 `{ cachedOnly: true }`（入参严格校验），不新增通道；这一读只读本机文件，不陪账号恢复排队、不起盘点、不记检测
+  失败，运行日志记成「已先显示上次的客户端检测结果，共 N 项」而不是「外部客户端检测完成」（免得客服以为这次已经检测过）；
+  本次启动真检测过以后只回空列表。首页见到 `cachedAt` 就当作还在检测：主按钮、「配置」「打开」先不能点，挂着现成的
+  「正在检测 WorkBuddy、Claude Desktop 和 OpenCode」那一句；真的那轮照旧排在首屏扫描之后，回来就整份替换，没读到就撤下
+  旧的、只留原来那条红条。主进程里安装、打开、配置、连接自检、反馈报告都不读这份文件。
+- 已知20：`claude-desktop-local-transaction.ts` 每次保存给改到的每个文件留 `.bak.<随机>`，以前从来不清。现在整次保存成功
+  以后，照 `config-files.ts` 每个文件只留最近 5 份：只认自己起的 UUID 后缀，按修改时间排，刚留的那份不删，手工放的 `.bak`
+  和别的文件不碰，删经 `removeSafeDataFileSync`，清不掉的照旧留着、不把保存变成失败；保存没成功时一份不删（那句报错要客户
+  从 .bak 恢复）。
+- 测试：`external-client-runtime.test.ts` 加脚本那两句不再带原话、原话进日志且只记一次；`system-service.external-client-log.test.ts`
+  把这行日志写进真的运行日志再读回来（主目录已脱敏）；`e2e/windows-powershell-probes-smoke.mjs`（Windows 打包那一步真跑
+  PowerShell）加 AppX 和数字签名两处抛错时 `errors` 只有中文、原话在 `errorDetails`。新增 `external-client-snapshot-cache.test.ts`
+  （往返、只认整份、脱敏和多余字段、坏行和白名单外的下载页、类型钉、原子写和只读一次、硬链接拒读）；
+  `external-client-service.test.ts` 加重启后先给上次结果、真检测过以后只给空列表；`ipc.test.ts` 加这一读不陪账号恢复排队、
+  参数格式不对报错；`claude-desktop-config.test.ts` 加每个文件只留最近 5 份、保存没成功时一份不删。新界面浏览器回归加开机先摆
+  上次结果且按钮等着、真的那轮没读到时撤下旧的；原有「客户端盘点排在首屏扫描之后」那条改成只数真检测。
+- 已知39：`workspace-guard.ts` 加 `sensitiveWorkspaceAsksAtLaunch`。`cli:launch` 开新对话时，`once` 那八类（主目录、
+  盘根、桌面、下载、文档、Users、整个 OneDrive、AppData）也弹选择器那一问，原来只问 `every-time` 两类；续接对话照旧
+  只问 `every-time`。首页「打开」、「换一个目录」里的最近目录、托盘和快捷键用的是从会话记录推出来的目录，不经过选择器，
+  客户自己在主目录开终端用过 claude，按钮就写「打开 张三」。
+- 选择器里点过「仍然打开」的放行（同一路径、两分钟、只用一次）从只认 `every-time` 扩到所有敏感目录
+  （`confirmedSensitiveWorkspace`），免得选完紧接着又问一遍。问完「仍然打开」，Windows 上桌面、文档、下载照旧先试写
+  （`launchUnlessUnwritable`）；在这一问里点「换一个文件夹」重选的、「新建」建出来的也先试写，原来这一支直接打开，
+  只有系统目录和存密钥的目录走得到，现在首页「打开 张三」那一问也走这里。通道形状没变，`ipc-contract.ts`、`preload.ts`、
+  渲染层都没动；旧界面的引导拿存下来的工作目录打开（从没选过时是主目录），现在同样先问。`docs/WORKSPACE-TRUST.md` 跟着改。
+- 2026-10-06 已知问题清单 39；yoyo 2026-10-06「全部修复」。
+- 已知4：`features/tools/recent-workspaces.ts` 加 `resumeNeedsRecheck`、`resumeStillLatest`。首页 `Home.tsx` 的「接着聊」（按文件夹接最近
+  一条的 Claude Code、Gemini CLI、Grok CLI）点下去先作废一分钟缓存、现读一份「最近」，点的这条已经不是它（工具 × 文件夹）最近的
+  一条就换上新列表、这次不打开；读不到照旧打开；Codex 按记录 id 接，不读。记录页 `SessionsPage` 同一下，放在打开前那几道关之前
+  （问完话再说不打开等于白问），不一致时列表一起重读。
+- 已知5：`pages-business.tsx` 给三个 `ExtensionsPage` 传 `active`，`ExtensionsPage`、`MaintenancePage` 接 `useReloadWhenShown`，
+  再显示时重读，在读就不再起一轮；外接工具的连接检测（`checkProviderMcpHealth`）照旧不跟着重跑。
+- 已知6：`features/app/environment-status.ts` 加 `markDiagnosticsStale`（状态栏退回「环境待检测」）和环境版本号，`publishDiagnosticsCounts`
+  可带开跑时的版本，跑到一半环境改过就不交（缺省＝旧行为）。`App.tsx` 在工具行任务收尾（`environmentJobsFinished`，打开工具不算）、
+  配置窗口保存、账号 Key 真写了或修了 Codex 老配置、备份恢复、密钥页「配置到工具」、`onSystemChanged` 时标过期，不在后台替客户重查。
+  检查页开着时版本一变就重查一次，在查就等这一轮查完。
+- 已知12：`App.tsx` 给账号 Key 同步的结果记 `finishedAt`；`Home.tsx` 的 `bootstrapNoticeExpiresAt` 让只说「已完成 N 组工具的 Key 配置。」
+  的那句照右下角提示条的读完时长（`toastDurationMs`）到点收起，回首页时已过点的不再出现；有失败、有提醒、被网拦住的照旧常驻。
+- 测试：单测补 `recent-workspaces`、`environment-status` 和首页横幅；`app-check.mjs` 补七条（首页和记录页「接着聊」先对一次、Codex 不读、
+  扩展三页和安装卸载页再显示重读、状态栏装完退回灰点、检查页自己重查、横幅到点收起）。原「记录页接着聊后回到窗口」那条，「最新 100 条」
+  的读次数多一次（点的时候先对的那一下）。
+- 2026-10-06 已知问题清单 A 组 4、5、6、12；yoyo 2026-10-06「把已知的问题都做完」。
+- 已知48 里不等新字的几处（第三十六批、第三十九批「查过、不收」的两条，第四十四批 10）：`system-service.ts` 卸掉 ~/.grok/bin 里的 Grok 后，
+  从当前用户 PATH 删目录那一步原来等着、只给 8 秒，用 `[Environment]` 读写，会把 `%VAR%` 写死、把 REG_EXPAND_SZ 改成 REG_SZ，
+  超时就把已经卸完的报成失败。改成 `windows-cli-shell-access.ts` 的 `buildRemoveUserPathScript`（照 `buildEnsureUserPathScript`
+  读写注册表原值、保留值类型，只为比较展开、没有命中就不写）+ `removeDirectoryFromWindowsUserPath`（60 秒）；经新的
+  `CliTerminalAccess.forgetUserPath` 在后台跑，不等它，失败只记 `cli.user-path.remove-failed`。服务新增 `removeWindowsUserPath`
+  注入口，只有 `main.ts` 在 Windows 上接真实现，测试里不起 PowerShell。
+- 已知48：`grokManualUninstallResult` 安全核对没过时，英文原话（:820 那句和 `macos-grok.ts` 里那些）不再接在「自动卸载安全验证失败：」
+  后面上屏，按 `isChineseSentence` 判，英文换成原有的「Grok CLI 自动卸载安全验证失败」；原话照旧放在 `error` 里，
+  `ipc.ts` 的 `cli.uninstall.completed` 遇到 manual-required 时把它记成 `reason`。这组单测从只在 Mac 上跑的 describe 挪出来，
+  Linux 卸不了时走的也是它。
+- 已知68（yoyo 2026-10-06 亲手同意放宽）：`external-client-runtime.ts` 的 `launch()` 以前打开前一律现验签名（Windows 上
+  对每个装着的客户端跑一遍 `Get-AuthenticodeSignature`），每次点「打开」都要等好几秒。现在 Windows 上打开前那次清点带上
+  这次运行里记住的签名结果，但只带核对通过（`Valid`）的那些：没核过的、上次没通过的照旧现验。记住的结果只在内存里，不落盘。
+- 认不认记住的结果由检测脚本判：路径、大小、修改时间、创建时间之外，新加卸载信息里登记的版本（DisplayVersion）也要和
+  验签那次逐字一样，任何一项变了就现验。展示用的检测同样多了这一条（只会多验，不会少验）。版本超过 256 字的不记
+  （截短或记成空串，就和别的版本、没登记版本分不开了），照旧现验。
+- 其余不变：装客户端前后照旧现验；Mac 上打开照旧现验（这次只放宽 Windows）；路径、符号链接和联接、注册表、发布者的核对
+  每次打开照旧都做，记住的结果也必须是官方发布者签的；打开照旧经资源管理器以当前登录用户启动。
+- 测试：`external-client-runtime.test.ts` 原来钉着「打开从不带记住的签名」那条改成新的规矩（展示用的全带、打开只带通过的、
+  装一条不带），另加一条打开会用上自己或检测记住的通过结果、不用记住的失败结果，去掉这次的改动两条都红；再加一条版本太长时
+  不记。
+  `e2e/windows-powershell-probes-smoke.mjs`（CI 里 Windows 打包那一步真跑 PowerShell）加一条：记住的结果在文件和版本都没变时
+  照用，版本变了、版本没了、文件大小变了都真的再验一次。
+- 已知11（第三十批跟进项）：`src/renderer-v2/features/tools/ConfigDialog.tsx` 的 `run()`（保存配置、读取密钥、选择文件夹、中文界面
+  与文件夹权限那几颗按钮）和「保存并检测模型」没保存成的那一支，失败时改用 `failureWithDetail` 连原话一起留着，红字（含重置确认框）
+  用页顶红条那个 `FailureReason` 显示：认得出类别时先说 `registry/errors.ts` 里现成的标题和正文，原来那句跟在后面；认不出照旧。
+  没过前置检查的提示和「模型检测未完成」不变。没有新写的字。
+- 没权限（EPERM/EACCES）时和页顶红条一样说「写不进安装目录」，对配置文件不准，那是已知29，改 `registry/errors.ts` 时这里跟着变。
+- 测试：`app-check.mjs` 新加保存时 EBUSY 的用例，对话框和重置确认框都先说「工具正在运行」、不露英文原话和路径。
+- 已知19：`resolveWindowsCliExecutionModeDetailed` 多回一个 `highIntegrity`（读出了完整性标签才有；自带 Administrator
+  的默认令牌也是 High，照旧 same-user），启动日志 `cli.execution-mode` 跟着记。`main.ts` 把它作为
+  `windowsProcessElevated` 交给 `registerIpcHandlers`，`platform:get-capabilities` 为真时叠上 `processElevated: true`
+  （`PlatformCapabilities` 新可选字段，缺省 = 旧行为）。`elevation-notice.ts` 三个函数多收一个可选的 `elevated`，为真时
+  不出那句：首页运行环境卡（只用 Codex 桌面端时那段只去掉弹窗半句，「一般不用单独点」照旧）和 Codex 桌面端那行、
+  「安装卸载」页 Node.js 和 Codex 桌面端两行；更新页重启安装确认框的
+  授权窗口那句、`buildAutoInstallNotice`（打开时装、退出时装的预告）里「Windows 弹出授权窗口时请点「是」。」同样不出，
+  后者和 Mac 那份说法一样。没有新字。
+- 客户恢复脚本 `scripts/windows-acceleration-recovery.ps1` 的还原逻辑检查（全部读写都是假的、不碰真代理）
+  从 `test:scripts` 挪到 Windows 打包作业的 `e2e/windows-powershell-probes-smoke.mjs`。它原来在 node --test
+  分片里和几十个套件同时跑，冷启动的 Windows PowerShell 在 #782 上把 30 秒用完、一条检查都没红。
+  `scripts/` 下两条只读源码的检查（无 BOM、和软件那份 WinInet 脚本逐字一致）留在原处；
+  `ci-workflow-config.test.cjs` 那条「单元测试不起真 PowerShell」的门禁扩到 `scripts/*.test.cjs`。
+- `acceleration-development-host.test.ts`「父进程突然退出后辅助进程照样收尾」那条不再自带三个墙钟期限
+  （父进程 4 秒内退、3 秒内写出 restored、假辅助进程 5 秒自尽），改成按事件等，只由用例自己的 10 秒上限兜底。
+  10-1 在沙箱整套 `npm test` 里偶红过；这次在沙箱压满 CPU 跑了 50 多轮没复现，这是全文件唯一靠墙钟判输赢的用例。
+- Windows 的 renderer-v2 夹具浏览器分片从两片加到三片（`renderer-v2-browser-1`～`-3`，各 18 分钟上限不变）。
+  10-6 两片各跑 7～10 分钟，最慢的机器上每片每天多半分钟上下，推测 10 月下旬会再撞 18 分钟，所以趁现在拆。
+  `app-check.mjs` 的用例照旧按声明顺序轮流发到三片；其余文件按 10-6 三轮 CI 的实测耗时分：
+  第 1 片加速 + 公告记忆，第 2 片登录 + 组件 + 对比度，第 3 片聊天 + 键盘 + 账号绑定启动 + 公告。
+- Linux 的 `linux-renderer-v2-browser` 不再整份跑 `test:v2:browser:fixture`，改成两个并行作业
+  （`test:v2:browser:fixture:linux:1` / `:2`，同样按 `XINGMANG_TEST_SHARD` 发 app-check 的用例，其余文件按 Linux 上的耗时分）。
+  10-6 它整份跑要 13～16 分钟，是整轮 CI 最慢的一个作业。作业名、上限 30 分钟和 `quality-gate` 的依赖都没变。
+- `ci-workflow-config.test.cjs` 的分片门禁改成 Windows、Linux 两边各查一遍：每份都派发、分母等于份数、
+  发牌的文件每份都跑、其余文件只在一份、合起来等于 `test:v2:browser:fixture`；Linux 不许再整份跑一遍。
+- 已知45 检查页那半（yoyo 10-6 回「改」，用的是 11:16 给的三处新字）：`diagnostics.ts` 的
+  `PROVIDER_ENVIRONMENT_OVERRIDE` 在 Mac 上另去读 9 个终端设置文件（`~/.zshrc`、`~/.zprofile`、`~/.zshenv`、`~/.zlogin`、
+  `~/.bash_profile`、`~/.bash_login`、`~/.profile`、`~/.bashrc`、`~/.config/fish/config.fish`），经 `readSafeUtf8File`
+  读，上限 512 KiB；链接、硬链接、超大的不读，原因只进日志（`diagnostics.shell-settings.skipped`），I8 不放宽。
+  只找 `breaksAccount` 的四个，只看用星芒账号（`relay`）的工具：Claude Code 用自己账号时启动脚本不去掉它们（#920），
+  报了「从星芒打开不受影响」就不对；Gemini CLI 不用星芒账号时这几个起什么作用没实测过（T12）。空值、指向当前账号的地址、
+  指向 `~/.claude` 的 `CLAUDE_CONFIG_DIR` 不报，看不出值的照报；同一个名字在一个文件里导出几次，有一次指向别处就报。
+- 新模块 `shell-startup-exports.ts`：纯函数 `parseShellStartupExports(text, dialect, names, home)`，按 zsh、bash 与 fish 的
+  引号、转义、注释、here-document、`;`、`&&`、换行分句，认 `export`、`typeset -x`、`declare -x`、先赋值后 `export`、
+  `set -a` / `setopt allexport`，以及 fish 的 `set -x`（各种写法）和它的 `export` 函数。`$HOME`、`${HOME}`、不带引号的
+  开头 `~` 换成主目录，别的展开一律当看不出值。不执行、不跟 `source`。`unset`、`set -e` 不抵消前面的导出：在函数里
+  切换中转的写法常见，从上往下读是「已删」，客户终端里却可能还留着。
+- 结论：都是启动脚本会去掉的（`droppedByMacosLauncher`，和 `system-service.ts` 的 `macosShellOverrideVariables` 对齐，
+  单测逐个变量、逐种账号钉住）→「需留意」，新字「终端设置里另外设了 {名字}：从星芒打开的工具不受影响，自己开终端直接用
+  {工具} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉」，详情行「{名字}（{工具}，在 {文件}）」。名字超过
+  三个沿用「等 N 项」，同名只说一次（`namesOf` 去重）。启动脚本照旧会带过去的（Claude Code 没用星芒账号时，星芒进程环境里的）
+  仍是原来的「待处理」，原话不变，只点这几个的名。星芒进程环境里和终端设置文件里同名的，只留带文件的那条。
+  Windows、Linux 的输出一字不变。
+- 单测：解析 25 条（含 fish 6 条）；检查页 Mac 14 条，含真建链接的 `~/.zshrc` 不读、日志里没有值和主目录，Windows、Linux
+  不读这些文件。另在沙箱里拿真 zsh 5.9、bash 5.2、fish 3.7 对了 47 段写法（没进仓库），只有两处 zsh 才有的边角
+  （`~不存在的用户/…`、`~"/…"`）多报，都是多报不漏报。故意改坏 32 处，每处都有单测红。没在真 Mac 上演过。
+- 已知45（第三十四批跟进项 1）：和第三十四批 B 同一条路，macOS「终端」先起客户的登录 shell 读 `~/.zshrc` 等文件，
+  里面 export 的变量一路带给工具；星芒从访达打开，自己的环境里没有它们，`providerCommandEnvironment` 管不到。
+  `system-service.ts` 新增 `macosShellOverrideVariables(provider, accountMode)`：Claude Code 只在用星芒账号（`relay`）时
+  去掉检查页实测会绕开当前账号的 `ANTHROPIC_API_KEY`（多带 `x-api-key` 换掉 Key）、`CLAUDE_CONFIG_DIR`（整个不读
+  `~/.claude`），即 `diagnostics.ts` 的 `breaksAccount`；用自己的 Claude 账号时这两个可能就是客户自己的 Key 和登录
+  （切回官方时 `config-files.ts` 也把他原来的 `ANTHROPIC_API_KEY` 放回 settings.json），不动。Gemini CLI 不论哪种账号，
+  去掉 `providerCommandEnvironment` 在 Windows、Linux 上本来就不交给它的五个（抽成模块级常量共用）。
+  Codex（`CODEX_HOME` 星芒每次自己写，`OPENAI_*` 盖不过 config.toml）、Grok（没实测过）不动。
+  Windows、Linux 上 Claude Code 的这两个照旧由检查页提示，这次不动。
+- 已知45 跟进（协调者定的）：用星芒账号时，三个平台从星芒打开 Claude Code 都不带客户环境里选型号的那几个，范围和接账号时
+  从 settings.json 挪开的一致：`config-files.ts` 从 `claudeForeignEnvKeys` 导出 `claudeForeignModelEnvKeys`（去掉
+  `ANTHROPIC_API_KEY`），`system-service.ts` 的 `launchExcludedEnvironmentVariables(provider, accountMode)` 只在
+  Claude Code 用星芒账号时给出这份名单。打开前 `withoutEnvironmentVariables` 不分大小写地把它们从交给终端的环境里去掉
+  （Windows、Linux 两条路都吃这份环境）；Mac 的启动脚本名单也包含它们；Linux 计划多一个可选的 `clearedEnvironmentKeys`，
+  启动脚本照样 `unset`，免得交给已经开着的命令窗口程序时，那个程序自己环境里的那份补上来。用自己的 Claude 账号时照旧带。
+- `buildDarwinCliLaunchPlan` 多收一个可选的名单，放进计划的 `clearedEnvironmentKeys`；`buildMacosTerminalScript` 在进文件夹
+  检查之后、export 之前 `unset` 它们，星芒自己的值（Gemini 的 Key、地址、模型）随后照旧写回。两边的名字都按环境变量名校验，
+  不合格抛错；没给名单时计划和脚本都和以前一字不差。`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 盖不过 settings.json 的
+  env 段，不动。不加新字。客户自己开的终端照旧会读这些设置；检查页在 Mac 上把它们查出来那一半要新字，另做。
+- 单测：Mac 启动脚本里 `unset` 排在进文件夹检查之后、第一条 export 之前，没给名单时不出这一行，四种不像变量名的写法都抛错，
+  `launchMacosTerminal` 把计划里的名单带进它写的脚本；有 `/bin/zsh` 时用真 zsh 跑整份启动脚本，登录 shell 带进来的
+  `ANTHROPIC_API_KEY`、`CLAUDE_CONFIG_DIR`、`GOOGLE_GENAI_API_VERSION` 到不了工具，`GEMINI_API_KEY` 是星芒那份，名单外的照旧
+  带上，stderr 为空。Linux 启动脚本同样排在进文件夹之后、export 之前，四种坏名字抛错，真 `/bin/sh` 跑时命令窗口程序环境里的
+  `ANTHROPIC_MODEL` 没给名单时带过去、给了就到不了工具。`system-service` 这边钉住选型号的名单只在 Claude Code 用星芒账号时
+  给出、Mac 名单包含三个平台都不带的、Claude Code 的 Key 和配置目录只在星芒账号时去掉、Gemini 的名单和 Windows、Linux
+  去掉的一样、Codex 和 Grok 不动、去名字不分大小写。三个平台各走一遍打开 Claude Code 的服务层流程（`SystemServiceOptions`
+  为此多一个测试接缝 `launchMacosTerminal`，同 `launchLinuxTerminal`、`launchCliPowerShell`）：星芒账号下，Windows 交给
+  PowerShell、Linux 交给命令窗口的环境里没有 `ANTHROPIC_MODEL`（Windows 那条连小写写法一起），Mac、Linux 的计划带着名单；
+  自己账号下 Windows、Linux 照旧带上 `ANTHROPIC_MODEL`，Mac、Linux 的计划不带名单。`config-files` 钉住名单和接账号时挪开的
+  同一批（只差 Key）；`diagnostics.test.ts` 逐个变量跑检查页，凡是判成「待处理」的都得在 Mac 启动脚本的名单里。故意改坏
+  十一处（去掉 Mac 的 `unset`、Claude 不看账号、Claude 名单少一个、`launchMacosTerminal` 不带名单、打开时不去掉、Linux 脚本
+  不 `unset`、Linux 不传名单、选型号的名单不看账号、Mac 打开时不把名单交给启动脚本、去名字时分大小写、Windows 那条不用去掉后的
+  环境），每处都有单测红。没在真 Mac、真 Windows、真 Linux 桌面上演过。
+- 已知57（0.2.15 回归检查第 7 条 / F2）：`proxy-bypass.ts` 的 `createSiteFetch` 以前只在拿到回话之前失败才报 `siteRouteFailed`，
+  直连会话回的是拦截页、门户跳转，或者回了话以后正文读到一半断了、超时了，都当走通了，这一轮一直直连到重开软件。现在回网页
+  （text/html）或 opaqueredirect 当场报；正文读出错时也报（新模块 `response-body-watch.ts` 给正文包一层流，状态、头、url、
+  redirected、type 照抄，调用方拒绝重定向的那道检查不受影响），调用方自己中止的照旧不算（账号请求除外，同 `abortMeansUnreachable`）。
+  报上去以后走原来那套再看，规则不变：系统代理连得上星芒才交还，不然接着直连。
+- `probeDirectConnection` 以前回什么都算通，拦截页、网关错误页也算，直连那一路被拦了照样分过去，也看不出该交还。现在只认
+  JSON：content-type 是 JSON、正文 64 KB 以内能解析，状态码不管（维护时回的 503 JSON 也说明连得到服务），加 `Accept: application/json`。
+  整个改直连、分去站点直连、交还、改回跟随系统代理这几处判断都用它。
+- 测试：新增 `response-body-watch.test.ts`；`proxy-bypass.test.ts` 改写探测那几条，加站点 fetch 报拦截页、跳转、断流、中止的几条，
+  按 main.ts 的接线加「公司网拦截页时交还」「AI 回复断了交还」「直连只回门户页时不分过去」三条；接线用例里代表「服务回了话」的
+  假回应改成 /api/status 那样的 JSON（以前是空的 204）。
+- 没做：已知38（代理回绝星芒时整个改直连）不动。没在真机上演过。
+- 已知7（第二十九批「看过但不列」那条，当时等的首页运行环境卡已随 #797 合入）：`diagnostics.ts` 加
+  `reconcileNodeRuntimeWithClis`，跑完所有检查后，四个 `CLI_*` 都确认没装（`details.installed === false`）时，把没装的
+  `RUNTIME_NODE` / `RUNTIME_NPM` 从 `fail` 降成 `warn`；结论照旧「未安装」，「去处理」照旧去「安装卸载」。有一家装着、或者
+  那一项没查出来（超时、出错）的照旧 `fail`，同首页的 `nodeOptional`。降黄不是不出：Codex 桌面端的「星芒画图」要 Node.js。
+  用跑完的结果判断，不为这个再探一遍四家工具。不加字。
+- 测试：`diagnostics.test.ts` 四条（都没装时两行是 `warn`、计数跟着变；装着 Codex 照旧 `fail`；有一家没查出来照旧 `fail`；
+  Node.js 那一项超时、Python 和 Git 不动）。
+- 已知9：`StartGuide.tsx` 的 `runtimeByApp` 原来只算 Windows 和能代装 Node.js 的 Linux，Mac 照旧写「在应用外安装完成后回来
+  重新检测」、按钮叫「安装指南」，选工具那一步写「命令行，要先按提示准备运行环境」。可 Mac 第十六批 2 起也由本软件准备 Node.js，
+  按钮点下去其实是星芒自己去下。现在 Mac 和 Linux 一样按 `runtimeAutoPrepare` 判断，Windows 不变；用的都是 Windows、Linux
+  那边现成的字，不加新字。`StartGuide.test.tsx` 里原来钉着「Mac 字样不动」的两条改成 Linux、Mac 一起测。
+- `electron/windows-elevation.ts` 打开工具的中转脚本把 `Start-Process` 和回传进程号包进 try/catch，出错时只把 `$_` 以纯文本
+  写回标准错误再 `exit 1`。以前留给 PowerShell 自己报，标准错误被重定向时它包成 CLIXML，还附上出错的那行脚本。写 `$_`
+  （ErrorRecord.ToString，先取 ErrorDetails）而不是 `$_.Exception.Message`：通配符那种报错的原因只在 ErrorDetails 里。
+- `describeWindowsCliLaunchError` 只从标准错误读原因，不再拼 Node 的「Command failed: 整条命令行」。`parseWindowsCliLaunchCause`：
+  纯文本照用；还是 CLIXML 的（受限语言模式下 catch 里的 `[Console]` 调不了，或者脚本根本没跑，比如被杀毒拦下）解开
+  `<S S="Error">`，跳过出错位置、引用的脚本和分类那几行，取第一段原因，去掉颜色转义和打头的命令名。5.1 按控制台宽度折行，
+  命令出错时原因在出错位置前面、脚本没跑时在引用的脚本后面；7 带颜色转义，脚本没跑时原因在「|」后面。PowerShell 之前报过
+  进度的，CLIXML 头先写出去、XML 退出时才写，catch 写的原因夹在两者之间，也认得出。超时这种读不到原因的，落到现成的「请查看
+  反馈与诊断日志」；PowerShell 根本起不来（spawn 失败，execFile 照样附一个空的标准错误）照旧用 Node 的消息。
+- 原文（标准错误、Node 的消息、退出码、信号、是否超时被停）放在 `WindowsCliLaunchError.launchOutput`，`system-service` 照 Linux
+  那样另记一条 `terminal.failed`（同一句「… 的命令窗口没能打开」），路径按主目录脱敏。`-EncodedCommand` 后面的 base64 里有
+  文件夹和用户主目录，主目录脱敏看不进去，两种写法（Node 的命令行、PowerShell 错误视图里引用的那行脚本）都抹掉。
+  `SystemServiceOptions` 加测试接缝 `launchCliPowerShell`，同 `launchLinuxTerminal`。
+- `e2e/windows-powershell-probes-smoke.mjs` 方括号那项改成整段跑 App 造的中转脚本，只把要起的终端换成隐藏的 cmd.exe；
+  不转义时要求原因是 catch 写回来的（标准错误里没有 CLIXML 的错误视图），按 App 的说法拼出来的错误框里没有 CLIXML 和命令行。
+- 第三十九批 C。三个客户端的「打开」在主进程排的是同一个安装队列（`external-client-runtime.ts` 的 `external-client:launch:*`），
+  渲染层标签却写死「正在打开客户端」，全面检测 Q15 只给命令行工具和 Codex 桌面端接上了 `launchWaitLabel`。`launchWaitLabel`
+  （`features/tools/launch-notice.ts`）加可选的第三个参数 `idle`（前面没人时说什么，缺省照旧「正在打开工具」）；`App.tsx` 的
+  `launchExternal` 先算 `launchWaitLabel(toolbox.jobs, jobToolName, '正在打开客户端')` 再交给 `toolbox.run`。找名字的小函数提成
+  `App.tsx` 顶层的 `jobToolName`，命令行工具那条也改用它。标签按点下去那一刻算，和 Q15 一样。
+- `launchWaitLabel` 跳过 `switch:`、`repair-hooks:` 两类任务：它们只走 `serializeConfigWrite`，不进 `InstallationQueue`，「打开」
+  不等它们，以前却说「正在等 另一个工具 安装完」。前面是 `git` 时和 `node`、`python` 一样说运行环境（Git 不在工具表里，在首页
+  「运行环境」卡上）。Mac 上苹果安装窗口那段 Git 不占队列（`installMacGitRuntimeForService`），这时点「打开」这句只闪一下，和以前一样。
+  只用现成的句子，不新写字。
+- 测试：`launch-notice.test.ts` 补客户端说法、跳过两类任务和 Git；`testing/app-check.mjs` 补一条：前面没东西在装时照旧写
+  「正在打开客户端」，正在装 Gemini CLI 时点 WorkBuddy 的「打开」写「正在等 Gemini CLI 安装完，安装完马上打开」。
+- Windows 开机自启、窗口没打开过时，打开时装不再直接留到退出时（#840 的 'skip'）：`resolveLaunchInstallMode`
+  新加 'window'，记下这一版，主窗口第一次 `show` 时照 'notice' 那样先预告、等 5 秒再装（UAC 照弹）。只
+  Windows（安装包 perMachine，每次装都要授权，开机自启、只关机不退出的人留到退出时就一直装不上）；Mac 不变。
+- 等到第一次打开窗口才装的，离开机可能已经过了几个小时：预告之前和等完各用 `shouldStillInstallAtLaunch`
+  看一眼（入参 `background` 换成 `mode`），这时开着加速就不装，留到退出时（装的时候加速会断，装好不会自己
+  连回去）。日志：等窗口时 `install.on-launch.held` 写明等第一次打开窗口，打开窗口去装时
+  `install.on-launch.window-shown`，不装时 `install.on-launch.skipped`。`main.ts` 里三种装法共用一个
+  `startLaunchInstall`。
+- 0.2.15 发版前回归检查第三节③：`codex-desktop-service.ts` 的官网离线包这一路以前没有慢的出口，下得慢只能点取消，而取消会停掉整轮安装，
+  到不了国内镜像。现在 `downloadCodexDesktopPackage` 按来源的 `maximumRemainingMs` 看速度：过了 30 秒的观察期，每个数据块按平均速度估算
+  剩下的还要多久，超过 10 分钟就用另一个 AbortController 中止这一路，抛「OpenAI 官网下载太慢：照目前的速度还要 N 分钟才下得完」，
+  走原来「官网没下成就换国内镜像」那条路（进度用已定稿的那句）。按剩余时间算，前面慢过、只差最后一点的不扔掉重下；国内镜像是最后一路，
+  不设这个限制。客户点取消照旧整次停下。新增 `estimateCodexDesktopDownloadRemainingMs`、`isCodexDesktopDownloadTooSlow` 两个纯函数。
+- 回归检查第三节④：外部客户端（Claude Desktop、WorkBuddy、OpenCode）的安装以前没有取消通道，Claude 官网包（Windows MSIX #804、
+  Mac #802）下得慢时还占着全局安装队列。`external-client-runtime.ts` 接入 `InstallCancellationRegistry`，入队前登记，新增 IPC 通道
+  `external-clients:cancel-install`（`ipc-contract.ts`、`preload.ts`、`ipc.ts` 三处，注册紧跟 `external-clients:install`）。排队、官网下载、
+  核对安装包都能停；Windows 上 winget 整段（结束它会连带结束它拉起的安装程序）、下好的 MSIX 交给 `Add-AppxPackage`、腾讯安装程序运行时
+  封存，拒绝时给「正在安装 X，这一步中断会留下装了一半的程序，请等它结束。」；winget 没装上、换官网包那一路时解封。Mac 全程不封存：
+  放进「应用程序」是整个改名，跨盘时先拷到临时名字再改名。`claude-desktop-msix-installer.ts`、`workbuddy-installer.ts` 各加一个
+  `onInstallStarting`，在最后一次检查 signal 之后同步调用，供调用方封存。取消统一抛 `InstallCancelledError`（「X 安装已取消」）。
+  首页这三行接上「取消」：`App.tsx` 的 `installExternal` 给 `toolbox.run` 带上 `cancel`，`Home.tsx` 新增可选的
+  `onCancelInstallExternal`，按钮点下去显示「正在停止」，主进程拒绝时那句原因照命令行工具那几行用 toast 提示。
+- `download-retry.ts`：每次读到数据块后先看这一轮有没有被中止。响应体不跟着请求信号一起中止时（测试里的流、不接信号的 fetch 实现），
+  流里排着的数据块会赢过中止，取消或「太慢」要等排队的数据读完才生效；整包都排在流里时甚至照样当成下完返回。
+- 排队时点「取消」以前只是记下取消，要等前面那项装完、轮到它时才抛出，这段时间那一行一直写「正在停止」或「取消中」。
+  `InstallationQueue.enqueue` 加可选的 `signal`：还在排队时信号中止，这一项直接出队，用信号的 reason 拒绝，任务一行不跑，
+  `revision` 不变也不通知；已经轮到的不归队列管，由任务自己看信号。命令行工具（`system-service.ts`）、Codex 桌面端
+  （`codex-desktop-service.ts`）、外部客户端（`external-client-runtime.ts`）三处把取消句柄的 signal 交给队列；出队的那次任务没跑过，
+  各自在队列返回的 promise 上补上「X 安装已取消」和那条 error 进度，和跑起来以后取消一样。
+- 新加 CI 作业 `secret-scan`（`.github/workflows/quality.yml`，脚本 `scripts/scan-new-commits-for-secrets.cjs`），
+  进 `quality-gate`，只改文档的改动也跑。用 TruffleHog 3.97.9（镜像按 digest 钉住，取出程序在 runner 上直接跑）
+  只扫这次改动新加的提交。挡两类：对方平台核实过、现在还能用的密钥；和星芒 Key 一个样子的字符串
+  （`sk-` 加 48～64 位字母数字，new-api rc.24 的 `GenerateKey` 发 48 位）。星芒 Key 没有平台能帮着核实，只能按样子认；
+  测试里要写这种长度的假值，行末加 `trufflehog:ignore` 或中间带短横线。
+- 只提示不挡：核实时对方平台出错的、私钥（没有接口可试）。只记在日志里：对方平台说是假的或没法核实的
+  （多半是测试里的假值）。不打印密钥本身，也不打印核实出错的原文（里面可能带着请求地址和 Key）。
+- 关掉了 TruffleHog 的 URI 检测：它「核实」时会去请求扫到的地址，我们的测试里有带假密码的 `xm.solov.cc`
+  等正式地址，CI 不许对生产发请求。加规则时把全部分支的全部历史试扫过一遍：除了这类假地址（57 处，都在测试里），
+  只认出一处旧分支 zip 里测试用的 TLS 私钥；星芒 Key 样子的 0 处。
+- 管不到的：推上来就已经公开，这道检查只能叫人去作废、挡住合并，收不回来；合并提交里解冲突时才写进去的内容
+  TruffleHog 不扫（PR 压成一个提交合进 main 后，那一轮会再扫一遍；连着合好几个时只扫最后一个）；
+  不带 `sk-` 的 48 位裸串认不出。
+- 按钮与设置重新规划第 1 个 PR（一、二、三部分，第六部分 1～3 条，五-51）。`registry/business.ts` 新增 `settingsItems`（每一行的 id、组、
+  标题、常用说法、出现条件）与 `settingsItemLabel` / `settingsItemAvailable`：设置页行标题和顶部搜索读同一份，行 id 不许和组 value 撞名
+  （`business.test.ts` 钉住），`app-check.mjs` 把注册表和设置页逐组对一遍（次序、这台电脑该有的行一行不少）。
+- 新增 `features/app/row-focus.ts`（`requestRowFocus` / `useRowFocus`）：搜索结果或「企业证书」按钮跳过来时，目标页画好后按
+  `data-anchor` 找那一行（最多等 2 秒），滚到正中、焦点给第一个可用控件、亮 2 秒；减少动画时改为一圈内描边。`SettingRow` /
+  `ListRow` 加 `anchor`，检查页每项以检查代码作 anchor。
+- `Dialog` 加 `headless`（不画标题行和关闭按钮，标题只给读屏，框顶固定在 100vh/6），只给命令面板用。
+- 侧栏：「更多」「设置」移进 `.v2-sidebar-pinned`，展开状态存 `xingmang-v2-sidebar-more`；上段导航按滚动位置写 `data-fade` 渐隐，
+  换页时把当前项滚进可视区；`@media (max-height: 659px)` 把导航行收到 32，这是固定 1280 版式下唯一的高度断点（规则文件已登记）。
+  `AccountView.sourceLabel` 换成 `sourceTag` + `restoring: 'pending' | 'retrying'`。
+- 设置页保存成功改走 `useToast`，`ResultNotice` 加 `retry`；系统状态没读到时写「暂未读到」并可「重新读取」。更新页的两个开关与设置页
+  通过 App 的 `appSettings` 保持同步。e2e 业务夹具补 `ToastProvider`、`fail=platform-read`、`autoUpdate`。
+- 按钮与设置重新规划第 2 个 PR（第四部分全部，第六部分第 12 条）。`.v2-root` 改为铺满窗口，`.v2-content` 左右内边距
+  `max(16px, calc((100% - 1000px) / 2))`；`Shell` 用 `(max-width: 1271px)` 判窄窗口，自动收起时 `sidebar-overlay` 浮层展开、
+  不写 `xingmang-v2-sidebar`。界面规范、规则文件、重建记录里「固定 1280 逻辑宽，不添加响应式断点」换成两个断点那句。
+- `Drawer` 不再用 `<dialog>.showModal()`：改为 `role="dialog"` + `popover="manual"`，无遮罩、无焦点陷阱，Esc 在文档层处理（焦点在抽屉外的
+  输入框里时不抢）；关闭时焦点交回最后点的那一行。抽屉在 `--v2-content-top` 与状态栏之间，footer 换行、主按钮在左。
+- `Notice`：`tone` 为 bad / warn 时图标固定为 `XCircle` / `TriangleAlert`；页内不带阴影，`.v2-notification`、开机提示由外壳加阴影。
+  `useOperation` 成功的字符串改走 `useToast`；兜底句改为指到「反馈」页。`ListState` 加 `query`（搜不到时「清除搜索」），`Pagination`
+  加 `failed`、只有一页时不渲染。新增 `calendar-time.ts`（`formatCalendarTime`，从 `recent-display` 抽出）与 `RelativeTime`。
+- 新增 `features/app/environment-status.ts`：检查结果（开机检查或检查页）写进一个模块级 store，状态栏按「待处理」项数显示环境状态；
+  不加 IPC。
+- `Card`：`meta` 是超过 24 个字的字符串时渲染为卡片第一行的 `.xm-card-lead`；标题 `nowrap`。卡片里的 `ListRow` / `ToolRow` / 表头
+  贴边、第一行不画上边线；`.v2-page` 直接子级里相邻的卡片、提示框 `margin-top: 16px`；`.xm-card` 背景改 `--panel-solid`。
+- 按钮与设置重新规划第 3 个 PR（第五部分第 1～22 条，第六部分第 6、7 条；第 4、5 条照「不点头」那一版）。`ListRow` 加 `onOpen` / `openTestId`
+  （标题成为按钮、铺满整行，`actions` 里的按钮叠在上面各管各的）；`Card` 加 `defaultOpen` / `onOpenChange`；`ToolRow` 加 `menuLabel`。
+- 首页：「试试第一条命令」的挑选抽成纯函数 `pickFirstRunTool`，等「最近」读完再决定（读不到当作都没用过）；「还可以装」收起记在 localStorage
+  `xingmang-v2-home-available`；检测失败的工具留在「你的工具」；第一次检测用 `Skeleton`；运行环境检测中灰点，检测失败给「重新检测」。
+  `electron/git-runtime.ts` 的 `gitMissingHomeNotice` 改短，检查页用的 `gitMissingNotice` 不动。
+- 聊天：「重新读取」只在读成功后换上新读到的记录，读不出来期间聊的内容由 `mergeSessionIntoHistory` 并进去；有回复正在生成时不换。读不出来时照旧不往本机写。
+- 记录：只有摘要的记录不去读详情（`detailAvailable` 为假时不调 `getProviderSessionDetail`），「导出」灰着；没有「接着聊」的行放一颗看不见的同尺寸按钮占位，
+  后面的按钮上下对齐。
+- 游戏加速：出错、冲突、加速文件坏了三种提示条挪到工作台上面；工作台不再定最小高度，地球约 140、圆环 160；主进程 `line-unreachable` 那句和教程里
+  加速、记录两章的按钮名跟着改。
+- 欢迎页：横版标志换成 `symbol` 64 加 `wordmark` 40，去掉 `auth-welcome-brands`；星轨改成一圈四个等距、同向公转（40s 一圈）；去掉 `min-height: 700px`，
+  星轨场景随首屏高度在 380～460 之间。
+- 按钮与设置重新规划第 4 个 PR（第五部分第 23～39 条，第六部分第 8 条）。外接工具、插件的「星芒精选」挪到自己的列表下面，`CuratedShelf` 卡头 meta 改成一句说明，
+  去掉每行的 `curatedNetworkLabels`；`ListState` 加 `emptyTitle` / `emptyDescription`。
+- 技能、插件工具条加 `${page}-reload`；外接工具「重新检测」改为先 `resource.reload()` 再检测，检测命令没跑完（`supported` 且带 `reason`）时显示
+  `mcp-health-failed`。Codex 进「市场」时自动下载插件目录不再给成功提示，自己点的照旧。插件行在 `update-available` 时加 `${page}-update-${id}`。
+- 技能页「看怎么放」走 `navigate('tutorial', 'skills#<补充说明标题>')`；外壳把 `#` 后面拆成教程的 `extra`，教程页只展开并翻到那一条。
+- 教程：命中词用 `splitSearchHits` 包 `<mark class="v2-tutorial-hit">`，补充说明只在 `textHasSearchWord` 时展开；吸顶条按内容区（`.v2-content`）的滚动
+  算读到第几步（`readingStepAt`），点圆点跳过去的那一步记下来，滚到底时最后两步也亮对；`.v2-content` 上边的留白写成 `--v2-content-padding-top`，
+  吸顶条用它贴住正文顶边。
+- 检查页：`sortDiagnosticsBySeverity`、`connectionRowStatus`、`sortConnectionRows` 是纯函数；`useRowFocus` 加第四个参数 `resolve`，开机提示的
+  「去看看」带 `firstProblemAnchor`，设置「网络检查」带 `XINGMANG_NETWORK`，指名的是正常项时先展开正常项再翻过去。
+  `connectionCheckView` 加 `section`，网络那一层落到设置的 `network` 组（检查页、备份页的「去处理」都用它）。
+- 测试：`e2e/v2-business-fixture.tsx` 的扩展列表抽成 `extensionList`，每次读都记一笔 `list-extensions`；加 `mcpHealthFail` 让第一次连接检测没跑完。
+- 按钮与设置重新规划第 5 个 PR（第五部分第 40～55 条，第 51 条已在第 1 个 PR 做了）。安装卸载页两张表改用 `MaintenanceRow`（`.v2-maintenance-table` 的三栏网格），
+  `ToolStatusMeta` 改为读 `toolStatusView(status, statusUnknown, version, activity)` 的结果，`activity` 是 `'installing' | 'failed'`；去掉 `ToolStatusReason`。
+- 安装卸载页从 App 拿 `toolJobs`（`useToolbox().jobs`），在首页点的安装这一页也画「安装中」和进度；运行环境和没接 `installTool` 时从进度事件自己记。
+  首页的卸载任务带 `ToolJob.kind: 'uninstall'`，这一页不当安装画，只写「正在卸载」、按钮灰着。
+  失败那一行的原因用 `resultNoticeLead(error, detail)`，和 `ResultNotice` 领头那句同一个来源。`installGuideTopic(id, platform)` 决定「查看安装步骤」「安装指南」落到哪一章，
+  桌面端那章的编号是 `registry/business.ts` 的 `desktopInstallTutorialTopic`。
+- 反馈页日志行是 `.v2-feedback-log` 按钮，时间用 `runtimeLogTimeText`；`ListState` 加 `errorDescription`。备份搜索用 `backupMatchesQuery`（`relativeTimeText` + `displayDate`）。
+- 更新页：`updateNewVersion` 给「新版本」那一行，`updateBubbleRepeatsUpdatesPage` 决定人在更新页时哪几种气泡不弹。
+- 测试：`testing/app-fixture.tsx` 加 `holdNextInstall()` / `releaseInstall()` 和 `cancelCliInstall`，能停在「装到一半」；`e2e/v2-business-fixture.tsx` 加 `manyLogs`
+  （150 条、`truncated`）和两个运行环境进度事件的空实现。
+- 按钮与设置重新规划第 6 个 PR（第五部分第 56～71 条，第六部分第 9、10、11 条照「不点头」）。`registry/business.ts` 的 `accountTabs` 次序改成左边子导航从上到下的次序，
+  新加 `accountTabGroups`（三组，registry 测试钉着每页只在一组里出现一次）、`accountSwitchAnchor` / `accountSwitchKeywords`；
+  `command-search.ts` 的个人中心组多一条「切换账号」，`App.tsx` 的 `navigate('account', accountSwitchAnchor)` 走 `requestRowFocus('account', …)`，不换分页。
+- `pages-account.tsx`：账号状态、资料和余额拆成两个 `useResource`，`accountTabNeeds(tab)` 决定每页等哪一样；页头副标题 `accountHeadLead(profile)`；
+  子导航 `AccountNav` 手动激活（方向键只挪焦点，回车/空格打开）。页头「刷新」经 `refreshRequest` 递给当时停着的那一页，各页用 `useRefreshRequest`（`business-common.tsx`）接；
+  列表读不到统一用 `ListReadFailure`，原因那一段 `FailureReason` 和 `ResultNotice` 共用；读取中的占位条是 `PlaceholderBar`。资料、余额再读没读到时留着上次读到的那份（按账号认，换账号不沿用；先发后到的旧结果不算），
+  要它的那页顶上出 `ResultNotice` 带「重新加载」；用量看板每次读都把时间范围算到当下；「我的账号」卡的登录设备台数只在刷新和「登录设备」页让设备下线后重读（`devicesChanged`）。
+- 充值页把充值信息和订阅（可选订阅 + 我的订阅）拆成两次读取，再读没读到时照列表的规矩说读不到，不留着旧的；`describeTopupTier` 的 `quote` 多一个 `'unavailable'`，返回 `quoting` / `bonus`，去掉 `hasBonus`。
+  `subscriptionToolsNotice` 出错时带 `action: 'health'`。`AccountFilters` 加 `primary`（第一行放哪几个框），`hiddenFilterCount` 只数收起的框里生效的条件。
+  `ToolKeyLimits` 的行和「还没配」那一行由 `toolKeyLimitLayout` 算；`LocalAvatar` 加 56 号。
+- 测试：`e2e/v2-business-fixture.tsx` 加 `fail=profile|tasks|orders|topup|devices`、`noPayment`、`otherDevice`、`help`；`e2e/v2-business.test.mjs` 补 15 条个人中心用例（fixture 多一个 `failNextRead` 让下一次资料或订阅读取失败、`profileReadHarness` 让下一次资料读取晚回来，并接上 `updateAccountDisplayName`），
+  `keyboard.browser-check.mjs` 补顶部搜索「切换账号」落点，`app-check.mjs` 跟着「退出登录」和页头「刷新」改。
+- 开发依赖 `concurrently`（只用于 `npm run dev`）带的 `shell-quote` 命中新公告 GHSA-pqg4-j6r4-53mv（critical，`>=1.8.4 <1.11.0`），而 `concurrently` 最新版 10.0.5 仍把它钉在 1.9.0，升 `concurrently` 清不掉；改在 `package.json` 的 `overrides` 把 `shell-quote` 钉到已修复的 1.12.0，lockfile 由 npm 重新生成。生产依赖不含它，客户端安装包不受影响。
+- `src/renderer-v2/features/app/update-retry.ts` 的 `updateOffersDownloadPage` 把 `UPDATE_CHECK_STALLED`（`updater.ts` 的 `reportCheckFailure`，看门狗掐断挂住的检查）也算进去，更新页和首页气泡同读这一份；用的是现成的「打开下载页」按钮，没新写字。普通的检查失败（断网、解析失败等）照旧只给「重试」。
+- 已知问题清单 2026-10-06 已知 14。
+- AI 工作区视频的「停止」不再向服务端发 `POST /v1/videos/{id}/cancel`：new-api 没有这条路由，默认线路和直连
+  （xm-direct）都回 404「Invalid URL」，服务端 2026-10-06 确认取消视频在两条线路上都不生效。以前只有 MiniMax 会发，
+  失败被吞掉，客户看不出区别；现在 `ai-video-service.ts` 停止只停本机等待，任务记录照旧留着、下次启动接着取回视频，
+  `ActiveVideoRequest` 也不再存 API Key 和 provider。`AiVideoCancelResult.canceled` 补了注释：只表示本机不再等，
+  界面不能据此说「取消成功」。
+- 星芒自己的代码里没有调用 Gemini 的 `:countTokens`（也没有 Claude 的 `/v1/messages/count_tokens`），写给 Gemini CLI
+  的配置也不涉及它。Gemini CLI 0.60.0 自己调 countTokens 失败时会改用本地估算（看的是安装包代码，没实测）。
+- 画布（canvas-v2）MiniMax 视频生成中那句「停止时会向服务端请求取消；生成中的任务可能需要短暂等待才进入已取消状态。」
+  换成 Grok 视频现成的那句（`canvas-v2/src/nodes/WorkflowNodes.tsx`），两种视频显示同一句。yoyo 2026-10-06 回「改」，
+  canvas-v2 只为这一句开例外。
+- 直连适配第二步的跟进（#932 带出来的，没发过版）：「自动」走直连时，检查页「电脑里另外设过的工具地址或密钥」
+  只拿直连地址去比。照旧教程设成默认线路地址的 `GOOGLE_GEMINI_BASE_URL` 在 Windows、Linux 被报「待处理」，
+  Windows 还给「删掉这几项设置」，开机提示也数它；`ANTHROPIC_BASE_URL` 从「通过」变成「需留意」。现在这会儿用的
+  那条线路一直算指向当前账号，选「自动」时默认线路也一直算（`diagnostics.ts` 的 `environmentAccountBaseUrls`）。
+  检查页、一键删除（`main.ts`）、Mac 终端设置文件那一路（#934）用的是同一套判法。
+- 没放宽的两种：「自动」已经退回默认线路时，指着直连的照旧报，因为直连这会儿在这台电脑上连不上；写死「只用直连」的
+  照旧报默认线路的地址，同 #872，因为多半是默认线路在他那儿不通才这么选。
+- 已知48「帮我清理」：新增 IPC `cli:clean-uninstall-leftovers`，只收工具名。卸载走到 manual-required 时，新模块 `uninstall-leftovers.ts`
+  的 `captureUninstallLeftovers` 当场把手动命令里那几个文件记在主进程（所在目录的 dev/ino/mode/uid，文件的 dev/ino/mode/uid/gid/nlink/
+  大小/mtime/birthtime，链接另记链接内容），记住了才给 `manualHelp.cleanUpAvailable`；硬链接、目录、别的账户的文件、经链接到达的目录、
+  Windows 上的链接一开始就不记。点了以后 `removeUninstallLeftovers` 只删记下的那几个，删前再核一遍：目录换了或文件改了不删，同名已换成
+  别的文件当作已删、不碰，重装后命令又指回它的程序文件不删（Grok 的 npm 安装脚本见到同版本 grok-<版本> 就沿用、只把链接指回去）；
+  删不掉的留在记录里等下一次，返回还剩几个。
+- Mac 上卸 Grok 原来只删命令入口，改名后的链接和程序文件一律交给客户手动删。yoyo 2026-10-06 打字同意「Mac 也帮我清理」后，
+  「帮我清理」在 Mac 上也删这些，但只在 `isDarwinForeignWritablePath` 判定除 root 和当前用户外没人能改的目录里删（记录时、删前各查一次）。
+  Windows、Linux 删的就是各自卸载本来就会删的那几个文件，没有放宽。
+- `system-service.ts`：清理排安装卸载同一个队（key `cli:clean-leftovers:<工具>`），下一次卸这个工具时或清干净后丢掉记录；有删不掉或
+  重装后在用的记 `cli.uninstall-leftovers.cleaned`（路径脱敏）。`DarwinGrokRetainedPathsError` 带上 `retainedPaths`。
+- 界面：`ManualUninstall.tsx` 的标题、说明、「帮我清理」按钮、「清理好了。」与没删干净的红字照 yoyo 批的字，没有命令时的框不变；
+  首页和安装卸载页都接上。`app-check.mjs` 加两条（点一次剩一个出红字，再点删干净关框），`uninstall-leftovers.test.ts` 与
+  `system-service.test.ts` 钉住核对规则，`ipc.test.ts` 钉住新通道不收界面带来的路径。
+- 已知29：`registry/errors.ts` 加 `configPermission`；`operation-error.ts` 的分类、`presentOperationError` /
+  `presentOperationFailure` 多收一个可选的 `target: 'config'`，只把 `permission` 换成它（文件被占用、搬过的文件夹、
+  磁盘满不动）。接上的地方：App `perform` 按动作名（`operationTargetOf`：改用当前账号、切回官方账号、重新写入 Key、
+  修提醒设置、重置为初始状态）、配置窗口红字、扩展页（除「安装 Python」）、备份页恢复和密钥页「配置到工具」
+  （`useOperation` 新增 `failed` 记下是哪个动作失败的）、`keySyncFailureReason`（首页「账号 Key」那行、
+  切换账号后没同步的工具）。
+- 已知29（新手引导）：`StartGuide.tsx` 的 `guideStepFailure` 按动作名（`operationTargetOf`）分类，`configPermission`
+  单独一句，把目录里的「重试」「找客服」换成引导里的「再试一次」「复制给客服」（没有复制按钮时是「需要帮助」）；
+  `guideFailureExits` 不传 target，出口照旧是「查看日志」。浏览器夹具加 `switchDenied`。
+- 已知30：`diagnostics.ts` 的 `withAppProxyRoute` 多收一个 `siteDirect`（宿主经新依赖 `siteDirectActive` 交
+  `proxyBypass.siteDirect()`），系统代理开着或在别的机器上、且连星芒的请求已改走直连会话时换说法、这半不再标黄；
+  代理没开的那种、另外设过代理的那半照旧。`platform/system-service.ts` 的 `describeSessionProxy` 多收一个
+  `siteDirect`，经 `proxy-bypass-bridge.ts` 新增的 `proxySiteDirectActive` 接到 main.ts。
+- 已知31：main.ts 把退出时问「还在安装」的框抽成 `confirmInterruptingInstall`，退出和新的 `confirmUpdateInstall`
+  共用（字一个不改）。IPC `update:install` 多收一个可选参数 `UpdateInstallOptions`，带 `askIfInstalling: true`
+  时先问它（新的可选依赖 `confirmUpdateInstall`），客户点「继续安装」就回 `{ accepted: true, postponed: true }`、
+  不调 `updaterService.install()`；托盘「重启并安装」在主进程里走同一句。只有更新页「确认重启安装」带这个参数：
+  「必须更新」那层提示和旧回滚界面不带，照旧直接装（那层提示拿到 `postponed` 会一直转圈）。契约多一个可选的
+  `postponed`，旧回滚界面照旧能编译、行为不变。更新页拿到 `postponed` 时只关确认框、不出「安装请求已提交」。
+- 已知32：`App.tsx` 的 `requestUninstall` 记下主进程回的是不是 `uninstalled`；是的话紧接着的 `toolbox.refresh(true)`
+  没读到只出 warn 提示、不往外抛，确认框照常关。`delegated`（以管理员身份运行时交给命令窗口）、`manual-required`、
+  `not-installed` 照旧当没做完。首页顶上检测自己的那句「检测没有完成，请重试。」照旧。
+- 已知33：`windows-elevation.ts` 抽出纯函数 `buildUnelevatedCommandScript`，.cmd 改按 UTF-8（不带 BOM）写，
+  第二行用固定解析出来的 `System32\chcp.com` 把窗口代码页换成 65001，之后的中文行按 UTF-8 解；说明文字拒绝
+  引号、百分号、&|<>^、半角括号、换行，命令行照旧只许 ASCII。`UnelevatedCommandWindowRequest` 的 `title`
+  换成 `text`（标题、开头、成功、失败四句）。要在 Windows 真机上看中文不乱码，看不对就退回英文那版。
+- 已知34：`electron-builder.config.cjs` 的 `mac.extendInfo` 加五项隐私说明（`NSDocumentsFolderUsageDescription`、
+  `NSDesktopFolderUsageDescription`、`NSDownloadsFolderUsageDescription`、`NSRemovableVolumesUsageDescription`、
+  `NSNetworkVolumesUsageDescription`），`scripts/macos-build-config.test.cjs` 钉住各种打包方式都带。要 Mac 真机看。
+- 已知35：`cli-keep-awake.ts` 加 `tools()`、`install-keep-awake.ts` 加 `reasons()`，两边都只在真挡着时有内容（挡不上、挡满两小时交还系统后为空），
+  变了才回调 `onChange` 刷新托盘；`application-tray.ts` 的 `trayKeepAwakeLabel` 按「终端里的工具 → 安装 → 下载星芒新版本」只挑一句，
+  菜单里是紧跟「打开」的置灰项，提示文字放最后。Codex 自己挡睡眠，不出这一行。
+- 已知36：`diagnostics.ts` 新增 `HOME_FOLDER_LEFTOVERS`（`homeFolderLeftoversOutcome`）。说明那半按内容认：
+  `project-instructions.ts` 的 `PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS` 记每一版发出去过的模板摘要（换行统一后 sha256），
+  以后改模板要把新摘要加进去、旧的不删，测试钉住当前随包模板在表里。信任那半由 `config-files.ts` 的
+  `inspectHomeFolderTrust` 只读三家（Claude Code `~/.claude.json`、Codex `config.toml`、Gemini CLI `trustedFolders.json`，
+  Gemini 的 `TRUST_PARENT` 落在个人文件夹上也算），读不懂的当没记着。一键处理 `set-aside-home-agents-md`
+  （`diagnostic-fixes.ts`）点下去时再认一遍内容，改名成 `AGENTS.md.xingmang-<时间>.bak`，不覆盖旧备份。
+- 已知40：`Home.tsx` 的 `startsFresh`（会打开目录的 CLI、最近记录已读到且整份记录里这个工具一条都没有
+  （`stats.byProvider`，不只看首页取的那 60 条）、也没记住的目录）时「打开」走 `onLaunchInNewFolder(tool, true)`，
+  「⋯」里的新建入口换成 `chooseWorkspaceLabel`；记录还没读到时照旧弹选择框。`ChooseWorkspaceOptions` 加 `firstOpen`：
+  `workspace:choose` 先用主进程记着、还在的文件夹（上次建好了却没打开成，再点「打开」或「重试」不建 my-project-2），
+  没有才新建，建不成说完接着走 `pickWorkspace`。`App.tsx` 的 `launch` / `requestLaunch` 把 `newFolder` 布尔换成
+  `LaunchFolder`（`choose` / `create` / `firstOpen`）。托盘、Ctrl+1～5、引导里的打开不变。
+- `src/renderer-v2/business-common.tsx` 的 `userFacingErrorMessage`：脱路径以前到第一个空格就停，
+  `C:\Users\Zhang San\.claude\settings.json` 上屏成 `本地配置文件 San\.claude\settings.json`（I13）。
+  现在空格后面还有分隔符就接着算路径；文件夹名里不收 Windows 禁用的文件名字符、引号和断句标点，
+  吞不进后面的句子和下一个带引号的路径；最后一节照旧到空格为止。只在原来的基础上多换、不少换。
+  旧回滚界面 `src/error-message.ts` 已冻结，没动。
+- preload 的 `downloadUpdate` 一直是 `() => invoke('downloadUpdate')`，把 `{ ignoreDiskSpace: true }` 丢在了沙箱这一侧
+  （#839 起），主进程收不到，照旧查磁盘、照旧拦下。改成和别的带可选参数的桥一样：有参数才转，不加空的尾参数；
+  `preload.test.ts` 钉住。顺手核了一遍：现在每个桥函数的参数个数都不少于契约。
+
 ## 0.2.15 - 2026-10-04
 
 - 第二十六批 D：`src/renderer-v2/business-common.tsx` 新增 `detectionFailureMessage`，把探针给的英文原话归成四句中文

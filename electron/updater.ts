@@ -88,8 +88,12 @@ export interface UpdateSnapshot {
   /**
    * `message` 是给用户看的中文；认不出的英文原话脱敏后放在可选的 `detail` 里，只为
    * 进 runtime.jsonl 给客服排查，界面不显示。
+   *
+   * `automatic`：这次没查成的检查不是客户点的，是开机或每 3 小时自己跑的那次。首页不为它
+   * 弹红框（网络一抖就凭空冒出「失败」，断网时又和顶上的断网横幅说两遍），更新页照常显示。
+   * 只跟着 error 走，错误一清就没了；缺省＝客户点的，旧行为。
    */
-  error: { code: string; message: string; detail?: string } | null
+  error: { code: string; message: string; detail?: string; automatic?: boolean } | null
   /**
    * 与 `error` 同生共死：有错才有步骤，错误被清掉时一并回到 null。可选是为了
    * 向后兼容（AGENTS.md §6「缺省 = 旧行为」）——旧快照没有这个字段，界面照旧
@@ -145,6 +149,12 @@ export interface UpdateSnapshot {
   launchInstallNotice?: LaunchInstallNotice | null
   /** 见 UpdateInstallMethod。可选＝旧快照，界面照旧按「重启安装」说。 */
   installMethod?: UpdateInstallMethod | null
+  /**
+   * Windows 上这个账号不在管理员组：装更新时授权窗口要输一个管理员账号的密码，所以下好的
+   * 版本不自动装（auto-update-install.ts）。界面据此改说「要输入管理员密码」，不再说「点「是」」
+   * 「会自动装上」。主进程问出来是这样才有这一项；可选＝不是、没问出来或旧快照，界面照旧。
+   */
+  installNeedsAdminPassword?: boolean
 }
 
 export interface LaunchInstallNotice {
@@ -242,6 +252,8 @@ export interface UpdaterService {
   setServiceStatus(status: ServiceStatus | null): void
   /** 开机自动装前的预告摆出来（或收回，null）。 */
   setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
+  /** 主进程问出了这个 Windows 账号不在管理员组（见 UpdateSnapshot.installNeedsAdminPassword）。 */
+  setInstallNeedsAdminPassword(value: boolean): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -249,6 +261,11 @@ export interface UpdaterService {
 export interface MacInstallHandoff {
   nativeUpdateDownloadedListenerCount(): number
   retryNativeCheck(): void
+}
+
+export interface UpdateFeedRouting {
+  prepare(): void
+  fallBack(error: unknown): boolean
 }
 
 export interface UpdaterRuntime {
@@ -267,6 +284,12 @@ export interface UpdaterRuntime {
    * keeps the old behaviour of leaving the session in direct mode.
    */
   restoreProxy?: () => Promise<void>
+  /**
+   * 星芒更新目录走哪条线路（直连适配第二步）。每次检查前调 prepare()，宿主按星芒账号这会儿的
+   * 线路换更新地址；检查没走通时问 fallBack(error)：宿主认得出是直连那条路的事、已经换回默认
+   * 更新地址时返回 true，这里当场再查一次。不传＝更新地址开机时定下、不再换（旧行为）。
+   */
+  feedRoute?: UpdateFeedRouting
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
   /**
@@ -345,7 +368,9 @@ export interface UpdaterRuntime {
    * from the host's request guard (update-request-guard.ts). The watchdog counts
    * it as activity next to progress events, which electron-updater does not send
    * for blockmaps, for single-range differential batches or for a response
-   * without a Content-Length. Without it only progress events count.
+   * without a Content-Length. Without it only progress events count. The check
+   * watchdog reads it too: a check sends no progress events at all, so without
+   * it a check only counts as stalled once updateCheckStallMs have passed.
    */
   downloadReceivedAt?: () => number | null
   /**
@@ -357,6 +382,9 @@ export interface UpdaterRuntime {
    * leaves HTTP/1.1 sockets that are in use open, and on HTTP/2 the differential
    * response it fails has no 'error' listener, so the failure is uncaught. Both
    * were reproduced against a local server that stalls mid-body.
+   * The check watchdog calls it on a check that hears nothing back. That failure
+   * is also what makes electron-updater drop the check it keeps in flight, which
+   * every later check would otherwise be handed again.
    */
   abortDownloadRequests?: (reason: Error) => void
   /** 看门狗停掉了一次下载。宿主拿去记一条日志。*/
@@ -505,6 +533,25 @@ export const updateDownloadWatchMs = 5_000
  * 又不认取消），不再干等，照「停住了」往下走。
  */
 export const updateDownloadCancelWaitMs = 10_000
+/**
+ * 检查更新多久收不到响应头、一个字节也没有算挂住，和下载停住同一个数。检查只拉几 KB 的更新
+ * 清单，正常网络一两秒就回。electron-updater 自带的超时同样不起作用（见 updateDownloadStallMs），
+ * 而它上一次检查没收场时再调，交回来的还是那一次：不掐断的话，之后的「重试」、三小时那次都接回
+ * 同一个挂住的请求，整次运行停在「正在检查」，「必须更新」那道门里只剩「联系客服」。
+ */
+export const updateCheckStallMs = 45_000
+
+/**
+ * 看门狗交给宿主去掐断挂住的检查用的错误（abortDownloadRequests）。electron-updater 以它让那次
+ * 检查失败、丢掉记着的那一次，失败前先把它当 error 事件发一遍；宿主掐不到请求时，看门狗不再等，
+ * 自己以它收场。进快照前换成「超时」那句话。
+ */
+class UpdateCheckAborted extends Error {
+  constructor() {
+    super('update check stalled')
+    this.name = 'UpdateCheckAborted'
+  }
+}
 
 /** 看门狗停掉的那一次下载。只在 download() 里流转，进快照前换成「超时」那句话。*/
 class UpdateDownloadStalled extends Error {
@@ -886,6 +933,10 @@ export function createUpdaterService(
   let verifiedPackagePath: string | null = null
   // 正在下载的那一次的看门狗（见 downloadWatched）；没在下载时为 null。
   let downloadWatch: { observe(percent: number): void; stop(): void } | null = null
+  // 正在等的那一次检查和盯着它的看门狗（见 checkWatched）；没在检查时为 null。
+  let checkWatch: { pending: Promise<unknown>; outcome: Promise<unknown>; stop(): void } | null = null
+  // check() 每真正开始一次加一。挂住的检查被掐断时只让最新那一次报（见 reportCheckFailure）。
+  let latestCheck = 0
   // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
   // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
   const abandonedDownloads = new Set<Promise<unknown>>()
@@ -1301,8 +1352,9 @@ export function createUpdaterService(
     },
     error: (error: unknown) => {
       // 看门狗掐断请求用的那个错误：接下来重下还是报「下载更新失败」由看门狗定。宿主没给取消
-      // 令牌时，electron-updater 才会把它当成下载出错发出来。
-      if (error instanceof UpdateDownloadAborted) return
+      // 令牌时，electron-updater 才会把它当成下载出错发出来。掐断挂住的检查时它每次都发，报什么
+      // 由 check() 定（开机那次「网络有点慢」那句要留着）。
+      if (error instanceof UpdateDownloadAborted || error instanceof UpdateCheckAborted) return
       if (
         snapshot.phase === 'downloaded'
         && (
@@ -1346,6 +1398,14 @@ export function createUpdaterService(
     if (!enabled) throw new Error('开发环境未启用主程序更新')
   }
 
+  function feedFallBack(error: unknown): boolean {
+    try {
+      return runtime.feedRoute?.fallBack(error) === true
+    } catch {
+      return false
+    }
+  }
+
   // Direct mode is scoped to the one request that needed it. Leaving the
   // updater session pinned to 'direct' for the rest of the process would mean
   // a single proxy hiccup silently keeps every later update request off the
@@ -1363,6 +1423,94 @@ export function createUpdaterService(
     }
   }
 
+  // 检查一次，期间盯着更新请求有没有收到东西（宿主看到的响应头和字节，downloadReceivedAt）。
+  // updateCheckStallMs 什么都没收到就算挂住：让宿主掐断还开着的请求，electron-updater 以
+  // UpdateCheckAborted 让这次检查失败，同时丢掉它记着的那一次，下一次检查重新发请求。掐断以后
+  // updateDownloadCancelWaitMs 还没收场（宿主掐不到请求）就不再等它，照样算挂住。
+  function checkWatched(): Promise<unknown> {
+    const pending = client.checkForUpdates()
+    // electron-updater 同时只查一次：上一次没收场时再调，交回来的就是那一次（开机检查超时以后
+    // 点「重试」就是这样）。后来的检查等同一个结果，不另起一个看门狗。
+    if (checkWatch?.pending === pending) return checkWatch.outcome
+    const settled = pending.then(
+      (value) => ({ failed: false as const, value }),
+      (error: unknown) => ({ failed: true as const, error }),
+    )
+    let lastActivityAt = Date.now()
+    let lastTickAt = lastActivityAt
+    let reportStall: () => void = () => undefined
+    const stalled = new Promise<'stalled'>((resolve) => { reportStall = () => resolve('stalled') })
+    const timer = setInterval(() => {
+      const at = Date.now()
+      // 机器睡着时什么也进不来，时钟往前、往回跳的那一截也不是在等：都从这一刻重新算。
+      if (at < lastTickAt || at - lastTickAt > 2 * updateDownloadWatchMs) lastActivityAt = at
+      lastTickAt = at
+      try {
+        const received = runtime.downloadReceivedAt?.()
+        // 时钟往回跳以前记下的时间比现在还晚，不能把刚重新算的这一刻又推到后面去。
+        if (typeof received === 'number' && received <= at && received > lastActivityAt) lastActivityAt = received
+      } catch {
+        // 读不到就只看时间。
+      }
+      if (at - lastActivityAt < updateCheckStallMs) return
+      clearInterval(timer)
+      reportStall()
+    }, updateDownloadWatchMs)
+    timer.unref?.()
+    const outcome = (async () => {
+      try {
+        const first = await Promise.race([settled, stalled])
+        if (first !== 'stalled') {
+          if (first.failed) throw first.error
+          return first.value
+        }
+        const aborted = new UpdateCheckAborted()
+        try { runtime.abortDownloadRequests?.(aborted) } catch { /* the wait below still bounds this check */ }
+        let giveUp: NodeJS.Timeout | null = null
+        const late = await Promise.race([
+          settled,
+          new Promise<'unsettled'>((resolve) => {
+            giveUp = setTimeout(() => resolve('unsettled'), updateDownloadCancelWaitMs)
+            giveUp.unref?.()
+          }),
+        ])
+        if (giveUp) clearTimeout(giveUp)
+        if (late === 'unsettled') throw aborted
+        // 掐断前后它自己查完了：就当没挂住过。
+        if (!late.failed) return late.value
+        throw late.error
+      } finally {
+        clearInterval(timer)
+      }
+    })()
+    const watch = { pending, outcome, stop: () => clearInterval(timer) }
+    checkWatch = watch
+    const forget = () => {
+      if (checkWatch === watch) checkWatch = null
+    }
+    outcome.then(forget, forget)
+    return outcome
+  }
+
+  // 挂住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多一句新话；
+  // code 另记，日志里分得清是看门狗停的。挂住的那次被掐断时只让最新那一次检查说话：之后又开始了
+  // 一次的，那一次接回了同一个请求就和它一起报，还没发出请求就会重新发，这里再报只会让「检查更新
+  // 失败」在它查的时候闪一下。开机那次已经说过「网络有点慢…在后台接着查」、之后没人再点过检查的，
+  // 那句留着：掐掉挂住的那次只是为了让之后的「重试」和三小时那次能重新发请求。
+  const reportCheckFailure = (error: unknown, failedCheck: number, manual: boolean) => {
+    const stalledCheck = error instanceof UpdateCheckAborted
+    if (stalledCheck && (failedCheck !== latestCheck || snapshot.error?.code === 'STARTUP_UPDATE_TIMEOUT')) return
+    const failure = stalledCheck
+      ? { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout }
+      : safeError(error, platform)
+    emit({
+      phase: 'error',
+      error: manual ? failure : { ...failure, automatic: true },
+      failedStep: 'check',
+      progress: null,
+    })
+  }
+
   const check = async (options: UpdateCheckOptions = {}): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (
@@ -1372,7 +1520,11 @@ export function createUpdaterService(
       // failed install would lock out update checks for the whole session.
       || (snapshot.phase === 'downloaded' && !snapshot.error)
     ) return cloneSnapshot(snapshot)
+    const thisCheck = ++latestCheck
     emit({ phase: 'checking', error: null, progress: null })
+    // 先定这次走哪个更新地址，下面读的状态文件也在同一个目录里。换不了就照旧用上次那个地址，
+    // 不能让选线路这一步变成查不了更新的原因。
+    try { runtime.feedRoute?.prepare() } catch { /* keep the current feed */ }
     await syncServiceStatus()
     if (disposed) return cloneSnapshot(snapshot)
     // 只有本机版本被撤回时才放开降级：平时 latest.yml 哪怕被误退回旧版本，也不能
@@ -1381,19 +1533,26 @@ export function createUpdaterService(
     manualCheck = options.manual === true
     let result: unknown
     try {
-      result = await client.checkForUpdates()
+      result = await checkWatched()
     } catch (error) {
       if (retryWithoutProxy && isProxyConnectionFailure(error)) {
         try {
           await retryOffProxy(async () => {
             emit({ phase: 'checking', error: null, progress: null })
-            result = await client.checkForUpdates()
+            result = await checkWatched()
           })
         } catch (retryError) {
-          emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'check', progress: null })
+          reportCheckFailure(retryError, thisCheck, options.manual === true)
+        }
+      } else if (feedFallBack(error)) {
+        try {
+          emit({ phase: 'checking', error: null, progress: null })
+          result = await checkWatched()
+        } catch (retryError) {
+          reportCheckFailure(retryError, thisCheck, options.manual === true)
         }
       } else {
-        emit({ phase: 'error', error: safeError(error, platform), failedStep: 'check', progress: null })
+        reportCheckFailure(error, thisCheck, options.manual === true)
       }
     } finally {
       manualCheck = false
@@ -1673,6 +1832,7 @@ export function createUpdaterService(
             error: {
               code: 'STARTUP_UPDATE_TIMEOUT',
               message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+              automatic: true,
             },
             failedStep: 'check',
           })
@@ -1719,6 +1879,10 @@ export function createUpdaterService(
       if (!notice && !snapshot.launchInstallNotice) return
       emit({ launchInstallNotice: notice ? { ...notice } : null })
     },
+    setInstallNeedsAdminPassword(value) {
+      if (disposed || value === (snapshot.installNeedsAdminPassword === true)) return
+      emit({ installNeedsAdminPassword: value })
+    },
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -1728,6 +1892,7 @@ export function createUpdaterService(
       listeners.clear()
       clearInstallWatchdog()
       downloadWatch?.stop()
+      checkWatch?.stop()
       for (const [event, handler] of Object.entries(eventHandlers)) {
         client.off(event as UpdateEventName, handler)
       }

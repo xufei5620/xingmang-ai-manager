@@ -39,6 +39,9 @@ const layerTargets: Record<ConnectionCheckLayer, PageId | null> = {
   unknown: 'feedback',
 }
 
+/** 「去处理」落到那一页里的哪一组；没写的只跳页。网络那一层以前只跳到设置页、落在第一组「外观」。 */
+const layerSections: Partial<Record<ConnectionCheckLayer, string>> = { network: 'network' }
+
 /**
  * 这两层的下一步就是让客户端对当前账号重新签发一把 Key 再写回配置，所以结果条
  * 上直接给这件事本身，而不是把用户送去账号页自己找（账号页上并没有「写入 Key」
@@ -77,6 +80,8 @@ export interface ConnectionCheckView {
   detail: string | null
   /** 成功时为 null：没有要处理的事就不该出现按钮。 */
   target: PageId | null
+  /** 「去处理」落到 target 那一页里的哪一组（设置的「网络」）；null = 只跳页。 */
+  section: string | null
   /** 'rewrite-key' 时按钮不再跳页，而是就地对当前账号重新写一次这个工具的 Key。 */
   action: 'rewrite-key' | null
 }
@@ -101,6 +106,7 @@ export function connectionCheckView(
       endpoint: null,
       detail: null,
       target: null,
+      section: null,
       action: null,
     }
   }
@@ -115,6 +121,7 @@ export function connectionCheckView(
       endpoint: null,
       detail: null,
       target: layerTargets.unconfigured,
+      section: null,
       action: null,
     }
   }
@@ -128,6 +135,7 @@ export function connectionCheckView(
     endpoint: result.endpoint,
     detail: result.detail,
     target: rewrite ? null : layerTargets[result.layer],
+    section: rewrite ? null : layerSections[result.layer] ?? null,
     action: rewrite ? 'rewrite-key' : null,
   }
 }

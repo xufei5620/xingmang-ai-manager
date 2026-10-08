@@ -399,6 +399,10 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw signal.reason ?? new Error('操作已取消')
 }
 
+// 1618：Windows 同一时间只让装一个安装包，别的程序（多半是 Windows 更新）正在装。
+// 跟从哪儿下载无关，认出它就不再换下载源重下（第三十五批 D）。
+const windowsInstallerBusyMessage = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
+
 function errorText(reason: unknown): string {
   const candidate = reason as { message?: unknown; stderr?: unknown } | null
   const raw = [
@@ -413,6 +417,7 @@ function errorText(reason: unknown): string {
   if (/\b1603\b/i.test(raw)) {
     return 'Windows Installer 安装失败（错误 1603）。请先重启 Windows 完成挂起更新，再重新点击一键安装；如果仍失败，请检查系统安装权限'
   }
+  if (/\b1618\b/.test(raw)) return windowsInstallerBusyMessage
   if (raw) return raw
   return '未知错误'
 }
@@ -1470,8 +1475,11 @@ export async function installNodeRuntime(
           })
           return result
         } catch (error) {
-          failures.push(`${source.label}：${errorText(error)}`)
+          const reason = errorText(error)
+          failures.push(`${source.label}：${reason}`)
           if (options.signal?.aborted) throw error
+          // 换个源再下几十 MB，Windows 那边还在装别的，照样是 1618。
+          if (reason === windowsInstallerBusyMessage) break
           report(options, {
             phase: 'resolving',
             source: source.id,

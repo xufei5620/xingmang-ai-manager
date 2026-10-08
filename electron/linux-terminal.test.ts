@@ -217,6 +217,28 @@ describe('Linux terminal launcher script', () => {
     expect(unset?.split(' ')).not.toContain('https_proxy')
   })
 
+  it('also clears what the plan keeps from the tool, after the folder check and before its own values', () => {
+    const lines = buildLinuxTerminalScript(scriptPlan({
+      env: { HOME: '/home/a', PATH: '/usr/bin', GEMINI_API_KEY: 'sk-gemini' },
+      clearedEnvironmentKeys: ['ANTHROPIC_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL'],
+    })).split('\n')
+    const unset = lines.findIndex((line) => line.startsWith('unset '))
+
+    expect(lines[unset]?.split(' ').slice(1)).toEqual(expect.arrayContaining(['ANTHROPIC_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CODEX_HOME']))
+    expect(unset).toBeGreaterThan(lines.findIndex((line) => line.startsWith('if ! cd -- ')))
+    expect(unset).toBeLessThan(lines.indexOf("export GEMINI_API_KEY='sk-gemini'"))
+    expect(buildLinuxTerminalScript(scriptPlan())).not.toContain('ANTHROPIC_MODEL')
+  })
+
+  it.each([
+    ['A B'],
+    ['X;touch /tmp/nope'],
+    ['$(id)'],
+    [''],
+  ])('refuses %j as a variable name to clear', (name) => {
+    expect(() => buildLinuxTerminalScript(scriptPlan({ clearedEnvironmentKeys: [name] }))).toThrow(TypeError)
+  })
+
   it('ignores variables it never writes, even ones a shell could not name', () => {
     const script = buildLinuxTerminalScript(scriptPlan({
       env: { HOME: '/home/a', PATH: '/usr/bin', 'BASH_FUNC_module%%': '() {  eval x\n}', SECRET: 'a\0b' },
@@ -240,7 +262,7 @@ describe('Linux terminal launcher script', () => {
       const executable = path.join(directory, 'fake-cli')
       fs.writeFileSync(executable, [
         '#!/bin/sh',
-        `{ pwd; printf '%s\\n' "$@"; printf 'GEMINI=%s\\n' "\${GEMINI_API_KEY-unset}"; printf 'CODEX=%s\\n' "\${CODEX_HOME-unset}"; } > '${output}'`,
+        `{ pwd; printf '%s\\n' "$@"; printf 'GEMINI=%s\\n' "\${GEMINI_API_KEY-unset}"; printf 'CODEX=%s\\n' "\${CODEX_HOME-unset}"; printf 'MODEL=%s\\n' "\${ANTHROPIC_MODEL-unset}"; } > '${output}'`,
         `exit ${exitCode}`,
         '',
       ].join('\n'), { mode: 0o700 })
@@ -277,6 +299,28 @@ describe('Linux terminal launcher script', () => {
       expect(fs.existsSync(path.join(workspace, 'nope'))).toBe(false)
       for (const line of cliExitHintLines.normal) expect(stdout).toContain(line)
       expect(stdout).toContain(cliCloseWindowPrompt)
+    })
+
+    it('keeps what the plan clears away from the tool even when the terminal server still has it', () => {
+      const directory = temporaryDirectory('xingmang-linux-script-cleared-')
+      const { executable, output } = fakeCli(directory, 0)
+      const launcherPath = path.join(directory, 'launch.sh')
+      const plan = {
+        executable,
+        argv: [],
+        workspace: directory,
+        launcherPath,
+        title: 'Claude Code · 星芒AI',
+        env: { HOME: directory, PATH: '/usr/bin:/bin' },
+      }
+      // 命令窗口程序自己的环境里还带着客户设的型号。
+      const server = { PATH: '/usr/bin:/bin', ANTHROPIC_MODEL: 'deepseek-chat' }
+
+      run(buildLinuxTerminalScript(plan), launcherPath, server)
+      expect(fs.readFileSync(output, 'utf8').split('\n')).toContain('MODEL=deepseek-chat')
+
+      run(buildLinuxTerminalScript({ ...plan, clearedEnvironmentKeys: ['ANTHROPIC_MODEL'] }), launcherPath, server)
+      expect(fs.readFileSync(output, 'utf8').split('\n')).toContain('MODEL=unset')
     })
 
     it('prints the cautious hint when the tool fails', () => {

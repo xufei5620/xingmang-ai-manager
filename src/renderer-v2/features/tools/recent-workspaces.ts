@@ -23,6 +23,9 @@ export interface WorkspaceChoice {
 /** 首页与引导里「新建项目文件夹」入口的统一文案。 */
 export const newWorkspaceLabel = '新建项目文件夹并打开'
 
+/** 「选择其他目录…」：弹原来的目录选择器。下拉里和第一次打开前的「⋯」菜单里都用它。 */
+export const chooseWorkspaceLabel = '选择其他目录…'
+
 /** 下拉里最多放几个目录。再多用户也不会一个个看完。 */
 const RECENT_LIMIT = 5
 
@@ -86,7 +89,7 @@ export function launchWorkspaces(
 export function workspaceChoices(items: readonly RecentWorkspace[]): WorkspaceChoice[] {
   return [
     ...items.map((item) => ({ path: item.path, label: item.path })),
-    { path: null, label: '选择其他目录…' },
+    { path: null, label: chooseWorkspaceLabel },
     { path: null, label: newWorkspaceLabel, create: true },
   ]
 }
@@ -106,7 +109,7 @@ export function isMissingWorkspace(cause: unknown): boolean {
 }
 
 /**
- * 「接着上次对话」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
+ * 「接着聊」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
  * 找最近一条,不按会话 id 挑。所以这颗按钮只能长在每个(工具 × 目录)组合里最近
  * 的那一条记录上,否则用户点第三条、接上的却是第一条。
  *
@@ -146,4 +149,21 @@ export type CliLaunchChoice = CliLaunchMode | { resumeSessionId: string }
 
 export function resumeLaunchChoice(session: Pick<SessionSummary, 'id' | 'provider'>): CliLaunchChoice {
   return session.provider === 'codex' ? { resumeSessionId: session.id } : 'resumeLast'
+}
+
+/**
+ * 「接着聊」点下去之前要不要先读一份最新的记录再对一次（已知4）。按文件夹接最近一条的那三家要：
+ * 手上的列表可能是在终端里聊之前读的，刚聊的那条不在，按钮还挂在同一文件夹更早那条上。
+ * Codex 带着记录 id 接，点哪条接哪条，不用对。
+ */
+export function resumeNeedsRecheck(session: Pick<SessionSummary, 'id' | 'provider'>): boolean {
+  return typeof resumeLaunchChoice(session) !== 'object'
+}
+
+/**
+ * 刚读回来的那份记录里，点的这条还是不是它那个（工具 × 文件夹）最近的一条：是，打开接上的就是它；
+ * 不是（终端里又聊了一条、或者这条已经删了、归档了），这次就不打开，换上新列表，按钮自己挪到该挂的那条上。
+ */
+export function resumeStillLatest(session: Pick<SessionSummary, 'id'>, sessions: readonly SessionSummary[]): boolean {
+  return latestSessionIdsByWorkspace(sessions).has(session.id)
 }

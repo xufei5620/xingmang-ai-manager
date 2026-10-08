@@ -168,6 +168,8 @@ export function createToolsApi(bridge: XingmangApi) {
       }
     },
     readExternal: (force = false) => bridge.scanExternalClients(force),
+    // 只要上次落盘的那份，主进程不起盘点；本次启动已经真检测过、或没有旧结果时是空列表（已知13）。
+    readCachedExternal: () => bridge.scanExternalClients(false, { cachedOnly: true }),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
@@ -187,6 +189,8 @@ export function createToolsApi(bridge: XingmangApi) {
       recentSessions.invalidate()
       return result
     },
+    /** 卸载框里的「帮我清理」（已知48）：只说是哪个工具，删哪几个文件由主进程按那次卸载记下的定。 */
+    cleanUninstallLeftovers: (id: ProviderId) => bridge.cleanUninstallLeftovers(id),
     /** 只有 Codex 桌面端有这一步，见错误框里的「重置 Codex」。 */
     resetCodexDesktop: () => bridge.resetCodexDesktop(),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),

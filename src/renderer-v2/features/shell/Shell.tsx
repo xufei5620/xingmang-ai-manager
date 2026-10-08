@@ -1,14 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, Globe, Menu as MenuIcon, PanelLeft, RefreshCw, Search, UserRound, Zap } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, Globe, Menu as MenuIcon, PanelLeft, RefreshCw, Search, Zap } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { moreNavigation, shellNavigation, shellTour } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
+import type { SettingsItem } from '../../registry/business'
 import '../../styles/shell.css'
 import { errorMessage } from '../../business-common'
 import { Starfield } from '../auth/Starfield'
 import { LocalAvatar } from '../../LocalAvatar'
 import type { AvatarIdentity } from '../../local-avatar'
+import type { EnvironmentStatus } from '../app/environment-status'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
+import { rowFocusEvent } from '../app/row-focus'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { networkLocationLabel } from './network'
 import { balanceFailureLabel, balanceStatusText, type BalanceStatusView } from './balance-status'
@@ -19,7 +22,14 @@ import { commandGroupLabels, searchCommands, type CommandResult } from './comman
 import { tutorialTopicsFor } from '../../registry/tutorials'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
-interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; /** 「订阅：剩余 $X · M 月 D 日到期」；没有能用的订阅时缺省。 */ subscription?: string; identity?: AvatarIdentity }
+interface AccountView extends BalanceStatusView {
+  signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string
+  /** 名字后面的小标签：历史账号挂「历史账号」，和星芒账号分得开；缺省 = 不挂。 */
+  sourceTag?: string
+  /** 正在恢复上次的登录（pending）或连不上、等着自动重试（retrying）：头像换成空白，金额位放占位条。 */
+  restoring?: 'pending' | 'retrying'
+  balance?: string; /** 「订阅：剩余 $X · M 月 D 日到期」；没有能用的订阅时缺省。 */ subscription?: string; identity?: AvatarIdentity
+}
 interface Adapter {
   /** section 是那一页里要落的分页、分组或教程主题；缺省 = 只跳页。 */
   navigate?(page: PageId, section?: string): void
@@ -29,6 +39,8 @@ interface Adapter {
   accountTabVisible?(tab: string): boolean
   /** 这台电脑上有没有这一页（Linux 没有游戏加速）；缺省 = 都有。侧栏和搜索都按它。 */
   pageVisible?(page: PageId): boolean
+  /** 这台电脑、这个登录状态下设置里有没有这一行（Windows 没有「卸载星芒」）；缺省 = 都有。只管搜索。 */
+  settingsItemVisible?(item: SettingsItem): boolean
   openAccount?(): void
   switchAccount?(): void
   topUp?(): void
@@ -48,7 +60,8 @@ interface ShellProps {
   account: AccountView
   platform: 'win' | 'mac' | 'linux'
   adapter: Adapter
-  environment?: string
+  /** 环境好不好：绿点「环境正常」、橙点「环境有 N 项需要处理」、灰点「环境待检测」。 */
+  environment?: EnvironmentStatus
   balance?: string
   version?: string
   /** Observed network location, refreshed after a connection change. */
@@ -67,18 +80,103 @@ interface ShellProps {
   children: ReactNode
 }
 
+const moreNavigationPreference = 'xingmang-v2-sidebar-more'
+// 窗口逻辑宽不到 1280（选了 110%，或窗口窄过自动缩放的下限）时侧栏自动收成窄条，不改你自己记的展开/收起。
+// 判在 1272 而不是 1280：自动缩放本来就把逻辑宽算成 1280，可倍率取四位小数、窗口宽取整，真机上会差出不到一个
+// 像素，不能因此把侧栏收掉；1272～1280 之间侧栏照样展开，只是正文两边的留白收窄一点，正文照样 1000 宽。
+const narrowWindowQuery = '(max-width: 1271px)'
+// 当前那一项滚进来时离上下边缘留一点，不落在渐隐里。
+const navEdge = 16
+const commandPlaceholder = '搜功能、设置或教程…'
+
+function useNarrowWindow() {
+  const [narrow, setNarrow] = useState(() => typeof matchMedia !== 'undefined' && matchMedia(narrowWindowQuery).matches)
+  useEffect(() => {
+    if (typeof matchMedia === 'undefined') return
+    const media = matchMedia(narrowWindowQuery)
+    function update() { setNarrow(media.matches) }
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  return narrow
+}
+
 export function Shell({ activePage, account, platform, adapter, environment, balance, version, network, networkRefreshing = false, installedCount, updatableCount = 0, unread, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const { offline } = useOnlineStatus()
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
-  const [more, setMore] = useState(false)
-  const moreListRef = useRef<HTMLDivElement>(null)
-  // 矮屏（1280×720、1080p 开 150% 缩放）上展开「更多」时，新出来的四项落在侧栏
-  // 可视区下面，看起来像点了没反应，所以展开后把它们滚进来。
+  const narrow = useNarrowWindow()
+  // 窗口窄、侧栏自动收着时点「展开侧栏」：浮在页面上面展开，点别处、按 Esc 或换页就收回，不记成你的设置。
+  const [overlay, setOverlay] = useState(false)
+  const rail = narrow ? !overlay : collapsed
+  const sidebarRef = useRef<HTMLElement>(null)
+  const brandRef = useRef<HTMLDivElement>(null)
+  const refocusToggle = useRef(false)
+  // 收起、展开时那颗按钮换了一颗（窄条上就是标志本身）：焦点原来在它上面的，换完交给新的那颗，键盘用户不丢位置。
+  useLayoutEffect(() => {
+    if (!refocusToggle.current) return
+    refocusToggle.current = false
+    brandRef.current?.querySelector<HTMLElement>('[data-testid="sidebar-collapse"]')?.focus()
+  }, [rail])
+  // 「更多」和「设置」一起钉在侧栏底部，窗口再矮也看得到；展开还是收起记在本机，下次打开照旧。
+  const [more, setMore] = useState(() => readLocalPreference(moreNavigationPreference) === 'expanded')
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const [fade, setFade] = useState<'top' | 'bottom' | 'both' | null>(null)
+  // 上面那段导航放不下时自己滚：上下边缘渐隐，看得出还有。
   useEffect(() => {
-    if (more) moreListRef.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [more])
+    const scroller = scrollerRef.current
+    if (!scroller || typeof ResizeObserver === 'undefined') return
+    const element = scroller
+    function measure() {
+      const top = element.scrollTop > 1
+      const bottom = element.scrollTop + element.clientHeight < element.scrollHeight - 1
+      setFade(top && bottom ? 'both' : top ? 'top' : bottom ? 'bottom' : null)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    for (const child of element.children) observer.observe(child)
+    element.addEventListener('scroll', measure, { passive: true })
+    return () => {
+      observer.disconnect()
+      element.removeEventListener('scroll', measure)
+    }
+  }, [rail, more])
+  // 换页时当前那一项可能在滚出去的那段里：滚到看得见，不滚别的地方。
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    const item = scroller?.querySelector<HTMLElement>('.v2-nav-item.is-active')
+    if (!scroller || !item) return
+    const box = scroller.getBoundingClientRect()
+    const rect = item.getBoundingClientRect()
+    if (rect.top < box.top + navEdge) scroller.scrollTop -= box.top + navEdge - rect.top
+    else if (rect.bottom > box.bottom - navEdge) scroller.scrollTop += rect.bottom - box.bottom + navEdge
+  }, [activePage, rail])
+  useEffect(() => { if (!narrow) setOverlay(false) }, [narrow])
+  useEffect(() => { setOverlay(false) }, [activePage])
+  useEffect(() => {
+    if (!overlay) return
+    function pointer(event: PointerEvent) {
+      if (event.target instanceof Node && sidebarRef.current?.contains(event.target)) return
+      setOverlay(false)
+    }
+    function key(event: KeyboardEvent) {
+      // 开着弹框时 Esc 归弹框。
+      if (event.key !== 'Escape' || event.isComposing || document.querySelector(':modal')) return
+      const inside = event.target instanceof Node && Boolean(sidebarRef.current?.contains(event.target))
+      setOverlay(false)
+      // 焦点原来在侧栏里：交回窄条顶上的「展开侧栏」，不掉到页面最上面去。
+      if (inside) requestAnimationFrame(() => sidebarRef.current?.querySelector<HTMLElement>('[data-testid="sidebar-collapse"]')?.focus())
+    }
+    document.addEventListener('pointerdown', pointer, true)
+    document.addEventListener('keydown', key)
+    return () => {
+      document.removeEventListener('pointerdown', pointer, true)
+      document.removeEventListener('keydown', key)
+    }
+  }, [overlay])
   const [command, setCommand] = useState(false)
   const [query, setQuery] = useState('')
   const [selection, setSelection] = useState(0)
@@ -94,7 +192,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   navigateRef.current = adapter.navigate
   const shownPage = useRef<PageId | null>(null)
   const [pageAnnouncement, setPageAnnouncement] = useState('')
-  const results = searchCommands(query, { accountTabVisible: adapter.accountTabVisible, pageVisible: adapter.pageVisible }, tutorialTopicsFor(platform))
+  const results = searchCommands(query, { accountTabVisible: adapter.accountTabVisible, pageVisible: adapter.pageVisible, settingsItemVisible: adapter.settingsItemVisible }, tutorialTopicsFor(platform))
   const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
   const resultCount = bonusAction ? 1 : results.length
   useEffect(() => () => { commandEpoch.current++; bonusFlight.current = null }, [])
@@ -139,6 +237,13 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   const balanceRefresh = account.signedIn && adapter.refreshBalance
     ? <Button size="xs" variant="ghost" icon={RefreshCw} aria-label="刷新余额" title={`刷新余额；${balanceStatus}`} loading={account.balanceLoading} onClick={adapter.refreshBalance} testId="sidebar-balance-refresh" />
     : null
+  // 还在恢复登录、头一回读余额：放灰色占位条；读过了没读到写「—」，不写「暂未读到」那么长一串。
+  const balanceAmount = account.restoring || (account.signedIn && !account.balance && account.balanceLoading)
+    ? <span className="v2-account-balance-placeholder" aria-hidden="true" data-testid="sidebar-balance-placeholder" />
+    : account.balance
+      ? <strong>{account.balance}</strong>
+      : <strong title={account.signedIn ? '余额暂时没有读到，点刷新再试' : undefined} data-testid="sidebar-balance-unread">—</strong>
+  const accountNote = account.email ?? (account.signedIn ? undefined : '登录后自动配 Key')
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if (event.isComposing || event.altKey || document.querySelector('dialog[open]')) return
@@ -175,6 +280,22 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
     })
     return () => cancelAnimationFrame(frame)
   }, [activePage])
+  // 详情抽屉在顶层（popover）里按窗口定位：告诉它正文从哪儿开始（顶栏、公告条、断网条都在上面），
+  // 抽屉从那下面开始，不盖住它们的按钮。
+  useLayoutEffect(() => {
+    const main = viewport.current
+    if (!main || typeof ResizeObserver === 'undefined') return
+    const element = main
+    const root = document.documentElement
+    function measure() { root.style.setProperty('--v2-content-top', `${Math.round(element.getBoundingClientRect().top)}px`) }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => {
+      observer.disconnect()
+      root.style.removeProperty('--v2-content-top')
+    }
+  }, [])
   function skipToContent(event: MouseEvent<HTMLAnchorElement>) {
     // 不改地址栏的 hash：只把焦点交给正文区，和切页时的落点一致。
     event.preventDefault()
@@ -199,6 +320,8 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
     element.addEventListener('scroll', remember, { passive: true })
     element.addEventListener('wheel', userScroll, { passive: true })
     element.addEventListener('pointerdown', userScroll)
+    // 从搜索或别的页跳过来要翻到某一行：那一行说了算，不再滚回上次的位置。
+    element.addEventListener(rowFocusEvent, finish)
     return () => {
       // A programmatic scroll can be followed by navigation before Chromium
       // dispatches its scroll event. Read the live position during teardown so
@@ -208,12 +331,21 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       element.removeEventListener('scroll', remember)
       element.removeEventListener('wheel', userScroll)
       element.removeEventListener('pointerdown', userScroll)
+      element.removeEventListener(rowFocusEvent, finish)
     }
   }, [activePage])
   function toggleSidebar() {
+    refocusToggle.current = Boolean(brandRef.current?.contains(document.activeElement))
+    if (narrow) { setOverlay((current) => !current); return }
     setCollapsed((current) => {
       writeLocalPreference('xingmang-v2-sidebar', current ? 'expanded' : 'collapsed')
       adapter.setSidebarCollapsed?.(!current)
+      return !current
+    })
+  }
+  function toggleMore() {
+    setMore((current) => {
+      writeLocalPreference(moreNavigationPreference, current ? 'collapsed' : 'expanded')
       return !current
     })
   }
@@ -229,48 +361,54 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" /><span>{definition.label}</span>{definition.external && <ArrowUpRight size={14} aria-hidden="true" />}
       {badge > 0 && <small className="v2-nav-badge" data-testid="nav-home-updates">{badge}</small>}
     </button>
-    return collapsed ? <Tooltip key={id} text={label}>{button}</Tooltip> : button
+    return rail ? <Tooltip key={id} text={label}>{button}</Tooltip> : button
   }
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
     <header className="v2-titlebar" data-testid="window-titlebar"><Logo kind="micro" height={20} /><span>星芒AI管理工具</span></header>
-    <div className={`v2-shell${collapsed ? ' sidebar-collapsed' : ''}`}>
-      <aside className="v2-sidebar" data-testid="sidebar">
+    <div className={`v2-shell${rail ? ' sidebar-collapsed' : overlay ? ' sidebar-overlay' : ''}`} data-narrow={narrow || undefined}>
+      <aside ref={sidebarRef} className="v2-sidebar" data-testid="sidebar">
         <a className="v2-skip-link" href="#v2-main" onClick={skipToContent} data-testid="shell-skip-to-content">跳到正文</a>
-        <div className="v2-brand"><Logo kind="micro" height={32} />{!collapsed && <Logo kind="wordmark" height={32} />}
-          <Button variant="ghost" size="xs" icon={PanelLeft} aria-label={collapsed ? '展开侧栏' : '收起侧栏'} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={toggleSidebar} testId="sidebar-collapse" /></div>
+        {/* 收成窄条时顶上只留标志，鼠标停上去才变成「展开侧栏」。 */}
+        <div ref={brandRef} className="v2-brand">{rail
+          ? <button type="button" className="v2-brand-toggle" aria-label="展开侧栏" title="展开侧栏" onClick={toggleSidebar} data-testid="sidebar-collapse"><Logo kind="micro" height={32} /><PanelLeft size={18} aria-hidden="true" /></button>
+          : <><Logo kind="micro" height={32} /><Logo kind="wordmark" height={32} />
+            <Button variant="ghost" size="xs" icon={PanelLeft} aria-label="收起侧栏" title="收起侧栏" onClick={toggleSidebar} testId="sidebar-collapse" /></>}</div>
         <nav className="v2-sidebar-nav" aria-label="主导航">
-          {/* 「设置」不跟着滚：屏幕矮时滚动区先收缩，「设置」始终露在外面。 */}
-          <div className="v2-sidebar-scroll" data-testid="sidebar-scroll">{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>)}
-            <button type="button" className="v2-nav-item" onClick={() => setMore((current) => !current)} aria-expanded={more} aria-label="更多" title={collapsed ? '更多' : undefined} data-testid="nav-more"><MenuIcon size={20} /><span>更多</span><ChevronDown size={16} /></button>
-            {more && <div className="v2-more-navigation" ref={moreListRef}>{moreNavigation.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>}
+          <div ref={scrollerRef} className="v2-sidebar-scroll" data-testid="sidebar-scroll" data-fade={fade ?? undefined}>{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>)}</div>
+          {/* 「更多」和「设置」不跟着滚：屏幕矮时上面那段先收缩，这两项和展开的四项始终露在外面。 */}
+          <div className="v2-sidebar-pinned" data-testid="sidebar-pinned">
+            <button type="button" className="v2-nav-item" onClick={toggleMore} aria-expanded={more} aria-label="更多" title={rail ? '更多' : undefined} data-testid="nav-more"><MenuIcon size={20} /><span>更多</span><ChevronDown size={16} /></button>
+            {more && <div className="v2-more-navigation">{moreNavigation.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>}
+            {navButton('settings')}
           </div>
-          {navButton('settings')}
         </nav>
         <section className="v2-account-entry" data-testid="account-entry">
           <div className="v2-account-top"><button type="button" aria-label={account.signedIn ? `打开个人中心 ${account.displayName}` : '登录'} title={account.displayName ?? '登录'} onClick={adapter.openAccount}>
-            <LocalAvatar identity={account.identity ?? null} name={account.displayName ?? '未登录'} />{!collapsed && <span className="v2-account-who"><strong>{account.displayName ?? '未登录'}</strong><small>{account.email ?? (account.signedIn ? account.sourceLabel ?? '星芒账号' : '登录后自动配 Key')}</small></span>}
+            {account.restoring
+              ? <span className="v2-account-placeholder" aria-hidden="true" data-testid="sidebar-account-placeholder">{account.restoring === 'pending' && <RefreshCw size={14} className="xm-spin" />}</span>
+              : <LocalAvatar identity={account.identity ?? null} name={account.displayName ?? '未登录'} />}
+            {!rail && <span className="v2-account-who"><span className="v2-account-name"><strong>{account.displayName ?? '未登录'}</strong>{account.signedIn && account.sourceTag && <small className="v2-account-tag" data-testid="sidebar-account-tag">{account.sourceTag}</small>}</span>{accountNote && <small>{accountNote}</small>}</span>}
           </button><Button variant="ghost" size="xs" icon={ChevronDown} aria-label="切换账号" title="切换账号" onClick={adapter.switchAccount} /></div>
           <div className="v2-account-balance">
-            {!collapsed ? <div className="v2-account-balance-summary" title={balanceTitle}>
-              <div className="v2-account-balance-label"><small>余额</small>{balanceRefresh}</div>
-              <strong>{account.balance ?? '暂未读到'}</strong>
+            {!rail && <div className="v2-account-balance-summary" title={balanceTitle}>
+              <div className="v2-account-balance-amount">{balanceAmount}{balanceRefresh}</div>
               {account.subscription && <small className="v2-account-balance-subscription" data-testid="sidebar-subscription">{account.subscription}</small>}
-            </div> : balanceRefresh}
-            {account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button>}
-            {!collapsed && account.signedIn && account.balanceError && !account.balanceLoading && <small className="v2-balance-error" role="status" title={balanceStatus}>{balanceFailureLabel(offline)}</small>}
+            </div>}
+            {account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{rail ? undefined : '充值'}</Button>}
+            {!rail && account.signedIn && account.balanceError && !account.balanceLoading && <small className="v2-balance-error" role="status" title={balanceStatus}>{balanceFailureLabel(offline)}</small>}
           </div>
         </section>
       </aside>
       <div className="v2-workspace">
         <Starfield quiet paused={false} />
-        <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={openCommand}><Search size={16} /><span>搜索、打开、跳转…</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
+        <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={openCommand}><Search size={16} /><span>{commandPlaceholder}</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
           <div className="v2-topbar-actions">{account.supportsAnnouncements !== false && <Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button>}<Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
         </header>
         <OfflineBanner />
         {banner}
         <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
         <p className="v2-visually-hidden" role="status" aria-live="polite" data-testid="shell-page-announcement">{pageAnnouncement}</p>
-        <footer className="v2-statusbar" data-testid="shell-statusbar"><button type="button" onClick={adapter.openHealth}><i className="v2-dot" />{environment ?? '环境待检测'}</button>
+        <footer className="v2-statusbar" data-testid="shell-statusbar"><button type="button" onClick={adapter.openHealth} title={environment?.detail} data-testid="statusbar-environment"><i className={`v2-dot${environment?.tone === 'ok' ? ' is-ok' : environment?.tone === 'warn' ? ' is-warn' : ''}`} />{environment?.label ?? '环境待检测'}</button>
           <button type="button" className="v2-network-location network-location" data-testid="shell-network-location"
             aria-label="刷新网络位置" aria-busy={networkRefreshing} disabled={networkRefreshing || !adapter.refreshNetwork}
             title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；点击刷新网络位置`}
@@ -283,14 +421,15 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         {notification && <div className="v2-notification">{notification}</div>}
       </div>
     </div>
-    {command && <Dialog open title="搜索、打开、跳转" onClose={closeCommand} width={640} initialFocus={searchRef} testId="command-palette">
-      <Input ref={searchRef} type="search" aria-label="搜索页面、设置和教程" value={query} onChange={(event) => { commandEpoch.current++; setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
+    {/* 没有标题行（读屏照样念「搜功能、设置或教程」）；框顶钉在窗口约六分之一处，打字时不跳。 */}
+    {command && <Dialog open headless title="搜功能、设置或教程" onClose={closeCommand} width={640} initialFocus={searchRef} testId="command-palette">
+      <div className="v2-command-search"><Search size={16} aria-hidden="true" /><Input ref={searchRef} type="search" aria-label="搜索页面、设置和教程" placeholder={commandPlaceholder} value={query} onChange={(event) => { commandEpoch.current++; setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
         if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
         if (event.key === 'ArrowDown') { event.preventDefault(); setSelection((current) => resultCount ? (current + 1) % resultCount : 0) }
         else if (event.key === 'ArrowUp') { event.preventDefault(); setSelection((current) => resultCount ? (current + resultCount - 1) % resultCount : 0) }
         else if (event.key === 'Enter' && bonusAction) { event.preventDefault(); void redeemBonus() }
         else if (event.key === 'Enter' && results[selection]) { event.preventDefault(); openResult(results[selection]) }
-      }} />
+      }} /></div>
       <div ref={resultsRef} className="v2-command-results" role="listbox" aria-label="页面与操作">{bonusAction
         ? <button role="option" aria-selected={selection === 0} aria-busy={bonusBusy} disabled={bonusBusy} type="button" data-testid="command-acceleration-bonus" onClick={() => { void redeemBonus() }}>
           {bonusBusy ? <RefreshCw size={18} className="xm-spin" aria-hidden="true" /> : <Zap size={18} aria-hidden="true" />}<span>{bonusBusy ? '正在领取…' : `领取 ${accelerationBonusSeconds / 60} 分钟加速时长`}</span><ArrowRight size={14} aria-hidden="true" />
@@ -309,6 +448,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         <p role="status">没找到相关的页面或设置。</p>
         {adapter.searchTutorial && query.trim() && <Button size="sm" icon={Search} onClick={searchTutorial} testId="command-search-tutorial">{`去教程里搜「${query.trim().slice(0, 40)}」`}</Button>}
       </div>}
+      <p className="v2-command-hint" data-testid="command-hint">↑↓ 选择　回车 打开　Esc 关闭</p>
     </Dialog>}
     <Coachmark open={Boolean(tourOpen && !command)} {...shellTour[tourStep]} step={tourStep + 1} count={shellTour.length} onNext={() => tourStep + 1 === shellTour.length ? onTourClose?.() : setTourStep((value) => value + 1)} onClose={() => onTourClose?.()} testId="shell-guide-tip" />
   </div>

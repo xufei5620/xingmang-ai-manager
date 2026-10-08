@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
+import { inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -32,8 +32,10 @@ import {
   xcodeLicensePendingNotice,
 } from './macos-command-line-tools'
 import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
+import { resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { managedCliRoot } from './managed-cli-paths'
-import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { hasUntouchedHomeProjectInstructions } from './project-instructions'
+import { classifyNetworkFailure, isJsonContentType, networkFailureCode, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import {
   buildNodeTlsProbeScript,
   certificateTrustNetworkFailedSummary,
@@ -46,8 +48,14 @@ import {
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
-import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
-import { findReparseComponent, type ReparseComponent } from './safe-local-data'
+import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
+import { relayRouteFailureThreshold, relayRouteRecoveryMs, type RelayRouteChange } from './relay-route-controller'
+import {
+  relayApiProbeBaseUrl, relayEndpointForUrl, relayProviderBaseUrlEquals, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite,
+  type RelayEndpointId, type RelayRouteLines, type RelaySite,
+} from './relay-sites'
+import { findReparseComponent, readSafeUtf8File, type ReparseComponent } from './safe-local-data'
+import { parseShellStartupExports, type ShellStartupDialect, type ShellStartupExport } from './shell-startup-exports'
 import { resolveRelocatedPath } from './relocated-folders'
 import { inspectDocumentsWritability, type DocumentsWritability } from './documents-fallback'
 import type { StarterWorkspaceLocationContext } from './starter-workspace'
@@ -174,6 +182,14 @@ export interface DiagnosticsDependencies {
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
   /**
+   * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
+   * 用的是直连还是默认线路；选「自动」、这会儿走直连却没连上时，改查同一个站的默认线路，查通了
+   * 算能连上、说清已经自动改走默认线路，并把直连的失败报给线路那边。缺省 = 不提线路（旧行为）。
+   * 「电脑里另外设过的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
+   * （environmentAccountBaseUrls）。缺省 = 只认 relaySite 那一份。
+   */
+  relayRoute?: DiagnosticsRelayRoute
+  /**
    * 加速开着没有。开着时星芒自己的服务按加速规则直接连（acceleration-clash-config.ts
    * 的 relayDirectHosts），「星芒 AI 网络」一项顺带说一句，免得用户以为这项量的是加速线路。
    * 缺省 = 不提（旧行为）。
@@ -195,6 +211,12 @@ export interface DiagnosticsDependencies {
    * 缺省 = 不看（旧行为）。
    */
   resolveAppProxy?: (url: string) => Promise<string>
+  /**
+   * 代理开着、只是不转发星芒时，连星芒的请求（账号、AI 对话）是不是已经改走直连会话
+   * （proxy-bypass.ts 的 siteDirect）。那时默认会话照旧跟着系统代理，resolveAppProxy 还是
+   * 答「走代理」，结论得照实说已经改了直连。缺省 = 没改（旧行为）。
+   */
+  siteDirectActive?: () => boolean
   /**
    * 「安全证书」一项用电脑上的 Node.js 做一次 TLS 握手（certificate-trust-probe.ts）。
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
@@ -329,13 +351,33 @@ interface CheckDefinition {
   code: string
   title: string
   run: (signal: AbortSignal) => Promise<CheckOutcome> | CheckOutcome
-  /** 只说明情况、不决定软件行为的项，超时给这句提醒，不亮红色的「检查超时」。 */
-  timeoutOutcome?: CheckOutcome
+  /**
+   * 超时就给这个结论，不给笼统的「检查超时」。只说明情况、不决定软件行为的项给一句不亮红的
+   * 提醒。给函数就在超时那一刻再看卡在哪一步，返回 undefined 照旧「检查超时」：「星芒 AI 网络」
+   * 只有一直等不到回话才算连不上。
+   */
+  timeoutOutcome?: CheckOutcome | (() => CheckOutcome | undefined)
+}
+
+export interface DiagnosticsRelayRoute {
+  line: RelayEndpointId
+  /** 选的是「自动」：只有它会在直连连不上时改走默认线路。 */
+  automatic: boolean
+  /** 「自动」定下来了没有；定在默认线路上 = 直连上次没连上，已经退回。 */
+  settled: boolean
+  /** 同一个站默认线路上的那一份，退回时查它。 */
+  primarySite: RelaySite
+  reportDirectFailure(reason: string): void
+  /** 「自动」最近一次换线路（relay-route-controller.ts 的 lastChange），详情里说给客户和客服听。 */
+  lastChange?: RelayRouteChange | null
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
 const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
   + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
+// 「自动」走直连时直连那一次最多等这么久，剩下的留给默认线路：整项只有 DEFAULT_CHECK_TIMEOUT_MS。
+const DIRECT_NETWORK_PROBE_TIMEOUT_MS = 4_000
+
 /**
  * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
  * 阈值定低了就是每次检查都亮一条没人能处理的黄灯。
@@ -605,6 +647,7 @@ async function versionForExecutable(
   tool: DiagnosticToolId,
   signal: AbortSignal,
   env: NodeJS.ProcessEnv,
+  additionalPaths: readonly string[] = [],
 ): Promise<string | null> {
   // 直接做同步校验，Program Files 下的路径会在主线程上起 PowerShell 读权限，
   // node / npm / git 各一次，普通用户点「重新检测」时窗口就卡住了。
@@ -619,13 +662,27 @@ async function versionForExecutable(
     argv: args,
     windowsPackageManager: tool === 'npm' ? 'npm' : undefined,
   }, {
-    env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env),
+    env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env, additionalPaths),
     trustedOnly: process.platform === 'win32',
     timeoutMs: 5_000,
     maxOutputBytes: 128 * 1024,
     signal,
   })
   return `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null
+}
+
+/**
+ * Mac 上客户自己那份 Node.js 太旧时，本软件自己用代下的那份（第三十四批 A，system-service.ts
+ * 的 preferredNodeDirectories）；检查页的 Node.js、npm 两项也报那一份，和首页对得上。
+ */
+async function preferredNodeDirectories(signal: AbortSignal, env: NodeJS.ProcessEnv): Promise<string[]> {
+  if (process.platform !== 'darwin') return []
+  const directory = await resolveDarwinPreferredNodeDirectory({
+    findNode: () => findExecutable('node', { env: commandEnvironment(env) }),
+    readVersion: (executable) => versionForExecutable(executable, 'node', signal, env),
+    environment: env,
+  }).catch(() => null)
+  return directory ? [directory] : []
 }
 
 async function defaultInspectTool(
@@ -676,12 +733,14 @@ async function defaultInspectTool(
     }
   }
   const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
+  const nodeDirectories = tool === 'node' || tool === 'npm' ? await preferredNodeDirectories(signal, env) : []
   let commandLineToolsShim = false
   let xcodeLicensePending = false
   for (const command of commands) {
     const executable = await findExecutable(command, {
       env: commandEnvironment(env),
       windowsPackageManagers: command === 'npm' ? ['npm'] : [],
+      ...(nodeDirectories.length ? { additionalPaths: nodeDirectories } : {}),
     }) ?? findWindowsShim(command, env)
     if (!executable) continue
     if (isMacOsCommandLineToolsShim(executable)) {
@@ -694,7 +753,7 @@ async function defaultInspectTool(
     }
     let version: string | null = null
     try {
-      version = await versionForExecutable(executable, tool, signal, env)
+      version = await versionForExecutable(executable, tool, signal, env, nodeDirectories)
     } catch {
       // Presence is still useful when a package-manager shim cannot be executed safely.
     }
@@ -943,18 +1002,25 @@ export async function inspectAppProxyRoute(
 export function withAppProxyRoute(
   outcome: Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>,
   route: AppProxyRoute | null,
+  siteDirect = false,
 ): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
   if (!route) return outcome
-  const sentence = route.reach === 'remote'
-    ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
-    : route.reach === 'closed'
-      ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
-      : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
+  // 代理开着、只是不转发星芒时，账号和 AI 对话已经自己改走直连：再叫客户退出代理软件
+  // 是白折腾，这半也不再标黄；另外设过代理的那半照旧（已知30）。代理没开的那种照旧说，
+  // 装工具这些还跟着系统代理走。
+  const bypassed = siteDirect && route.reach !== 'closed'
+  const sentence = bypassed
+    ? `电脑里开着代理（${route.reach === 'remote' ? '用的是别的机器上的代理' : `本机 ${route.port} 端口`}）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。`
+    : route.reach === 'remote'
+      ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
+      : route.reach === 'closed'
+        ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
+        : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
   const details = outcome.details ?? {}
   const variablesFound = Object.keys(details).length > 0
   return {
     ...outcome,
-    state: outcome.state === 'pass' ? 'warn' : outcome.state,
+    state: outcome.state === 'pass' && !bypassed ? 'warn' : outcome.state,
     summary: variablesFound ? `${sentence}另外，${outcome.summary}` : sentence,
     details: {
       ...details,
@@ -985,6 +1051,8 @@ interface EnvironmentOverrideMatch {
   overriding: boolean
   /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
   breaking: boolean
+  /** Mac 上从哪个终端设置文件读到的（`~/.zshrc` 这样，不带用户名）；缺省 = 星芒自己的进程环境里。 */
+  shellFile?: string
 }
 
 /**
@@ -1011,6 +1079,13 @@ interface EnvironmentOverrideMatch {
  * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
  *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
  *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
+ *
+ * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
+ * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
+ * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉；Gemini 照 providerCommandEnvironment
+ * 去掉五个，breaksAccount 为 false 的三个也在内。检查页在 Mac 上另去读那几个终端设置文件，只找 breaksAccount
+ * 的这四个（collectMacosShellOverrides）。
+ * 改这里的取值时那边一起看。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
   { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl', breaksAccount: false },
@@ -1043,9 +1118,29 @@ function sameHostAs(value: string, expected: string): boolean {
   }
 }
 
+/**
+ * 工具地址变量指到哪几份地址算「已指向当前账号」（直连适配第二步）。这会儿用的那条线路一直算。
+ * 选「自动」时默认线路也一直算：它是客户照旧教程设得最多的地址，「自动」走直连并不说明它不通，
+ * 报它只会教人删一个没问题的变量。直连只在这会儿真走直连时才算：「自动」退回了默认线路，说明直连
+ * 在这台电脑上连不上，指着直连的变量会让工具跟着连不上。写死「只用直连」的照旧只认直连，多半是
+ * 默认线路在他那儿不通才这么选。
+ */
+export function environmentAccountBaseUrls(
+  relaySite: RelaySite,
+  relayRoute: Pick<DiagnosticsRelayRoute, 'automatic' | 'primarySite'> | undefined,
+): ReadonlyArray<RelaySite['providerBaseUrls']> {
+  if (!relayRoute?.automatic) return [relaySite.providerBaseUrls]
+  return [relaySite.providerBaseUrls, relayRoute.primarySite.providerBaseUrls]
+}
+
+/** 本程序替这个工具写配置的那个目录：变量指的就是它，等于没设。 */
+function isProviderConfigDirectory(provider: ProviderId, value: string, userHome: string): boolean {
+  return normalizedPathKey(value) === normalizedPathKey(path.join(userHome, providerConfigDirectoryNames[provider]))
+}
+
 function collectEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): EnvironmentOverrideMatch[] {
   const matches: EnvironmentOverrideMatch[] = []
@@ -1055,13 +1150,11 @@ function collectEnvironmentOverrides(
     // CODEX_HOME 是本程序自己解析出来再注入进 codexEnv 的（codex-home.ts），所以
     // 诊断拿到的 env 里它永远有值。指到默认位置就是本程序自己写的那份，报它等于
     // 每次检查都给一条假警报；只有指到别处才是用户真的改过。
-    if (variable.kind === 'directory') {
-      const fallback = path.join(userHome, providerConfigDirectoryNames[variable.provider])
-      if (normalizedPathKey(value) === normalizedPathKey(fallback)) continue
-    }
-    // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
+    if (variable.kind === 'directory' && isProviderConfigDirectory(variable.provider, value, userHome)) continue
+    // 指向当前账号的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
     // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
-    const overriding = !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider]))
+    const overriding = !(variable.kind === 'baseUrl'
+      && accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider])))
     matches.push({
       name: variable.name,
       provider: variable.provider,
@@ -1073,6 +1166,128 @@ function collectEnvironmentOverrides(
   return matches
 }
 
+interface ShellSettingsFile {
+  /** 相对用户主目录。 */
+  path: string
+  dialect: ShellStartupDialect
+}
+
+/**
+ * Mac 上「终端」开新窗口时登录 shell 会读的启动文件（已知45）。照别家中转教程配的 Key 多半在 ~/.zshrc，
+ * 它排第一；bash、fish 的也看，换过 shell 的电脑上旧文件里常留着。
+ */
+const macosShellSettingsFiles: readonly ShellSettingsFile[] = [
+  { path: '.zshrc', dialect: 'posix' },
+  { path: '.zprofile', dialect: 'posix' },
+  { path: '.zshenv', dialect: 'posix' },
+  { path: '.zlogin', dialect: 'posix' },
+  { path: '.bash_profile', dialect: 'posix' },
+  { path: '.bash_login', dialect: 'posix' },
+  { path: '.profile', dialect: 'posix' },
+  { path: '.bashrc', dialect: 'posix' },
+  { path: '.config/fish/config.fish', dialect: 'fish' },
+]
+
+// 手写的启动文件不会有几百 KB（同 macos-shell-profile.ts）；再大就不是该去读的文件了。
+const maximumShellSettingsBytes = 512 * 1024
+
+interface ShellSettingsExports {
+  /** `~/.zshrc` 这样写：进报告的只有它，不带用户名。 */
+  file: string
+  exports: ShellStartupExport[]
+}
+
+async function readMacosShellSettings(
+  userHome: string,
+  names: readonly string[],
+  skipped: (file: string, error: unknown) => void,
+): Promise<ShellSettingsExports[]> {
+  const found: ShellSettingsExports[] = []
+  for (const settings of macosShellSettingsFiles) {
+    const file = `~/${settings.path}`
+    let text: string | null
+    try {
+      text = await readSafeUtf8File(path.join(userHome, ...settings.path.split('/')), '终端设置文件', maximumShellSettingsBytes)
+    } catch (error) {
+      // dotfiles 仓库常把 ~/.zshrc 做成指向别处的链接。I8 只放行单链接普通文件，这一项只是提醒，不为它放宽。
+      skipped(file, error)
+      continue
+    }
+    if (text === null) continue
+    const exports = parseShellStartupExports(text, settings.dialect, names, userHome)
+    if (exports.length) found.push({ file, exports })
+  }
+  return found
+}
+
+/**
+ * 值同进程环境那边判：空的不算，指向当前账号的地址、指向本程序写的配置目录的不算，看不出值的照报。
+ * 不去首尾空白：终端原样交给工具的就是这个字符串。
+ */
+function overridesFromShellSettings(
+  variable: EnvironmentOverrideVariable,
+  value: string | null,
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
+  userHome: string,
+): boolean {
+  if (value === null) return true
+  if (value === '') return false
+  if (variable.kind === 'directory') return !isProviderConfigDirectory(variable.provider, value, userHome)
+  if (variable.kind === 'baseUrl') return !accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider]))
+  return true
+}
+
+/**
+ * Mac 上终端设置文件里导出的、会让工具绕开当前账号的那几个（已知45）。只看用星芒账号的工具：Claude Code
+ * 用客户自己的账号时，那几行多半就是他自己的 Key，从星芒打开也照旧带上（system-service.ts 的
+ * macosShellOverrideVariables）；Gemini CLI 不用星芒账号时这几个变量起什么作用没实测过，按 T12 宁缺勿猜。
+ * 同一个名字在几个文件里都有，就各报一条，客户照着逐个去删。
+ */
+async function collectMacosShellOverrides(
+  userHome: string,
+  relayProviders: ReadonlySet<ProviderId>,
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
+  skipped: (file: string, error: unknown) => void,
+): Promise<EnvironmentOverrideMatch[]> {
+  const variables = ENVIRONMENT_OVERRIDE_VARIABLES
+    .filter((variable) => variable.breaksAccount && relayProviders.has(variable.provider))
+  if (!variables.length) return []
+  const found = await readMacosShellSettings(userHome, variables.map((variable) => variable.name), skipped)
+  return variables.flatMap((variable) => found
+    .filter((settings) => settings.exports.some((exported) => exported.name === variable.name
+      && overridesFromShellSettings(variable, exported.value, accountBaseUrls, userHome)))
+    .map((settings) => ({
+      name: variable.name,
+      provider: variable.provider,
+      kind: variable.kind,
+      overriding: true,
+      breaking: true,
+      shellFile: settings.file,
+    })))
+}
+
+/**
+ * 星芒是从终端里打开的时候，进程环境里也带着终端设置文件里的那几个：同一个名字只留指明了文件的那几条。
+ * 顺序照变量表排，同一个工具的挨在一起。
+ */
+function withShellSettingsOverrides(
+  environment: readonly EnvironmentOverrideMatch[],
+  shell: readonly EnvironmentOverrideMatch[],
+): EnvironmentOverrideMatch[] {
+  const named = new Set(shell.map((match) => match.name))
+  const combined = [...environment.filter((match) => !named.has(match.name)), ...shell]
+  return ENVIRONMENT_OVERRIDE_VARIABLES.flatMap((variable) => combined.filter((match) => match.name === variable.name))
+}
+
+/**
+ * Mac 上从星芒打开这个工具时，启动脚本会不会先把它的这几个变量去掉（system-service.ts 的
+ * macosShellOverrideVariables）：Claude Code 只在用星芒账号时去掉，Gemini CLI 不论哪种账号都去掉。
+ * 只拿来问 breaksAccount 的那四个；两边对不上时 diagnostics.test.ts 会红。
+ */
+function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySet<ProviderId>): boolean {
+  return provider === 'gemini' || (provider === 'claude' && relayProviders.has(provider))
+}
+
 /**
  * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
  * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
@@ -1080,10 +1295,10 @@ function collectEnvironmentOverrides(
  */
 export function clearableEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
-  providerBaseUrls: RelaySite['providerBaseUrls'],
+  accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   userHome: string,
 ): string[] {
-  return collectEnvironmentOverrides(env, providerBaseUrls, userHome)
+  return collectEnvironmentOverrides(env, accountBaseUrls, userHome)
     .filter((match) => match.overriding && match.kind !== 'directory')
     .map((match) => match.name)
 }
@@ -1097,17 +1312,32 @@ function withEnvironmentOverrideFix(outcome: CheckOutcome, clearable: boolean): 
   return { ...outcome, details: { ...outcome.details, fix: 'clear-user-overrides' } }
 }
 
+// Mac 上同一个名字可能写在几个终端设置文件里，结论里只说一次。
 function namesOf(matches: readonly EnvironmentOverrideMatch[]): string {
-  const listed = matches.slice(0, 3).map((match) => match.name).join('、')
-  return matches.length > 3 ? `${listed}等 ${matches.length} 项` : listed
+  const names = [...new Set(matches.map((match) => match.name))]
+  const listed = names.slice(0, 3).join('、')
+  return names.length > 3 ? `${listed}等 ${names.length} 项` : listed
 }
 
-function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
+function toolsOf(matches: readonly EnvironmentOverrideMatch[]): string {
+  return [...new Set(matches.map((match) => cliCatalog[match.provider].name))].join('、')
+}
+
+/**
+ * droppedByLauncher：从星芒打开时启动脚本会不会先去掉这一个（只在 Mac 上可能为 true）。
+ * 缺省 = 都会带给工具，Windows、Linux 就是这样。
+ */
+function environmentOverrideOutcome(
+  matches: readonly EnvironmentOverrideMatch[],
+  droppedByLauncher: (match: EnvironmentOverrideMatch) => boolean = () => false,
+): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = { count: matches.length }
   matches.forEach((match, index) => {
     // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
     // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
-    const note = !match.overriding ? '，已指向当前账号' : match.breaking ? '，会绕开当前账号' : ''
+    const note = !match.overriding
+      ? '，已指向当前账号'
+      : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，会绕开当前账号' : ''
     details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const overriding = matches.filter((match) => match.overriding)
@@ -1121,13 +1351,22 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
     }
   }
   const breaking = overriding.filter((match) => match.breaking)
-  if (breaking.length) {
-    const tools = [...new Set(breaking.map((match) => cliCatalog[match.provider].name))].join('、')
+  const reachingTools = breaking.filter((match) => !droppedByLauncher(match))
+  if (reachingTools.length) {
     return {
       // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
       // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
       state: 'fail',
-      summary: `电脑里另外设了 ${namesOf(breaking)}，会让 ${tools} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
+      summary: `电脑里另外设了 ${namesOf(reachingTools)}，会让 ${toolsOf(reachingTools)} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
+      details,
+    }
+  }
+  if (breaking.length) {
+    return {
+      // Mac 上从星芒打开工具时启动脚本已经去掉了这几个（已知45），只有客户自己开终端直接用工具时才绕开
+      // 当前账号，所以是「需留意」，开机提示不数它。
+      state: 'warn',
+      summary: `终端设置里另外设了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自己开终端直接用 ${toolsOf(breaking)} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉`,
       details,
     }
   }
@@ -1165,6 +1404,57 @@ export function relayStatusProbeUrl(site: RelaySite): string {
     case 'sub2api':
       return new URL('/api/v1/settings/public', origin).href
   }
+}
+
+/**
+ * 一个地址所在站点每条线路的探测地址，这会儿用的那条排第一；不是星芒的地址给空的。代理分流
+ * （proxy-bypass.ts）靠它把同一个站的几个入口当成一个站点：「自动」中途换了入口，分去直连会话
+ * 的请求照样分过去，再看时探的也是这会儿用的入口。
+ */
+export function relaySiteStatusProbeUrls(url: string, lines: RelayRouteLines): string[] {
+  const endpoint = relayEndpointForUrl(url)
+  if (!endpoint) return []
+  const current = lines[endpoint.siteId].line
+  const others = relaySiteEndpointChoices(endpoint.siteId).map((choice) => choice.id).filter((line) => line !== current)
+  return [current, ...others].map((line) => relayStatusProbeUrl(requireRelaySite(endpoint.siteId, line)))
+}
+
+type RelayStatusProbe =
+  | { kind: 'answered'; endpoint: string; response: Response; body: string }
+  | { kind: 'failed'; endpoint: string; reason: NetworkFailureReason; error: unknown }
+
+// 直连那一次换成默认线路有可能查得通：连不上一类的失败（含代理回绝了直连这个地址），或者直连回的
+// 不是星芒的回话（网关错误页、拦截页），同 relay-line-fetch.ts 的退回条件；白名单挡下的网页 404 也算，
+// 检查页要知道的是这会儿连不连得上。状态接口正常时一定回 JSON，回了 200 却读不出 JSON 的，同下面
+// 认拦截的口径。服务回的 JSON 错误是服务那一侧的事，两条线路一样。给出报给线路那边的原因，不然 null。
+function relayLineFailure(probe: RelayStatusProbe): string | null {
+  if (probe.kind === 'failed') return relayLineFailureReason(probe.error) ? networkFailureCode(probe.error) ?? probe.reason : null
+  const { response, body } = probe
+  if (response.status === 404 && !isJsonContentType(response.headers.get('content-type'))) return 'http-404'
+  if (response.ok && !parsesAsJson(body)) return 'intercepted'
+  return relayLineFailureAnswer(response)
+}
+
+/**
+ * 要不要报给线路那边、叫它马上查一轮健康检查（#941 第 3 节）：同 relay-line-fetch.ts 的口径，加上直连那
+ * 几秒里一个字都没回来也算——状态接口只回几百字节，等不到它就是这会儿不通，不是慢。报上去也只是叫线路
+ * 那边连着查几次，换不换由它定。
+ */
+function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
+  if (probe.kind === 'answered') return true
+  return reportedRelayLineFailure(probe.error) !== null || probe.reason === 'timeout'
+}
+
+/**
+ * 「星芒 AI 网络」查通时那句结论（直连适配方案第六节第 3 条原话）。fellBack：选的是「自动」，
+ * 直连这会儿连不上，用的是默认线路（这次当场退回的，或者之前就已经退回的）。
+ */
+export function relayNetworkPassSummary(route: { line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
+  if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
+  const summary = route.line === 'direct'
+    ? '能连上星芒服务，用的是直连'
+    : route.fellBack ? '能连上星芒服务。直连这会儿连不上，已自动改走默认线路' : '能连上星芒服务，用的是默认线路'
+  return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
 }
 
 function parsesAsJson(body: string): boolean {
@@ -1271,7 +1561,47 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
   return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
-function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
+// 这两条线路在星芒里就叫这两个名字（设置里的「只用直连」「只用默认线路」、网络那一项的结论都这么叫）。
+// 下面几处只写进导出的检查报告，客服看得懂；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
+const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '默认线路', direct: '直连' }
+
+/** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
+interface ProviderRelayLine {
+  siteId: string
+  line: RelayEndpointId
+  baseUrl: string
+}
+
+// 只认每条线路自己的地址：写着旧地址（别名）的配置说不上走的是哪条，下次保存会改成线路自己的地址。
+function providerRouteLine(siteId: string, provider: ProviderId, actual: string): RelayEndpointId | null {
+  const endpoint = relaySiteEndpointChoices(siteId)
+    .find((choice) => relayProviderBaseUrlEquals(actual, resolveRelaySite(siteId, choice.id).providerBaseUrls[provider]))
+  return endpoint?.id ?? null
+}
+
+/**
+ * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
+ * 换到哪条，不带地址。时间按这台电脑的时区说。
+ */
+export function describeRelayRouteChange(change: RelayRouteChange): string {
+  const at = new Date(change.at)
+  const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  const reason = change.reason === 'recovered'
+    ? `直连连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回直连`
+    : change.reason === 'health-failed'
+      ? `直连连着 ${relayRouteFailureThreshold} 次没连上，改走默认线路`
+      : '查到直连能连上，走直连'
+  return `${time}，${reason}`
+}
+
+// 连同引起那一轮检查的错误码一起只进导出的报告，客服拿它对服务端的日志。
+function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Record<string, string> {
+  const change = route?.lastChange
+  if (!change) return {}
+  return { lastRouteChange: describeRelayRouteChange(change), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
+}
+
+function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots, current?: ProviderRelayLine): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = {
     exists: inspection.exists,
     hasApiKey: inspection.hasApiKey,
@@ -1286,6 +1616,12 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     details[`file${index + 1}`] = pathForDisplay(file.path, roots)
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
+    // 工具走的线路和星芒这会儿走的对不上（#941 第 2 节）：线路换了以后写失败的、客户自己改过配置所以没跟着
+    // 改的。两条线路连的是同一个账号，工具照样能用，所以不算要留意的事（yoyo 10-8：线路的事不要太多提示），
+    // 只在导出的报告里写清两边各是哪条；星芒下次跟着线路改配置时会改过来。
+    const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
+    if (line) details.routeLine = relayLineNames[line]
+    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
@@ -1378,6 +1714,23 @@ export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): D
     : item)
 }
 
+const cliCheckCodes: readonly string[] = providerIds.map((provider) => `CLI_${provider.toUpperCase()}`)
+
+/**
+ * 一个命令行工具都没装（只用 Codex 桌面端，它自带运行环境）时，Node.js、npm 没装只是
+ * 「需留意」：首页运行环境卡这时也只写「可选 · 未装」、不挂橙点（第二十七批 B），检查页
+ * 却是两行红色「待处理」，状态栏和开机提示跟着数进去（已知7）。仍旧要提、不能不出：
+ * Codex 桌面端的「星芒画图」要 Node.js。有一家装着、或者这次没查出来装没装的，照旧红。
+ */
+export function reconcileNodeRuntimeWithClis(items: DiagnosticItem[]): DiagnosticItem[] {
+  const clis = items.filter((item) => cliCheckCodes.includes(item.code))
+  if (clis.length === 0 || clis.some((item) => item.details?.installed !== false)) return items
+  return items.map((item) => (item.code === 'RUNTIME_NODE' || item.code === 'RUNTIME_NPM')
+    && item.state === 'fail' && item.details?.installed === false
+    ? { ...item, state: 'warn' }
+    : item)
+}
+
 /**
  * 「操作系统」一项的结论说人话：Windows 11（64 位）、macOS 15（Apple 芯片）。
  * Windows 11 的内核号仍是 10.0，只能按版本号 22000 起算；macOS 从 Darwin 20
@@ -1453,9 +1806,12 @@ async function runIsolatedCheck(
     }
   } catch (error) {
     const timedOut = error instanceof Error && error.name === 'DiagnosticTimeoutError'
-    if (timedOut && check.timeoutOutcome) {
+    const timeoutOutcome = timedOut
+      ? typeof check.timeoutOutcome === 'function' ? check.timeoutOutcome() : check.timeoutOutcome
+      : undefined
+    if (timeoutOutcome) {
       return {
-        ...check.timeoutOutcome,
+        ...timeoutOutcome,
         code: check.code,
         title: check.title,
         durationMs: Date.now() - startedAt,
@@ -1647,6 +2003,46 @@ export function documentsWritabilityOutcome(
   }
 }
 
+// 「工具名照实写」：Codex 那一份 config.toml 命令行和桌面端共用，所以只写 Codex。
+const homeFolderTrustNames: Readonly<Record<HomeFolderTrustProvider, string>> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini CLI',
+}
+
+/**
+ * 「个人文件夹里早先留下的设置」（已知36）。#321 以前客户选个人文件夹打开工具时，星芒往
+ * 那里放过一份 AGENTS.md、替工具记过「信任整个个人文件夹」，之后不再放也不再记，已经留下
+ * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「挪开这份说明」；信任只
+ * 说一声、不给按钮，同「Claude 跑命令前要不要先问你」那项的口径。两样都有时两段连着说。
+ * 「有的工具会连它一起读」「可能不会先问」是推测（只有 Gemini CLI 在不是 git 仓库的项目里
+ * 一路往上读到个人文件夹这一点有把握），所以字里留着「有的」「可能」。
+ */
+export function homeFolderLeftoversOutcome(input: {
+  untouchedInstructions: boolean
+  trustedBy: readonly HomeFolderTrustProvider[]
+}): CheckOutcome {
+  const parts: string[] = []
+  if (input.untouchedInstructions) {
+    parts.push('个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+      + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。')
+  }
+  if (input.trustedBy.length) {
+    const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
+    const pronoun = input.trustedBy.length > 1 ? '它们' : '它'
+    parts.push(`${names} 记着“信任整个个人文件夹”：个人文件夹下的项目，${pronoun}打开时可能不会先问一句信不信得过。`)
+  }
+  const details: Record<string, boolean | number | string | null> = {
+    untouchedInstructions: input.untouchedInstructions,
+    trustedBy: input.trustedBy.join(',') || null,
+  }
+  // 「挪开这份说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
+  if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
+  return parts.length
+    ? { state: 'warn', summary: parts.join(''), details }
+    : { state: 'pass', summary: '没有早先留下的项目说明和信任设置', details }
+}
+
 /**
  * 「电脑芯片」一项的结论。面向小白：只说「ARM 芯片」「ARM 版」「普通电脑用的版本」，
  * 不出现 arm64 / x64 / 模拟层这些词。
@@ -1685,6 +2081,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectProvider = dependencies.inspectProvider
     ?? ((provider, roots) => inspectProviderConfig(provider, roots))
   const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
+  const accountBaseUrls = environmentAccountBaseUrls(relaySite, dependencies.relayRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
@@ -1783,6 +2180,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const log = dependencies.log
   const now = dependencies.now ?? (() => new Date())
   const supportedPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux'
+  // 「星芒 AI 网络」那一次请求回完话没有，超时那一刻看它决定结论。
+  let relayAnswered = false
 
   const checks: CheckDefinition[] = [
     {
@@ -2024,7 +2423,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: `${cliCatalog[provider].name} 连接设置`,
       run: () => {
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
-        return providerOutcome(provider, inspection, displayRoots)
+        // 「自动」还没定下来时不比：那时工具配置本来就不跟着迁。
+        const route = dependencies.relayRoute
+        const current = route?.settled ? { siteId: relaySite.id, line: route.line, baseUrl: relaySite.providerBaseUrls[provider] } : undefined
+        return providerOutcome(provider, inspection, displayRoots, current)
       },
     })),
     {
@@ -2034,34 +2436,81 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // （登录页用的是同一份文案），判断只用这里本来就要发的这一次请求。
       code: 'XINGMANG_NETWORK',
       title: '星芒 AI 网络',
+      // 一直等不到回话的，以前算成检查自己出错（「检查超时」）。可当地网络切断一条线路时
+      // 常常就是这样：请求发出去，没人回。所以按连不上算，结论用登录页同一句超时的话。
+      // 回完了话、卡在后面的（问加速开没开要排在正开关加速的后面）不算：网络是通的，照旧
+      // 「检查超时」，说成连不上会把人带去换线路。
+      timeoutOutcome: () => relayAnswered ? undefined : {
+        state: 'fail',
+        summary: networkFailureMessages.timeout,
+        details: { endpoint: relayStatusProbeUrl(relaySite), reason: 'timeout', siteId: relaySite.id, ...relayRouteChangeDetails(dependencies.relayRoute) },
+      },
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
-        const endpoint = relayStatusProbeUrl(relaySite)
-        let response: Response
-        let body = ''
-        try {
-          response = await fetchImpl(endpoint, {
-            method: 'GET',
-            credentials: 'omit',
-            redirect: 'error',
-            signal,
-            headers: { Accept: 'application/json' },
-          })
-          // 只有 2xx 才看内容；非 2xx 的错误页不读，免得一张大错误页顶掉下面那句 HTTP 状态。
-          if (response.ok) body = await readBoundedResponseText(response, MAX_NETWORK_PROBE_BYTES, '星芒 AI 状态接口')
-          else await response.body?.cancel().catch(() => undefined)
-        } catch (error) {
-          const reason = classifyNetworkFailure(error)
-          // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
-          // 只会让用户白折腾一轮（同 network-failure.ts 的口径）。
-          if (!reason) throw error
+        const fetchStatus = fetchImpl
+        async function probeStatus(site: RelaySite, probeSignal: AbortSignal): Promise<RelayStatusProbe> {
+          const endpoint = relayStatusProbeUrl(site)
+          try {
+            const response = await fetchStatus(endpoint, {
+              method: 'GET',
+              credentials: 'omit',
+              redirect: 'error',
+              signal: probeSignal,
+              headers: { Accept: 'application/json' },
+            })
+            // 只有 2xx 才看内容；非 2xx 的错误页不读，免得一张大错误页顶掉下面那句 HTTP 状态。
+            let body = ''
+            if (response.ok) body = await readBoundedResponseText(response, MAX_NETWORK_PROBE_BYTES, '星芒 AI 状态接口')
+            else await response.body?.cancel().catch(() => undefined)
+            relayAnswered = true
+            return { kind: 'answered', endpoint, response, body }
+          } catch (error) {
+            // 「自动」给直连那一次单独限的时间到了（整项还没到点）：按超时算，下面改查默认线路。
+            const reason = error instanceof Error && error.name === 'TimeoutError' && !signal.aborted
+              ? 'timeout'
+              : classifyNetworkFailure(error)
+            // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
+            // 只会让用户白折腾一轮（同 network-failure.ts 的口径）。
+            if (!reason) throw error
+            return { kind: 'failed', endpoint, reason, error }
+          }
+        }
+        const route = dependencies.relayRoute
+        const directFirst = route?.automatic === true && route.line === 'direct'
+        let probe = await probeStatus(relaySite, directFirst
+          ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_NETWORK_PROBE_TIMEOUT_MS)])
+          : signal)
+        let line: RelayEndpointId | null = route?.line ?? null
+        let fellBack = false
+        const directFailure = route && directFirst ? relayLineFailure(probe) : null
+        if (route && directFailure) {
+          if (reportsRelayLineFailure(probe)) route.reportDirectFailure(directFailure)
+          // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
+          relayAnswered = false
+          const retry = await probeStatus(route.primarySite, signal).catch(() => null)
+          // 默认线路也没查通就照直连那次的结论说：用的是直连，说的就是直连那边的事。
+          if (retry?.kind === 'answered' && retry.response.ok && parsesAsJson(retry.body)) {
+            log?.('info', 'diagnostics.network.fallback', '直连这次没查通，默认线路查通了', {
+              reason: probe.kind === 'failed' ? probe.reason : directFailure,
+            })
+            probe = retry
+            line = 'primary'
+            fellBack = true
+          }
+        }
+        const endpoint = probe.endpoint
+        if (probe.kind === 'failed') {
+          const { reason, error } = probe
           log?.('warn', 'diagnostics.network.failed', `星芒 AI 网络检查失败（${reason}）`, {
             endpoint,
             reason,
             raw: sanitize(errorChainText(error)),
           })
-          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason } }
+          // 带上查的是哪个站：检查页据此认出「换一条线路」救不救得回来（第四十三批 B）。
+          // 新界面的「查看详情」不摆这个键（diagnostic-details.ts）。
+          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id, ...relayRouteChangeDetails(route) } }
         }
+        const { response, body } = probe
         // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
         // 这时没有异常可归类，只能从内容认出来：这个接口正常时一定回 JSON，
         // 拿到别的（网页、空白）就是中间有东西替服务器答了话。
@@ -2076,7 +2525,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           return {
             state: 'fail',
             summary: networkFailureMessages.intercepted,
-            details: { endpoint, reason: 'intercepted', status: response.status },
+            details: { endpoint, reason: 'intercepted', status: response.status, ...relayRouteChangeDetails(route) },
           }
         }
         if (!response.ok) {
@@ -2088,7 +2537,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           return {
             state: 'fail',
             summary: `网络能连通，但星芒 AI 返回 HTTP ${response.status}，多半是服务端暂时的问题，请稍后再试。`,
-            details: { endpoint, status: response.status },
+            details: { endpoint, status: response.status, ...relayRouteChangeDetails(route) },
           }
         }
         // 这一次请求已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
@@ -2100,15 +2549,22 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             state: 'warn',
             summary: `能连上星芒服务，但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
               + `可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`,
-            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
+            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000), ...relayRouteChangeDetails(route) },
           }
         }
         const accelerating = await dependencies.inspectAccelerationActive?.().catch(() => false) ?? false
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务',
-          details: accelerating ? { endpoint, status: response.status, route: 'direct' } : { endpoint, status: response.status },
+          summary: relayNetworkPassSummary(route && line ? { line, fellBack: fellBack || (route.automatic && route.settled && line === 'primary') } : null, accelerating),
+          details: {
+            endpoint,
+            status: response.status,
+            ...(accelerating ? { route: 'direct' } : {}),
+            ...(line ? { line } : {}),
+            ...(fellBack ? { fellBack: true } : {}),
+            ...relayRouteChangeDetails(route),
+          },
         }
       },
     },
@@ -2361,19 +2817,39 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             : otherProxySettingsOutcome(await inspectProxy(signal)),
           inspectAppProxyRouteUnlessAccelerating(),
         ])
-        return withAppProxyRoute(variables, route)
+        return withAppProxyRoute(variables, route, dependencies.siteDirectActive?.() ?? false)
       },
     },
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '电脑里另外设过的工具地址或密钥',
-      run: () => withIgnoredCodexHome(
-        withEnvironmentOverrideFix(
-          environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
-          platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
-        ),
-        inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
-      ),
+      run: async () => {
+        const relayProviders = new Set(providerIds.filter((provider) => {
+          const inspection = providerInspections.get(provider)
+          return inspection !== undefined && providerAccountMode(inspection) === 'relay'
+        }))
+        const environment = collectEnvironmentOverrides(env, accountBaseUrls, userHome)
+        // 读不了是哪个文件、为什么，只进日志不进报告；原文里可能带着用户名，先脱敏。
+        const skipped = (file: string, error: unknown): void => {
+          log?.('info', 'diagnostics.shell-settings.skipped', '终端设置文件没读', { file, raw: sanitize(errorChainText(error)) })
+        }
+        const matches = platform === 'darwin'
+          ? withShellSettingsOverrides(
+            environment,
+            await collectMacosShellOverrides(userHome, relayProviders, accountBaseUrls, skipped),
+          )
+          : environment
+        return withIgnoredCodexHome(
+          withEnvironmentOverrideFix(
+            environmentOverrideOutcome(
+              matches,
+              (match) => platform === 'darwin' && droppedByMacosLauncher(match.provider, relayProviders),
+            ),
+            platform === 'win32' && clearableEnvironmentOverrides(env, accountBaseUrls, userHome).length > 0,
+          ),
+          inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
+        )
+      },
     },
     {
       code: 'WORKSPACE_CONFIG_OVERRIDE',
@@ -2401,12 +2877,20 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: 'Claude Code 跑命令前要不要先问你',
       run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
     },
+    {
+      code: 'HOME_FOLDER_LEFTOVERS',
+      title: '个人文件夹里早先留下的设置',
+      run: () => homeFolderLeftoversOutcome({
+        untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
+        trustedBy: inspectHomeFolderTrust(providerRoots),
+      }),
+    },
   ]
 
-  const items = reconcileCertificateTrustWithNetwork(
+  const items = reconcileNodeRuntimeWithClis(reconcileCertificateTrustWithNetwork(
     (await Promise.all(checks.map((check) => runIsolatedCheck(check, timeoutMs, sanitize))))
       .filter((item): item is DiagnosticItem => item !== null),
-  )
+  ))
   return {
     version: 1,
     generatedAt: now().toISOString(),

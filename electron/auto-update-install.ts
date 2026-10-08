@@ -3,8 +3,12 @@
  *
  * 规矩是不在用户正用着的时候把软件关掉重开，所以只有两个时机：
  * - **用户自己退出时**：直接装，不再弹「顺手装上吗」那一问（main.ts 的 confirmQuit）。
+ *   系统关机、重启、注销不算：安装器会被一起结束，留给下次打开。
  * - **下次打开软件时**：上一次运行就已经下好了，这次启动刚打开、用户还没开始用，装上。
- *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。
+ *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。开机自启的要等开机安静期过了才查
+ *   更新（login-launch.ts），「刚打开」从那时算；窗口一直没打开过时没人在看，就不预告、
+ *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装。Windows 上那就等用户
+ *   第一次打开窗口，再照平常打开时那样先预告再装（resolveLaunchInstallMode）。
  *
  * 第二条最怕的是死循环：安装器每次都起不来，软件就会每次一打开就关掉。所以每个版本
  * 在启动时只试一次，先记下「试过了」再去装；没装成的版本退回到「退出时装」和更新页
@@ -14,23 +18,37 @@
  * 退出时装同样每个版本只自动试一次：授权窗被点了「否」、安装器没起来时，软件已经
  * 退出了，这次失败只能等下次打开时从记录里认出来（见 resolvePreviousAutoInstallFailure）。
  * 认出来之后这个版本不再自动装，只在提示气泡和更新页留「重新安装」，别让授权窗一直弹。
+ * 装上了的版本，打开时就从记录里清掉（resolveRecordToWriteAtLaunch）：客户之后装回旧版，
+ * 旧版再下好它时不能被当成上次没装上。
+ *
+ * Windows 上账号不在管理员组的电脑（公司、学校配的，家里长辈的子账号）两个时机都不装：
+ * 授权窗口要输一个管理员账号的密码，他多半没有，自动装只会把软件关掉、再弹一个他填不了的
+ * 窗口。下好后由提示说清楚，等有管理员账号的人在更新页点「重启安装」（第二十四批 2）。
  *
  * 记录读坏了一律当作没有记录：最多少装一次，绝不会多装。
  */
+import fs from 'node:fs'
 import path from 'node:path'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
-import type { UpdateInstallMethod, UpdateSnapshot } from './updater'
+import { updateInstallLaunchTimeoutCode, type UpdateInstallMethod, type UpdateSnapshot } from './updater'
 
 const storeLabel = '自动更新记录'
 const MAX_STORE_BYTES = 4 * 1024
 const VERSION_PATTERN = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,64})?$/
 
 /**
- * 启动后多久之内下好的才算「打开时装」。本地缓存命中加上 SHA-512 复核通常几秒就完；
- * 超过这个时间才下好，说明是这次现场下载的，用户多半已经在用了，留到退出时再装。
+ * 开始查更新后多久之内下好的才算「打开时装」。本地缓存命中加上 SHA-512 复核通常几秒就完；
+ * 超过这个时间才下好，说明是这次现场下载的，用户多半已经在用了，留到退出时再装。开机自启
+ * 的安静期里不查更新，从安静期结束算（main.ts）。
  */
 export const LAUNCH_INSTALL_WINDOW_MS = 2 * 60 * 1_000
+
+/**
+ * 后台装好新版后，安装器最晚在开始装之后多久把它重新拉起来。Mac 的安装器要解包、核对
+ * 签名再换掉程序，慢的机器也就一两分钟；过了这个时间才打开的，当成用户自己打开的。
+ */
+export const BACKGROUND_RELAUNCH_WINDOW_MS = 10 * 60 * 1_000
 
 /** 启动时自动装之前，预告通知摆出来之后等多久再关窗去装。 */
 export const LAUNCH_INSTALL_NOTICE_MS = 5_000
@@ -44,9 +62,17 @@ export interface PendingUpdateRecord {
   attemptedVersion: string | null
   /** 已经在退出时自动装过的版本。可选＝旧记录，当作没试过。 */
   quitAttemptedVersion?: string | null
+  /** 开机自启时在后台开始装的版本。可选＝没有。 */
+  backgroundInstall?: BackgroundInstall | null
 }
 
-export const emptyPendingUpdateRecord: PendingUpdateRecord = { downloadedVersion: null, attemptedVersion: null, quitAttemptedVersion: null }
+export interface BackgroundInstall {
+  version: string
+  /** 开始装的时间（毫秒时间戳）。 */
+  startedAt: number
+}
+
+export const emptyPendingUpdateRecord: PendingUpdateRecord = { downloadedVersion: null, attemptedVersion: null, quitAttemptedVersion: null, backgroundInstall: null }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -54,6 +80,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseVersion(value: unknown): string | null {
   return typeof value === 'string' && VERSION_PATTERN.test(value) ? value : null
+}
+
+function parseBackgroundInstall(value: unknown): BackgroundInstall | null {
+  if (!isRecord(value)) return null
+  const version = parseVersion(value.version)
+  const startedAt = value.startedAt
+  if (!version || typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt <= 0) return null
+  return { version, startedAt }
 }
 
 export function parsePendingUpdateRecord(content: string): PendingUpdateRecord {
@@ -64,6 +98,7 @@ export function parsePendingUpdateRecord(content: string): PendingUpdateRecord {
       downloadedVersion: parseVersion(value.downloadedVersion),
       attemptedVersion: parseVersion(value.attemptedVersion),
       quitAttemptedVersion: parseVersion(value.quitAttemptedVersion),
+      backgroundInstall: parseBackgroundInstall(value.backgroundInstall),
     }
   } catch {
     return { ...emptyPendingUpdateRecord }
@@ -77,19 +112,48 @@ export function resolveDownloadedVersionToRecord(snapshot: UpdateSnapshot, recor
   return version && version !== record.downloadedVersion ? version : null
 }
 
+/**
+ * 启动时要写回的记录，不用改时返回 null。后台装的那一条只认一次，读到就清掉。记着的版本
+ * 就是正在运行的这一版，说明已经装上了，「下好了」「试过了」都清掉：留着的话，客户装回
+ * 旧版以后，旧版再下好这一版时会照「试过了」说它上次没装上，之后退出、打开都不再自动装。
+ * 只清和这一版一样的：比它旧的，可能是本机版本被撤回后往回退的那一版（updater.ts 的
+ * allowDowngrade），它没装上就得一直记着，不然每次退出都再去装一次，Windows 上授权窗口
+ * 一回回地弹。
+ */
+export function resolveRecordToWriteAtLaunch(record: PendingUpdateRecord, currentVersion: string): PendingUpdateRecord | null {
+  const settled: PendingUpdateRecord = {
+    downloadedVersion: forgetInstalledVersion(record.downloadedVersion, currentVersion),
+    attemptedVersion: forgetInstalledVersion(record.attemptedVersion, currentVersion),
+    quitAttemptedVersion: forgetInstalledVersion(record.quitAttemptedVersion, currentVersion),
+    backgroundInstall: null,
+  }
+  const unchanged = settled.downloadedVersion === record.downloadedVersion
+    && settled.attemptedVersion === record.attemptedVersion
+    && settled.quitAttemptedVersion === (record.quitAttemptedVersion ?? null)
+    && !record.backgroundInstall
+  return unchanged ? null : settled
+}
+
+function forgetInstalledVersion(version: string | null | undefined, currentVersion: string): string | null {
+  return version === currentVersion ? null : version ?? null
+}
+
 export interface LaunchInstallInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
   /** 本次启动时读到的记录，不是运行中改写过的那份。 */
   recordAtLaunch: PendingUpdateRecord
+  /** 从开始查更新算：普通打开从启动算，开机自启的从安静期结束算。 */
   elapsedSinceLaunchMs: number
   /** 有安装任务在跑（装 CLI、装 Node 之类）时不打断。 */
   busy: boolean
+  /** Windows 上这个账号不在管理员组（windows-elevation.ts 问出来的 'standard'）。缺省＝不是，或者没问出来。 */
+  standardAccount?: boolean
 }
 
 /** 返回要在启动时装上的版本；不该装时返回 null。 */
 export function decideLaunchInstall(input: LaunchInstallInput): string | null {
-  if (!input.autoUpdate || input.busy) return null
+  if (!input.autoUpdate || input.busy || input.standardAccount) return null
   // 交给系统安装器的版本（Linux）从不自己装：一打开（常常是开机自启）就弹一个要开机密码
   // 的窗口，客户只会当成来路不明的东西点掉。
   if (input.snapshot.installMethod === 'system-installer') return null
@@ -102,23 +166,165 @@ export function decideLaunchInstall(input: LaunchInstallInput): string | null {
   return version
 }
 
+export type LaunchInstallMode = 'notice' | 'background' | 'window' | 'skip'
+
+export interface LaunchInstallModeInput {
+  platform: NodeJS.Platform
+  /** 开机自启拉起的；后台装好新版后重新拉起的那一次也算。 */
+  launchedAtLogin: boolean
+  /** 这次运行里主窗口显示过。 */
+  windowShown: boolean
+  /** 加速可能还连着（开机后从托盘开的）。装之前要断开，装好重新打开时不会自己连回去。 */
+  accelerationActive: boolean
+  /** 装的时候一个窗口也不弹（canInstallUnattended）。 */
+  unattended: boolean
+}
+
+/**
+ * 打开时装怎么装。照旧是先预告、几秒后关掉软件去装，装好打开窗口（'notice'）。开机自启、
+ * 窗口一直没打开过时没人在看：预告没人看得到，装好也不该自己弹出窗口，就不预告、在后台装，
+ * 装好照旧待在后台（'background'）。装的时候会弹出东西等人点（Windows 的授权窗口、Mac 要
+ * 输开机密码），或者开机后已经从托盘开了加速，开机时就不装。Windows 上每次装都弹授权窗口，
+ * 开机自启、只关机不退出的人留到退出时就一直装不上，所以等用户第一次打开窗口、人在电脑前
+ * 了，再照平常打开时那样先预告再装（'window'）；其余留到退出时（'skip'）。
+ */
+export function resolveLaunchInstallMode(input: LaunchInstallModeInput): LaunchInstallMode {
+  if (!input.launchedAtLogin || input.windowShown) return 'notice'
+  if (input.unattended && !input.accelerationActive) return 'background'
+  return input.platform === 'win32' ? 'window' : 'skip'
+}
+
+export interface LaunchInstallRecheckInput {
+  version: string
+  autoUpdate: boolean
+  snapshot: UpdateSnapshot
+  busy: boolean
+  mode: Exclude<LaunchInstallMode, 'skip'>
+  windowShown: boolean
+  accelerationActive: boolean
+}
+
+/**
+ * 预告等完、或者后台装写完记录，真去装之前再看一眼：这几秒里用户可能关了自动更新、开始
+ * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。等到第一次
+ * 打开窗口才装的，离开机可能已经过了几个小时，预告之前也先看这一眼：开着加速时不装，用户
+ * 这时多半正靠它连着别的工具，装的时候加速会断，装好也不会自己连回去，留到退出时再装。
+ */
+export function shouldStillInstallAtLaunch(input: LaunchInstallRecheckInput): boolean {
+  if (!input.autoUpdate || input.busy) return false
+  if (resolveInstallableUpdateOnQuit(input.snapshot)?.version !== input.version) return false
+  if (input.mode === 'notice') return true
+  if (input.accelerationActive) return false
+  return input.mode === 'window' || !input.windowShown
+}
+
+/**
+ * 后台装没装成、软件还开着（安装器没起来、Mac 的安装器核对没过）。这时要撤回「重新拉起时
+ * 待在后台」那条记录，不然之后十分钟里用户自己退出再打开，窗口出不来。安装器迟迟没接手的
+ * 那条超时不算：Mac 的安装器取包、核对签名常常超过它，之后照样会装好、重新拉起。
+ */
+export function isBackgroundInstallFailed(record: PendingUpdateRecord, snapshot: UpdateSnapshot): boolean {
+  if (!record.backgroundInstall || snapshot.failedStep !== 'install' || !snapshot.error) return false
+  return snapshot.error.code !== updateInstallLaunchTimeoutCode
+}
+
+export interface UnattendedInstallInput {
+  platform: NodeJS.Platform
+  installMethod?: UpdateInstallMethod | null
+  /** Mac 上本程序的 .app；认不出来、或者从磁盘映像和系统的只读临时副本里运行时是 null。 */
+  bundlePath: string | null
+  /** 测试用；缺省看当前用户能不能写。 */
+  canWrite?: (target: string) => boolean
+  /** 测试用；缺省解开符号链接。 */
+  realPath?: (target: string) => string
+}
+
+/**
+ * 装新版本时会不会一个窗口也不弹。Windows 的安装包装在「所有用户」目录下，安装器每次都要
+ * 系统授权窗口；交给系统安装器的（Linux）每次都要输开机密码。Mac 的安装器（Squirrel.Mac 的
+ * ShipIt）在程序包或它所在的文件夹当前用户改不了时，要输开机密码才装（SQRLUpdater.m 的
+ * launchPrivileged：先解开符号链接，再看两处能不能写），照它的看法看一遍。看不清楚一律当作会弹。
+ */
+export function canInstallUnattended(input: UnattendedInstallInput): boolean {
+  if (input.platform !== 'darwin' || input.installMethod === 'system-installer' || !input.bundlePath) return false
+  const canWrite = input.canWrite ?? canWriteAsCurrentUser
+  try {
+    const target = (input.realPath ?? fs.realpathSync)(input.bundlePath)
+    return canWrite(target) && canWrite(path.dirname(target))
+  } catch {
+    return false
+  }
+}
+
+function canWriteAsCurrentUser(target: string): boolean {
+  try {
+    fs.accessSync(target, fs.constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 这次启动是不是后台装新版后、安装器把它重新拉起的那一次。是的话照开机自启那样待在后台，
+ * 装之前它就待在后台。Mac 的安装器装没装成都会重新拉起（ShipIt-main.m：Launch regardless
+ * of whether installation succeeds or fails），所以不看版本：没装成的那一次也不弹窗口，
+ * 「上次没装上」留到用户自己打开窗口时再看。隔了很久才打开的当成用户自己打开的。
+ */
+export function isRelaunchAfterBackgroundInstall(record: PendingUpdateRecord, now: number): boolean {
+  const install = record.backgroundInstall
+  if (!install) return false
+  const elapsed = now - install.startedAt
+  return elapsed >= 0 && elapsed <= BACKGROUND_RELAUNCH_WINDOW_MS
+}
+
 export interface QuitInstallInput {
   autoUpdate: boolean
   version: string | null
   record: PendingUpdateRecord
   /** 缺省＝安装器接手退出（Windows、Mac）。 */
   installMethod?: UpdateInstallMethod | null
+  /** 系统已经在关机、重启或注销。缺省＝没有。 */
+  systemShuttingDown?: boolean
+  /** 见 LaunchInstallInput.standardAccount。 */
+  standardAccount?: boolean
 }
 
 /**
  * 退出时有下好的更新：自动更新开着、这个版本还没在退出时自动试过，就直接装；否则
  * 回到「顺手装上吗」那一问，由用户决定。交给系统安装器的版本（Linux）每次都问：装的时候
  * 要他在系统窗口里点「安装」、输开机密码，没问过就弹出来只会被当成可疑窗口关掉。
+ *
+ * 系统在关机、重启或注销时这次不装也不问（'later'）：安装器会被关机一起结束，问了也没人
+ * 回答。也不记「退出时试过了」，记了下次打开就会被当成上次没装上；不记，下次打开照常
+ * 自动装（decideLaunchInstall）。
+ *
+ * 账号不在管理员组的 Windows 电脑也是不装不问，直接退出（'leave'）：问了他多半点「安装
+ * 并退出」，软件关掉后弹出来的是要管理员密码的窗口，每次退出都这样白跑一趟。下好的版本
+ * 留着，等有管理员账号的人在更新页点。自动更新关着时照旧问，那是他自己要的。
  */
-export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' {
+export function decideQuitInstall(input: QuitInstallInput): 'install' | 'ask' | 'later' | 'leave' {
+  if (input.systemShuttingDown) return 'later'
   const version = parseVersion(input.version)
   if (!input.autoUpdate || !version || input.installMethod === 'system-installer') return 'ask'
+  if (input.standardAccount) return 'leave'
   return input.record.quitAttemptedVersion === version ? 'ask' : 'install'
+}
+
+/** 这次退出时自动装写下的「试过了」，连同写之前记录里的值，撤回时要用。 */
+export interface QuitInstallAttempt {
+  version: string
+  previous: string | null
+}
+
+/**
+ * 退出时自动装已经记下「试过了」，可系统关机抢在安装器装完之前（Mac 的安装器在本进程里
+ * 准备，会被一起结束）：撤回那条记录，下次打开照常自动装，不说「上次没装上」。记录已经
+ * 不是这次写的样子时不动，返回 null。
+ */
+export function undoQuitInstallAttempt(record: PendingUpdateRecord, attempt: QuitInstallAttempt | null): PendingUpdateRecord | null {
+  if (!attempt || record.quitAttemptedVersion !== attempt.version) return null
+  return { ...record, quitAttemptedVersion: attempt.previous }
 }
 
 /**
@@ -141,9 +347,12 @@ export interface AutoInstallNotice {
 /**
  * 自动装之前的那句预告。Windows 的安装包装在「所有用户」目录下，装的时候会弹系统授权
  * 窗口；事先不说一声，用户看到的就是软件自己关了、又凭空冒出一个窗口问要不要允许。
+ *
+ * 星芒这次本身就带着管理员权限在跑时（`elevated`：自带 Administrator、关了 UAC、右键以管理员
+ * 身份运行，见 windows-elevation.ts 的 highIntegrity）不弹授权窗口，那句不说（已知19）。
  */
-export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform): AutoInstallNotice {
-  const consent = platform === 'win32' ? 'Windows 弹出授权窗口时请点「是」。' : ''
+export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform, elevated = false): AutoInstallNotice {
+  const consent = platform === 'win32' && !elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
   if (moment === 'quit') {
     return {
       title: '正在安装星芒AI新版本',
@@ -212,6 +421,7 @@ export function createPendingUpdateStore(options: { filePath: string }): Pending
         downloadedVersion: parseVersion(record.downloadedVersion),
         attemptedVersion: parseVersion(record.attemptedVersion),
         quitAttemptedVersion: parseVersion(record.quitAttemptedVersion),
+        backgroundInstall: parseBackgroundInstall(record.backgroundInstall),
       }
       await writeAtomicSafeUtf8File(options.filePath, `${JSON.stringify(value)}\n`, storeLabel)
     },

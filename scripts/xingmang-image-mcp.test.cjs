@@ -4,6 +4,7 @@ const { mkdtemp, writeFile, rm, symlink } = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
+const { pathToFileURL } = require('node:url')
 const test = require('node:test')
 
 const serverPath = path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai', 'scripts', 'mcp-server.mjs')
@@ -35,7 +36,7 @@ function createLineReader(child) {
  * Starts a fake relay and the MCP server against it. `respond` receives the
  * request and decides the reply, so each test can script its own relay.
  */
-async function withServer(config, respond, run) {
+async function withServer(config, respond, run, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-mcp-'))
   const configPath = path.join(root, 'config.json')
   const requests = []
@@ -46,6 +47,7 @@ async function withServer(config, respond, run) {
       const request = {
         url: req.url,
         authorization: req.headers.authorization,
+        originalUrl: req.headers['x-test-original-url'],
         contentType: req.headers['content-type'] || '',
         body: Buffer.concat(chunks),
       }
@@ -58,26 +60,47 @@ async function withServer(config, respond, run) {
   await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
   const port = httpServer.address().port
   await writeFile(configPath, JSON.stringify({ baseUrl: `http://127.0.0.1:${port}`, ...config }))
-  const child = spawn(process.execPath, [serverPath], {
+  const argv = [serverPath]
+  if (options.mockFetch) {
+    // Intercept every fetch before loading the MCP module. Production-looking
+    // test origins must never reach DNS, TLS or a real account backend.
+    const preloadPath = path.join(root, 'mock-fetch.mjs')
+    await writeFile(preloadPath, `const originalFetch = globalThis.fetch
+globalThis.fetch = function (input, init) {
+  const originalUrl = new URL(input)
+  return originalFetch(${JSON.stringify(`http://127.0.0.1:${port}`)} + originalUrl.pathname, {
+    ...init, headers: { ...init.headers, 'x-test-original-url': originalUrl.href },
+  })
+}
+`)
+    argv.unshift('--import', pathToFileURL(preloadPath).href)
+  }
+  const child = spawn(process.execPath, argv, {
     env: {
       ...process.env,
       XINGMANG_IMAGE_CONFIG_PATH: configPath,
-      XINGMANG_IMAGE_MCP_ALLOW_INSECURE_LOCAL: '1',
+      XINGMANG_IMAGE_MCP_ALLOW_INSECURE_LOCAL: options.mockFetch ? '' : '1',
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const next = createLineReader(child)
+  const closed = new Promise((resolve) => child.once('close', resolve))
   let id = 0
   async function call(method, params = {}) {
     id += 1
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
-    return next()
+    let timer
+    try {
+      return await Promise.race([next(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('MCP test response timed out')), 5000)
+      })])
+    } finally { clearTimeout(timer) }
   }
   try {
     await run({ call, requests, root, child, next })
   } finally {
     child.kill()
-    await new Promise((resolve) => child.once('close', resolve))
+    await closed
     await new Promise((resolve) => httpServer.close(resolve))
     await rm(root, { recursive: true, force: true })
   }
@@ -86,6 +109,35 @@ async function withServer(config, respond, run) {
 function ok() {
   return { status: 200, body: { data: [{ b64_json: fixture }] } }
 }
+
+test('MCP server accepts only the registered HTTPS origins', async () => {
+  for (const baseUrl of ['https://xm.solov.cc', 'https://api.solov.cc', 'https://xm-direct.solov.cc']) {
+    await withServer({ apiKey: 'sk-fixture-not-real', baseUrl }, ok, async ({ call, requests }) => {
+      const result = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'fixture' } })
+      assert.equal(result.result.isError, undefined, baseUrl)
+      assert.equal(result.result.content[0].data, fixture)
+      assert.equal(requests[0].originalUrl, `${baseUrl}/v1/images/generations`)
+      assert.equal(requests[0].authorization, 'Bearer sk-fixture-not-real')
+    }, { mockFetch: true })
+  }
+})
+
+test('MCP server refuses unregistered scheme host port credentials and URL suffixes before sending a key', async () => {
+  // 38.147.105.28:8443 是服务端关掉的临时测试入口，直连改走 xm-direct.solov.cc 以后也不再放行。
+  for (const baseUrl of ['https://38.147.105.28:8443', 'http://xm.solov.cc', 'https://xm.solov.cc:8443',
+    'https://api.solov.cc:8443', 'https://xm-direct.solov.cc:8443',
+    'https://38.147.105.28', 'https://38.147.105.28:8444', 'http://38.147.105.28:8443',
+    'https://38.147.105.29:8443', 'https://xm.solov.cc.evil.example', 'https://anything.solov.cc',
+    'https://user:password@38.147.105.28:8443', 'https://38.147.105.28:8443?key=fixture',
+    'https://38.147.105.28:8443#fragment']) {
+    await withServer({ apiKey: 'sk-fixture-not-real', baseUrl }, ok, async ({ call, requests }) => {
+      const result = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'fixture' } })
+      assert.equal(result.result.isError, true, baseUrl)
+      assert.match(result.result.content[0].text, /服务地址无效/)
+      assert.equal(requests.length, 0)
+    }, { mockFetch: true })
+  }
+})
 
 test('MCP server exposes image tool and returns MCP image content', async () => {
   await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, requests }) => {

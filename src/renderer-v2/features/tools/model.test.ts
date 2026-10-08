@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -57,6 +58,36 @@ describe('renderer tool source', () => {
     expect(readyOnceRepaired({ ...shadowed, codexProviderShadowed: false }, 'codex', storage)).toBe(false)
   })
 
+  // 2026-10-02 客户的「无法加载组织设置」：Codex 自己读不了 config.toml。修的时候不换账号来源。
+  it('flags a Codex config Codex cannot read and repairs it on the account it already uses', () => {
+    const broken = { ...relayConfig(), configurationOwnership: 'account' as const, configBroken: true }
+    expect(brokenConfigOf(broken, 'codex')).toBe('codexConfig')
+    expect(brokenConfigOf({ ...broken, codexAuthBroken: true }, 'codex')).toBe('codexConfig')
+    expect(brokenConfigOf(relayConfig(), 'codex')).toBeNull()
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: 'chatgpt', actualBaseUrl: '' })).toBe('official')
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: 'apikey', actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: null, actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('codexConfig', { actualBaseUrl: '' })).toBe('account')
+  })
+
+  // 已知44：Codex 读不了 auth.json 时当成没登录；Claude Code、Gemini CLI 读不了 settings.json 时星芒会把它认成官方账号。
+  it('flags the other files the tools cannot read and keeps an official login official', () => {
+    expect(brokenConfigOf({ codexAuthBroken: true }, 'codex')).toBe('codexAuth')
+    expect(brokenConfigOf({ configBroken: true }, 'claude')).toBe('claudeSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'gemini')).toBe('geminiSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'grok')).toBeNull()
+    expect(brokenConfigOf({ codexAuthBroken: true }, 'claude')).toBeNull()
+    expect(brokenConfigOf({ configBroken: false, codexAuthBroken: false }, 'codex')).toBeNull()
+
+    const relay = relayConfig()
+    expect(brokenConfigRepairTarget('codexAuth', relay)).toBe('account')
+    expect(brokenConfigRepairTarget('codexAuth', { ...relay, codexAuthMode: 'chatgpt' })).toBe('official')
+    expect(brokenConfigRepairTarget('codexAuth', { ...relay, actualBaseUrl: '' })).toBe('official')
+    expect(brokenConfigRepairTarget('claudeSettings', { ...relay, actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('geminiSettings', relay)).toBe('account')
+    expect(brokenConfigRepairTarget('geminiSettings', { ...relay, authType: 'oauth-personal' })).toBe('official')
+  })
+
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {
     const storage = memoryStorage()
     const config = relayConfig()
@@ -66,6 +97,60 @@ describe('renderer tool source', () => {
     expect(sourceFor(config, 'codex', storage)).toBe('manual')
     expect(connectionReady(config, 'codex', storage)).toBe(true)
     expect(providerFor('codexDesktop')).toBe('codex')
+  })
+
+  describe('known routes for the same relay site', () => {
+    const primaryBaseUrl = relayProviderBaseUrls('solov', 'primary').codex
+    const directBaseUrl = relayProviderBaseUrls('solov', 'direct').codex
+    const routes = [
+      { baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://38.147.105.28:8443/v1' },
+      { baseUrl: 'https://38.147.105.28:8443/v1', actualBaseUrl: 'https://xm.solov.cc/v1' },
+      { baseUrl: primaryBaseUrl, actualBaseUrl: directBaseUrl },
+      { baseUrl: directBaseUrl, actualBaseUrl: primaryBaseUrl },
+    ]
+
+    it.each(routes)('recognizes the current account through $actualBaseUrl', (route) => {
+      const config = { ...relayConfig(), ...route, configurationOwnership: 'changed' as const, configurationAccountMatched: true }
+      expect(sourceFor(config, 'codex', null)).toBe('account')
+      expect(connectionReady(config, 'codex', null)).toBe(true)
+      expect(sourceFor({ ...config, configurationAccountMatched: false }, 'codex', null)).toBe('changed')
+    })
+
+    it.each(routes)('preserves manual ownership through $actualBaseUrl', (route) => {
+      const storage = memoryStorage()
+      const config = { ...relayConfig(), ...route, configurationOwnership: 'changed' as const, configurationAccountMatched: true }
+      expect(sourceFor({ ...config, configurationOwnership: 'manual' }, 'codex', null)).toBe('manual')
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('manual')
+      expect(connectionReady(config, 'codex', storage)).toBe(true)
+    })
+
+    it.each(routes)('keeps stale ChatGPT tokens over $actualBaseUrl in the repair state', (route) => {
+      const storage = memoryStorage()
+      const config = {
+        ...relayConfig(), ...route, hasApiKey: false, matchesRelay: false,
+        codexAuthMode: 'chatgpt' as const, configurationOwnership: 'account' as const,
+      }
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('changed')
+      expect(connectionReady(config, 'codex', storage)).toBe(false)
+      expect(sourceFor({ ...config, actualBaseUrl: '' }, 'codex', storage)).toBe('official')
+    })
+
+    it.each([
+      'https://api.solov.cc/v1',
+      'https://other.example/v1',
+      'https://xm-direct.solov.cc.evil.example/v1',
+    ])('does not turn a different site into the current account: %s', (actualBaseUrl) => {
+      const config = {
+        ...relayConfig(), actualBaseUrl, matchesRelay: false,
+        configurationOwnership: 'account' as const, configurationAccountMatched: true,
+      }
+      const storage = memoryStorage()
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('unknown')
+      expect(connectionReady(config, 'codex', storage)).toBe(false)
+    })
   })
 
   describe('a configuration CC Switch left behind', () => {
@@ -706,5 +791,38 @@ describe('renderer subscription warning', () => {
 
   it('warns regardless of the wallet when only the subscription is spent', () => {
     expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10 月 3 日到期，到期后工具就用不了了，续费后可继续使用。')
+  })
+})
+
+describe('renderer official account subtitle', () => {
+  const now = new Date(2026, 9, 6, 12, 0, 0).getTime()
+
+  it('names the plan and how soon it renews, with the full date for the hover', () => {
+    const renewsAt = new Date(2026, 9, 10, 12, 0, 0).toISOString()
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: renewsAt }, now))
+      .toEqual({ text: '官方账号 · Plus · 4天后续期', renewal: '2026年10月10日续期' })
+  })
+
+  it('counts hours and minutes when the renewal is less than a day away', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Pro', officialAccountRenewsAt: new Date(now + 5 * 3_600_000).toISOString() }, now).text)
+      .toBe('官方账号 · Pro · 5小时后续期')
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Pro', officialAccountRenewsAt: new Date(now + 20 * 60_000).toISOString() }, now).text)
+      .toBe('官方账号 · Pro · 20分钟后续期')
+  })
+
+  it('shows the plan alone when no renewal date was read', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: null }, now))
+      .toEqual({ text: '官方账号 · Plus' })
+  })
+
+  it('leaves out a renewal date that has already passed or cannot be read', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: new Date(now - 86_400_000).toISOString() }, now))
+      .toEqual({ text: '官方账号 · Plus' })
+    expect(officialAccountSubtitle({ officialAccountPlan: null, officialAccountRenewsAt: 'not a date' }, now))
+      .toEqual({ text: '官方账号' })
+  })
+
+  it('keeps the plain wording when nothing about the plan is known', () => {
+    expect(officialAccountSubtitle({}, now)).toEqual({ text: '官方账号' })
   })
 })

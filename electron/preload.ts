@@ -42,6 +42,7 @@ const ipcInvokeChannels = {
   installCli: 'cli:install',
   cancelCliInstall: 'cli:cancel-install',
   uninstallCli: 'cli:uninstall',
+  cleanUninstallLeftovers: 'cli:clean-uninstall-leftovers',
   checkCliUpdate: 'cli:check-update',
   getCodexSetupStatus: 'setup:codex-status',
   installCodexDesktop: 'desktop:install-codex',
@@ -228,6 +229,8 @@ const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onProxyBypassEnded: 'network:proxy-bypass-ended',
+  onRelayRouteChanged: 'network:relay-route-changed',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }
@@ -264,7 +267,7 @@ const xingmangApi: XingmangApi = {
   saveConfig: (payload) => invoke('saveConfig', payload),
   openProviderConfigDirectory: (provider) => invoke('openProviderConfigDirectory', provider),
   configureExternalTool: (tool, options) => invoke('configureExternalTool', tool, options),
-  scanExternalClients: (force) => invoke('scanExternalClients', force),
+  scanExternalClients: (force, options) => invoke('scanExternalClients', force, options),
   installExternalClient: (tool) => invoke('installExternalClient', tool),
   cancelExternalClientInstall: (tool) => invoke('cancelExternalClientInstall', tool),
   launchExternalClient: (tool) => invoke('launchExternalClient', tool),
@@ -287,6 +290,7 @@ const xingmangApi: XingmangApi = {
   installCli: (provider, version) => invoke('installCli', provider, version),
   cancelCliInstall: (provider) => invoke('cancelCliInstall', provider),
   uninstallCli: (provider, options) => invoke('uninstallCli', provider, options),
+  cleanUninstallLeftovers: (provider) => invoke('cleanUninstallLeftovers', provider),
   checkCliUpdate: (provider) => invoke('checkCliUpdate', provider),
   getCodexSetupStatus: () => invoke('getCodexSetupStatus'),
   installCodexDesktop: () => invoke('installCodexDesktop'),
@@ -314,8 +318,8 @@ const xingmangApi: XingmangApi = {
   getUpdateState: () => invoke('getUpdateState'),
   runStartupUpdate: () => invoke('runStartupUpdate'),
   checkForUpdates: () => invoke('checkForUpdates'),
-  downloadUpdate: () => invoke('downloadUpdate'),
-  installUpdate: () => invoke('installUpdate'),
+  downloadUpdate: (options) => options === undefined ? invoke('downloadUpdate') : invoke('downloadUpdate', options),
+  installUpdate: (options) => options === undefined ? invoke('installUpdate') : invoke('installUpdate', options),
   listSessions: (query) => invoke('listSessions', query),
   getSessionDetail: (sessionId) => invoke('getSessionDetail', sessionId),
   exportSession: (sessionId) => invoke('exportSession', sessionId),
@@ -474,6 +478,8 @@ const xingmangApi: XingmangApi = {
   onUpdateState: (listener) => subscribe('onUpdateState', listener),
   onAccountPaymentWindowTerminal: (listener) => subscribe('onAccountPaymentWindowTerminal', listener),
   onAiChatStream: (listener) => subscribe('onAiChatStream', listener),
+  onProxyBypassEnded: (listener) => subscribe('onProxyBypassEnded', listener),
+  onRelayRouteChanged: (listener) => subscribe('onRelayRouteChanged', listener),
 }
 
 contextBridge.exposeInMainWorld('xingmang', xingmangApi)
