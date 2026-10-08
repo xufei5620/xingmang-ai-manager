@@ -169,7 +169,7 @@ async function main() {
           flag: fs.existsSync(path.join(process.cwd(), 'dist', 'renderer-v2.flag')),
         }))
       }).catch((error) => ({ error: String(error) }))
-      evidence.platformBridgePage = await page.evaluate(() => ({ platform: typeof window.xingmangPlatform, bridge: typeof window.xingmang })).catch((error) => ({ error: String(error) }))
+      evidence.platformBridgePage = await withDeadline('platform bridge page', stepBudgetMs, () => page.evaluate(() => ({ platform: typeof window.xingmangPlatform, bridge: typeof window.xingmang }))).catch((error) => ({ error: String(error) }))
       process.stderr.write(`platform bridge diagnosis: ${JSON.stringify({ main: evidence.platformBridge, page: evidence.platformBridgePage }, null, 2)}\n`)
     }
     assert.ok(platform, 'The isolated native platform preload must be available')
