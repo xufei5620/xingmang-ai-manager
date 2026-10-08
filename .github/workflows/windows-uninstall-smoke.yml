@@ -11,6 +11,10 @@
 # 文件夹还能再补出来；桌面路径里有联接、图标换成了符号链接时，卸载程序不跟过去删。
 # 步骤见 scripts/windows-uninstall-shortcuts-smoke.ps1。
 #
+# 还查一件也只有真安装程序才有的事：装到 Program Files 以外、谁都能改的文件夹时，安装目录
+# 被收紧成只有管理员能改；从老版本留下的宽松目录升级时同样收紧，目录里指向别处的联接不跟过去改；
+# 装在 Program Files 里的原样不动。步骤见 scripts/windows-install-directory-acl-smoke.ps1。
+#
 # 打一次包要几分钟，所以不进必需的 quality 门禁，只在碰到这条路径的改动上跑，
 # 也可以手动触发。
 name: windows-uninstall-smoke
@@ -28,6 +32,7 @@ on:
       - scripts/windows-acceleration-recovery.ps1
       - scripts/windows-uninstall-cleanup-smoke.ps1
       - scripts/windows-uninstall-shortcuts-smoke.ps1
+      - scripts/windows-install-directory-acl-smoke.ps1
       - .github/workflows/windows-uninstall-smoke.yml
   workflow_dispatch:
 
@@ -73,3 +78,11 @@ jobs:
           $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1
           if ($null -eq $installer) { throw 'no installer was built' }
           ./scripts/windows-uninstall-shortcuts-smoke.ps1 -Installer $installer.FullName
+      - name: Installing outside Program Files leaves the folder admin-only, upgrades from a loose folder lock it again, links are not followed
+        # 一次装进 Program Files 再卸，一次装进宽松目录、一次升级、一次卸载。
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1
+          if ($null -eq $installer) { throw 'no installer was built' }
+          ./scripts/windows-install-directory-acl-smoke.ps1 -Installer $installer.FullName

@@ -35,6 +35,11 @@ export interface ManagedCliKeySyncSummary {
   imageSkillWarning?: string
   /** 技能已写好、但星芒画图没登记进某些工具时给首页的一句话（已是客户能看懂的文案）；缺省 = 没问题。 */
   imageMcpWarning?: string
+  /**
+   * imageMcpWarning 只是因为这台电脑没有 Node.js（画图工具靠它跑）。首页凭这个跟着运行环境卡的说法走：
+   * 一个命令行工具都没装时那一行写 Node.js「可选」，这句就不上首页（yoyo 10-8）。缺省 = 不是这个原因。
+   */
+  imageMcpNeedsNode?: boolean
 }
 
 export interface ManagedCliConfigurationOutcome {
