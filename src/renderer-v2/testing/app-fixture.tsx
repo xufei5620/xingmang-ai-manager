@@ -67,7 +67,7 @@ if (query.has('restoring')) session = { authenticated: false, account: null, res
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
 // ?mergeRoute：服务状态把换线路切回老办法（R6 merge），星芒账号换线路照旧由界面整份写入；不带时由主进程定点改地址（xm 三线路 C9），界面不迁。
-if (query.has('mergeRoute')) settings.toolRouteRewrite = 'merge'
+if (query.has('mergeRoute')) settings = { ...settings, toolRouteRewrite: 'merge' }
 // ?autoRelay=direct|primary|pending：星芒账号线路没选过（「自动」），后台查出来走直连 / 退回了默认线路 /
 // 还没查出来（直连适配第二步）。不带它时照旧写死一条线路，别的用例不会被开机那一轮迁移带着走。
 const storedRoutes: RelayRoutePreferences = query.has('autoRelay') ? { 'solov-api': 'primary' } : { solov: query.has('directRelayActive') ? 'direct' : 'primary', 'solov-api': 'primary' }
