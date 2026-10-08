@@ -91,6 +91,14 @@ async function main() {
   }))
   const launchedPid = application.process().pid
   if (launchedPid) trackProcessIds([launchedPid])
+  // The platform installer reports its own failures only on the main process's
+  // stderr, so the diagnosis below needs that stream to say why it gave up.
+  const mainOutput = []
+  for (const stream of [application.process().stdout, application.process().stderr]) {
+    stream?.on('data', (chunk) => {
+      if (mainOutput.length < 400) mainOutput.push(...String(chunk).split(/\r?\n/).filter(Boolean))
+    })
+  }
 
   const checks = []
   const errors = []
@@ -170,8 +178,24 @@ async function main() {
           flag: fs.existsSync(path.join(process.cwd(), 'dist', 'renderer-v2.flag')),
         }))
       }).catch((error) => ({ error: String(error) }))
+      evidence.platformBridgeRegistration = await evaluateInMainProcess('platform bridge registration probe', ({ app, BrowserWindow }) => {
+        const fs = process.getBuiltinModule('node:fs')
+        const path = process.getBuiltinModule('node:path')
+        const filePath = path.join(process.cwd(), 'dist-electron', 'platform', 'preload.js')
+        const window = BrowserWindow.getAllWindows()[0]
+        const result = { filePath, exists: fs.existsSync(filePath), windowCreatedListeners: app.listenerCount('browser-window-created'), willQuitListeners: app.listenerCount('will-quit') }
+        if (!window) return result
+        try {
+          const id = window.webContents.session.registerPreloadScript({ type: 'frame', filePath })
+          window.webContents.session.unregisterPreloadScript(id)
+          return { ...result, registered: true }
+        } catch (error) {
+          return { ...result, registered: false, error: String(error) }
+        }
+      }).catch((error) => ({ error: String(error) }))
+      evidence.platformBridgeOutput = mainOutput.filter((line) => /renderer-v2 platform|platform|preload/i.test(line)).slice(0, 40)
       evidence.platformBridgePage = await withDeadline('platform bridge page', stepBudgetMs, () => page.evaluate(() => ({ platform: typeof window.xingmangPlatform, bridge: typeof window.xingmang }))).catch((error) => ({ error: String(error) }))
-      process.stderr.write(`platform bridge diagnosis: ${JSON.stringify({ main: evidence.platformBridge, page: evidence.platformBridgePage }, null, 2)}\n`)
+      process.stderr.write(`platform bridge diagnosis: ${JSON.stringify({ main: evidence.platformBridge, page: evidence.platformBridgePage, registration: evidence.platformBridgeRegistration, output: evidence.platformBridgeOutput }, null, 2)}\n`)
     }
     assert.ok(platform, 'The isolated native platform preload must be available')
     passedAssertions.push('isolated-platform-preload-available')
