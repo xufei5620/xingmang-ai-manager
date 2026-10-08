@@ -219,18 +219,16 @@ gh pr create \
 
 标了 `serial-only` 的任务，**同一时间只能有一个人做**。涉及：
 
-- **IPC 三件套**（`ipc-contract.ts` / `ipc.ts` / `preload.ts`）
 - **`src/styles.css`**
 - **`system-service.ts` / `App.tsx` 的结构性改动**
 
-**为什么**：`ipc.test.ts:222` 断言 IPC 注册顺序与契约键顺序逐项相等。两个人并行加通道，**即使 git 文本合并干净，CI 也一定红**。
+**为什么**：`src/styles.css` 是全局作用域、无模块化的单文件，`system-service.ts` / `App.tsx` 是枢纽文件，两个人同时动几乎必冲突。
 
 **怎么协调**（没有中央调度，靠约定）：
 
 1. 领 `serial-only` 任务前，先看有没有别的**同类** `serial-only` 任务处于「已认领但未合并」状态
 2. 有的话，等它合并再领
 3. 你领了之后，尽快做完提 PR，不要占着不动
-4. **特别注意**：#18（对接 new-api）和 #21（画布）都会加 IPC 通道，**绝对不能同时开工**
 
 ---
 
@@ -262,7 +260,7 @@ gh pr create \
       （Windows 上换成 env:windows；标签名只有 env:any / env:windows / env:macos / env:server），
       挑一个未认领、依赖已满足、非 needs-decision 的任务，按 docs/AGENT-RUNBOOK.md 执行
 ```
-⚠️ 但定时轮询要**特别小心 serial-only 冲突**——无人盯着的自动执行最容易两个 agent 撞 IPC。建议定时轮询只用于领 `env:any` 且非 `serial-only` 的安全任务。
+⚠️ 但定时轮询要**特别小心 serial-only 冲突**——无人盯着的自动执行最容易两个 agent 撞同一个热点文件。建议定时轮询只用于领 `env:any` 且非 `serial-only` 的安全任务。
 
 ---
 

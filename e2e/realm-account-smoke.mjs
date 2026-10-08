@@ -521,6 +521,26 @@ async function openLoginWithUi(page) {
   await dialog.or(accountLogin).first().waitFor({ state: 'visible', timeout: fixtureReadyTimeoutMs })
   if (!await dialog.isVisible()) await accountLogin.click()
 }
+// 新账号登录后先盖一层开始引导，「稍后继续」在引导替账号核对 Key 时是灰的。夹具不答历史账号的直连线路，
+// 程序起来 30 秒出头「自动」改走默认线路，界面重读设置后会再核对一轮 Key，按钮又灰下去几百毫秒。Playwright
+// 的 click 先确认按钮能点、再发鼠标事件，按钮正好在这两步之间变灰，浏览器就把这次点击丢掉，click() 照样
+// 返回；引导一直盖着，等不到「切换账号」（#530 两次、#942 一次，这一步都在第 29.7 秒前后开始）。所以点完
+// 要看引导真的收起了，没收起就再点。
+const startGuideCloseMs = 5_000
+async function pauseStartGuide(page) {
+  const pause = page.getByTestId('guide-pause')
+  const deadline = Date.now() + fixtureReadyTimeoutMs
+  let clicks = 0
+  while (await pause.count()) {
+    const left = deadline - Date.now()
+    if (left <= 0) throw new Error(`the start guide stayed open through ${clicks} clicks on 稍后继续 within ${fixtureReadyTimeoutMs}ms`)
+    if (clicks) progress(`the start guide is still open after click ${clicks} on 稍后继续, clicking again`)
+    await pause.click({ timeout: left })
+    clicks += 1
+    // Never hand Playwright a zero: it reads that as no timeout at all.
+    await pause.waitFor({ state: 'detached', timeout: Math.max(1, Math.min(deadline - Date.now(), startGuideCloseMs)) }).catch(() => undefined)
+  }
+}
 async function loginWithUi(page, siteId) {
   await chooseAccountSource(page, siteId === 'solov' ? '星芒账号' : '历史账号')
   await page.getByTestId('login-account').fill('same@example.test')
@@ -545,7 +565,7 @@ async function loginWithUi(page, siteId) {
   await page.getByTestId('login-dialog').waitFor({ state: 'hidden', timeout: fixtureReadyTimeoutMs })
   await expect.poll(() => evaluateInRenderer(page, 'account session after login', () => window.xingmang.getAccountSession()),
     { timeout: fixtureReadyTimeoutMs }).toMatchObject({ authenticated: true, siteId, account: { userId: 7 } })
-  if (await page.getByTestId('guide-pause').count()) await page.getByTestId('guide-pause').click({ timeout: fixtureReadyTimeoutMs })
+  await pauseStartGuide(page)
   await page.getByRole('button', { name: '切换账号', exact: true }).waitFor({ timeout: fixtureReadyTimeoutMs })
   // The UI performs the first sync; explicitly repeating it checks reuse.
   const synchronized = await evaluateInRenderer(page, 'managed CLI key sync', () => window.xingmang.syncManagedCliKeys())

@@ -43,7 +43,7 @@
 - legacy 渲染层（`src/` 下除 `src/renderer-v2/` 以外的源码，加 `tooling/legacy-renderer/`）**只接受安全修复**：违反 `AGENTS.md` 第 4 节 I1–I15 的问题照常修，新功能、界面调整、一般与建议级缺陷、重构、补测试一律只在 `src/renderer-v2/` 做。
 - **不删代码、不改行为**：不定退役日期，`npm run compile:legacy` 与 `npm run dev:legacy` 保持可用，legacy 的既有 vitest 用例继续在 `npm test` 里跑。冻结不是退役。
 - **#30**（拆 legacy `App.tsx`）按这条决定关闭：它的目的是让多个 agent 能并行改 legacy，冻结之后这个目的不再存在。v2 侧的同类问题（`pages-account.tsx` / `pages-maintenance.tsx` / `pages-management.tsx` 三块大文件）另行处理。
-- 落地位置：`AGENTS.md` 第 2/3/5（T14）/7/10 节、`docs/MODULE-MAP.md`、`docs/AGENT-RUNBOOK.md`（领任务前置条件）、`docs/COLLABORATION.md`（第 4.1 节 ④）、`.claude/rules/legacy-renderer.md`（按路径自动加载）、`.claude/rules/renderer-v2.md`。
+- 落地位置：`AGENTS.md` 第 2/3/5（T14）/7/10 节、`docs/MODULE-MAP.md`、`docs/AGENT-RUNBOOK.md`（领任务前置条件）、`docs/COLLABORATION.md`（第 4.1 节 ③）、`.claude/rules/legacy-renderer.md`（按路径自动加载）、`.claude/rules/renderer-v2.md`。
 - legacy 若连构建或启动都不成立（`R-F1` 那一类），属于「冻结还有没有意义」的问题，需要 yoyo 重新拍板，不在 legacy 上做功能性修复来救它。
 
 ## 已验证

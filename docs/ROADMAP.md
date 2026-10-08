@@ -406,7 +406,6 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 | 必须串行（标 `serial-only`） | 原因 |
 |---|---|
-| IPC 通道增删（`ipc-contract.ts` / `ipc.ts` / `preload.ts`） | 注册顺序与契约键顺序强耦合，两人并行加通道**即使文本合并干净 CI 也必红** |
 | `src/styles.css`（约 8000 行） | 全局作用域、无模块化 |
 | `system-service.ts`(约 2900) / `App.tsx`(约 1800) 的结构性改动 | 枢纽文件 |
 

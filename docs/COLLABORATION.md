@@ -118,23 +118,15 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ### 4.1 必须串行的改动（标 `serial-only`）
 
-**① 新增/删除/移动 IPC 通道**
-
-`ipc.test.ts:222` 断言 `ipcMain.handle` 的注册顺序与 `ipcInvokeChannels` 键顺序**逐项相等**（数组 `toEqual` 对顺序敏感）。
-
-> ⚠️ **两个 agent 各自加一个通道，即使 git 文本合并干净，CI 也一定红。**
-
-涉及 `ipc-contract.ts` / `ipc.ts` / `preload.ts` 三件套的任务，同一时间只能有一个人在做。
-
-**② 修改 `src/styles.css`（约 8000 行）**
+**① 修改 `src/styles.css`（约 8000 行）**
 
 单文件、无模块化、全局作用域。两个 agent 同时加样式几乎必冲突。
 
-**③ 大范围重构枢纽文件**
+**② 大范围重构枢纽文件**
 
 `electron/system-service.ts`（约 2900 行）、`src/App.tsx`（约 1800 行）的结构性改动。
 
-**④ legacy 渲染层已冻结**
+**③ legacy 渲染层已冻结**
 
 `src/` 下除 `src/renderer-v2/` 以外的源码与 `tooling/legacy-renderer/` 自 2026-09-19 起**只接受安全修复**（审查总表 `R-S12`，yoyo 拍板）。`src/styles.css` 与 `src/App.tsx` 因此基本不再是并行冲突点——它们的结构性重构不做了。口径见 `AGENTS.md` T14 与 `.claude/rules/legacy-renderer.md`。
 
@@ -209,7 +201,6 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 
 **同一时间，同一热点文件只能有一个人。** 因为不再有「各管一摊」的天然隔离，这条比以前更关键：
 
-- IPC 三件套（`ipc-contract.ts` / `ipc.ts` / `preload.ts`）→ `serial-only`
 - `src/styles.css`（6027 行）→ `serial-only`
 - `system-service.ts`(3300) / `App.tsx`(2855) 的结构性改动 → `serial-only`
 
@@ -245,7 +236,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 ## 8. 常见问题
 
 **Q：我的改动需要加 IPC 通道，但有人正在改 IPC？**
-A：等待。IPC 三件套是 `serial-only`，见 4.1。
+A：不用等。`ipc.test.ts` 排序后比对注册的通道和契约，新通道放在哪一行都行；三处（`ipc-contract.ts` / `ipc.ts` / `preload.ts`）保持一致即可，见 `AGENTS.md` T1。
 
 **Q：测试在我的平台上是红的，怎么判断是不是我改坏的？**
 A：Windows 本机基线是 9 个失败（全是符号链接 `EPERM`），macOS、Linux 与 CI 是 0（见 §5）。超出基线的先在干净的 `main` 上复跑确认，仍红即为环境或新回归，不要带着红提交。

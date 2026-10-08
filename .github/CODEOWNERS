@@ -9,3 +9,7 @@
 
 # 构建、打包、发布与运维脚本
 /scripts/ @xufei5620
+
+# IPC 通道清单：通道数就是渲染进程能碰到的主进程入口（I5）。ipc.test.ts
+# 不再按顺序比对之后，加通道不会再因为顺序让 CI 变红，改由这里点名审查。
+/electron/ipc-contract.ts @xufei5620
