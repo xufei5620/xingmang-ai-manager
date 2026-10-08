@@ -170,7 +170,19 @@ describe('tool-path-probe', () => {
       lookup: lookupOf([{ address: v4, family: 4 }]),
       request: fakeRequest({ [v4]: { kind: 'respond', chunks: ['{"success":true,"pad":"', 'x'.repeat(17 * 1024), '"}'] } }),
     })
-    expect(result).toMatchObject({ ok: false, kind: 'reset' })
+    expect(result).toMatchObject({ ok: false, kind: 'http' })
+    expect(toolPathTlsRejected(result)).toBe(false)
+  })
+
+  it('keeps a hanging resolver inside the total time budget', async () => {
+    const started = Date.now()
+    const result = await probeToolPathDirect(directOrigin, {
+      lookup: () => new Promise(() => undefined),
+      request: fakeRequest({}),
+      timeoutMs: 50,
+    })
+    expect(result).toEqual({ ok: false, kind: 'timeout', addresses: [], attempts: [] })
+    expect(Date.now() - started).toBeLessThan(2_000)
   })
 
   it('does not count a response that is still arriving at the deadline as a failure', async () => {
@@ -241,6 +253,16 @@ describe('tool-path-probe', () => {
     expect(calls[0]).toMatchObject({ redirect: 'manual', credentials: 'omit' })
     expect(await probeToolPathThroughFetch(fetchReturning(new Response('', { status: 302 })), primaryOrigin)).toMatchObject({ ok: false, kind: 'http' })
     expect(await probeToolPathThroughFetch(fetchReturning(new Response('{"success":false}')), primaryOrigin)).toMatchObject({ ok: false, kind: 'http' })
+    const oversized = new Response(`{"success":true,"pad":"${'x'.repeat(17 * 1024)}"}`)
+    expect(await probeToolPathThroughFetch(fetchReturning(oversized), primaryOrigin)).toMatchObject({ ok: false, kind: 'http' })
+    // Like a real fetch, the body errors once the request signal fires.
+    const trickle: typeof fetch = async (_input, init) => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"succ'))
+        init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), { once: true })
+      },
+    }))
+    expect(await probeToolPathThroughFetch(trickle, primaryOrigin, 50)).toMatchObject({ ok: false, kind: 'slow' })
     const failing: typeof fetch = async () => { throw new TypeError('fetch failed', { cause: codedError('ECONNREFUSED') }) }
     expect(await probeToolPathThroughFetch(failing, primaryOrigin)).toMatchObject({ ok: false })
   })

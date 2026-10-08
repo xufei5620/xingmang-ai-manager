@@ -270,6 +270,29 @@ describe('tool route controller', () => {
     expect(run.controller.snapshot().lastChange).toMatchObject({ reason: 'incident' })
   })
 
+  it('clears the server switching line when the incident wait ends with every line down', async () => {
+    const run = harness({ status: status({ incident: { line: 'direct', state: 'switched', since: null } }) })
+    run.results.primary = fail('reset', [cloudflare])
+    await failDirectThreeRounds(run)
+    expect(run.controller.snapshot().serverSwitching).toBe(true)
+    await run.fireNext()
+    expect(run.controller.line()).toBe('direct')
+    expect(run.snapshots.at(-1)).toMatchObject({ serverSwitching: false, outage: { reason: 'unreachable' } })
+    await run.fireUntil(() => run.snapshots.filter((value) => value.serverSwitching).length === 2)
+    await run.fireUntil(() => run.events('relay.route.unreachable').length === 2)
+    expect(run.snapshots.at(-1)).toMatchObject({ serverSwitching: false })
+    expect(run.controller.snapshot().serverSwitching).toBe(false)
+  })
+
+  it('keeps the current line when it is only slow after the incident wait', async () => {
+    const run = harness({ status: status({ incident: { line: 'direct', state: 'switching', since: null } }) })
+    await failDirectThreeRounds(run)
+    run.results.direct = fail('slow')
+    await run.fireNext()
+    expect(run.controller.snapshot()).toMatchObject({ line: 'direct', serverSwitching: false, lastChange: null })
+    expect(run.writes.at(-1)?.failures.direct).toBeUndefined()
+  })
+
   it('keeps the current line when it recovers during the incident wait', async () => {
     const run = harness({ status: status({ incident: { line: 'direct', state: 'suspected', since: null } }) })
     await failDirectThreeRounds(run)

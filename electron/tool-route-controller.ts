@@ -509,7 +509,8 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     roundBusy = true
     const again = await probe(current)
     if (disposed || token !== epoch || round !== active) return
-    if (again.ok) {
+    // 通了，或者慢但有进展（不算失败）：接着用这条。
+    if (again.ok || !toolPathFailureCounted(again)) {
       roundBusy = false
       round = null
       clearTransient()
@@ -558,14 +559,13 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
 
   function enterOutage(active: NonNullable<typeof round>, failure: ToolRouteProbeResult): void {
     round = null
-    // 服务端切换等够了、CF 也不通：改按三线全挂提示。
-    incidentSince = null
     const reason = outageReason(failure.kind)
     log('warn', 'relay.route.unreachable', '工具线路的候选这会儿都不通，配置先不改', { line: current, reason, trigger: active.trigger })
-    if (!outage || outage.reason !== reason) {
-      outage = { reason, since: outage?.since ?? now() }
-      emit()
-    }
+    // 服务端切换等够了、CF 也不通：改按三线全挂提示，「服务端正在切换」那一行同时收起。
+    const changed = incidentSince !== null || !outage || outage.reason !== reason
+    incidentSince = null
+    if (!outage || outage.reason !== reason) outage = { reason, since: outage?.since ?? now() }
+    if (changed) emit()
     notice({ kind: 'outage', reason })
     watch()
   }

@@ -106,27 +106,67 @@ parentPort.postMessage(certificates)
 let trustedCertificates: Promise<string[]> | null = null
 let bundledRootFingerprints: Set<string> | null = null
 
-function readSystemCertificates(): Promise<string[]> {
+// 证书库卡住（Windows 证书服务、macOS securityd 没响应）时最多等这么久，这次就只用自带的，下次探测再读。
+const systemCertificatesTimeoutMs = 5_000
+
+// 读不出来给 null：不记住，下次探测再试。
+function readSystemCertificates(): Promise<string[] | null> {
   return new Promise((resolve) => {
     let worker: Worker
     try {
       worker = new Worker(systemCertificatesWorkerSource, { eval: true })
     } catch {
-      resolve([])
+      resolve(null)
       return
     }
+    const timer = setTimeout(() => {
+      resolve(null)
+      void worker.terminate()
+    }, systemCertificatesTimeoutMs)
+    timer.unref?.()
     worker.once('message', (value: unknown) => {
+      clearTimeout(timer)
       resolve(Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [])
       void worker.terminate()
     })
-    worker.once('error', () => resolve([]))
-    worker.once('exit', () => resolve([]))
+    worker.once('error', () => {
+      clearTimeout(timer)
+      resolve(null)
+    })
+    worker.once('exit', () => {
+      clearTimeout(timer)
+      resolve(null)
+    })
   })
 }
 
 function caCertificates(): Promise<string[]> {
-  trustedCertificates ??= readSystemCertificates().then((system) => [...new Set([...tls.rootCertificates, ...system])])
+  if (!trustedCertificates) {
+    const loading = readSystemCertificates().then((system) => {
+      if (system === null && trustedCertificates === loading) trustedCertificates = null
+      return [...new Set([...tls.rootCertificates, ...(system ?? [])])]
+    })
+    trustedCertificates = loading
+  }
   return trustedCertificates
+}
+
+// 解析和读证书也算在总时限里：时限到了就给 fallback，不等它们回来。
+function beforeDeadline<T>(task: Promise<T>, signal: AbortSignal, fallback: () => T): Promise<T> {
+  if (signal.aborted) return Promise.resolve(fallback())
+  return new Promise<T>((resolve, reject) => {
+    function onAbort(): void {
+      resolve(fallback())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    task.then((value) => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(value)
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', onAbort)
+      reject(error)
+    })
+  })
 }
 
 function bundledFingerprints(): Set<string> {
@@ -230,7 +270,7 @@ function attempt(context: AttemptContext, address: string, family: 4 | 6): Promi
       }
       void readBoundedBody(response, maximumStatusBytes).then((text) => {
         finish(statusBodySucceeded(text) ? { ok: true, ...(intercepted ? { intercepted: true } : {}) } : { ok: false, kind: 'http' })
-      }, () => finish({ ok: false, kind: context.signal.aborted ? 'slow' : 'reset' }))
+      }, () => finish({ ok: false, kind: context.signal.aborted ? 'slow' : 'http' }))
     })
     request.on('error', (error) => {
       finish({ ok: false, kind: context.signal.aborted ? headers ? 'slow' : 'timeout' : toolPathFailureKind(error) })
@@ -251,16 +291,19 @@ export async function probeToolPathDirect(origin: string, dependencies: ToolPath
   const deadline = setTimeout(() => controller.abort(), timeoutMs)
   deadline.unref?.()
   try {
-    let resolved: { address: string; family: number }[]
+    let resolved: { address: string; family: number }[] | null
     try {
-      resolved = await (dependencies.lookup ?? ((hostname) => dns.promises.lookup(hostname, { all: true, verbatim: true })))(url.hostname)
+      const lookup = dependencies.lookup ?? ((hostname: string) => dns.promises.lookup(hostname, { all: true, verbatim: true }))
+      resolved = await beforeDeadline(lookup(url.hostname), controller.signal, () => null)
     } catch (error) {
       return { ok: false, kind: toolPathFailureKind(error) === 'timeout' ? 'timeout' : 'dns', addresses: [], attempts: [] }
     }
+    if (resolved === null) return { ok: false, kind: 'timeout', addresses: [], attempts: [] }
     const candidates = resolved.filter((entry) => entry.family === 4 || entry.family === 6)
     const addresses = candidates.map((entry) => entry.address)
     if (!candidates.length) return { ok: false, kind: 'dns', addresses, attempts: [] }
-    const context = { url, request: dependencies.request ?? https.request, signal: controller.signal, ca: await caCertificates() }
+    const context = { url, request: dependencies.request ?? https.request, signal: controller.signal,
+      ca: await beforeDeadline(caCertificates(), controller.signal, () => [...tls.rootCertificates]) }
     const attempts: ToolPathAttempt[] = []
     const winner = await new Promise<ToolPathAttempt | null>((resolve) => {
       let started = 0
@@ -304,6 +347,7 @@ export async function probeToolPathDirect(origin: string, dependencies: ToolPath
  */
 export async function probeToolPathThroughFetch(fetchImpl: typeof fetch, origin: string, timeoutMs = toolPathTimeoutMs): Promise<ToolPathResult> {
   const url = assertToolPathOrigin(origin)
+  const signal = AbortSignal.timeout(timeoutMs)
   let response: Response
   try {
     response = await fetchImpl(new URL('/api/status', url).href, {
@@ -312,7 +356,7 @@ export async function probeToolPathThroughFetch(fetchImpl: typeof fetch, origin:
       redirect: 'manual',
       cache: 'no-store',
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     })
   } catch (error) {
     const reason = classifyNetworkFailure(error)
@@ -328,7 +372,8 @@ export async function probeToolPathThroughFetch(fetchImpl: typeof fetch, origin:
     const text = await readBoundedResponseText(response, maximumStatusBytes, '线路探测')
     return statusBodySucceeded(text) ? { ok: true, addresses: [], attempts: [] } : { ok: false, kind: 'http', addresses: [], attempts: [] }
   } catch {
-    return { ok: false, kind: 'slow', addresses: [], attempts: [] }
+    // 时限到了正文还在来才算「慢」；超过上限（门户、拦截页回的大网页）、读到一半断了都算回的不对。
+    return { ok: false, kind: signal.aborted ? 'slow' : 'http', addresses: [], attempts: [] }
   }
 }
 
