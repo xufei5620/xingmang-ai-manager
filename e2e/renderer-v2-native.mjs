@@ -91,6 +91,14 @@ async function main() {
   }))
   const launchedPid = application.process().pid
   if (launchedPid) trackProcessIds([launchedPid])
+  // The platform installer reports its own failures only on the main process's
+  // stderr, so the diagnosis below needs that stream to say why it gave up.
+  const mainOutput = []
+  for (const stream of [application.process().stdout, application.process().stderr]) {
+    stream?.on('data', (chunk) => {
+      if (mainOutput.length < 400) mainOutput.push(...String(chunk).split(/\r?\n/).filter(Boolean))
+    })
+  }
 
   const checks = []
   const errors = []
@@ -141,13 +149,54 @@ async function main() {
     // collected`). Acquiring the first renderer window establishes the ready
     // event before using main-process evaluation.
     const profile = await evaluateInMainProcess('profile path', ({ app }) => app.getPath('userData'))
-    assert.equal(path.resolve(profile), path.resolve(userData), 'Native smoke must use its isolated profile')
+    // macOS reports the temp root through its /private/var target while mkdtemp
+    // hands back the /var symlink, so both sides are compared resolved.
+    assert.equal(await fs.realpath(profile), await fs.realpath(userData), 'Native smoke must use its isolated profile')
     passedAssertions.push('runs-in-an-isolated-profile')
     page.on('pageerror', (error) => errors.push(error.message))
 
     progress('waiting for the welcome page')
     await withDeadline('welcome page', stepBudgetMs, () => page.getByTestId('welcome-page').waitFor({ timeout: stepBudgetMs }))
     const platform = await withDeadline('platform preload', stepBudgetMs, () => page.evaluate(() => window.xingmangPlatform?.getState()))
+    if (!platform) {
+      // Without this the failure says only that the bridge is missing; these
+      // are the facts that tell which link of the chain broke.
+      evidence.platformBridge = await evaluateInMainProcess('platform bridge diagnosis', ({ BrowserWindow }) => {
+        // Playwright evaluates this without a CommonJS require in scope.
+        const fs = process.getBuiltinModule('node:fs')
+        const path = process.getBuiltinModule('node:path')
+        return BrowserWindow.getAllWindows().map((window) => ({
+          title: window.getTitle(),
+          hasParent: window.getParentWindow() !== null,
+          type: window.webContents.getType(),
+          url: window.webContents.getURL(),
+          preloads: window.webContents.session.getPreloadScripts().map((script) => ({
+            type: script.type,
+            filePath: script.filePath,
+            exists: fs.existsSync(script.filePath),
+          })),
+          flag: fs.existsSync(path.join(process.cwd(), 'dist', 'renderer-v2.flag')),
+        }))
+      }).catch((error) => ({ error: String(error) }))
+      evidence.platformBridgeRegistration = await evaluateInMainProcess('platform bridge registration probe', ({ app, BrowserWindow }) => {
+        const fs = process.getBuiltinModule('node:fs')
+        const path = process.getBuiltinModule('node:path')
+        const filePath = path.join(process.cwd(), 'dist-electron', 'platform', 'preload.js')
+        const window = BrowserWindow.getAllWindows()[0]
+        const result = { filePath, exists: fs.existsSync(filePath), windowCreatedListeners: app.listenerCount('browser-window-created'), willQuitListeners: app.listenerCount('will-quit') }
+        if (!window) return result
+        try {
+          const id = window.webContents.session.registerPreloadScript({ type: 'frame', filePath })
+          window.webContents.session.unregisterPreloadScript(id)
+          return { ...result, registered: true }
+        } catch (error) {
+          return { ...result, registered: false, error: String(error) }
+        }
+      }).catch((error) => ({ error: String(error) }))
+      evidence.platformBridgeOutput = mainOutput.filter((line) => /renderer-v2 platform|platform|preload/i.test(line)).slice(0, 40)
+      evidence.platformBridgePage = await withDeadline('platform bridge page', stepBudgetMs, () => page.evaluate(() => ({ platform: typeof window.xingmangPlatform, bridge: typeof window.xingmang }))).catch((error) => ({ error: String(error) }))
+      process.stderr.write(`platform bridge diagnosis: ${JSON.stringify({ main: evidence.platformBridge, page: evidence.platformBridgePage, registration: evidence.platformBridgeRegistration, output: evidence.platformBridgeOutput }, null, 2)}\n`)
+    }
     assert.ok(platform, 'The isolated native platform preload must be available')
     passedAssertions.push('isolated-platform-preload-available')
     await assertNoStartupDialog(page, evidence, 'on the welcome page')

@@ -196,6 +196,22 @@ describe('external desktop client lifecycle', () => {
     expect(onDetectionErrorDetail).toHaveBeenCalledTimes(5)
   })
 
+  it('leaves the logged failures of the other clients alone when a launch looks at one client', async () => {
+    const onDetectionErrorDetail = vi.fn<NonNullable<ExternalClientRuntimeOptions['onDetectionErrorDetail']>>()
+    const failing = { clients: [candidate('opencode')], errors: { workbuddy: '无法读取客户端数字签名' }, errorDetails: { workbuddy: 'Access is denied.' } }
+    let output: Record<string, unknown> = failing
+    const f = fixture({ onDetectionErrorDetail })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify(output)))
+    await f.runtime.scan()
+    expect(onDetectionErrorDetail).toHaveBeenCalledOnce()
+    // What the script prints before OpenCode opens: OpenCode alone, nothing about WorkBuddy.
+    output = { clients: [candidate('opencode')], errors: {} }
+    await f.runtime.launch('opencode')
+    output = failing
+    await f.runtime.scan({ force: true })
+    expect(onDetectionErrorDetail).toHaveBeenCalledOnce()
+  })
+
   it('detects signed installed desktop applications and current-user Claude Store without executing their binaries', async () => {
     const f = fixture()
     f.setInventory([candidate('workbuddy'), appx(), candidate('opencode')])
@@ -764,6 +780,90 @@ describe('external desktop client lifecycle', () => {
     gate.resolve()
     await opened
     expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ executable: explorer, argv: ['shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude'] }))
+  })
+
+  it('has the inventory before a launch look at the client being opened alone, AppX only for Claude Desktop', async () => {
+    const f = fixture()
+    f.setInventory([candidate('workbuddy'), appx(), candidate('opencode')])
+    await f.runtime.launch('workbuddy')
+    await f.runtime.launch('claudeDesktop')
+    await f.runtime.scan()
+    const [workbuddy, claude, scan] = f.execute.mock.calls
+      .filter(([spec]) => spec.executable === powershell)
+      .map(([spec]) => Buffer.from(spec.argv.at(-1)!, 'base64').toString('utf16le'))
+    expect(workbuddy).toContain("$products = @($products | Where-Object { $_.tool -ceq 'workbuddy' })")
+    expect(workbuddy).not.toContain('Get-AppxPackage')
+    expect(workbuddy).not.toContain("'Appx'")
+    expect(claude).toContain("$products = @($products | Where-Object { $_.tool -ceq 'claudeDesktop' })")
+    expect(claude).toContain('Get-AppxPackage -Name Claude')
+    expect(claude).toContain("'Appx'")
+    // Every check on the client being opened stays.
+    for (const script of [workbuddy, claude]) {
+      expect(script).toContain('Get-AuthenticodeSignature -LiteralPath $exe')
+      expect(script).toContain('Test-LocalExecutablePath $exe')
+      expect(script).toContain('foreach ($root in $roots)')
+    }
+    expect(scan).not.toContain('Where-Object { $_.tool')
+    expect(scan).toContain('Get-AppxPackage -Name Claude')
+    expect(f.launchProcess).toHaveBeenNthCalledWith(1, expect.objectContaining({ argv: [candidate('workbuddy').path] }))
+    expect(f.launchProcess).toHaveBeenNthCalledWith(2, expect.objectContaining({ argv: ['shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude'] }))
+    // @ts-expect-error only the three clients compile; anything else is refused at run time as well
+    expect(() => windowsExternalClientInventoryScript([], "workbuddy' }); calc; #")).toThrow('未知客户端')
+  })
+
+  it('logs how long each part of a launch took, the inventory script\'s own sections included', async () => {
+    let clock = 1_000
+    const queue = new InstallationQueue()
+    const gate = deferred()
+    void queue.enqueue('existing-install', () => gate.promise)
+    const onLaunchTiming = vi.fn<NonNullable<ExternalClientRuntimeOptions['onLaunchTiming']>>()
+    const f = fixture({ now: () => clock, installationQueue: queue, onLaunchTiming, launchProcess: async () => { clock += 50 } })
+    const sections = { importMs: 310, registryMs: 920, processMs: 45, clientsMs: 130, signatureMs: 0, signaturesChecked: 0, signaturesReused: 1 }
+    f.execute.mockImplementation(async (spec) => {
+      clock += 2_000
+      return { ...commandResult(spec, JSON.stringify({ clients: [candidate('workbuddy')], errors: {}, timings: sections })), durationMs: 1_900 }
+    })
+    const opened = f.runtime.launch('workbuddy')
+    clock += 250
+    gate.resolve()
+    await opened
+    expect(onLaunchTiming.mock.calls).toEqual([[{ tool: 'workbuddy', queueWaitMs: 250, inventoryMs: 2_000, launchMs: 50, powershellMs: 1_900, ...sections }]])
+  })
+
+  it('passes on only the section timings the script reported as plain non-negative whole numbers', async () => {
+    const onLaunchTiming = vi.fn<NonNullable<ExternalClientRuntimeOptions['onLaunchTiming']>>()
+    const f = fixture({ onLaunchTiming })
+    const printed: unknown[] = [
+      { importMs: -1, registryMs: 1.5, processMs: '45', appxMs: 2 ** 60, clientsMs: 130, signaturesChecked: null, launchMs: 1, tool: 'claudeDesktop' },
+      // An older script printed none; a malformed list loses only the log line.
+      undefined, ['not', 'a', 'map'], 'slow',
+    ]
+    for (const timings of printed) {
+      f.execute.mockImplementationOnce(async (spec) => ({ ...commandResult(spec, JSON.stringify({ clients: [candidate('opencode')], errors: {}, timings })), durationMs: 700 }))
+      await f.runtime.launch('opencode')
+    }
+    const logged = onLaunchTiming.mock.calls.map(([timing]) => timing)
+    expect(logged.map(({ queueWaitMs, inventoryMs, launchMs, ...rest }) => rest)).toEqual([
+      { tool: 'opencode', powershellMs: 700, clientsMs: 130 },
+      { tool: 'opencode', powershellMs: 700 }, { tool: 'opencode', powershellMs: 700 }, { tool: 'opencode', powershellMs: 700 },
+    ])
+    expect(logged.every(({ queueWaitMs, inventoryMs, launchMs }) => [queueWaitMs, inventoryMs, launchMs].every((value) => typeof value === 'number'))).toBe(true)
+    expect(f.launchProcess).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not log timings for a launch that did not happen', async () => {
+    const onLaunchTiming = vi.fn<NonNullable<ExternalClientRuntimeOptions['onLaunchTiming']>>()
+    const f = fixture({ onLaunchTiming })
+    await expect(f.runtime.launch('opencode')).rejects.toThrow('尚未检测到客户端')
+    expect(onLaunchTiming).not.toHaveBeenCalled()
+  })
+
+  it('still reports a launch as done when its timings cannot be logged', async () => {
+    // The client is already with Explorer: a failure here must not send the customer to click again.
+    const f = fixture({ onLaunchTiming: () => { throw new Error('log unavailable') } })
+    f.setInventory([candidate('opencode')])
+    await expect(f.runtime.launch('opencode')).resolves.toBeUndefined()
+    expect(f.launchProcess).toHaveBeenCalledOnce()
   })
 
   it('limits Windows installation to available official architectures', async () => {
