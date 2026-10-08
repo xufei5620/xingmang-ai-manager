@@ -63,7 +63,7 @@ import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, u
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
 import { LaunchInstallNotice } from './features/app/LaunchInstallNotice'
-import { claudeDesktopRepairedNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, toolTemplateFilledNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { claudeDesktopRepairedNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, toolTemplateFilledNotice, toolRouteRestartNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
@@ -334,6 +334,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!notice.failure) return
     void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id), level: 'warn' }).catch(() => undefined)
   }, [native])
+  // 换线路的重开提示每条只弹一次：窗口重载、同一条提示又被读到时不再弹。
+  const shownRouteRestartHint = useRef<number | null>(null)
+  const showRouteRestartHint = useCallback((next: AppSettingsV2) => {
+    const hint = next.toolRouteRestartHint
+    if (!hint || shownRouteRestartHint.current === hint.id) return
+    shownRouteRestartHint.current = hint.id
+    const notice = toolRouteRestartNotice(hint)
+    if (notice) noteStartupCheck(notice)
+  }, [noteStartupCheck])
   const dismissStartupNotice = useCallback((id: StartupCheckId) => {
     setStartupNotices((current) => withoutStartupNotice(current, id))
   }, [])
@@ -390,6 +399,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       const claudeDesktopRepaired = claudeDesktopRepairedNotice(result.capabilities, result.platform.platform)
       if (claudeDesktopRepaired) noteStartupCheck(claudeDesktopRepaired)
+      showRouteRestartHint(result.settings)
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
@@ -399,7 +409,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (current) { setBootError(errorMessage(cause, '启动检查没有完成')); setBoot('failed') }
     })
     return () => { current = false }
-  }, [app, bootAttempt, noteStartupCheck])
+  }, [app, bootAttempt, noteStartupCheck, showRouteRestartHint])
   const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId, quiet = false) => {
     if (!settings || !Number.isSafeInteger(userId) || userId < 1) return
     const bootstrapScope = accountScope({ siteId: accountSite, account: { userId } as AccountSessionState['account'] })
@@ -673,11 +683,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const [next, config] = await Promise.all([app.readSettings(), native.getConfig()]).catch(() => [null, null] as const)
     if (!mounted.current || !next || !config) return
     setSettings(next)
+    showRouteRestartHint(next)
     void toolbox.refreshExternal(true).catch(() => undefined)
+    // 星芒账号的工具配置由主进程定点改到新线路（xm 三线路 C9），改完也是叫这一声：首页的线路标签跟着重读。
+    void toolbox.refreshConfig().catch(() => undefined)
     if (session.authenticated && session.account && accountRoutesPending(config, next)) {
       await runAccountBootstrap(session.account.userId, 'restore', true, undefined, siteId, true)
     }
-  }, [app, native, runAccountBootstrap, session.account, session.authenticated, siteId, toolbox.refreshExternal])
+  }, [app, native, runAccountBootstrap, session.account, session.authenticated, showRouteRestartHint, siteId, toolbox.refreshConfig, toolbox.refreshExternal])
   useEffect(() => {
     if (boot !== 'ready') return
     return native.onRelayRouteChanged?.(() => { void followRelayRoute() })
@@ -1723,6 +1736,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         else if ('displayCompat' in action) void chooseDisplayCompat(action.displayCompat)
         else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
+        else if ('restartCodexDesktop' in action) void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart') })
       }} />
     {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })} support={supportInput} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {nodeReplace && <NodeReplaceDialog version={toolbox.snapshot?.system.runtime.node.version} onClose={() => setNodeReplace(null)} onConfirm={() => {

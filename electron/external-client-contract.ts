@@ -43,6 +43,11 @@ export interface ExternalClientConnectionStatus {
    * （第四十三批 A）。缺省 = 没有要换的。
    */
   routePending?: boolean
+  /**
+   * routePending 的这一行不用客户回来点「重新检测」：星芒每 5 分钟、回到星芒窗口时看一眼它关没关，
+   * 关了就自动换（xm 三线路 C11，只有星芒账号这么做）。缺省 = 照旧要点「重新检测」。
+   */
+  routeRecheck?: boolean
 }
 
 export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {

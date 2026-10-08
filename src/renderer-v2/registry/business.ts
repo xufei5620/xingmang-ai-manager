@@ -394,6 +394,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'terminal', group: 'tools', label: '用哪个终端打开工具', keywords: [] },
   { id: 'install-location', group: 'tools', label: '工具装在哪里', keywords: [] },
   ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', label: route.label, keywords: ['线路', '直连', '备用', '重启', '连不上'] })),
+  { id: 'tool-route-restart-hints', group: 'network', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
   { id: 'mirror', group: 'network', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
   { id: 'proxy', group: 'network', label: '网络连接', keywords: ['代理', 'VPN', '梯子'] },
   { id: 'network-check', group: 'network', label: '网络检查', keywords: [] },

@@ -27,7 +27,7 @@ export function presentExternalClients(statuses: ExternalClientStatus[]) {
       detail: detectionFailureMessage(status.detectionError) ?? snapshotErrorMessage(status.configurationError) ?? (!status.installed ? status.installHint ?? definition.vendor
         : [status.version ? `v${status.version.replace(/^v/, '')}` : '版本暂未识别', status.running ? '运行中' : null,
           // 换了线路、客户端开着这次没换成（第四十三批 A）：这时摆模型名，客户看不出这一行还连着原来那条。
-          status.running && status.routePending ? '连接线路暂未改动，完全退出后点「重新检测」'
+          status.running && status.routePending ? status.routeRecheck ? '还开着，完全退出后会自动换到当前线路' : '连接线路暂未改动，完全退出后点「重新检测」'
             : status.model ?? (status.tool === 'claudeDesktop' && status.configurationReady ? '自动获取模型'
               : status.configurationSource === 'other' ? status.configurationReady === false ? '第三方推理配置待完善' : '已有第三方配置' : null)].filter(Boolean).join(' · ')),
     }]

@@ -3227,6 +3227,18 @@ export function SettingsPage({
             )}
           />
           {row(
+            'tool-route-restart-hints',
+            '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后只在首页标「需重开生效」。',
+            <Switch
+              checked={settings.toolRouteRestartHints !== false}
+              aria-label="换线路后提醒我重开工具"
+              testId="settings-tool-route-restart-hints"
+              onChange={(toolRouteRestartHints) =>
+                void update({ toolRouteRestartHints })
+              }
+            />,
+          )}
+          {row(
             'mirror',
             '自动选择可用来源；下载失败时可切换后重试',
             <Segment

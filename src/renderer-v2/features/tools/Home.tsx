@@ -25,6 +25,7 @@ import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, ru
 import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { toolRouteLabel } from './route-label'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 
 export interface HomeProps {
@@ -561,6 +562,8 @@ export function Home(props: HomeProps) {
     const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
     // 文件坏了时读出来的来源不作数（见 brokenConfigOf），不说成官方账号。
     const officialLine = tool.source === 'official' && !broken && snapshot ? officialAccountSubtitle(snapshot.config.providers[tool.provider], Date.now()) : null
+    // 配置里实际写的星芒线路（xm 三线路 C12）；codexDesktop 读的是 Codex 那份配置，标签跟着一起显示。
+    const routeLabel = snapshot && !broken && !ownershipPending ? toolRouteLabel(snapshot.config.providers[tool.provider], tool.source) : null
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
       disabled={waitingForScan || waitingForAccount || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
@@ -569,8 +572,8 @@ export function Home(props: HomeProps) {
     return <ToolRow key={tool.id} tool={tool.id} status={status}
       detail={job?.label ?? tool.error ?? (status === 'configBroken' && broken ? brokenConfigDetails[broken] : status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
-      model={tool.status.installed ? officialLine ? officialLine.text : tool.model || undefined : undefined}
-      modelHint={tool.status.installed ? officialLine?.renewal : undefined}
+      model={tool.status.installed ? officialLine ? officialLine.text : [tool.model, routeLabel?.text].filter(Boolean).join(' · ') || undefined : undefined}
+      modelHint={tool.status.installed ? officialLine?.renewal ?? routeLabel?.hint : undefined}
       progress={job?.percent}
       extraAction={installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>

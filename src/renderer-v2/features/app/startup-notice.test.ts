@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -268,5 +268,27 @@ describe('claudeDesktopRepairedNotice', () => {
       const notice = claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, platform)
       expect(`${notice?.title}${notice?.body}`).not.toMatch(/inferenceModels|JSON|配置文件|configLibrary|0\.2\.12|网关|gateway|xm\.solov|Sub2API/i)
     }
+  })
+})
+
+describe('toolRouteRestartNotice', () => {
+  it('leads with the approved sentence, lists each tool and offers to restart the desktop app when it can', () => {
+    expect(toolRouteRestartNotice({ id: 1, codex: { cli: false, desktop: 'win32', canRestartDesktop: true } })).toEqual({
+      id: 'route-restart',
+      failure: false,
+      tone: 'neutral',
+      title: '刚才那条连接线路连不上，已经换到另一条。',
+      body: '',
+      items: [
+        'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。',
+        '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+      ],
+      action: { label: '帮我重开', restartCodexDesktop: true },
+    })
+  })
+
+  it('has no button when nothing can be restarted, and nothing to say without a tool', () => {
+    expect(toolRouteRestartNotice({ id: 1, grok: 'running' })).not.toHaveProperty('action')
+    expect(toolRouteRestartNotice({ id: 1 })).toBeNull()
   })
 })

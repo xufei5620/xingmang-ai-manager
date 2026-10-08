@@ -374,6 +374,22 @@ export const windowsExternalClientInventoryModules = [
 
 export const externalClientSystemCommandTimeoutMs = 15_000
 
+/**
+ * 只看进程的那一小段（xm 三线路 C11）：客户端开着、换线路要等它退出时，每 5 分钟问一次「还开着吗」。
+ * 整轮盘点要读注册表、核签名，老电脑上好几秒；这里只列一个进程名的路径。进程名是写死的常量，
+ * 比路径在 JS 里做，没有任何外来文字进 PowerShell 源码。
+ */
+export function windowsExternalClientProcessScript(tool: ExternalToolId): string {
+  const name = definitions[tool].executable.replace(/\.exe$/i, '')
+  return String.raw`
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'])}
+$ErrorActionPreference = 'Stop'
+$paths = @(Get-Process -Name ${name} -ErrorAction SilentlyContinue | ForEach-Object { try { [string]$_.Path } catch {} } | Where-Object { $_ })
+ConvertTo-Json -InputObject @($paths) -Compress
+`
+}
+
 /** 打开 WorkBuddy、OpenCode 之前只看它自己，用不着 Appx：导入它、查 AppX 注册信息都要花时间。 */
 export function windowsExternalClientInventoryModulesFor(only?: ExternalToolId): readonly string[] {
   return only === undefined || only === 'claudeDesktop' ? windowsExternalClientInventoryModules
@@ -998,5 +1014,28 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     void launched.then(invalidateScan, invalidateScan)
     return launched
   }
-  return { scan, install, cancelInstall, launch }
+  /**
+   * 上一轮盘点认出来的那个客户端这会儿还开着没有：true / false；看不出来（检测失败、平台不支持）= null。
+   * 只比路径，不重新认人：认人那一步在真要改配置之前的整轮盘点里照旧做（followExternalClientRoute）。
+   */
+  async function stillRunning(tool: ExternalToolId, clientPath: string): Promise<boolean | null> {
+    try {
+      if (platform === 'win32') {
+        const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientProcessScript(tool))] }, systemOptions())
+        const paths = JSON.parse(cleanCommandOutput(result.stdout).trim() || '[]') as unknown
+        if (!Array.isArray(paths)) return null
+        const expected = path.win32.normalize(clientPath).toLowerCase()
+        return paths.some((entry) => typeof entry === 'string' && path.win32.normalize(entry).toLowerCase() === expected)
+      }
+      if (platform === 'darwin') {
+        const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, { ...systemOptions(), trustedOnly: false })
+        return processes.stdout.split(/\r?\n/).some((line) => line.trim().startsWith(`${clientPath}/Contents/MacOS/`))
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  return { scan, install, cancelInstall, launch, stillRunning }
 }

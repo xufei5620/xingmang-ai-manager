@@ -248,6 +248,17 @@ export function relaySiteEndpointIdForBaseUrl(siteId: unknown, provider: Provide
   return null
 }
 
+/**
+ * 配置里这个地址到底是哪条线路：只认每条线路自己的地址，逐字比（xm 三线路 C12）。落在退役别名上的
+ * 不算那条线路（它实际不走那条线路的中转），和本站以外的地址一样是 other。
+ */
+export function relaySiteExactEndpointIdForBaseUrl(siteId: unknown, provider: ProviderId, value: string): RelayEndpointId | 'other' {
+  for (const endpoint of relaySiteEndpointChoices(siteId)) {
+    if (relayProviderBaseUrlEquals(value, providerUrlsForOrigin(endpoint.origin)[provider])) return endpoint.id
+  }
+  return 'other'
+}
+
 /** Preserve a recognized native route until the user explicitly selects a line. */
 export function relaySiteForProviderBaseUrl(siteId: unknown, provider: ProviderId, value: string): RelaySite | null {
   const normalized = normalizedRelayBaseUrl(value)
