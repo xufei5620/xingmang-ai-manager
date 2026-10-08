@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sameLocalPathIdentity } from './path-identity'
+import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 const hostPlatform = process.platform
@@ -62,7 +63,7 @@ describe('sameLocalPathIdentity', () => {
     expect(sameLocalPathIdentity('/variable/app', '/private/variable/app')).toBe(false)
   })
 
-  it('does not equate an arbitrary symbolic link with its target', () => {
+  it.runIf(canCreateSymbolicLink)('does not equate an arbitrary symbolic link with its target', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-path-identity-'))
     temporaryDirectories.push(directory)
     const target = path.join(directory, 'target')

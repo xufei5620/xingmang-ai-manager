@@ -20,6 +20,7 @@ import {
   readSafeUtf8FileSync,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 
@@ -136,7 +137,7 @@ describe('relocated folders', () => {
     expect(() => assertNoReparseComponents(resolved, '应用设置目录')).toThrow('不能经过符号链接或目录联接')
   })
 
-  it('does not treat a link to a file as a relocated folder', () => {
+  it.runIf(canCreateSymbolicLink)('does not treat a link to a file as a relocated folder', () => {
     const profile = movedProfile()
     const real = path.join(profile.root, 'secret.txt')
     fs.writeFileSync(real, 'x')
