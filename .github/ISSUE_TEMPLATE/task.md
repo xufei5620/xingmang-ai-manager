@@ -40,7 +40,6 @@ assignees: ''
 
 <!-- 勾选后请同时打上 serial-only 标签 -->
 
-- [ ] 涉及 IPC 通道增删（`ipc-contract.ts` / `ipc.ts` / `preload.ts`）→ **serial-only**
 - [ ] 涉及 `src/styles.css` → **serial-only**
 - [ ] 涉及 `system-service.ts` / `App.tsx` 的结构性改动 → **serial-only**
 - [ ] 无热点文件冲突，可并行

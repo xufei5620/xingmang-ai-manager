@@ -1,6 +1,6 @@
 # 账号体系完善计划（2026-08-09 起，用户「按推荐走」）
 
-> 账号注册/登录/验证码/写Key已验证跑通（真机）。以下为后续波次。自主：Sonnet实现→Opus审查→本地commit→重编译，0 push。铁律：自动化测试绝不触生产 xm.solov.cc；加 IPC 通道 T1 串行；明文密钥不入日志（I13）。
+> 账号注册/登录/验证码/写Key已验证跑通（真机）。以下为后续波次。自主：Sonnet实现→Opus审查→本地commit→重编译，0 push。铁律：自动化测试绝不触生产 xm.solov.cc；加 IPC 通道 T1 三处一致；明文密钥不入日志（I13）。
 
 ## 用户已定决策
 1. **登录持久化**：用 Electron `safeStorage`（Windows 底层 DPAPI）加密持久化 session token，免每次重启重登。⚠️ 注意：这是 app 自身 session token，**不是** CLI 的 relay API Key——AGENTS.md「不给 API Key 加密」那条针对的是必须明文写进 CLI 配置的 relay Key，session token 加密存储不受该条约束、且是正确做法。
@@ -8,7 +8,7 @@
 3. **充值**：在线支付**外链**跳 xm.solov.cc 充值页（查证 new-api 标准充值页路由，加外链白名单 I12 全等）。
 4. **个人中心**（登录后账号中心页，点账号区头像进）：个人资料 / 余额与用量明细 / 我的API Key管理(查看撤销含孤儿token) / 邀请返佣(链接+码+记录) / 充值(外链) / 修改密码 / 登出。
 
-## 波次（都动账号文件、加通道，必须串行）
+## 波次（都动账号文件，必须串行）
 
 > **✅ 全部落地（2026-08-10 核实，防重复施工）**：W2=`39c9671`（safeStorage/DPAPI 持久化 + 自动续期，`electron/account-session-store.ts`）、W2.5=`3a4b1fa`、W3=`f9cf547`、W4a=`f4a6a9b`、W4b=`3bc2b1a`（个人中心含钱包外链 `WALLET_URL`）。真机验证项仍挂 HANDOFF ①栏第 6 项。
 

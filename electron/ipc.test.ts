@@ -409,12 +409,17 @@ beforeEach(() => {
 describe('registerIpcHandlers', () => {
   it('registers and disposes the existing IPC contract', () => {
     const { dispose } = register()
-    const expectedChannels = Object.values(ipcInvokeChannels)
-    expect([...electronMocks.handlers.keys()]).toEqual(expectedChannels)
+    // Electron does not care in which order handlers are registered, so the
+    // comparison is sorted: parallel PRs can add channels anywhere. Reading
+    // the raw handle() calls (not the deduplicating handlers map) still fails
+    // on a channel registered twice, which real ipcMain.handle rejects.
+    const expectedChannels = Object.values(ipcInvokeChannels).sort()
+    expect(new Set(expectedChannels).size).toBe(expectedChannels.length)
+    expect(electronMocks.handle.mock.calls.map(([channel]) => channel).sort()).toEqual(expectedChannels)
 
     dispose()
 
-    expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
+    expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel).sort()).toEqual(expectedChannels)
   })
 
   it('routes global acceleration through trusted IPC and rejects unknown modes', async () => {
