@@ -126,7 +126,7 @@ GitHub 用不了的时候：
 
 1. **发布之前**，在 **service-status** 里「分批放量」填 `0.2.11 20`（版本号、空格、百分比），跑完。
 2. 再照常发布 `0.2.11`。自动检查更新时只有大约两成电脑会看到它；用户自己点「检查更新」的不受限制。
-3. 观察一段时间没问题，再跑一次 service-status，「分批放量」填 `0.2.11 100` 或 `none`，全部放开。
+3. 观察一段时间没问题，再跑一次 service-status，「分批放量」填 `0.2.11 100` 或 `none`，全部放开。观察时想看新版本铺开了多少，跑一次 update-feed-stats（见下面「看各版本有多少人在用」）。
 
 一定要先设放量再发布：反过来的话，发布到设置之间检查更新的人都会拿到新版本。哪台电脑在「两成」里是固定的，
 不会每次检查换一批人。
@@ -170,6 +170,29 @@ GitHub 用不了的时候：
 **在测试电脑上演一遍**（不影响客户）：要一个带这段代码、但版本号比线上低的测试包。比如线上已经发了 `0.2.11`，
 从版本号还是 `0.2.10` 的分支出一个测试包装到测试电脑上，「最低版本」填 `0.2.11`。真实的 0.2.10 客户不认这一项，
 0.2.11 客户不低于它，只有这台测试电脑会被拦住。演完填 `none` 取消。
+
+## 看各版本有多少人在用
+
+Actions → **update-feed-stats** → **Run workflow**，「统计最近几天」默认 7，点 Run workflow。不用批准，一两分钟跑完。
+点进那条运行，结果在 Summary 页上：各版本占全部电脑的比例（Windows、Mac、Linux 分开列），下面再附一张按请求算的对照表。
+
+**怎么数的**：0.2.10 起的客户端打开时、开着时每 15 分钟读一次这份 service-status.json，请求里带着自己的版本号
+（Electron 默认的 User-Agent，里面有「星芒AI管理工具/0.2.15」）。工作流拿只读令牌查 Cloudflare 的访问统计，把这些请求
+按版本、系统和来源 IP 归拢，每台电脑只算它这段时间里最后一次读时的版本。来源 IP 只在运行时拿来去重，不写进日志和结果。
+
+**只有比例，没有台数**：仓库是公开的，运行页谁都能看，写台数等于告诉别人有多少客户。
+
+**看不到、不准的地方**：
+
+- 0.2.8、0.2.9 不读这份文件。
+- 0.2.18 起 Windows 走直连线路的电脑从 `xm-direct.solov.cc` 读，那部分只在服务端日志里，这里看不到。
+- 同一个网络出口下的几台电脑算一台，换过网络的电脑会算成几台。
+- Cloudflare 只留最近一段时间的统计，填的天数比它留的多时只统计它留着的那段，Summary 页上会写明。
+
+**令牌**：仓库 Secrets 里的 `CLOUDFLARE_ANALYTICS_TOKEN`（Settings → Secrets and variables → Actions → Repository secrets，
+不在 release 环境里）。运行报「令牌被 Cloudflare 拒绝」就是过期或被删了，在 Cloudflare 右上角头像 → My Profile → API Tokens →
+Create Token → Create Custom Token 重建：Permissions 两行 Zone｜Analytics｜Read 和 Zone｜Zone｜Read，Zone Resources 选
+Include｜Specific zone｜shenfengwl.fun，建好把那串粘进这个 secret。只有 Analytics 一行时令牌看不到域名，运行会报「令牌看不到 shenfengwl.fun」。
 
 ## 文件长什么样
 

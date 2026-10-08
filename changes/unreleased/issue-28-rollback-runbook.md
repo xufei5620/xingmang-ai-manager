@@ -7,3 +7,6 @@
   先填 0 观察再放开的手动灰度。
 - `scripts/service-status.cjs` 的运行日志把放量 0 写成「先不自动推，只给自己点「检查更新」的人」，不再是「先给 0% 的电脑」；
   service-status 工作流「分批放量」那一格的说明加上 0 这一档。
+- #28：新增 `update-feed-stats` 工作流（手动运行，只读的 `CLOUDFLARE_ANALYTICS_TOKEN`，不用 release 环境），按客户端读
+  `service-status.json` 时 User-Agent 里带的版本号，从 Cloudflare 访问统计算出各版本、各系统占全部电脑的比例，写进运行摘要页。
+  来源 IP 只在运行时去重，不输出；仓库公开，所以只写比例不写台数。用法与看不到的部分见 `docs/SERVICE-STATUS.md`「看各版本有多少人在用」。
