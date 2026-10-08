@@ -27,8 +27,10 @@ const electron = require(path.join(repo, 'node_modules/electron'))
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xm-system-ca-smoke-')))
 const commonName = `Xingmang CI Throwaway Root ${randomBytes(6).toString('hex')}`
 
+// Every external command is bounded: a keychain or certificate-store call that waits for an
+// authorization dialog nobody can answer must fail the step, not hang it.
 function run(command, args) {
-  return execFileSync(command, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+  return execFileSync(command, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30_000 })
 }
 
 function writeConfig(name, subject, extensions) {
@@ -72,7 +74,8 @@ function removeRoot(certificate) {
     if (process.platform === 'win32') {
       run('certutil', ['-delstore', 'Root', certificate.serialNumber])
     } else {
-      run('sudo', ['security', 'remove-trusted-cert', '-d', path.join(root, 'root.pem')])
+      // `security remove-trusted-cert` waits for an authorization dialog even under sudo and hung
+      // the runner; deleting the certificate from the keychain is enough on a throwaway machine.
       run('sudo', ['security', 'delete-certificate', '-Z', certificate.fingerprint.replaceAll(':', ''), '/Library/Keychains/System.keychain'])
     }
   } catch (error) {
@@ -204,7 +207,9 @@ try {
   console.log(`tls.getCACertificates('system') took ${result.firstCallMs} ms synchronously on ${process.platform}`)
   console.log('PASS: Electron main process trusts system root certificates')
 } finally {
+  server?.closeAllConnections()
   server?.close()
   if (installed) removeRoot(certificate)
   fs.rmSync(root, { recursive: true, force: true })
 }
+process.exit(0)
