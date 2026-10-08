@@ -34,8 +34,9 @@ export interface RelayRoutePreferences {
 export interface RelayRouteLine {
   line: RelayEndpointId
   /**
-   * 是不是定下来的：写死的偏好、上次存下的结论、这次探出来的都算。「自动」第一次开机还没探出
-   * 结论时先走默认线路，这时为 false，工具配置不跟着它迁。
+   * 是不是定下来的：写死的偏好、上次存下的结论、这次探出来的都算，星芒账号没有结论时开机直接定在
+   * 直连也算（relay-route-controller.ts）。历史账号「自动」第一次开机还没探出结论时先走默认线路，
+   * 这时为 false，工具配置不跟着它迁。
    */
   settled: boolean
 }

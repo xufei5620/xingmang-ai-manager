@@ -291,7 +291,8 @@ describe('diagnostics', () => {
       .toBe('~/.claude/config.json')
   })
 
-  // #941 第 2 节：工具配置里写的地址和星芒这会儿走的线路对不上时，检查页要说出来，并说清两边各是哪条。
+  // #941 第 2 节：工具配置里写的地址和星芒这会儿走的线路对不上时，导出的报告里写清两边各是哪条。两条线路连的
+  // 是同一个账号，所以检查页照常算通过，不提醒（yoyo 10-8：线路的事不要太多提示）。
   describe('tool connection settings against the current line', () => {
     const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
     const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
@@ -313,16 +314,16 @@ describe('diagnostics', () => {
       return report.items.find((item) => item.code === 'PROVIDER_CODEX')
     }
 
-    it('warns when a tool still points at the other line and names both lines', async () => {
+    it('passes when a tool still points at the other line and names both lines for the report', async () => {
       const item = codexItem(await runDiagnostics(onLine('direct', true, primarySite.providerBaseUrls.codex)))
 
       expect(item).toMatchObject({
-        state: 'warn',
-        summary: '已连到当前账号，但连接线路和星芒现在走的不一样。点「去处理」再点「保存配置」就会改过来',
+        state: 'pass',
+        summary: '已连到当前账号',
         details: { matchesRelay: true, routeLine: '默认线路', currentRouteLine: '直连' },
       })
-      // 结论和两条线路的名字里都不带地址，抽屉可以照常上屏。
-      expect(`${item?.summary} ${item?.details?.routeLine} ${item?.details?.currentRouteLine}`).not.toMatch(/https?:|solov/)
+      // 两条线路的名字里都不带地址，导出的报告照常可以发给客服。
+      expect(`${item?.details?.routeLine} ${item?.details?.currentRouteLine}`).not.toMatch(/https?:|solov/)
     })
 
     it('passes and names the line when the tool already uses the current one', async () => {
@@ -352,14 +353,14 @@ describe('diagnostics', () => {
       expect(item?.details).not.toHaveProperty('routeLine')
     })
 
-    it('asks to save again for a retired address of the current line without guessing which line it is on', async () => {
+    it('names only the current line for a retired address of it without guessing which line it is on', async () => {
       const [retired] = relaySiteProviderBaseUrlVariants('solov', 'codex')
         .filter((variant) => variant.endpointId === 'direct' && variant.baseUrl !== directSite.providerBaseUrls.codex)
       expect(retired).toBeDefined()
 
       const item = codexItem(await runDiagnostics(onLine('direct', true, retired.baseUrl)))
 
-      expect(item).toMatchObject({ state: 'warn', details: { currentRouteLine: '直连' } })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { currentRouteLine: '直连' } })
       expect(item?.details).not.toHaveProperty('routeLine')
     })
   })

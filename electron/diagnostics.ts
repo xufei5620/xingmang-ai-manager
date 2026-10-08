@@ -1561,7 +1561,8 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
   return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
-// 界面上这两条线路就叫这两个名字（设置里的「只用直连」「只用默认线路」、网络那一项的结论都这么叫）。
+// 这两条线路在星芒里就叫这两个名字（设置里的「只用直连」「只用默认线路」、网络那一项的结论都这么叫）。
+// 下面几处只写进导出的检查报告，客服看得懂；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
 const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '默认线路', direct: '直连' }
 
 /** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
@@ -1579,8 +1580,8 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
 }
 
 /**
- * 「自动」最近一次换线路，放进「星芒 AI 网络」的详情（#941 第 2、7 节）：什么时候、为什么、换到哪条，
- * 不带地址。时间按这台电脑的时区说。
+ * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
+ * 换到哪条，不带地址。时间按这台电脑的时区说。
  */
 export function describeRelayRouteChange(change: RelayRouteChange): string {
   const at = new Date(change.at)
@@ -1593,7 +1594,7 @@ export function describeRelayRouteChange(change: RelayRouteChange): string {
   return `${time}，${reason}`
 }
 
-// 引起那一轮检查的错误码只进导出的报告（详情抽屉不摆这个键），客服拿它对服务端的日志。
+// 连同引起那一轮检查的错误码一起只进导出的报告，客服拿它对服务端的日志。
 function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Record<string, string> {
   const change = route?.lastChange
   if (!change) return {}
@@ -1615,17 +1616,12 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     details[`file${index + 1}`] = pathForDisplay(file.path, roots)
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
-    // 工具用的线路和星芒这会儿走的对不上（#941 第 2 节）：线路换了以后写失败的、客户自己改过配置所以没跟着
-    // 改的。两条线路连的是同一个账号，工具照样能用，只提醒一句；保存一次配置就按现在的线路重写。
+    // 工具走的线路和星芒这会儿走的对不上（#941 第 2 节）：线路换了以后写失败的、客户自己改过配置所以没跟着
+    // 改的。两条线路连的是同一个账号，工具照样能用，所以不算要留意的事（yoyo 10-8：线路的事不要太多提示），
+    // 只在导出的报告里写清两边各是哪条；星芒下次跟着线路改配置时会改过来。
     const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
     if (line) details.routeLine = relayLineNames[line]
-    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) {
-      return {
-        state: 'warn',
-        summary: '已连到当前账号，但连接线路和星芒现在走的不一样。点「去处理」再点「保存配置」就会改过来',
-        details: { ...details, currentRouteLine: relayLineNames[current.line] },
-      }
-    }
+    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }

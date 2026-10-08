@@ -8,8 +8,9 @@
  * 改不改线路只看健康检查（probeRelayLineHealth）。请求慢、超时不算直连坏了：10-7 线上有客户
  * 直连下行只有几十 KB/s，公告下到一半超时就被当成直连坏了，在两条线路之间来回切。
  *
- * - 开机不等检查结果：先用上次存下的结论，没有结论就先走默认线路（这时不算定下来，工具
- *   配置不跟着迁），后台再查。
+ * - 开机不等检查结果：先用上次存下的结论。没有结论时星芒账号直接走直连、算定下来，工具配置一开始
+ *   就写直连地址（yoyo 10-8「xm 站点这边全部走直连」）；历史账号先走默认线路（这时不算定下来，
+ *   工具配置不跟着迁）。后台再查。
  * - 走直连时隔一阵查一次。星芒自己的请求在直连上连不上（relay-line-fetch.ts 说了哪些算）就马上
  *   查，不等下一次；报上来的只叫这里去查，改不改照样看查的结果。
  * - 直连连续 3 次没查通、默认线路查通了才改走默认线路；两条都不通（比如开机时还没联网）就不改，
@@ -57,6 +58,13 @@ export const relayRouteFailureRecheckGapMs = 30_000
 // 只会晚到不会早到，连着这么多次就一定跨过了那么久；电脑睡一觉醒来钟跳过去几个小时，睡前那一次
 // 不该跟醒来这一次连成「一直查得通」。
 const recoveryStreak = relayRouteRecoveryMs / relayRouteRecoveryProbeIntervalMs + 1
+
+// 「自动」的站这台电脑上还没有结论时，开机先走哪条。星芒账号直接定在直连：直连连不上照样按下面的
+// 规矩悄悄退回默认线路，好了再切回来。历史账号（sub2api）这次不动，照旧先走默认线路、查出结论再迁。
+const unconcludedStart: Readonly<Record<RelayRouteSiteId, RelayRouteLine>> = {
+  solov: { line: 'direct', settled: true },
+  'solov-api': { line: 'primary', settled: false },
+}
 
 // 健康检查那个接口只回几 KB，平时一秒内就回；给足时间，直连下行只有几十 KB/s 时也查得完。
 const probeTimeoutMs = 10_000
@@ -167,9 +175,10 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   for (const siteId of relayRouteSiteIds) {
     if (dependencies.preferences[siteId] !== 'auto') continue
     const concluded = conclusions.lines[siteId]
+    const start = concluded === undefined ? unconcludedStart[siteId] : { line: concluded, settled: true }
     states.set(siteId, {
-      line: concluded ?? 'primary',
-      settled: concluded !== undefined,
+      line: start.line,
+      settled: start.settled,
       round: null,
       recovered: 0,
       checking: false,
