@@ -134,9 +134,8 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 
 ## 5. 改动陷阱清单
 
-**T1. 加/删/挪 IPC 处理器 → 注册顺序必须与 `ipcInvokeChannels` 键顺序完全一致。**
-`ipc.test.ts` 的 `toEqual` **对顺序敏感**。⚠️ **两个 agent 并行加通道，即使 git 文本合并成功，CI 也会红。** 加通道属于必须串行的任务。
-（`preload.ts` 的副本顺序**不需要**一致，它只做键查找。）
+**T1. 加/删 IPC 通道 → `ipc-contract.ts`、`ipc.ts`、`preload.ts` 三处必须一致。**
+`ipc.test.ts` 把 `ipc.ts` 实际注册的通道和 `ipcInvokeChannels` 排序后比对，漏注册、多注册、重复注册都会红；`preload.test.ts` 钉住 preload 里那份通道表副本。三处都**不看先后顺序**，新通道放在哪一行都行，并行加通道不用排队。`ipc-contract.ts` 列在 `.github/CODEOWNERS` 里，通道数就是渲染进程能碰到的主进程入口（I5），加通道要让 yoyo 看得见。
 
 **T2. 给 `ProviderId` 加第 5 个 CLI → 改动点已收口，编译器/测试会带你走完。**
 
