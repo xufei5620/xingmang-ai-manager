@@ -400,7 +400,7 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 |---|---|---|
 | **开发者 A（你）+ Win/Mac Claude** | 全产品线 | 有 Windows + macOS 双环境，**平台强相关的验证任务优先派给这边** |
 | **开发者 B + Codex** | 全产品线 | 更熟悉现有代码库，**安全边界相关改动优先由这边把关或 review** |
-| **云端 Claude** | 规划 / 架构 / 规范 / Issue 分发 | 不碰业务代码，零冲突 |
+| **云端 Claude** | 规划 / 架构 / 规范 / Issue 分发，也改业务代码 | 平台专有的验证靠 CI 与本地，见 `COLLABORATION.md` §7 |
 
 **因为不再有「各管一摊」的天然隔离，`COLLABORATION.md` 的串行约束变得更关键：**
 
