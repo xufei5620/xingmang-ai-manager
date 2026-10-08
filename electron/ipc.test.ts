@@ -1233,9 +1233,11 @@ describe('registerIpcHandlers', () => {
     )
 
     try {
-      const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent()) as { imageMcpWarning?: string; imageSkillWarning?: string }
+      const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent()) as { imageMcpWarning?: string; imageMcpNeedsNode?: boolean; imageSkillWarning?: string }
       expect(summary.imageMcpWarning).toContain('运行环境')
       expect(summary.imageMcpWarning).not.toContain('Node.js')
+      // The renderer only knows why from this flag, and drops the line while Node.js reads optional.
+      expect(summary.imageMcpNeedsNode).toBe(true)
       expect(summary.imageSkillWarning).toBeUndefined()
       expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
     } finally {

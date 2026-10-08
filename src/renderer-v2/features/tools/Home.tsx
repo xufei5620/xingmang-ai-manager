@@ -247,6 +247,18 @@ export function bootstrapNoticeExpiresAt(bootstrap: HomeProps['bootstrap']): num
   return duration === null ? null : bootstrap.finishedAt + duration
 }
 
+/**
+ * 横幅里要客户留意的那几句。星芒画图缺 Node.js 的那句（drawingNeedsNode）跟着运行环境卡走：一个命令行工具
+ * 都没装（只装了 Codex 桌面端，或者什么都没装）时 Node.js 那一行写「可选 · 未装」「一般不用单独点」，横幅再说
+ * 「还缺运行环境」就打架了，客户不知道到底装不装（yoyo 10-8，A014）。这时 Codex 桌面端里先画不了图；客户装任一
+ * 命令行工具时星芒顺带准备 Node.js，装完那一轮同步就把画图接上。正在装的不算装着，免得装到一半冒出这句；
+ * 没检测出来的算装着（A4），同 Node.js 那一行。
+ */
+export function homeBootstrapWarnings(result: AccountBootstrapResult, tools: readonly ToolPresentation[]): string[] {
+  const cliInstalled = tools.some((tool) => tool.id !== 'codexDesktop' && (tool.status.installed || tool.status.detectionFailed === true))
+  return result.drawingNeedsNode && cliInstalled ? [...result.warnings, result.drawingNeedsNode] : result.warnings
+}
+
 export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -366,8 +378,9 @@ export function Home(props: HomeProps) {
   const subscriptionNotice = subscription ? subscriptionWarning(subscription, dollars) : null
   const bootstrapResult = props.bootstrap?.result
   const bootstrapFailed = bootstrapResult?.failed ?? []
+  const bootstrapWarnings = bootstrapResult ? homeBootstrapWarnings(bootstrapResult, tools) : []
   // 只是跟着连接线路换了地址的那一轮不说「已完成…」（yoyo 10-8），没写成、有要留意的照常说。
-  const bootstrapNoticeWanted = Boolean(bootstrapResult && (bootstrapFailed.length || bootstrapResult.warnings.length
+  const bootstrapNoticeWanted = Boolean(bootstrapResult && (bootstrapFailed.length || bootstrapWarnings.length
     || (bootstrapResult.configured.length && !bootstrapOnlyFollowedRoute(bootstrapResult))))
   const subscriptionLine = subscription ? `订阅：${subscription.name ? `${subscription.name} · ` : ''}${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : null
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
@@ -417,7 +430,7 @@ export function Home(props: HomeProps) {
   // 回到首页时已经过了点的就不再冒出来；挂着的时候到点叫一次重画。开着的工具等着换线路的那几条已经由上方
   // 那句总的说了，不算横幅里还要客户动手的。
   const bootstrapNoticeUntil = bootstrapNoticeExpiresAt(props.bootstrap?.result
-    ? { ...props.bootstrap, result: { ...props.bootstrap.result, failed: bootstrapFailed } }
+    ? { ...props.bootstrap, result: { ...props.bootstrap.result, failed: bootstrapFailed, warnings: bootstrapWarnings } }
     : props.bootstrap)
   const [bootstrapNoticeClock, setBootstrapNoticeClock] = useState(() => Date.now())
   useEffect(() => {
@@ -676,10 +689,10 @@ export function Home(props: HomeProps) {
       <span>{props.bootstrap.error ? bootstrapErrorText(props.bootstrap.error) : `${props.bootstrap.label}（${props.bootstrap.percent}%）`}</span>
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
-    {bootstrapResult && bootstrapNoticeShown && bootstrapNoticeWanted && <div className={`v2-bootstrap-notice ${bootstrapFailed.length || bootstrapResult.warnings.length ? 'is-warn' : ''}`} role="status">
-      <span className={`v2-dot ${bootstrapFailed.length || bootstrapResult.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? offlineBootstrapNotice : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapResult.warnings.length ? ` ${bootstrapResult.warnings.join('；')}` : ''}`}</span>
+    {bootstrapResult && bootstrapNoticeShown && bootstrapNoticeWanted && <div className={`v2-bootstrap-notice ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : ''}`} role="status">
+      <span className={`v2-dot ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? offlineBootstrapNotice : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapWarnings.length ? ` ${bootstrapWarnings.join('；')}` : ''}`}</span>
       {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
-      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapResult.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
+      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}

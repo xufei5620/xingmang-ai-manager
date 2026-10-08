@@ -1,7 +1,7 @@
 # electron-builder 的 NSIS 自定义脚本。本文件被插在生成脚本的最前面，
 # 所以这里只能定义宏和 !define，真正的代码都在宏里，由模板在合适的位置插入。
 #
-# 这里一共做六件事，每一件都对应一个客户机上会真实发生的问题：
+# 这里一共做七件事，每一件都对应一个客户机上会真实发生的问题：
 #
 #   1. customInstall：安装收尾时补齐缺失的快捷方式（见下面那段长注释）。
 #   2. customHeader 里的目录页守卫：不许把程序装进别人的非空目录。
@@ -10,6 +10,7 @@
 #   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项，再删掉第 1 件事
 #      补建在当前用户桌面和开始菜单里的图标。
 #   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录和聊天记录」勾选框（默认不勾）。
+#   7. 装到 Program Files 以外时，把安装目录改成只有管理员能改（见 XINGMANG_INSTALL_DIRECTORY_SDDL）。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -27,6 +28,20 @@
 # 测试钉住。卸载页勾了「同时清除登录记录和聊天记录」时跟在上面那个参数后面传给程序；静默卸载
 # 没有页面可勾，在卸载程序自己的命令行上带同一个参数，效果等于勾上。
 !define XINGMANG_CLEAR_LOGIN_ARGUMENT "--xingmang-clear-login"
+
+# 装到 Program Files 以外时给安装目录设的权限。
+#
+# 自选目录（比如 D:\星芒AI管理工具）默认继承盘根的权限，Windows 给 D 盘这类非系统盘的
+# 默认权限是「已验证的用户」可修改，也就是本机任何账户、当前用户下跑的任何普通程序都能
+# 换掉里面的文件。而以管理员身份运行的几个进程会去执行这个目录里的文件：升级时新安装程序
+# 先跑旧的卸载程序，卸载时卸载程序跑主程序做清理，更新时 resources\elevate.exe 负责弹
+# UAC。所以这不只是「程序能被改」，而是谁都能借客户下一次更新或卸载拿到管理员权限。
+#
+# 改成跟 Program Files 下的程序目录一样：属主是 Administrators 组（O:BA），不再继承上级
+# 目录（P），SYSTEM 和 Administrators 完全控制，Users 和两个应用包组（AC 与
+# S-1-15-2-2，Program Files 也给它们）只能读和运行，子目录和文件都继承（OICI）。程序运行
+# 本来就不往安装目录里写东西，装在 Program Files 时也是这样跑的。
+!define XINGMANG_INSTALL_DIRECTORY_SDDL "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)(A;OICI;0x1200a9;;;S-1-15-2-2)"
 
 !ifdef BUILD_UNINSTALLER
   # "1" 表示要清。没赋过值的变量是空串，所以不勾、静默卸载不带参数、升级时跑的
@@ -77,6 +92,10 @@
         # 本程序自己的旧版本：升级覆盖必须照常可行，所以先认安装标记。
         ${If} ${FileExists} "$R0\${APP_EXECUTABLE_FILENAME}"
         ${OrIf} ${FileExists} "$R0\${UNINSTALL_FILENAME}"
+          !ifdef INSTALL_MODE_PER_ALL_USERS
+            Push $R0
+            Call xingmangLockInstallDirectory
+          !endif
           Return
         ${EndIf}
 
@@ -99,6 +118,99 @@
           MessageBox MB_OK|MB_ICONEXCLAMATION "这个目录里已经有别的文件：$\r$\n$R0$\r$\n$\r$\n卸载时可能连它们一起删掉，所以不能装在这里。请换一个空目录，或者选它的上一级目录，让安装程序自己新建一个。"
           Abort
         ${EndIf}
+
+        !ifdef INSTALL_MODE_PER_ALL_USERS
+          # 目录页后面紧接着就是安装页，这里就是定下来的那一刻。现在就把目录建好、收紧，
+          # 不留到模板解压时再建：那样从建好到 customInstall 之间，解压出来的文件谁都能换。
+          CreateDirectory "$R0"
+          Push $R0
+          Call xingmangLockInstallDirectory
+        !endif
+      FunctionEnd
+    !endif
+
+    !ifdef INSTALL_MODE_PER_ALL_USERS
+      # 把一个目录的权限改成 XINGMANG_INSTALL_DIRECTORY_SDDL（为什么见那里）。入栈目录的完整路径。
+      # Program Files 下面本来就只有管理员能改，不动。
+      #
+      # 这一步在提权的安装程序里执行，目录却可能在别人写得进去的地方，所以照
+      # un.xingmangDeleteFallbackShortcut 的办法：先不跟链接地打开它，确认打开的就是这个
+      # 路径上的那个真目录（路径里没有哪一段被联接、符号链接转到别处，它自己也不是链接），
+      # 再经同一个句柄改权限，核对完再换也没用。打开时不许别人同时删、改名，拿着句柄期间
+      # 这个目录挪不走。哪一条不对都不改，照现在的样子装下去：没改成总比改错了地方好。
+      #
+      # 网络位置不改：那上面的 Administrators、Users 是服务器自己的组，改了以后这台电脑的
+      # 管理员可能反倒升级不了。FAT32、exFAT 这类没有权限的盘改不了，SetSecurityInfo
+      # 报错，同样照原样装下去。
+      #
+      # 改的时候里面已有的文件跟着换成继承来的新权限（SetSecurityInfo 自己会往下传），
+      # 升级时旧版本的卸载程序、主程序在模板执行它们之前就已经换不掉了。
+      Function xingmangLockInstallDirectory
+        Exch $R0
+        Push $R1
+        Push $R2
+        Push $R3
+        Push $R4
+        Push $R5
+        Push $R6
+        Push $R7
+        # 只认「盘符:\」开头的本机路径。
+        StrCpy $R1 $R0 2 1
+        ${If} $R1 == ":\"
+          StrLen $R1 "$PROGRAMFILES64\"
+          StrCpy $R2 $R0 $R1
+          StrLen $R1 "$PROGRAMFILES32\"
+          StrCpy $R3 $R0 $R1
+          ${If} $R2 != "$PROGRAMFILES64\"
+          ${AndIf} $R3 != "$PROGRAMFILES32\"
+            # READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES；别人可以同时读、写，
+            # 不能同时删、改名；OPEN_EXISTING；FILE_FLAG_BACKUP_SEMANTICS（打开目录要它）|
+            # FILE_FLAG_OPEN_REPARSE_POINT（路径最后一段是链接时打开的是链接本身）。
+            System::Call 'kernel32::CreateFileW(w R0, i 0xE0080, i 3, p 0, i 3, i 0x2200000, p 0) p .R1'
+            ${If} $R1 <> -1
+              # 系统给的是 \\?\D:\...，要改的路径按同样的写法拼出来再比。
+              System::Call 'kernel32::GetFinalPathNameByHandleW(p R1, w .R2, i ${NSIS_MAX_STRLEN}, i 0) i .R3'
+              ${If} $R3 > 0
+              ${AndIf} $R3 < ${NSIS_MAX_STRLEN}
+              ${AndIf} $R2 == "\\?\$R0"
+                # FILE_ATTRIBUTE_TAG_INFO：得是文件夹（0x10），不能是重解析点（0x400）。
+                System::Call '*(i, i) p .R2'
+                System::Call 'kernel32::GetFileInformationByHandleEx(p R1, i 9, p R2, i 8) i .R3'
+                System::Call '*$R2(i .R4, i .R5)'
+                System::Free $R2
+                IntOp $R5 $R4 & 0x10
+                IntOp $R4 $R4 & 0x400
+                ${If} $R3 <> 0
+                ${AndIf} $R5 <> 0
+                ${AndIf} $R4 = 0
+                  # SDDL_REVISION_1。拿到的是一整块，属主和 DACL 都指在里面，用完 LocalFree。
+                  # 权限串先放进寄存器再传：里面的括号、分号不进 System::Call 的参数串。
+                  StrCpy $R6 "${XINGMANG_INSTALL_DIRECTORY_SDDL}"
+                  System::Call 'advapi32::ConvertStringSecurityDescriptorToSecurityDescriptorW(w R6, i 1, *p .R2, p 0) i .R3'
+                  ${If} $R3 <> 0
+                    System::Call 'advapi32::GetSecurityDescriptorOwner(p R2, *p .R4, *i .R7) i .R3'
+                    System::Call 'advapi32::GetSecurityDescriptorDacl(p R2, *i .R7, *p .R5, *i .R7) i .R6'
+                    ${If} $R3 <> 0
+                    ${AndIf} $R6 <> 0
+                      # SE_FILE_OBJECT；OWNER | DACL | PROTECTED_DACL（不再继承上级目录）。
+                      System::Call 'advapi32::SetSecurityInfo(p R1, i 1, i 0x80000005, p R4, p 0, p R5, p 0) i'
+                    ${EndIf}
+                    System::Call 'kernel32::LocalFree(p R2) p'
+                  ${EndIf}
+                ${EndIf}
+              ${EndIf}
+              System::Call 'kernel32::CloseHandle(p R1)'
+            ${EndIf}
+          ${EndIf}
+        ${EndIf}
+        Pop $R7
+        Pop $R6
+        Pop $R5
+        Pop $R4
+        Pop $R3
+        Pop $R2
+        Pop $R1
+        Pop $R0
       FunctionEnd
     !endif
 
@@ -438,6 +550,14 @@
     MessageBox MB_OK|MB_ICONSTOP "星芒AI管理工具在这台电脑上需要 Windows 11 才能运行（ARM 处理器的 Windows 10 不支持）。$\r$\n$\r$\n这次没有安装任何东西。" /SD IDOK
     Quit
   ${EndIf}
+  !ifdef INSTALL_MODE_PER_ALL_USERS
+    # 走到这里 $INSTDIR 已经是注册表里记的旧安装位置，或者命令行 /D= 给的位置（更新器
+    # 拉起的升级、静默安装都是这两种；/D= 的目录 .onInit 一开头已经建好）。赶在模板执行
+    # 旧的卸载程序、解压新文件之前把它收紧，见 xingmangLockInstallDirectory。目录不存在
+    # 就什么也不做，有界面的安装在目录页定下来时再收紧。
+    Push $INSTDIR
+    Call xingmangLockInstallDirectory
+  !endif
 !macroend
 
 # electron-builder 的卸载界面第一页是 MUI_UNPAGE_WELCOME；定义了这个宏就由这里
@@ -508,7 +628,7 @@
 # 用户主动删掉的图标不会被复活。补到当前用户那里的图标，模板卸载时不管，由
 # un.xingmangRemoveFallbackShortcuts 按同样的路径删掉，两边要一起改。
 #
-# 这段脚本在提权的安装进程里执行，所以只允许出现 CreateShortCut 与路径判断，
+# 补图标这段脚本在提权的安装进程里执行，所以只允许出现 CreateShortCut 与路径判断，
 # 不读注册表以外的外部输入，也永远不删除任何文件。
 
 !macro xingmangCreateShortcutIfMissing LinkPath
@@ -534,6 +654,13 @@
 !macroend
 
 !macro customInstall
+  !ifdef INSTALL_MODE_PER_ALL_USERS
+    # customInit 和目录页已经收紧过一次。这里再来一次，兜住 $INSTDIR 在那之后又变了的情况：
+    # 更新器拉起的有界面安装跳过目录页，模板的 instFilesPre 却可能给旧位置再补一层产品名。
+    Push $INSTDIR
+    Call xingmangLockInstallDirectory
+  !endif
+
   # 更新器拉起的安装（--updated）不补快捷方式：那条路径上"没有图标"最可能是
   # 用户自己删的，替他决定不合适。
   ${IfNot} ${isUpdated}

@@ -339,8 +339,10 @@ module.exports = {
     oneClick: false,
     perMachine: true,
     // 老板拍板(2026-08-10):安装时允许用户自选目录。默认仍是 Program
-    // Files(管理员才可写);用户改到普通用户可写的目录时,会失去"装好的
-    // 程序文件不可被本机低权限进程篡改"这层保护——该取舍已明确告知并接受。
+    // Files(管理员才可写)。选到 D 盘这类普通用户可写的地方时,build/installer.nsh
+    // 的 xingmangLockInstallDirectory 会把安装目录改成跟 Program Files 一样只有
+    // 管理员能改:以管理员身份跑的升级、卸载要执行这个目录里的文件,不收紧就是
+    // 谁都能借客户下一次更新拿到管理员权限(Codex 逆向报告第 3 条,2026-10-08)。
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,

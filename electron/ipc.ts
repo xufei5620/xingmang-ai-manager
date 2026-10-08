@@ -133,7 +133,7 @@ import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
-import { clearXingmangAiSkillSecrets, describeImageMcpWarnings, syncXingmangAiSkill } from './xingmang-ai-skill'
+import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, clearXingmangAiSkillSecrets, describeImageMcpWarnings, syncXingmangAiSkill } from './xingmang-ai-skill'
 import type {
   AccountKeyCliConfigurationInput,
   AccountSessionState,
@@ -3544,7 +3544,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       // 技能写进去了、画图工具却没登记上，以前只进日志：客户说「画一张」AI 不会，首页一个字没有。
       // 这里换成一句人话交给首页，那张提示自带「重新同步」，点了就整轮再登记一次。
       const imageMcpWarning = describeImageMcpWarnings(skill.imageMcpWarnings ?? [])
-      if (skill.ready) return imageMcpWarning ? { ...summary, imageMcpWarning } : summary
+      // 缺 Node.js 的那句要不要上首页，渲染层跟着运行环境卡对 Node.js 的说法定，这里只把原因带过去。
+      const imageMcpNeedsNode = (skill.imageMcpWarnings ?? []).includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)
+      if (skill.ready) return imageMcpWarning ? { ...summary, imageMcpWarning, ...(imageMcpNeedsNode ? { imageMcpNeedsNode } : {}) } : summary
       const imageSkillWarning = skill.reason || '星芒AI 生图 Key 未完成初始化'
       options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', imageSkillWarning)
       return { ...summary, imageSkillWarning }
