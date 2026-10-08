@@ -273,9 +273,11 @@ import {
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
 import {
   buildClaudeNativeLayout,
+  buildClaudeRetainedFiles,
   buildClaudeRetainedVersionFilesCommand,
   buildClaudeRetainedVersionFilesReason,
   uninstallVerifiedClaudeNativeInstallation,
+  type ClaudeRetainedFiles,
 } from './claude-native-uninstall'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import {
@@ -594,7 +596,8 @@ export type ToolUninstallResult =
          * a command can no longer be trusted). Non-null only where the
          * producer already fully re-verified every path it names — see
          * DarwinGrokRetainedPathsError below, and the Claude native version
-         * files left behind by uninstallVerifiedClaudeNativeInstallation.
+         * files (plus, on Windows, the renamed claude.exe still running) left
+         * behind by uninstallVerifiedClaudeNativeInstallation.
          */
         manualCommand: string | null
         /**
@@ -5373,13 +5376,13 @@ export function createSystemService(
   // Q14：官方脚本装的 ~/.local/bin/claude 在 macOS/Linux 上是指向
   // ~/.local/share/claude/versions/<版本> 的符号链接，旧实现按普通文件校验直接拒绝；
   // 两个平台也都把 versions 里的程序本体留在了磁盘上。
-  async function uninstallNativeClaude(installation: CliInstallation): Promise<string[]> {
+  async function uninstallNativeClaude(installation: CliInstallation): Promise<ClaudeRetainedFiles> {
     const result = await uninstallVerifiedClaudeNativeInstallation({
       homeDirectory: os.homedir(),
       installDirectory: installation.installDirectory,
       platform: process.platform,
     })
-    return result.retainedVersionFiles
+    return buildClaudeRetainedFiles(result, process.platform)
   }
 
   function isManagedNpmInstallation(installation: Pick<CliInstallation, 'npmPrefix'>): boolean {
@@ -5501,6 +5504,7 @@ export function createSystemService(
       if (options.reinstall) await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
       let current = initial
       const removedInstallations: string[] = []
+      const retainedClaudeCommandFiles: string[] = []
       const retainedClaudeVersionFiles: string[] = []
       const retainedGrokFiles: string[] = []
       for (let attempt = 0; attempt < 8 && current.installation; attempt += 1) {
@@ -5610,7 +5614,9 @@ export function createSystemService(
             throw error
           }
         } else {
-          retainedClaudeVersionFiles.push(...await uninstallNativeClaude(installation))
+          const retained = await uninstallNativeClaude(installation)
+          retainedClaudeCommandFiles.push(...retained.commandFiles)
+          retainedClaudeVersionFiles.push(...retained.versionFiles)
         }
         removedInstallations.push(installation.installDirectory)
         current = await inspectCliTool(provider, npmPath, npmGlobalRoot)
@@ -5625,16 +5631,21 @@ export function createSystemService(
       invalidateCliUpdateCache(provider)
       // Linux：删掉这个工具的小启动器，星芒装的一个都不剩时把终端启动设置里加的几行也去掉。
       void cliTerminalAccess.release(provider)
-      const retainedReason = buildClaudeRetainedVersionFilesReason(retainedClaudeVersionFiles, process.platform)
+      const retainedReason = buildClaudeRetainedVersionFilesReason(
+        retainedClaudeVersionFiles,
+        process.platform,
+        retainedClaudeCommandFiles,
+      )
       if (retainedReason) {
-        const cleanUpAvailable = rememberUninstallLeftovers(provider, retainedClaudeVersionFiles)
+        const retainedClaudeFiles = [...retainedClaudeCommandFiles, ...retainedClaudeVersionFiles]
+        const cleanUpAvailable = rememberUninstallLeftovers(provider, retainedClaudeFiles)
         return {
           outcome: 'manual-required',
           previousVersion: initial.status.version,
           error: retainedReason,
           manualHelp: {
             reason: retainedReason,
-            manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeVersionFiles, process.platform),
+            manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeFiles, process.platform),
             ...(cleanUpAvailable ? { cleanUpAvailable } : {}),
           },
         }
