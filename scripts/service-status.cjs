@@ -168,12 +168,20 @@ function applyStatusChanges(current, changes, now = new Date()) {
   return next
 }
 
+// 0 是手动灰度那一档（docs/SERVICE-STATUS.md「分批放量」）：自动检查一个都不推，
+// 「先给 0% 的电脑」读起来像没生效，日志里直接说清谁拿得到。
+function describeRollout(rollout) {
+  if (!isRecord(rollout)) return '分批放量：无（新版本全部放开）'
+  if (rollout.percent === 0) return `分批放量：${rollout.version} 先不自动推，只给自己点「检查更新」的人`
+  return `分批放量：${rollout.version} 先给 ${rollout.percent}% 的电脑`
+}
+
 function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
   lines.push(maintenance ? `维护：打开${maintenance.message ? `，说明「${maintenance.message}」` : ''}${maintenance.until ? `，${maintenance.until} 自动结束` : ''}` : '维护：关闭')
   lines.push(Array.isArray(status.badVersions) && status.badVersions.length ? `撤回的版本：${status.badVersions.join('、')}` : '撤回的版本：无')
-  lines.push(isRecord(status.rollout) ? `分批放量：${status.rollout.version} 先给 ${status.rollout.percent}% 的电脑` : '分批放量：无（新版本全部放开）')
+  lines.push(describeRollout(status.rollout))
   lines.push(typeof status.minimumVersion === 'string' ? `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认）` : '最低版本：无')
   return lines
 }
