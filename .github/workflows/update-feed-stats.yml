@@ -1,6 +1,7 @@
-# 看各版本的星芒有多少台电脑在用：按客户端读 service-status.json 时带的版本号，
+# 看各版本的星芒各占多少电脑：按客户端读 service-status.json 时带的版本号，
 # 从 Cloudflare 的访问统计里数（怎么数、哪些看不到见 scripts/update-feed-stats.cjs
 # 开头和 docs/SERVICE-STATUS.md「看各版本有多少人在用」）。结果写在这次运行的摘要页里。
+# 仓库公开，运行页谁都能看，所以摘要页只有占比，没有台数。
 #
 # 只读：令牌是仓库 Secrets 里的 CLOUDFLARE_ANALYTICS_TOKEN（只有 Analytics 读权限，
 # 限 shenfengwl.fun），不用 release 环境，所以不用批准，也碰不到发布凭据和更新目录。
@@ -10,7 +11,7 @@ on:
   # TEMPORARY: one real run from this branch before merge; removed in the next commit.
   push:
     branches: [claude/rollback-runbook-version-stats-pdehhc]
-    paths: [.github/workflows/update-feed-stats.yml]
+    paths: [.github/workflows/update-feed-stats.yml, scripts/update-feed-stats.cjs]
   workflow_dispatch:
     inputs:
       days:
@@ -33,7 +34,7 @@ jobs:
           node-version: 22
 
       # 脚本只用 Node 自带的模块，不用 npm ci。来源 IP 只在脚本内存里去重，
-      # 日志和摘要页里只有按版本汇总的数字。
+      # 日志和摘要页里只有按版本汇总的占比。
       - name: Count clients per version from the status file requests
         env:
           CLOUDFLARE_ANALYTICS_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}

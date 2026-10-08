@@ -8,8 +8,8 @@
 // 请求 UA 是 electron-builder，不带版本，所以只能数状态文件。更新目录挂在 Cloudflare
 // 上，这里拿只读的 Analytics 令牌查 GraphQL Analytics API，按 UA 和来源 IP 分组。
 //
-// 来源 IP 只在内存里拿来去重，任何输出（日志、Job Summary）里都只有按版本和系统
-// 汇总后的数字。
+// 来源 IP 只在内存里拿来去重；仓库公开，任何输出（日志、Job Summary）里都只有按版本
+// 和系统汇总后的占比，没有 IP，也没有台数。
 const { compareReleaseVersions } = require('./update-release-utils.cjs')
 
 const API_ORIGIN = 'https://api.cloudflare.com'
@@ -24,6 +24,8 @@ const DEFAULT_PAGE_SIZE = 10000
 const MIN_WINDOW_MS = 10 * 60 * 1000
 // Cloudflare 按查询那一刻算「最早能查多久以前」，留几分钟余量免得卡在边上被拒。
 const RETENTION_MARGIN_MS = 10 * 60 * 1000
+// 电脑少于这么多台时提醒比例只能粗看；只说「不到」，不暴露具体台数。
+const SMALL_SAMPLE = 20
 const PLATFORMS = [['windows', 'Windows'], ['mac', 'Mac'], ['linux', 'Linux'], ['other', '其他']]
 
 class StatsError extends Error {}
@@ -127,9 +129,11 @@ function createApiClient(token, fetchImpl) {
 
 async function resolveZoneId(client) {
   const body = await client.get(`/client/v4/zones?name=${encodeURIComponent(ZONE_NAME)}`)
+  if (body.success === false) throw new StatsError(`Cloudflare 没列出域名：${describeApiErrors(body.errors) || '没给原因'}`)
   const zones = Array.isArray(body.result) ? body.result : []
   const zone = zones.find((entry) => isRecord(entry) && entry.name === ZONE_NAME)
-  if (!zone) throw new StatsError(`令牌看不到 ${ZONE_NAME} 这个域名，建令牌时「Zone Resources」要选它`)
+  // 令牌缺 Zone / Zone / Read 时 Cloudflare 不报错，只回一个空列表。
+  if (!zone) throw new StatsError(`令牌看不到 ${ZONE_NAME} 这个域名。去 Cloudflare 编辑这个令牌：权限里要有 Zone / Zone / Read（只有 Zone / Analytics / Read 不够），Zone Resources 要选 ${ZONE_NAME}`)
   if (typeof zone.id !== 'string' || !/^[0-9a-f]{32}$/.test(zone.id)) throw new StatsError('Cloudflare 返回的域名编号格式不对')
   return zone.id
 }
@@ -297,6 +301,8 @@ function sortVersionsDescending(versions) {
   return [...versions].sort((left, right) => compareReleaseVersions(right, left))
 }
 
+// 仓库是公开的，运行页和摘要页谁都能看，所以只写占比，不写台数和请求次数：
+// 台数等于告诉别人星芒有多少客户。
 function renderMachineTable(machines) {
   const columns = PLATFORMS.filter(([id]) => id !== 'other' || [...machines.values()].some((counts) => counts.other > 0))
   const totals = { windows: 0, mac: 0, linux: 0, other: 0 }
@@ -306,30 +312,29 @@ function renderMachineTable(machines) {
     total += counts.windows + counts.mac + counts.linux + counts.other
   }
   const lines = [
-    `| 版本 | ${columns.map(([, label]) => label).join(' | ')} | 合计 | 占比 |`,
-    `|---|${columns.map(() => '---:').join('|')}|---:|---:|`,
+    `| 版本 | ${columns.map(([, label]) => label).join(' | ')} | 合计 |`,
+    `|---|${columns.map(() => '---:').join('|')}|---:|`,
   ]
   for (const version of sortVersionsDescending(machines.keys())) {
     const counts = machines.get(version)
     const sum = counts.windows + counts.mac + counts.linux + counts.other
-    lines.push(`| ${version} | ${columns.map(([id]) => counts[id]).join(' | ')} | ${sum} | ${formatShare(sum, total)} |`)
+    lines.push(`| ${version} | ${columns.map(([id]) => formatShare(counts[id], total)).join(' | ')} | **${formatShare(sum, total)}** |`)
   }
-  lines.push(`| **合计** | ${columns.map(([id]) => `**${totals[id]}**`).join(' | ')} | **${total}** | |`)
-  return lines
+  lines.push(`| **合计** | ${columns.map(([id]) => `**${formatShare(totals[id], total)}**`).join(' | ')} | **100%** |`)
+  return { lines, total }
 }
 
 function renderRequestTable(requests) {
   const total = [...requests.values()].reduce((sum, count) => sum + count, 0)
-  const lines = ['| 版本 | 次数 | 占比 |', '|---|---:|---:|']
+  const lines = ['| 版本 | 占比 |', '|---|---:|']
   for (const version of sortVersionsDescending(requests.keys())) {
-    lines.push(`| ${version} | ${requests.get(version)} | ${formatShare(requests.get(version), total)} |`)
+    lines.push(`| ${version} | ${formatShare(requests.get(version), total)} |`)
   }
-  lines.push(`| **合计** | **${total}** | |`)
   return lines
 }
 
 function renderReport(stats, window, limits, days) {
-  const lines = ['## 星芒各版本在用的电脑数', '']
+  const lines = ['## 星芒各版本的占比', '']
   const covered = (window.end - window.start) / (24 * 60 * 60 * 1000)
   lines.push(`统计时段：北京时间 ${formatBeijingTime(window.start)} 至 ${formatBeijingTime(window.end)}（${Number.isInteger(covered) ? covered : covered.toFixed(1)} 天）`)
   if (window.clamped) lines.push('', `Cloudflare 只留了最近 ${(limits.notOlderThanMs / (24 * 60 * 60 * 1000)).toFixed(1)} 天的统计，要的 ${days} 天查不全，只统计了上面这一段。`)
@@ -337,20 +342,23 @@ function renderReport(stats, window, limits, days) {
   if (!stats.requests.size) {
     lines.push('这段时间没有星芒客户端读过更新状态文件。')
   } else if (stats.withIp) {
-    lines.push(...renderMachineTable(stats.machines), '')
-    lines.push('电脑数按「来源 IP + 系统」去重，每台只算它这段时间里最后一次读更新状态文件时的版本。同一个网络出口下的几台电脑只算一台，换过网络的电脑会算成几台，所以看比例比看台数准。')
+    const table = renderMachineTable(stats.machines)
+    lines.push('按电脑算（每格是占全部电脑的比例）：', '', ...table.lines, '')
+    lines.push('电脑按「来源 IP + 系统」去重，每台只算它这段时间里最后一次读更新状态文件时的版本。同一个网络出口下的几台电脑只算一台，换过网络的电脑会算成几台，比例会有些偏差。')
+    if (table.total < SMALL_SAMPLE) lines.push('', `这段时间读到的电脑不到 ${SMALL_SAMPLE} 台，比例只能粗看。`)
   } else {
-    lines.push('这个套餐的 Cloudflare 统计查不到来源 IP，没法按电脑去重，只有下面的请求次数。')
+    lines.push('这个套餐的 Cloudflare 统计查不到来源 IP，没法按电脑去重，只有下面按请求算的占比。')
   }
   if (stats.requests.size) {
-    lines.push('', '### 请求次数', '', ...renderRequestTable(stats.requests), '')
-    lines.push('开着的星芒每 15 分钟读一次，一直不关的电脑次数多，这张表只用来对照。')
+    lines.push('', '### 按请求算', '', ...renderRequestTable(stats.requests), '')
+    lines.push('开着的星芒每 15 分钟读一次，一直不关的电脑分量重，这张表只用来对照。')
   }
-  if (stats.unrecognized) lines.push('', `另有 ${stats.unrecognized} 次请求看不出版本（浏览器直接打开、爬虫等），没算进上面的表。`)
+  const recognized = [...stats.requests.values()].reduce((sum, count) => sum + count, 0)
+  if (stats.unrecognized) lines.push('', `另有 ${formatShare(stats.unrecognized, recognized + stats.unrecognized)} 的请求看不出版本（浏览器直接打开、爬虫等），没算进上面的表。`)
   lines.push('', '### 这里看不到的', '')
   lines.push('- 0.2.8、0.2.9 不读更新状态文件。')
   lines.push('- 0.2.18 起 Windows 走直连线路的电脑从 xm-direct.solov.cc 读，那部分只在服务端日志里。')
-  if (stats.sampleInterval > 1) lines.push(`- Cloudflare 这段时间的统计是抽样的（最多每 ${Math.round(stats.sampleInterval)} 次记 1 次），数字有误差，台数可能偏少。`)
+  if (stats.sampleInterval > 1) lines.push(`- Cloudflare 这段时间的统计是抽样的（最多每 ${Math.round(stats.sampleInterval)} 次记 1 次），比例有误差。`)
   return `${lines.join('\n')}\n`
 }
 

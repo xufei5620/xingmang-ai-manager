@@ -123,7 +123,7 @@ test('the day count must be a whole number of days Cloudflare could hold', () =>
   for (const bad of ['0', '32', '1.5', '-1', 'abc', '']) assert.throws(() => parseDays(bad), StatsError, bad)
 })
 
-test('the report lists machines per version and platform without any address in it', async () => {
+test('the report gives shares per version and platform, never an address or a count', async () => {
   const cloudflare = createCloudflare({
     groups: (filter) => (filter.datetime_geq === '2026-10-07T12:00:00Z'
       ? [row(windows15, '203.0.113.7'), row(mac15, '203.0.113.7'), row(windows14, '198.51.100.20', 40), row(browser, '192.0.2.1', 1)]
@@ -131,14 +131,18 @@ test('the report lists machines per version and platform without any address in 
   })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   assert.match(report, /统计时段：北京时间 2026-10-07 20:00 至 2026-10-08 20:00（1 天）/)
-  assert.match(report, /\| 版本 \| Windows \| Mac \| Linux \| 合计 \| 占比 \|/)
-  assert.match(report, /\| 0\.2\.15 \| 1 \| 1 \| 0 \| 2 \| 66\.7% \|/)
-  assert.match(report, /\| 0\.2\.14 \| 1 \| 0 \| 0 \| 1 \| 33\.3% \|/)
-  assert.match(report, /\| \*\*合计\*\* \| \*\*2\*\* \| \*\*1\*\* \| \*\*0\*\* \| \*\*3\*\* \| \|/)
-  assert.match(report, /\| 0\.2\.14 \| 40 \| 83\.3% \|/)
-  assert.match(report, /另有 1 次请求看不出版本/)
+  assert.match(report, /\| 版本 \| Windows \| Mac \| Linux \| 合计 \|/)
+  assert.match(report, /\| 0\.2\.15 \| 33\.3% \| 33\.3% \| 0\.0% \| \*\*66\.7%\*\* \|/)
+  assert.match(report, /\| 0\.2\.14 \| 33\.3% \| 0\.0% \| 0\.0% \| \*\*33\.3%\*\* \|/)
+  assert.match(report, /\| \*\*合计\*\* \| \*\*66\.7%\*\* \| \*\*33\.3%\*\* \| \*\*0\.0%\*\* \| \*\*100%\*\* \|/)
+  assert.match(report, /\| 0\.2\.14 \| 83\.3% \|/)
+  assert.match(report, /\| 0\.2\.15 \| 16\.7% \|/)
+  assert.match(report, /另有 2\.0% 的请求看不出版本/)
+  assert.match(report, /读到的电脑不到 20 台，比例只能粗看/)
   assert.match(report, /0\.2\.8、0\.2\.9 不读更新状态文件/)
+  // The repository is public, and so is every run page: no address, no machine or request count.
   assert.doesNotMatch(report, /203\.0\.113|198\.51\.100|192\.0\.2/)
+  assert.doesNotMatch(report, /\| (?:1|2|3|8|40|48|49) \|/)
   assert.doesNotMatch(report, /抽样/)
 })
 
@@ -174,8 +178,8 @@ test('a piece that fills a whole page is split in half until every group fits', 
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   // 24h -> 12h -> 6h: four pieces of six hours, the later ones see ip-a on 0.2.15.
   assert.equal(cloudflare.calls.length, 2 + 1 + 2 + 4)
-  assert.match(report, /\| 0\.2\.15 \| 1 \| 0 \| 0 \| 1 \| 50\.0% \|/)
-  assert.match(report, /\| 0\.2\.14 \| 1 \| 0 \| 0 \| 1 \| 50\.0% \|/)
+  assert.match(report, /\| 0\.2\.15 \| 50\.0% \| 0\.0% \| 0\.0% \| \*\*50\.0%\*\* \|/)
+  assert.match(report, /\| 0\.2\.14 \| 50\.0% \| 0\.0% \| 0\.0% \| \*\*50\.0%\*\* \|/)
 })
 
 test('without client addresses the report falls back to request counts', async () => {
@@ -186,7 +190,7 @@ test('without client addresses the report falls back to request counts', async (
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   assert.match(cloudflare.calls[2].init.body, /dimensions \{ userAgent \}/)
   assert.match(report, /查不到来源 IP/)
-  assert.match(report, /\| 0\.2\.15 \| 9 \| 100\.0% \|/)
+  assert.match(report, /\| 0\.2\.15 \| 100\.0% \|/)
   assert.match(report, /最多每 4 次记 1 次/)
 })
 
@@ -208,6 +212,13 @@ test('a rejected or malformed token stops before anything is queried and is neve
   await assert.rejects(collectUpdateFeedStats({ token: undefined, days: 1, now, fetchImpl: unused.fetchImpl }), /CLOUDFLARE_ANALYTICS_TOKEN/)
   await assert.rejects(collectUpdateFeedStats({ token: `${TOKEN}\nx-evil: 1`, days: 1, now, fetchImpl: unused.fetchImpl }), /格式不对/)
   assert.equal(unused.calls.length, 0)
+})
+
+test('a token that cannot list the zone says which permission is missing', async () => {
+  async function fetchImpl() {
+    return jsonResponse(200, { success: true, result: [] })
+  }
+  await assert.rejects(collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl }), /权限里要有 Zone \/ Zone \/ Read/)
 })
 
 test('a GraphQL error from Cloudflare is shown as it was given', async () => {
