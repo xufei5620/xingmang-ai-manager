@@ -2657,7 +2657,7 @@ test('a tool whose account key changes this startup keeps waiting for the scan w
 // 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
 // 问完了、谁都不用换，检测没跑完也能打开。
 test('an applied route migration blocks home and native launch after scanning until configuration finishes', async () => {
-  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1')
+  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1&mergeRoute=1')
   try {
     await page.getByTestId('home-cached-scan').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
@@ -3525,7 +3525,7 @@ async function changeRouteQuietly(page, line) {
 }
 
 test('auto leaves the tools alone until its check settles, then moves the ones Xingmang configured onto that line', async () => {
-  const page = await open('allInstalled=1&autoRelay=pending&bootstrapPending=1')
+  const page = await open('allInstalled=1&autoRelay=pending&bootstrapPending=1&mergeRoute=1')
   try {
     await releaseStartupBootstrap(page)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '没查出线路以前不迁')
@@ -3539,7 +3539,7 @@ test('auto leaves the tools alone until its check settles, then moves the ones X
 // #941：「自动」换了线路，开着的工具也照样跟着改好配置，下次打开就走新线路。yoyo 10-8：线路的事不要太多提示，
 // 所以不问开没开，首页不摆进度、不说「已完成…」，也没有「要关掉重开」那句。
 test('when auto changes the line while tools are open, they quietly follow it', async () => {
-  const page = await open('autoRelay=direct&runningTools=1&bootstrapPending=1')
+  const page = await open('autoRelay=direct&runningTools=1&bootstrapPending=1&mergeRoute=1')
   try {
     await releaseStartupBootstrap(page)
     await changeRouteQuietly(page, 'primary')
@@ -3547,6 +3547,23 @@ test('when auto changes the line while tools are open, they quietly follow it', 
     for (const provider of ['claude', 'codex']) assert.equal(new URL(providers[provider].actualBaseUrl).origin, 'https://xm.solov.cc', provider)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'inspectRunningTools')), false, '不再问开没开')
     assert.equal(await page.getByText('连接线路').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// xm 三线路 C9：星芒账号换线路由主进程定点改地址，界面收到那一声只重读设置和配置，不再同步 Key、整份写入。
+test('when auto changes the xm line the main process moves the tools and home only rereads them', async () => {
+  const page = await open('allInstalled=1&autoRelay=direct')
+  try {
+    await settleStartupBootstrap(page)
+    const configReads = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length)
+    await page.evaluate(() => {
+      window.v2Test.setRelayRoute({ line: 'primary', settled: true })
+      window.v2Test.emit('onRelayRouteChanged', undefined)
+    })
+    await page.waitForFunction((before) => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length > before + 1, configReads)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '界面不再整份写入')
+    assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
