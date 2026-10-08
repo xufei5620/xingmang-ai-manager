@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { RefreshCw } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, RunningToolsReport, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, afterCodexDesktopRestart, bootstrapAccountTools, nextRouteRestart, relayFallbackActive, sessionChangeKeepsBootstrap, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, sessionChangeKeepsBootstrap, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -104,11 +104,8 @@ interface AccountBootstrapView extends AccountBootstrapProgress {
   /** result 落下来的时刻，首页「已完成…」那句据此到点收起（已知12）。 */
   finishedAt?: number
   error?: string
-  /**
-   * 跟着换线路改了配置时还开着的工具，首页那句「要重开」（#941，每轮怎么换见 nextRouteRestart）。单放一格
-   * 不放 result 里：后面几轮同步一开始进度就把整格换掉、result 是空的，那句也得留着，等客户点「知道了」。
-   */
-  routeRestart?: RunningToolsReport
+  /** 跟着连接线路悄悄改工具配置的那一轮（followRelayRoute）：首页不摆进度，出了错照常说。 */
+  quiet?: boolean
 }
 
 /**
@@ -403,7 +400,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     })
     return () => { current = false }
   }, [app, bootAttempt, noteStartupCheck])
-  const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId) => {
+  const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId, quiet = false) => {
     if (!settings || !Number.isSafeInteger(userId) || userId < 1) return
     const bootstrapScope = accountScope({ siteId: accountSite, account: { userId } as AccountSessionState['account'] })
     const attemptKey = `${bootstrapScope}:${mode}:${onlyProviders?.join(',') ?? 'all'}`
@@ -414,11 +411,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const epoch = ++bootstrapEpoch.current
     const updateProgress = (progress: AccountBootstrapProgress) => {
       if (!mounted.current || epoch !== bootstrapEpoch.current) return
-      setAccountBootstrap((current) => ({
-        ...progress,
-        scope: bootstrapScope,
-        ...(current?.scope === bootstrapScope && current.routeRestart ? { routeRestart: current.routeRestart } : {}),
-      }))
+      setAccountBootstrap({ ...progress, scope: bootstrapScope, ...(quiet ? { quiet } : {}) })
     }
     updateProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 5 })
     // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
@@ -452,16 +445,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         }
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
-          ? {
-            ...current,
-            phase: 'verifying',
-            label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态',
-            percent: 100,
-            result,
-            // 这一轮没改线路时留着上一轮那句「要重开」：工具还开着拿着旧地址（#941）。
-            routeRestart: nextRouteRestart(current.routeRestart, result),
-            finishedAt: Date.now(),
-          }
+          ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result, finishedAt: Date.now() }
           : current)
         setWorkspaceEntered(true)
         // 只重读配置，不再把整轮环境探测走第二遍：跟着 Key 变的只有配置状态，
@@ -682,7 +666,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   /**
    * 「自动」那条线路查出了结论、退回默认线路或切回直连（直连适配第二步）：设置里的线路跟着
    * 重读，另外三个客户端重新检测一遍（检测时跟着换，第四十三批 A）。工具配置还停在另一条线路
-   * 上的，照开机那一档迁过去，开着的也改、首页提示重开（#941）；没有要迁的就不去同步 Key。
+   * 上的，照开机那一档迁过去，开着的也改（#941）；没有要迁的就不去同步 Key。这一轮首页不摆进度、
+   * 只换了线路也不说「已完成…」，出了错照常说（yoyo 10-8：线路的事不要太多提示）。
    */
   const followRelayRoute = useCallback(async () => {
     const [next, config] = await Promise.all([app.readSettings(), native.getConfig()]).catch(() => [null, null] as const)
@@ -690,9 +675,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setSettings(next)
     void toolbox.refreshExternal(true).catch(() => undefined)
     if (session.authenticated && session.account && accountRoutesPending(config, next)) {
-      await runAccountBootstrap(session.account.userId, 'restore', true)
+      await runAccountBootstrap(session.account.userId, 'restore', true, undefined, siteId, true)
     }
-  }, [app, native, runAccountBootstrap, session.account, session.authenticated, toolbox.refreshExternal])
+  }, [app, native, runAccountBootstrap, session.account, session.authenticated, siteId, toolbox.refreshExternal])
   useEffect(() => {
     if (boot !== 'ready') return
     return native.onRelayRouteChanged?.(() => { void followRelayRoute() })
@@ -1641,11 +1626,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               </Suspense>
             </div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
-              relayFallback={session.authenticated && relayFallbackActive(settings) && toolbox.externalClients.some((client) => client.running && client.routePending)}
-              onRestartCodexDesktop={() => void perform('重开 Codex 桌面端', async () => {
-                if (await launch('codexDesktop', 'restart')) setAccountBootstrap((current) => current?.routeRestart ? { ...current, routeRestart: afterCodexDesktopRestart(current.routeRestart) } : current)
-              })}
-              onDismissRouteRestart={() => setAccountBootstrap((current) => current?.routeRestart ? { ...current, routeRestart: undefined } : current)}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => {
                 refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)

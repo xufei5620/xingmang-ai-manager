@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, lowBalanceText, pickFirstRunTool, recentResumeOffered, routeRestartNotice, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
-import type { ProviderId, RunningToolsReport } from '../../../../electron/ipc-contract'
+import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
@@ -620,86 +620,44 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     })).toBeNull()
   })
 
-  // 直连适配第六节第 4 条：「自动」退回默认线路、另外三个客户端还开着没跟着换时，上方说一句总的。
-  const fallbackNotice = '直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换'
-
-  it('says once that the other clients follow the default line after they quit', () => {
-    const markup = render({}, undefined, { relayFallback: true })
-    expect(markup).toContain('data-testid="home-relay-fallback"')
-    expect(markup).toContain(fallbackNotice)
-    expect(render({}, undefined, {})).not.toContain('home-relay-fallback')
+  // yoyo 10-8：线路的事不要太多提示。跟着连接线路改工具配置的那一轮首页不摆进度、只换了线路也不说「已完成…」，
+  // 出了错照常说；首页也不再有切线路的黄条和「要重开」那句。
+  const followedRoute = (overrides: Partial<AccountBootstrapResult> = {}) => ({
+    phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', quiet: true,
+    result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'], ...overrides }),
   })
 
-  // #941：四个命令行工具开着也照样跟着换线路，开着的要重开才走新地址，首页说给开着的那几个。
-  const routeRestartBootstrap = (routeRestart: RunningToolsReport) => ({
-    phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope',
-    result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'] }), routeRestart,
+  it('shows no progress while it quietly moves the tools to the current line', () => {
+    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在为 1 个已安装工具写入 Key', percent: 65, scope: 'scope', quiet: true } })
+    expect(markup).not.toContain('正在为 1 个已安装工具写入 Key')
+    expect(markup).not.toContain('v2-bootstrap-notice')
   })
 
-  it('asks to restart only the tools still open after they followed the line', () => {
+  it('still says when the quiet round did not finish', () => {
     const markup = render({}, undefined, {
-      bootstrap: routeRestartBootstrap({ running: ['codex'], unknown: ['claude'], codexDesktopRunning: false, canRestartCodexDesktop: true }),
-    })
-    expect(markup).toContain('data-testid="home-route-restart"')
-    expect(markup).toContain('连接线路换了，工具配置已经跟着改好。Codex CLI 还开着，要关掉重开才会换到新的连接线路。如果 Claude Code 还开着，也要关掉重开才会换到新的连接线路。')
-    expect(markup).not.toContain('home-route-restart-codex-desktop')
-    expect(markup).not.toContain('连接线路暂未改动')
-  })
-
-  it('keeps the restart prompt up while a later round is still syncing', () => {
-    const markup = render({}, undefined, {
-      bootstrap: {
-        phase: 'syncing', label: '正在同步账号专属 Key', percent: 5, scope: 'scope',
-        routeRestart: { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true },
-      },
-    })
-    expect(markup).toContain('data-testid="home-route-restart"')
-    expect(markup).toContain('连接线路换了，工具配置已经跟着改好。Codex CLI 还开着，要关掉重开才会换到新的连接线路。')
-  })
-
-  it('says nothing about restarting once every followed tool is closed', () => {
-    const markup = render({}, undefined, {
-      bootstrap: routeRestartBootstrap({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true }),
-    })
-    expect(markup).not.toContain('home-route-restart')
-    expect(routeRestartNotice(undefined)).toBe('')
-  })
-
-  it('offers to restart the Codex desktop app only where it can be restarted', () => {
-    const restartable = render({}, undefined, {
-      bootstrap: routeRestartBootstrap({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }),
-      onRestartCodexDesktop: () => undefined, onDismissRouteRestart: () => undefined,
-    })
-    expect(restartable).toContain('Codex 桌面端 还开着，要关掉重开才会换到新的连接线路。')
-    expect(restartable).toContain('data-testid="home-route-restart-codex-desktop"')
-    expect(restartable).toContain('>帮我重开 Codex 桌面端<')
-    expect(restartable).toContain('data-testid="home-route-restart-dismiss"')
-    const mac = render({}, undefined, {
-      bootstrap: routeRestartBootstrap({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }),
-      onRestartCodexDesktop: () => undefined,
-    })
-    expect(mac).toContain('Codex 桌面端只关窗口不算，要在它的窗口里按 Command + Q 完全退出再打开。')
-    expect(mac).not.toContain('home-route-restart-codex-desktop')
-  })
-
-  it('shows every failure in the banner again, a configuration that did not follow the line included', () => {
-    const markup = render({}, undefined, {
-      relayFallback: true,
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({
-          failed: [
-            { provider: 'claude', message: '当前分组未返回可用模型' },
-            { provider: 'codex', message: configurationFailureMessages.routeMismatch },
-          ],
-        }),
-      },
+      bootstrap: { phase: 'syncing', label: '正在同步账号专属 Key', percent: 5, scope: 'scope', quiet: true, error: '星芒账号已变化，已停止本次 Key 配置' },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain(fallbackNotice)
-    expect(markup).toContain('当前分组未返回可用模型')
-    expect(markup).toContain('连接线路尚未更新，请点「重新同步」')
+    expect(markup).toContain('role="alert"')
     expect(markup).toContain('>重新同步<')
+  })
+
+  it('does not announce a round that only moved the tools to the current line', () => {
+    expect(render({}, undefined, { bootstrap: followedRoute() })).not.toContain('v2-bootstrap-notice')
+    // 开机那一轮不是悄悄的那一轮，只换了线路也一样不说。
+    expect(render({}, undefined, { bootstrap: { ...followedRoute(), quiet: undefined } })).not.toContain('v2-bootstrap-notice')
+    // 同一轮里真写了 Key 的照常说。
+    expect(render({}, undefined, { bootstrap: followedRoute({ configured: ['claude', 'codex'] }) })).toContain('已完成 2 组工具的 Key 配置。')
+  })
+
+  it('still shows the failures of a round that moved the tools, without a word about the line', () => {
+    const markup = render({}, undefined, {
+      bootstrap: followedRoute({ configured: [], routeFollowed: undefined, failed: [{ provider: 'codex', message: configurationFailureMessages.relayMismatch }] }),
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain(configurationFailureMessages.relayMismatch)
+    expect(markup).toContain('>重新同步<')
+    expect(markup).not.toContain('连接线路')
   })
 })
 

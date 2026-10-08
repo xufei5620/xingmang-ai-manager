@@ -3491,50 +3491,62 @@ async function assertToolsOnTheirExpectedLine(page, line) {
   }
 }
 
+// 页面带 ?bootstrapPending 时每一轮同步 Key 都先扣着：开机那一轮放开让它做完。
+async function releaseStartupBootstrap(page) {
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+  await page.evaluate(() => window.v2Test.releaseBootstrap())
+  await settleStartupBootstrap(page)
+}
+
+// 「自动」换了线路、工具跟着改配置的那一轮（yoyo 10-8：线路的事不要太多提示），页面要带 ?bootstrapPending：同步 Key
+// 扣着的时候首页不摆进度；放开以后这一轮写完、首页照结果画完，也不说「已完成…」，中间一下都没出过同步横幅。
+// 做没做完看运行日志里那一行，光看配置改没改，横幅可能还没画。
+async function changeRouteQuietly(page, line) {
+  assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0)
+  await page.evaluate((next) => {
+    window.routeRoundSyncsBefore = window.v2Test.calls.filter((entry) => entry.method === 'syncManagedCliKeys').length
+    window.followedRouteRounds = () => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError'
+      && entry.args[0]?.context === 'account-bootstrap' && String(entry.args[0]?.message).includes('跟着换了连接线路')).length
+    window.followedRouteRoundsBefore = window.followedRouteRounds()
+    window.bootstrapNoticeSeen = false
+    new MutationObserver(() => { if (document.querySelector('.v2-bootstrap-notice')) window.bootstrapNoticeSeen = true })
+      .observe(document.body, { childList: true, subtree: true })
+    window.v2Test.setRelayRoute({ line: next, settled: true })
+    window.v2Test.emit('onRelayRouteChanged', undefined)
+  }, line)
+  await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'syncManagedCliKeys').length > window.routeRoundSyncsBefore)
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0, '同步 Key 扣着的时候首页不摆进度')
+  await page.evaluate(() => window.v2Test.releaseBootstrap())
+  await page.waitForFunction(() => window.followedRouteRounds() > window.followedRouteRoundsBefore)
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  assert.equal(await page.evaluate(() => window.bootstrapNoticeSeen), false, '跟着线路改的那一轮首页一下都没出同步横幅')
+  assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0)
+}
+
 test('auto leaves the tools alone until its check settles, then moves the ones Xingmang configured onto that line', async () => {
-  const page = await open('allInstalled=1&autoRelay=pending')
+  const page = await open('allInstalled=1&autoRelay=pending&bootstrapPending=1')
   try {
-    await settleStartupBootstrap(page)
+    await releaseStartupBootstrap(page)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '没查出线路以前不迁')
     await assertToolsOnTheirExpectedLine(page, 'https://xm.solov.cc')
-    await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'direct', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
-    await expect.poll(async () => (await page.evaluate(async () => (await window.xingmang.getConfig()).providers.grok.actualBaseUrl))).toBe('https://xm-direct.solov.cc/v1')
+    await changeRouteQuietly(page, 'direct')
     await assertToolsOnTheirExpectedLine(page, 'https://xm-direct.solov.cc')
-    // 改走的是直连，不是退回：首页不说退回那句。
-    assert.equal(await page.getByTestId('home-relay-fallback').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
-// #941：「自动」换了线路，开着的工具也照样跟着改好配置，首页说一句要关掉重开。后面几轮同步（这里是装完一个工具）
-// 不会让这句自己消失，客户点「知道了」才收起。
-test('when auto changes the line while tools are open, they follow it and home keeps asking to restart them until dismissed', async () => {
-  const page = await open('autoRelay=direct&runningTools=1')
+// #941：「自动」换了线路，开着的工具也照样跟着改好配置，下次打开就走新线路。yoyo 10-8：线路的事不要太多提示，
+// 所以不问开没开，首页不摆进度、不说「已完成…」，也没有「要关掉重开」那句。
+test('when auto changes the line while tools are open, they quietly follow it', async () => {
+  const page = await open('autoRelay=direct&runningTools=1&bootstrapPending=1')
   try {
-    await settleStartupBootstrap(page)
-    await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'primary', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
-    const notice = page.getByTestId('home-route-restart')
-    const restart = '连接线路换了，工具配置已经跟着改好。Claude Code、Codex CLI、Codex 桌面端 还开着，要关掉重开才会换到新的连接线路。'
-    await notice.getByText(restart, { exact: true }).waitFor()
+    await releaseStartupBootstrap(page)
+    await changeRouteQuietly(page, 'primary')
     const providers = await page.evaluate(async () => (await window.xingmang.getConfig()).providers)
     for (const provider of ['claude', 'codex']) assert.equal(new URL(providers[provider].actualBaseUrl).origin, 'https://xm.solov.cc', provider)
-    assert.equal(await notice.getByTestId('home-route-restart-codex-desktop').count(), 1)
-    // 退回默认线路那句只说另外三个客户端；横幅里也不再说「连接线路暂未改动」。
-    assert.equal(await page.getByTestId('home-relay-fallback').count(), 0)
-    assert.equal(await page.getByText('连接线路暂未改动').count(), 0)
-    await page.screenshot({ path: path.join(artifacts, 'home-route-restart.png'), fullPage: true })
-    // 装完 Gemini 那一轮只碰 Gemini（它原来那份配置还在直连上，跟着挪过来，刚装好没开）：上面那句照旧点那几个的名。
-    await page.evaluate(() => window.v2Test.setToolsRunning(false))
-    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
-    await page.getByTestId('tool-gemini-primary').click()
-    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
-    assert.deepEqual((await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))).at(-1).args[0].providers, ['gemini'])
-    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
-    await settleStartupBootstrap(page)
-    await notice.getByText(restart, { exact: true }).waitFor()
-    await notice.getByTestId('home-route-restart-dismiss').click()
-    await notice.waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'inspectRunningTools')), false, '不再问开没开')
+    assert.equal(await page.getByText('连接线路').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

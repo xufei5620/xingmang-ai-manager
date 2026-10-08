@@ -17,7 +17,8 @@ function bootSignedOutSmoke(config) {
     const url = new URL(typeof input === 'string' ? input : input.url ?? String(input))
     const method = init.method ?? 'GET'
     const headers = new Headers(init.headers)
-    if (url.origin === 'https://xm.solov.cc' && url.pathname === '/api/status' && method === 'GET'
+    // 星芒账号默认走直连、直连连不上才退回默认线路（yoyo 10-8）：两条线路的公开状态都照同一份答。
+    if (['https://xm-direct.solov.cc', 'https://xm.solov.cc'].includes(url.origin) && url.pathname === '/api/status' && method === 'GET'
       && !headers.has('authorization') && !headers.has('cookie') && !headers.has('new-api-user')) {
       calls.push({ transport: 'fetch', route: '/api/status', outcome: 'mocked' })
       const response = Response.json({ success: true, message: '', data: { system_name: 'Isolated smoke',

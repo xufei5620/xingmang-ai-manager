@@ -40,11 +40,6 @@ const fixedLabels: Readonly<Record<string, string>> = {
   clockSkewMinutes: '本机时间相差（分钟）',
   workspace: '项目文件夹',
   reason: '原因',
-  // 工具连接设置那几项：配置里写的地址在哪条线路上、星芒这会儿走哪条（#941 第 2 节）。
-  routeLine: '这个工具走的线路',
-  currentRouteLine: '星芒现在走的线路',
-  // 「星芒 AI 网络」那项：「自动」最近一次换线路是什么时候、为什么。
-  lastRouteChange: '最近一次换线路',
 }
 
 /** 带序号的键（file1、disk2……），序号原样接在中文名后面。 */

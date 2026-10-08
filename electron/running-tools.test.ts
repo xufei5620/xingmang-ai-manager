@@ -153,11 +153,6 @@ describe('describeRunningTools', () => {
       .toBe('Gemini CLI 还开着，要关掉重开才会换回官方账号。')
   })
 
-  it('says the open tools reach the new line only after a restart when the connection line changed', () => {
-    expect(describeRunningTools(report({ running: ['codex'], codexDesktopRunning: true, canRestartCodexDesktop: false }), 'route'))
-      .toBe('Codex CLI、Codex 桌面端 还开着，要关掉重开才会换到新的连接线路。Codex 桌面端只关窗口不算，要在它的窗口里按 Command + Q 完全退出再打开。')
-  })
-
   it('hedges for tools it could not check rather than claiming they are open', () => {
     expect(describeRunningTools(report({ unknown: ['grok'], codexDesktopRunning: null }), 'account'))
       .toBe('如果 Grok CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
