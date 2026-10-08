@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   Copy,
   ArrowLeft,
@@ -15,6 +15,10 @@ import {
   UserRound,
   Users,
   Zap,
+  HelpCircle,
+  Home,
+  XCircle,
+  BarChart3,
 } from 'lucide-react'
 import {
   BrandIcon,
@@ -32,9 +36,9 @@ import {
   SearchInput,
   Select,
   SettingRow,
+  Skeleton,
   Switch,
   Table,
-  Tabs,
   Textarea,
   Toolbar,
 } from './ui'
@@ -42,18 +46,26 @@ import {
   displayDate,
   dollars,
   errorMessage,
+  failureWithDetail,
+  FailureReason,
+  ListReadFailure,
   ListState,
   Pagination,
+  PlaceholderBar,
   overflowedPage,
   ResultNotice,
   useOperation,
+  useRefreshRequest,
   useResource,
 } from './business-common'
 import {
+  accountSwitchAnchor,
+  accountTabGroups,
   accountTabs,
   billingOptions,
   keyStates,
   orderStates,
+  subscriptionStates,
   taskStates,
   taskFilterFields,
   usageFilterFields,
@@ -75,11 +87,17 @@ import type { AvatarIdentity } from './local-avatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
+import { buildTopupBonus } from './features/account/topup-bonus'
+import { paymentMethodLabel } from './features/account/payment-method-label'
+import { describeTopupTier, isQuotableAmount, useTopupQuotes } from './features/account/topup-tier'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
 import { describeLoginDevice } from './features/account/login-device-label'
 import { KeyRewriteSkippedError } from './features/tools/account-bootstrap'
+import { offlineActionMessage } from './features/shell/online-status'
+import { useRowFocus } from './features/app/row-focus'
+import { useOnlineStatus } from './features/shell/useOnlineStatus'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -101,6 +119,11 @@ type SubscriptionPaymentInput = Parameters<
 >[0]
 type AccountTab = (typeof accountTabs)[number]['value']
 type Provider = Parameters<V2Bridge['saveConfigWithAccountKey']>[0]['provider']
+/** 首页那边某个工具的设置已经保存并读回；sequence 每次加一，同一个工具连存两次也认得出。 */
+export interface ToolConfigConfirmation {
+  provider: Provider
+  sequence: number
+}
 // Codex CLI 与 Codex 桌面端共用一份配置，在用的是同一把 Key，所以只说「Codex」。
 function keyToolName(provider: Provider): string {
   if (provider === 'codex') return 'Codex'
@@ -109,13 +132,14 @@ function keyToolName(provider: Provider): string {
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
 }
+// 没读到的金额写「—」，不写「暂未读到」：小标签上是「消耗 —」「剩余 —」。
 function quotaMoney(
   quota: number | null | undefined,
   balance: Balance | null,
 ) {
   return balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
     ? dollars(quota / balance.quotaPerUnit)
-    : '暂未读到'
+    : '—'
 }
 
 export interface PasswordFormState {
@@ -182,28 +206,78 @@ export function buildSubscriptionPaymentInput(
 
 export function paymentTerminalPresentation(
   status: AccountPaymentWindowTerminalEvent['status'],
+  confirming = false,
+  kind: 'topup' | 'subscription' = 'topup',
 ): { tone: 'neutral' | 'warn' | 'bad' | 'ok'; title: string; body: string } {
+  if (status === 'success' && kind === 'subscription') return {
+    tone: 'ok', title: '订阅已开通', body: '服务端已确认付款，支付窗口已关闭，正在刷新订阅。',
+  }
   if (status === 'success') return {
-    tone: 'ok', title: '充值成功', body: '服务端已确认到账，支付窗口已关闭，正在刷新账户余额。',
+    tone: 'ok', title: '充值成功', body: '服务端已确认到账，余额已更新。',
   }
   if (status === 'expired') {
     return {
       tone: 'warn',
       title: '支付已超时',
-      body: '支付窗口已过期，订单没有自动取消。请刷新订单状态后再决定是否重新支付。',
+      body: '这笔订单没有付成功，也不会再扣钱。要充值的话重新下一单；如果手机上显示已经扣款，点「查看我的订单」核对。',
     }
   }
   if (status === 'failed') {
     return {
       tone: 'bad',
       title: '支付没有完成',
-      body: '支付渠道返回失败，订单状态请以订单页为准。',
+      body: '支付渠道返回没有付成功。可以重新充值；如果手机上显示已经扣款，点「查看我的订单」核对。',
     }
   }
+  if (status === 'unconfirmed') {
+    return {
+      tone: 'warn',
+      title: '还没查到这笔订单到账',
+      body: '如果手机上已经显示付款成功，可能是支付渠道慢了，稍后在「我的订单」里看。超过 30 分钟还没到账，请联系客服，并告诉客服订单号。',
+    }
+  }
+  return confirming
+    ? {
+      tone: 'neutral',
+      title: '支付窗口已关闭',
+      body: '如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。',
+    }
+    : {
+      tone: 'neutral',
+      title: '支付窗口已关闭',
+      body: '关闭支付窗口不会取消订单。付过款的话，到账后余额会自动更新，也可以点「查看我的订单」核对。',
+    }
+}
+
+/** 提示正文：订单号跟在后面；后台还在确认时订单号放在下面那行「正在确认…」里。 */
+export function paymentTerminalBody(event: AccountPaymentWindowTerminalEvent, kind: 'topup' | 'subscription' = 'topup'): string {
+  const presentation = paymentTerminalPresentation(event.status, event.confirming, kind)
+  if (!event.tradeNo) return presentation.body
+  if (event.status === 'success' && kind === 'subscription') return `订单 ${event.tradeNo} 已付款，订阅已开通，正在刷新订阅。`
+  if (event.status === 'success') return `订单 ${event.tradeNo} 已到账，余额已更新。`
+  if (event.status === 'closed' && event.confirming) return presentation.body
+  return `${presentation.body} 订单号 ${event.tradeNo}。`
+}
+
+/**
+ * 订阅开通后，工具那边换没换过去的一句话。星芒账号的订阅不看 Key 在哪个分组，
+ * 请求按「扣费偏好」自动先扣订阅，不用换；历史账号的订阅只对订阅分组里的 Key
+ * 生效，要把用得上的工具换一把 Key（switched 就是换好的那几个工具的名字）。
+ */
+export function subscriptionToolsNotice(
+  input: { followsPreference: true } | { followsPreference: false; switched: readonly string[] } | { followsPreference: false; error: string },
+): { tone: 'ok' | 'warn'; title: string; body: string; action?: 'health' } {
+  if (input.followsPreference) return {
+    tone: 'ok', title: '工具不用重新设置', body: '工具发出的请求会按「扣费偏好」先用订阅额度。',
+  }
+  if ('error' in input) return {
+    tone: 'warn', title: '订阅已开通，工具还没换过去', body: `${input.error} 可以到「检查」页点「重新写入 Key」再试一次。`, action: 'health',
+  }
+  if (input.switched.length) return {
+    tone: 'ok', title: '工具已改用订阅额度', body: `${input.switched.join('、')} 已换成用这份订阅，不用重新打开设置。`,
+  }
   return {
-    tone: 'neutral',
-    title: '支付窗口已关闭',
-    body: '关闭支付窗口不会取消订单，请刷新订单状态确认结果。',
+    tone: 'ok', title: '工具不用重新设置', body: '这份订阅对应的工具装好、登录后会自动用订阅额度。',
   }
 }
 
@@ -219,6 +293,8 @@ export function validateTopupAmount(value: number, minimum: number): number {
   }
   return value
 }
+
+export { buildTopupBonus, type TopupBonus } from './features/account/topup-bonus'
 
 export function resetTopupQuoteForMethod(
   amount: string,
@@ -267,6 +343,11 @@ export function orderStateFor(value: string) {
     tone: 'neutral' as const,
   }
 }
+export function subscriptionStateFor(status: string) {
+  return Object.hasOwn(subscriptionStates, status)
+    ? subscriptionStates[status]
+    : { label: '待确认', tone: 'neutral' as const }
+}
 function PaymentOptions({
   methods,
   value,
@@ -300,12 +381,12 @@ function PaymentOptions({
             size={28}
           />
           <span>
-            <strong>{method.name}</strong>
+            <strong>{paymentMethodLabel(method)}</strong>
             <small>支付金额以渠道页面为准</small>
           </span>
           <Input
             type="radio"
-            aria-label={method.name}
+            aria-label={paymentMethodLabel(method)}
             name="account-payment"
             value={method.type}
             checked={value === method.type}
@@ -316,34 +397,217 @@ function PaymentOptions({
     </div>
   )
 }
+/**
+ * 每个分页要先读到什么才画得出来。资料、余额分开读，一样没读到只挡要它的分页：
+ * 充值、订单、登录设备什么都不等，照常能进。
+ */
+export function accountTabNeeds(tab: AccountTab): { profile: boolean; balance: boolean } {
+  if (tab === 'overview' || tab === 'invite') return { profile: true, balance: true }
+  if (tab === 'recharge' || tab === 'orders' || tab === 'devices') return { profile: false, balance: false }
+  return { profile: false, balance: true }
+}
+
+/** 页头那句：现在是哪个账号。资料没读到就直说，不拿别的话顶上。 */
+export function accountHeadLead(profile: Pick<Profile, 'username' | 'email'> | null): string {
+  if (!profile) return '当前账号的资料暂时没有读到'
+  return profile.email ? `当前账号：${profile.username}（${profile.email}）` : `当前账号：${profile.username}`
+}
+
+type ReadFailure = { message: string; detail?: string }
+
+/**
+ * 个人中心左边的子导航：分三组，组名一行小灰字。上下方向键在全部分页里挪焦点，跨组接着走；
+ * 和原来的横排页签一样手动激活（回车或空格才打开），挪过去不会把每一页都读一遍。
+ */
+function AccountNav({
+  tabs,
+  value,
+  onChange,
+}: {
+  tabs: readonly AccountTab[]
+  value: AccountTab
+  onChange: (tab: AccountTab) => void
+}) {
+  const groups = accountTabGroups
+    .map((group) => ({ label: group.label, tabs: group.tabs.filter((tab) => tabs.includes(tab)) }))
+    .filter((group) => group.tabs.length > 0)
+  const order = groups.flatMap((group) => group.tabs)
+  function move(event: KeyboardEvent<HTMLButtonElement>, current: AccountTab) {
+    if (event.nativeEvent.isComposing) return
+    const index = order.indexOf(current)
+    let target = index
+    if (event.key === 'ArrowDown') target = (index + 1) % order.length
+    else if (event.key === 'ArrowUp') target = (index + order.length - 1) % order.length
+    else if (event.key === 'Home') target = 0
+    else if (event.key === 'End') target = order.length - 1
+    else return
+    event.preventDefault()
+    document.getElementById(`v2-account-tab-${order[target]}`)?.focus()
+  }
+  return (
+    <nav
+      className="v2-business-subnav v2-account-subnav"
+      aria-label="个人中心分页"
+      data-testid="account-tabs"
+    >
+      {groups.map((group, index) => (
+        <div className="v2-account-subnav-group" key={group.label}>
+          <span className="v2-account-subnav-label" id={`v2-account-group-${index}`}>
+            {group.label}
+          </span>
+          <div
+            role="tablist"
+            aria-orientation="vertical"
+            aria-labelledby={`v2-account-group-${index}`}
+          >
+            {group.tabs.map((tab) => (
+              <button
+                key={tab}
+                id={`v2-account-tab-${tab}`}
+                role="tab"
+                type="button"
+                aria-selected={value === tab}
+                aria-controls={value === tab ? `v2-account-panel-${tab}` : undefined}
+                tabIndex={value === tab ? 0 : -1}
+                className={value === tab ? 'is-active' : ''}
+                onClick={() => onChange(tab)}
+                onKeyDown={(event) => move(event, tab)}
+              >
+                {accountTabs.find((item) => item.value === tab)?.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </nav>
+  )
+}
+
+/** 读取中右边那块：和那一页内容差不多的灰色占位块，读到了原地换成内容，页面不往下跳。 */
+function AccountPanelSkeleton({ tab }: { tab: AccountTab }) {
+  if (tab === 'overview')
+    return (
+      <div className="v2-business-profile-grid" data-testid="account-loading">
+        <Card><Skeleton rows={7} /></Card>
+        <aside className="v2-business-profile-aside">
+          <Card><Skeleton rows={3} /></Card>
+          <Card><Skeleton rows={2} /></Card>
+        </aside>
+      </div>
+    )
+  if (tab === 'dashboard' || tab === 'invite')
+    return (
+      <div className="v2-business-account-loading" data-testid="account-loading">
+        <div className={tab === 'invite' ? 'v2-business-stat-grid is-four' : 'v2-business-stat-grid'}>
+          {Array.from({ length: tab === 'invite' ? 4 : 3 }, (_, index) => (
+            <Card key={index}><Skeleton rows={2} /></Card>
+          ))}
+        </div>
+        <Card><Skeleton rows={5} /></Card>
+      </div>
+    )
+  return (
+    <div className="v2-business-account-loading" data-testid="account-loading">
+      <Card><Skeleton rows={6} /></Card>
+    </div>
+  )
+}
+
+/** 资料或余额读不到时，要它们的那一页正中：说没读到，原因照旧，给「重新加载」「联系客服」。 */
+function AccountReadFailure({
+  failure,
+  onRetry,
+  onOpenHelp,
+}: {
+  failure: ReadFailure
+  onRetry: () => void
+  onOpenHelp?: () => void
+}) {
+  return (
+    <Empty
+      testId="account-read-error"
+      icon={XCircle}
+      title="当前账号的资料暂时没有读到"
+      description={<FailureReason error={failure.message} detail={failure.detail} />}
+      action={
+        <>
+          <Button size="sm" icon={RefreshCw} onClick={onRetry} testId="account-read-retry">
+            重新加载
+          </Button>
+          {onOpenHelp && (
+            <Button size="sm" icon={HelpCircle} onClick={onOpenHelp} testId="account-read-support">
+              联系客服
+            </Button>
+          )}
+        </>
+      }
+    />
+  )
+}
+
 export function AccountPage({
   api,
   initialTab,
   tabRequest,
+  rechargeAmount,
   paymentReturn,
+  accountSession,
   onLogin,
   onAccountChanged,
   onBack,
+  onSwitchAccount,
   onRewriteKey,
   onConfigureTool,
   onToolConfigSaved,
+  toolConfigConfirmed,
+  onSubscriptionActivated,
+  onSubscriptionPurchased,
+  onOpenHelp,
+  onOpenHealth,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
   /** 每次从外面点名要切到某个分页就加一；同一个分页再点一次也得切回去（Q29）。 */
   tabRequest?: number
+  /** 从活动卡片点某一档进来时要选好的充值金额，跟着 tabRequest 一起变。缺省 = 默认金额。 */
+  rechargeAmount?: number
   paymentReturn?: { sequence: number; order: string | null }
+  /** 外壳手上的登录状态：页面自己读回来之前先拿它摆出左边分页。缺省 = 等页面自己读。 */
+  accountSession?: AccountSessionState
   onLogin?: (target?: LoginTarget) => void
   onAccountChanged?: () => void
   onBack?: () => void
+  /** 打开「切换账号」框（侧栏小 ▾ 那个）；缺省 = 页头这颗按钮灰着。 */
+  onSwitchAccount?: () => void
   /** 撤销了工具正在用的 Key 之后，给那个工具换一把新的；缺省 = 不自动换（旧行为）。 */
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   /** 打开某个工具的设置；自动换新不适用时（手填等），这是用户的下一步。缺省 = 不给按钮。 */
   onConfigureTool?: (provider: Provider) => void
   /** 「配置到工具」写成功后让首页重读配置；缺省 = 不通知（旧行为）。 */
   onToolConfigSaved?: () => void
+  /** 某个工具的设置已保存并读回；每次加一。缺省 = 没有这个信号（旧行为）。 */
+  toolConfigConfirmed?: ToolConfigConfirmation | null
+  /** 订阅开通后把用得上它的工具换过去，返回换好的工具；缺省 = 不换（旧行为）。 */
+  onSubscriptionActivated?: () => Promise<Provider[]>
+  /** 订阅开通后让首页、侧栏那行订阅马上重读；缺省 = 等它自己几分钟后再读。 */
+  onSubscriptionPurchased?: () => void
+  /** 打开「联系客服」；缺省 = 不给这个按钮。 */
+  onOpenHelp?: () => void
+  /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
+  onOpenHealth?: () => void
 }) {
+  const pageRef = useRef<HTMLElement>(null)
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
+  // 「我的订单」按哪个订单号打开：外面付款回跳（paymentReturn）和充值页的「查看我的订单」
+  // 共用一个递增编号，同一个订单号再点一次也会重新查。
+  const [orderRequest, setOrderRequest] = useState(paymentReturn)
+  useEffect(() => {
+    if (paymentReturn) setOrderRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, order: paymentReturn.order }))
+  }, [paymentReturn?.sequence])
+  function openOrders(order: string | null) {
+    setOrderRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, order }))
+    setTab('orders')
+  }
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
   const [visited, setVisited] = useState<AccountTab[]>([
     initialTab ?? 'overview',
@@ -354,10 +618,26 @@ export function AccountPage({
   useEffect(() => {
     if (initialTab) setTab(initialTab)
   }, [initialTab, tabRequest])
-  const load = useCallback(async () => {
+  const loadSession = useCallback(async () => {
     const session = await api.getAccountSession()
-    if (!session.authenticated) return null
-    const [profile, balance] = await Promise.all([
+    return session.authenticated ? session : null
+  }, [api])
+  const sessionRead = useResource(loadSession)
+  const session = sessionRead.data ?? (
+    (sessionRead.loading || sessionRead.error) && accountSession?.authenticated ? accountSession : null
+  )
+  const signedOut = !sessionRead.loading && !sessionRead.error && !sessionRead.data
+  const signedIn = Boolean(session)
+  const detailsScope = session ? `${accountOrigin(session)}:${session.account?.userId ?? ''}` : ''
+  // 已经读到过的资料、余额：刷新或改了东西以后再读没读到，手上这份留着，正在改的显示名称也不丢，
+  // 只在要它的那页顶上说一声（同改版前）。换了账号不沿用。
+  const keptDetails = useRef<{ scope: string; profile: Profile | null; balance: Balance | null } | null>(null)
+  // 和 useResource 一样只认最后发出去的那次：先发后到的旧结果上不了屏，也不能顶掉留着的那份。
+  const detailsRequest = useRef(0)
+  const loadDetails = useCallback(async () => {
+    if (!detailsScope) return null
+    const request = ++detailsRequest.current
+    const [profile, balance] = await Promise.allSettled([
       api.getAccountProfile(),
       balanceStore ? balanceStore.refresh('foreground').then(() => {
         const state = balanceStore.getSnapshot()
@@ -365,31 +645,164 @@ export function AccountPage({
         return state.balance
       }) : api.getAccountBalance(),
     ])
-    const site = resolveRelaySite(accountSiteId(session))
-    return {
-      profile,
-      balance,
-      session,
-      origin: accountOrigin(session),
-      inviteBaseUrl: site.websiteUrl,
-      providerBaseUrls: site.providerBaseUrls,
+    const kept = keptDetails.current?.scope === detailsScope ? keptDetails.current : null
+    const next = {
+      profile: profile.status === 'fulfilled' ? profile.value : kept?.profile ?? null,
+      profileFailure: profile.status === 'rejected' ? failureWithDetail(profile.reason) : null,
+      balance: balance.status === 'fulfilled' ? balance.value : kept?.balance ?? null,
+      balanceFailure: balance.status === 'rejected' ? failureWithDetail(balance.reason) : null,
     }
-  }, [api, balanceStore])
-  const resource = useResource(load)
-  const availableTabs = accountTabs.filter((item) => resource.data && visibleAccountTab(item.value, resource.data.session))
+    if (request === detailsRequest.current) {
+      keptDetails.current = { scope: detailsScope, profile: next.profile, balance: next.balance }
+    }
+    return next
+  }, [api, balanceStore, detailsScope])
+  const details = useResource(loadDetails)
+  const profile = details.data?.profile ?? null
+  const balance = balanceStore && balanceState.balance ? balanceState.balance : details.data?.balance ?? null
+  const detailsSettled = Boolean(details.data) || (!details.loading && Boolean(details.error))
+  const site = session ? resolveRelaySite(accountSiteId(session)) : null
+  const origin = session ? accountOrigin(session) : ''
+  const accountId = session?.account?.userId ?? profile?.userId ?? 0
+  const availableTabs = session ? accountTabs.filter((item) => visibleAccountTab(item.value, session)) : []
   const activeTab = availableTabs.some((item) => item.value === tab) ? tab : 'overview'
-  const changed = () => {
-    void balanceStore?.refresh('mutation')
-    void resource.reload()
+  // 页头「刷新」只重读点的时候停着的那一页；别的分页等切过去再说。
+  const [refreshRequest, setRefreshRequest] = useState<{ tab: AccountTab; sequence: number }>({ tab: 'overview', sequence: 0 })
+  // 「登录设备」里让设备下线以后，「我的账号」那张卡上的台数跟着重读。
+  const [devicesChanged, setDevicesChanged] = useState(0)
+  const refreshOf = (panel: AccountTab) => refreshRequest.tab === panel ? refreshRequest.sequence : 0
+  useRowFocus('account', pageRef, true)
+  const reloadAccount = () => {
+    void balanceStore?.refresh('manual')
+    void sessionRead.reload()
+    void details.reload()
     onAccountChanged?.()
   }
-  const refreshAccount = () => {
-    void balanceStore?.refresh('manual')
-    void resource.reload()
+  const changed = () => {
+    void balanceStore?.refresh('mutation')
+    void sessionRead.reload()
+    void details.reload()
     onAccountChanged?.()
+  }
+  function refreshAll() {
+    reloadAccount()
+    setRefreshRequest((current) => ({ tab: activeTab, sequence: current.sequence + 1 }))
+  }
+  function panelContent(panel: AccountTab) {
+    if (!session) return null
+    const needs = accountTabNeeds(panel)
+    if ((needs.profile && !profile) || (needs.balance && !balance)) {
+      const failure = (needs.profile && !profile ? details.data?.profileFailure : null)
+        ?? (needs.balance && !balance ? details.data?.balanceFailure : null)
+        ?? (details.error ? { message: details.error, detail: details.detail || undefined } : null)
+      return failure && !details.loading
+        ? <AccountReadFailure failure={failure} onRetry={reloadAccount} onOpenHelp={onOpenHelp} />
+        : <AccountPanelSkeleton tab={panel} />
+    }
+    const stale = details.loading ? null : (needs.profile ? details.data?.profileFailure : null)
+      ?? (needs.balance ? details.data?.balanceFailure : null)
+    return (
+      <>
+        {stale && (
+          <ResultNotice error={stale.message} detail={stale.detail} retry={{ label: '重新加载', onClick: reloadAccount }} />
+        )}
+        {panelBody(panel)}
+      </>
+    )
+  }
+  function panelBody(panel: AccountTab) {
+    if (!session) return null
+    const refresh = refreshOf(panel)
+    switch (panel) {
+      case 'overview':
+        return profile && balance && (
+          <AccountOverview
+            api={api}
+            profile={profile}
+            balance={balance}
+            changed={changed}
+            navigateTab={setTab}
+            onLogin={onLogin}
+            identity={{ origin, userId: profile.userId }}
+            session={session}
+            refreshRequest={refresh}
+            devicesChanged={devicesChanged}
+          />
+        )
+      case 'dashboard':
+        return balance && <AccountDashboard api={api} balance={balance} session={session} refreshRequest={refresh} />
+      case 'keys':
+        return balance && site && (
+          <AccountKeys
+            api={api}
+            balance={balance}
+            providerBaseUrls={site.providerBaseUrls}
+            siteId={accountSiteId(session)}
+            onRewriteKey={onRewriteKey}
+            onConfigureTool={onConfigureTool}
+            onToolConfigSaved={onToolConfigSaved}
+            toolConfigConfirmed={toolConfigConfirmed}
+            onGoHome={onBack}
+            refreshRequest={refresh}
+          />
+        )
+      case 'usage':
+        return balance && <AccountUsage api={api} balance={balance} session={session} refreshRequest={refresh} />
+      case 'tasks':
+        return balance && (
+          <AccountTasks
+            api={api}
+            balance={balance}
+            accountScope={`${origin}:${accountId}`}
+            refreshRequest={refresh}
+          />
+        )
+      case 'recharge':
+        return (
+          <AccountRecharge
+            api={api}
+            balance={balance}
+            session={session}
+            changed={changed}
+            refresh={reloadAccount}
+            refreshRequest={refresh}
+            subscriptionActivated={onSubscriptionActivated}
+            subscriptionPurchased={onSubscriptionPurchased}
+            openOrders={openOrders}
+            openHelp={onOpenHelp}
+            openHealth={onOpenHealth}
+            presetAmount={rechargeAmount}
+            presetRequest={tabRequest}
+          />
+        )
+      case 'orders':
+        return <AccountOrders api={api} paymentReturn={orderRequest} refreshRequest={refresh} />
+      case 'invite':
+        return profile && balance && site && (
+          <AccountInvite
+            api={api}
+            profile={profile}
+            balance={balance}
+            changed={changed}
+            inviteBaseUrl={site.websiteUrl}
+          />
+        )
+      case 'devices':
+        return (
+          <AccountDevices
+            api={api}
+            changed={() => {
+              setDevicesChanged((value) => value + 1)
+              changed()
+            }}
+            refreshRequest={refresh}
+          />
+        )
+    }
   }
   return (
     <section
+      ref={pageRef}
       className="v2-page v2-business-account"
       data-page-id="account"
       data-testid="page-account"
@@ -399,63 +812,43 @@ export function AccountPage({
           variant="ghost"
           icon={ArrowLeft}
           aria-label="返回首页"
-          title="返回"
+          title="回首页"
           onClick={onBack}
           disabled={!onBack}
           testId="account-back"
         />
         <PageHead
           title="个人中心"
-          lead="管理你的星芒账号、余额与 Key。"
+          lead={signedIn ? (
+            detailsSettled ? accountHeadLead(profile) : <PlaceholderBar width="16em" testId="account-lead-loading" />
+          ) : undefined}
           actions={
-            <Menu
-              label="账号操作"
-              anchor={
+            <>
+              <span className="v2-account-switch-anchor" data-anchor={accountSwitchAnchor}>
                 <Button
-                  variant="ghost"
-                  aria-label="账号操作"
-                  testId="account-identity-menu"
+                  icon={Users}
+                  onClick={onSwitchAccount}
+                  disabled={!onSwitchAccount}
+                  testId="account-switch"
                 >
-                  <span className="v2-business-account-identity">
-                    <LocalAvatar
-                      identity={
-                        resource.data
-                          ? {
-                              origin: resource.data.origin,
-                              userId: resource.data.profile.userId,
-                            }
-                          : null
-                      }
-                      name={
-                        resource.data?.profile.displayName ||
-                        resource.data?.profile.username ||
-                        '星'
-                      }
-                    />
-                    <span>
-                      <strong>
-                        {resource.data?.profile.displayName ||
-                          resource.data?.profile.username ||
-                          '星芒账号'}
-                      </strong>
-                      <small>{resource.data?.profile.email || ''}</small>
-                    </span>
-                  </span>
+                  切换账号
                 </Button>
-              }
-              items={[
-                {
-                  label: '刷新账号资料',
-                  icon: RefreshCw,
-                  disabled: resource.loading || balanceState.loading,
-                  onSelect: refreshAccount,
-                },
-              ]}
-            />
+              </span>
+              {signedIn && (
+                <Button
+                  icon={RefreshCw}
+                  loading={sessionRead.loading || details.loading}
+                  onClick={refreshAll}
+                  testId="account-refresh"
+                >
+                  刷新
+                </Button>
+              )}
+            </>
           }
         />
       </div>
-      {!resource.loading && !resource.data && !resource.error ? (
+      {signedOut ? (
         <Empty
           icon={UserRound}
           title="登录后查看个人中心"
@@ -466,100 +859,38 @@ export function AccountPage({
             </Button>
           }
         />
-      ) : (
-        <>
-          <Tabs
-            items={availableTabs}
-            value={activeTab}
-            onChange={(value) => {
-              if (availableTabs.some((item) => item.value === value))
-                setTab(value as AccountTab)
-            }}
-            testId="account-tabs"
+      ) : !session ? (
+        sessionRead.error ? (
+          <AccountReadFailure
+            failure={{ message: sessionRead.error, detail: sessionRead.detail || undefined }}
+            onRetry={reloadAccount}
+            onOpenHelp={onOpenHelp}
           />
-          <ResultNotice error={resource.error} />
-          {resource.loading && !resource.data ? (
-            <p role="status">正在读取账号…</p>
-          ) : (
-            resource.data &&
-            [...new Set([...visited, activeTab])].filter((panel) => visibleAccountTab(panel, resource.data!.session)).map((panel) => {
-              if (!resource.data) return null
-              const account = { ...resource.data, balance: balanceStore && balanceState.balance ? balanceState.balance : resource.data.balance }
-              return (
-                <div
-                  className="v2-business-account-panel"
-                  role="tabpanel"
-                  key={`${account.origin}:${account.profile.userId}-${panel}`}
-                  hidden={panel !== activeTab}
-                >
-                  {panel === 'overview' && (
-                    <AccountOverview
-                      api={api}
-                      profile={account.profile}
-                      balance={account.balance}
-                      changed={changed}
-                      navigateTab={setTab}
-                      onLogin={onLogin}
-                      identity={{
-                        origin: account.origin,
-                        userId: account.profile.userId,
-                      }}
-                      session={account.session}
-                    />
-                  )}
-                  {panel === 'dashboard' && (
-                    <AccountDashboard api={api} balance={account.balance} session={account.session} />
-                  )}
-                  {panel === 'keys' && (
-                    <AccountKeys
-                      api={api}
-                      balance={account.balance}
-                      providerBaseUrls={account.providerBaseUrls}
-                      siteId={accountSiteId(account.session)}
-                      onRewriteKey={onRewriteKey}
-                      onConfigureTool={onConfigureTool}
-                      onToolConfigSaved={onToolConfigSaved}
-                    />
-                  )}
-                  {panel === 'usage' && (
-                    <AccountUsage api={api} balance={account.balance} session={account.session} />
-                  )}
-                  {panel === 'tasks' && (
-                    <AccountTasks
-                      api={api}
-                      balance={account.balance}
-                      accountScope={`${account.origin}:${account.profile.userId}`}
-                    />
-                  )}
-                  {panel === 'recharge' && (
-                    <AccountRecharge
-                      api={api}
-                      balance={account.balance}
-                      session={account.session}
-                      changed={changed}
-                      refresh={refreshAccount}
-                    />
-                  )}
-                  {panel === 'orders' && (
-                    <AccountOrders api={api} paymentReturn={paymentReturn} />
-                  )}
-                  {panel === 'invite' && (
-                    <AccountInvite
-                      api={api}
-                      profile={account.profile}
-                      balance={account.balance}
-                      changed={changed}
-                      inviteBaseUrl={account.inviteBaseUrl}
-                    />
-                  )}
-                  {panel === 'devices' && (
-                    <AccountDevices api={api} changed={changed} />
-                  )}
-                </div>
-              )
-            })
-          )}
-        </>
+        ) : (
+          <AccountPanelSkeleton tab={activeTab} />
+        )
+      ) : (
+        <div className="v2-business-account-layout">
+          <AccountNav
+            tabs={availableTabs.map((item) => item.value)}
+            value={activeTab}
+            onChange={setTab}
+          />
+          <div className="v2-business-account-panels">
+            {[...new Set([...visited, activeTab])].filter((panel) => visibleAccountTab(panel, session)).map((panel) => (
+              <div
+                className="v2-business-account-panel"
+                role="tabpanel"
+                id={`v2-account-panel-${panel}`}
+                aria-labelledby={`v2-account-tab-${panel}`}
+                key={`${origin}:${accountId}-${panel}`}
+                hidden={panel !== activeTab}
+              >
+                {panelContent(panel)}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </section>
   )
@@ -573,6 +904,8 @@ function AccountOverview({
   onLogin,
   identity,
   session,
+  refreshRequest,
+  devicesChanged,
 }: {
   api: V2Bridge
   profile: Profile
@@ -582,9 +915,13 @@ function AccountOverview({
   onLogin?: (target?: LoginTarget) => void
   identity: AvatarIdentity
   session: AccountSessionState
+  refreshRequest?: number
+  /** 「登录设备」那页让设备下线的次数；变了就重读台数。缺省 = 只在刷新时读。 */
+  devicesChanged?: number
 }) {
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
-  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error })
+  const { offline } = useOnlineStatus()
+  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
   const [name, setName] = useState(profile.displayName ?? '')
   const profileNameRef = useRef(profile.displayName ?? '')
   const [passwordOpen, setPasswordOpen] = useState(false)
@@ -599,11 +936,15 @@ function AccountOverview({
     setConfirm('')
     operation.clear()
   }
+  // 只认「支不支持」这一件事：刷新时 session 会换成新对象，跟着它变会把刚发出去的那次读取作废再读一遍。
+  const devicesSupported = accountSupports(session, 'supportsSessionManagement')
   const accountsLoad = useCallback(
-    async () => ({ devices: accountSupports(session, 'supportsSessionManagement') ? await api.getAccountLoginSessions() : [] }),
-    [api, session],
+    async () => ({ devices: devicesSupported ? await api.getAccountLoginSessions() : [] }),
+    [api, devicesSupported],
   )
   const accounts = useResource(accountsLoad)
+  useRefreshRequest(refreshRequest, () => void accounts.reload())
+  useRefreshRequest(devicesChanged, () => void accounts.reload())
   const [logout, setLogout] = useState(false)
   const [avatarOpen, setAvatarOpen] = useState(false)
   useEffect(() => {
@@ -616,6 +957,8 @@ function AccountOverview({
     )
     profileNameRef.current = nextName
   }, [profile.displayName])
+  // 改过才能点「保存」；只差前后空格不算改过，存的时候本来就会去掉。
+  const nameChanged = name.trim() !== (profile.displayName ?? '').trim()
   return (
     <>
       <ResultNotice {...operation} />
@@ -625,12 +968,11 @@ function AccountOverview({
             <LocalAvatar
               identity={identity}
               name={profile.displayName || profile.username}
-              size={72}
+              size={56}
               testId="account-profile-avatar"
             />
             <div>
               <strong>{profile.displayName || profile.username}</strong>
-              <p>你的账户资料与余额</p>
               <Button
                 size="sm"
                 icon={Pencil}
@@ -643,35 +985,21 @@ function AccountOverview({
           </div>
           <div
             className="v2-business-profile-fields"
-            data-unsaved={
-              name !== (profile.displayName ?? '') ? 'true' : undefined
-            }
+            data-unsaved={nameChanged ? 'true' : undefined}
           >
-            <Input
-              label="显示名称"
-              value={name}
-              maxLength={20}
-              onChange={(event) => setName(event.target.value)}
-              testId="account-display"
-            />
-            <Input
-              label="用户名"
-              readOnly
-              value={profile.username}
-              hint="登录时使用，暂不支持修改。"
-            />
-            <Input
-              label="邮箱"
-              readOnly
-              value={profile.email || ''}
-              hint="用于找回密码和接收通知。"
-            />
-            <div className="v2-business-control">
+            <div className="v2-business-profile-name">
+              <Input
+                label="显示名称"
+                value={name}
+                maxLength={20}
+                onChange={(event) => setName(event.target.value)}
+                testId="account-display"
+              />
               <Button
                 variant="primary"
-                icon={Pencil}
                 loading={operation.busy === 'profile'}
-                disabled={!accountSupports(session, 'supportsProfileUpdate')}
+                disabled={!nameChanged || !accountSupports(session, 'supportsProfileUpdate')}
+                testId="account-display-save"
                 onClick={() =>
                   void operation.execute(
                     'profile',
@@ -685,9 +1013,22 @@ function AccountOverview({
                   )
                 }
               >
-                保存资料
+                保存
               </Button>
-              <Button icon={ShieldCheck} onClick={() => setPasswordOpen(true)}>
+            </div>
+            <div className="v2-business-profile-row">
+              <span>用户名</span>
+              <strong>{profile.username}</strong>
+              <small>登录时使用，暂不支持修改。</small>
+            </div>
+            <div className="v2-business-profile-row">
+              <span>邮箱</span>
+              <strong>{profile.email || '—'}</strong>
+              <small>用于找回密码和接收通知。</small>
+            </div>
+            <div className="v2-business-profile-row">
+              <span>密码</span>
+              <Button size="sm" icon={ShieldCheck} onClick={() => setPasswordOpen(true)}>
                 修改密码
               </Button>
             </div>
@@ -716,7 +1057,7 @@ function AccountOverview({
               </Button>}
               {accountSupports(session, 'supportsUsage') && <Button
                 size="sm"
-                icon={RefreshCw}
+                icon={BarChart3}
                 onClick={() => navigateTab('dashboard')}
               >
                 看用量
@@ -726,16 +1067,26 @@ function AccountOverview({
           <Card title="已保存的账号" padding="none">
             <SavedAccounts
               api={api}
+              variant="card"
               onAccountChanged={changed}
               onLogin={onLogin}
             />
           </Card>
           <Card title="登录与设备">
-            <p>
-              {!accountSupports(session, 'supportsSessionManagement') ? '当前账号暂不提供登录设备管理。' : accounts.data
-                ? `${accounts.data.devices.length} 台已登录设备`
-                : '正在读取登录设备…'}
-            </p>
+            {accountSupports(session, 'supportsSessionManagement') && accounts.error ? (
+              <ListReadFailure
+                page="account-devices"
+                noun="登录设备"
+                description={accounts.error}
+                retry={() => void accounts.reload()}
+              />
+            ) : (
+              <p>
+                {!accountSupports(session, 'supportsSessionManagement') ? '当前账号暂不提供登录设备管理。' : accounts.data
+                  ? `${accounts.data.devices.length} 台已登录设备`
+                  : '正在读取登录设备…'}
+              </p>
+            )}
             <div className="v2-business-control">
               {accountSupports(session, 'supportsSessionManagement') && <Button
                 size="sm"
@@ -750,7 +1101,7 @@ function AccountOverview({
                 icon={Trash2}
                 onClick={() => setLogout(true)}
               >
-                退出当前账号
+                退出登录
               </Button>
             </div>
           </Card>
@@ -766,7 +1117,7 @@ function AccountOverview({
       )}
       <Dialog
         open={logout}
-        title="退出当前账号？"
+        title="退出登录？"
         onClose={() => setLogout(false)}
         footer={
           <>
@@ -792,7 +1143,7 @@ function AccountOverview({
         }
       >
         <p>工具里已写入的配置继续保留。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={passwordOpen}
@@ -845,7 +1196,7 @@ function AccountOverview({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         {accountSiteId(session) === 'solov-api' && <p>修改密码后当前登录会失效，请使用新密码重新登录。</p>}
         <Input
           label="当前密码"
@@ -880,14 +1231,21 @@ function AccountKeys({
   onRewriteKey,
   onConfigureTool,
   onToolConfigSaved,
+  toolConfigConfirmed,
+  onGoHome,
+  refreshRequest,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
   siteId: AccountSiteId
+  /** 回首页配置工具；缺省 = 不给这颗按钮（旧行为）。 */
+  onGoHome?: () => void
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
   onToolConfigSaved?: () => void
+  toolConfigConfirmed?: ToolConfigConfirmation | null
+  refreshRequest?: number
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -911,7 +1269,10 @@ function AccountKeys({
     [api, page, keyword],
   )
   const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
   const operation = useOperation()
+  // 「配置到工具」写的是工具的配置文件，没权限时说「写不进配置文件」（已知29）。
+  const configureFailureTarget = operation.failed === 'configure' ? 'config' : undefined
   const keyTotal = resource.data?.page.total
   useEffect(() => {
     if (keyTotal === undefined) return
@@ -935,6 +1296,15 @@ function AccountKeys({
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
   // 要给的是「去设置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
+  // 点「去设置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
+  // 新来的信号，之前留下的那次不算。
+  const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
+  useEffect(() => {
+    if (!toolConfigConfirmed || toolConfigConfirmed.sequence === confirmedSequence.current) return
+    confirmedSequence.current = toolConfigConfirmed.sequence
+    setReplaceFailed((current) => current?.provider === toolConfigConfirmed.provider ? null : current)
+  }, [toolConfigConfirmed])
   const [revealed, setRevealed] = useState('')
   const [selected, setSelected] = useState<AccountKey | null>(null)
   const [models, setModels] = useState<string[]>([])
@@ -1066,7 +1436,20 @@ function AccountKeys({
   const list = resource.data?.page.keys ?? []
   return (
     <>
-      <ToolKeyLimits api={api} balance={balance} siteId={siteId} />
+      {/* 工具用的密钥在首页配置工具时会自动准备好，新手不该从这页手动建一把
+          （新手引导梳理 9-25 第 5 条）。说在最前面，并给回首页的路。 */}
+      <Notice
+        tone="neutral"
+        title="工具用的密钥会自动准备好"
+        body="在首页安装或打开工具时，软件会替你生成并填好密钥，一般不用来这里。想给某个工具限额，或者给别的软件单独用一把，再来这页。"
+        testId="account-keys-auto-hint"
+        actions={onGoHome && (
+          <Button size="sm" icon={Home} onClick={onGoHome} testId="account-keys-go-home">
+            去首页配置工具
+          </Button>
+        )}
+      />
+      <ToolKeyLimits api={api} balance={balance} siteId={siteId} refreshRequest={refreshRequest} />
       <Toolbar
         search={
           <SearchInput
@@ -1078,7 +1461,6 @@ function AccountKeys({
         }
         right={
           <Button
-            variant="primary"
             icon={Plus}
             onClick={() => edit('new')}
             testId="account-key-add"
@@ -1087,7 +1469,7 @@ function AccountKeys({
           </Button>
         }
       />
-      <ResultNotice {...operation} />
+      <ResultNotice {...operation} target={configureFailureTarget} />
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
           tone="warn"
@@ -1099,7 +1481,7 @@ function AccountKeys({
               size="sm"
               icon={KeyRound}
               testId="account-key-replace-configure"
-              onClick={() => { onConfigureTool(replaceFailed.provider); setReplaceFailed(null) }}
+              onClick={() => onConfigureTool(replaceFailed.provider)}
             >
               去设置
             </Button>
@@ -1132,11 +1514,13 @@ function AccountKeys({
           loading={resource.loading}
           error={resource.error}
           count={list.length}
+          query={query}
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
+          emptyDescription="工具用的密钥会自动出现在这里；给别的软件用，点「新建密钥」。"
           action={
-            <Button icon={Plus} onClick={() => edit('new')}>
+            <Button size="sm" icon={Plus} onClick={() => edit('new')} testId="keys-empty-add">
               新建密钥
             </Button>
           }
@@ -1185,7 +1569,7 @@ function AccountKeys({
                         void operation.execute(
                           'copy',
                           () => api.copyAccountKey(key.id),
-                          '密钥已复制',
+                          '密钥已复制。为了安全，1 分钟后会从剪贴板里清掉',
                         )
                       }
                     >
@@ -1252,6 +1636,7 @@ function AccountKeys({
       <Pagination
         page={page}
         total={resource.data?.page.total ?? 0}
+        failed={Boolean(resource.error)}
         onChange={setPage}
       />
       <Dialog
@@ -1274,7 +1659,7 @@ function AccountKeys({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
         <ResultNotice error={groupsError} />
         <Input
           label="名称"
@@ -1304,6 +1689,7 @@ function AccountKeys({
             ]
           }
           value={group}
+          hint="分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。"
           onChange={(event) => setGroup(event.target.value)}
         />
         <Button variant="ghost" size="sm" icon={RefreshCw} testId="account-key-groups-refresh"
@@ -1319,6 +1705,7 @@ function AccountKeys({
             type="number"
             min="0"
             step="0.01"
+            hint="这把密钥最多花这么多，用完它就停，不影响账户余额。"
             value={quota}
             onChange={(event) => setQuota(event.target.value)}
           />
@@ -1372,7 +1759,7 @@ function AccountKeys({
               : `${keyToolName(removing.managedProvider)} 正在用这把密钥，撤销后它会停止工作。`
             : '使用这把密钥的工具会停止请求，需要重新配置有效密钥。'}
         </p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(revealed)}
@@ -1419,6 +1806,8 @@ function AccountKeys({
                         false,
                       )
                       setSelected(null)
+                      // 这里写进去的是另一把没撤销的 Key，这个工具的撤销警告可以收起了。
+                      setReplaceFailed((current) => current?.provider === provider ? null : current)
                       // 主进程保存这条路不发配置变更事件，首页那份快照得由这里叫它重读，
                       // 否则回到首页还是旧的来源和模型（#479）。
                       onToolConfigSaved?.()
@@ -1432,7 +1821,7 @@ function AccountKeys({
           </>
         }
       >
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} target={configureFailureTarget} />
         <Select
           aria-label="选择工具"
           options={tools
@@ -1464,7 +1853,56 @@ const sub2ApiUsageFilterFields: AccountFilterField[] = [
     { value: '', label: '全部来源' }, { value: '0', label: '账户余额' }, { value: '1', label: '订阅额度' },
   ] },
 ]
-function AccountUsage({ api, balance, session }: { api: V2Bridge; balance: Balance; session: AccountSessionState }) {
+// 筛选第一行常驻的框，其余收进「展开筛选」：表格不被筛选框挤出第一屏。
+const usageFilterPrimary = ['start', 'end', 'modelName']
+const sub2ApiUsageFilterPrimary = ['startDate', 'endDate', 'modelName']
+const taskFilterPrimary = ['start', 'end', 'status']
+const pageSizes = [10, 20, 50, 100]
+/**
+ * 表格下面那一行：翻页，和「20 条 / 页」。一共不超过最小的一档时每页多少条都一样，
+ * 整行不出；读不到时也不出（列表那里已经说了没读到）。
+ */
+function TableFoot({
+  label,
+  page,
+  pageSize,
+  total,
+  failed,
+  onPage,
+  onPageSize,
+}: {
+  label: string
+  page: number
+  pageSize: number
+  total: number
+  failed: boolean
+  onPage: (page: number) => void
+  onPageSize: (size: number) => void
+}) {
+  if (failed || total <= pageSizes[0]) return null
+  return (
+    <div className="v2-business-table-foot">
+      <Pagination page={page} size={pageSize} total={total} onChange={onPage} />
+      <Select
+        aria-label={label}
+        options={pageSizes.map((size) => ({ value: String(size), label: `${size} 条 / 页` }))}
+        value={String(pageSize)}
+        onChange={(event) => onPageSize(Number(event.target.value))}
+      />
+    </div>
+  )
+}
+function AccountUsage({
+  api,
+  balance,
+  session,
+  refreshRequest,
+}: {
+  api: V2Bridge
+  balance: Balance
+  session: AccountSessionState
+  refreshRequest?: number
+}) {
   const calendar = accountSiteId(session) === 'solov-api'
   const defaultDates = useMemo(() => usageDateRange({}), [])
   const [page, setPage] = useState(1)
@@ -1478,10 +1916,14 @@ function AccountUsage({ api, balance, session }: { api: V2Bridge; balance: Balan
     [api, page, pageSize, filter],
   )
   const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
+  const failed = Boolean(resource.error) && !resource.loading
+  const stats = resource.data?.stats
   return (
     <>
       <AccountFilters
         fields={calendar ? sub2ApiUsageFilterFields : usageFilterFields}
+        primary={calendar ? sub2ApiUsageFilterPrimary : usageFilterPrimary}
         initialValues={calendar ? defaultDates : undefined}
         onApply={(values) => {
           if (calendar) {
@@ -1510,70 +1952,69 @@ function AccountUsage({ api, balance, session }: { api: V2Bridge; balance: Balan
         }}
       />
       {calendar && <p>按整日统计（时区 {defaultDates.timezone}），包含结束日期全天。默认最近 7 个日历日。</p>}
-      <Toolbar
-        left={
-          <>
-            <Pill>消耗 {quotaMoney(resource.data?.stats.quota, balance)}</Pill>
-            <Pill>RPM {resource.data?.stats.rpm ?? '—'}</Pill>
-            <Pill>TPM {resource.data?.stats.tpm ?? '—'}</Pill>
-          </>
-        }
-        right={
-          <Select
-            aria-label="每页日志数量"
-            options={[10, 20, 50, 100].map((size) => ({
-              value: String(size),
-              label: `${size} 条 / 页`,
-            }))}
-            value={String(pageSize)}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value))
-              setPage(1)
-            }}
+      <Card
+        title="调用明细"
+        padding="none"
+        actions={stats && (
+          <span className="v2-business-usage-stats" data-testid="usage-stats">
+            消耗 {quotaMoney(stats.quota, balance)} · RPM {stats.rpm} · TPM {stats.tpm}
+          </span>
+        )}
+      >
+        {failed ? (
+          <ListReadFailure
+            page="usage"
+            noun="调用明细"
+            description={<FailureReason error={resource.error} detail={resource.detail} />}
+            retry={() => void resource.reload()}
           />
-        }
-      />
-      <ResultNotice error={resource.error} />
-      <Card padding="none">
-        <Table
-          columns={[
-            { key: 'when', label: '时间' },
-            { key: 'model', label: '模型 / 分组' },
-            { key: 'tokens', label: '输入 / 输出' },
-            { key: 'amount', label: '消耗（USD）' },
-            { key: 'duration', label: '耗时' },
-            { key: 'action', label: '' },
-          ]}
-          rows={
-            resource.data?.records.map((row) => ({
-              id: String(row.id),
-              when: displayDate(row.createdAt),
-              model: (
-                <>
-                  {row.modelName}
-                  <small>{row.group}</small>
-                </>
-              ),
-              tokens: `${row.promptTokens} / ${row.completionTokens}`,
-              amount: quotaMoney(row.quota, balance),
-              duration: `${row.useTimeSeconds} 秒`,
-              action: (
-                <Button size="sm" icon={Eye} onClick={() => setSelected(row)}>
-                  详情
-                </Button>
-              ),
-            })) ?? []
-          }
-          rowKey={(row) => String(row.id)}
-          empty={resource.loading ? '正在读取调用明细…' : resource.error ? '调用明细读取失败' : '暂无调用明细'}
-          label="调用明细"
-        />
+        ) : (
+          <Table
+            columns={[
+              { key: 'when', label: '时间' },
+              { key: 'model', label: '模型 / 分组' },
+              { key: 'tokens', label: '输入 / 输出' },
+              { key: 'amount', label: '消耗（USD）' },
+              { key: 'duration', label: '耗时' },
+              { key: 'action', label: '' },
+            ]}
+            rows={
+              resource.data?.records.map((row) => ({
+                id: String(row.id),
+                when: displayDate(row.createdAt),
+                model: (
+                  <>
+                    {row.modelName}
+                    <small>{row.group}</small>
+                  </>
+                ),
+                tokens: `${row.promptTokens} / ${row.completionTokens}`,
+                amount: quotaMoney(row.quota, balance),
+                duration: `${row.useTimeSeconds} 秒`,
+                action: (
+                  <Button size="sm" icon={Eye} onClick={() => setSelected(row)}>
+                    详情
+                  </Button>
+                ),
+              })) ?? []
+            }
+            rowKey={(row) => String(row.id)}
+            empty={resource.loading ? '正在读取调用明细…' : '暂无调用明细'}
+            label="调用明细"
+          />
+        )}
       </Card>
-      <Pagination
+      <TableFoot
+        label="每页日志数量"
         page={page}
-        size={pageSize}
+        pageSize={pageSize}
         total={resource.data?.total ?? 0}
-        onChange={setPage}
+        failed={failed}
+        onPage={setPage}
+        onPageSize={(size) => {
+          setPageSize(size)
+          setPage(1)
+        }}
       />
       {selected && <UsageDetails record={selected} balance={balance} onClose={() => setSelected(null)} />}
     </>
@@ -1583,23 +2024,38 @@ function AccountDashboard({
   api,
   balance,
   session,
+  refreshRequest,
 }: {
   api: V2Bridge
   balance: Balance
   session: AccountSessionState
+  refreshRequest?: number
 }) {
   const supportsTrends = accountSupports(session, 'supportsDashboardTrends')
   const [days, setDays] = useState('7')
-  const range = useMemo(() => {
+  // 每次读都算到「现在」：分页切走再回来、点页头「刷新」，都要看到刚刚的用量。
+  const load = useCallback(() => {
     const endTimestamp = Math.floor(Date.now() / 1000)
-    return { startTimestamp: endTimestamp - Number(days) * 86400, endTimestamp }
-  }, [days])
-  const load = useCallback(() => api.getAccountDashboard(range), [api, range])
+    return api.getAccountDashboard({ startTimestamp: endTimestamp - Number(days) * 86400, endTimestamp })
+  }, [api, days])
   const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
+  const failed = Boolean(resource.error) && !resource.loading
   const max = Math.max(
     1,
     ...(resource.data?.buckets.map((bucket) => bucket.quota) ?? []),
   )
+  // 大字只放三种：数字、读取中的灰条、读不到时的「—」（下面一行小字说没读到）。
+  function stat(title: string, value: string | undefined) {
+    return (
+      <Card title={title}>
+        <strong className="v2-business-amount" title={value === undefined && failed ? '暂时没有读到' : undefined}>
+          {value ?? (failed ? '—' : <PlaceholderBar width="4em" />)}
+        </strong>
+        {value === undefined && failed && <small>暂时没有读到</small>}
+      </Card>
+    )
+  }
   return (
     <>
       <Toolbar
@@ -1615,31 +2071,25 @@ function AccountDashboard({
             onChange={(event) => setDays(event.target.value)}
           /> : <Pill>累计汇总 · 全部时间</Pill>
         }
-        right={
-          <Button icon={RefreshCw} onClick={() => void resource.reload()}>
-            刷新
-          </Button>
-        }
       />
-      <ResultNotice error={resource.error} />
+      {failed && (
+        <Notice
+          tone="bad"
+          title="当前账号的用量暂时没有读到"
+          body={<FailureReason error={resource.error} detail={resource.detail} />}
+          testId="dashboard-error"
+          actions={
+            <Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()} testId="dashboard-retry">
+              重新加载
+            </Button>
+          }
+        />
+      )}
       <div className="v2-business-stat-grid">
-        <Card title="消耗">
-          <strong className="v2-business-amount">
-            {quotaMoney(resource.data?.quota, balance)}
-          </strong>
-        </Card>
-        <Card title="请求次数">
-          <strong className="v2-business-amount">
-            {resource.data?.count.toLocaleString() ?? '暂未读到'}
-          </strong>
-        </Card>
-        <Card title="Token 数">
-          <strong className="v2-business-amount">
-            {resource.data?.tokens.toLocaleString() ?? '暂未读到'}
-          </strong>
-        </Card>
+        {stat('消耗', resource.data ? quotaMoney(resource.data.quota, balance) : undefined)}
+        {stat('请求次数', resource.data?.count.toLocaleString())}
+        {stat('Token 数', resource.data?.tokens.toLocaleString())}
       </div>
-      <ToolUsage api={api} balance={balance} siteId={accountSiteId(session)} />
       {supportsTrends && resource.data?.coverage !== 'all-time-summary' ? <>
       <Card title="用量趋势">
         <div className="v2-business-chart" aria-label="用量趋势">
@@ -1663,8 +2113,17 @@ function AccountDashboard({
                 </small>
               </div>
             ))
+          ) : failed ? (
+            <div className="v2-business-chart-empty" data-testid="dashboard-trend-error">
+              <p>用量趋势暂时没有读到</p>
+              <Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()}>
+                重新加载
+              </Button>
+            </div>
           ) : (
-            <p>{resource.loading ? '正在读取用量…' : resource.error ? '用量趋势读取失败' : '这个时间段还没有用量'}</p>
+            <div className="v2-business-chart-empty">
+              <p>{resource.loading ? '正在读取用量…' : '这个时间段还没有用量'}</p>
+            </div>
           )}
         </div>
       </Card>
@@ -1689,6 +2148,7 @@ function AccountDashboard({
         />
       </Card>
       </> : <Notice tone="neutral" title="仅提供累计汇总" body="当前客户端尚未接入该账号的趋势和模型统计。此处显示全部时间累计值。" />}
+      <ToolUsage api={api} balance={balance} siteId={accountSiteId(session)} refreshRequest={refreshRequest} />
     </>
   )
 }
@@ -1696,10 +2156,12 @@ function AccountTasks({
   api,
   balance,
   accountScope,
+  refreshRequest,
 }: {
   api: V2Bridge
   balance: Balance
   accountScope: string
+  refreshRequest?: number
 }) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -1713,6 +2175,8 @@ function AccountTasks({
     [api, page, pageSize, filter],
   )
   const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
+  const failed = Boolean(resource.error) && !resource.loading
   const observedStatuses = useRef(new Map<number, string>())
   useEffect(() => {
     for (const task of resource.data?.tasks ?? []) {
@@ -1736,6 +2200,7 @@ function AccountTasks({
     <>
       <AccountFilters
         fields={taskFilterFields}
+        primary={taskFilterPrimary}
         onApply={(values) => {
           setFilter({
             ...accountTimeRange(values.start, values.end),
@@ -1747,68 +2212,59 @@ function AccountTasks({
           setPage(1)
         }}
       />
-      <Toolbar
-        left={
-          <Select
-            aria-label="每页任务数量"
-            options={[10, 20, 50, 100].map((size) => ({
-              value: String(size),
-              label: `${size} 条 / 页`,
-            }))}
-            value={String(pageSize)}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value))
-              setPage(1)
-            }}
-          />
-        }
-        right={
-          <Button icon={RefreshCw} onClick={() => void resource.reload()}>
-            刷新任务
-          </Button>
-        }
-      />
-      <ResultNotice
-        error={resource.error || operation.error}
-        message={operation.message}
-      />
+      <ResultNotice {...operation} />
       <Card padding="none">
-        <Table
-          columns={[
-            { key: 'task', label: '任务' },
-            { key: 'model', label: '模型' },
-            { key: 'status', label: '状态' },
-            { key: 'cost', label: '消耗（USD）' },
-            { key: 'action', label: '' },
-          ]}
-          rows={
-            resource.data?.tasks.map((task) => ({
-              id: task.id,
-              task: task.taskId,
-              model: task.originModelName || task.platform,
-              status: (
-                <Pill tone={taskStates[task.status]?.tone ?? 'neutral'}>
-                  {taskStates[task.status]?.label ?? '待确认'} {task.progress}
-                </Pill>
-              ),
-              cost: quotaMoney(task.quota, balance),
-              action: (
-                <Button size="sm" icon={Eye} onClick={() => setSelected(task)}>
-                  详情
-                </Button>
-              ),
-            })) ?? []
-          }
-          rowKey={(row) => String(row.id)}
-          empty={resource.loading ? '正在读取异步任务…' : '暂无异步任务'}
-          label="异步任务"
-        />
+        {failed ? (
+          <ListReadFailure
+            page="tasks"
+            noun="异步任务"
+            description={<FailureReason error={resource.error} detail={resource.detail} />}
+            retry={() => void resource.reload()}
+          />
+        ) : (
+          <Table
+            columns={[
+              { key: 'task', label: '任务' },
+              { key: 'model', label: '模型' },
+              { key: 'status', label: '状态' },
+              { key: 'cost', label: '消耗（USD）' },
+              { key: 'action', label: '' },
+            ]}
+            rows={
+              resource.data?.tasks.map((task) => ({
+                id: task.id,
+                task: task.taskId,
+                model: task.originModelName || task.platform,
+                status: (
+                  <Pill tone={taskStates[task.status]?.tone ?? 'neutral'}>
+                    {taskStates[task.status]?.label ?? '待确认'} {task.progress}
+                  </Pill>
+                ),
+                cost: quotaMoney(task.quota, balance),
+                action: (
+                  <Button size="sm" icon={Eye} onClick={() => setSelected(task)}>
+                    详情
+                  </Button>
+                ),
+              })) ?? []
+            }
+            rowKey={(row) => String(row.id)}
+            empty={resource.loading ? '正在读取异步任务…' : '暂无异步任务'}
+            label="异步任务"
+          />
+        )}
       </Card>
-      <Pagination
+      <TableFoot
+        label="每页任务数量"
         page={page}
+        pageSize={pageSize}
         total={resource.data?.total ?? 0}
-        size={pageSize}
-        onChange={setPage}
+        failed={failed}
+        onPage={setPage}
+        onPageSize={(size) => {
+          setPageSize(size)
+          setPage(1)
+        }}
       />
       <Drawer
         open={Boolean(selected)}
@@ -1842,7 +2298,7 @@ function AccountTasks({
             <dt>操作</dt>
             <dd>{selected.action}</dd>
             <dt>状态</dt>
-            <dd>{selected.status}</dd>
+            <dd>{taskStates[selected.status]?.label ?? '待确认'}</dd>
             <dt>失败原因</dt>
             <dd>{selected.failReason || '无'}</dd>
             <dt>结果链接</dt>
@@ -1856,9 +2312,11 @@ function AccountTasks({
 function AccountOrders({
   api,
   paymentReturn,
+  refreshRequest,
 }: {
   api: V2Bridge
   paymentReturn?: { sequence: number; order: string | null }
+  refreshRequest?: number
 }) {
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState(paymentReturn?.order ?? '')
@@ -1867,6 +2325,8 @@ function AccountOrders({
     [api, page, keyword],
   )
   const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
+  const failed = Boolean(resource.error) && !resource.loading
   useEffect(() => api.onAccountPaymentWindowTerminal((event) => {
     if (event.status === 'success') void resource.reload()
   }), [api, resource.reload])
@@ -1892,46 +2352,50 @@ function AccountOrders({
             placeholder="搜索订单号"
           />
         }
-        right={
-          <Button icon={RefreshCw} onClick={() => void resource.reload()}>
-            查询订单
-          </Button>
-        }
       />
-      <ResultNotice error={resource.error} />
       <Card padding="none">
-        <Table
-          columns={[
-            { key: 'trade', label: '订单号' },
-            { key: 'amount', label: '充值数量' },
-            { key: 'paid', label: '支付金额' },
-            { key: 'method', label: '支付方式' },
-            { key: 'time', label: '创建时间' },
-            { key: 'status', label: '状态' },
-          ]}
-          rows={
-            resource.data?.orders.map((order) => ({
-              id: order.id,
-              trade: order.tradeNo,
-              amount: order.amount,
-              paid: order.money.toFixed(2),
-              method: order.paymentMethod,
-              time: displayDate(order.createdAt),
-              status: (
-                <Pill tone={orderStateFor(order.status).tone}>
-                  {orderStateFor(order.status).label}
-                </Pill>
-              ),
-            })) ?? []
-          }
-          rowKey={(row) => String(row.id)}
-          empty={resource.loading ? '正在查询订单…' : '还没有订单'}
-          label="我的订单"
-        />
+        {failed ? (
+          <ListReadFailure
+            page="orders"
+            noun="订单"
+            description={<FailureReason error={resource.error} detail={resource.detail} />}
+            retry={() => void resource.reload()}
+          />
+        ) : (
+          <Table
+            columns={[
+              { key: 'trade', label: '订单号' },
+              { key: 'amount', label: '充值数量' },
+              { key: 'paid', label: '支付金额' },
+              { key: 'method', label: '支付方式' },
+              { key: 'time', label: '创建时间' },
+              { key: 'status', label: '状态' },
+            ]}
+            rows={
+              resource.data?.orders.map((order) => ({
+                id: order.id,
+                trade: order.tradeNo,
+                amount: order.amount,
+                paid: order.money.toFixed(2),
+                method: paymentMethodLabel({ name: '', type: order.paymentMethod }),
+                time: displayDate(order.createdAt),
+                status: (
+                  <Pill tone={orderStateFor(order.status).tone}>
+                    {orderStateFor(order.status).label}
+                  </Pill>
+                ),
+              })) ?? []
+            }
+            rowKey={(row) => String(row.id)}
+            empty={resource.loading ? '正在查询订单…' : '还没有订单'}
+            label="我的订单"
+          />
+        )}
       </Card>
       <Pagination
         page={page}
         total={resource.data?.total ?? 0}
+        failed={failed}
         onChange={setPage}
       />
     </>
@@ -1943,24 +2407,58 @@ function AccountRecharge({
   session,
   changed,
   refresh,
+  refreshRequest,
+  subscriptionActivated,
+  subscriptionPurchased,
+  openOrders,
+  openHelp,
+  openHealth,
+  presetAmount,
+  presetRequest,
 }: {
   api: V2Bridge
-  balance: Balance
+  /** 余额读不到时为 null：卡头不写「当前余额」，充值照常能用。 */
+  balance: Balance | null
   session: AccountSessionState
   changed: () => void
   refresh: () => void
+  /** 页头「刷新」点名到这一页时加一。 */
+  refreshRequest?: number
+  subscriptionActivated?: () => Promise<Provider[]>
+  subscriptionPurchased?: () => void
+  openOrders?: (order: string | null) => void
+  openHelp?: () => void
+  /** 去「检查」页；缺省 = 工具没换过去时不给「去检查页」。 */
+  openHealth?: () => void
+  presetAmount?: number
+  presetRequest?: number
 }) {
-  const load = useCallback(async () => {
-    const [info, plans, subscriptions] = await Promise.all([
-      api.getAccountTopupInfo(),
+  // 充值信息和订阅分开读：订阅那边出错只影响「我的订阅」「选择订阅」两张卡，
+  // 读到充值信息就能充值。
+  const loadInfo = useCallback(() => api.getAccountTopupInfo(), [api])
+  const info = useResource(loadInfo)
+  const loadSubscriptions = useCallback(async () => {
+    const [plans, subscriptions] = await Promise.all([
       api.getAccountSubscriptionPlans(),
       api.getAccountSubscriptionSelf(),
     ])
-    return { info, plans, subscriptions }
+    return { plans, subscriptions }
   }, [api])
-  const resource = useResource(load)
+  const subscriptions = useResource(loadSubscriptions)
+  function reloadAll() {
+    void info.reload()
+    void subscriptions.reload()
+  }
+  useRefreshRequest(refreshRequest, reloadAll)
   const operation = useOperation()
-  const [amount, setAmount] = useState('10')
+  const { offline } = useOnlineStatus()
+  const [amount, setAmount] = useState(() => presetAmount ? String(presetAmount) : '10')
+  // 已经停在充值页时再从活动卡片点另一档，也要换成那一档。
+  useEffect(() => {
+    if (!presetAmount) return
+    setAmount(String(presetAmount))
+    setQuote(null)
+  }, [presetAmount, presetRequest])
   const [method, setMethod] = useState('')
   const [code, setCode] = useState('')
   const [quote, setQuote] = useState<Awaited<
@@ -1969,26 +2467,56 @@ function AccountRecharge({
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
   const [redeemOpen, setRedeemOpen] = useState(false)
-  const [redemptionMessage, setRedemptionMessage] = useState('')
   const [payment, setPayment] = useState<{
     tradeNo: string | null
     kind: 'topup' | 'subscription'
     expiresAt: string | null
   } | null>(null)
   const [paymentTerminal, setPaymentTerminal] =
-    useState<AccountPaymentWindowTerminalEvent | null>(null)
+    useState<(AccountPaymentWindowTerminalEvent & { kind: 'topup' | 'subscription' }) | null>(null)
+  const [subscriptionTools, setSubscriptionTools] = useState<ReturnType<typeof subscriptionToolsNotice> | null>(null)
+  // 订阅开通（在线付款到账、兑换码兑成订阅）之后调一次。星芒账号不用换工具，只说一句；
+  // 历史账号把用得上这份订阅的工具换一把放在订阅分组里的 Key。
+  function applySubscriptionToTools() {
+    subscriptionPurchased?.()
+    if (accountSupports(session, 'supportsSubscriptionPreference')) {
+      setSubscriptionTools(subscriptionToolsNotice({ followsPreference: true }))
+      return
+    }
+    if (!subscriptionActivated) return
+    setSubscriptionTools({ tone: 'ok', title: '正在把工具换成订阅额度', body: '换好之前工具照常能用。' })
+    subscriptionActivated().then(
+      (switched) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, switched: switched.map(keyToolName) })),
+      (error: unknown) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, error: errorMessage(error, '工具这次没有换成功。') })),
+    )
+  }
+  const applySubscriptionRef = useRef(applySubscriptionToTools)
+  applySubscriptionRef.current = applySubscriptionToTools
   const paymentRef = useRef(payment)
   const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
+  // 窗口关了、主进程还在后台确认的那笔订单号。结果晚到时即使提示已经收起，也要把结果摆出来。
+  const followUp = useRef<{ tradeNo: string; kind: 'topup' | 'subscription' } | null>(null)
   const acceptPaymentTerminal = (event: AccountPaymentWindowTerminalEvent) => {
     const current = paymentRef.current
-    if (!current) return
+    if (!current) {
+      const pending = followUp.current
+      if (!pending || !event.tradeNo || event.tradeNo !== pending.tradeNo || event.status === 'closed') return
+      followUp.current = null
+      setPaymentTerminal({ ...event, kind: pending.kind })
+      changed()
+      reloadAll()
+      if (event.status === 'success' && pending.kind === 'subscription') applySubscriptionRef.current()
+      return
+    }
     if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
     if (event.tradeNo && current.tradeNo && event.tradeNo !== current.tradeNo) return
     paymentRef.current = null
+    followUp.current = event.status === 'closed' && event.confirming && event.tradeNo ? { tradeNo: event.tradeNo, kind: current.kind } : null
     setPayment(null)
-    setPaymentTerminal(event)
+    setPaymentTerminal({ ...event, kind: current.kind })
     changed()
-    void resource.reload()
+    reloadAll()
+    if (event.status === 'success' && current.kind === 'subscription') applySubscriptionRef.current()
   }
   // 支付回调是一次性事件：退订与重订之间到达的那一条没有人接，订单就此丢在
   // 「等待支付结果」上。`changed` 由 AccountPage 每次渲染新建，再上一层 App.tsx 传的
@@ -2001,18 +2529,20 @@ function AccountRecharge({
     const buffered = openingPayment.current ?? []
     openingPayment.current = null
     paymentRef.current = result
+    followUp.current = null
     setPaymentTerminal(null)
+    setSubscriptionTools(null)
     setPayment(result)
     for (const event of buffered) acceptPaymentTerminal(event)
   }
   useEffect(() => {
-    const available = resource.data?.info.paymentMethods ?? []
+    const available = info.data?.paymentMethods ?? []
     setMethod((current) =>
       available.some((item) => item.type === current)
         ? current
         : available[0]?.type ?? '',
     )
-  }, [resource.data?.info.paymentMethods])
+  }, [info.data?.paymentMethods])
   useEffect(
     () =>
       api.onAccountPaymentWindowTerminal((event) => {
@@ -2024,17 +2554,41 @@ function AccountRecharge({
       }),
     [api],
   )
-  const methods = resource.data?.info.paymentMethods ?? []
+  const methods = info.data?.paymentMethods ?? []
   const paymentMethod =
     methods.find((item) => item.type === method) ?? methods[0]
   const topupMinimum = Math.max(
-    resource.data?.info.minTopup ?? 1,
+    info.data?.minTopup ?? 1,
     paymentMethod?.minTopup ?? 0,
   )
+  const presetAmounts = info.data?.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  const customAmount = isQuotableAmount(Number(amount), topupMinimum) ? Number(amount) : null
+  const quoting = Boolean(info.data && paymentMethod) && !offline
+  const tierQuotes = useTopupQuotes({
+    quote: async (value) => (await api.quoteAccountTopupAmount({ amount: value })).payableAmount,
+    presets: presetAmounts,
+    custom: customAmount,
+    enabled: quoting,
+    resetKey: info.data,
+  })
+  function tierView(value: number) {
+    const state = tierQuotes.get(value)
+    return describeTopupTier({
+      amount: value,
+      // 算不了（断网、没有支付渠道）就不写「实付」；已经算好的照旧写。
+      quote: typeof state === 'number' || quoting ? state : 'unavailable',
+      discounts: info.data?.discounts,
+      provider: paymentMethod?.provider,
+      creditMultiplier: info.data?.creditMultiplier,
+    })
+  }
+  const customTier = customAmount === null ? null : tierView(customAmount)
+  const quoteBonus = quote ? buildTopupBonus(quote.amount, info.data?.discounts) : null
   const quoteTopup = () =>
     void operation.execute(
       'quote',
       async () => {
+        if (offline) throw new Error(offlineActionMessage)
         const value = validateTopupAmount(Number(amount), topupMinimum)
         if (!paymentMethod) throw new Error('暂时没有可用的支付渠道。')
         setQuote(await api.quoteAccountTopupAmount({ amount: value }))
@@ -2081,113 +2635,211 @@ function AccountRecharge({
           } finally { openingPayment.current = null }
         }
         setPurchase(null)
-        await resource.reload()
+        await subscriptions.reload()
         changed()
+        if (purchaseMethod === 'balance') applySubscriptionToTools()
       },
       purchaseMethod === 'balance'
         ? '订阅购买完成'
         : '支付窗口已打开，请在支付后刷新订阅',
     )
   }
+  // 读不到就说读不到，手上有旧的一份也一样（同各页列表）：付完款再读订阅没成，不能还摆着「还没有订阅」。
+  const infoFailed = Boolean(info.error) && !info.loading
+  const noMethods = Boolean(info.data) && methods.length === 0
+  const subscriptionsFailed = Boolean(subscriptions.error) && !subscriptions.loading
   return (
     <>
       <ResultNotice
-        error={resource.error || operation.error}
-        message={payment || paymentTerminal ? '' : operation.message === '兑换码已兑换' ? redemptionMessage : operation.message}
+        error={operation.error}
+        detail={operation.detail}
+        message={payment || paymentTerminal ? '' : operation.message}
       />
       <div className="v2-business-recharge-grid">
         <Card
           title="充值到账户余额"
-          meta={`当前余额 ${dollars(balance.displayAmount)}`}
+          meta={balance ? `当前余额 ${dollars(balance.displayAmount)}` : undefined}
         >
-          <div className="v2-business-suggestions-label">快捷金额</div>
-          <div className="v2-business-suggestions">
-            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => (
-              <Button size="sm" key={value} onClick={() => { setAmount(String(value)); setQuote(null) }}>{value}</Button>
-            ))}
-          </div>
-          <Input
-            label="自定义金额"
-            type="number"
-            min={topupMinimum}
-            step="1"
-            inputMode="numeric"
-            value={amount}
-            onChange={(event) => {
-              setAmount(event.target.value)
-              setQuote(null)
-            }}
-          />
-          <PaymentOptions
-            methods={methods}
-            value={paymentMethod?.type ?? ''}
-            onChange={(next) => {
-              const nextMethod = methods.find((item) => item.type === next)
-              setMethod(next)
-              setQuote(null)
-              if (nextMethod) {
-                setAmount(
-                  resetTopupQuoteForMethod(amount, nextMethod, resource.data?.info.minTopup ?? 1).amount,
-                )
+          {infoFailed ? (
+            <Empty
+              testId="account-recharge-error"
+              icon={XCircle}
+              title="充值信息暂时没有读到"
+              description={offline ? '现在连不上网，联网后点「重新加载」。' : <FailureReason error={info.error} detail={info.detail} />}
+              action={
+                <>
+                  <Button size="sm" icon={RefreshCw} onClick={() => void info.reload()} testId="account-recharge-retry">
+                    重新加载
+                  </Button>
+                  {openHelp && (
+                    <Button size="sm" icon={HelpCircle} onClick={openHelp} testId="account-recharge-support">
+                      联系客服
+                    </Button>
+                  )}
+                </>
               }
-            }}
-          />
-          <Button
-            variant="balance"
-            icon={CreditCard}
-            disabled={!paymentMethod || resource.loading || Boolean(payment)}
-            loading={operation.busy === 'quote'}
-            onClick={quoteTopup}
-            testId="account-recharge-submit"
-          >
-            充值
-          </Button>
-          {!methods.length && !resource.loading && (
-            <Notice
-              tone="neutral"
-              title="暂时没有可用的支付渠道"
-              body="请稍后重试或联系支持。"
             />
+          ) : !info.data ? (
+            <Skeleton rows={8} testId="account-recharge-loading" />
+          ) : (
+            <>
+              {noMethods && (
+                <Notice
+                  tone="neutral"
+                  title="暂时没有可用的支付渠道"
+                  body="请稍后重试或联系客服。有充值码的话，可以在右边兑换。"
+                  testId="account-recharge-no-methods"
+                  actions={openHelp && (
+                    <Button size="sm" icon={HelpCircle} onClick={openHelp}>
+                      联系客服
+                    </Button>
+                  )}
+                />
+              )}
+              {/* 没有支付渠道时档位、金额和「充值」整块变灰，点不了。 */}
+              <fieldset className="v2-business-recharge-form" disabled={noMethods}>
+                <div className="v2-business-suggestions-label">快捷金额</div>
+                <div className="v2-business-suggestions">
+                  {presetAmounts.map((value) => {
+                    const tier = tierView(value)
+                    const selected = Number(amount) === value
+                    return (
+                      <button
+                        type="button"
+                        key={value}
+                        className={`v2-business-tier${selected ? ' is-selected' : ''}`}
+                        aria-label={tier.label}
+                        aria-pressed={selected}
+                        onClick={() => { setAmount(String(value)); setQuote(null) }}
+                      >
+                        <span className="v2-business-tier-credited">到账 {tier.credited}</span>
+                        {tier.paid !== null ? (
+                          <span className="v2-business-tier-paid">实付 {tier.paid}</span>
+                        ) : tier.quoting && (
+                          <span className="v2-business-placeholder v2-business-tier-paid" aria-hidden="true" />
+                        )}
+                        {tier.bonus && <span className="v2-business-tier-bonus">{tier.bonus}</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+                <Input
+                  label="自定义金额"
+                  type="number"
+                  min={topupMinimum}
+                  step="1"
+                  inputMode="numeric"
+                  value={amount}
+                  onChange={(event) => {
+                    setAmount(event.target.value)
+                    setQuote(null)
+                  }}
+                />
+                {customTier && (
+                  <p className="v2-business-tier-note" data-testid="account-recharge-breakdown">
+                    <span>到账 <strong>{customTier.credited}</strong></span>
+                    {customTier.paid !== null ? (
+                      <span>实付 <strong>{customTier.paid}</strong></span>
+                    ) : customTier.quoting && <PlaceholderBar width="5em" />}
+                    {customTier.bonus && <span className="has-bonus">{customTier.bonus}</span>}
+                  </p>
+                )}
+                {/* 一个渠道都没有时上面那条提示已经说了，这里不留一块空的选择区。 */}
+                {methods.length > 0 && (
+                  <PaymentOptions
+                    methods={methods}
+                    value={paymentMethod?.type ?? ''}
+                    onChange={(next) => {
+                      const nextMethod = methods.find((item) => item.type === next)
+                      setMethod(next)
+                      setQuote(null)
+                      if (nextMethod) {
+                        setAmount(
+                          resetTopupQuoteForMethod(amount, nextMethod, info.data?.minTopup ?? 1).amount,
+                        )
+                      }
+                    }}
+                  />
+                )}
+                <Button
+                  variant="balance"
+                  icon={CreditCard}
+                  disabled={!paymentMethod || info.loading || Boolean(payment)}
+                  loading={operation.busy === 'quote'}
+                  onClick={quoteTopup}
+                  testId="account-recharge-submit"
+                >
+                  充值
+                </Button>
+              </fieldset>
+            </>
           )}
         </Card>
         <Card title="兑换充值码">
-          <Input
-            label="充值码"
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-            autoComplete="off"
-          />
-          <Button
-            icon={Zap}
-            disabled={
-              !code.trim() || resource.data?.info.redemptionEnabled === false
-            }
-            onClick={() => setRedeemOpen(true)}
-          >
-            兑换
-          </Button>
+          <div className="v2-business-redeem">
+            <Input
+              label="充值码"
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              autoComplete="off"
+            />
+            <Button
+              icon={Zap}
+              disabled={
+                !code.trim() || info.data?.redemptionEnabled === false
+              }
+              onClick={() => {
+                // 断网时在这里就说，不先弹「确认兑换」再等请求超时。
+                if (offline) void operation.execute('redeem', () => Promise.reject(new Error(offlineActionMessage)))
+                else setRedeemOpen(true)
+              }}
+              testId="account-redeem"
+            >
+              兑换
+            </Button>
+          </div>
           <p>兑换成功后，余额和权益会自动更新。</p>
         </Card>
       </div>
       {(payment || paymentTerminal) && (
         <Notice
-          tone={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status).tone : 'neutral'}
-          title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status).title : '等待支付结果'}
+          tone={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming, paymentTerminal.kind).tone : 'neutral'}
+          title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming, paymentTerminal.kind).title : '等待支付结果'}
           body={paymentTerminal
-            ? `${paymentTerminalPresentation(paymentTerminal.status).body}${paymentTerminal.tradeNo ? ` 订单 ${paymentTerminal.tradeNo}。` : ''}`
-            : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
+            ? <>
+              {paymentTerminalBody(paymentTerminal, paymentTerminal.kind)}
+              {paymentTerminal.status === 'closed' && paymentTerminal.confirming && paymentTerminal.tradeNo && (
+                <small className="v2-business-payment-confirming">正在确认订单 {paymentTerminal.tradeNo} 是否到账…</small>
+              )}
+            </>
+            : payment?.kind === 'subscription'
+              ? `订阅订单 ${payment.tradeNo || '待生成'}。付款后会自动关闭支付窗口并刷新订阅。`
+              : `订单 ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
+          testId="account-payment-notice"
           actions={
             <>
-              <Button
-                size="sm"
-                icon={RefreshCw}
-                onClick={() => {
-                  refresh()
-                  void resource.reload()
-                }}
-              >
-                刷新余额与订阅
-              </Button>
+              {(!paymentTerminal || paymentTerminal.status === 'success') && (
+                <Button
+                  size="sm"
+                  icon={RefreshCw}
+                  onClick={() => {
+                    refresh()
+                    void subscriptions.reload()
+                  }}
+                >
+                  刷新余额与订阅
+                </Button>
+              )}
+              {paymentTerminal && paymentTerminal.status !== 'success' && openOrders && (
+                <Button size="sm" onClick={() => openOrders(paymentTerminal.tradeNo)} testId="account-payment-orders">
+                  查看我的订单
+                </Button>
+              )}
+              {paymentTerminal?.status === 'unconfirmed' && openHelp && (
+                <Button size="sm" icon={HelpCircle} onClick={openHelp}>
+                  联系客服
+                </Button>
+              )}
               {payment ? (
                 <Button
                   size="sm"
@@ -2214,76 +2866,101 @@ function AccountRecharge({
           }
         />
       )}
-      <Card title="我的订阅">
-        {accountSupports(session, 'supportsSubscriptionPreference') && <SettingRow
-          title="扣费偏好"
-          description="决定请求优先使用订阅还是账户余额"
-          control={
-            <Select
-              aria-label="扣费偏好"
-              options={billingOptions}
-              value={
-                resource.data?.subscriptions.billingPreference ??
-                'subscription_first'
-              }
-              onChange={(event) => {
-                const preference = event.target.value
-                if (
-                  preference === 'subscription_first' ||
-                  preference === 'wallet_first' ||
-                  preference === 'subscription_only' ||
-                  preference === 'wallet_only'
-                )
-                  void operation.execute(
-                    'preference',
-                    async () => {
-                      await api.updateAccountSubscriptionPreference(preference)
-                      await resource.reload()
-                    },
-                    '扣费偏好已保存',
-                  )
-              }}
-            />
+      {subscriptionTools && (
+        <Notice
+          tone={subscriptionTools.tone}
+          title={subscriptionTools.title}
+          body={subscriptionTools.body}
+          actions={
+            <>
+              {subscriptionTools.action === 'health' && openHealth && (
+                <Button size="sm" onClick={openHealth} testId="account-subscription-health">
+                  去检查页
+                </Button>
+              )}
+              <Button size="sm" onClick={() => setSubscriptionTools(null)}>收起提示</Button>
+            </>
           }
-        />}
-        {resource.data?.subscriptions.allSubscriptions.length ? (
-          resource.data.subscriptions.allSubscriptions.map((subscription) => (
-            <ListRow
-              key={subscription.id}
-              icon={Zap}
-              title={
-                subscription.groupName || (subscription.source === 'sub2api' ? `订阅分组 ${subscription.planId}` : resource.data?.plans.find(
-                  (plan) => plan.id === subscription.planId,
-                )?.title ?? `订阅 ${subscription.planId}`)
-              }
-              badge={
-                <Pill
-                  tone={subscription.status === 'active' ? 'ok' : 'neutral'}
-                >
-                  {subscription.status === 'active'
-                    ? '生效中'
-                    : subscription.status}
-                </Pill>
-              }
-              desc={subscription.quotaPeriods ? <>
-                {subscription.quotaPeriods.map((period) => <span key={period.period} style={{ display: 'block' }}>
-                  {{ daily: '日额度', weekly: '周额度', monthly: '月额度' }[period.period]}：
-                  已用 {quotaMoney(period.used, balance)} · {period.limitState === 'unlimited' ? '不限额'
-                    : period.limitState === 'unknown' ? '限额暂未提供'
-                    : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
-                </span>)}
-                <span>到期 {displayDate(subscription.endsAt)}</span>
-              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · 到期 ${displayDate(subscription.endsAt)}`}
-            />
-          ))
+        />
+      )}
+      <Card title="我的订阅">
+        {subscriptionsFailed ? (
+          <ListReadFailure
+            page="account-subscriptions"
+            noun="订阅信息"
+            description={<FailureReason error={subscriptions.error} detail={subscriptions.detail} />}
+            retry={() => void subscriptions.reload()}
+          />
         ) : (
-          <p>{resource.loading ? '正在读取订阅…' : resource.error ? '订阅读取失败' : '还没有订阅'}</p>
+          <>
+            {accountSupports(session, 'supportsSubscriptionPreference') && <SettingRow
+              title="扣费偏好"
+              description="决定请求优先使用订阅还是账户余额"
+              control={
+                <Select
+                  aria-label="扣费偏好"
+                  options={billingOptions}
+                  disabled={!subscriptions.data}
+                  value={
+                    subscriptions.data?.subscriptions.billingPreference ??
+                    'subscription_first'
+                  }
+                  onChange={(event) => {
+                    const preference = event.target.value
+                    if (
+                      preference === 'subscription_first' ||
+                      preference === 'wallet_first' ||
+                      preference === 'subscription_only' ||
+                      preference === 'wallet_only'
+                    )
+                      void operation.execute(
+                        'preference',
+                        async () => {
+                          await api.updateAccountSubscriptionPreference(preference)
+                          await subscriptions.reload()
+                        },
+                        '扣费偏好已保存',
+                      )
+                  }}
+                />
+              }
+            />}
+            {subscriptions.data?.subscriptions.allSubscriptions.length ? (
+              subscriptions.data.subscriptions.allSubscriptions.map((subscription) => (
+                <ListRow
+                  key={subscription.id}
+                  icon={Zap}
+                  title={
+                    subscription.groupName || (subscription.source === 'sub2api' ? `订阅分组 ${subscription.planId}` : subscriptions.data?.plans.find(
+                      (plan) => plan.id === subscription.planId,
+                    )?.title ?? `订阅 ${subscription.planId}`)
+                  }
+                  badge={
+                    <Pill tone={subscriptionStateFor(subscription.status).tone}>
+                      {subscriptionStateFor(subscription.status).label}
+                    </Pill>
+                  }
+                  desc={subscription.quotaPeriods ? <>
+                    {subscription.quotaPeriods.map((period) => <span key={period.period} style={{ display: 'block' }}>
+                      {{ daily: '日额度', weekly: '周额度', monthly: '月额度' }[period.period]}：
+                      已用 {quotaMoney(period.used, balance)} · {period.limitState === 'unlimited' ? '不限额'
+                        : period.limitState === 'unknown' ? '限额暂未提供'
+                        : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
+                    </span>)}
+                    <span>到期 {displayDate(subscription.endsAt)}</span>
+                  </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · 到期 ${displayDate(subscription.endsAt)}`}
+                />
+              ))
+            ) : (
+              <p>{subscriptions.loading ? '正在读取订阅…' : '还没有订阅'}</p>
+            )}
+          </>
         )}
       </Card>
-      <Card title="选择订阅">
+      {!subscriptionsFailed && <Card title="选择订阅">
         {!accountSupports(session, 'supportsSubscriptionPayment') && !accountSupports(session, 'supportsSubscriptionBalancePurchase') &&
           <Notice tone="neutral" title="订阅仅供查看" body="该账号的订阅购买与扣费规则请在官方网站管理。" />}
-        {resource.data?.plans.map((plan) => (
+        {subscriptions.data?.plans.map((plan) => (
           <ListRow
             key={plan.id}
             icon={Zap}
@@ -2299,7 +2976,7 @@ function AccountRecharge({
                   setPurchaseMethod(
                     plan.allowBalancePay
                       ? 'balance'
-                        : (subscriptionPaymentMethods(plan, methods, resource.data?.info)[0]?.type ??
+                        : (subscriptionPaymentMethods(plan, methods, info.data ?? undefined)[0]?.type ??
                             ''),
                   )
                 }}
@@ -2309,7 +2986,7 @@ function AccountRecharge({
             }
           />
         ))}
-      </Card>
+      </Card>}
       <Dialog
         open={Boolean(quote)}
         title="确认充值报价"
@@ -2329,12 +3006,17 @@ function AccountRecharge({
         }
       >
         <p>充值数量：{quote?.amount}</p>
+        {quoteBonus && (
+          <p data-testid="account-recharge-quote-bonus">
+            活动赠送：{quoteBonus.bonus}（多送 {quoteBonus.percent}%），到账 {quote?.amount}
+          </p>
+        )}
         <p>
           应付金额：{quote?.payableAmount.toFixed(2)}
           （支付渠道币种以支付页面为准）
         </p>
-        <p>支付方式：{paymentMethod?.name}</p>
-        <ResultNotice error={operation.error} />
+        <p>支付方式：{paymentMethod ? paymentMethodLabel(paymentMethod) : ''}</p>
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={redeemOpen}
@@ -2352,14 +3034,16 @@ function AccountRecharge({
                   'redeem',
                   async () => {
                     const result = await api.redeemAccountTopupCode(code.trim())
-                    setRedemptionMessage(result.type === 'subscription' ? '订阅兑换成功'
-                      : result.type === 'concurrency' ? '并发额度兑换成功' : '余额兑换成功')
                     setCode('')
                     setRedeemOpen(false)
                     changed()
-                    await resource.reload()
+                    void info.reload()
+                    await subscriptions.reload()
+                    if (result.type === 'subscription') applySubscriptionToTools()
+                    return result.type
                   },
-                  '兑换码已兑换',
+                  (type) => type === 'subscription' ? '订阅兑换成功'
+                    : type === 'concurrency' ? '并发额度兑换成功' : '余额兑换成功',
                 )
               }
             >
@@ -2369,7 +3053,7 @@ function AccountRecharge({
         }
       >
         <p>兑换成功后，相应余额或权益会应用到当前账号。</p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(purchase)}
@@ -2400,14 +3084,14 @@ function AccountRecharge({
               ? [{ value: 'balance', label: '账户余额' }]
               : []),
             ...(purchase
-              ? subscriptionPaymentMethods(purchase, methods, resource.data?.info)
+              ? subscriptionPaymentMethods(purchase, methods, info.data ?? undefined)
               : []
             ).map((item) => ({ value: item.type, label: item.name })),
           ]}
           value={purchaseMethod}
           onChange={(event) => setPurchaseMethod(event.target.value)}
         />
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
   )
@@ -2427,14 +3111,31 @@ function AccountInvite({
 }) {
   const operation = useOperation()
   const [transfer, setTransfer] = useState(false)
-  const [amount, setAmount] = useState(
-    String(profile.affQuota / balance.quotaPerUnit),
-  )
+  const [amount, setAmount] = useState('')
   const invite = buildAccountInviteLink(inviteBaseUrl, profile.affCode)
   return (
     <>
       <ResultNotice {...operation} />
-      <div className="v2-business-stat-grid">
+      <Card title="邀请链接">
+        <p className="v2-business-help">分享邀请码或邀请链接。好友注册并充值后，返利会计入可转额度，可随时转入账户余额。</p>
+        <div className="v2-business-invite-link">
+          <Input label="分享邀请链接" readOnly value={invite} testId="account-invite-link" />
+          <Button
+            icon={Copy}
+            disabled={!invite}
+            onClick={() =>
+              void operation.execute(
+                'copy',
+                () => navigator.clipboard.writeText(invite),
+                '邀请链接已复制',
+              )
+            }
+          >
+            复制链接
+          </Button>
+        </div>
+      </Card>
+      <div className="v2-business-stat-grid is-four">
         <Card title="我的返利比例">
           <strong className="v2-business-amount">{profile.affRebateRatePercent ?? 0}%</strong>
           <small>被邀请用户每次充值后可获得的返利比例</small>
@@ -2446,6 +3147,20 @@ function AccountInvite({
           <strong className="v2-business-amount">
             {quotaMoney(profile.affQuota, balance)}
           </strong>
+          <Button
+            size="sm"
+            icon={Zap}
+            disabled={profile.affQuota <= 0}
+            onClick={() => {
+              // 默认金额按点开这一刻的可转余额算。转出一部分后资料会重读，但这张卡不会重新挂上，
+              // 只在挂上时算一次的话，再点开还是上一次的数，可能比现在剩下的还多。
+              setAmount(String(profile.affQuota / balance.quotaPerUnit))
+              setTransfer(true)
+            }}
+            testId="account-invite-transfer"
+          >
+            转入余额
+          </Button>
         </Card>
         <Card title="累计返利">
           <strong className="v2-business-amount">
@@ -2453,30 +3168,6 @@ function AccountInvite({
           </strong>
         </Card>
       </div>
-      <Card title="邀请链接">
-        <p className="v2-business-help">分享邀请码或邀请链接。好友注册并充值后，返利会计入可转额度，可随时转入账户余额。</p>
-        <Input label="分享邀请链接" readOnly value={invite} />
-        <Button
-          icon={Copy}
-          disabled={!invite}
-          onClick={() =>
-            void operation.execute(
-              'copy',
-              () => navigator.clipboard.writeText(invite),
-              '邀请链接已复制',
-            )
-          }
-        >
-          复制链接
-        </Button>
-        <Button
-          icon={Zap}
-          disabled={profile.affQuota <= 0}
-          onClick={() => setTransfer(true)}
-        >
-          转入账户余额
-        </Button>
-      </Card>
       <Card title="已邀请用户">
         {profile.invitees?.length ? <div className="v2-business-table"><div className="v2-business-table-row v2-business-table-head"><span>邮箱</span><span>用户名</span><span>累计返利</span></div>{profile.invitees.map((item) => <div className="v2-business-table-row" key={item.userId}><span>{item.email}</span><span>{item.username || '-'}</span><span>{quotaMoney(item.totalRebate, balance)}</span></div>)}</div> : <p>暂时还没有已邀请用户。</p>}
       </Card>
@@ -2525,7 +3216,7 @@ function AccountInvite({
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
         />
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
   )
@@ -2533,14 +3224,19 @@ function AccountInvite({
 function AccountDevices({
   api,
   changed,
+  refreshRequest,
 }: {
   api: V2Bridge
   changed: () => void
+  refreshRequest?: number
 }) {
   const load = useCallback(() => api.getAccountLoginSessions(), [api])
   const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
   const operation = useOperation()
   const [revoke, setRevoke] = useState<string | 'others' | null>(null)
+  // 「当前设备」那一行点了，确实是这台电脑退出登录：照这个说，不说「下线」。
+  const revokingCurrent = Boolean(revoke && revoke !== 'others' && resource.data?.some((session) => session.sid === revoke && session.current))
   return (
     <>
       <Toolbar
@@ -2551,7 +3247,7 @@ function AccountDevices({
             disabled={!resource.data?.some((session) => !session.current)}
             onClick={() => setRevoke('others')}
           >
-            退出其他设备
+            下线其他设备
           </Button>
         }
       />
@@ -2564,6 +3260,13 @@ function AccountDevices({
           error={resource.error}
           count={resource.data?.length ?? 0}
           retry={() => void resource.reload()}
+          emptyTitle="没有读到登录设备"
+          emptyDescription="点「重新加载」再读一次。"
+          action={
+            <Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()} testId="devices-empty-retry">
+              重新加载
+            </Button>
+          }
         >
           {resource.data?.map((session) => (
             <ListRow
@@ -2579,7 +3282,7 @@ function AccountDevices({
                   icon={Trash2}
                   onClick={() => setRevoke(session.sid)}
                 >
-                  退出登录
+                  {session.current ? '退出登录' : '让它下线'}
                 </Button>
               }
             />
@@ -2588,7 +3291,7 @@ function AccountDevices({
       </Card>
       <Dialog
         open={Boolean(revoke)}
-        title={revoke === 'others' ? '退出其他设备？' : '退出这台设备？'}
+        title={revoke === 'others' ? '下线其他设备？' : revokingCurrent ? '退出登录？' : '让这台设备下线？'}
         onClose={() => setRevoke(null)}
         footer={
           <>
@@ -2612,7 +3315,7 @@ function AccountDevices({
                 )
               }
             >
-              确认退出
+              {revokingCurrent ? '退出登录' : '确认下线'}
             </Button>
           </>
         }
@@ -2621,7 +3324,7 @@ function AccountDevices({
           该设备需要重新登录才能查看账户信息。工具里已经写入的 API Key
           不受影响。
         </p>
-        <ResultNotice error={operation.error} />
+        <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
   )

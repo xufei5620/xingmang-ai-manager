@@ -15,6 +15,10 @@ export const AI_CHAT_LIMITS = {
   // An 8 MB owned image expands to roughly 10.7 MB after base64 encoding.
   videoImageLength: 12 * 1024 * 1024,
   maxTokens: 131_072,
+  // 聊天里附带的截图。每张先在主进程压到 2 MB 以内，一次请求最多 8 张，请求体
+  // 控制在二十来 MB；更早消息里的图片超出部分改成一句说明，不再重复发送。
+  imagesPerMessage: 4,
+  imagesPerRequest: 8,
 } as const
 
 export type AiChatGroup = {
@@ -28,6 +32,17 @@ export type AiChatRole = 'system' | 'user' | 'assistant'
 export type AiChatMessage = {
   role: AiChatRole
   content: string
+  /** Owned image asset ids attached by the user; resolved to bytes only in the main process. */
+  images?: readonly string[]
+}
+
+export type ChatCompletionsContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
+export type ChatCompletionsWireMessage = {
+  role: AiChatRole
+  content: string | ChatCompletionsContentPart[]
 }
 
 export type AiChatParameters = {
@@ -113,6 +128,11 @@ export type ChatCompletionsRequestBody = {
   seed?: number
 }
 
+/** What actually goes over the wire: image ids replaced by data URIs. */
+export type ChatCompletionsWireBody = Omit<ChatCompletionsRequestBody, 'messages'> & {
+  messages: ChatCompletionsWireMessage[]
+}
+
 export type ImagesApiGenerationRequestBody = {
   model: string
   prompt: string
@@ -184,6 +204,7 @@ export type AiChatProtocolErrorCode =
   | 'invalid-video-resolution'
   | 'invalid-video-aspect-ratio'
   | 'invalid-video-media'
+  | 'model-no-image-input'
 
 export class AiChatProtocolError extends Error {
   readonly code: AiChatProtocolErrorCode
@@ -531,6 +552,47 @@ export function selectAiChatModelsForGroup(group: string, models: readonly strin
   return IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))
 }
 
+const IMAGE_ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
+// 聊天模型能不能看图，中转不告诉我们，只能按型号认。只收确认能看图的几家，认不出的
+// 一律当不能看，发图按钮灰掉，比发出去扣了费再被拒好。
+const CHAT_IMAGE_INPUT_MODEL_PATTERNS = [
+  /^claude-(?!2|instant)/i,
+  /^(?:chatgpt-)?gpt-(?:4o|4\.1|4\.5|4-turbo|[5-9])(?![0-9])/i,
+  /^o(?:1|3|4-mini)(?:$|-)(?!mini)/i,
+  /^gemini-/i,
+  /^grok-(?:[4-9]|2-vision)/i,
+  /(?:^|[-_.])(?:vl|vision)(?:$|[-_.])/i,
+]
+
+export function supportsChatImageInput(model: string): boolean {
+  let capability: AiModelCapability
+  try {
+    capability = resolveAiModelCapability(model)
+  } catch {
+    return false
+  }
+  if (capability.kind !== 'chat') return false
+  return CHAT_IMAGE_INPUT_MODEL_PATTERNS.some((pattern) => pattern.test(capability.model))
+}
+
+function validateMessageImages(message: AiChatMessage): string[] | undefined {
+  if (message.images === undefined) return undefined
+  if (!Array.isArray(message.images)) throw new AiChatProtocolError('invalid-message', 'message images must be an array')
+  if (message.images.length === 0) return undefined
+  if (message.role !== 'user') throw new AiChatProtocolError('invalid-message', 'only user messages can carry images')
+  if (message.images.length > AI_CHAT_LIMITS.imagesPerMessage) {
+    throw new AiChatProtocolError('input-limit-exceeded', 'too many images in one message')
+  }
+  const images = message.images.map((image) => {
+    if (typeof image !== 'string' || !IMAGE_ASSET_ID_PATTERN.test(image)) {
+      throw new AiChatProtocolError('invalid-message', 'message image id is invalid')
+    }
+    return image
+  })
+  if (new Set(images).size !== images.length) throw new AiChatProtocolError('invalid-message', 'message images repeat')
+  return images
+}
+
 function validateMessages(messages: readonly AiChatMessage[]): AiChatMessage[] {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new AiChatProtocolError('invalid-message', 'at least one message is required')
@@ -540,11 +602,13 @@ function validateMessages(messages: readonly AiChatMessage[]): AiChatMessage[] {
   }
 
   let totalLength = 0
+  let totalImages = 0
   return messages.map((message) => {
     if (!message || typeof message !== 'object' || !['system', 'user', 'assistant'].includes(message.role)) {
       throw new AiChatProtocolError('invalid-message', 'message role is invalid')
     }
-    if (typeof message.content !== 'string' || message.content.trim().length === 0) {
+    const images = validateMessageImages(message)
+    if (typeof message.content !== 'string' || (message.content.trim().length === 0 && !images)) {
       throw new AiChatProtocolError('invalid-message', 'message content is required')
     }
     if (message.content.length > AI_CHAT_LIMITS.messageLength) {
@@ -554,8 +618,37 @@ function validateMessages(messages: readonly AiChatMessage[]): AiChatMessage[] {
     if (totalLength > AI_CHAT_LIMITS.totalMessageLength) {
       throw new AiChatProtocolError('input-limit-exceeded', 'total message content is too long')
     }
-    return { role: message.role, content: message.content }
+    totalImages += images?.length ?? 0
+    if (totalImages > AI_CHAT_LIMITS.imagesPerRequest) {
+      throw new AiChatProtocolError('input-limit-exceeded', 'too many images in one request')
+    }
+    return { role: message.role, content: message.content, ...(images ? { images } : {}) }
   })
+}
+
+/**
+ * Replaces image ids with the data URIs the main process read from its own
+ * store. A message without images keeps its plain string content, so text-only
+ * requests are byte-for-byte what they were before images existed.
+ */
+export function toChatCompletionsWireBody(
+  body: ChatCompletionsRequestBody,
+  images: ReadonlyMap<string, string>,
+): ChatCompletionsWireBody {
+  return {
+    ...body,
+    messages: body.messages.map((message): ChatCompletionsWireMessage => {
+      if (!message.images?.length) return { role: message.role, content: message.content }
+      const parts: ChatCompletionsContentPart[] = []
+      if (message.content.trim()) parts.push({ type: 'text', text: message.content })
+      for (const id of message.images) {
+        const url = images.get(id)
+        if (!url || !url.startsWith('data:image/')) throw new AiChatProtocolError('invalid-message', 'message image was not resolved')
+        parts.push({ type: 'image_url', image_url: { url } })
+      }
+      return { role: message.role, content: parts }
+    }),
+  }
 }
 
 function optionalNumber(
@@ -585,6 +678,10 @@ export function buildChatCompletionsRequest(input: {
   if (input.stream !== undefined && typeof input.stream !== 'boolean') {
     throw new AiChatProtocolError('invalid-parameter', 'stream must be a boolean')
   }
+  const messages = validateMessages(input.messages)
+  if (messages.some((message) => message.images?.length) && !supportsChatImageInput(capability.model)) {
+    throw new AiChatProtocolError('model-no-image-input', 'this model cannot read images')
+  }
 
   const parameters = input.parameters ?? {}
   const temperature = optionalNumber(parameters.temperature, 'temperature', 0, 2)
@@ -596,7 +693,7 @@ export function buildChatCompletionsRequest(input: {
 
   return {
     model: capability.model,
-    messages: validateMessages(input.messages),
+    messages,
     stream: input.stream ?? true,
     ...(temperature === undefined ? {} : { temperature }),
     ...(topP === undefined ? {} : { top_p: topP }),

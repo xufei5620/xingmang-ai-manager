@@ -8,6 +8,7 @@ import type {
   WebContents,
 } from 'electron'
 import { AppSettingsStore } from '../app-settings'
+import { ipcEventChannels, type RendererNavigationTarget } from '../ipc-contract'
 import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from '../security'
 import { platformChannels } from './contract'
 import { registerPlatformHandlers, type PlatformIpcLogger } from './ipc'
@@ -18,6 +19,9 @@ import {
   detachHostNotifier,
   type HostNotifier,
 } from './host-notification-bridge'
+import { proxyBypassActive, proxySiteDirectActive } from './proxy-bypass-bridge'
+import { trayAvailability } from './tray-availability-bridge'
+import { createLinuxAutostart } from '../linux-autostart'
 import {
   createPlatformNotifications,
   type PlatformNotificationRuntime,
@@ -45,12 +49,16 @@ export function installPlatformSystemApi(
   let notifications: ReturnType<typeof createPlatformNotifications> | null =
     null
   // main.ts 与这里互不 import，加速那两条通知靠这个转接口过来。
-  const hostNotifier: HostNotifier = (request) =>
-    notifications?.notifyHost(
+  const hostNotifier: HostNotifier = (request) => {
+    if (!notifications) return 'unsupported'
+    if ('terminal' in request)
+      return notifications.notifyTerminal(request.terminal, request.eventKey)
+    return notifications.notifyHost(
       request.event,
       request.eventKey,
       request.onClick,
-    ) ?? 'unsupported'
+    )
+  }
   const registrations = new Map<Session, string>()
   const extraPreload = path.resolve(
     options.platformPreloadPath ?? path.join(__dirname, 'preload.js'),
@@ -116,7 +124,10 @@ export function installPlatformSystemApi(
               task: true,
               cliUpdate: true,
               announcement: true,
+              spend: true,
               acceleration: true,
+              cliTrouble: true,
+              cliTurn: true,
               ...store.read().notifications,
             }),
             focusMainWindow: () => {
@@ -125,6 +136,16 @@ export function installPlatformSystemApi(
                 mainWindow.show()
                 mainWindow.focus()
               }
+            },
+            // 主进程只能认主窗口的页面：窗口被换成别处的地址时不发，同状态推送的口径。
+            openPage: (target) => {
+              const page: RendererNavigationTarget = target
+              if (
+                owner &&
+                !owner.isDestroyed() &&
+                isTrustedIpcSenderUrl(owner.getURL(), options.policy())
+              )
+                owner.send(ipcEventChannels.onNavigate, page)
             },
             onError: (error) => options.onError?.(error),
           },
@@ -138,14 +159,25 @@ export function installPlatformSystemApi(
           platform: process.platform,
           packaged: options.app.isPackaged,
           executablePath: process.execPath,
+          ...(process.platform !== 'win32' && process.platform !== 'darwin'
+            ? {
+                linuxAutostart: createLinuxAutostart({
+                  env: process.env,
+                  executablePath: process.execPath,
+                }),
+              }
+            : {}),
+          trayAvailable: trayAvailability,
           relaySiteId: () => existing.read().relaySiteId,
+          proxyBypassed: proxyBypassActive,
+          proxySiteDirect: proxySiteDirectActive,
           resolveProxy: (url) => {
             if (!owner || owner.isDestroyed()) throw new Error('主窗口已关闭。')
             return owner.session.resolveProxy(url)
           },
           onError: options.onError,
-          notify: (kind, key) =>
-            notifications?.notify(kind, key) ?? 'unsupported',
+          notify: (kind, key, detail) =>
+            notifications?.notify(kind, key, detail) ?? 'unsupported',
         })
         unsubscribe = service.subscribe((state) => {
           if (

@@ -195,6 +195,23 @@ test('Toast keeps three unique items and expires; reduced motion disables animat
     assert.equal(await page.locator('.xm-spin').first().evaluate(el => getComputedStyle(el).animationName), 'none');
   } finally { await page.close(); }
 });
+test('Toast pauses under the mouse and keeps warnings until closed', async () => {
+  const page = await gallery();
+  try {
+    await page.getByRole('button', { name: '长提示' }).click();
+    const toasts = page.getByTestId('gallery-toasts');
+    const warning = toasts.getByRole('status').filter({ hasText: '模型没换成' });
+    const long = toasts.getByRole('status').filter({ hasText: '兼容方式显示' });
+    await long.hover();
+    await page.waitForTimeout(7000);
+    assert.equal(await long.count(), 1);
+    await page.mouse.move(0, 0);
+    await long.waitFor({ state: 'detached', timeout: 10000 });
+    assert.equal(await warning.count(), 1);
+    await warning.getByRole('button', { name: '关闭' }).click();
+    await warning.waitFor({ state: 'detached', timeout: 2000 });
+  } finally { await page.close(); }
+});
 test('ToolRow uses six fixed columns, real brands and exact theme tokens across Win/Mac light/dark', async () => {
   await fs.mkdir('artifacts/renderer-v2-components', { recursive: true });
   for (const os of ['win', 'mac']) for (const theme of ['light', 'dark']) {

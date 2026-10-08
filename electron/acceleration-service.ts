@@ -1,8 +1,21 @@
-import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState, AccelerationUnavailableReason } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
+  listAccelerationLines(scope: string): Promise<AccelerationLine[]>
+  pingAccelerationLine(scope: string, lineId: string): Promise<AccelerationLine>
+  /**
+   * 用户在加速页或托盘上点的「停止」。连着的若是软件替他在后台连的那一次（他在
+   * 加速页上看不见它），原样留着：那一次什么时候断归 codex-desktop-acceleration.ts 管。
+   * 与 stopAcceleration 在同一条队列里先读后停，中间插不进别的连接。
+   */
+  stopUserAcceleration(scope: string): Promise<AccelerationState>
+  /**
+   * 只断软件替他连的那一次（认 connectedAt）。到点要断时他可能刚点了「开始加速」，
+   * 连着的已经是他计时的那一次，那就原样留着。同样在队列里先读后停。
+   */
+  stopAutomaticAcceleration(scope: string, connectedAt: string): Promise<AccelerationState>
   /**
    * 软件替用户发起的连接（打开 Codex 桌面端时）。与 startAcceleration 走同一条
    * 路，只多记一笔「这次是谁连的」，此后这次会话的每一份状态都带上
@@ -22,7 +35,13 @@ export interface AccelerationService extends AccelerationApi, AccelerationPrefer
 
 interface AccelerationServiceOptions {
   getAccountScope: () => string | null
-  backend?: AccelerationApi
+  /**
+   * `startAutomaticAcceleration` 是软件替用户连的那种：不扣免费时长。没有它的后端
+   * （测试替身）退回普通连接，也就是旧行为。
+   */
+  backend?: AccelerationApi & {
+    startAutomaticAcceleration?(scope: string, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
+  }
   /**
    * 每产出一个状态就通知一次。托盘那一行（tray-acceleration.ts）靠它跟上加速页
    * 上的连接与断开，不必另起一套轮询；回调抛错不许影响本次请求的结果。
@@ -33,12 +52,18 @@ interface AccelerationServiceOptions {
    * 排着的可能是一次十几秒的连接，界面上点一下线路不该等它。
    */
   preferences?: AccelerationPreferenceApi
+  /**
+   * 启动时自带的加速文件就没读通（见 main.ts）。给了就把原因带进「开不了」的状态里，
+   * 并提供「重新检查」；不给就是旧口径的「线路准备中」。
+   */
+  bundleDamaged?: { recheck(): Promise<AccelerationBundleCheck> }
 }
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
 const INVALID_RESPONSE = '加速服务返回的数据无效，请稍后重试。'
 const BACKEND_FAILURE = accelerationFailureMessages.unknown
 const ACCOUNT_CHANGED = '账号已变更，请重新打开游戏加速。'
+const BACKGROUND_BUSY = 'Codex 桌面端正在后台用加速，暂不能检测线路。'
 const phases: readonly AccelerationPhase[] = ['unavailable', 'idle', 'connecting', 'active', 'stopping', 'exhausted', 'error']
 
 function assertScope(scope: unknown): asserts scope is string {
@@ -80,6 +105,20 @@ function parsePreferenceUpdate(value: unknown): AccelerationPreferenceUpdate {
  */
 function backendFailure(error: unknown): Error {
   return accelerationFailure(accelerationFailureReason(error) ?? 'unknown')
+}
+
+const REDEMPTION_FAILURE = '加速时长这次没有加上，请稍后再输一次口令；还不行就联系客服。'
+
+/**
+ * 口令不对、已经领过是正常结果（见 projectRedemption），走到这里的都是本机没办成：
+ * 时长记录写不进去、加速组件没起来之类。原来一律「兑换失败，请稍后重试」，客户以为
+ * 是网络，反复重试也不会好。归类由下层给出，这里只挑句子，错误原文照旧不上屏（I13）。
+ */
+function redemptionFailure(error: unknown): Error {
+  const reason = accelerationFailureReason(error)
+  if (reason === 'local-data') return accelerationFailure(reason, '加速时长这次没有加上：本机的时长记录写不进去。请检查磁盘剩余空间后再输一次口令。')
+  if (!reason || reason === 'unknown') return new Error(REDEMPTION_FAILURE)
+  return accelerationFailure(reason, `加速时长这次没有加上：${accelerationFailureMessages[reason]}`)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -140,7 +179,10 @@ function projectState(value: unknown, scope: string): AccelerationState {
   if (value.supportedModes !== undefined && (!Array.isArray(value.supportedModes) || !value.supportedModes.length
     || value.supportedModes.length > 2 || new Set(value.supportedModes).size !== value.supportedModes.length
     || value.supportedModes.some((mode) => mode !== 'system-proxy' && mode !== 'tun'))) throw new Error(INVALID_RESPONSE)
-  if (phase === 'active' && (value.connectedAt === null || value.remainingSeconds === null || value.remainingSeconds === 0)) {
+  if (value.autoStartedBy !== undefined && (value.autoStartedBy !== 'codex-desktop' || !isRunning(phase))) throw new Error(INVALID_RESPONSE)
+  // 软件替用户连的会话不扣时长，免费时长用完（0）也照样连着。
+  if (phase === 'active' && (value.connectedAt === null || value.remainingSeconds === null
+    || (value.remainingSeconds === 0 && value.autoStartedBy === undefined))) {
     throw new Error(INVALID_RESPONSE)
   }
   if (phase === 'exhausted' && value.remainingSeconds !== 0) throw new Error(INVALID_RESPONSE)
@@ -161,8 +203,49 @@ function projectState(value: unknown, scope: string): AccelerationState {
     ...(value.entitlementSource === 'server' || value.entitlementSource === 'local-device' || value.entitlementSource === 'local-development' ? { entitlementSource: value.entitlementSource } : {}),
     ...(Array.isArray(value.supportedModes) ? { supportedModes: [...value.supportedModes] as AccelerationMode[] } : {}),
     ...(Array.isArray(value.conflicts) ? { conflicts: [...value.conflicts] as AccelerationConflictKind[] } : {}),
+    ...(value.autoStartedBy === 'codex-desktop' ? { autoStartedBy: value.autoStartedBy } : {}),
     scope, phase, mode: value.mode, totalSeconds: value.totalSeconds, remainingSeconds: value.remainingSeconds,
     sessionSeconds: value.sessionSeconds, measuredAt: value.measuredAt, connectedAt: value.connectedAt, line, error: value.error,
+  }
+}
+
+/**
+ * 用户看得到的那一份状态（加速页、托盘）。yoyo 2026-10-02 定：软件替他在后台连的
+ * 加速（打开 Codex 桌面端时）「不在游戏加速那边体现」。所以这一次会话在他眼里就是
+ * 没连：未连接、剩余时长照旧（这次本来就不扣），时长用完的照旧显示用完。主进程里
+ * 别的观察者（到期、意外断开、桌面端退出就断开、诊断）仍然读真实状态。
+ */
+export function userAccelerationState(state: AccelerationState): AccelerationState {
+  if (!state.autoStartedBy) return state
+  return {
+    ...(state.entitlementSource ? { entitlementSource: state.entitlementSource } : {}),
+    ...(state.supportedModes ? { supportedModes: [...state.supportedModes] } : {}),
+    scope: state.scope, phase: state.remainingSeconds === 0 ? 'exhausted' : 'idle', mode: state.mode,
+    totalSeconds: state.totalSeconds, remainingSeconds: state.remainingSeconds, sessionSeconds: 0,
+    measuredAt: state.measuredAt, connectedAt: null, line: null, error: null,
+  }
+}
+
+/**
+ * 交给渲染层（IPC）和托盘的那一套：读到的、连接与停止返回的状态一律换成
+ * userAccelerationState；停止走 stopUserAcceleration，不碰后台那一次。用户自己点
+ * 「开始加速」时后台那一次正连着，由后端停掉它重新连一次计时的
+ * （acceleration-development-backend.ts 的 startSession）。
+ */
+export function createUserAccelerationApi(service: AccelerationService): AccelerationApi & AccelerationPreferenceApi {
+  const recheck = service.recheckAccelerationBundle
+  return {
+    getAccelerationState: (scope) => service.getAccelerationState(scope).then(userAccelerationState),
+    startAcceleration: (scope, mode, lineId, ignoreConflicts) => service.startAcceleration(scope, mode, lineId, ignoreConflicts)
+      .then(userAccelerationState),
+    stopAcceleration: (scope) => service.stopUserAcceleration(scope).then(userAccelerationState),
+    redeemAccelerationCode: (scope, code) => service.redeemAccelerationCode(scope, code)
+      .then((result) => ({ ...result, state: userAccelerationState(result.state) })),
+    listAccelerationLines: (scope) => service.listAccelerationLines(scope),
+    pingAccelerationLine: (scope, lineId) => service.pingAccelerationLine(scope, lineId),
+    getAccelerationPreference: (scope) => service.getAccelerationPreference(scope),
+    saveAccelerationPreference: (scope, update) => service.saveAccelerationPreference(scope, update),
+    ...(recheck ? { recheckAccelerationBundle: recheck } : {}),
   }
 }
 
@@ -170,10 +253,11 @@ function defaultPreference(): AccelerationPreference {
   return { lineId: null, mode: 'system-proxy' }
 }
 
-function unavailableState(scope: string): AccelerationState {
+function unavailableState(scope: string, reason?: AccelerationUnavailableReason): AccelerationState {
   return {
     scope, phase: 'unavailable', mode: 'system-proxy', totalSeconds: accelerationTrialSeconds, remainingSeconds: null,
     sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null,
+    ...(reason ? { unavailableReason: reason } : {}),
   }
 }
 
@@ -188,7 +272,7 @@ function projectRedemption(value: unknown, scope: string): AccelerationRedemptio
 }
 
 export function createAccelerationService(options: AccelerationServiceOptions): AccelerationService {
-  const { backend } = options
+  const { backend, bundleDamaged } = options
   // Track a start before awaiting it: a failed/late response does not prove the tunnel never started.
   const possibleSessions = new Set<string>()
   let queue: Promise<unknown> = Promise.resolve()
@@ -250,8 +334,15 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     }
   }
 
-  function request(scope: string, operation: 'get' | 'start' | 'stop', mode?: AccelerationMode, lineId?: string, ignoreConflicts?: boolean,
-    origin?: NonNullable<AccelerationState['autoStartedBy']>): Promise<AccelerationState> {
+  /** 后台那一次（软件替他连的）正连着没有。读不到按没有：只用来挑一句更准的提示。 */
+  async function automaticSessionRunning(scope: string): Promise<boolean> {
+    if (!backend) return false
+    try { return Boolean(withOrigin(projectState(await backend.getAccelerationState(scope), scope)).autoStartedBy) }
+    catch { return false }
+  }
+
+  function request(scope: string, operation: 'get' | 'start' | 'stop' | 'user-stop' | 'automatic-stop', mode?: AccelerationMode, lineId?: string, ignoreConflicts?: boolean,
+    origin?: NonNullable<AccelerationState['autoStartedBy']>, connectedAt?: string): Promise<AccelerationState> {
     try {
       assertScope(scope)
       if (operation === 'start') assertMode(mode)
@@ -262,14 +353,14 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     const expectedRevision = revision
     // A retry that overrides the conflict warning is a different request from
     // the one that raised it, so it must not be served the refusal in flight.
-    const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}:${ignoreConflicts === true}:${origin ?? ''}`
+    const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}:${ignoreConflicts === true}:${origin ?? ''}:${connectedAt ?? ''}`
     if (operation !== 'get' && lastMutation?.key === key) return lastMutation.promise
     const promise = enqueue(async () => {
       await stopOtherAccounts(options.getAccountScope())
       assertCurrent(scope, expectedRevision)
       if (!backend) {
         if (operation === 'start') throw new Error(SERVICE_UNAVAILABLE)
-        return notify(unavailableState(scope))
+        return notify(unavailableState(scope, bundleDamaged ? 'bundle-damaged' : undefined))
       }
       const wasRunning = possibleSessions.has(scope)
       if (operation === 'start') possibleSessions.add(scope)
@@ -278,9 +369,16 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         let raw: unknown
         if (operation === 'start') {
           assertMode(mode)
-          raw = await backend.startAcceleration(scope, mode, lineId, ignoreConflicts)
+          raw = origin && backend.startAutomaticAcceleration
+            ? await backend.startAutomaticAcceleration(scope, mode, lineId)
+            : await backend.startAcceleration(scope, mode, lineId, ignoreConflicts)
         } else if (operation === 'get') raw = await backend.getAccelerationState(scope)
-        else raw = await backend.stopAcceleration(scope)
+        else if (operation === 'user-stop' || operation === 'automatic-stop') {
+          const current = withOrigin(projectState(await backend.getAccelerationState(scope), scope))
+          const automatic = Boolean(current.autoStartedBy)
+          const keep = operation === 'user-stop' ? automatic : !automatic || current.connectedAt !== connectedAt
+          raw = keep ? current : await backend.stopAcceleration(scope)
+        } else raw = await backend.stopAcceleration(scope)
         state = projectState(raw, scope)
         if (operation === 'start' && state.mode !== mode) throw new Error(INVALID_RESPONSE)
         track(state)
@@ -313,6 +411,8 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     startAcceleration: (scope, mode, lineId, ignoreConflicts) => request(scope, 'start', mode, lineId, ignoreConflicts),
     startAutomaticAcceleration: (scope, origin, mode, lineId) => request(scope, 'start', mode, lineId, false, origin),
     stopAcceleration: (scope) => request(scope, 'stop'),
+    stopUserAcceleration: (scope) => request(scope, 'user-stop'),
+    stopAutomaticAcceleration: (scope, connectedAt) => request(scope, 'automatic-stop', undefined, undefined, undefined, undefined, connectedAt),
     redeemAccelerationCode(scope, code) {
       try {
         assertScope(scope)
@@ -326,9 +426,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         if (!backend?.redeemAccelerationCode) throw new Error(SERVICE_UNAVAILABLE)
         let result: AccelerationRedemptionResult
         try { result = projectRedemption(await backend.redeemAccelerationCode(scope, code), scope) }
-        catch {
+        catch (error) {
           assertCurrent(scope, expectedRevision)
-          throw new Error('加速口令兑换失败，请稍后重试。')
+          throw redemptionFailure(error)
         }
         assertCurrent(scope, expectedRevision)
         track(result.state)
@@ -356,6 +456,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       return enqueue(async () => {
         assertCurrent(scope, expectedRevision)
         if (!backend?.pingAccelerationLine) throw new Error(SERVICE_UNAVAILABLE)
+        // 后台那一次占着内核时后端照样拒绝，但那句话到这里只剩「暂不可用」；加速页
+        // 上又看不见它连着，所以照实说是谁占着。
+        if (await automaticSessionRunning(scope)) throw new Error(BACKGROUND_BUSY)
         try {
           const line = projectLine(await backend.pingAccelerationLine(scope, lineId))
           if (line.id !== lineId) throw new Error(INVALID_RESPONSE)
@@ -381,6 +484,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
     },
+    ...(bundleDamaged ? { recheckAccelerationBundle: () => bundleDamaged.recheck() } : {}),
     hasPossibleSession() {
       return possibleSessions.size > 0
     },

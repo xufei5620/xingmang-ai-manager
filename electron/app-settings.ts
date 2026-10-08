@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { relaySites } from './relay-sites'
+import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
@@ -11,6 +11,7 @@ import {
   ensureSafeDataDirectory,
   readSafeUtf8FileSync,
   removeSafeDataFile,
+  renameWithTransientRetry,
 } from './safe-local-data'
 
 export type AppTheme = 'light' | 'dark'
@@ -54,6 +55,15 @@ export interface AppSettings {
    */
   relaySiteId?: string
   /**
+   * 每个账号站的连接线路：auto（「自动」）、direct（「只用直连」）、primary（「只用默认线路」）。
+   * 缺省（整个字段或某个站没写）算「自动」；#872 起存下的 direct / primary 原样当后两个。
+   */
+  relayEndpointIds?: RelayRoutePreferences
+  /** IPC runtime snapshot only: the preferences applied at startup, never persisted by settings writes. */
+  readonly activeRelayEndpointIds?: RelayRoutePreferences
+  /** IPC runtime snapshot only: the line each site uses right now ('auto' can move during a run). */
+  readonly relayRouteLines?: RelayRouteLines
+  /**
    * Pinned download-source order. Absent = 'auto' (probe the region, the
    * entire install base's behavior pre-2.4). Unknown values degrade to
    * absent so a newer version's policy string can never fail the read.
@@ -81,6 +91,12 @@ export interface AppSettings {
    */
   crashReporting?: boolean
   /**
+   * 已经用一次性卡片告诉过用户「出错时会把错误报告发到海外的错误收集服务」。只落 true：
+   * 老版本没有这个字段，读出来就是「还没说过」，升级后说一次。和 crashReporting 的开关
+   * 互不影响——告知不等于同意，也不改上报的缺省。
+   */
+  crashReportingNoticeShown?: boolean
+  /**
    * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
    * needs a loopback CDP port which stays open for the whole Codex session and
    * accepts any local client, so consent must never be inferred from
@@ -98,10 +114,31 @@ export interface AppSettings {
    * from them reads as enabled either way.
    */
   desktopNotifications?: boolean
+  /**
+   * 本软件自己的自动更新（不是四家 CLI 的）。缺省 = 开启，和 crashReporting 一样只把
+   * 用户亲手关掉的 false 落盘：老版本从没写过这个字段，读出来就是开着。开着时新版本在
+   * 后台下好，等用户退出或下次打开时装上；关掉就回到「提示一下，由你点」。
+   */
+  autoUpdate?: boolean
+  /**
+   * 「用显卡加速显示」。缺省 = 开启，和 crashReporting 一样只把用户亲手关掉的 false
+   * 落盘。主进程在 ready 之前读它，改了要重开软件才生效。
+   */
+  hardwareAcceleration?: boolean
+  /**
+   * 「大字」：只把说明文字和小字调大一档，正文和布局不动。缺省 = 关，和
+   * reducedMotion 一样只把打开的 true 落盘。
+   */
+  largeText?: boolean
   /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
   uiScale?: Exclude<AppUiScale, 'auto'>
   /** Absent = ask. The host must keep a visible entry when no tray exists. */
   closeBehavior?: Exclude<AppCloseBehavior, 'ask'>
+  /**
+   * 第一次缩到托盘时已经告诉过用户窗口去哪了。只落 true：老版本没有这个字段，
+   * 读出来就是「还没说过」，升级后第一次缩到托盘会说一次。
+   */
+  trayHintShown?: boolean
   windowState?: AppWindowState
 }
 
@@ -131,17 +168,25 @@ export interface AppSettingsUpdate {
   runDiagnosticsOnStartup?: boolean
   sidebarMoreExpanded?: boolean
   relaySiteId?: string
+  relayEndpointIds?: RelayRoutePreferences
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
   crashReporting?: boolean
+  /** true is sticky and false is ignored, like trayHintShown. */
+  crashReportingNoticeShown?: boolean
   codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
   desktopNotifications?: boolean
+  autoUpdate?: boolean
+  hardwareAcceleration?: boolean
+  largeText?: boolean
   uiScale?: AppUiScale
   closeBehavior?: AppCloseBehavior
+  /** Only the host sets this; true is sticky and false is ignored. */
+  trayHintShown?: boolean
   /** null explicitly resets saved placement; absence preserves it. */
   windowState?: AppWindowState | null
 }
@@ -194,6 +239,17 @@ function parseRelaySiteId(value: unknown): string | undefined {
   return typeof value === 'string' && relaySites.some((site) => site.id === value)
     ? value
     : undefined
+}
+
+/** Stored preferences cannot supply a URL or borrow another account site's line. */
+export function parseRelayRoutePreferences(value: unknown): RelayRoutePreferences | undefined {
+  if (!isRecord(value)) return undefined
+  const preferences: RelayRoutePreferences = {}
+  for (const siteId of relayRouteSiteIds) {
+    const preference = value[siteId]
+    if (relayRoutePreferenceAllowed(siteId, preference)) preferences[siteId] = preference
+  }
+  return Object.keys(preferences).length ? preferences : undefined
 }
 
 function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
@@ -256,6 +312,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   // check would silently swallow a (pathological but type-legal) empty-string
   // site id, and calling the parser twice invites the two results drifting.
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
+  const relayEndpointIds = parseRelayRoutePreferences(value.relayEndpointIds)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
   const codexDesktopChineseRuntimePatch = parseChineseRuntimePatch(value.codexDesktopChineseRuntimePatch)
@@ -282,6 +339,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // than failing the whole read, matching every other optional field here.
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(relayEndpointIds !== undefined ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
@@ -289,12 +347,17 @@ function parseSettingsValue(value: unknown): AppSettings {
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(value.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(value.desktopNotifications === false ? { desktopNotifications: false as const } : {}),
+    ...(value.autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
+    ...(optionalBoolean(value.largeText, false) ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
+    ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -359,12 +422,15 @@ async function performAtomicSettingsWrite(
       assertSafeDataFile(filePath, '应用设置文件')
       assertSafeDataFile(backupPath, '应用设置备份')
       await fsPromises.copyFile(filePath, backupTemporaryPath, fs.constants.COPYFILE_EXCL)
-      await fsPromises.rename(backupTemporaryPath, backupPath)
+      await renameWithTransientRetry(backupTemporaryPath, backupPath, () => {
+        assertSafeDataFile(backupPath, '应用设置备份')
+      })
     }
 
-    await hooks.beforeReplace?.(filePath)
-    assertSafeDataFile(filePath, '应用设置文件')
-    await fsPromises.rename(temporaryPath, filePath)
+    await renameWithTransientRetry(temporaryPath, filePath, async () => {
+      await hooks.beforeReplace?.(filePath)
+      assertSafeDataFile(filePath, '应用设置文件')
+    })
   } finally {
     await Promise.allSettled([
       removeIfPresent(temporaryPath),
@@ -396,6 +462,10 @@ export function writeAppSettings(
 export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): AppSettings {
   const sidebarMoreExpanded = update.sidebarMoreExpanded ?? base.sidebarMoreExpanded ?? false
   const relaySiteId = update.relaySiteId ?? base.relaySiteId
+  const relayEndpointIds = {
+    ...parseRelayRoutePreferences(base.relayEndpointIds),
+    ...parseRelayRoutePreferences(update.relayEndpointIds),
+  }
   const mirrorPolicy = update.mirrorPolicy === 'auto'
     ? undefined
     : update.mirrorPolicy ?? base.mirrorPolicy
@@ -419,6 +489,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
   const reducedMotion = update.reducedMotion ?? base.reducedMotion
   const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
+  const autoUpdate = update.autoUpdate ?? base.autoUpdate
+  const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
+  const largeText = update.largeText ?? base.largeText
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
@@ -430,17 +503,23 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     runDiagnosticsOnStartup: update.runDiagnosticsOnStartup ?? base.runDiagnosticsOnStartup,
     ...(sidebarMoreExpanded ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(Object.keys(relayEndpointIds).length ? { relayEndpointIds } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications === false ? { desktopNotifications: false as const } : {}),
+    ...(autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
+    ...(largeText ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
+    ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -460,6 +539,30 @@ export function updateAppSettings(
     const merged = mergeAppSettings(readAppSettings(filePath, homeDirectory), update)
     await performAtomicSettingsWrite(filePath, merged, hooks)
     return merged
+  })
+}
+
+/**
+ * 启动时那次「按当前格式整理一遍」。以前每次开软件都无条件重写 settings.json：
+ * C 盘一满、或杀毒软件锁住这个文件，写失败就一路抛到启动兜底，软件直接打不开。
+ * 现在磁盘上的内容已经是整理后的样子就不写；真要写而写不进去，由调用方决定
+ * 要不要拦启动（main.ts 不拦，照常用读到的设置打开）。
+ */
+export function normalizeAppSettings(
+  filePath: string,
+  homeDirectory = os.homedir(),
+): Promise<{ settings: AppSettings; written: boolean }> {
+  return enqueueSettingsOperation(filePath, async () => {
+    const settings = mergeAppSettings(readAppSettings(filePath, homeDirectory), { version: 2 })
+    let current: string | null = null
+    try {
+      current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
+    } catch {
+      // Unreadable primary: fall through and rewrite it from the effective record.
+    }
+    if (current === settingsContent(settings)) return { settings, written: false }
+    await performAtomicSettingsWrite(filePath, settings, {})
+    return { settings, written: true }
   })
 }
 
@@ -512,5 +615,9 @@ export class AppSettingsStore {
 
   setOfficialProvider(provider: ProviderId, official: boolean, hooks: AppSettingsWriteHooks = {}): Promise<AppSettings> {
     return setOfficialProvider(this.filePath, provider, official, hooks, this.homeDirectory)
+  }
+
+  normalize(): Promise<{ settings: AppSettings; written: boolean }> {
+    return normalizeAppSettings(this.filePath, this.homeDirectory)
   }
 }

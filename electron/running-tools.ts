@@ -106,6 +106,8 @@ export function describeRunningTools(report: RunningToolsReport, goal: RunningTo
   if (report.codexDesktopRunning === null) unknown.push('Codex 桌面端')
   const sentences: string[] = []
   if (running.length) sentences.push(`${running.join('、')} 还开着，要关掉重开才会${outcome}。`)
+  // Mac 上没有「帮我重开」，只点关窗口桌面端还在后台跑、读不到新设置，得说清怎么算关掉（第二十九批 A）。
+  if (report.codexDesktopRunning === true && !report.canRestartCodexDesktop) sentences.push('Codex 桌面端只关窗口不算，要在它的窗口里按 Command + Q 完全退出再打开。')
   if (unknown.length) sentences.push(`如果 ${unknown.join('、')} 还开着，${running.length ? '也' : ''}要关掉重开才会${outcome}。`)
   return sentences.join('')
 }

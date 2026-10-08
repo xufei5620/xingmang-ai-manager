@@ -1,5 +1,5 @@
 import { providerIds, type ProviderId } from './catalog'
-import { requireRelaySite } from './relay-sites'
+import { requireRelaySite, type RelayEndpointId } from './relay-sites'
 import {
   createActiveIdentityReader,
   type AccountIdentitySource,
@@ -50,8 +50,8 @@ function validatedUrl(value: unknown, requireOrigin: boolean): URL {
  * the primary site; removing the duplicate registry entry removed the need
  * for it.
  */
-export function requireSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefinition {
-  const selected = requireRelaySite(siteId)
+export function requireSiteRuntimeDefinition(siteId: unknown, endpointId: RelayEndpointId = 'primary'): SiteRuntimeDefinition {
+  const selected = requireRelaySite(siteId, endpointId)
   const accountOrigin = validatedUrl(selected.accountBaseUrl, true).origin
   const providerBaseUrls = { ...selected.providerBaseUrls }
   for (const provider of providerIds) {
@@ -68,11 +68,11 @@ export function requireSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefini
   })
 }
 /** Backwards-compatible guard for callers that intentionally require xm. */
-export function requireXmSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefinition {
+export function requireXmSiteRuntimeDefinition(siteId: unknown, endpointId: RelayEndpointId = 'primary'): SiteRuntimeDefinition {
   if (siteId === 'solov-api') {
     throw new Error('未知中转站点')
   }
-  const definition = requireSiteRuntimeDefinition(siteId)
+  const definition = requireSiteRuntimeDefinition(siteId, endpointId)
   if (definition.backend !== 'new-api') throw new Error('该站点账号后端尚未启用')
   return definition
 }

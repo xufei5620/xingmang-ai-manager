@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   addCodexDesktopPackage,
+  addWindowsDesktopAppxPackage,
   buildCodexAppxElevationScript,
   buildCodexAppxUacBrokerScript,
+  claudeAppxProduct,
   codexDesktopElevationFailureMessage,
   requiresCodexAppxElevation,
 } from './codex-desktop-appx'
@@ -290,5 +292,40 @@ describe('codexDesktopElevationFailureMessage', () => {
     expect(codexDesktopElevationFailureMessage(740, 'standard')).toContain('管理员账号的密码')
     expect(codexDesktopElevationFailureMessage(1223, 'administrator')).toContain('重新点击安装')
     expect(codexDesktopElevationFailureMessage(1223)).not.toContain('不在管理员组')
+  })
+})
+
+describe('Claude Desktop through the shared MSIX installer', () => {
+  const claudePackage = 'C:\\Temp\\Claude.msix'
+
+  it('names the protected copy after Claude so the two installs never share it', () => {
+    const script = buildCodexAppxElevationScript(claudePackage, sha256Base64, 1024, claudeAppxProduct)
+    expect(script).toContain("('Xingmang-Claude-Install-' + [Guid]::NewGuid().ToString('N'))")
+    expect(script).toContain("$payload = Join-Path $cache 'Claude.msix'")
+    expect(script).not.toContain('Codex')
+    expect(buildCodexAppxElevationScript(packagePath, sha256Base64)).toContain("'Codex.msix'")
+  })
+
+  it('refuses a product label that could leave the quoted literal', () => {
+    for (const slug of ["Claude'; calc", '', 'Claude Desktop', 'Клод']) {
+      expect(() => buildCodexAppxElevationScript(claudePackage, sha256Base64, 1024, { name: 'Claude Desktop', slug }))
+        .toThrow('MSIX 安装对象标识无效')
+    }
+  })
+
+  it('speaks about Claude Desktop when Windows needs or refuses an administrator', async () => {
+    expect(codexDesktopElevationFailureMessage(1223, 'unknown', claudeAppxProduct))
+      .toBe('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')
+    expect(codexDesktopElevationFailureMessage(740, 'unknown', claudeAppxProduct)).toContain('未获得管理员权限，Claude Desktop 安装已停止。')
+    expect(codexDesktopElevationFailureMessage(13, 'unknown', claudeAppxProduct)).toBe('授权期间 Claude 安装包发生变化，已停止安装，请重新下载。')
+    expect(codexDesktopElevationFailureMessage(1223)).toContain('Codex 桌面端安装未开始')
+
+    const run = vi.fn<(executable: string, argv: string[]) => Promise<void>>()
+      .mockRejectedValueOnce(elevationRequired())
+      .mockRejectedValueOnce(Object.assign(new Error('broker failed'), { code: 1 }))
+    await expect(addWindowsDesktopAppxPackage(claudePackage, { sha256Base64, product: claudeAppxProduct }, {
+      run, resolvePowerShell: () => powershell, inspectElevationCapability: async () => 'unknown',
+    })).rejects.toThrow('Claude Desktop 管理员安装失败（退出码 1）')
+    expect(decodeScript(run.mock.calls[1][1])).toContain('Xingmang-Claude-Install-')
   })
 })

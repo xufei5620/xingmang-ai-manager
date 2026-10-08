@@ -3,9 +3,11 @@ const path = require('node:path')
 const {
   ReleaseValidationError,
   assertRemoteReleaseIsOlder,
+  readRemoteManifest,
   validateReleaseEnvironment,
   verifyRemoteFeed,
 } = require('./update-release-utils.cjs')
+const { updateManifestName: linuxUpdateManifestName } = require('./linux-artifact-names.cjs')
 const packageVersion = require('../package.json').version
 
 const releaseNotesFile = 'release-notes.md'
@@ -47,22 +49,51 @@ function assertReleaseNotesVersionIsPublishable(signing, source, localVersion) {
   return true
 }
 
+// 不带参数是 Windows 那条（release:build 与 release:build:unsigned 一直这么调）；
+// Linux 出包作业每个架构带 --platform linux --arch <x64|arm64>，只比它自己那份清单
+// ——先发 Windows、之后在同一个 commit 上补发 Linux 是被支持的发布方式，拿 Windows
+// 的清单来比会把它当成「同版本已发布」拦下。
+function parsePreflightArguments(argv) {
+  const value = (flag) => {
+    const index = argv.indexOf(flag)
+    return index === -1 ? undefined : argv[index + 1]
+  }
+  const platform = value('--platform') ?? 'windows'
+  if (platform === 'windows') return { platform, metadataFile: 'latest.yml' }
+  if (platform !== 'linux') throw new ReleaseValidationError('PREFLIGHT_PLATFORM_INVALID', `--platform 只接受 windows 或 linux，收到：${platform}`)
+  const arch = value('--arch')
+  let metadataFile
+  try {
+    metadataFile = linuxUpdateManifestName(arch)
+  } catch (error) {
+    throw new ReleaseValidationError('PREFLIGHT_PLATFORM_INVALID', error.message)
+  }
+  return { platform, arch, metadataFile }
+}
+
 async function main() {
+  const target = parsePreflightArguments(process.argv.slice(2))
   const { updateUrl, signing } = validateReleaseEnvironment(process.env, packageVersion)
   const releaseNotes = fs.readFileSync(path.join(__dirname, '..', releaseNotesFile), 'utf8')
   assertReleaseNotesVersionIsPublishable(signing, releaseNotes, packageVersion)
-  const feed = await verifyRemoteFeed({
-    baseUrl: updateUrl,
-    allowMissing: true,
-    verifyAssets: false,
-    platform: 'windows',
-  })
+  const feed = target.platform === 'windows'
+    ? await verifyRemoteFeed({
+        baseUrl: updateUrl,
+        allowMissing: true,
+        verifyAssets: false,
+        platform: 'windows',
+      })
+    : await readRemoteManifest({ baseUrl: updateUrl, metadataFile: target.metadataFile, allowMissing: true })
   assertRemoteVersionIsPublishable(signing, feed, packageVersion)
-  const feedState = feed.missing ? '尚未发布 latest.yml（允许首次发布）' : `当前版本 ${feed.metadata.version}`
+  const feedState = feed.missing ? `尚未发布 ${target.metadataFile}（允许首次发布）` : `当前版本 ${feed.metadata.version}`
   console.log(`发布前置检查通过：${updateUrl}`)
   console.log(`更新源状态：${feedState}`)
   console.log(`更新说明版本行：${readReleaseNotesVersion(releaseNotes)}（${releaseNotesFile}）`)
-  if (signing.releaseMode) {
+  if (target.platform === 'linux') {
+    console.log(signing.unsignedReleaseMode
+      ? `发布模式：Linux ${target.arch} deb（Linux 没有代码签名，靠 HTTPS 与 SHA-512）`
+      : `发布模式：本地开发校验（Linux ${target.arch}）；未执行正式发布门禁`)
+  } else if (signing.releaseMode) {
     console.log(`发布模式：Authenticode 签名 Windows 安装程序（发布者：${signing.expectedPublisher}）`)
   } else if (signing.unsignedReleaseMode) {
     console.log('发布模式：无签名 Windows 安装程序（产品决定：暂无代码签名证书）')
@@ -83,5 +114,6 @@ if (require.main === module) {
 module.exports = {
   assertReleaseNotesVersionIsPublishable,
   assertRemoteVersionIsPublishable,
+  parsePreflightArguments,
   readReleaseNotesVersion,
 }

@@ -1,34 +1,53 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
 import {
   buildCodexApiKeyAuth,
   canLaunchManagedProvider,
+  claudeRootConfigTrustsFolder,
+  codexConfigTrustsFolder,
   geminiCliCompatibleModel,
+  geminiTrustedFoldersTrustFolder,
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
   claudeConsoleKeySnapshotName,
+  claudeForeignModelEnvKeys,
   claudeForeignSettingsSnapshotName,
   moveClaudeForeignSettingsAside,
   restoreClaudeForeignSettings,
+  rewriteManagedCliHooks,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
+  applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
+  codexModelCatalogNeedsRefresh,
+  codexModelCatalogPath,
+  codexModelCatalogTargetUsable,
+  inspectCodexModelCatalogOnDisk,
+  takeBackCodexModelCatalog,
   defaultCodexRelayProvider,
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
+  executeFilePlans,
+  forgetStaleGeminiUsageStatisticsRecord,
+  geminiUsageStatisticsRecordName,
+  fillRelayTemplateDefaults,
+  relayTemplateDefaultsPending,
+  inspectManagedCliHookTargets,
   inspectOfficialLogin,
   inspectProviderConfig,
   inspectCodexWorkspacePermissionsText,
+  inspectHomeFolderTrust,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
   moveClaudeConsoleKeyAsideTexts,
   providerAccountMode,
   providerConfigPaths,
+  removeManagedCliHooks,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
@@ -44,9 +63,23 @@ import {
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { relayProviderBaseUrls } from './relay-sites'
+import type { CliHookInvocation } from './cli-hooks'
+import { renameWithTransientRetrySync } from './safe-local-data'
 
 const temporaryHomes: string[] = []
 const statusLineCommand = '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
+const cliHook: CliHookInvocation = {
+  nodeExecutable: '/managed/node/bin/node',
+  scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+  eventsDirectory: '/home/me/.config/xingmang-ai-manager/cli-events',
+  platform: 'linux',
+}
+interface GrokConfigShape {
+  compat?: unknown
+  hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
+  model: Record<string, { api_key?: string }>
+}
 const testModels: Record<ProviderId, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.5',
@@ -93,6 +126,7 @@ if (false) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryHomes.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -223,8 +257,285 @@ describe('native CLI configuration files', () => {
     // Merge promises to preserve existing settings. It cannot honour that on a
     // file it cannot read, so it must fail rather than quietly reset the user.
     expect(() => saveProviderConfig('codex', 'sk-merge', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
-      .toThrow(/无法解析/)
+      .toThrow(/^Codex 的配置文件里有写错的地方（第 \d+ 行附近），星芒没有改动它。/)
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+  })
+
+  it('tells the home page when Codex itself cannot read config.toml', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const configPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    // A duplicate key written by another tool stops Codex Desktop at
+    // 「无法加载组织设置」 before anything else loads.
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots).configBroken).toBe(true)
+    // A Chinese comment saved as GBK: this app still reads the file, Codex does not.
+    fs.writeFileSync(configPath, Buffer.concat([Buffer.from('# '), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from('\nmodel = "a"\n')]))
+    expect(inspectProviderConfig('codex', roots).model).toBe('a')
+    expect(inspectProviderConfig('codex', roots).configBroken).toBe(true)
+    // TOML 1.1 that Codex reads fine is not broken, although this app cannot parse it.
+    fs.writeFileSync(configPath, 'model = "a"\nxm = {\n  b = 1,\n}\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
+    fs.writeFileSync(configPath, 'model = "a"\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
+    const grokPath = providerConfigPaths('grok', roots)[0]
+    fs.mkdirSync(path.dirname(grokPath), { recursive: true })
+    fs.writeFileSync(grokPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    expect(inspectProviderConfig('grok', roots)).not.toHaveProperty('configBroken')
+  })
+
+  it('resets an unreadable Codex config.toml for a ChatGPT login and keeps the login', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
+    }), 'utf8')
+
+    // 首页「修好它」对登录 ChatGPT 的客户走的就是这条：以前坏文件在这里直接报错，修不了。
+    const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens: { access_token: string } }
+    expect(auth.tokens.access_token).toBe('access-token')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
+    const backup = saved.backups.find((entry) => entry.startsWith(`${configPath}.bak.`))
+    expect(backup).toBeDefined()
+    expect(fs.readFileSync(String(backup), 'utf8')).toBe('model = "a"\nmodel = "b"\n')
+    // An unreadable file is never kept as the 星芒 snapshot to switch back to.
+    expect(fs.existsSync(codexConfigSnapshotPaths(roots).relay)).toBe(false)
+  })
+
+  // ChatGPT 登录换来的 Key 和令牌一起留在 auth.json 里时，Codex 按 auth_mode 用令牌，
+  // 读不出地址的坏文件不能因此被当成第三方挡住重置。
+  it('resets an unreadable Codex config.toml for a ChatGPT login that also keeps an exchanged key', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: 'sk-exchanged-by-login',
+      tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
+    }), 'utf8')
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt', hasApiKey: true, matchesRelay: false, configBroken: true })
+
+    // 只更新照旧不碰，指去重置：分不清来源时宁可不动。
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。/)
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens: { access_token: string } }
+    expect(auth.tokens.access_token).toBe('access-token')
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthMode: 'chatgpt' })
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('configBroken')
+  })
+
+  it('still refuses to reset a readable third-party Codex setup behind a ChatGPT login', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const thirdParty = 'model_provider = "other"\n\n[model_providers.other]\nname = "other"\nbase_url = "https://other.example.test/v1"\n'
+    fs.writeFileSync(configPath, thirdParty, 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: 'sk-exchanged-by-login',
+      tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
+    }), 'utf8')
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset'))
+      .toThrow('当前配置不是星芒中转')
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(thirdParty)
+  })
+
+  it('tells the home page when Claude Code, Gemini CLI or Codex cannot read their own JSON files', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const [geminiPath] = providerConfigPaths('gemini', roots)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    for (const filePath of [claudePath, geminiPath, authPath]) fs.mkdirSync(path.dirname(filePath), { recursive: true })
+
+    // Claude Code skips a settings.json with a trailing comma, so the key this app
+    // cannot read either is not the official account in disguise.
+    fs.writeFileSync(claudePath, '{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" }, }\n', 'utf8')
+    expect(inspectProviderConfig('claude', roots)).toMatchObject({ configBroken: true, hasApiKey: false })
+    // A byte order mark is fine for Claude Code, but stops Gemini CLI and Codex.
+    fs.writeFileSync(claudePath, '\uFEFF{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" } }\n', 'utf8')
+    expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('configBroken')
+    fs.writeFileSync(geminiPath, '\uFEFF{ "security": { "auth": { "selectedType": "gemini-api-key" } } }\n', 'utf8')
+    expect(inspectProviderConfig('gemini', roots)).toMatchObject({ configBroken: true, authType: 'gemini-api-key' })
+    fs.writeFileSync(geminiPath, '// 我的设置\n{ "security": { "auth": { "selectedType": "gemini-api-key" } } }\n', 'utf8')
+    expect(inspectProviderConfig('gemini', roots)).not.toHaveProperty('configBroken')
+    fs.writeFileSync(authPath, '\uFEFF{ "OPENAI_API_KEY": "sk-relay" }\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ codexAuthBroken: true, hasApiKey: true })
+    fs.writeFileSync(authPath, '{ "OPENAI_API_KEY": "sk-relay" }\n', 'utf8')
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexAuthBroken')
+    expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('codexAuthBroken')
+  })
+
+  it('resets the account config over an auth.json Codex cannot read, after backing it up', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(auth.active), { recursive: true })
+    const broken = '{"OPENAI_API_KEY": "sk-old-re'
+    fs.writeFileSync(auth.active, broken, 'utf8')
+    const savedLogin = JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'saved' } })
+    fs.writeFileSync(auth.chatgpt, savedLogin, 'utf8')
+
+    // Merge still refuses to rewrite what it cannot read, and says where the reset is.
+    expect(() => saveProviderConfig('codex', 'sk-new', testModels.codex, 'merge', roots, {}, providerBaseUrls))
+      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。.*「重置为初始状态」/)
+    expect(fs.readFileSync(auth.active, 'utf8')).toBe(broken)
+
+    const saved = saveProviderConfig('codex', 'sk-new', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-new' })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ hasApiKey: true, matchesRelay: true })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).not.toHaveProperty('codexAuthBroken')
+    const backup = saved.backups.find((entry) => entry.startsWith(`${auth.active}.bak.`))
+    expect(fs.readFileSync(String(backup), 'utf8')).toBe(broken)
+    // The ChatGPT login saved earlier is still there to switch back to.
+    expect(fs.readFileSync(auth.chatgpt, 'utf8')).toBe(savedLogin)
+  })
+
+  it('resets the official config over an auth.json Codex cannot read', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(auth.active), { recursive: true })
+    fs.writeFileSync(auth.active, Buffer.alloc(64))
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。/)
+    const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    // No ChatGPT login to put back: no auth.json at all is how Codex itself says
+    // "not logged in", and opening it asks for a login.
+    expect(fs.existsSync(auth.active)).toBe(false)
+    const backup = saved.backups.find((entry) => entry.startsWith(`${auth.active}.bak.`))
+    expect(fs.readFileSync(String(backup))).toEqual(Buffer.alloc(64))
+    expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexAuthBroken')
+
+    // With a saved ChatGPT login, the reset puts that login back instead.
+    fs.writeFileSync(auth.active, '{"auth_mode": "chatgpt",', 'utf8')
+    fs.writeFileSync(auth.chatgpt, JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'saved' } }), 'utf8')
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toMatchObject({ auth_mode: 'chatgpt', tokens: { access_token: 'saved' } })
+  })
+
+  // Codex 0.159 reads an auth.json of `{}` as a ChatGPT login without tokens: every
+  // request fails with "plan type is required for chatgpt authentication" and it
+  // never asks for a login. Switching a relay that never had a ChatGPT login back
+  // to official used to leave exactly that behind.
+  it('leaves no empty auth.json behind when switching a relay without a ChatGPT login to official', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(fs.existsSync(auth.active)).toBe(false)
+    expect(JSON.parse(fs.readFileSync(auth.apikey, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay' })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ hasApiKey: false, codexAuthMode: null })
+    saveProviderConfig('codex', 'sk-relay-again', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay-again' })
+  })
+
+  it('keeps an auth.json that still holds something else when switching to official', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    fs.writeFileSync(auth.active, JSON.stringify({ OPENAI_API_KEY: 'sk-relay', personal_access_token: 'pat' }), 'utf8')
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ personal_access_token: 'pat' })
+  })
+
+  it('puts a removed auth.json back when a later file in the same switch cannot commit', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const auth = codexAuthSnapshotPaths(roots)
+    const configs = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const before = directoryFileSnapshot(roots.codexHome)
+
+    expect(() => executeFilePlans([
+      { path: auth.active, remove: true },
+      { path: configs.active, content: 'model = "x"\n' },
+    ], {
+      beforeReplace(file) { if (file === configs.active) throw new Error('fixture failure') },
+    }, roots.codexHome)).toThrow('fixture failure')
+
+    const after = directoryFileSnapshot(roots.codexHome)
+    expect(after[path.basename(auth.active)]).toBe(before[path.basename(auth.active)])
+    expect(after[path.basename(configs.active)]).toBe(before[path.basename(configs.active)])
+    expect(Object.keys(after).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('points a Claude Code or Gemini CLI switch to official at the reset instead of calling it official already', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const [geminiPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(claudePath), { recursive: true })
+    fs.mkdirSync(path.dirname(geminiPath), { recursive: true })
+    fs.writeFileSync(claudePath, '{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" }, }\n', 'utf8')
+    fs.writeFileSync(geminiPath, '{ "security": ', 'utf8')
+
+    // 以前这里说「当前已经在使用你自己的官方订阅账号，无需切换」，方向全错（已知44 ①）。
+    expect(() => switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Claude Code 的配置文件里有写错的地方，星芒没有改动它。/)
+    expect(() => switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls, 'merge'))
+      .toThrow(/^Gemini CLI 的配置文件里有写错的地方，星芒没有改动它。/)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
+    expect(JSON.parse(fs.readFileSync(claudePath, 'utf8'))).toMatchObject({ env: { DISABLE_AUTOUPDATER: '1' } })
+    expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('configBroken')
+  })
+
+  it('points the customer at the reset when a save cannot read the existing config', () => {
+    // 以前只说「现有 … 无法解析，未执行修改」，客户不知道「重置为初始状态」能救，只能反复重试（第三十批 C）。
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const reset = '星芒没有改动它。在首页 {tool} 那一行点「…」里的「配置」，选「使用星芒账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「备份」页能找回），再重新生成。'
+    const advice = (tool: string, problem: string) => `${problem}，${reset.replace('{tool}', tool)}`
+    const cases: Array<{ provider: ProviderId, content: string, expected: string }> = [
+      { provider: 'codex', content: 'model = “gpt-5.5”\n', expected: advice('Codex', 'Codex 的配置文件里有写错的地方（第 1 行附近）') },
+      { provider: 'claude', content: '{ "env": { "ANTHROPIC_MODEL": "claude-opus-4-6" }, }\n', expected: advice('Claude Code', 'Claude Code 的配置文件里有写错的地方') },
+      { provider: 'claude', content: '["not", "settings"]\n', expected: advice('Claude Code', 'Claude Code 的配置文件里有写错的地方') },
+      { provider: 'gemini', content: '{ "ui": { "theme": "GitHub", }, }\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
+      { provider: 'gemini', content: '[]\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
+      { provider: 'grok', content: '# 我的设置\ndefault = “grok-4.5”\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里有写错的地方（第 2 行附近）') },
+      { provider: 'grok', content: '[models]\ndefault = "missing"\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对') },
+    ]
+    for (const { provider, content, expected } of cases) {
+      const configPath = providerConfigPaths(provider, roots)[0]
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, content, 'utf8')
+      let message = ''
+      try {
+        saveProviderConfig(provider, 'sk-merge', testModels[provider], 'merge', roots, {}, providerBaseUrls)
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message).toBe(expected)
+      // 客户看不懂文件格式的名字；按钮叫法要和界面上的一字不差。
+      expect(message).not.toMatch(/toml|json/i)
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(content)
+    }
   })
 
   it('names only the row of a broken TOML config, never the lines around it', () => {
@@ -242,7 +553,7 @@ describe('native CLI configuration files', () => {
         message = error instanceof Error ? error.message : String(error)
       }
       // 全面检测 Q17：TOML 解析器的原文自带前后几行，截图发客服就带出 Key。
-      expect(message).toMatch(/无法解析，未执行修改（第 3 行附近）/)
+      expect(message).toMatch(/的配置文件里有写错的地方（第 3 行附近），星芒没有改动它。/)
       expect(message).not.toMatch(/xai-secret|ghp_secret|api_key/)
       expect(fs.readFileSync(configPath, 'utf8')).toBe(broken)
     }
@@ -389,6 +700,23 @@ describe('native CLI configuration files', () => {
       .toThrow('2048 KB 安全上限')
     expect(fs.statSync(configPath).size).toBe(2 * 1024 * 1024 + 1)
   })
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] as ProviderId[])(
+    'recognizes both fixed and historical backup URLs for %s only within their account site', (provider) => {
+      const roots = providerRoots(temporaryHome())
+      const direct = relayProviderBaseUrls('solov', 'direct')
+      const historical = { claude: 'https://38.147.105.28:8443', codex: 'https://38.147.105.28:8443/v1',
+        gemini: 'https://38.147.105.28:8443', grok: 'https://38.147.105.28:8443/v1' }
+      for (const urls of [direct, historical]) {
+        saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, urls)
+        const inspection = inspectProviderConfig(provider, roots, providerBaseUrls)
+        expect(inspection.actualBaseUrl).toBe(urls[provider])
+        expect(inspection.matchesRelay).toBe(true)
+        expect(canLaunchManagedProvider(inspection)).toBe(true)
+        expect(inspectProviderConfig(provider, roots, relayProviderBaseUrls('solov-api')).matchesRelay).toBe(false)
+      }
+    },
+  )
 
   it.each(['claude', 'codex', 'gemini', 'grok'] as ProviderId[])(
     'creates and detects %s configuration',
@@ -656,6 +984,128 @@ describe('native CLI configuration files', () => {
     )).toThrow('状态行命令不能包含换行符')
   })
 
+  it('writes the terminal notification hooks next to the user hooks and takes only ours back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const own = { hooks: [{ type: 'command', command: 'say done' }] }
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ hooks: { Stop: [own] } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    expect(merged.hooks.Stop).toEqual([own, { hooks: [expect.objectContaining({ command: cliHook.nodeExecutable, args: [cliHook.scriptPath, 'claude', cliHook.eventsDirectory] })] }])
+    expect(merged.hooks.StopFailure).toHaveLength(1)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(official.hooks).toEqual({ Stop: [own] })
+  })
+
+  it('writes the terminal notification hooks into fresh and merged Gemini settings and removes them for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const fresh = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
+    expect(Object.keys(fresh.hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'Notification', 'SessionEnd'])
+    expect(fresh.hooks.AfterAgent[0].hooks[0].command).toContain('xingmang-hook.cjs')
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    expect(merged.hooks.AfterAgent).toHaveLength(1)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect('hooks' in official).toBe(false)
+  })
+
+  it('writes the Grok turn hooks into fresh and merged configs, turns off its Claude hook compatibility and takes the hooks back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const posixHook = { ...cliHook, platform: 'linux' as const }
+
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls, undefined, undefined, posixHook)
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(fresh.compat).toEqual({ claude: { hooks: false } })
+    expect(Object.keys(fresh.hooks).sort()).toEqual(['Notification', 'SessionEnd', 'Stop', 'StopCancelled', 'StopFailure', 'UserPromptSubmit'])
+    expect(fresh.hooks.Stop[0].hooks[0].command).toContain(' grok ')
+    expect(fresh.model.grok.api_key).toBe('sk-relay')
+
+    fs.writeFileSync(configPath, `${fs.readFileSync(configPath, 'utf8')}\n[[hooks.PreToolUse]]\nmatcher = "Bash"\nhooks = [{ type = "command", command = "/opt/guard.sh" }]\n`, 'utf8')
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls, undefined, undefined, posixHook)
+    const merged = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(merged.hooks.Stop).toHaveLength(1)
+    expect(merged.hooks.PreToolUse).toHaveLength(1)
+
+    switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
+    const official = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(Object.keys(official.hooks)).toEqual(['PreToolUse'])
+    expect(official.compat).toEqual({ claude: { hooks: false } })
+  })
+
+  it('leaves the Grok Claude compatibility switch the user set alone and writes no Grok hook on Windows', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls, undefined, undefined, { ...cliHook, platform: 'win32' })
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(fresh.compat).toEqual({ claude: { hooks: false } })
+    expect('hooks' in fresh).toBe(false)
+
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('hooks = false', 'hooks = true'), 'utf8')
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls, undefined, undefined, { ...cliHook, platform: 'linux' })
+    expect((TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape).compat).toEqual({ claude: { hooks: true } })
+  })
+
+  it('writes the Codex notify command into a fresh config, refreshes our own and takes it back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const expected = [cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory]
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(expected)
+
+    const moved = { ...cliHook, scriptPath: '/new/place/bundled-catalog/cli-hooks/xingmang-hook.cjs' }
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, moved)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual([moved.nodeExecutable, moved.scriptPath, 'codex', moved.eventsDirectory])
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect('notify' in TOML.parse(fs.readFileSync(configPath, 'utf8'))).toBe(false)
+  })
+
+  it('leaves a notify command the user set for Codex alone', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'notify = ["notify-send", "Codex"]\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+  })
+
+  it('writes no hooks at all when none are given', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    for (const provider of ['claude', 'gemini'] as const) {
+      const settings = JSON.parse(fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8')) as Record<string, unknown>
+      expect('hooks' in settings).toBe(false)
+    }
+    expect('notify' in TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))).toBe(false)
+  })
+
   it('keeps the Claude retention period and language after switching back to the official account', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -711,6 +1161,25 @@ describe('native CLI configuration files', () => {
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(asRecord(merged.env)?.DISABLE_AUTOUPDATER).toBe('1')
     expect(asRecord(merged.env)?.CUSTOM_TOKEN).toBe('preserved')
+  })
+
+  it('skips command confirmation on merge only when the user wrote no permission mode', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ permissions: { allow: ['Bash(ls:*)'] } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const filled = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(filled.permissions)?.defaultMode).toBe('bypassPermissions')
+    expect(asRecord(filled.permissions)?.allow).toEqual(['Bash(ls:*)'])
+    expect(filled.skipDangerousModePermissionPrompt).toBe(true)
+
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }, null, 2)}\n`, 'utf8')
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const chosen = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(chosen.permissions)?.defaultMode).toBe('acceptEdits')
   })
 
   it('keeps the Claude self-updater off after switching back to the official account', () => {
@@ -790,6 +1259,59 @@ describe('native CLI configuration files', () => {
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
 
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
+  })
+
+  it('keeps the computer awake, leaves no background server and skips the admin sandbox prompt', () => {
+    const windows: Record<string, unknown> = {}
+    applyCodexRelayMachineDefaults(windows, 'win32')
+    expect(windows).toEqual({
+      features: { prevent_idle_sleep: true, daemon_auto_start: false },
+      windows: { sandbox: 'unelevated' },
+    })
+
+    // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
+    const mac: Record<string, unknown> = {}
+    applyCodexRelayMachineDefaults(mac, 'darwin')
+    expect(mac).toEqual({ features: { prevent_idle_sleep: true, daemon_auto_start: false } })
+  })
+
+  it('leaves Codex sleep and sandbox choices the user already made', () => {
+    const chosen: Record<string, unknown> = {
+      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
+      windows: { sandbox: 'elevated' },
+    }
+    applyCodexRelayMachineDefaults(chosen, 'win32')
+    expect(chosen).toEqual({
+      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
+      windows: { sandbox: 'elevated' },
+    })
+
+    // A malformed scalar is the user's problem to see in Codex, not ours to overwrite.
+    const scalar: Record<string, unknown> = { features: 'off', windows: 'x' }
+    applyCodexRelayMachineDefaults(scalar, 'win32')
+    expect(scalar).toEqual({ features: 'off', windows: 'x' })
+  })
+
+  it('writes the Codex sleep and sandbox defaults on both a fresh install and an existing config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    const expectedWindows = process.platform === 'win32' ? { sandbox: 'unelevated' } : undefined
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(fresh.windows).toEqual(expectedWindows)
+
+    const existingRoots = providerRoots(temporaryHome())
+    const existingPath = codexConfigSnapshotPaths(existingRoots).active
+    fs.mkdirSync(path.dirname(existingPath), { recursive: true })
+    fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
+    const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
+    expect(merged.features).toEqual({ prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(merged.windows).toEqual(expectedWindows)
+    expect(merged.custom_official).toEqual({ enabled: true })
   })
 
   it('writes no Codex settings that the recommended version no longer recognizes', () => {
@@ -972,7 +1494,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(configs.relay, brokenRelay, 'utf8')
 
     expect(() => saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls))
-      .toThrow('已保存的星芒 Codex 配置 无法解析')
+      .toThrow('星芒替 Codex 存的那份配置读不出来了，星芒没有改动它。')
     expect(fs.readFileSync(configs.active, 'utf8')).toBe(official)
     const result = saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
 
@@ -1126,6 +1648,122 @@ describe('native CLI configuration files', () => {
     }
 
     expect(saveError).toBeInstanceOf(Error)
+    expect(directoryFileSnapshot(outside)).toEqual(outsideBefore)
+  })
+
+  it('waits out a scanner briefly holding a Codex file instead of failing the save', () => {
+    const roots = providerRoots(temporaryHome())
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    const originalRename = fs.renameSync.bind(fs)
+    let locked = 2
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (locked > 0 && path.resolve(String(to)) === path.resolve(authPath)) {
+        locked -= 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      originalRename(from, to)
+    })
+    let authHookCalls = 0
+
+    saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {
+      beforeReplace: (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(authPath)) authHookCalls += 1
+      },
+    }, providerBaseUrls)
+
+    expect(locked).toBe(0)
+    expect(authHookCalls).toBe(3)
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toMatchObject({ OPENAI_API_KEY: 'new-key' })
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.model).toBe('gpt-5.6-sol')
+    expect(fs.readdirSync(path.dirname(configPath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('keeps the original error and restores every Codex file when a file stays held', () => {
+    const roots = providerRoots(temporaryHome())
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    const configBefore = fs.readFileSync(configPath, 'utf8')
+    const authBefore = fs.readFileSync(authPath, 'utf8')
+    const originalRename = fs.renameSync.bind(fs)
+    let heldAttempts = 0
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (path.resolve(String(to)) === path.resolve(authPath)) {
+        heldAttempts += 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
+      .toThrow('EPERM: operation not permitted, rename')
+    expect(heldAttempts).toBe(5)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(configBefore)
+    expect(fs.readFileSync(authPath, 'utf8')).toBe(authBefore)
+    expect(fs.readdirSync(path.dirname(configPath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('waits out a briefly held file while rolling back a failed save', () => {
+    const root = temporaryHome()
+    const first = path.join(root, 'first.json')
+    const second = path.join(root, 'second.json')
+    fs.writeFileSync(first, '{"before":1}\n', 'utf8')
+    fs.writeFileSync(second, '{"before":2}\n', 'utf8')
+    const originalRename = fs.renameSync.bind(fs)
+    let rollbackLocked = 1
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (rollbackLocked > 0 && path.basename(String(from)).includes('.xingmang-rollback-')) {
+        rollbackLocked -= 1
+        throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' })
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => executeFilePlans([
+      { path: first, content: '{"after":1}\n' },
+      { path: second, content: '{"after":2}\n' },
+    ], {
+      beforeReplace: (_targetPath, index) => {
+        if (index === 1) throw new Error('injected second-file failure')
+      },
+    }, root)).toThrow('injected second-file failure')
+    expect(rollbackLocked).toBe(0)
+    expect(fs.readFileSync(first, 'utf8')).toBe('{"before":1}\n')
+    expect(fs.readFileSync(second, 'utf8')).toBe('{"before":2}\n')
+    expect(fs.readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('fails closed when a junction replaces the Codex root while a held file is retried', () => {
+    const userHome = temporaryHome()
+    const codexParent = temporaryHome()
+    const codexHome = path.join(codexParent, 'custom-codex')
+    const displacedCodexHome = path.join(codexParent, 'displaced-codex')
+    const outside = temporaryHome()
+    const roots = { userHome, codexHome }
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    const originalRename = fs.renameSync.bind(fs)
+    let swapped = false
+    let outsideBefore: Record<string, string> = {}
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (!swapped && path.resolve(String(to)) === path.resolve(authPath)) {
+        swapped = true
+        for (const name of fs.readdirSync(codexHome)) {
+          fs.writeFileSync(path.join(outside, name), `outside sentinel: ${name}\n`, 'utf8')
+        }
+        outsideBefore = directoryFileSnapshot(outside)
+        // A scanner may still hold a file just written here; wait it out the
+        // same way, or the swap itself could fail and let the save go through.
+        renameWithTransientRetrySync(codexHome, displacedCodexHome)
+        fs.symlinkSync(outside, codexHome, 'junction')
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      originalRename(from, to)
+    })
+
+    expect(() => saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
+      .toThrow()
+    expect(fs.lstatSync(codexHome).isSymbolicLink()).toBe(true)
     expect(directoryFileSnapshot(outside)).toEqual(outsideBefore)
   })
 
@@ -1422,6 +2060,8 @@ describe('native CLI configuration files', () => {
 // 切换绝不能碰官方登录凭据 —— Codex 的 ChatGPT token 就住在同一个
 // auth.json 里,删错一个键用户就要重新走浏览器登录,整个功能也就没意义了。
 describe('switching a provider back to the official subscription account', () => {
+  const historicalCodexBaseUrls = { ...providerBaseUrls, codex: 'https://api.solov.cc/v1' }
+
   function chatGptTokens() {
     return {
       id_token: 'header.payload.signature',
@@ -1441,6 +2081,113 @@ describe('switching a provider back to the official subscription account', () =>
       last_refresh: '2026-08-12T00:00:00Z',
     }, null, 2))
   }
+
+  it.each([
+    ['current then historical', providerBaseUrls, historicalCodexBaseUrls],
+    ['historical then current', historicalCodexBaseUrls, providerBaseUrls],
+  ])('keeps the official snapshot intact across %s relay sites', (_label, firstSite, secondSite) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const auth = codexAuthSnapshotPaths(roots)
+    const officialConfig = 'approval_policy = "never"\n[custom_official]\nenabled = true\n'
+    const officialAuth = { auth_mode: 'chatgpt', tokens: chatGptTokens() }
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, officialConfig)
+    fs.writeFileSync(auth.active, JSON.stringify(officialAuth))
+
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'merge', roots, {}, firstSite)
+    const officialSnapshot = fs.readFileSync(configs.chatgpt, 'utf8')
+    const loginSnapshot = fs.readFileSync(auth.chatgpt, 'utf8')
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, secondSite)
+
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toBe(officialSnapshot)
+    expect(fs.readFileSync(auth.chatgpt, 'utf8')).toBe(loginSnapshot)
+    switchProviderToOfficialAccount('codex', roots, {}, secondSite)
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe(officialConfig)
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(officialAuth)
+  })
+
+  it('switches a known relay back to official when the selected account site changed first', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, 'approval_policy = "never"\n')
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
+
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe('approval_policy = "never"\n')
+  })
+
+  it('creates a clean official fallback when no official snapshot exists', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, historicalCodexBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
+
+    const active = fs.readFileSync(configs.active, 'utf8')
+    const snapshot = fs.readFileSync(configs.chatgpt, 'utf8')
+    expect(active).not.toContain('https://xm.solov.cc/v1')
+    expect(active).not.toContain('https://api.solov.cc/v1')
+    expect(snapshot).not.toContain('https://xm.solov.cc/v1')
+    expect(snapshot).not.toContain('https://api.solov.cc/v1')
+  })
+
+  it.each(['https://38.147.105.28:8443/v1', 'https://xm-direct.solov.cc/v1'])(
+    'does not store the recognized backup %s as an official Codex snapshot', (baseUrl) => {
+      const roots = providerRoots(temporaryHome())
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {},
+        { ...providerBaseUrls, codex: baseUrl })
+      expect(classifyCodexConfigProfile(asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8'))) ?? {}, providerBaseUrls.codex)).toBe('relay')
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(configs.active, 'utf8')).not.toContain(baseUrl)
+      expect(fs.existsSync(configs.chatgpt)).toBe(false)
+    },
+  )
+
+  it('repairs an already polluted official snapshot instead of restoring a relay route', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const polluted = fs.readFileSync(configs.active, 'utf8')
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, historicalCodexBaseUrls)
+    fs.writeFileSync(configs.chatgpt, polluted)
+
+    switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
+
+    expect(fs.readFileSync(configs.active, 'utf8')).not.toContain('https://xm.solov.cc/v1')
+    expect(fs.readFileSync(configs.active, 'utf8')).not.toContain('https://api.solov.cc/v1')
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).not.toContain('https://xm.solov.cc/v1')
+  })
+
+  it('rolls back every cross-site snapshot when the official auth commit fails', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const auth = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, 'approval_policy = "never"\n')
+    fs.writeFileSync(auth.active, JSON.stringify({ auth_mode: 'chatgpt', tokens: chatGptTokens() }))
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    const polluted = fs.readFileSync(configs.active, 'utf8')
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, historicalCodexBaseUrls)
+    fs.writeFileSync(configs.chatgpt, polluted)
+    const files = [...Object.values(configs), ...Object.values(auth)]
+    const before = files.map((file) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null)
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {
+      beforeReplace(file) { if (file === auth.active) throw new Error('fixture auth commit failure') },
+    }, historicalCodexBaseUrls)).toThrow('fixture auth commit failure')
+
+    expect(files.map((file) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null)).toEqual(before)
+  })
 
   it('keeps the ChatGPT login in auth.json and only drops the relay key', () => {
     const home = temporaryHome()
@@ -1674,7 +2421,10 @@ describe('switching a provider back to the official subscription account', () =>
     if (provider === 'gemini') expect(fs.readFileSync(paths[1], 'utf8')).toBe('')
     expect(fs.readFileSync(credentialPath, 'utf8')).toBe('{"oauth":"keep"}\n')
     expect(fs.readFileSync(historyPath, 'utf8')).toBe('existing history\n')
-    expect(result.backups.length).toBe(paths.length)
+    // Gemini 另有一份「统计开关是星芒写的」记录，重置成官方模板后它没用了，跟着写空。
+    const recordPath = path.join(path.dirname(paths[0]), geminiUsageStatisticsRecordName)
+    if (provider === 'gemini') expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+    expect(result.backups.length).toBe(paths.length + (provider === 'gemini' ? 1 : 0))
     expect(result.files).not.toContain(credentialPath)
     expect(result.files).not.toContain(historyPath)
   })
@@ -1920,6 +2670,18 @@ describe('switching a provider back to the official subscription account', () =>
     expect(moveClaudeForeignSettingsAside(own, null, 'sk-relay')).toBeNull()
   })
 
+  // 从星芒打开 Claude Code 时不交给它的选型号变量（system-service.ts，已知45 跟进），得和接账号时
+  // 从 settings.json 挪开的是同一批，只差那把 Key。
+  it('names as model choices exactly what connecting the account moves aside, less the key', () => {
+    const env = Object.fromEntries([...claudeForeignModelEnvKeys, 'ANTHROPIC_API_KEY', 'MY_OWN_VARIABLE'].map((key) => [key, 'x']))
+    const settings: Record<string, unknown> = { env: { ...env } }
+
+    moveClaudeForeignSettingsAside(settings, null, 'sk-relay')
+
+    const left = settings.env as Record<string, unknown>
+    expect(Object.keys(env).filter((key) => !(key in left)).sort()).toEqual([...claudeForeignModelEnvKeys, 'ANTHROPIC_API_KEY'].sort())
+  })
+
   it('skips the WebFetch domain preflight on the relay and restores it for the official account', () => {
     // The preflight asks api.anthropic.com about every domain; from mainland
     // China that host is unreachable, so relay users could not fetch any page.
@@ -2017,6 +2779,20 @@ describe('switching a provider back to the official subscription account', () =>
     })
   })
 
+  it('covers the Flash models Gemini CLI 0.61.0 added to its built-in table and model menu', () => {
+    // 0.61.0 的 /model 菜单列出这两个；不改写的话选了就直接发出官方型号名。
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const overrides = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs)?.customOverrides
+    for (const helper of ['gemini-3.8-flash', 'gemini-3.5-flash-lite']) {
+      expect(overrides).toContainEqual({
+        match: { model: helper },
+        modelConfig: { model: 'gemini-3.8-flash-high' },
+      })
+    }
+  })
+
   it('never rewrites the configured Gemini model onto itself', () => {
     const home = temporaryHome()
     saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
@@ -2085,6 +2861,106 @@ describe('switching a provider back to the official subscription account', () =>
     expect(official.theme).toBe('Dark')
   })
 
+  it('keeps the Gemini usage statistics a user turned off before using the relay when switching back to Google', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, JSON.stringify({ privacy: { usageStatisticsEnabled: false }, theme: 'Dark' }), 'utf8')
+
+    const saved = saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(saved.files).not.toContain(recordPath)
+    expect(fs.existsSync(recordPath)).toBe(false)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(official.privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(official.theme).toBe('Dark')
+  })
+
+  it('forgets its own Gemini usage statistics switch once it is taken back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    const settings = () => JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    expect(settings().privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(JSON.parse(fs.readFileSync(recordPath, 'utf8'))).toEqual({ version: 1, usageStatisticsEnabled: false })
+
+    // A second save that writes the switch again does not rewrite the record (no extra backup).
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings(), privacy: {} }), 'utf8')
+    const again = saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(settings().privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(again.files).not.toContain(recordPath)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(settings()).not.toHaveProperty('privacy')
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+
+    // Turned off by the user on the Google account: a relay round trip must leave it alone.
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings(), privacy: { usageStatisticsEnabled: false } }), 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(settings().privacy).toEqual({ usageStatisticsEnabled: false })
+  })
+
+  it('does not take back a Gemini usage statistics switch when its record is unreadable', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    fs.writeFileSync(recordPath, '{not-json', 'utf8')
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+  })
+
+  it('forgets its Gemini usage statistics record once a restored settings.json no longer has that switch', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    const google = JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } }, theme: 'Dark' })
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, google, 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    // The switch is rolled back: the backup puts settings.json back, but not the record.
+    fs.writeFileSync(settingsPath, google, 'utf8')
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(true)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(false)
+
+    // Later the user turns statistics off on Google; a relay round trip leaves it alone.
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(google), privacy: { usageStatisticsEnabled: false } }), 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+  })
+
+  it('keeps its Gemini usage statistics record while the restored settings.json still has that switch', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(false)
+    expect(fs.existsSync(recordPath)).toBe(false)
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    const record = fs.readFileSync(recordPath, 'utf8')
+    expect(forgetStaleGeminiUsageStatisticsRecord(roots)).toBe(false)
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe(record)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).not.toHaveProperty('privacy')
+  })
+
   it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {
     const home = temporaryHome()
     saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', providerRoots(home), {}, providerBaseUrls)
@@ -2149,7 +3025,7 @@ describe('switching a provider back to the official subscription account', () =>
     for (const content of damaged) {
       fs.writeFileSync(settingsPath, content, 'utf8')
       expect(() => saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls))
-        .toThrow('现有 Gemini settings.json 无法解析为 JSON，未执行修改')
+        .toThrow('Gemini CLI 的配置文件里有写错的地方，星芒没有改动它。')
       expect(fs.readFileSync(settingsPath, 'utf8')).toBe(content)
     }
   })
@@ -2420,6 +3296,54 @@ describe('workspace trust for the directory the user picked', () => {
   })
 })
 
+describe('telling which tools trust the whole home folder', () => {
+  it('reads a Claude trust answer for the home folder under either slash style', () => {
+    const trusted = JSON.stringify({ projects: { 'C:/Users/peaker': { hasTrustDialogAccepted: true } } })
+    expect(claudeRootConfigTrustsFolder(trusted, 'C:\\Users\\peaker')).toBe(true)
+    expect(claudeRootConfigTrustsFolder(trusted, 'C:\\Users\\peaker\\project')).toBe(false)
+    // 只有答过「信任」才算；答过「不信任」、只是记着别的设置的都不算。
+    const other = JSON.stringify({ projects: { 'C:\\Users\\peaker': { hasTrustDialogAccepted: false }, 'C:\\Users\\peaker\\app': { hasTrustDialogAccepted: true } } })
+    expect(claudeRootConfigTrustsFolder(other, 'C:\\Users\\peaker')).toBe(false)
+    expect(claudeRootConfigTrustsFolder(JSON.stringify({ projects: { '/home/me': { allowedTools: [] } } }), '/home/me')).toBe(false)
+  })
+
+  it('reads a Codex trust level for the home folder, including its verbatim Windows form', () => {
+    expect(codexConfigTrustsFolder('[projects."/Users/alex"]\ntrust_level = "trusted"\n', '/Users/alex/')).toBe(true)
+    expect(codexConfigTrustsFolder('[projects."\\\\\\\\?\\\\C:\\\\Users\\\\peaker"]\ntrust_level = "trusted"\n', 'C:\\Users\\peaker')).toBe(true)
+    expect(codexConfigTrustsFolder('[projects."/Users/alex"]\ntrust_level = "untrusted"\n', '/Users/alex')).toBe(false)
+    expect(codexConfigTrustsFolder('[projects."/Users/alex/app"]\ntrust_level = "trusted"\n', '/Users/alex')).toBe(false)
+  })
+
+  it('reads a Gemini trusted home folder, also through a project directly under it that trusts its parent', () => {
+    expect(geminiTrustedFoldersTrustFolder('{\n  // 自己加的\n  "/home/me": "TRUST_FOLDER"\n}\n', '/home/me')).toBe(true)
+    expect(geminiTrustedFoldersTrustFolder(JSON.stringify({ 'C:\\Users\\peaker\\app': 'TRUST_PARENT' }), 'C:\\Users\\peaker')).toBe(true)
+    expect(geminiTrustedFoldersTrustFolder(JSON.stringify({ '/home/me/work/app': 'TRUST_PARENT' }), '/home/me')).toBe(false)
+    expect(geminiTrustedFoldersTrustFolder(JSON.stringify({ '/home/me': 'DO_NOT_TRUST', '/home/me/app': 'TRUST_FOLDER' }), '/home/me')).toBe(false)
+  })
+
+  it('treats a file it cannot read as no answer instead of an error', () => {
+    expect(claudeRootConfigTrustsFolder('{"projects":', '/home/me')).toBe(false)
+    expect(claudeRootConfigTrustsFolder(null, '/home/me')).toBe(false)
+    expect(codexConfigTrustsFolder('[projects', '/home/me')).toBe(false)
+    expect(geminiTrustedFoldersTrustFolder('["/home/me"]', '/home/me')).toBe(false)
+  })
+
+  it('lists the tools that remember trusting the home folder on disk, in a fixed order', () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const roots = providerRoots(home)
+    expect(inspectHomeFolderTrust(roots)).toEqual([])
+    fs.mkdirSync(path.join(home, '.gemini'))
+    fs.writeFileSync(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [home]: 'TRUST_FOLDER' }), 'utf8')
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
+    fs.mkdirSync(path.join(home, '.codex'))
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[projects', 'utf8')
+    expect(inspectHomeFolderTrust(roots)).toEqual(['claude', 'gemini'])
+    // 只读：哪个文件都没被改动。
+    expect(fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf8')).toBe('[projects')
+  })
+})
+
 describe('teaching Gemini CLI to read the shared AGENTS.md', () => {
   it('adds both context files when settings.json has none', () => {
     const result = ensureGeminiContextFilenamesInSettingsText('{}')
@@ -2599,5 +3523,563 @@ describe('telling whether an official login already exists on this computer', ()
     fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), '{"refresh_token":"x"}')
     expect(inspectOfficialLogin('gemini', roots)).toBe(true)
     expect(inspectOfficialLogin('grok', roots)).toBe(false)
+  })
+})
+
+describe('hooks and status line pointing at an old location', () => {
+  const moved: CliHookInvocation = { ...cliHook, scriptPath: '/new/place/bundled-catalog/cli-hooks/xingmang-hook.cjs' }
+  const movedStatusLine = '"/managed/node/bin/node" "/new/place/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
+  const oldTargets = { nodeExecutable: cliHook.nodeExecutable, scriptPath: cliHook.scriptPath }
+
+  function writeAll(roots: ReturnType<typeof providerRoots>): void {
+    for (const provider of ['claude', 'gemini', 'codex'] as const) {
+      saveProviderConfig(provider, 'sk-relay', testModels[provider], 'reset', roots, {}, providerBaseUrls, provider === 'claude' ? statusLineCommand : undefined, undefined, cliHook)
+    }
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls, undefined, undefined, { ...cliHook, platform: 'linux' })
+  }
+
+  it('reads back where our hooks, status line and notify point', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(inspectManagedCliHookTargets('claude', roots)).toEqual([])
+    writeAll(roots)
+    const claude = inspectManagedCliHookTargets('claude', roots)
+    expect(claude).toHaveLength(6)
+    expect(claude.slice(0, 5)).toEqual(Array(5).fill(oldTargets))
+    expect(claude[5]).toEqual({ nodeExecutable: '/managed/node/bin/node', scriptPath: '/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs' })
+    expect(inspectManagedCliHookTargets('gemini', roots)).toEqual(Array(4).fill({ ...oldTargets, form: 'posix' }))
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([oldTargets])
+    expect(inspectManagedCliHookTargets('grok', roots)).toEqual(Array(6).fill({ ...oldTargets, form: 'posix' }))
+  })
+
+  it('rewrites only our entries to the new location and keeps keys, models and user hooks', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const withUserHook = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    const own = { hooks: [{ type: 'command', command: 'say done' }] }
+    withUserHook.hooks.Stop.unshift(own)
+    fs.writeFileSync(claudePath, `${JSON.stringify(withUserHook, null, 2)}\n`, 'utf8')
+
+    const result = rewriteManagedCliHooks('claude', roots, { cliHook: moved, claudeStatusLineCommand: movedStatusLine })
+    expect(result.files).toEqual([claudePath])
+    expect(result.backups).toHaveLength(1)
+    const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { env: Record<string, string>, model: string, statusLine: { command: string }, hooks: Record<string, unknown[]> }
+    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(claude.model).toBe(testModels.claude)
+    expect(claude.statusLine.command).toBe(movedStatusLine)
+    expect(claude.hooks.Stop[0]).toEqual(own)
+    expect(inspectManagedCliHookTargets('claude', roots).slice(0, 5)).toEqual(Array(5).fill({ nodeExecutable: moved.nodeExecutable, scriptPath: moved.scriptPath }))
+
+    for (const provider of ['gemini', 'codex', 'grok'] as const) {
+      rewriteManagedCliHooks(provider, roots, { cliHook: provider === 'grok' ? { ...moved, platform: 'linux' } : moved })
+      expect(new Set(inspectManagedCliHookTargets(provider, roots).map((target) => target.scriptPath))).toEqual(new Set([moved.scriptPath]))
+    }
+    expect(inspectProviderConfig('codex', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('gemini', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('grok', roots).apiKey).toBe('sk-relay')
+  })
+
+  it('takes our entries back when this computer cannot write them any more', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    rewriteManagedCliHooks('claude', roots, {})
+    const claude = JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as Record<string, unknown>
+    expect('hooks' in claude).toBe(false)
+    expect('statusLine' in claude).toBe(false)
+    expect(inspectManagedCliHookTargets('claude', roots)).toEqual([])
+  })
+
+  it('does not add hooks to a config that never had ours and leaves a user status line alone', () => {
+    const roots = providerRoots(temporaryHome())
+    const [claudePath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(claudePath), { recursive: true })
+    const user = { statusLine: { type: 'command', command: '~/.claude/line.sh' }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'say done' }] }] } }
+    fs.writeFileSync(claudePath, `${JSON.stringify(user, null, 2)}\n`, 'utf8')
+    const before = fs.readFileSync(claudePath, 'utf8')
+    expect(rewriteManagedCliHooks('claude', roots, { cliHook: moved, claudeStatusLineCommand: movedStatusLine })).toEqual({ backups: [], files: [] })
+    expect(removeManagedCliHooks('claude', roots)).toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    for (const provider of ['gemini', 'codex', 'grok'] as const) {
+      expect(removeManagedCliHooks(provider, roots)).toEqual({ backups: [], files: [] })
+    }
+  })
+
+  it('adds the Grok hooks to a config saved without them only when asked, and keeps the key', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('grok', roots)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const before = fs.readFileSync(configPath, 'utf8')
+    const posixHook = { ...moved, platform: 'linux' as const }
+
+    expect(rewriteManagedCliHooks('grok', roots, { cliHook: posixHook })).toEqual({ backups: [], files: [] })
+    expect(rewriteManagedCliHooks('grok', roots, { addIfMissing: true })).toEqual({ backups: [], files: [] })
+    expect(rewriteManagedCliHooks('grok', roots, { cliHook: { ...moved, platform: 'win32', grokWindowsShell: 'cmd' }, addIfMissing: true }))
+      .toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+
+    const result = rewriteManagedCliHooks('grok', roots, { cliHook: posixHook, addIfMissing: true })
+    expect(result.backups).toHaveLength(1)
+    expect(inspectManagedCliHookTargets('grok', roots)).toHaveLength(6)
+    expect(inspectProviderConfig('grok', roots).apiKey).toBe('sk-relay')
+
+    const powerShell = { ...moved, platform: 'win32' as const, grokWindowsShell: 'powershell' as const }
+    rewriteManagedCliHooks('grok', roots, { cliHook: powerShell, addIfMissing: true })
+    const rewritten = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(rewritten.hooks.Stop).toHaveLength(1)
+    expect(rewritten.hooks.Stop[0].hooks[0].command.startsWith('& ')).toBe(true)
+  })
+
+  it('removes our hooks, status line and notify on uninstall but keeps the keys and user settings', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) removeManagedCliHooks(provider, roots)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) {
+      expect(inspectManagedCliHookTargets(provider, roots)).toEqual([])
+      expect(inspectProviderConfig(provider, roots).apiKey).toBe('sk-relay')
+    }
+    const grok = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8')) as unknown as GrokConfigShape
+    expect(grok.compat).toEqual({ claude: { hooks: false } })
+  })
+})
+
+describe('bringing an older account config up to the current template', () => {
+  function writeFile(filePath: string, content: string) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, content)
+  }
+
+  it('fills only the Codex keys an older template never wrote and keeps what the user set', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    writeFile(configPath, [
+      'model_provider = "XingmangAI"',
+      'model = "gpt-5.5"',
+      'approval_policy = "never"',
+      'disable_response_storage = true',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${providerBaseUrls.codex}"`,
+      'wire_api = "responses"',
+      '',
+      '[features]',
+      'prevent_idle_sleep = false',
+      '',
+    ].join('\n'))
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(true)
+    const result = fillRelayTemplateDefaults('codex', roots, providerBaseUrls, {}, 'win32')
+
+    expect(result?.backups).toHaveLength(1)
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(parsed.approval_policy).toBe('never')
+    expect(parsed.sandbox_mode).toBe('workspace-write')
+    expect(parsed.check_for_update_on_startup).toBe(false)
+    expect(parsed.disable_response_storage).toBeUndefined()
+    expect(asRecord(parsed.analytics)?.enabled).toBe(false)
+    expect(asRecord(parsed.features)?.prevent_idle_sleep).toBe(false)
+    expect(asRecord(parsed.features)?.daemon_auto_start).toBe(false)
+    expect(asRecord(parsed.windows)?.sandbox).toBe('unelevated')
+    expect(parsed.model).toBe('gpt-5.5')
+    expect(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8')).toBe(fs.readFileSync(configPath, 'utf8'))
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(false)
+  })
+
+  it('writes nothing when the config already has every template key', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'claude', 'gemini', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+    }
+    const before = directoryFileSnapshot(path.join(home, '.claude'))
+    for (const provider of ['codex', 'claude', 'gemini', 'grok'] as const) {
+      expect(relayTemplateDefaultsPending(provider, roots, providerBaseUrls, process.platform)).toBe(false)
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls)).toBeNull()
+    }
+    expect(directoryFileSnapshot(path.join(home, '.claude'))).toEqual(before)
+  })
+
+  it('leaves configs that do not point at the current account alone', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const codexPath = codexConfigSnapshotPaths(roots).active
+    writeFile(codexPath, 'model = "gpt-5.5"\n')
+    const claudePath = providerConfigPaths('claude', roots)[0]
+    writeFile(claudePath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }))
+    const grokPath = providerConfigPaths('grok', roots)[0]
+    writeFile(grokPath, '[models]\ndefault = "mine"\n\n[model.mine]\nbase_url = "https://api.x.ai/v1"\n')
+
+    for (const provider of ['codex', 'claude', 'gemini', 'grok'] as const) {
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls)).toBeNull()
+    }
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe('model = "gpt-5.5"\n')
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }))
+  })
+
+  it('fills Claude Code defaults without touching values the user chose', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const settingsPath = providerConfigPaths('claude', roots)[0]
+    writeFile(settingsPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+      permissions: { deny: ['Bash(rm:*)'] },
+      skipWebFetchPreflight: false,
+      language: 'English',
+      model: 'claude-opus-4-6',
+    }))
+
+    fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.env).toEqual({ ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude, DISABLE_AUTOUPDATER: '1' })
+    expect(parsed.permissions.deny).toEqual(['Bash(rm:*)', 'Artifact', 'DesignSync'])
+    expect(parsed.skipWebFetchPreflight).toBe(false)
+    expect(parsed.language).toBe('English')
+    expect(parsed.cleanupPeriodDays).toBe(365)
+    expect(parsed.model).toBe('claude-opus-4-6')
+    expect(parsed.permissions.defaultMode).toBe('bypassPermissions')
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(true)
+  })
+
+  it('leaves a Claude permission mode the user chose when filling defaults', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const settingsPath = providerConfigPaths('claude', roots)[0]
+    writeFile(settingsPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+      permissions: { defaultMode: 'default' },
+      skipDangerousModePermissionPrompt: false,
+    }))
+
+    fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.permissions.defaultMode).toBe('default')
+    expect(parsed.skipDangerousModePermissionPrompt).toBe(false)
+  })
+
+  it('fills Gemini defaults and adds the helper model mapping only when none is there', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\nGEMINI_API_KEY=sk-fixture\nGEMINI_MODEL=gemini-3.5-flash\n`)
+    writeFile(settingsPath, JSON.stringify({
+      security: { auth: { selectedType: 'gemini-api-key' } },
+      general: { enableAutoUpdate: true },
+      privacy: { usageStatisticsEnabled: true },
+    }))
+
+    fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.general.enableAutoUpdate).toBe(true)
+    expect(parsed.general.enableAutoUpdateNotification).toBe(false)
+    expect(parsed.general.sessionRetention).toEqual({ maxAge: '365d' })
+    expect(parsed.privacy.usageStatisticsEnabled).toBe(true)
+    expect(parsed.modelConfigs.customOverrides.length).toBeGreaterThan(0)
+    expect(parsed.modelConfigs.customOverrides.every((entry: { modelConfig: { model: string } }) => entry.modelConfig.model === 'gemini-3.5-flash')).toBe(true)
+  })
+
+  it('skips Gemini when it is signed in with a Google account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\n`)
+    writeFile(settingsPath, JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }))
+    expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)).toBeNull()
+  })
+
+  it('records the Gemini usage statistics switch it fills so switching back to Google takes back only that one', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    const recordPath = path.join(path.dirname(settingsPath), geminiUsageStatisticsRecordName)
+    const relaySettings = { security: { auth: { selectedType: 'gemini-api-key' } } }
+    writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\nGEMINI_API_KEY=sk-fixture\nGEMINI_MODEL=gemini-3.5-flash\n`)
+    writeFile(settingsPath, JSON.stringify({ ...relaySettings, privacy: { usageStatisticsEnabled: false } }))
+    expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)?.files).not.toContain(recordPath)
+    expect(fs.existsSync(recordPath)).toBe(false)
+
+    writeFile(settingsPath, JSON.stringify(relaySettings))
+    expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)?.files).toContain(recordPath)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).not.toHaveProperty('privacy')
+  })
+
+  it('points Grok image tools at the current account only when the user never set them', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = providerConfigPaths('grok', roots)[0]
+    writeFile(configPath, [
+      '[models]',
+      'default = "grok"',
+      'session_summary = "grok-4.6"',
+      '',
+      '[model.grok]',
+      'model = "grok-4.5"',
+      `base_url = "${providerBaseUrls.grok}"`,
+      'api_key = "sk-fixture"',
+      '',
+    ].join('\n'))
+
+    fillRelayTemplateDefaults('grok', roots, providerBaseUrls)
+
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(parsed.cli)?.auto_update).toBe(false)
+    expect(asRecord(parsed.endpoints)?.xai_api_base_url).toBe(providerBaseUrls.grok)
+    expect(asRecord(parsed.models)?.session_summary).toBe('grok-4.6')
+    expect(asRecord(parsed.models)?.image_description).toBe('grok')
+    expect(asRecord(parsed.models)?.allowed_models).toEqual(['grok'])
+  })
+})
+
+describe('the Codex model catalog Xingmang writes', () => {
+  const catalog = '{\n  "models": [\n    {\n      "slug": "gpt-6.1-sol"\n    }\n  ]\n}\n'
+  const otherCatalog = '{\n  "models": [\n    {\n      "slug": "gpt-6-astra"\n    }\n  ]\n}\n'
+
+  function saveCodex(roots: ReturnType<typeof providerRoots>, mode: 'reset' | 'merge', modelCatalog?: string | null, hooks = {}) {
+    return saveProviderConfig('codex', 'sk-relay', testModels.codex, mode, roots, hooks, providerBaseUrls, undefined, undefined, undefined, modelCatalog)
+  }
+
+  function readConfig(roots: ReturnType<typeof providerRoots>): Record<string, unknown> {
+    return asRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))) ?? {}
+  }
+
+  it('writes the catalog next to config.toml and points Codex at it above the first table', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+
+    const text = fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8')
+    const line = text.indexOf('model_catalog_json = "xingmang-models.json"')
+    expect(line).toBeGreaterThan(-1)
+    expect(line).toBeLessThan(text.indexOf('['))
+    expect(codexModelCatalogPath(roots)).toBe(path.join(roots.codexHome, 'xingmang-models.json'))
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(catalog)
+  })
+
+  it('commits the catalog before the config that points at it', () => {
+    const roots = providerRoots(temporaryHome())
+    const replaced: string[] = []
+    saveCodex(roots, 'reset', catalog, { beforeReplace: (filePath: string) => { replaced.push(path.basename(filePath)) } })
+    expect(replaced.indexOf('xingmang-models.json')).toBe(0)
+    expect(replaced.indexOf('config.toml')).toBeGreaterThan(0)
+  })
+
+  it('adds the catalog to an existing config and rewrites the file only when it changed', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset')
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+
+    expect(saveCodex(roots, 'merge', catalog).files).toContain(codexModelCatalogPath(roots))
+    expect(readConfig(roots).model_catalog_json).toBe('xingmang-models.json')
+    expect(saveCodex(roots, 'merge', catalog).files).not.toContain(codexModelCatalogPath(roots))
+    expect(saveCodex(roots, 'merge', otherCatalog).files).toContain(codexModelCatalogPath(roots))
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(otherCatalog)
+  })
+
+  it('takes back only its own line when no catalog should be written, and keeps the file for old backups', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    saveCodex(roots, 'merge', null)
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+    expect(readConfig(roots).model).toBe(testModels.codex)
+    expect(fs.existsSync(codexModelCatalogPath(roots))).toBe(true)
+  })
+
+  it('leaves the line and the file alone when the caller cannot tell what to write', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    saveCodex(roots, 'merge')
+    expect(readConfig(roots).model_catalog_json).toBe('xingmang-models.json')
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(catalog)
+  })
+
+  it('never replaces a catalog the user pointed Codex at', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configPath, 'model_catalog_json = "my-models.json"\n', 'utf8')
+
+    saveCodex(roots, 'merge', catalog)
+    expect(readConfig(roots).model_catalog_json).toBe('my-models.json')
+    expect(fs.existsSync(codexModelCatalogPath(roots))).toBe(false)
+    saveCodex(roots, 'merge', null)
+    expect(readConfig(roots).model_catalog_json).toBe('my-models.json')
+  })
+
+  it('takes the line back on the official account and puts it back with the relay', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+    expect(fs.existsSync(codexModelCatalogPath(roots))).toBe(true)
+
+    saveCodex(roots, 'merge', catalog)
+    expect(readConfig(roots).model_catalog_json).toBe('xingmang-models.json')
+    expect('model_catalog_json' in asRecord(TOML.parse(fs.readFileSync(codexConfigSnapshotPaths(roots).chatgpt, 'utf8')))!).toBe(false)
+  })
+
+  it('keeps its line out of the saved ChatGPT config even when an official config still carries it', () => {
+    const roots = providerRoots(temporaryHome())
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, 'model_catalog_json = "xingmang-models.json"\napproval_policy = "never"\n', 'utf8')
+
+    saveCodex(roots, 'merge', catalog)
+    const official = asRecord(TOML.parse(fs.readFileSync(configs.chatgpt, 'utf8')))
+    expect(official).toEqual({ approval_policy: 'never' })
+  })
+
+  it('reports whether the catalog on disk matches what the account needs', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset')
+    expect(codexModelCatalogNeedsRefresh(catalog, roots)).toBe(true)
+    expect(codexModelCatalogNeedsRefresh(null, roots)).toBe(false)
+
+    saveCodex(roots, 'merge', catalog)
+    expect(codexModelCatalogNeedsRefresh(catalog, roots)).toBe(false)
+    expect(codexModelCatalogNeedsRefresh(otherCatalog, roots)).toBe(true)
+    expect(codexModelCatalogNeedsRefresh(null, roots)).toBe(true)
+
+    fs.rmSync(codexModelCatalogPath(roots))
+    expect(codexModelCatalogNeedsRefresh(catalog, roots)).toBe(true)
+  })
+
+  function expectLinkRefused(link: (target: string, linkPath: string) => void, refusal: RegExp) {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    // Same volume as the Codex root, so a hard link can be made on every platform.
+    const elsewhere = path.join(roots.userHome, 'elsewhere.json')
+    fs.writeFileSync(elsewhere, catalog, 'utf8')
+    fs.rmSync(codexModelCatalogPath(roots))
+    link(elsewhere, codexModelCatalogPath(roots))
+
+    expect(codexModelCatalogTargetUsable(roots)).toBe(false)
+    expect(() => codexModelCatalogNeedsRefresh(catalog, roots)).toThrow(refusal)
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: true, content: null })
+    // 名单写不了不连累整次保存：Key 照存，那一行收回，链接指向的文件一个字不动。
+    saveProviderConfig('codex', 'sk-relay-next', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, undefined, otherCatalog)
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).apiKey).toBe('sk-relay-next')
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe(catalog)
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+  }
+
+  it('saves the key without the catalog when the catalog was swapped for a hard link', () => {
+    expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /单链接普通文件/)
+  })
+
+  // Creating a file symlink needs Developer Mode or administrator rights on Windows.
+  it.skipIf(process.platform === 'win32')('saves the key without the catalog when the catalog was swapped for a symbolic link', () => {
+    expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /符号链接|单链接普通文件/)
+  })
+
+  it('reports whether config.toml carries its own catalog line and what that file holds', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: false, content: null })
+    saveCodex(roots, 'reset', catalog)
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: true, content: catalog })
+    fs.rmSync(codexModelCatalogPath(roots))
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: true, content: null })
+    fs.writeFileSync(providerConfigPaths('codex', roots)[0], 'model_catalog_json = "my-models.json"\n', 'utf8')
+    expect(inspectCodexModelCatalogOnDisk(roots)).toEqual({ managed: false, content: null })
+  })
+
+  it('takes back only its own line, from config.toml and the saved relay config, leaving every other byte alone', () => {
+    const roots = providerRoots(temporaryHome())
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    const original = [
+      '# 我自己的注释',
+      'model = "gpt-6.1-sol"',
+      "model_catalog_json = 'xingmang-models.json'  # 星芒写的",
+      'model_provider = "xingmang"',
+      '',
+      '[model_providers.xingmang]',
+      'name = "星芒"',
+      '',
+    ].join('\r\n')
+    fs.writeFileSync(configs.active, original, 'utf8')
+    fs.writeFileSync(configs.relay, original, 'utf8')
+    fs.writeFileSync(codexModelCatalogPath(roots), catalog, 'utf8')
+
+    const result = takeBackCodexModelCatalog(roots)
+
+    const expected = original.replace("model_catalog_json = 'xingmang-models.json'  # 星芒写的\r\n", '')
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe(expected)
+    expect(fs.readFileSync(configs.relay, 'utf8')).toBe(expected)
+    expect(result?.files).toEqual([configs.relay, configs.active])
+    expect(fs.readFileSync(codexModelCatalogPath(roots), 'utf8')).toBe(catalog)
+  })
+
+  it('keeps mixed line endings and values that only read back as big integers when it takes the line back', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    const original = 'model = "gpt-6.1-sol"\nmodel_catalog_json = "xingmang-models.json"\r\nproject_doc_max_bytes = 9007199254740993\r\n'
+    fs.writeFileSync(configPath, original, 'utf8')
+
+    expect(takeBackCodexModelCatalog(roots)).not.toBeNull()
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "gpt-6.1-sol"\nproject_doc_max_bytes = 9007199254740993\r\n')
+  })
+
+  it('still takes the line back from config.toml when the saved relay config cannot be read', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.writeFileSync(configs.relay, 'model_catalog_json = "xingmang-models.json"\nmodel = [\n', 'utf8')
+
+    expect(takeBackCodexModelCatalog(roots)?.files).toEqual([configs.active])
+
+    expect('model_catalog_json' in readConfig(roots)).toBe(false)
+    expect(fs.readFileSync(configs.relay, 'utf8')).toBe('model_catalog_json = "xingmang-models.json"\nmodel = [\n')
+  })
+
+  it('has nothing to take back when the line is absent or the user set their own catalog', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(takeBackCodexModelCatalog(roots)).toBeNull()
+    saveCodex(roots, 'reset')
+    expect(takeBackCodexModelCatalog(roots)).toBeNull()
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.writeFileSync(configPath, 'model_catalog_json = "my-models.json"\n', 'utf8')
+    expect(takeBackCodexModelCatalog(roots)).toBeNull()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model_catalog_json = "my-models.json"\n')
+  })
+
+  it('rewrites the whole file instead of cutting a line that only looks like its own', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configPath, [
+      'developer_instructions = """',
+      'model_catalog_json = "xingmang-models.json"',
+      '"""',
+      '"model_catalog_json" = "xingmang-models.json"',
+      'model = "gpt-6.1-sol"',
+      '',
+    ].join('\n'), 'utf8')
+
+    expect(takeBackCodexModelCatalog(roots)).not.toBeNull()
+
+    expect(readConfig(roots)).toEqual({
+      developer_instructions: 'model_catalog_json = "xingmang-models.json"\n',
+      model: 'gpt-6.1-sol',
+    })
+  })
+
+  it('refuses to take the line back through a linked config.toml', () => {
+    const roots = providerRoots(temporaryHome())
+    saveCodex(roots, 'reset', catalog)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const elsewhere = path.join(roots.userHome, 'config-elsewhere.toml')
+    fs.renameSync(configPath, elsewhere)
+    fs.linkSync(elsewhere, configPath)
+
+    expect(() => takeBackCodexModelCatalog(roots)).toThrow(/单链接普通文件/)
+    expect(asRecord(TOML.parse(fs.readFileSync(elsewhere, 'utf8')))?.model_catalog_json).toBe('xingmang-models.json')
   })
 })

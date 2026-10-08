@@ -43,6 +43,12 @@ export interface DownloadAccelerationCoordinatorOptions {
   timeoutMs?: number
   /** 路由变化时同步给宿主（Electron 那侧要据此切下载用的 session 代理）。 */
   onRouteChanged?(endpoint: DownloadProxyEndpoint | null): Promise<void>
+  /**
+   * 没有临时线路时下载走的那条通道（main.ts 的默认会话）这会儿跟不跟着系统代理。
+   * 电脑里留着一个已经关掉的代理时，星芒这次运行会整个改成直连（proxy-bypass.ts），
+   * 之后用户再开加速，系统代理指过去了，下载却照旧直连：这时答 false。缺省按跟着算。
+   */
+  downloadsFollowSystemProxy?(): boolean
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
 }
 
@@ -99,6 +105,15 @@ export function createDownloadAccelerationCoordinator(
     catch { /* 记日志失败不能反过来影响下载。 */ }
   }
 
+  // 用户自己开着加速时，下载是跟着系统代理才走上线路的。星芒这次运行已经整个改成直连
+  // （见 downloadsFollowSystemProxy）就跟不上了：下载其实直连，不能算加速，不然安装源
+  // 改成官方优先，国内直连官方源要等超时才换回镜像，进度里还说已经加速。
+  function followsSystemProxy(): boolean {
+    if (options.downloadsFollowSystemProxy?.() !== false) return true
+    log('info', 'acceleration.download.direct', '星芒本次运行已改为直接联网，下载用不上已连接的加速线路，按现有下载源顺序继续')
+    return false
+  }
+
   function grant(): DownloadAccelerationLease {
     const current = active!
     let released = false
@@ -130,6 +145,8 @@ export function createDownloadAccelerationCoordinator(
     acquire() {
       return enqueue(async () => {
         if (active) {
+          // 别的下载正握着的那份可能是改直连之前给的，沿用前再看一次。
+          if (!active.endpoint && !followsSystemProxy()) return idleLease
           holders += 1
           return grant()
         }
@@ -150,6 +167,8 @@ export function createDownloadAccelerationCoordinator(
           return idleLease
         }
         if (result.status === 'system-proxy-active') {
+          // 后端为这一支什么都没起，不算加速时也就没什么要还。
+          if (!followsSystemProxy()) return idleLease
           active = { scope, endpoint: null }
           holders = 1
           log('info', 'acceleration.download.reused', '本次下载沿用已连接的加速线路')

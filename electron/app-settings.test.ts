@@ -1,10 +1,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultAppSettings,
   mergeAppSettings,
+  normalizeAppSettings,
   readAppSettings,
   setOfficialProvider,
   updateAppSettings,
@@ -30,6 +31,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -299,6 +301,178 @@ describe('application settings persistence', () => {
     )).rejects.toThrow('单链接普通文件')
     expect(fs.readFileSync(victim, 'utf8')).toBe(original)
   })
+
+  it('waits out a scanner briefly holding the settings file or its backup', async () => {
+    const filePath = temporarySettingsPath()
+    const previous = settings({ workspace: 'D:\\Previous' })
+    const next = settings({ workspace: 'D:\\Next', theme: 'light' })
+    await writeAppSettings(filePath, previous)
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    const held = new Map([[path.resolve(filePath), 2], [path.resolve(`${filePath}.bak`), 1]])
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      const target = path.resolve(String(to))
+      const remaining = held.get(target) ?? 0
+      if (remaining > 0) {
+        held.set(target, remaining - 1)
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return originalRename(from, to)
+    })
+
+    let hookCalls = 0
+
+    await writeAppSettings(filePath, next, { beforeReplace: () => { hookCalls += 1 } })
+
+    expect([...held.values()]).toEqual([0, 0])
+    expect(hookCalls).toBe(3)
+    expect(readAppSettings(filePath)).toEqual(next)
+    expect(readAppSettings(`${filePath}.bak`)).toEqual(previous)
+    expect(fs.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('keeps the original error and the previous settings when the file stays held', async () => {
+    const filePath = temporarySettingsPath()
+    const previous = settings({ workspace: 'D:\\Previous' })
+    await writeAppSettings(filePath, previous)
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    let heldAttempts = 0
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.resolve(String(to)) === path.resolve(filePath)) {
+        heldAttempts += 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return originalRename(from, to)
+    })
+
+    await expect(writeAppSettings(filePath, settings({ workspace: 'D:\\Next' })))
+      .rejects.toThrow('EPERM: operation not permitted, rename')
+    expect(heldAttempts).toBe(5)
+    expect(readAppSettings(filePath)).toEqual(previous)
+    expect(fs.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('checks the settings file again before retrying a held replacement', async () => {
+    const filePath = temporarySettingsPath()
+    const alias = path.join(path.dirname(filePath), 'settings-alias.json')
+    await writeAppSettings(filePath, settings({ workspace: 'D:\\Previous' }))
+    const before = fs.readFileSync(filePath, 'utf8')
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    let linked = false
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (!linked && path.resolve(String(to)) === path.resolve(filePath)) {
+        linked = true
+        fs.linkSync(filePath, alias)
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return originalRename(from, to)
+    })
+
+    await expect(writeAppSettings(filePath, settings({ workspace: 'D:\\Next' })))
+      .rejects.toThrow('单链接普通文件')
+    expect(linked).toBe(true)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before)
+    expect(fs.lstatSync(filePath).nlink).toBe(2)
+  })
+})
+
+describe('relay endpoint selections', () => {
+  it('leaves the route preference unstored, meaning auto, until one is explicitly chosen', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('relayEndpointIds')
+    await writeAppSettings(filePath, settings())
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath)).not.toHaveProperty('relayEndpointIds')
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).not.toHaveProperty('relayEndpointIds')
+  })
+
+  it('round-trips explicit endpoint choices including a return to primary', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } }))
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'direct', 'solov-api': 'primary' })
+
+    await updateAppSettings(filePath, { version: 2, relayEndpointIds: { solov: 'primary' } })
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'primary', 'solov-api': 'primary' })
+  })
+
+  it('round-trips an explicit auto choice next to a pinned line on the other site', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ relayEndpointIds: { solov: 'direct', 'solov-api': 'direct' } }))
+    await updateAppSettings(filePath, { version: 2, relayEndpointIds: { solov: 'auto' } })
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'direct' })
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).relayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'direct' })
+  })
+
+  it('never persists or merges the active runtime endpoint snapshot', async () => {
+    const filePath = temporarySettingsPath()
+    const snapshot = settings({
+      relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'primary' },
+      relayRouteLines: { solov: { line: 'primary', settled: true }, 'solov-api': { line: 'primary', settled: true } },
+    })
+    await writeAppSettings(filePath, snapshot)
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'direct' })
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).not.toHaveProperty('activeRelayEndpointIds')
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).not.toHaveProperty('relayRouteLines')
+    expect(mergeAppSettings(snapshot, { version: 2 })).not.toHaveProperty('activeRelayEndpointIds')
+    expect(mergeAppSettings(snapshot, { version: 2 })).not.toHaveProperty('relayRouteLines')
+  })
+
+  it.each([
+    null,
+    'https://other.example/v1',
+    [],
+    {},
+    { solov: 'https://other.example/v1' },
+    { solov: 'DIRECT' },
+    { solov: 'Auto' },
+    { 'solov-api': 'backup' },
+    { unknown: 'primary' },
+    { sub2api: 'auto' },
+  ])('omits unsupported stored endpoint selections without discarding other settings: %j', (relayEndpointIds) => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ workspace: 'D:\\Keep' }), relayEndpointIds }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ workspace: 'D:\\Keep' }))
+  })
+
+  it('retains each site\'s own valid choice while omitting unknown sites and unknown values', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      ...settings(), relayEndpointIds: { solov: 'auto', 'solov-api': 'direct', unknown: 'primary', sub2api: 'direct' },
+    }), 'utf8')
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'auto', 'solov-api': 'direct' })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), relayEndpointIds: { solov: 'direct', 'solov-api': 'backup' } }), 'utf8')
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'direct' })
+  })
+
+  it('merges a partial endpoint update without reverting the other site', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ relayEndpointIds: { 'solov-api': 'primary' } }))
+    const selected = await updateAppSettings(filePath, { version: 2, relayEndpointIds: { solov: 'direct' } })
+    expect(selected.relayEndpointIds).toEqual({ solov: 'direct', 'solov-api': 'primary' })
+
+    const unchanged = await updateAppSettings(filePath, { version: 2, relayEndpointIds: { 'solov-api': 'primary' } })
+    expect(unchanged.relayEndpointIds).toEqual(selected.relayEndpointIds)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual(selected.relayEndpointIds)
+  })
+
+  it('ignores invalid endpoint updates and sanitizes an untrusted merge base', () => {
+    const base = settings({ relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } })
+    const invalid = { solov: 'https://other.example/v1', 'solov-api': 'backup', unknown: 'primary' }
+    expect(mergeAppSettings(base, { version: 2, relayEndpointIds: invalid as never }).relayEndpointIds)
+      .toEqual(base.relayEndpointIds)
+    expect(mergeAppSettings(settings({ relayEndpointIds: invalid as never }), { version: 2 }))
+      .not.toHaveProperty('relayEndpointIds')
+    expect(mergeAppSettings(settings(), { version: 2, relayEndpointIds: {} })).not.toHaveProperty('relayEndpointIds')
+  })
+
+  it('preserves concurrent endpoint updates to different sites', async () => {
+    const filePath = temporarySettingsPath()
+    await Promise.all([
+      updateAppSettings(filePath, { version: 2, relayEndpointIds: { solov: 'direct' } }),
+      updateAppSettings(filePath, { version: 2, relayEndpointIds: { 'solov-api': 'primary' } }),
+    ])
+    expect(readAppSettings(filePath).relayEndpointIds).toEqual({ solov: 'direct', 'solov-api': 'primary' })
+  })
 })
 
 describe('field-wise settings updates (①栏11)', () => {
@@ -454,6 +628,45 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
   })
 
+  it('turns app auto-update on by default and keeps only an explicit opt-out', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('autoUpdate')
+    await updateAppSettings(filePath, { version: 2, autoUpdate: false })
+    expect(readAppSettings(filePath).autoUpdate).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).autoUpdate).toBe(false)
+    await updateAppSettings(filePath, { version: 2, autoUpdate: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('autoUpdate')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), autoUpdate: 'off' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
+  it('keeps display acceleration on by default and stores only an explicit opt-out', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('hardwareAcceleration')
+    await updateAppSettings(filePath, { version: 2, hardwareAcceleration: false })
+    expect(readAppSettings(filePath).hardwareAcceleration).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).hardwareAcceleration).toBe(false)
+    await updateAppSettings(filePath, { version: 2, hardwareAcceleration: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('hardwareAcceleration')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), hardwareAcceleration: 'off' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
+  it('keeps large text off by default and stores only an explicit opt-in', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('largeText')
+    await updateAppSettings(filePath, { version: 2, largeText: true })
+    expect(readAppSettings(filePath).largeText).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).largeText).toBe(true)
+    await updateAppSettings(filePath, { version: 2, largeText: false })
+    expect(readAppSettings(filePath)).not.toHaveProperty('largeText')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), largeText: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')
@@ -467,6 +680,32 @@ describe('UI and window preferences', () => {
     })
     await writeAppSettings(filePath, next)
     expect(readAppSettings(filePath)).toEqual(next)
+  })
+
+  it('keeps the tray hint marker once set and ignores anything but true', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('trayHintShown')
+    await updateAppSettings(filePath, { version: 2, trayHintShown: true })
+    expect(readAppSettings(filePath)).toMatchObject({ trayHintShown: true })
+    await updateAppSettings(filePath, { version: 2, trayHintShown: false, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath)).toMatchObject({ trayHintShown: true, closeBehavior: 'tray' })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), trayHintShown: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('trayHintShown')
+  })
+
+  it('keeps the crash reporting notice marker once set without touching the reporting switch', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
+    await updateAppSettings(filePath, { version: 2, crashReportingNoticeShown: true })
+    const shown = readAppSettings(filePath)
+    expect(shown).toMatchObject({ crashReportingNoticeShown: true })
+    expect(shown).not.toHaveProperty('crashReporting')
+    await updateAppSettings(filePath, { version: 2, crashReportingNoticeShown: false, crashReporting: false })
+    expect(readAppSettings(filePath)).toMatchObject({ crashReportingNoticeShown: true, crashReporting: false })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), crashReportingNoticeShown: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
   })
 
   it('migrates old v2 records to the first-run light and mist appearance', async () => {
@@ -524,5 +763,32 @@ describe('UI and window preferences', () => {
     })).rejects.toThrow('appearance write failed')
     expect(readAppSettings(filePath)).toEqual(previous)
     expect(readAppSettings(`${filePath}.bak`)).toEqual(previous)
+  })
+})
+
+describe('startup settings normalization', () => {
+  it('writes once when the file is missing and leaves an already-normalized file untouched', async () => {
+    const filePath = temporarySettingsPath()
+    const first = await normalizeAppSettings(filePath, 'D:\\Workspace')
+    expect(first.written).toBe(true)
+    expect(first.settings.workspace).toBe('D:\\Workspace')
+    const before = fs.statSync(filePath).mtimeMs
+    const content = fs.readFileSync(filePath, 'utf8')
+
+    const second = await normalizeAppSettings(filePath, 'D:\\Workspace')
+    expect(second.written).toBe(false)
+    expect(second.settings).toEqual(first.settings)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content)
+    expect(fs.statSync(filePath).mtimeMs).toBe(before)
+    expect(fs.existsSync(`${filePath}.bak`)).toBe(false)
+  })
+
+  it('rewrites a legacy file into the current shape', async () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, workspace: 'D:\\Legacy', theme: 'light', scanOnStartup: true }), 'utf8')
+    const result = await normalizeAppSettings(filePath)
+    expect(result.written).toBe(true)
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ version: 2, workspace: 'D:\\Legacy' })
+    expect((await normalizeAppSettings(filePath)).written).toBe(false)
   })
 })

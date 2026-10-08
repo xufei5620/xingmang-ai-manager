@@ -45,6 +45,22 @@ test('the directory page leave callback is wired up at the top level of the scri
   assert.ok(definePosition < firstMacro, 'the leave callback define must come before the first macro')
 })
 
+test('browsing to another drive or folder appends the default folder name', () => {
+  const contents = readCustomInclude()
+  // NSIS 只在编译期有 InstallDir 时，才会把它最后一段接到「浏览」选中的目录后面。
+  // electron-builder 的模板不写这一句，选 D 盘就只剩「D:\」，NSIS 不许装在盘根，
+  // 「安装」按钮变灰。结尾不能带反斜杠，否则 NSIS 会关掉自动追加。
+  const installDir = /^\s*InstallDir "\$PROGRAMFILES64\\\$\{APP_FILENAME\}"$/m
+  assert.match(contents, installDir)
+  // 只该出现一次，且只进安装程序、只在目录可改时编译。
+  assert.equal(contents.match(/^\s*InstallDir /gm).length, 1)
+  const position = contents.search(installDir)
+  const guard = contents.lastIndexOf('!ifdef allowToChangeInstallationDirectory', position)
+  assert.ok(guard !== -1 && contents.lastIndexOf('!ifndef BUILD_UNINSTALLER', guard) !== -1)
+  assert.ok(contents.indexOf('!endif', guard) > position, 'InstallDir must stay inside the guard')
+  assert.ok(position < contents.indexOf('!macro '), 'InstallDir must be at the top level of the script')
+})
+
 test('the directory page refuses a non-empty directory that is not a previous install', () => {
   const body = bodyOf(readCustomInclude(), 'Function xingmangVerifyInstallDirectory', 'FunctionEnd')
   // 升级覆盖必须照常可行：目录里有本程序的主 exe 或卸载程序就直接放行。

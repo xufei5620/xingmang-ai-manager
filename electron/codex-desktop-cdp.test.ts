@@ -1,24 +1,97 @@
 import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
+  activateCodexDesktopWithCdp,
   buildCodexDesktopCdpArguments,
   classifyCodexDesktopCdpPortOwnership,
   codexChineseRuntimeScript,
+  codexDesktopCdpPortOwnerArguments,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
   parseCodexDesktopCdpPortOwners,
   parseCodexDesktopActivationProcessId,
+  resolveCodexDesktopCdpPortOwners,
   validateCodexDesktopAppUserModelId,
   validateCodexDesktopCdpPort,
   validateCodexDesktopCdpTarget,
+  withCodexDesktopCdpFailureReport,
   type CodexDesktopCdpTarget,
 } from './codex-desktop-cdp'
 
 const codexProcessId = 4321
+// What execFile puts in the message when it stops the owner lookup at its limit.
+const ownerLookupCommandLine = 'C:\\Windows\\System32\\netstat.exe -a -n -o'
 const codexPortOwner = {
   expectedProcessId: codexProcessId,
   resolvePortOwnerProcessIds: async () => [codexProcessId],
 }
+const windowsMachinePaths = {
+  systemRoot: 'C:\\Windows',
+  system32: 'C:\\Windows\\System32',
+  programFiles: 'C:\\Program Files',
+  programFilesX86: 'C:\\Program Files (x86)',
+  programData: 'C:\\ProgramData',
+}
+// `netstat -a -n -o` as English Windows prints it, with Codex (4321) on 9222.
+const netstatTable = [
+  '',
+  'Active Connections',
+  '',
+  '  Proto  Local Address          Foreign Address        State           PID',
+  '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1060',
+  '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50123        ESTABLISHED     4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50124        TIME_WAIT       0',
+  '  TCP    127.0.0.1:19222        0.0.0.0:0              LISTENING       5555',
+  '  TCP    127.0.0.1:50123        127.0.0.1:9222         ESTABLISHED     2468',
+  '  TCP    192.168.1.5:9222       52.1.2.3:443           ESTABLISHED     7788',
+  '  TCP    [::]:135               [::]:0                 LISTENING       1060',
+  '  TCP    [::1]:9222             [::]:0                 LISTENING       4321',
+  '  UDP    0.0.0.0:9222           *:*                                    8888',
+  '  UDP    [::]:9222              *:*                                    8888',
+  '',
+].join('\r\n')
+
+// netstat writes to a pipe in the console code page and execFile decodes its
+// stdout as UTF-8, so on Windows in other languages this is what the parser is
+// handed. Strings are ASCII; buffers are bytes in that code page.
+function decodedAsExecFileDoes(lines: ReadonlyArray<string | ReadonlyArray<string | Buffer>>): string {
+  return Buffer.concat(lines.flatMap((line) => [
+    ...(typeof line === 'string' ? [line] : line).map((part) => typeof part === 'string' ? Buffer.from(part, 'ascii') : part),
+    Buffer.from('\r\n', 'ascii'),
+  ])).toString('utf8')
+}
+// 活动连接 and the header 协议 本地地址 外部地址 状态, as Simplified Chinese Windows
+// writes them: in GBK (code page 936). The states stay in English there.
+const chineseNetstat = decodedAsExecFileDoes([
+  '',
+  [Buffer.from('bbeeb6afc1acbdd3', 'hex')],
+  '',
+  ['  ', Buffer.from('d0add2e9', 'hex'), '  ', Buffer.from('b1beb5d8b5d8d6b7', 'hex'), '          ',
+    Buffer.from('cde2b2bfb5d8d6b7', 'hex'), '        ', Buffer.from('d7b4ccac', 'hex'), '           PID'],
+  '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1060',
+  '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50123        ESTABLISHED     4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50124        TIME_WAIT       0',
+  '  TCP    127.0.0.1:50123        127.0.0.1:9222         ESTABLISHED     2468',
+  '  TCP    [::]:135               [::]:0                 LISTENING       1060',
+  '  UDP    0.0.0.0:9222           *:*                                    8888',
+])
+// ABHÖREN, German Windows's LISTENING, in code page 850.
+const abhoeren = ['ABH', Buffer.from([0x99]), 'REN']
+const germanNetstat = decodedAsExecFileDoes([
+  '',
+  'Aktive Verbindungen',
+  '',
+  '  Proto  Lokale Adresse         Remoteadresse          Status           PID',
+  ['  TCP    0.0.0.0:135            0.0.0.0:0              ', ...abhoeren, '         1060'],
+  ['  TCP    127.0.0.1:9222         0.0.0.0:0              ', ...abhoeren, '         4321'],
+  '  TCP    127.0.0.1:9222         127.0.0.1:50123        HERGESTELLT     4321',
+  '  TCP    127.0.0.1:9222         127.0.0.1:50124        WARTEND         0',
+  '  TCP    127.0.0.1:50125        127.0.0.1:9222         SCHLIESSEN_WARTEN  2468',
+  ['  TCP    [::]:135               [::]:0                 ', ...abhoeren, '         1060'],
+  '  UDP    0.0.0.0:9222           *:*                                    8888',
+])
 
 function target(overrides: Partial<CodexDesktopCdpTarget> = {}): CodexDesktopCdpTarget {
   return {
@@ -135,6 +208,41 @@ describe('Codex Desktop CDP trust boundary', () => {
     expect(validateCodexDesktopAppUserModelId('OpenAI.Codex_2p2nqsd0c76g0!App')).toBe('OpenAI.Codex_2p2nqsd0c76g0!App')
     expect(() => validateCodexDesktopAppUserModelId('Contoso.App!App')).toThrow('应用标识不可信')
     expect(() => validateCodexDesktopAppUserModelId('OpenAI.Codex_foo!App --evil')).toThrow('应用标识不可信')
+  })
+})
+
+describe('Codex Desktop CDP activation failures', () => {
+  it('keeps the activation failure as the cause of the Chinese launch error', async () => {
+    // Off Windows the activation refuses the platform, on Windows it refuses
+    // this identity; both happen before PowerShell would be started.
+    const error = await activateCodexDesktopWithCdp('Contoso.App!App', 9222).then(() => null, (reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    const cause = (error as Error).cause
+    expect(cause).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(`Codex Desktop 中文增强启动失败：${(cause as Error).message}`)
+  })
+
+  it('reports a failed activation and still rejects with the same error', async () => {
+    const failure = new Error('Codex Desktop 中文增强启动失败：激活被拒绝')
+    const reported: unknown[] = []
+    const activate = withCodexDesktopCdpFailureReport(async () => { throw failure }, (error) => { reported.push(error) })
+
+    await expect(activate('OpenAI.Codex_2p2nqsd0c76g0!App', 9222)).rejects.toBe(failure)
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toBe(failure)
+  })
+
+  it('passes a successful activation through without reporting anything', async () => {
+    const calls: unknown[][] = []
+    const environment = { SystemRoot: 'C:\\Windows' }
+    const activate = withCodexDesktopCdpFailureReport(async (appUserModelId, port, baseEnv) => {
+      calls.push([appUserModelId, port, baseEnv])
+      return 18420
+    }, () => { throw new Error('a successful activation has nothing to report') })
+
+    await expect(activate('OpenAI.Codex_2p2nqsd0c76g0!App', 9222, environment)).resolves.toBe(18420)
+    expect(calls).toEqual([['OpenAI.Codex_2p2nqsd0c76g0!App', 9222, environment]])
   })
 })
 
@@ -565,9 +673,97 @@ describe('Codex Desktop Chinese CDP injection', () => {
 })
 
 describe('Codex Desktop CDP debugging port ownership', () => {
-  it('reads every listening owner reported for the port and ignores non-numeric output', () => {
-    expect(parseCodexDesktopCdpPortOwners('\r\n4321\r\n4321\r\n7788\r\n')).toEqual([4321, 7788])
-    expect(parseCodexDesktopCdpPortOwners('Get-NetTCPConnection : 找不到对象\n0\n-1\n')).toEqual([])
+  it('reads only the rows listening on the port from the netstat table', () => {
+    // The accepted connection, the one closing in TIME_WAIT, the client end
+    // pointing at the port and another process's outgoing connection that
+    // happens to use 9222 on another address all share the number without
+    // listening on it; 19222 and the UDP rows are different sockets altogether.
+    expect(parseCodexDesktopCdpPortOwners(netstatTable, 9222)).toEqual([4321])
+    expect(parseCodexDesktopCdpPortOwners(netstatTable, 135)).toEqual([1060])
+    expect(parseCodexDesktopCdpPortOwners(netstatTable, 50123)).toEqual([])
+  })
+
+  it('names every process listening on the port, on any address', () => {
+    const squatted = [
+      '  TCP    0.0.0.0:9222           0.0.0.0:0              LISTENING       7788',
+      '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+      '  TCP    [::]:9222              [::]:0                 LISTENING       9999',
+      '  TCP    [fe80::1c2d:3e4f:5a6b:7c8d%12]:9222  [::]:0                 LISTENING       1111',
+    ].join('\r\n')
+    const owners = parseCodexDesktopCdpPortOwners(squatted, 9222)
+    expect(owners).toEqual([7788, 4321, 9999, 1111])
+    expect(classifyCodexDesktopCdpPortOwnership(owners ?? [], 4321)).toBe('foreign')
+  })
+
+  it('reads a Simplified Chinese table the way execFile hands it over', () => {
+    // The header arrives as replacement characters; nothing read depends on it.
+    expect(chineseNetstat).toContain('\uFFFD')
+    expect(parseCodexDesktopCdpPortOwners(chineseNetstat, 9222)).toEqual([4321])
+    expect(parseCodexDesktopCdpPortOwners(chineseNetstat, 135)).toEqual([1060])
+  })
+
+  it('recognises a listener by its addresses when the state column is translated', () => {
+    expect(germanNetstat).toContain('ABH\uFFFDREN')
+    expect(parseCodexDesktopCdpPortOwners(germanNetstat, 9222)).toEqual([4321])
+    expect(parseCodexDesktopCdpPortOwners(germanNetstat, 135)).toEqual([1060])
+    // A second listener is still caught although no row says LISTENING.
+    const squatted = germanNetstat + decodedAsExecFileDoes([
+      ['  TCP    [::]:9222              [::]:0                 ', ...abhoeren, '         7788'],
+    ])
+    const owners = parseCodexDesktopCdpPortOwners(squatted, 9222)
+    expect(owners).toEqual([4321, 7788])
+    expect(classifyCodexDesktopCdpPortOwnership(owners ?? [], 4321)).toBe('foreign')
+    // Should a translation ever run to several words, the PID is still the last column.
+    expect(parseCodexDesktopCdpPortOwners([
+      '  TCP    [::1]:9222             [::]:0                 EN ESCUCHA      4321',
+      '  TCP    127.0.0.1:9222         127.0.0.1:50124        EN ESPERA       0',
+    ].join('\r\n'), 9222)).toEqual([4321])
+  })
+
+  it('fails the lookup on output it cannot read as a TCP table', () => {
+    // Windows always listens somewhere, so none of these is an idle machine.
+    expect(parseCodexDesktopCdpPortOwners('', 9222)).toBeNull()
+    expect(parseCodexDesktopCdpPortOwners(chineseNetstat.split('\r\n').slice(0, 4).join('\r\n'), 9222)).toBeNull()
+    expect(parseCodexDesktopCdpPortOwners('  UDP    0.0.0.0:9222           *:*                                    8888', 9222)).toBeNull()
+    expect(parseCodexDesktopCdpPortOwners('Access is denied.', 9222)).toBeNull()
+  })
+
+  it('refuses to answer for a listener whose process it cannot read', () => {
+    // Dropping such a row could pass a port another process also listens on.
+    expect(parseCodexDesktopCdpPortOwners([
+      '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING       4321',
+      '  TCP    [::1]:9222             [::]:0                 LISTENING',
+    ].join('\r\n'), 9222)).toBeNull()
+    expect(parseCodexDesktopCdpPortOwners('  TCP    0.0.0.0:9222    0.0.0.0:0    LISTENING    0', 9222)).toBeNull()
+    expect(() => parseCodexDesktopCdpPortOwners(netstatTable, 0)).toThrow('端口无效')
+  })
+
+  it('reads the table with the system netstat.exe under the trusted environment', async () => {
+    const calls: Array<{ executable: string; argv: readonly string[]; env: NodeJS.ProcessEnv }> = []
+    const owners = await resolveCodexDesktopCdpPortOwners(9222, {
+      platform: 'win32',
+      machinePaths: windowsMachinePaths,
+      env: { Path: 'C:\\Users\\Tester\\bin;C:\\Windows\\System32', NODE_OPTIONS: '--require C:\\Users\\Tester\\hook.js' },
+      run: async (executable, argv, env) => {
+        calls.push({ executable, argv, env })
+        return netstatTable
+      },
+    })
+    expect(owners).toEqual([4321])
+    expect(calls.map(({ executable, argv }) => ({ executable, argv }))).toEqual([
+      { executable: 'C:\\Windows\\System32\\netstat.exe', argv: ['-a', '-n', '-o'] },
+    ])
+    expect(codexDesktopCdpPortOwnerArguments).toEqual(['-a', '-n', '-o'])
+    expect(Object.values(calls[0].env).join('\n')).not.toContain('Tester')
+  })
+
+  it('fails the lookup instead of guessing when a listener cannot be attributed', async () => {
+    await expect(resolveCodexDesktopCdpPortOwners(9222, {
+      platform: 'win32',
+      machinePaths: windowsMachinePaths,
+      run: async () => '  TCP    127.0.0.1:9222         0.0.0.0:0              LISTENING',
+    })).rejects.toThrow('监听进程无法识别')
+    await expect(resolveCodexDesktopCdpPortOwners(9222, { platform: 'linux' })).rejects.toThrow('仅支持 Windows')
   })
 
   it('treats an empty listener table as a port Codex has not bound yet', () => {
@@ -617,6 +813,115 @@ describe('Codex Desktop CDP debugging port ownership', () => {
     })
     expect(result).toEqual({ injectedTargets: 1, attempts: 3 })
     expect(lookups).toBe(3)
+  })
+
+  it('asks again when an owner lookup fails or runs out of time instead of giving up on the language', async () => {
+    const { socket } = mockCdpSocket()
+    let lookups = 0
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        if (lookups === 1) throw new Error(`Command failed: ${ownerLookupCommandLine}`)
+        return [4321]
+      },
+      fetch: async () => {
+        // Nothing reaches the port before an answered lookup names Codex.
+        expect(lookups).toBe(2)
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 2 })
+  })
+
+  it('stops after three unanswered lookups in a row without touching the port or quoting the command', async () => {
+    let lookups = 0
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        throw new Error(`Command failed: ${ownerLookupCommandLine}`)
+      },
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    expect(lookups).toBe(3)
+    expect(discoveries).toBe(0)
+  })
+
+  it('counts only unanswered lookups in a row, so an answer in between keeps the retries going', async () => {
+    const { socket } = mockCdpSocket()
+    const answers: Array<number[] | null> = [null, null, [], null, null, [4321]]
+    let lookups = 0
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        const answer = answers[lookups]
+        lookups += 1
+        if (!answer) throw new Error(`Command failed: ${ownerLookupCommandLine}`)
+        return answer
+      },
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 6 })
+    expect(lookups).toBe(6)
+  })
+
+  it('still refuses a port another process holds even after lookups failed', async () => {
+    let lookups = 0
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        if (lookups === 1) throw new Error(`Command failed: ${ownerLookupCommandLine}`)
+        return [7788]
+      },
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow('被其他进程占用')
+    expect(lookups).toBe(2)
+    expect(discoveries).toBe(0)
+  })
+
+  it('confirms Codex and switches the language on Chinese and German Windows alike', async () => {
+    for (const table of [chineseNetstat, germanNetstat]) {
+      const { socket } = mockCdpSocket()
+      const result = await injectCodexDesktopChineseLocale(9222, {
+        expectedProcessId: 4321,
+        resolvePortOwnerProcessIds: (port) => resolveCodexDesktopCdpPortOwners(port, {
+          platform: 'win32',
+          machinePaths: windowsMachinePaths,
+          run: async () => table,
+        }),
+        fetch: async () => new Response(JSON.stringify([target()])),
+        createWebSocket: () => socket,
+        delay: async () => undefined,
+      })
+      expect(result).toEqual({ injectedTargets: 1, attempts: 1 })
+    }
+  })
+
+  it('gives up after three unreadable tables instead of waiting out the deadline as if nothing listened', async () => {
+    let lookups = 0
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: (port) => resolveCodexDesktopCdpPortOwners(port, {
+        platform: 'win32',
+        machinePaths: windowsMachinePaths,
+        run: async () => { lookups += 1; return '' },
+      }),
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    expect(lookups).toBe(3)
+    expect(discoveries).toBe(0)
   })
 
   it('reuses a confirmed owner across the attempts of one bounded discovery', async () => {

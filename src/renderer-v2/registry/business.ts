@@ -1,4 +1,6 @@
 import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-contract'
+import { describeUpdateDiskShortfall } from '../../../electron/disk-space-copy'
+import { connectionRouteSettings } from './connection-routes'
 /**
  * 教程里讲「Mac 上怎么自己装桌面端」的那一章。首页那几行点不动的「安装」要直接跳到
  * 这一章而不是教程首页，所以 id 放在注册表里由两边共用：教程页写章节、App 写跳转，
@@ -7,26 +9,50 @@ import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-con
 export const macDesktopTutorialTopic = 'mac-desktop-apps'
 /** 同理：教程里讲「Mac 上怎么自己装 Node.js 和 Python」的那一章。 */
 export const macRuntimeTutorialTopic = 'runtime-mac'
+/**
+ * 同理：「Codex 桌面端怎么安装？」那一章；安装卸载页桌面端那一行（不在 Mac 上时）的
+ * 「查看安装步骤」跳到这里。教程那边还写着字面量，pages-maintenance.test.ts 钉着两边一致。
+ */
+export const desktopInstallTutorialTopic = 'install'
+/** 同理：「备份、更新与数据」那一章，里面有「磁盘快满了、更新下不下来怎么办」。 */
+export const updatesTutorialTopic = 'safety'
+/** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
+export const cliTutorialTopic = 'cli'
+// keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
+// 界面上不显示。次序就是个人中心左边子导航从上到下的次序（分组见 accountTabGroups）。
 export const accountTabs = [
-  { value: 'overview', label: '我的账号' },
-  { value: 'dashboard', label: '用量看板' },
-  { value: 'keys', label: '密钥' },
-  { value: 'usage', label: '调用明细' },
-  { value: 'tasks', label: '异步任务' },
-  { value: 'recharge', label: '充值与订阅' },
-  { value: 'orders', label: '我的订单' },
-  { value: 'invite', label: '邀请返利' },
-  { value: 'devices', label: '登录设备' },
+  { value: 'overview', label: '我的账号', keywords: ['账号', '资料', '邮箱', '密码', '改密码', '修改密码'] },
+  { value: 'recharge', label: '充值与订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换', '兑换码', '充值码', '扣费偏好', '先扣'] },
+  { value: 'orders', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'] },
+  { value: 'invite', label: '邀请返利', keywords: ['邀请', '返利', '推广', '分享'] },
+  { value: 'dashboard', label: '用量看板', keywords: ['用量', '统计', '消耗', '花了多少'] },
+  { value: 'usage', label: '调用明细', keywords: ['明细', '扣费', '消费', '扣了多少', '花费'] },
+  { value: 'tasks', label: '异步任务', keywords: ['任务', '生成进度'] },
+  { value: 'keys', label: '密钥', keywords: ['Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
+  { value: 'devices', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'] },
 ] as const
+export type AccountTabValue = (typeof accountTabs)[number]['value']
+/** 个人中心左边子导航分的三组，每组上面一行小灰字组名；每个分页只在一组里出现一次（registry 测试钉着）。 */
+export const accountTabGroups: ReadonlyArray<{ label: string; tabs: readonly AccountTabValue[] }> = [
+  { label: '账号与充值', tabs: ['overview', 'recharge', 'orders', 'invite'] },
+  { label: '用量', tabs: ['dashboard', 'usage', 'tasks'] },
+  { label: '密钥与设备', tabs: ['keys', 'devices'] },
+]
+/**
+ * 个人中心页头「切换账号」那颗按钮：顶部搜索搜「切换账号」时，个人中心那一条落到这里，
+ * 不换分页。和设置里「切换账号」那一行同名，各在各的页上找。
+ */
+export const accountSwitchAnchor = 'switch-account'
+export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
 export const settingsGroups = [
-  { value: 'appearance', label: '外观' },
-  { value: 'startup', label: '启动与关闭' },
-  { value: 'tools', label: '工具' },
-  { value: 'network', label: '网络' },
-  { value: 'notifications', label: '通知' },
-  { value: 'account', label: '账号' },
-  { value: 'privacy', label: '隐私与数据' },
-  { value: 'about', label: '关于' },
+  { value: 'appearance', label: '外观', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
+  { value: 'startup', label: '启动与关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },
+  { value: 'tools', label: '工具', keywords: ['工作文件夹', '文件夹', '终端', '安装位置', '装在哪'] },
+  { value: 'network', label: '网络', keywords: ['下载来源', '网络', '证书', '连不上'] },
+  { value: 'notifications', label: '通知', keywords: ['通知', '提醒', '消息提示'] },
+  { value: 'account', label: '账号', keywords: ['记住密码', '退出登录', '登出'] },
+  { value: 'privacy', label: '隐私与数据', keywords: ['隐私', '数据', '崩溃', '上报', '日志', '统计'] },
+  { value: 'about', label: '更新与关于', keywords: ['版本', '版本号', '许可'] },
 ] as const
 export const scopeOptions = [
   { value: 'all', label: '全部范围' },
@@ -66,21 +92,134 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
  * 本机旧（退回上一个好版本）时，照常说「发现新版本」就是在骗人。这几句也只在这里
  * 定义一次，更新页与首页气泡读同一份。
  */
-type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn'>
+type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall' | 'installMethod'>
 export function updateCardTitle(update: UpdateOfferState): string {
   if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
   if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
   return updateLabels[update.phase]
 }
+/** 更新页「当前版本」下面那行「新版本」写哪一版。退回旧版本不是新版本，那时没有这一行。 */
+export function updateNewVersion(update: Pick<UpdateSnapshot, 'currentVersion' | 'availableVersion' | 'rollback'> | null | undefined): string | null {
+  if (!update?.availableVersion || update.rollback || update.availableVersion === update.currentVersion) return null
+  return update.availableVersion
+}
+/**
+ * 人就在更新页时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
+ * 页面上写着的同一件事，不弹；离开更新页照旧弹。别的几种（「这个版本有已知问题」等）照旧。
+ */
+export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'failedStep'>): boolean {
+  if (update.error) return update.failedStep === 'download'
+  if (update.phase === 'downloading') return true
+  return update.phase === 'available' && !update.rollback && !update.diskShortfall
+}
 export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'downloaded') return '更新已下载'
   if (update.phase === 'downloading') return '正在下载更新'
+  if (update.phase === 'available' && update.diskShortfall) return '新版本先不下载'
   if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
   return '这个版本有已知问题'
 }
+/**
+ * Windows 上账号不在管理员组（update.installNeedsAdminPassword）：下好的新版本不自动装，首页气泡
+ * 说整句，更新页拆成标题和正文。主进程 desktop-notifications.ts 的系统通知是同一句，两边字面量
+ * 要一致。
+ */
+export const standardAccountUpdateNotice = {
+  title: '这台电脑的账号不是管理员，装更新时要输入管理员密码',
+  body: '让有管理员账号的人点一次「重启安装」，或者找客服。',
+} as const;
+export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
+// 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进更新页。
+// 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
+export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
+  if (installMethod === 'system-installer') {
+    if (phase === 'downloaded') return '已经下好了，到更新页点「安装新版本」就能装上。';
+    return autoUpdate ? '正在后台下载，下好后到更新页点「安装新版本」。' : '查看更新内容和安装状态。';
+  }
+  if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
+  if (!autoUpdate) return '查看更新内容和安装状态。';
+  if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
+  if (installNeedsAdminPassword) return '正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。';
+  return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
+}
+/**
+ * 磁盘空间不够、这一轮没下更新时的那句。和系统通知读同一份说法（disk-space-copy.ts）；
+ * 没有缺口时返回 null，调用方照旧用原来的说法。
+ */
+export function updateDiskShortfallText(update: Pick<UpdateSnapshot, 'phase' | 'diskShortfall'> | null | undefined, autoUpdate: boolean): string | null {
+  if (update?.phase !== 'available' || !update.diskShortfall) return null
+  return describeUpdateDiskShortfall(update.diskShortfall, autoUpdate)
+}
+/** 下载量与速度用的大小：上 GB 与 10 MB 以下写一位小数（整数不带 .0），不到 1 MB 写 KB。*/
+export function formatDownloadBytes(bytes: number): string {
+  const safe = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (safe >= 1024 ** 3) return `${oneDecimal(safe / 1024 ** 3)} GB`;
+  const megabytes = safe / 1024 ** 2;
+  if (megabytes >= 10) return `${Math.round(megabytes)} MB`;
+  if (megabytes >= 1) return `${oneDecimal(megabytes)} MB`;
+  if (safe === 0) return '0 KB';
+  return `${Math.max(1, Math.round(safe / 1024))} KB`;
+}
+function oneDecimal(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, '');
+}
+/**
+ * 还要多久。故意说得粗：一分钟以内按 10 秒取整，一小时以内按分钟往上取，免得数字
+ * 每秒都在变；几秒就好的直接说「马上就好」。
+ */
+export function formatDownloadRemaining(seconds: number): string {
+  if (seconds <= 10) return '马上就好';
+  if (seconds < 60) return `大约还要 ${Math.min(50, Math.ceil(seconds / 10) * 10)} 秒`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `大约还要 ${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `大约还要 ${hours} 小时 ${rest} 分钟` : `大约还要 ${hours} 小时`;
+}
+/**
+ * 进度条下面那行：「已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 1 分钟」。
+ * 速度和剩余时间用主进程算好的近 10 秒平均值；刚开始、或者速度算不出来时只说下了多少，
+ * 不知道总大小时连「共多少」也不说。更新页和强制更新那道门读同一份。
+ */
+export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null | undefined): string | null {
+  if (!progress) return null;
+  const transferred = Math.max(0, progress.transferred || 0);
+  const total = Math.max(0, progress.total || 0);
+  const parts = [total > 0 ? `已下载 ${formatDownloadBytes(Math.min(transferred, total))} / 共 ${formatDownloadBytes(total)}` : `已下载 ${formatDownloadBytes(transferred)}`];
+  const rate = progress.averageBytesPerSecond;
+  if (rate && rate > 0 && (total <= 0 || transferred < total)) {
+    parts.push(`每秒 ${formatDownloadBytes(rate)}`);
+    const remaining = progress.secondsRemaining;
+    if (typeof remaining === 'number' && remaining > 0) parts.push(formatDownloadRemaining(remaining));
+  }
+  return parts.join(' · ');
+}
+// 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
+// 重启」就是在说反话。账号不是管理员的 Windows 电脑只在后台下、不自己装，也不能说会装上。
+export function updatesPageLead(autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
+  if (autoUpdate && installMethod === 'system-installer') {
+    return '新版本会在后台下好，下好后点「安装新版本」，在弹出的安装窗口里输入开机密码就装上了。';
+  }
+  if (autoUpdate && installNeedsAdminPassword) return '新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。';
+  return autoUpdate
+    ? '新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。'
+    : '新版本什么时候安装由你决定，不会自己重启。';
+}
+/** 「自动更新」开关下面那句。设置「更新与关于」和「更新」页各有一个这个开关，说的是同一句。 */
+export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
+  if (installMethod === 'system-installer') return '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载';
+  return installNeedsAdminPassword
+    ? '新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装'
+    : '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装';
+}
+/** 更新页上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启安装」。*/
+export function updateInstallActionLabel(installMethod: UpdateOfferState['installMethod']): string {
+  return installMethod === 'system-installer' ? '安装新版本' : '重启安装';
+}
+export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
-  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「重启安装」。`
+  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「${updateInstallActionLabel(update.installMethod)}」。`
   if (next) return `发布者撤回了 ${update.currentVersion}，修好的 ${next} 已经可以装了，建议尽快更新。`
   return `发布者撤回了 ${update.currentVersion}。修好的版本准备好后，这里会提示你更新。`
 }
@@ -97,6 +236,19 @@ export const orderStates = {
   expired: { label: '已超时', tone: 'neutral' },
   unknown: { label: '待确认', tone: 'neutral' },
 } as const
+/**
+ * 订阅卡上的状态。两个账号后台报的都是英文原值：星芒账号有 active / expired / cancelled（后台作废），
+ * 历史账号有 active / expired / suspended（暂停）/ revoked（删掉）。这里没有的值界面写「待确认」，
+ * 不把英文原样放上去。
+ */
+export const subscriptionStates: Record<string, { label: string; tone: 'ok' | 'warn' | 'neutral' }> = {
+  active: { label: '生效中', tone: 'ok' },
+  exhausted: { label: '额度已用完', tone: 'warn' },
+  expired: { label: '已到期', tone: 'neutral' },
+  cancelled: { label: '已撤销', tone: 'neutral' },
+  revoked: { label: '已撤销', tone: 'neutral' },
+  suspended: { label: '已停用', tone: 'neutral' },
+}
 export const billingOptions = [
   { value: 'subscription_first', label: '优先用订阅' },
   { value: 'wallet_first', label: '优先用余额' },
@@ -161,8 +313,8 @@ export const skinOptions = [
 export const notificationOptions = [
   {
     value: 'install',
-    label: '安装 / 更新完成',
-    description: '工具准备完成后提醒你查看结果',
+    label: '安装 / 更新结果',
+    description: '工具装好或没装上时提醒你',
   },
   {
     value: 'balance',
@@ -172,12 +324,12 @@ export const notificationOptions = [
   {
     value: 'task',
     label: '异步任务完成',
-    description: '已关注的任务完成后提醒你查看结果',
+    description: '聊天回复、图片和异步任务完成时提醒你（正看着窗口时不提醒）',
   },
   {
     value: 'cliUpdate',
     label: '工具有新版本',
-    description: '你装的命令行工具出新版本时提醒一次',
+    description: '你装的工具出新版本时提醒一次',
   },
   {
     value: 'announcement',
@@ -185,8 +337,116 @@ export const notificationOptions = [
     description: '软件在后台时有新公告，提醒一次',
   },
   {
+    value: 'spend',
+    label: '花费突然变多',
+    description: '一小时里用掉的钱比平时多很多时提醒你',
+  },
+  {
     value: 'acceleration',
     label: '加速提醒',
-    description: '免费加速还剩 5 分钟、用完自动断开、加速意外断开，以及软件替你自动连上加速时各提醒一次',
+    description: '免费加速还剩 5 分钟、用完自动断开、加速意外断开时各提醒一次',
+  },
+  {
+    value: 'cliTrouble',
+    label: '终端里没回上',
+    description: '终端里的 Claude Code、Gemini CLI、Grok 因额度、Key 或服务问题没回上时，告诉你原因和怎么办，同一原因半小时只提醒一次',
+  },
+  {
+    value: 'cliTurn',
+    label: '终端里的 AI 做完或在等你',
+    description: '终端里的 AI 一轮跑了一分钟以上做完时，或停下来等你确认时提醒你',
   },
 ] as const
+export type SettingsGroupId = (typeof settingsGroups)[number]['value']
+/**
+ * 设置里不是每台电脑、每种情况都有的那几行：Mac 才有「卸载星芒」，别的电脑是「卸载工具或星芒」；
+ * 支持自动更新的电脑才有「自动更新」；有游戏加速的电脑才有「加速提醒」；登录了才有「退出登录」。
+ */
+export type SettingsItemCondition = 'mac' | 'notMac' | 'autoUpdate' | 'acceleration' | 'signedIn'
+export interface SettingsItem {
+  /** 设置页上那一行的 data-anchor：顶部搜索点了靠它翻到那一行，不能和分组的 value 撞名。 */
+  id: string
+  group: SettingsGroupId
+  /** 那一行的标题，设置页和顶部搜索读同一份。 */
+  label: string
+  /** 顶部搜索用的常用说法，界面上不显示。 */
+  keywords: readonly string[]
+  when?: SettingsItemCondition
+}
+/**
+ * 设置里的每一行，按页面上的顺序。顶部搜索按行出结果（「更新与关于 › 自动更新」），
+ * 点了打开那一组、翻到那一行；页面上的行标题也从这里取，两边不会说成两个名字。
+ */
+export const settingsItems: readonly SettingsItem[] = [
+  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '夜间', '暗色', '白色'] },
+  { id: 'skin', group: 'appearance', label: '界面皮肤', keywords: [] },
+  { id: 'ui-scale', group: 'appearance', label: '界面缩放', keywords: ['缩放', '放大', '缩小', '太大', '太小'] },
+  { id: 'large-text', group: 'appearance', label: '大字', keywords: ['字体', '字号', '字太小', '看不清'] },
+  { id: 'high-contrast', group: 'appearance', label: '高对比度', keywords: [] },
+  { id: 'reduced-motion', group: 'appearance', label: '减少动画', keywords: [] },
+  { id: 'hardware-acceleration', group: 'appearance', label: '用显卡加速显示', keywords: ['黑屏', '花屏', '闪烁', '闪退', '显卡'] },
+  { id: 'language', group: 'appearance', label: '语言', keywords: [] },
+  { id: 'launch-at-login', group: 'startup', label: '开机自动启动', keywords: ['开机', '自启'] },
+  { id: 'close-behavior', group: 'startup', label: '点关闭按钮时', keywords: ['托盘', '最小化', '关闭'] },
+  { id: 'startup-diagnostics', group: 'startup', label: '启动时检查环境', keywords: [] },
+  { id: 'workspace', group: 'tools', label: '打开工具时进入的文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
+  { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
+  { id: 'terminal', group: 'tools', label: '用哪个终端打开工具', keywords: [] },
+  { id: 'install-location', group: 'tools', label: '工具装在哪里', keywords: [] },
+  ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', label: route.label, keywords: ['线路', '直连', '备用', '重启', '连不上'] })),
+  { id: 'mirror', group: 'network', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
+  { id: 'proxy', group: 'network', label: '网络连接', keywords: ['代理', 'VPN', '梯子'] },
+  { id: 'network-check', group: 'network', label: '网络检查', keywords: [] },
+  { id: 'certificate', group: 'network', label: '企业证书', keywords: ['证书', '公司电脑'] },
+  { id: 'desktop-notifications', group: 'notifications', label: '桌面通知', keywords: [] },
+  { id: 'test-notification', group: 'notifications', label: '测试通知', keywords: ['通知不弹', '收不到通知'] },
+  ...notificationOptions.map((option): SettingsItem => ({
+    id: notificationSettingsItemId(option.value),
+    group: 'notifications',
+    label: option.label,
+    keywords: [],
+    ...(option.value === 'acceleration' ? { when: 'acceleration' as const } : {}),
+  })),
+  { id: 'current-account', group: 'account', label: '当前账号', keywords: [] },
+  { id: 'switch-account', group: 'account', label: '切换账号', keywords: accountSwitchKeywords },
+  { id: 'remember-password', group: 'account', label: '记住密码', keywords: [] },
+  { id: 'logout', group: 'account', label: '退出登录', keywords: ['登出', '注销'], when: 'signedIn' },
+  { id: 'transfer', group: 'privacy', label: '搬到新电脑', keywords: ['导出', '导入', '换电脑', '新电脑', '迁移', '聊天记录'] },
+  { id: 'backups', group: 'privacy', label: '工具配置备份', keywords: [] },
+  { id: 'logs', group: 'privacy', label: '本机日志', keywords: ['日志', '报告'] },
+  { id: 'crash-reporting', group: 'privacy', label: '崩溃自动上报', keywords: [] },
+  { id: 'usage-stats', group: 'privacy', label: '使用统计', keywords: [] },
+  { id: 'version', group: 'about', label: '当前版本', keywords: ['版本号', '版本'] },
+  { id: 'update-check', group: 'about', label: '启动时检查新版本', keywords: ['检查更新', '升级', '新版本'] },
+  { id: 'auto-update', group: 'about', label: '自动更新', keywords: ['检查更新', '升级', '新版本'], when: 'autoUpdate' },
+  { id: 'shortcuts', group: 'about', label: '快捷键', keywords: ['快捷键', '键盘'] },
+  { id: 'guide', group: 'about', label: '新手引导', keywords: ['引导', '新手', '从头'] },
+  { id: 'tour', group: 'about', label: '界面导览', keywords: [] },
+  { id: 'legal', group: 'about', label: '用户协议与隐私政策', keywords: [] },
+  { id: 'uninstall-app', group: 'about', label: '卸载星芒', keywords: ['卸载星芒', '删除软件'], when: 'mac' },
+  { id: 'uninstall', group: 'about', label: '卸载工具或星芒', keywords: ['卸载星芒', '删除软件'], when: 'notMac' },
+]
+export function notificationSettingsItemId(kind: (typeof notificationOptions)[number]['value']): string {
+  return `notify-${kind}`
+}
+/** 设置页某一行的标题；id 写错是开发时的错，直接抛出来，不让页面悄悄少一个字。 */
+export function settingsItemLabel(id: string): string {
+  const item = settingsItems.find((entry) => entry.id === id)
+  if (!item) throw new Error(`settings item ${id} is not registered`)
+  return item.label
+}
+export interface SettingsItemContext {
+  mac: boolean
+  autoUpdate: boolean
+  acceleration: boolean
+  signedIn: boolean
+}
+/** 这一行在这台电脑、这个登录状态下有没有。没有的不出现在顶部搜索里。 */
+export function settingsItemAvailable(item: SettingsItem, context: SettingsItemContext): boolean {
+  if (item.when === 'mac') return context.mac
+  if (item.when === 'notMac') return !context.mac
+  if (item.when === 'autoUpdate') return context.autoUpdate
+  if (item.when === 'acceleration') return context.acceleration
+  if (item.when === 'signedIn') return context.signedIn
+  return true
+}

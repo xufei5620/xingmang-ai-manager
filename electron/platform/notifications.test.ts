@@ -1,13 +1,20 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  buildActivityNotificationMessage,
+  buildTerminalNotificationMessage,
   createPlatformNotifications,
+  hiddenWindowNotification,
+  hostNotificationMessage,
+  resolveNotificationTarget,
+  resolveTerminalNotificationTarget,
   type PlatformNotificationRuntime,
+  type TerminalFailureReason,
 } from './notifications'
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true, cliTrouble: true, cliTurn: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -26,12 +33,14 @@ function setup() {
     }),
   }
   const focusMainWindow = vi.fn()
+  const openPage = vi.fn()
   const onError = vi.fn()
   const controller = createPlatformNotifications(
     {
       readEnabled: () => enabled,
       readPreferences: () => preferences,
       focusMainWindow,
+      openPage,
       onError,
     },
     runtime,
@@ -42,6 +51,7 @@ function setup() {
     notifications,
     runtime,
     focusMainWindow,
+    openPage,
     onError,
     enable: (value: boolean) => {
       enabled = value
@@ -122,24 +132,60 @@ describe('acceleration reminders sent by the main process', () => {
     h.preferences.acceleration = false
     expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t2')).toBe('disabled')
   })
-  it('says an automatic connection is on, is billed and where to turn it off', () => {
+  it('says where the window went under the master switch alone, once per key', () => {
     const h = setup()
-    expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('requested')
+    for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
+    expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '已为 Codex 桌面端连上加速',
-      body: '打开桌面端时自动连上的，会计入免费加速时长，不用时可以在托盘或加速页断开。',
+      title: '星芒AI管理工具还在运行',
+      body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
       silent: true,
     })
-    expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('duplicate')
+    expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('duplicate')
+    expect(h.controller.notifyHost('hiddenToMenuBar', 'first')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith(expect.objectContaining({ body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。' }))
+    h.enable(false)
+    expect(h.controller.notifyHost('hiddenToTray', 'second')).toBe('disabled')
+    expect(hostNotificationMessage('hiddenToTray')).toEqual({
+      title: '星芒AI管理工具还在运行',
+      body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+    })
   })
+
+  it('says where the window went in each system\'s own words', () => {
+    expect(hiddenWindowNotification('win32')).toBe('hiddenToTray')
+    expect(hiddenWindowNotification('darwin')).toBe('hiddenToMenuBar')
+    expect(hiddenWindowNotification('linux')).toBe('hiddenToPanel')
+    expect(hostNotificationMessage('hiddenToPanel')).toEqual({
+      title: '星芒AI管理工具还在运行',
+      body: '窗口已收起，点屏幕顶部或任务栏右边的星芒图标就能打开。',
+    })
+    // Linux 上没有 Windows 那个小箭头，也不一定在右下角。
+    expect(hostNotificationMessage('hiddenToPanel').body).not.toMatch(/右下角|\^/)
+  })
+
+  it('says a payment settled after its window closed, once per order, without the order number', () => {
+    const h = setup()
+    for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '付款已到账',
+      body: '刚才那笔订单已到账，余额和订阅已更新。',
+      silent: true,
+    })
+    expect(JSON.stringify((h.runtime.create as ReturnType<typeof vi.fn>).mock.calls)).not.toContain('XM-20260925-1')
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('duplicate')
+    h.enable(false)
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-2')).toBe('disabled')
+  })
+
   it('keeps the copy free of the relay site name, top-up pitch and technical words', () => {
     const h = setup()
     h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t0')
-    h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')
-    expect(h.runtime.create).toHaveBeenCalledTimes(5)
+    expect(h.runtime.create).toHaveBeenCalledTimes(4)
     for (const call of (h.runtime.create as ReturnType<typeof vi.fn>).mock.calls) {
       expect(`${call[0].title} ${call[0].body}`).not.toMatch(/solov|sub2api|new-api|充值|购买|续费|内核|进程|代理|mihomo/i)
     }
@@ -172,7 +218,7 @@ describe('CLI update reminders', () => {
       'requested',
     )
     expect(h.runtime.create).toHaveBeenCalledWith({
-      title: '命令行工具有新版本',
+      title: '工具有新版本',
       body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
       silent: true,
     })
@@ -187,6 +233,17 @@ describe('CLI update reminders', () => {
       'disabled',
     )
     expect(h.runtime.create).toHaveBeenCalledTimes(2)
+  })
+
+  // 第三十二批 B：Windows 客户日志里真发过这一条（只装了 Codex 桌面端，四家命令行工具一个没装），
+  // 编号就是下面这个。标题说「命令行工具」像是发错了人。
+  it('does not call a desktop app update a command-line tool update', () => {
+    const message = buildActivityNotificationMessage('cliUpdate', 'cli-update:codexDesktop.26.928.3736.0')
+    expect(message).toEqual({
+      title: '工具有新版本',
+      body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+    })
+    expect(`${message.title} ${message.body}`).not.toContain('命令行')
   })
 })
 
@@ -203,5 +260,184 @@ describe('announcement reminders', () => {
     h.preferences.announcement = false
     expect(h.controller.notify('announcement', 'notice-ffffffff')).toBe('disabled')
     expect(h.runtime.create).toHaveBeenCalledTimes(1)
+  })
+  it('words recharge promos on their own, once per promo and once per day, under the announcement switch', () => {
+    const h = setup()
+    expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '有新的充值活动',
+      body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。',
+      silent: true,
+    })
+    expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('duplicate')
+    expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20260930')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '充值活动还在进行',
+      body: '当前账号的充值活动还没结束，回到星芒首页看看。',
+      silent: true,
+    })
+    h.preferences.announcement = false
+    expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20261001')).toBe('disabled')
+  })
+  it('names the tool and says whether it installed, updated or failed', () => {
+    const h = setup()
+    h.controller.notify('install', 'install:claude:installed:1', { tool: 'claude', outcome: 'installed' })
+    h.controller.notify('install', 'install:codex:updated:2', { tool: 'codex', outcome: 'updated' })
+    h.controller.notify('install', 'install:node:installFailed:3', { tool: 'node', outcome: 'installFailed' })
+    h.controller.notify('install', 'install:gemini:updateFailed:4', { tool: 'gemini', outcome: 'updateFailed' })
+    expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options)).toEqual([
+      { title: 'Claude Code 装好了', body: '回到星芒就能打开使用。', silent: true },
+      { title: 'Codex CLI 已经更新好了', body: '回到星芒就能接着用。', silent: true },
+      { title: '运行环境没装上', body: '回到星芒看看原因，照提示点一下就能重试。', silent: true },
+      { title: 'Gemini CLI 没更新好', body: '回到星芒看看原因，照提示点一下就能重试。', silent: true },
+    ])
+  })
+  it('falls back to a generic name for ids outside the fixed list', () => {
+    const h = setup()
+    h.controller.notify('install', 'install:x:1', { tool: 'constructor', outcome: 'installed' })
+    h.controller.notify('install', 'install:y:2', { tool: 'unknownTool', outcome: 'installFailed' })
+    expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options.title)).toEqual(['工具装好了', '工具没装上'])
+  })
+  it('keeps install results behind the install switch', () => {
+    const h = setup()
+    h.preferences.install = false
+    expect(h.controller.notify('install', 'install:claude:installFailed:1', { tool: 'claude', outcome: 'installFailed' })).toBe('disabled')
+    expect(h.runtime.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('spend spike reminders', () => {
+  it('writes the amount and multiple in a fixed format built in the main process', () => {
+    expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toEqual({
+      title: '这一小时花得比平时多',
+      body: '过去一小时用掉了 $12.40，大约是平时的 8 倍。如果不是你在用，回星芒看看是哪个工具。',
+    })
+    expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 505, multiple: null }).body)
+      .toBe('过去一小时用掉了 $5.05，比平时多很多。如果不是你在用，回星芒看看是哪个工具。')
+  })
+  it('can be switched off on its own and opens the usage page on click', () => {
+    const h = setup()
+    h.openPage.mockImplementation(() => undefined)
+    h.preferences.spend = false
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('disabled')
+    h.preferences.spend = true
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('requested')
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('duplicate')
+    h.notifications[0].emit('click')
+    expect(h.openPage).toHaveBeenCalledWith('usage')
+  })
+  it('never names the relay site', () => {
+    const { title, body } = buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })
+    expect(`${title} ${body}`).not.toMatch(/solov|new-api|relay|sub2api|API/i)
+  })
+})
+
+describe('chat notifications and click destinations', () => {
+  it('uses chat-specific copy for chat and image completions instead of the async task sentence', () => {
+    expect(buildActivityNotificationMessage('task', 'chat:req-1')).toEqual({
+      title: 'AI 回复好了',
+      body: '回到星芒的「聊天」查看。',
+    })
+    expect(buildActivityNotificationMessage('task', 'image:req-1')).toEqual({
+      title: '图片生成好了',
+      body: '回到星芒的「聊天」查看。',
+    })
+    expect(buildActivityNotificationMessage('task', 'xm-account:7:12:0').title).toBe('异步任务已完成')
+    // 前缀只对 task 这一类生效，别的种类照旧用自己的说法。
+    expect(buildActivityNotificationMessage('balance', 'chat:1').title).toBe('余额需要留意')
+  })
+  it('maps every notification kind to a fixed page decided in the main process', () => {
+    expect(resolveNotificationTarget('balance', 'balance:7:1')).toBe('topup')
+    expect(resolveNotificationTarget('task', 'chat:req-1')).toBe('chat')
+    expect(resolveNotificationTarget('task', 'image:req-1')).toBe('chat')
+    expect(resolveNotificationTarget('task', 'xm-account:7:12:0')).toBe('tasks')
+    expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
+    expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
+    expect(resolveNotificationTarget('announcement', 'notice-1')).toBe('announcement')
+    expect(resolveNotificationTarget('announcement', 'promo:notice-1')).toBe('home')
+    expect(resolveNotificationTarget('announcement', 'promo-daily:notice-1:20260930')).toBe('home')
+    expect(resolveNotificationTarget('spend', 'spend:7:1')).toBe('usage')
+    expect(resolveNotificationTarget('test', 'test')).toBeNull()
+  })
+  it('focuses the window before opening the destination page on click', () => {
+    const h = setup()
+    const order: string[] = []
+    h.focusMainWindow.mockImplementation(() => order.push('focus'))
+    h.openPage.mockImplementation((target: string) => order.push(target))
+    h.controller.notify('task', 'chat:req-1')
+    h.controller.notify('balance', 'balance:7:1')
+    h.controller.notify('test', 'test')
+    h.notifications[0].emit('click')
+    h.notifications[1].emit('click')
+    h.notifications[2].emit('click')
+    expect(order).toEqual(['focus', 'chat', 'focus', 'topup', 'focus'])
+  })
+  it('still only focuses the window when no page opener is wired', () => {
+    const notices: EventEmitter[] = []
+    const focusMainWindow = vi.fn()
+    const onError = vi.fn()
+    const controller = createPlatformNotifications(
+      {
+        readEnabled: () => true,
+        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true, cliTrouble: true, cliTurn: true }),
+        focusMainWindow,
+        onError,
+      },
+      {
+        supported: () => true,
+        create: () => {
+          const notice = Object.assign(new EventEmitter(), { show: vi.fn(), close: vi.fn() })
+          notices.push(notice)
+          return notice
+        },
+      },
+    )
+    controller.notify('balance', 'balance:7:1')
+    notices[0].emit('click')
+    expect(focusMainWindow).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  })
+})
+
+describe('terminal tool reminders', () => {
+  const reasons: TerminalFailureReason[] = ['billing', 'auth', 'busy', 'model', 'service', 'unknown']
+
+  it('names the tool and gives a fixed reason without the word balance or site names', () => {
+    for (const reason of reasons) {
+      const message = buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason })
+      expect(message.title).toBe('Claude Code 刚才没回上')
+      expect(message.body).not.toMatch(/余额|solov|Sub2API|API|npm|PATH/)
+    }
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason: 'billing' }).body).toContain('当前账号的额度不够了')
+    expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 在等你')
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'codex', event: 'finished' }).title).toBe('Codex 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'failed', reason: 'auth' }).title).toBe('Grok 刚才没回上')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'waiting' }).title).toBe('Grok 在等你')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'finished' }).title).toBe('Grok 做完了')
+  })
+
+  it('sends billing trouble to top-up, other trouble to the check page and turn reminders nowhere', () => {
+    expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'failed', reason: 'billing' })).toBe('topup')
+    for (const reason of reasons.filter((value) => value !== 'billing')) {
+      expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'failed', reason })).toBe('health')
+    }
+    expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'waiting' })).toBeNull()
+    expect(resolveTerminalNotificationTarget({ tool: 'gemini', event: 'finished' })).toBeNull()
+  })
+
+  it('follows its own two switches and opens the fixed page on click', () => {
+    const { controller, preferences, notifications, openPage } = setup()
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'billing' }, 'a')).toBe('requested')
+    notifications[0].emit('click')
+    expect(openPage).toHaveBeenCalledWith('topup')
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'billing' }, 'a')).toBe('duplicate')
+    preferences.cliTrouble = false
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'auth' }, 'b')).toBe('disabled')
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'waiting' }, 'c')).toBe('requested')
+    notifications[1].emit('click')
+    expect(openPage).toHaveBeenCalledTimes(1)
+    preferences.cliTurn = false
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'finished' }, 'd')).toBe('disabled')
   })
 })

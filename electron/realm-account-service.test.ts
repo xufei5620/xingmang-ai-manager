@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createRealmAccountService, type RealmAccountServiceOptions, type RealmAccountSiteId } from './realm-account-service'
-import { createRealmAccountVault, type RealmVaultStorage } from './realm-account-vault'
+import { createRealmAccountVault, createSessionRealmAccountVault, type RealmVaultStorage } from './realm-account-vault'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
-import { NewApiLoginRejectedError } from './new-api-client'
+import { NewApiLoginRejectedError, NewApiNetworkError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError } from './new-api-client'
 import { savedAccountId } from './saved-accounts'
 
 function deferred<T>() {
@@ -83,7 +83,14 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
       login: vi.fn(async (input: NewApiLoginInput) => {
         authenticationPolicy(siteId, input)
         if (item.failLogin || input.password === 'bad') throw new RealmAccountError('UNAUTHORIZED')
+        if (input.password === 'needs-2fa') throw new NewApiTwoFactorRequiredError(`flow-${siteId}`, Date.now() + 300_000)
         emit(saved(siteId, input.username === '8' ? '8' : '7', loginToken))
+        return { account: state().account!, accessExpiresAt: null }
+      }),
+      completeTwoFactorLogin: vi.fn(async ({ code }: { flowToken: string; code: string }) => {
+        if (code === 'wrong') throw new Error('验证码不对或已过期，请看验证器里最新的数字再试')
+        if (code === 'expired') throw new NewApiTwoFactorExpiredError()
+        emit(saved(siteId, '7', loginToken))
         return { account: state().account!, accessExpiresAt: null }
       }),
       logout: vi.fn(() => emit(null)),
@@ -185,6 +192,46 @@ describe('realm account service', () => {
     expect(f.service.getSiteId()).toBe('solov')
     expect(f.clients[1].client.logout).not.toHaveBeenCalled()
     expect(f.clients[2].client.logout).toHaveBeenCalledOnce()
+  })
+  it('finishes a two-factor login with the flow token it kept in memory', async () => {
+    const f = fixture()
+    await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect(await f.vault.active()).toBeNull()
+    await expect(f.service.completeTwoFactorLogin('wrong')).rejects.toThrow('验证码不对')
+    const result = await f.service.completeTwoFactorLogin('123456')
+    expect(result).toMatchObject({ siteId: 'solov', realmId: 'xm-account', account: { userId: 7 } })
+    const second = f.clients[f.clients.length - 1]
+    expect(second.client.completeTwoFactorLogin).toHaveBeenLastCalledWith({ flowToken: 'flow-solov', code: '123456' })
+    expect(f.service.client.getSessionState().account?.userId).toBe(7)
+    expect((await f.vault.active())?.credential).toEqual(saved().credential)
+    expect(await f.service.latestLoginHint()).toMatchObject({ identifier: login.username })
+    // One challenge, one login: the flow is gone once it has been used.
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+  it('asks for the password again when no challenge is waiting or the server expired it', async () => {
+    const f = fixture()
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    await expect(f.service.completeTwoFactorLogin('expired')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    expect(await f.vault.active()).toBeNull()
+  })
+  it('drops a waiting challenge when a later password login fails', async () => {
+    const f = fixture()
+    await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+  it('drops a challenge after its five minutes even without asking the server', async () => {
+    vi.useFakeTimers({ now: 1_000_000 })
+    try {
+      const f = fixture()
+      await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+      vi.setSystemTime(1_000_000 + 300_001)
+      const calls = f.clients.length
+      await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+      expect(f.clients.length).toBe(calls)
+    } finally { vi.useRealTimers() }
   })
   it('does not silently route historical account recovery to the primary account', async () => {
     const f = fixture()
@@ -421,6 +468,149 @@ describe('realm account service', () => {
       expect(onChanged.mock.lastCall?.[1]).toMatchObject({ authenticated: outcome === 'restored' })
       if (outcome === 'expired') expect(await f.vault.active()).toBeNull()
     }
+  })
+  // A014：线路差时偶尔一次请求十秒没回，下一次又好了。开机先悄悄再试一次，不挂「暂时连不上」。
+  for (const timeout of [new RealmAccountError('TIMEOUT'), new NewApiNetworkError('timeout')]) {
+    it(`retries a startup restore once after ${timeout.name} before marking it as retrying`, async () => {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      const onChanged = vi.fn()
+      const failures: Error[] = [timeout]
+      const restarted = createRealmAccountService({ ...f.options, onChanged, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        // 账号服务一建好就先给「solov」建一个空句柄，只有恢复用的候选句柄才吃掉这次失败。
+        if (siteId === 'solov-api') f.clients[f.clients.length - 1].restoreError = failures.shift() ?? null
+        return result
+      } })
+      const before = f.clients.length
+      await expect(restarted.restoreActive()).resolves.toBe(true)
+      expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(2)
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).toMatchObject({ authenticated: true })
+      expect(onChanged.mock.calls.every(([, state]) => !state.restoring)).toBe(true)
+    })
+  }
+  it('marks the startup restore as retrying when the quick retry also times out', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new RealmAccountError('TIMEOUT')
+      return result
+    } })
+    const before = f.clients.length
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'TIMEOUT' })
+    expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(2)
+    expect(restarted.stalledAccount()).toEqual({ siteId: 'solov-api', userId: 42 })
+    expect((await f.vault.active())?.realmId).toBe('api-account')
+  })
+  // 0.2.14 发版前检查：开机时令牌已过期，第一次恢复先续了期（服务端换了令牌、旧续期令牌
+  // 当场作废，新的已存进本机账号库），紧接着的请求才超时。拿旧的重试会被当成失效、账号被删。
+  for (const siteId of ['solov-api', 'solov'] as const) {
+    it(`quick-retries a startup restore with the credential rotated before the timeout (${siteId})`, async () => {
+      const f = fixture()
+      const original = saved(siteId, '42')
+      await f.vault.activate(original)
+      const rotated = parseRealmSavedAccount({ ...original, credential: siteId === 'solov'
+        ? { kind: 'new-api', cookies: ['session=test-rotated'] }
+        : { kind: 'sub2api', accessToken: 'test-rotated-access', refreshToken: 'test-rotated-refresh', expiresAt: null } })
+      const presented: unknown[] = []
+      const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (id, callback) => {
+        const result = f.options.createClient(id, callback)
+        return { ...result, restore: async (value) => {
+          presented.push(value.credential)
+          if (presented.length === 1) {
+            // 同 main.ts 的 onCredentialRotation：换来的令牌先落库，再查账号资料时超时。
+            await f.vault.updateSession(rotated)
+            throw new RealmAccountError('TIMEOUT')
+          }
+          // 服务端只认换来的那一份。
+          if (JSON.stringify(value.credential) !== JSON.stringify(rotated.credential)) return false
+          return result.restore(value)
+        } }
+      } })
+      await expect(restarted.restoreActive()).resolves.toBe(true)
+      expect(presented).toEqual([original.credential, rotated.credential])
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).toMatchObject({ authenticated: true })
+      expect((await f.vault.active())?.userId).toBe('42')
+      expect(await f.vault.list()).toHaveLength(1)
+    })
+  }
+  for (const reread of ['missing', 'unreadable'] as const) {
+    it(`leaves a timed-out startup restore retrying when the saved login cannot be re-read (${reread})`, async () => {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      const vault = { ...f.vault, get: async () => {
+        if (reread === 'missing') return null
+        throw new Error('disk failure')
+      } }
+      const restarted = createRealmAccountService({ ...f.options, vault, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        f.clients[f.clients.length - 1].restoreError = new RealmAccountError('TIMEOUT')
+        return result
+      } })
+      const before = f.clients.length
+      await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'TIMEOUT' })
+      expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(1)
+      expect(restarted.stalledAccount()).toEqual({ siteId: 'solov-api', userId: 42 })
+      expect((await f.vault.active())?.realmId).toBe('api-account')
+    })
+  }
+  it('signs out a startup restore whose re-read credential is rejected as well', async () => {
+    const f = fixture()
+    const original = saved('solov-api', '42')
+    await f.vault.activate(original)
+    const rotated = parseRealmSavedAccount({ ...original, credential: { kind: 'sub2api',
+      accessToken: 'test-rotated-access', refreshToken: 'test-rotated-refresh', expiresAt: null } })
+    const presented: unknown[] = []
+    const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (id, callback) => {
+      const result = f.options.createClient(id, callback)
+      return { ...result, restore: async (value) => {
+        presented.push(value.credential)
+        if (presented.length > 1) return false
+        await f.vault.updateSession(rotated)
+        throw new RealmAccountError('TIMEOUT')
+      } }
+    } })
+    // 换来的那份也被拒（比如这期间在别处改了密码），才是真失效，照旧清掉。
+    await expect(restarted.restoreActive()).resolves.toBe(false)
+    expect(presented).toEqual([original.credential, rotated.credential])
+    expect(restarted.stalledAccount()).toBeNull()
+    expect(await f.vault.active()).toBeNull()
+  })
+  // 星芒账号每次恢复都先续期：剩下的期限掐断重试里的续期，换来的令牌就没落库。
+  it('leaves a timed-out startup restore retrying when too little of the restore budget is left', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov', '42'))
+    const restarted = createRealmAccountService({ ...f.options, prepareTimeoutMs: 5000, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new NewApiNetworkError('timeout')
+      return result
+    } })
+    const before = f.clients.length
+    await expect(restarted.restoreActive()).rejects.toBeInstanceOf(NewApiNetworkError)
+    expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(1)
+    expect(restarted.stalledAccount()).toEqual({ siteId: 'solov', userId: 42 })
+    expect((await f.vault.active())?.realmId).toBe('xm-account')
+  })
+  it('does not quick-retry a startup restore that failed for a reason other than a timeout', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new RealmAccountError('UNAVAILABLE')
+      return result
+    } })
+    const before = f.clients.length
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+    expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(1)
+    expect(restarted.stalledAccount()).toEqual({ siteId: 'solov-api', userId: 42 })
+  })
+  it('rejects an out-of-range startup retry delay', () => {
+    const f = fixture()
+    expect(() => createRealmAccountService({ ...f.options, startupRetryDelayMs: -1 })).toThrow(RealmAccountError)
+    expect(() => createRealmAccountService({ ...f.options, startupRetryDelayMs: 10001 })).toThrow(RealmAccountError)
   })
   // 全面检测 Q9：等重试的那段网络请求不占账号锁，工具页的读取、打开、保存照常。
   for (const interrupt of ['none', 'login'] as const) {
@@ -1011,6 +1201,27 @@ describe('realm account re-login of the same account (#476)', () => {
     expect(restarted.stalledAccount()).toBeNull()
   })
 
+  it('refuses a re-login it cannot check against the stored session and ends the new one instead', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const get = vi.fn(async () => { throw new Error('disk hiccup') })
+    const failing = createRealmAccountService({ ...f.options, vault: { ...f.vault, get } })
+    await failing.restoreActive()
+    const before = f.content()
+    f.loginToken('test-second-login')
+    await expect(failing.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(get).toHaveBeenCalledOnce()
+    // The stored solov cookie is still there to sign out later, and the fresh
+    // session this machine could not keep has already been ended.
+    expect(f.content()).toBe(before)
+    expect((await f.vault.get(saved()))?.credential).toEqual(saved('solov', '7', 'test-original').credential)
+    expect(f.clients[f.clients.length - 1].serverSessionsEnded).toEqual(['7'])
+    expect(savedSignOuts(f)).toEqual([])
+    expect(failing.client.getSessionState().authenticated).toBe(true)
+    expect((await f.vault.active())?.realmId).toBe('api-account')
+  })
+
   it('keeps sessions alive when nothing was replaced: other accounts, first logins, switching', async () => {
     const f = fixture()
     await f.service.login(login)
@@ -1040,5 +1251,41 @@ describe('realm account re-login of the same account (#476)', () => {
     await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
     expect(liveSignOuts(f)).toEqual([])
     expect(savedSignOuts(f)).toEqual([])
+  })
+})
+
+describe('realm account session-only login (Linux without a keyring)', () => {
+  it('signs in and tells the renderer the login will not be remembered', async () => {
+    const f = fixture({ vault: createSessionRealmAccountVault() })
+    expect(f.service.client.getSessionState()).toMatchObject({ authenticated: false, sessionOnly: true })
+    const result = await f.service.login(login)
+    expect(result).toMatchObject({ siteId: 'solov', sessionOnly: true })
+    expect(f.service.client.getSessionState()).toMatchObject({ authenticated: true, sessionOnly: true })
+    await expect(f.service.client.getBalance()).resolves.toEqual({ quota: 100 })
+    // The durable fixture is never written; the session vault has no file at all.
+    expect(f.content()).toBeNull()
+  })
+  it('switches between this run\'s accounts and signs out without a keyring', async () => {
+    const f = fixture({ vault: createSessionRealmAccountVault() })
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    expect(summaries).toHaveLength(2)
+    expect((await f.service.switchSavedAccount(summaries[0].id)).siteId).toBe('solov')
+    await f.service.logout()
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+  })
+  it('starts the next launch signed out', async () => {
+    const f = fixture({ vault: createSessionRealmAccountVault() })
+    await f.service.login(login)
+    const restarted = createRealmAccountService({ ...f.options, vault: createSessionRealmAccountVault() })
+    expect(await restarted.restoreActive()).toBe(false)
+    expect(await restarted.listSavedAccounts()).toEqual([])
+  })
+  it('never marks a durable login as session-only', async () => {
+    const f = fixture()
+    expect(f.service.client.getSessionState()).not.toHaveProperty('sessionOnly')
+    expect(await f.service.login(login)).not.toHaveProperty('sessionOnly')
+    expect(f.service.client.getSessionState()).not.toHaveProperty('sessionOnly')
   })
 })

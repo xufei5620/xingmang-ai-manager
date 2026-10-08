@@ -31,6 +31,8 @@ function createInstallFixture(readDiskSpace: () => Promise<DiskSpaceReading | nu
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-disk-space-')))
   temporaryDirectories.push(root)
   vi.stubEnv('HOME', path.join(root, 'home'))
+  // Linux 上托管目录跟着 XDG_DATA_HOME 走，不清掉会写进开发机真实的数据目录。
+  vi.stubEnv('XDG_DATA_HOME', undefined)
   const target = { isDestroyed: () => false, send: vi.fn() }
   const service = createSystemService(
     new AppSettingsStore(path.join(root, 'settings.json'), root),
@@ -110,5 +112,64 @@ describe('refusing an npm install over a CLI installed another way', () => {
     expect(String(error)).toContain('不是通过本工具安装的，这里不会再另装一份')
     expect(target.send).not.toHaveBeenCalled()
     expect(readDiskSpace).not.toHaveBeenCalled()
+  })
+})
+
+// 「换成星芒装的」先卸后装（第三十一批 B）：装不回来就不该先卸，盘不够时官方那份原样留着。
+describe('checking free space before uninstalling a CLI that is about to be reinstalled', () => {
+  function createNativeClaudeFixture(readDiskSpace: () => Promise<DiskSpaceReading | null>) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-switch-disk-')))
+    temporaryDirectories.push(root)
+    const home = path.join(root, 'home')
+    const binDirectory = path.join(home, '.local', 'bin')
+    const commandPath = path.join(binDirectory, 'claude')
+    fs.mkdirSync(binDirectory, { recursive: true })
+    fs.writeFileSync(commandPath, '#!/bin/sh\n', { mode: 0o755 })
+    vi.stubEnv('HOME', home)
+    vi.stubEnv('XDG_DATA_HOME', undefined)
+    const probe = vi.fn(readDiskSpace)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      {
+        platform: 'linux',
+        windowsExecutionMode: 'same-user',
+        findExecutable: vi.fn(async () => null),
+        readDiskSpace: probe,
+        syncLinuxTerminalCommands: vi.fn(async () => ({ outcome: 'present' as const, launchers: [], skipped: [] })),
+        // 同官方安装器：命令还在就认得出，卸掉以后就没有了。
+        resolveCliInstallation: async () => fs.existsSync(commandPath)
+          ? { commandPath, installDirectory: binDirectory, packageRoot: null, npmPrefix: null, source: 'native' as const }
+          : null,
+      },
+    )
+    return { service, commandPath, probe }
+  }
+
+  it('leaves the installed copy alone when the reinstall would not fit on the disk', async () => {
+    const fixture = createNativeClaudeFixture(async () => diskWith(420 * 1024 ** 2))
+
+    const error = await fixture.service.uninstallCli('claude', { reinstall: true }).catch((reason: unknown) => reason)
+
+    expect(String(error)).toContain('Claude Code 安装失败')
+    expect(String(error)).toContain('磁盘空间不足')
+    expect(fs.existsSync(fixture.commandPath)).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('uninstalls once the disk has room for the reinstall', async () => {
+    const fixture = createNativeClaudeFixture(async () => diskWith(40 * gigabyte))
+
+    await expect(fixture.service.uninstallCli('claude', { reinstall: true })).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    expect(fixture.probe).toHaveBeenCalled()
+    expect(fs.existsSync(fixture.commandPath)).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('never looks at the disk for a plain uninstall, which only frees space', async () => {
+    const fixture = createNativeClaudeFixture(async () => diskWith(420 * 1024 ** 2))
+
+    await expect(fixture.service.uninstallCli('claude')).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    expect(fixture.probe).not.toHaveBeenCalled()
+    expect(fs.existsSync(fixture.commandPath)).toBe(false)
   })
 })

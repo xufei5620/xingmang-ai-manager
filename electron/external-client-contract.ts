@@ -1,4 +1,5 @@
 import type { ProviderId } from './catalog'
+import { claudeDesktopDownloadPageUrl } from './claude-desktop-install-failure'
 import type { ExternalClientCheckResult } from './external-client-connection'
 import type { ExternalToolId } from './external-tool-config'
 
@@ -25,7 +26,7 @@ export interface ExternalClientRuntimeStatus {
  * （I12 全等匹配），所以这里只放完整网址，不拼接。WorkBuddy 有腾讯官方安装包兜底，不在此列。
  */
 export const externalClientOfficialDownloadUrls = {
-  claudeDesktop: 'https://claude.com/download',
+  claudeDesktop: claudeDesktopDownloadPageUrl,
   opencode: 'https://opencode.ai/download',
 } as const satisfies Partial<Record<ExternalToolId, string>>
 
@@ -37,9 +38,25 @@ export interface ExternalClientConnectionStatus {
   model: string | null
   configurationSource: 'xingmang' | 'other' | 'missing' | 'unknown'
   configurationError: string | null
+  /**
+   * 用户换了线路以后，星芒替当前账号写的那份还在这个站的另一条线路上，客户端开着所以这次没换
+   * （第四十三批 A）。缺省 = 没有要换的。
+   */
+  routePending?: boolean
 }
 
-export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {}
+export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {
+  /**
+   * 只有开机先摆出来的「上次的检测结果」才有：落盘的时间（已知13）。界面见到它就当作还在检测，
+   * 真的检测结果回来会整份替换（见 external-client-snapshot-cache.ts）。缺省 = 这次真检测的结果。
+   */
+  cachedAt?: string
+}
+
+/** 首页开机那一次可以只要上次落盘的结果（见 SystemService.cachedExternalClients）；其余调用方不传。 */
+export interface ExternalClientScanOptions {
+  cachedOnly?: boolean
+}
 
 /**
  * 展示与遍历顺序。首页、反馈报告与检查页都按这一份走，各处不再自写字面量数组

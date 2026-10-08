@@ -8,6 +8,7 @@ const YAML = require('yaml')
 const {
   StatusInputError,
   applyBadVersions,
+  applyMinimumVersion,
   applyRollout,
   applyStatusChanges,
   describeStatus,
@@ -98,7 +99,7 @@ test('the workflow keeps free text out of the shell and publishes only the statu
   assert.equal(uploads.length, 1)
   assert.match(uploads[0].run, /\$OBJECT_PREFIX\/service-status\.json/)
   assert.match(uploads[0].run, /--cache-control 'no-cache'/)
-  assert.doesNotMatch(uploads[0].run, /latest(-mac)?\.yml/)
+  assert.doesNotMatch(uploads[0].run, /latest(?:-[a-z0-9-]+)?\.yml/)
 })
 
 test('withdrawn versions are added, removed one by one, or cleared, never silently replaced', () => {
@@ -118,5 +119,37 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11'), /版本号 空格 百分比/)
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
-  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑'])
+  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无'])
+})
+
+test('a minimum version never goes above what the feed is publishing', () => {
+  assert.equal(applyMinimumVersion(undefined, 'v0.2.12', ['0.2.12', '0.2.13']), '0.2.12')
+  assert.equal(applyMinimumVersion('0.2.12', '', []), '0.2.12')
+  assert.equal(applyMinimumVersion('0.2.12', 'none', []), undefined)
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.13', ['0.2.12', '0.2.13']), /比线上正在发的 0\.2\.12、0\.2\.13 还高/)
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.12', []), /读不到线上的更新清单/)
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.12-beta', ['0.2.12']), /0\.2\.10 这样/)
+  const next = applyStatusChanges({ badVersions: ['0.2.10'] }, { 'minimum-version': '0.2.11', 'published-versions': '0.2.11 0.2.11' }, now)
+  assert.equal(next.minimumVersion, '0.2.11')
+  assert.deepEqual(next.badVersions, ['0.2.10'])
+  assert.equal(describeStatus(next)[3], '最低版本：0.2.11（更低的必须先更新，只有 0.2.11 及以后的客户端认）')
+  assert.equal(applyStatusChanges(next, { 'minimum-version': 'none' }, now).minimumVersion, undefined)
+})
+
+test('the workflow checks the live manifests before it sets a minimum version', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  assert.ok(workflow.on.workflow_dispatch.inputs.minimum_version)
+  const steps = workflow.jobs.publish.steps
+  const build = steps.find((step) => /service-status\.cjs/.test(step.run ?? ''))
+  assert.match(build.run, /--minimum-version "\$MINIMUM_VERSION"/)
+  assert.match(build.run, /--published-versions "\$PUBLISHED_VERSIONS"/)
+  assert.equal(build.env.MINIMUM_VERSION, '${{ inputs.minimum_version }}')
+  const manifests = steps.findIndex((step) => /latest-mac\.yml/.test(step.run ?? ''))
+  assert.ok(manifests >= 0 && manifests < steps.indexOf(build))
+  // 每个平台都要读，Linux 两个架构各一份：漏读 Linux 的话，最低版本可能被设得比线上
+  // Linux 正在发的还高，Linux 客户就被挡在门外、又找不到能装的新版本。没发过的平台
+  // 404 跳过。
+  const { UPDATE_MANIFEST_NAMES } = require('./update-release-utils.cjs')
+  assert.ok(steps[manifests].run.includes(`for manifest in ${UPDATE_MANIFEST_NAMES.join(' ')}; do`))
+  assert.match(steps[manifests].run, /404\) echo "线上没有 \$manifest，跳过这个平台"/)
 })

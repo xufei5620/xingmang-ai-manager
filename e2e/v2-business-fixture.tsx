@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { BusinessPage } from '../src/renderer-v2/pages-business'
 import { Shell } from '../src/renderer-v2/features/shell/Shell'
-import { BalanceTierProvider } from '../src/renderer-v2/ui'
+import { BalanceTierProvider, ToastProvider } from '../src/renderer-v2/ui'
 import type { V2Bridge, V2Page } from '../src/renderer-v2/types'
 import type {
   PlatformSystemState,
@@ -18,6 +18,13 @@ declare global {
     // 支付回调只发一次：订阅次数是 R-B6 的直接观测点，重订一次就是一次丢单窗口。
     paymentTerminalSubscriptions: () => { added: number; live: number }
     rerenderFixture: () => void
+    // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
+    failNextRead: (read: 'profile' | 'subscriptions') => void
+    // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
+    profileReadHarness: {
+      deferNext(): void
+      release(): void
+    }
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
@@ -36,10 +43,26 @@ const initialSkin = requestedSkin === 'dawn' || requestedSkin === 'obsidian' || 
   : 'mist'
 const fail = query.get('fail')
 const empty = query.has('empty')
+
+// 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
+function fixtureTopupDiscounts(): Record<string, number> {
+  return query.has('topupBonus') ? { 20: 0.8 } : {}
+}
 const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
   document.documentElement.dataset.calls = JSON.stringify(calls)
+}
+const failOnce = new Set<string>()
+window.failNextRead = (read) => { failOnce.add(read) }
+function failingOnce(read: string) {
+  return failOnce.delete(read)
+}
+let deferNextProfileRead = false
+let releaseProfileRead: (() => void) | null = null
+window.profileReadHarness = {
+  deferNext() { deferNextProfileRead = true },
+  release() { releaseProfileRead?.(); releaseProfileRead = null },
 }
 // Chromium rejects clipboard writes unless the context was granted the
 // permission, so record them instead: the copy actions are what the tests
@@ -57,6 +80,8 @@ let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
 // codexCatalogOffline 让第一次下载按国内常见的样子失败。
 let codexCatalogReady = false
 let codexCatalogAttempts = 0
+// mcpHealthFail 让第一次连接检测没跑完，验证「这次没检测成」和「重新检测」。
+let mcpHealthAttempts = 0
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -71,6 +96,25 @@ const codexCatalogPlugin = {
   source: { kind: 'native' as const, locator: 'openai-api-curated', reference: null },
   update: { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
   operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+}
+// scopedExtensions：Claude 只在这个项目里用的插件（local）和 Gemini 扩展自带的技能（extension），
+// 验证「范围」筛选把它们放在详情写的那一档里。
+function scopedExtension(kind: 'skill' | 'plugin', id: string, name: string, scope: 'local' | 'extension') {
+  return {
+    provider: kind === 'plugin' ? 'claude' as const : 'gemini' as const,
+    kind,
+    id,
+    name,
+    description: '只在这一档里出现',
+    installed: true,
+    enabled: true,
+    scope,
+    currentVersion: '1.0.0',
+    latestVersion: '1.0.0',
+    source: { kind: 'native' as const, locator: null, reference: null },
+    update: { state: 'unsupported' as const, reason: '不支持检查更新', checkedAt: null },
+    operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
+  }
 }
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
 // 主进程按原因抛不同的错误（NewApiAuthenticationError 的中文、限流的英文原文……），
@@ -140,6 +184,7 @@ let settings: Awaited<ReturnType<V2Bridge['getSettings']>> = {
   reducedMotion: query.has('evidence'),
   checkUpdatesOnStartup: true,
   runDiagnosticsOnStartup: false,
+  crashReportingNoticeShown: true,
 }
 const capabilities = {
   available: true,
@@ -306,9 +351,76 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
     },
   },
 }
+// 扩展三页共用的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
+function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
+  return {
+    provider,
+    checkedAt: time,
+    capabilities: {
+      mcp: { list: true, reason: null },
+      skill: { list: true, reason: null },
+      plugin: { list: true, reason: null },
+    },
+    warnings: [],
+    // 缺 Python 的机器是多数：添加 uvx 型连接前那条提示就是靠它出的。
+    runtimes: { python: false, uv: false },
+    ...(provider === 'codex'
+      ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
+      : {}),
+    items: [
+      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
+      ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
+        ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
+        : []),
+      ...(query.has('scopedExtensions') && provider === 'gemini' && page === 'skills'
+        ? [scopedExtension('skill', 'extension-skill', '扩展自带技能', 'extension')]
+        : []),
+      ...(empty
+      ? []
+      : [
+          {
+            provider,
+            kind: (page === 'skills'
+              ? 'skill'
+              : page === 'plugins'
+                ? 'plugin'
+                : 'mcp') as 'mcp' | 'skill' | 'plugin',
+            id: 'test-extension',
+            name: '测试扩展',
+            description: '本机测试连接',
+            installed: true,
+            enabled: true,
+            scope: 'user' as const,
+            currentVersion: '1.0.0',
+            latestVersion: '1.0.1',
+            source: {
+              kind: 'npm' as const,
+              locator: 'test-package',
+              reference: null,
+            },
+            update: {
+              state: 'update-available' as const,
+              reason: '发现新版本',
+              checkedAt: time,
+            },
+            operations: {
+              install: true,
+              uninstall: true,
+              enable: true,
+              disable: true,
+              update: true,
+            },
+          },
+        ]),
+    ],
+  }
+}
 const apiMethods = {
   onInstallProgress: () => () => undefined,
   onCodexDesktopInstallProgress: () => () => undefined,
+  onNodeRuntimeInstallProgress: () => () => undefined,
+  onPythonRuntimeInstallProgress: () => () => undefined,
+  onCodexDesktopLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
@@ -327,7 +439,25 @@ const apiMethods = {
       usedQuota: 100,
     },
   }),
-  getAccountProfile: async () => { record('get-profile'); return { ...profile, userId: activeUserId } },
+  getAccountProfile: async () => {
+    record('get-profile')
+    if (fail === 'profile' || failingOnce('profile')) throw new Error('账号资料服务暂时不可用')
+    const read = { ...profile, userId: activeUserId }
+    if (deferNextProfileRead) {
+      deferNextProfileRead = false
+      await new Promise<void>((resolve) => { releaseProfileRead = resolve })
+    }
+    return read
+  },
+  updateAccountDisplayName: async (input: { displayName: string }) => {
+    record('update-display-name', input)
+    profile.displayName = input.displayName
+    return { updated: true as const }
+  },
+  transferAccountAffiliateQuota: async (input: { quota: number }) => {
+    record('transfer-affiliate-quota', input)
+    profile.affQuota -= input.quota
+  },
   getAccountBalance: async () => { record('get-balance'); return { ...balance, ...(query.has('sub2apiReliability') ? { quotaPerUnit: 1 } : {}) } },
   listSavedAccounts: async () => [
     {
@@ -426,7 +556,8 @@ const apiMethods = {
     if (state === 'deferred') await new Promise<void>((resolve) => { releaseKeyGroups = resolve })
     return groups
   },
-  getAccountDashboard: async () => {
+  getAccountDashboard: async (input: { startTimestamp?: number; endTimestamp?: number }) => {
+    record('get-dashboard', input)
     if (fail === 'dashboard') throw new Error('用量服务暂时不可用')
     return {
     startTimestamp: 1,
@@ -440,6 +571,7 @@ const apiMethods = {
     ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
   } },
   getAccountTasks: async () => {
+    if (fail === 'tasks') throw new Error('任务服务暂时不可用')
     const completed = ++taskReads > 1
     return {
       page: 1,
@@ -484,6 +616,7 @@ const apiMethods = {
     input: Parameters<V2Bridge['getAccountTopupOrders']>[0],
   ) => {
     record('query-orders', input)
+    if (fail === 'orders') throw new Error('订单服务暂时不可用')
     return {
       page: 1,
       pageSize: 20,
@@ -503,7 +636,10 @@ const apiMethods = {
       ],
     }
   },
-  getAccountTopupInfo: async () => ({
+  getAccountTopupInfo: async () => {
+    record('get-topup-info')
+    if (fail === 'topup') throw new Error('充值服务暂时不可用')
+    return {
     onlineTopupEnabled: true,
     stripeTopupEnabled: true,
     creemTopupEnabled: false,
@@ -511,7 +647,8 @@ const apiMethods = {
     redemptionEnabled: true,
     paymentComplianceConfirmed: true,
     paymentComplianceTermsVersion: '1',
-    paymentMethods: query.has('multiPayment')
+    // noPayment：后台一个支付渠道都没开，只能用充值码兑换。
+    paymentMethods: query.has('noPayment') ? [] : query.has('multiPayment')
       ? [
           {
             name: 'Stripe',
@@ -542,12 +679,15 @@ const apiMethods = {
         ],
     minTopup: 1,
     amountOptions: [10, 20],
-    discounts: {},
+    discounts: fixtureTopupDiscounts(),
     topupLink: null,
-  }),
+  } },
   quoteAccountTopupAmount: async (
     input: Parameters<V2Bridge['quoteAccountTopupAmount']>[0],
-  ) => ({ amount: input.amount, payableAmount: input.amount }),
+  ) => ({
+    amount: input.amount,
+    payableAmount: query.has('topupBonus') && input.amount === 20 ? 16 : input.amount,
+  }),
   createAccountTopupPayment: async (
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
   ) => {
@@ -599,7 +739,7 @@ const apiMethods = {
   },
   getAccountSubscriptionSelf: async () => {
     record('get-subscriptions')
-    if (fail === 'subscriptions') throw new Error('订阅服务暂时不可用')
+    if (fail === 'subscriptions' || failingOnce('subscriptions')) throw new Error('订阅服务暂时不可用')
     if (query.has('sub2apiReliability')) return {
       billingPreference: null, activeSubscriptions: [], allSubscriptions: [{
         id: 4, planId: 1, groupName: '周期订阅', status: 'active', source: 'sub2api', amountTotal: null, amountUsed: null,
@@ -610,23 +750,48 @@ const apiMethods = {
         ],
       }],
     }
+    // 两个账号后台报回来的各种订阅状态，外加一个界面不认识的。
+    if (query.has('subscriptionStates')) return {
+      billingPreference: 'subscription_first' as const,
+      activeSubscriptions: [],
+      allSubscriptions: ([['月卡一号', 'active'], ['月卡二号', 'expired'], ['月卡三号', 'cancelled'], ['月卡四号', 'suspended'], ['月卡五号', 'paused']] as const).map(([groupName, status], index) => ({
+        id: 10 + index, planId: 1, groupName, status, source: 'order', amountTotal: 1000, amountUsed: 100,
+        startedAt: time, endsAt: '2026-10-01T00:00:00Z', nextResetAt: null,
+      })),
+    }
     return {
     billingPreference: 'subscription_first' as const,
     activeSubscriptions: [],
     allSubscriptions: [],
   } },
-  getAccountLoginSessions: async () => [
-    {
-      sid: 'device-1',
-      current: true,
-      loginMethod: 'password',
-      ip: '127.0.0.1',
-      userAgent: 'Test browser',
-      createdAt: time,
-      lastActiveAt: time,
-      expiresAt: time,
-    },
-  ],
+  getAccountLoginSessions: async () => {
+    if (fail === 'devices') throw new Error('设备服务暂时不可用')
+    return [
+      {
+        sid: 'device-1',
+        current: true,
+        loginMethod: 'password',
+        ip: '127.0.0.1',
+        userAgent: 'Test browser',
+        createdAt: time,
+        lastActiveAt: time,
+        expiresAt: time,
+      },
+      // otherDevice：同一个账号还在另一台电脑上登着。
+      ...(query.has('otherDevice')
+        ? [{
+            sid: 'device-2',
+            current: false,
+            loginMethod: 'password',
+            ip: '10.0.0.2',
+            userAgent: 'Other browser',
+            createdAt: time,
+            lastActiveAt: time,
+            expiresAt: time,
+          }]
+        : []),
+    ]
+  },
   listAccountKeyModels: async () => ['test-model'],
   copyAccountKey: async (id: number) => record('copy-key', id),
   createAccountKey: async (
@@ -687,74 +852,24 @@ const apiMethods = {
     provider: Parameters<V2Bridge['launchCli']>[0],
     workspace: string,
     mode?: Parameters<V2Bridge['launchCli']>[2],
+    sessionId?: Parameters<V2Bridge['launchCli']>[3],
   ) => {
-    record('launch-cli', { provider, workspace, mode })
+    record('launch-cli', sessionId === undefined ? { provider, workspace, mode } : { provider, workspace, mode, sessionId })
     return {}
   },
   listProviderExtensions: async (
     provider: Parameters<V2Bridge['listProviderExtensions']>[0],
-  ) => ({
-    provider,
-    checkedAt: time,
-    capabilities: {
-      mcp: { list: true, reason: null },
-      skill: { list: true, reason: null },
-      plugin: { list: true, reason: null },
-    },
-    warnings: [],
-    // 缺 Python 的机器是多数：添加 uvx 型连接前那条提示就是靠它出的。
-    runtimes: { python: false, uv: false },
-    ...(provider === 'codex'
-      ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
-      : {}),
-    items: [
-      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
-      ...(empty
-      ? []
-      : [
-          {
-            provider,
-            kind: (page === 'skills'
-              ? 'skill'
-              : page === 'plugins'
-                ? 'plugin'
-                : 'mcp') as 'mcp' | 'skill' | 'plugin',
-            id: 'test-extension',
-            name: '测试扩展',
-            description: '本机测试连接',
-            installed: true,
-            enabled: true,
-            scope: 'user' as const,
-            currentVersion: '1.0.0',
-            latestVersion: '1.0.1',
-            source: {
-              kind: 'npm' as const,
-              locator: 'test-package',
-              reference: null,
-            },
-            update: {
-              state: 'update-available' as const,
-              reason: '发现新版本',
-              checkedAt: time,
-            },
-            operations: {
-              install: true,
-              uninstall: true,
-              enable: true,
-              disable: true,
-              update: true,
-            },
-          },
-        ]),
-    ],
-  }),
+  ) => {
+    record('list-extensions', provider)
+    return extensionList(provider)
+  },
   ensureProviderMarketplace: async (
     provider: Parameters<V2Bridge['ensureProviderMarketplace']>[0],
   ) => {
     record('ensure-marketplace', provider)
     codexCatalogAttempts += 1
     if (query.has('codexCatalogOffline') && codexCatalogAttempts === 1)
-      throw new Error('插件目录要从国外的网站下载，当前网络连不上或太慢。打开加速后再点一次「下载插件目录」，或者换个网络再试。')
+      throw new Error('插件目录要从国外的网站下载，当前网络连不上或太慢。请稍后再点一次「下载插件目录」，或者换个网络再试。')
     codexCatalogReady = true
     return api.listProviderExtensions(provider)
   },
@@ -764,6 +879,8 @@ const apiMethods = {
     provider: Parameters<V2Bridge['checkProviderMcpHealth']>[0],
   ) => {
     record('mcp-health', provider)
+    mcpHealthAttempts += 1
+    if (query.has('mcpHealthFail') && mcpHealthAttempts === 1) throw new Error('连接检测没有跑完')
     return {
       provider,
       checkedAt: time,
@@ -833,6 +950,12 @@ const apiMethods = {
       ...(patch.reducedMotion !== undefined
         ? { reducedMotion: patch.reducedMotion }
         : {}),
+      ...(patch.checkUpdatesOnStartup !== undefined
+        ? { checkUpdatesOnStartup: patch.checkUpdatesOnStartup }
+        : {}),
+      ...(patch.autoUpdate !== undefined
+        ? { autoUpdate: patch.autoUpdate }
+        : {}),
       // 只有显式关闭才留在记录里，和 app-settings.ts 的落盘语义一致。
       ...(patch.crashReporting === false
         ? { crashReporting: false as const }
@@ -846,15 +969,26 @@ const apiMethods = {
     directory: 'C:/test-logs',
     filePath: 'C:/test-logs/log',
     sizeBytes: 64,
-    total: 3,
-    truncated: false,
+    total: query.has('manyLogs') ? 650 : 3,
+    // manyLogs：日志多到主进程只回了最近一部分，列表一次先放 100 条。
+    truncated: query.has('manyLogs'),
     counts: { debug: 0, info: 2, warn: 0, error: 1 },
     sources: ['fixture', 'updater'],
     currentProcessId: 4242,
     startedAt: time,
     entries: empty
       ? []
-      : [
+      : query.has('manyLogs')
+        ? Array.from({ length: 150 }, (_, index) => ({
+            id: `${time}:4242:${index + 1}`,
+            timestamp: time,
+            level: 'info' as const,
+            source: 'fixture',
+            event: 'test',
+            message: `第 ${index + 1} 条测试日志`,
+            detail: null,
+          }))
+        : [
           {
             id: `${time}:4242:1`,
             timestamp: time,
@@ -888,6 +1022,7 @@ const apiMethods = {
     id: 'report-snapshot-7',
     text: '固定的脱敏报告内容',
     entries: 1,
+    selfChecked: !query.has('selfCheckMissing'),
   }),
   copyFeedbackReport: async (id?: string) => {
     record('copy-report', id)
@@ -911,6 +1046,7 @@ const apiMethods = {
     progress: null,
     error: null,
     development: true,
+    ...(query.has('autoUpdate') ? { autoUpdateSupported: true } : {}),
   }),
   downloadUpdate: async () => {
     record('download-update')
@@ -985,8 +1121,16 @@ if (query.has('system')) {
   const guard = () => {
     if (fail === 'platform') throw new Error('平台设置写入失败')
   }
+  // fail=platform-read：第一次读系统状态失败，点「重新读取」再读就好了。
+  let platformReadFailures = fail === 'platform-read' ? 1 : 0
   const platform: XingmangPlatformApi = {
-    getState: async () => systemState,
+    getState: async () => {
+      if (platformReadFailures > 0) {
+        platformReadFailures -= 1
+        throw new Error('系统状态暂时读不到')
+      }
+      return systemState
+    },
     setThemePreference: async (themePreference) => {
       guard()
       record('platform-theme', themePreference)
@@ -1043,7 +1187,10 @@ if (query.has('system')) {
             task: true,
             cliUpdate: true,
             announcement: true,
+            spend: true,
             acceleration: true,
+            cliTrouble: true,
+            cliTurn: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,
           },
@@ -1080,11 +1227,15 @@ if (query.has('system')) {
   window.xingmangPlatform = platform
 }
 const root = createRoot(document.getElementById('root')!)
+// 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
+let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'gemini' | 'grok'; sequence: number } | null = null
 const renderFixture = (paymentReturn?: {
   sequence: number
   order: string | null
 }) =>
   root.render(
+    // 设置页存好了只弹小提示（不再挂在页顶），夹具要有地方弹出来，测试才看得到。
+    <ToastProvider>
     <Shell
       activePage={page}
       platform={query.get('os') === 'mac' ? 'mac' : 'win'}
@@ -1094,7 +1245,7 @@ const renderFixture = (paymentReturn?: {
         balance: '$10.00',
       }}
       version="0.1.31"
-      environment="Node.js 已安装"
+      environment={{ tone: 'ok', label: '环境正常' }}
       adapter={{ navigate: (next) => record('navigate', next) }}
     >
       <BalanceTierProvider value="warn">
@@ -1108,14 +1259,19 @@ const renderFixture = (paymentReturn?: {
                   typeof BusinessPage
                 >[0]['accountTab']) ?? undefined)
           }
+          accountRechargeAmount={query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined}
           paymentReturn={paymentReturn}
-          navigate={(next) => record('navigate', next)}
+          navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
+          switchAccount={() => record('open-account-switcher')}
+          openHelp={query.has('help') ? () => record('open-help') : undefined}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
+          toolConfigConfirmed={toolConfigConfirmed}
         />
       </BalanceTierProvider>
-    </Shell>,
+    </Shell>
+    </ToastProvider>,
   )
 let paymentSequence = 0
 window.addEventListener('test-payment-return', () =>
@@ -1124,4 +1280,9 @@ window.addEventListener('test-payment-return', () =>
 // 真实环境里余额 store 每 30 秒 publish 一次，整棵树跟着重渲染；夹具用一次
 // root.render 复现同一件事，不动任何页面状态。
 window.rerenderFixture = () => renderFixture()
+window.addEventListener('test-tool-config-confirmed', (event) => {
+  const provider = (event as CustomEvent<'claude' | 'codex' | 'gemini' | 'grok'>).detail
+  toolConfigConfirmed = { provider, sequence: (toolConfigConfirmed?.sequence ?? 0) + 1 }
+  renderFixture()
+})
 renderFixture()

@@ -42,3 +42,48 @@ export interface InitialWindowRevealInput {
 export function shouldRevealInitialWindow(input: InitialWindowRevealInput): boolean {
   return !input.launchedAtLogin || !input.trayAvailable
 }
+
+// 开机那一两分钟系统、杀毒、网盘、输入法都在抢资源。开机拉起时窗口本来就藏在托盘
+// 里，工具检测（Windows 上要起好几段 PowerShell）、检查更新、账号 Key 初始化这几件
+// 后台事都等到用户第一次点开窗口，或开机过了这么久再做。用户点开窗口后和现在一样。
+export const loginQuietPeriodMs = 3 * 60_000
+
+export type LoginQuietPeriodEnd = 'window-shown' | 'timeout'
+
+export interface LoginQuietPeriodOptions {
+  active: boolean
+  durationMs: number
+  onEnd?(reason: LoginQuietPeriodEnd): void
+}
+
+export interface LoginQuietPeriod {
+  active(): boolean
+  // 安静期结束时兑现；不在安静期里时立刻兑现。永不拒绝。
+  whenOver(): Promise<void>
+  end(reason: LoginQuietPeriodEnd): void
+}
+
+export function createLoginQuietPeriod(options: LoginQuietPeriodOptions): LoginQuietPeriod {
+  let active = options.active
+  let release: () => void = () => undefined
+  const over = active ? new Promise<void>((resolve) => { release = resolve }) : Promise.resolve()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  function end(reason: LoginQuietPeriodEnd) {
+    if (!active) return
+    active = false
+    if (timer) clearTimeout(timer)
+    timer = undefined
+    release()
+    options.onEnd?.(reason)
+  }
+  if (active) {
+    timer = setTimeout(() => { end('timeout') }, Math.max(0, options.durationMs))
+    // 定时器不该拖住退出：用户在安静期里从托盘退出时进程照常结束。
+    timer.unref?.()
+  }
+  return {
+    active: () => active,
+    whenOver: () => over,
+    end,
+  }
+}

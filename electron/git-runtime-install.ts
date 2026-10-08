@@ -10,6 +10,7 @@ import {
 } from './command-runner'
 import type { NodeRuntimeNetworkRegion, NodeRuntimeProcessPlan } from './node-runtime'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { downloadWithResume } from './download-retry'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
 /**
@@ -51,12 +52,18 @@ export interface GitRuntimeInstallProgress {
 }
 
 export interface GitRuntimeInstallResult {
-  installed: true
-  action: 'installed' | 'unchanged'
+  /**
+   * 只有 macOS 那一路会是 false：Git 交给苹果自己的安装窗口装（macos-git-install.ts），
+   * 客户在窗口里点了取消（'cancelled'），或者等了很久还没装完（'pending'）。
+   */
+  installed: boolean
+  action: 'installed' | 'unchanged' | 'cancelled' | 'pending'
   source: GitRuntimeSource | null
   version: string | null
   architecture: GitRuntimeArchitecture
   pathRefreshRequired: boolean
+  /** 给首页那一句话；只有 installed 为 false 时带。 */
+  message?: string
 }
 
 export interface GitRuntimeDownloadSource {
@@ -67,6 +74,8 @@ export interface GitRuntimeDownloadSource {
 
 export interface GitRuntimeInstallerDependencies {
   fetch: typeof globalThis.fetch
+  /** 测试接缝：下载断了以后等多久再在同一条线路上接着下，缺省按真实时间等。 */
+  waitBeforeResume?(milliseconds: number, signal?: AbortSignal): Promise<void>
   /** 测试接缝：真实摘要属于真实安装包，合成的下载内容永远对不上。 */
   expectedSha256(architecture: GitRuntimeArchitecture): string
   runProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult>
@@ -83,7 +92,19 @@ export interface InstallGitRuntimeOptions {
   /** 决定当前用户程序目录的环境变量；缺省 process.env，测试用它模拟 Windows。 */
   environment?: NodeJS.ProcessEnv
   dependencies?: Partial<GitRuntimeInstallerDependencies>
+  /**
+   * 安装程序退出 0 之后回查一遍 Git 是否真能找到。返回 null 表示没找到；缺省时不回查，
+   * 按安装程序的退出码算数（只给测试和旧调用方用）。
+   */
+  verifyInstalled?: () => Promise<{ version: string | null } | null>
 }
+
+/**
+ * 安装程序说装完了、回查却找不到 Git 时给客户看的话。多半是安全软件或公司电脑的管理
+ * 规定把安装拦了一半（#549），换下载地址重下也是同样结果，所以不再换源，直接说原因。
+ */
+export const gitRuntimeMissingAfterInstallMessage =
+  'Git 没装上：安装程序已经跑完，但这台电脑上还是找不到 Git，可能被安全软件或公司电脑的管理规定拦下了。可以重启电脑后再点一次「安装 Git」；还不行请联系客服'
 
 const downloadTimeoutMs = 10 * 60_000
 const installerTimeoutMs = 15 * 60_000
@@ -206,55 +227,52 @@ async function downloadInstaller(
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('下载超时')), downloadTimeoutMs)
-  const hash = createHash('sha256')
-  let size = 0
-  let file: fs.promises.FileHandle | null = null
+  const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
-    const response = await fetchTrustedGitResource(source.url, {
-      method: 'GET',
+    const download = await downloadWithResume({
+      targetPath,
+      maximumBytes: maximumInstallerBytes,
+      oversizeMessage: '安装包超过 200 MB 安全限制',
       signal: controller.signal,
-      headers: { Accept: 'application/octet-stream' },
-    }, dependencies.fetch)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    if (!response.body) throw new Error('服务器没有返回安装包内容')
-    const declaredHeader = response.headers.get('content-length')
-    const declared = declaredHeader === null ? null : Number(declaredHeader)
-    if (declared !== null && (!Number.isSafeInteger(declared) || declared < minimumInstallerBytes)) {
-      throw new Error('服务器返回的安装包大小无效')
-    }
-    if (declared !== null && declared > maximumInstallerBytes) throw new Error('安装包超过 200 MB 安全限制')
-    file = await fs.promises.open(targetPath, 'wx')
-    const reader = response.body.getReader()
-    while (true) {
-      throwIfAborted(options.signal)
-      const { done, value } = await reader.read()
-      if (done) break
-      if (!value) continue
-      size += value.byteLength
-      if (size > maximumInstallerBytes) {
-        await reader.cancel()
-        throw new Error('安装包超过 200 MB 安全限制')
-      }
-      hash.update(value)
-      await file.write(value)
-      report(options, {
+      ...(dependencies.waitBeforeResume ? { wait: dependencies.waitBeforeResume } : {}),
+      request: (headers, signal) => fetchTrustedGitResource(source.url, {
+        method: 'GET',
+        signal,
+        headers: { Accept: 'application/octet-stream', ...headers },
+      }, dependencies.fetch),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.body) throw new Error('服务器没有返回安装包内容')
+        const declaredHeader = response.headers.get('content-length')
+        const declared = declaredHeader === null ? null : Number(declaredHeader)
+        if (declared !== null && (!Number.isSafeInteger(declared) || declared < minimumInstallerBytes)) {
+          throw new Error('服务器返回的安装包大小无效')
+        }
+        if (declared !== null && declared > maximumInstallerBytes) throw new Error('安装包超过 200 MB 安全限制')
+        return declared
+      },
+      onProgress: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
         message: `正在从${source.label}下载 Git`,
-        percent: declared ? Math.min(99, (size / declared) * 100) : null,
+        percent: percentOf(size, total),
         transferredBytes: size,
-        totalBytes: declared,
-      })
-    }
-    await file.sync()
-    await file.close()
-    file = null
-    if (size < minimumInstallerBytes) throw new Error('下载的安装包内容过小')
-    if (declared !== null && size !== declared) throw new Error('安装包下载不完整')
-    return { sha256: hash.digest('hex'), size }
+        totalBytes: total,
+      }),
+      onResume: (size, total) => report(options, {
+        phase: 'downloading',
+        source: source.id,
+        message: `网络断了一下，正在从${source.label}接着下载 Git`,
+        percent: percentOf(size, total),
+        transferredBytes: size,
+        totalBytes: total,
+      }),
+    })
+    if (download.size < minimumInstallerBytes) throw new Error('下载的安装包内容过小')
+    if (download.total !== null && download.size !== download.total) throw new Error('安装包下载不完整')
+    return { sha256: download.sha256.toString('hex'), size: download.size }
   } catch (error) {
-    await file?.close().catch(() => undefined)
     await fs.promises.rm(targetPath, { force: true }).catch(() => undefined)
     throw error
   } finally {
@@ -378,6 +396,37 @@ export async function installGitRuntime(options: InstallGitRuntimeOptions): Prom
   return installGitRuntimeWith(architecture, options, dependencies)
 }
 
+async function verifyInstalledGit(
+  source: GitRuntimeSource,
+  architecture: GitRuntimeArchitecture,
+  options: InstallGitRuntimeOptions,
+): Promise<GitRuntimeInstallResult> {
+  let version: string | null = gitForWindowsVersion
+  if (options.verifyInstalled) {
+    report(options, { phase: 'verifying', source, message: '正在确认 Git 能不能用', percent: null })
+    let found: { version: string | null } | null
+    try {
+      found = await options.verifyInstalled()
+    } catch {
+      found = null
+    }
+    if (!found) {
+      report(options, { phase: 'error', source, message: gitRuntimeMissingAfterInstallMessage, percent: null })
+      throw new Error(gitRuntimeMissingAfterInstallMessage)
+    }
+    version = found.version ?? gitForWindowsVersion
+  }
+  report(options, { phase: 'complete', source, message: 'Git 装好了', percent: 100 })
+  return {
+    installed: true,
+    action: 'installed',
+    source,
+    version,
+    architecture,
+    pathRefreshRequired: true,
+  }
+}
+
 /** 与平台无关的主体，测试直接调它，不必伪装成 Windows。 */
 export async function installGitRuntimeWith(
   architecture: GitRuntimeArchitecture,
@@ -399,15 +448,6 @@ export async function installGitRuntimeWith(
       throwIfAborted(options.signal)
       try {
         await installFromSource(source, architecture, temporaryDirectory, options, dependencies)
-        report(options, { phase: 'complete', source: source.id, message: 'Git 装好了', percent: 100 })
-        return {
-          installed: true,
-          action: 'installed',
-          source: source.id,
-          version: gitForWindowsVersion,
-          architecture,
-          pathRefreshRequired: true,
-        }
       } catch (error) {
         if (options.signal?.aborted) throw error
         failures.push(`${source.label}：${errorText(error)}`)
@@ -417,7 +457,9 @@ export async function installGitRuntimeWith(
           message: `${source.label}没下好，正在换一个下载地址`,
           percent: null,
         })
+        continue
       }
+      return await verifyInstalledGit(source.id, architecture, options)
     }
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)

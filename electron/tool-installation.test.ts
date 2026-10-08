@@ -9,6 +9,8 @@ import {
   classifyCliInstallDisplaySource,
   cliLaunchArgv,
   cliResumeLastArgv,
+  isCodexSessionUuid,
+  codexSupportsNoDaemon,
   cliUninstallCapability,
   nativeInstallBinDirectories,
   resolveCliCommand,
@@ -1009,6 +1011,9 @@ describe('CLI installation resolution', () => {
     }, 'same-user', {
       platform: 'darwin',
       executablePath: commandPath,
+      // The host's own global npm (a CI image or a developer machine with Claude Code
+      // installed through npm) must not decide which installation this fixture resolves.
+      npmGlobalRoot: path.join(directory, 'missing-node-modules'),
       runCommand: async (spec) => {
         specs.push(spec)
         return { stdout: '', stderr: '' }
@@ -1043,6 +1048,7 @@ describe('CLI installation resolution', () => {
     }, 'same-user', {
       platform: 'darwin',
       executablePath: commandPath,
+      npmGlobalRoot: path.join(directory, 'missing-node-modules'),
       runCommand: async () => {
         throw new Error('code object is not signed at all')
       },
@@ -1060,6 +1066,35 @@ describe('CLI installation resolution', () => {
 
     expect(command.executable).toBe(path.resolve(node))
     expect(command.argv).toEqual([fs.realpathSync(path.join(packageRoot, 'bin', 'codex.js'))])
+  })
+
+  // 第三十四批 A：Mac 上客户自己那份 Node.js 太旧时，开工具用本软件代下的那份。
+  it('runs a JavaScript CLI with node from the preferred directories before its own', async () => {
+    const directory = temporaryDirectory()
+    const prefix = path.join(directory, 'hermes', 'node')
+    write(path.join(prefix, process.platform === 'win32' ? 'codex.cmd' : 'codex'))
+    write(path.join(prefix, process.platform === 'win32' ? 'node.exe' : 'node'))
+    const packageRoot = npmPackage(prefix, '@openai/codex', 'codex')
+    const preferred = path.join(directory, 'Runtime', 'node', 'bin')
+    const preferredNode = write(path.join(preferred, process.platform === 'win32' ? 'node.exe' : 'node'))
+
+    const command = await resolveCliCommand('codex', { PATH: prefix, HOME: directory }, 'same-user', {
+      nodeDirectories: [preferred],
+    })
+
+    expect(command.executable).toBe(path.resolve(preferredNode))
+    expect(command.argv).toEqual([fs.realpathSync(path.join(packageRoot, 'bin', 'codex.js'))])
+  })
+
+  it.skipIf(process.platform === 'win32')('runs npm root --global with node from the preferred directories first', async () => {
+    const queryNpmRoot = vi.fn(async (_npm: string, env: NodeJS.ProcessEnv) => {
+      expect(env.PATH?.split(path.delimiter)[0]).toBe('/preferred/node/bin')
+      return '/prefix/lib/node_modules'
+    })
+    await expect(resolveNpmGlobalRoot('/usr/local/bin/npm', { PATH: '/usr/local/bin', HOME: '/Users/tester' }, queryNpmRoot, 'darwin', [
+      '/preferred/node/bin',
+    ])).resolves.toBe('/prefix/lib/node_modules')
+    expect(queryNpmRoot).toHaveBeenCalledOnce()
   })
 
   it('rejects oversized package manifests before parsing them', () => {
@@ -1088,6 +1123,32 @@ describe('resume-last launch arguments', () => {
     expect(cliLaunchArgv('claude', [], 'resumeLast')).toEqual(['--continue'])
   })
 
+  // resume --last 在上游还按连接名过滤,切过账号就找不到;按 id 接不看连接名。
+  it('resumes a verified Codex record by id instead of the latest one under the current connection', () => {
+    const entry = ['/managed/codex/bin/codex.js']
+
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+      .toEqual([...entry, 'resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { installedVersion: '0.156.1', resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+      .toEqual([...entry, '--no-daemon', 'resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { resumeSessionId: null }))
+      .toEqual([...entry, 'resume', '--last'])
+  })
+
+  it('ignores a session id for a new conversation and for the other three tools', () => {
+    const entry = ['/managed/cli.js']
+
+    expect(cliLaunchArgv('codex', entry, 'new', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual(entry)
+    expect(cliLaunchArgv('claude', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual([...entry, '--continue'])
+  })
+
+  it('refuses a Codex session id that is not a bare UUID', () => {
+    for (const bad of ['--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', '../../etc', '']) {
+      expect(() => cliLaunchArgv('codex', [], 'resumeLast', { resumeSessionId: bad })).toThrow('会话 ID 格式错误')
+    }
+    expect(isCodexSessionUuid('0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'.toUpperCase())).toBe(true)
+  })
+
   it('leaves the entry argv untouched for a new conversation', () => {
     const argv = ['/managed/claude/cli-wrapper.cjs']
 
@@ -1095,6 +1156,38 @@ describe('resume-last launch arguments', () => {
 
     expect(launched).toEqual(argv)
     expect(launched).not.toBe(argv)
+  })
+
+  // 0.157.0 默认自动起后台服务,宿主有不许脱离的 Job Object 时直接报错退出;
+  // macOS 上不报错,但退出 Codex 后服务照样常驻。
+  it('starts Codex without the background server when the version supports it', () => {
+    const entry = ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js']
+
+    expect(cliLaunchArgv('codex', entry, 'new', { installedVersion: '0.157.0' }))
+      .toEqual([...entry, '--no-daemon'])
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { installedVersion: 'codex-cli 0.156.1' }))
+      .toEqual([...entry, '--no-daemon', 'resume', '--last'])
+    // macOS 的独立版 Codex 没有入口脚本,参数直接跟在可执行文件后面。
+    expect(cliLaunchArgv('codex', [], 'resumeLast', { installedVersion: 'codex-cli 0.158.0' }))
+      .toEqual(['--no-daemon', 'resume', '--last'])
+  })
+
+  it('keeps the upstream launch where --no-daemon is unknown or unnecessary', () => {
+    const entry = ['/managed/codex/bin/codex.js']
+
+    expect(cliLaunchArgv('codex', entry, 'new', { installedVersion: '0.155.1' })).toEqual(entry)
+    expect(cliLaunchArgv('codex', entry, 'new', { installedVersion: null })).toEqual(entry)
+    expect(cliLaunchArgv('codex', entry, 'new')).toEqual(entry)
+    expect(cliLaunchArgv('claude', entry, 'new', { installedVersion: '2.1.277' })).toEqual(entry)
+  })
+
+  it('recognizes the first Codex release that accepts --no-daemon', () => {
+    expect(codexSupportsNoDaemon('0.156.0')).toBe(true)
+    expect(codexSupportsNoDaemon('0.158.0-alpha.13')).toBe(true)
+    expect(codexSupportsNoDaemon('0.156.0-alpha.3')).toBe(false)
+    expect(codexSupportsNoDaemon('0.155.1')).toBe(false)
+    expect(codexSupportsNoDaemon('无法读取版本')).toBe(false)
+    expect(codexSupportsNoDaemon(undefined)).toBe(false)
   })
 })
 

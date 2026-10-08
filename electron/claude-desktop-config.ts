@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { getNodeValue, parseTree, type Node, type ParseError } from 'jsonc-parser'
+import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { readSafeUtf8FileSync } from './safe-local-data'
 import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
@@ -28,6 +28,15 @@ export interface ClaudeDesktopConfigResult {
   connectionVerified: false
   warnings: string[]
 }
+
+/**
+ * 开机修复星芒自己那份配置的结论。unrecognized 是「星芒写过、清单也不止一个型号，但认不准
+ * 是 0.2.12 那个写法」：没动，reason 只进运行日志。
+ */
+export type ClaudeDesktopModelRepairOutcome =
+  | { status: 'unowned' | 'unchanged' }
+  | { status: 'unrecognized'; reason: 'unreadable' | 'model-list' | 'gateway' }
+  | { status: 'repaired'; model: string; backups: string[] }
 
 export interface ClaudeDesktopConfigOptions {
   dataDirectory: string
@@ -71,6 +80,32 @@ export function buildClaudeDesktopGatewayConfig(input: ClaudeDesktopGatewayInput
     inferenceCredentialKind: 'static',
     ...(models?.length ? { inferenceModels: [...new Set(models)] } : {}),
   }
+}
+
+// 0.2.12 的写法（#685 起，#746 撤回；0.2.11 没发给客户）：选中的型号排第一，后面跟当前 Key
+// 能用的其余 claude-* 型号，去重后按 localeCompare 排好，一共最多 20 个。
+const legacyMaximumModels = 20
+
+/**
+ * 型号清单逐项都对得上 0.2.12 写出来的样子时，回当时选中的那一个（清单第一项）；对不上
+ * 就回 null。客户在 Claude Desktop 自己的设置窗口里改过的清单（对象写法、顺序变了、混进
+ * 别家型号、多出空格）都对不上，开机修复据此不碰。排序用和当年同一个比较函数：同一台
+ * 电脑上同一个比较结果，纯小写的型号名在各语言环境下也一样。
+ */
+export function legacyClaudeDesktopSelectedModel(models: unknown): string | null {
+  if (!Array.isArray(models) || models.length < 2 || models.length > legacyMaximumModels) return null
+  const ids: string[] = []
+  for (const model of models) {
+    if (typeof model !== 'string' || !model || model !== model.trim() || model.length > 512 || /[\x00-\x1f\x7f]/.test(model)) return null
+    ids.push(model)
+  }
+  const [selected, ...others] = ids
+  if (new Set(ids).size !== ids.length || !others.every((model) => /^claude-/i.test(model))) return null
+  return others.every((model, index) => index === 0 || others[index - 1].localeCompare(model) <= 0) ? selected : null
+}
+
+function sameBaseUrl(left: string, right: string): boolean {
+  return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
 }
 
 function object(value: unknown): JsonObject {
@@ -213,7 +248,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === '3p')
         && !metadata.hybridPointer && gatewayConfigurationReady(config)
       const configured = configurationReady
-        && typeof baseUrl === 'string' && baseUrl.replace(/\/+$/, '') === expectedBaseUrl.replace(/\/+$/, '')
+        && typeof baseUrl === 'string' && sameBaseUrl(baseUrl, expectedBaseUrl)
         && typeof apiKey === 'string' && Boolean(apiKey.trim())
         && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
         && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
@@ -225,6 +260,48 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
   }
 
   return {
+    /**
+     * 开机一次性修复（claude-desktop-model-repair.ts）：0.2.12 往星芒自己那份配置里写进了一串
+     * 型号，Claude Desktop 因此发消息没有回复。这里只把 inferenceModels 改回当时选中的那一个，
+     * 和 #746 之后「保存配置」写出来的一样，其余字段原样留着。不是星芒那份、清单认不准、网关
+     * 地址不是星芒的，一律不动。
+     *
+     * 不查管理策略、不核对当前账号：只是把星芒自己写过的清单收窄，策略管着时 Claude Desktop
+     * 本来就不读它，换了账号这份也照样坏着；Windows 上查策略要起 PowerShell，不值得为它在
+     * 开机时多跑一个进程。
+     */
+    repairLegacyModelList: (relayBaseUrls: readonly string[]): Promise<ClaudeDesktopModelRepairOutcome> => serial(async () => {
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      // 读不出来（被占用、读到一半变了、目录联接这次不放行）往外抛，算这次没修成、下次开机
+      // 再试；读出来了却解析不了，是文件本身坏了或被别人改过，认不准，不再看。
+      const ownerContent = capture(markerPath)
+      let owner: OwnedProfile | null
+      try { owner = parseOwner(ownerContent, profileDirectory) } catch { return { status: 'unrecognized', reason: 'unreadable' } }
+      if (!owner) return { status: 'unowned' }
+      const gatewayPath = path.join(libraryDirectory, `${owner.id}.json`)
+      const gatewayContent = capture(gatewayPath)
+      if (gatewayContent === null) return { status: 'unchanged' }
+      let gateway: JsonObject
+      try { gateway = parseObject(gatewayContent) } catch { return { status: 'unrecognized', reason: 'unreadable' } }
+      const models = gateway.inferenceModels
+      if (!Array.isArray(models) || models.length < 2) return { status: 'unchanged' }
+      const model = legacyClaudeDesktopSelectedModel(models)
+      if (!model) return { status: 'unrecognized', reason: 'model-list' }
+      const baseUrl = gateway.inferenceGatewayBaseUrl
+      if (gateway.inferenceProvider !== 'gateway' || typeof baseUrl !== 'string'
+        || !relayBaseUrls.some((relayBaseUrl) => sameBaseUrl(baseUrl, relayBaseUrl))) {
+        return { status: 'unrecognized', reason: 'gateway' }
+      }
+      const content = json({ ...gateway, inferenceModels: [model] })
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, () => undefined)
+      return { status: 'repaired', model, backups: saved.backups }
+    }),
     inspectConnection: async (expectedBaseUrl: string, belongsToCurrentAccount?: (apiKey: string) => boolean): Promise<ExternalClientConnectionStatus> => {
       const { apiKey: _apiKey, ...status } = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
       return status
@@ -237,6 +314,67 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const result = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
       return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
     },
+    /**
+     * 换线路用（第四十三批 A）：正在用的就是星芒标记的那一份时，交出它的网关地址、Key 和第一个
+     * 型号（没写型号、由 Claude Desktop 自动获取时为 null），是哪条线路、归属对不对由调用方认。
+     * 客户复制出来再切过去用的那份哪怕地址、Key 都一样也不认：换线路不该替他把正在用的切回
+     * 星芒那份。主进程内部专用，永不跨 IPC（I3）。
+     */
+    inspectOwnedRoute: async (): Promise<{ baseUrl: string; apiKey: string; model: string | null } | null> => {
+      try {
+        await options.assertUnmanaged?.()
+        const desktop = parseObject(read(configPath))
+        const metadata = parseMetadata(read(metadataPath))
+        const owner = parseOwner(read(markerPath), profileDirectory)
+        if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer
+          || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p')) return null
+        const gateway = parseObject(read(path.join(libraryDirectory, `${owner.id}.json`)))
+        const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
+        if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || typeof apiKey !== 'string' || !apiKey.trim()) return null
+        return { baseUrl, apiKey, model: firstModel(gateway.inferenceModels) }
+      } catch {
+        return null
+      }
+    },
+    /**
+     * 换线路（第四十三批 A）：只把星芒那份的网关地址从 from 换成 to，文件里别的一个字不动（缩进、
+     * 字段顺序照 Claude Desktop 自己写的样子）。型号清单、认证方式这些客户可能在 Claude Desktop
+     * 里自己改过的字段原样留着，也不碰别的文件；不走 saveGateway，那条会把型号收成一个、认证方式
+     * 改回 bearer。管理策略要起 PowerShell，先查完再调 beforeCommit（调用方在那里最后看一眼客户端
+     * 开没开），之后到写完都是同步的。写之前重读一遍：已经不是星芒那份在用、地址不是 from、Key
+     * 不是这一把，一个字不写。
+     */
+    followRoute: (from: string, to: string, apiKey: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      await beforeCommit?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const desktop = parseObject(capture(configPath))
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      const gatewayPath = owner ? path.join(libraryDirectory, `${owner.id}.json`) : null
+      const original = gatewayPath ? capture(gatewayPath) : null
+      const gateway = parseObject(original)
+      if (!owner || !gatewayPath || original === null || metadata.appliedId !== owner.id || metadata.hybridPointer
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p') || !gatewayConfigurationReady(gateway)
+        || typeof gateway.inferenceGatewayBaseUrl !== 'string' || !sameBaseUrl(gateway.inferenceGatewayBaseUrl, from)
+        || gateway.inferenceGatewayApiKey !== apiKey) {
+        throw new Error(`${label}在换线路前已变化，未执行修改`)
+      }
+      const { inferenceGatewayBaseUrl } = buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey })
+      const content = applyEdits(original, modify(original, ['inferenceGatewayBaseUrl'], inferenceGatewayBaseUrl, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
+      return { path: gatewayPath, backups: saved.backups }
+    }),
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)
       assertContext()

@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, createHistoryWriter, historyKey, importLegacyHistory, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
+import { ChatStorageError, conversationPlainText, createHistoryWriter, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
 const formerLimitBytes = 4 * 1024 * 1024
 function memoryStorage() {
   const data = new Map<string, string>()
-  return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value) }) }
+  return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value) }), removeItem: vi.fn((key: string) => { data.delete(key) }), keys: () => [...data.keys()] }
 }
 // Same contract as electron/ai-chat-history-store.ts: rewrite the listed
 // conversations, then the index, then drop files the index no longer names.
@@ -66,6 +66,26 @@ describe('lossless chat history files', () => {
     expect(planHistoryWrite(restored.state, restored.saved)).toBeNull()
   })
 
+  it('keeps images waiting in the composer as references, and refuses a malformed list', async () => {
+    const state = workspace()
+    const assetId = 'D'.repeat(43)
+    state.conversations[0].draftImages = [{ assetId, mimeType: 'image/png', localUrl: `xingmang-asset://image/${assetId}`, fileName: 'shot.png' }]
+    const files = memoryFiles()
+    const restored = await saveAndReopen(state, files)
+    expect(restored.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
+    expect(files.raw()).not.toContain('xingmang-asset://')
+    const broken = workspace()
+    Object.assign(broken.conversations[0], { draftImages: 'not a list' })
+    expect(() => parseHistorySnapshot(snapshotOf(broken), scope)).toThrow(ChatStorageError)
+  })
+
+  it('remembers that the long-conversation warning was dismissed', async () => {
+    const state = workspace()
+    state.conversations[0].lengthNoticeDismissed = true
+    const restored = await saveAndReopen(state)
+    expect(restored.state.conversations[0].lengthNoticeDismissed).toBe(true)
+    expect(restored.state).toEqual(state)
+  })
   it('preserves all 350 messages and all asset references without reusing request limits for stored history', async () => {
     const state = workspace()
     state.conversations[0].messages = Array.from({ length: 350 }, (_, index) => message(index))
@@ -187,7 +207,7 @@ describe('lossless chat history files', () => {
     const storage = memoryStorage()
     storage.setItem(historyKey(scope), JSON.stringify(workspace()))
     const restored = await loadChatHistory({ readHistory: async () => { throw new Error('reparse point') } }, storage, scope)
-    expect(restored).toMatchObject({ exists: true, saved: null, warning: '本地聊天记录暂时无法读取，原始数据已保留' })
+    expect(restored).toMatchObject({ exists: true, saved: null, warning: '以前的聊天记录暂时读不出来，原文件没动' })
     expect(restored.state.conversations).toHaveLength(0)
   })
 
@@ -205,7 +225,7 @@ describe('lossless chat history files', () => {
 })
 
 describe('localStorage history from earlier versions', () => {
-  it('reads a stored workspace and moves it into the file store on the first save, leaving the source untouched', async () => {
+  it('reads a stored workspace and moves it into the file store on the first save, removing the source only after that save', async () => {
     const storage = memoryStorage()
     const state = workspace(scope, 2)
     const raw = JSON.stringify(state)
@@ -215,10 +235,66 @@ describe('localStorage history from earlier versions', () => {
     const loaded = await loadChatHistory(files.api, storage, scope)
     expect(loaded).toMatchObject({ exists: true, saved: null })
     expect(loaded.state).toEqual(state)
-    await createHistoryWriter(files.api, loaded.saved).save(loaded.state)
-    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state).toEqual(state)
     expect(storage.getItem(historyKey(scope))).toBe(raw)
     expect(storage.setItem).not.toHaveBeenCalled()
+    await createHistoryWriter(files.api, loaded.saved, loaded.afterFirstSave).save(loaded.state)
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state).toEqual(state)
+    expect(storage.getItem(historyKey(scope))).toBeNull()
+  })
+
+  it('keeps the source when the first save fails and removes it after a later save succeeds', async () => {
+    const storage = memoryStorage()
+    const state = workspace(scope, 1)
+    const raw = JSON.stringify(state)
+    storage.setItem(historyKey(scope), raw)
+    const files = memoryFiles()
+    const loaded = await loadChatHistory(files.api, storage, scope)
+    let diskFull = true
+    const writer = createHistoryWriter({ writeHistory: async (input) => { if (diskFull) throw new Error('disk full'); await files.api.writeHistory(input) } }, loaded.saved, loaded.afterFirstSave)
+    await expect(writer.save(loaded.state)).rejects.toThrow('disk full')
+    expect(storage.getItem(historyKey(scope))).toBe(raw)
+    diskFull = false
+    await writer.save({ ...loaded.state })
+    expect(storage.getItem(historyKey(scope))).toBeNull()
+  })
+
+  it('does not bring migrated history back when the history folder is cleared later', async () => {
+    const storage = memoryStorage()
+    const state = workspace(scope, 1)
+    storage.setItem(historyKey(scope), JSON.stringify(state))
+    const files = memoryFiles()
+    const loaded = await loadChatHistory(files.api, storage, scope)
+    // Removal refused (for example by a locked profile): only the marker lands.
+    storage.removeItem.mockImplementation(() => { throw new Error('denied') })
+    await createHistoryWriter(files.api, loaded.saved, loaded.afterFirstSave).save(loaded.state)
+    expect(storage.getItem(historyKey(scope))).not.toBeNull()
+    files.stores.clear()
+    const reopened = await loadChatHistory(files.api, storage, scope)
+    expect(reopened).toMatchObject({ exists: false, saved: null })
+    expect(reopened.state.conversations).toHaveLength(0)
+    expect(reopened.afterFirstSave).toBeUndefined()
+  })
+
+  it('removes stale copies an earlier version left behind once the file store has a record', async () => {
+    const storage = memoryStorage()
+    const files = memoryFiles()
+    const state = workspace(scope, 1)
+    await createHistoryWriter(files.api, null).save(state)
+    for (const key of legacyHistoryKeys(scope)) storage.setItem(key, 'stale copy')
+    storage.setItem(historyKey('api-account:7'), 'another account')
+    expect(legacyHistoryKeys(scope)).toEqual([historyKey(scope), historyKey('solov:7'), historyKey('sub2api:7'), legacyKey])
+    expect((await loadChatHistory(files.api, storage, scope)).state).toEqual(state)
+    for (const key of legacyHistoryKeys(scope)) expect(storage.getItem(key)).toBeNull()
+    expect(storage.getItem(historyKey('api-account:7'))).toBe('another account')
+  })
+
+  it('keeps an unreadable localStorage record and never offers to remove it', async () => {
+    const storage = memoryStorage()
+    storage.setItem(historyKey(scope), '{not json')
+    const loaded = await loadChatHistory(memoryFiles().api, storage, scope)
+    expect(loaded.warning).toBeTruthy()
+    expect(loaded.afterFirstSave).toBeUndefined()
+    expect(storage.getItem(historyKey(scope))).toBe('{not json')
   })
 
   it.each(['conversations', 'duplicate-message', 'duplicate-conversation', 'invalid-message', 'invalid-asset'] as const)('refuses a lossy read of %s while retaining its original storage', (kind) => {
@@ -408,5 +484,152 @@ describe('complete legacy and account-alias migration', () => {
     expect(files.raw()).toBeNull()
     expect(storage.getItem(legacyKey)).toBe(raw)
     expect((await loadChatHistory(files.api, storage, scope)).state.conversations[0].messages[0].content).toHaveLength(80_000)
+  })
+})
+
+describe('moving history to another computer', () => {
+  const asset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png' as const, fileName: 'x.png' }
+  it('exports conversations without images, request state or pasted keys', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0].messages = [message(0, { content: 'key sk-abcdefghijklmnop', mayStillComplete: true, requestId: 'r1' } as Partial<ChatMessage>), message(1, { content: '', assets: [asset] })]
+    const exported = JSON.stringify(exportableConversations(state))
+    expect(exported).not.toContain('sk-abcdefghijklmnop')
+    expect(exported).not.toContain('assetId')
+    expect(exported).not.toContain('mayStillComplete')
+    expect(exported).not.toContain('requestId')
+    expect(exported).toContain('[图片没有一起搬过来]')
+  })
+
+  it('round-trips exported conversations through the strict import parser', () => {
+    const state = workspace(scope, 3)
+    const parsed = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state))))
+    expect(parsed.map((conversation) => conversation.id)).toEqual(state.conversations.map((conversation) => conversation.id))
+  })
+
+  it('rejects the whole import when one conversation is malformed', () => {
+    const exported = JSON.parse(JSON.stringify(exportableConversations(workspace(scope, 2))))
+    exported[1].messages[0].role = 'system'
+    expect(() => parseImportedConversations(exported)).toThrow('没有导入任何内容')
+    expect(() => parseImportedConversations([exported[0], exported[0]])).toThrow('没有导入任何内容')
+    expect(() => parseImportedConversations(Array.from({ length: 51 }, () => exported[0]))).toThrow(ChatStorageError)
+  })
+
+  it('keeps existing conversations and the 50 most recent overall', () => {
+    const state = workspace(scope, 49)
+    state.conversations.forEach((conversation, index) => { conversation.updatedAt = 1000 + index })
+    const same = { ...state.conversations[0], title: 'imported copy' }
+    const newer = { ...createConversation(undefined, 'new-1'), updatedAt: 5000 }
+    const older = { ...createConversation(undefined, 'old-1'), updatedAt: 1 }
+    const merged = mergeImportedConversations(state, [same, newer, older])
+    expect(merged.added).toBe(1)
+    expect(merged.state.conversations).toHaveLength(50)
+    expect(merged.state.conversations[0].id).toBe('new-1')
+    expect(merged.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)?.title).not.toBe('imported copy')
+    expect(merged.state.conversations.some((conversation) => conversation.id === 'old-1')).toBe(false)
+  })
+
+  it('gives an imported conversation a new id when it collides with the draft', () => {
+    const state = workspace(scope, 0)
+    const merged = mergeImportedConversations(state, [{ ...createConversation(undefined, state.draftConversation.id), messages: [message()] }])
+    expect(merged.added).toBe(1)
+    expect(merged.state.conversations[0].id).not.toBe(state.draftConversation.id)
+  })
+
+  it('merges into the saved files and survives a reopen', async () => {
+    const files = memoryFiles()
+    // 导入按 updatedAt 倒序排；夹具连着建的两个对话偶尔跨过一毫秒，后建的就排到前面，所以时间写死。
+    const saved = workspace(scope, 2)
+    saved.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index * 1000 })
+    await createHistoryWriter(files.api, null).save(saved)
+    const imported = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(workspace('xm-account:9', 0)))))
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toBe(0)
+    const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: 3000, messages: [message()] }
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(1)
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(0)
+    const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(reopened.state.conversations.map((conversation) => conversation.id)).toEqual(['from-old-computer', 'conversation-0', 'conversation-1'])
+  })
+
+  it('refuses to import over a record it cannot read', async () => {
+    const files = memoryFiles()
+    files.stores.set(scope, { index: 'not json', conversations: [] })
+    await expect(importConversationsIntoHistory(files.api, memoryStorage(), scope, [createConversation()])).rejects.toThrow('没有导入对话')
+    expect(files.api.writeHistory).not.toHaveBeenCalled()
+  })
+
+  it('waits for saves still in flight, including one started as the page goes away', async () => {
+    let release: () => void = () => undefined
+    const api = { writeHistory: vi.fn(() => new Promise<void>((resolve) => { release = resolve })) }
+    void createHistoryWriter(api, null).save(workspace(scope, 1))
+    let settled = false
+    const waiting = settleHistoryWrites().then(() => { settled = true })
+    await Promise.resolve(); await Promise.resolve()
+    expect(api.writeHistory).toHaveBeenCalledOnce()
+    expect(settled).toBe(false)
+    release()
+    await waiting
+    expect(settled).toBe(true)
+  })
+
+  it('formats one conversation as plain text without keys', () => {
+    const conversation = { ...createConversation(undefined, 'c'), title: '周报', messages: [message(0, { content: 'token=abcdef123456', createdAt: 1_700_000_000_000 }), message(1, { content: '好的', assets: [asset] }), message(3, { status: 'error', content: '', error: '网络断了' })] }
+    const text = conversationPlainText(conversation)
+    expect(text.startsWith('周报\n')).toBe(true)
+    expect(text).toContain('我（')
+    expect(text).toContain('AI（')
+    expect(text).not.toContain('abcdef123456')
+    expect(text).toContain('[1 张图片，没有放进这个文件]')
+    expect(text).toContain('[没有回复成功：网络断了]')
+  })
+})
+
+// 以前的记录没读出来时，这一回聊的内容只在窗口里；点「重新读取」读出来以后要并进去接着存。
+describe('reading an unreadable record again', () => {
+  function session(conversations: string[], activeId: string | null, draft = '') {
+    const state = createWorkspace(scope)
+    state.conversations = conversations.map((id) => ({ ...createConversation(undefined, id), messages: [message()] }))
+    state.activeId = activeId
+    state.draftConversation = { ...state.draftConversation, draft }
+    return state
+  }
+
+  it('puts what was said meanwhile ahead of the record and stays on the conversation in view', () => {
+    const loaded = workspace(scope, 2)
+    const merged = mergeSessionIntoHistory(loaded, session(['said-meanwhile'], 'said-meanwhile', 'still typing'))
+    expect(merged.conversations.map((conversation) => conversation.id)).toEqual(['said-meanwhile', 'conversation-0', 'conversation-1'])
+    expect(merged.activeId).toBe('said-meanwhile')
+    expect(merged.draftConversation.draft).toBe('still typing')
+    expect(new Set([merged.draftConversation.id, ...merged.conversations.map((conversation) => conversation.id)]).size).toBe(4)
+  })
+
+  it('returns to where the record left off when nothing happened meanwhile', () => {
+    const loaded = workspace(scope, 2)
+    loaded.activeId = 'conversation-1'
+    loaded.draftConversation = { ...loaded.draftConversation, draft: 'saved draft' }
+    const merged = mergeSessionIntoHistory(loaded, session([], null))
+    expect(merged.activeId).toBe('conversation-1')
+    expect(merged.draftConversation).toBe(loaded.draftConversation)
+    expect(merged.conversations).toEqual(loaded.conversations)
+  })
+
+  it('stays on a new conversation being typed instead of jumping to the saved one', () => {
+    const merged = mergeSessionIntoHistory(workspace(scope, 1), session([], null, 'half a question'))
+    expect(merged.activeId).toBeNull()
+    expect(merged.draftConversation.draft).toBe('half a question')
+  })
+
+  it('renames a clashing id so the saved record stays readable', () => {
+    const loaded = workspace(scope, 1)
+    const merged = mergeSessionIntoHistory(loaded, session(['conversation-0'], 'conversation-0'))
+    const ids = merged.conversations.map((conversation) => conversation.id)
+    expect(new Set(ids).size).toBe(2)
+    expect(merged.activeId).toBe(ids[0])
+    expect(merged.activeId).not.toBe('conversation-0')
+  })
+
+  it('keeps every conversation past the limit so saving asks to delete some rather than dropping any', () => {
+    const merged = mergeSessionIntoHistory(workspace(scope, 50), session(['said-meanwhile'], 'said-meanwhile'))
+    expect(merged.conversations).toHaveLength(51)
+    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过本地保存上限（50 个对话）')
   })
 })

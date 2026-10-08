@@ -28,13 +28,34 @@
 # runner 现场生成的一次性身份（见 package-for-testing.yml）**绝不能**进更新源：老用户的
 # 机器不认它会拒绝更新，新装用户拿到的又是一个没人认得的发布者。本工作流不走那条路径。
 #
+# ## Linux：先出包，开关打开才对外发
+#
+# 选 all 或 linux 时，Linux 的 x64 与 arm64 两个 deb 跟着出包、过门禁、真装真开，
+# 产物进这次运行的 Actions artifact（linux-release-<架构>-<版本>），供发布者装机验收。
+# **传不传到更新目录和 GitHub Release，看仓库变量 XINGMANG_PUBLISH_LINUX**：不是
+# true（包括没建这个变量）时，publish 作业不下载 Linux 的包，客户看不到任何 Linux
+# 的东西，Linux 两个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
+# 点头、先在真机上过一遍，这个变量由他自己在仓库设置里打开（docs/LINUX.md）。Linux
+# 不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准。
+#
 # ## 上传顺序
 #
-# `latest.yml` / `latest-mac.yml` 是客户端用来判断"有没有新版本"的清单。它一旦先
-# 落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。所以顺序固定为：
-# **先传安装包与 blockmap → 逐字节确认它们能从客户会用的地址下载下来 → 最后才覆盖
-# 两份清单**。这三步在下面是三个独立的步骤，顺序由
+# `latest.yml` / `latest-mac.yml` / `latest-linux*.yml` 是客户端用来判断"有没有新版本"
+# 的清单。它一旦先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。所以
+# 顺序固定为：**先传安装包与 blockmap → 逐字节确认它们能从客户会用的地址下载下来 →
+# 最后才覆盖清单**。这三步在下面是三个独立的步骤，顺序由
 # scripts/publish-workflow-config.test.cjs 钉住。
+#
+# ## tag 在触发时就占上
+#
+# 作业用的 GITHUB_TOKEN 建不了「工作流文件和 main 对不上」的提交上的 tag 和 Release
+# （原因见 scripts/release-tag-plan.cjs 开头）。出包到收尾之间 main 只要合进一个改
+# .github/workflows 的提交，收尾那一步就是 403：0.2.14 就停在那里，更新源换好了，GitHub
+# 发布页却要人手工补。所以 tag 改由第一个作业 release-tag 占好，出包作业都等它：出包的
+# 提交是触发那一刻 main 的最新提交，release-tag 通常触发后一两分钟就跑完，这么短的时间
+# 里 main 的工作流文件很难再变。排在前一次发布后面时要等那一次跑完才轮到它，真变了它会
+# 停下、说清楚从最新的 main 重新触发，那时什么都还没发。收尾建 Release 时不再指定提交，
+# 挂到这个已有的 tag 上。
 name: publish-release
 
 on:
@@ -45,14 +66,18 @@ on:
         required: true
         type: string
       platforms:
-        description: '这次发布哪些平台的包'
+        description: '这次发布哪些平台的包（all 是全部；both 和原来一样只有 Windows 与 macOS；Linux 开关没打开时只出包、不上传）'
         required: true
-        default: both
+        default: all
         type: choice
+        # both 是加 Linux 之前的默认值，留着它，照老习惯选 both 还是原来那样只发
+        # Windows 与 macOS，不会碰 Linux。
         options:
+          - all
           - both
           - windows
           - macos
+          - linux
 
 permissions:
   contents: read
@@ -63,8 +88,231 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 第零步，一开始跑就把这一版的 tag 占上（为什么见 scripts/release-tag-plan.cjs 开头）。
+  # 出包作业都等它，顺带把「这个版本号已经发过、被撤回」挡在出包之前，原来要等一个多小时
+  # 出完包、批过一次才知道。
+  #
+  # 这是批准之前唯一拿着写权限的作业，所以它不装任何依赖：只跑 gh、curl 和仓库里两个
+  # 不依赖第三方包的脚本。判断和动手放在同一个作业里，重跑时一起重来，不会拿上一次的
+  # 判断去动 tag。
+  # 不设 if：它被跳过会把后面的作业全部带着跳过。
+  release-tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Decide what to do with the release tag
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+          PLATFORMS: ${{ inputs.platforms }}
+          PUBLISH_LINUX: ${{ vars.XINGMANG_PUBLISH_LINUX }}
+          DISPATCH_REF: ${{ github.ref }}
+          SHIPPED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # 只选 linux 而 Linux 开关没开：publish 作业整个跳过，这次什么都不对外发，也就
+          # 不占 tag。开关照 GitHub 表达式的规矩不分大小写。
+          publish_linux=$(printf '%s' "$PUBLISH_LINUX" | tr '[:upper:]' '[:lower:]')
+          if [ "$PLATFORMS" = 'linux' ] && [ "$publish_linux" != 'true' ]; then
+            echo '这次只出 Linux 的包、不对外发，不占 tag'
+            echo 'action=none' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # release 环境只放行 main：从别处触发，Mac 出包和上传都会被环境拒掉，tag 却已经
+          # 占在一个发不出去的提交上了。
+          if [ "$DISPATCH_REF" != 'refs/heads/main' ]; then
+            echo "::error::正式发布只能从 main 触发，这次是 $DISPATCH_REF；什么都没动"
+            exit 1
+          fi
+          version=$(node -p "require('./package.json').version")
+          if [ "$version" != "$CONFIRM_VERSION" ]; then
+            echo "::error::版本不一致：package.json 是 $version，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+          # 下一步要把 tag 名拼进接口地址，这里先按整串对一遍格式。
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$version 不是有效的版本号；什么都没动"
+            exit 1
+          fi
+          tag="v$version"
+          # matching-refs 没有这个 tag 时回空列表而不是 404，任何报错都只能是真的查不了
+          # （#493）。它按前缀匹配，下面再按完整的 ref 名挑出这一个。
+          if ! refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --paginate \
+            --jq '.[] | [.ref, .object.type, .object.sha] | join(" ")'); then
+            echo "::error::查不了 $tag 是否已存在（不是「没有这个 tag」，是 GitHub 接口报错）；什么都没动，过几分钟重新触发"
+            exit 1
+          fi
+          object=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$tag" '$1 == ref { print $2 " " $3 }')
+          existing=''
+          case "$object" in
+            '') ;;
+            'tag '*) existing=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${object#tag }" --jq '.object.sha') ;;
+            'commit '*) existing=${object#commit } ;;
+            *) echo "::error::$tag 指向的不是 commit 也不是附注 tag（$object）；什么都没动"; exit 1 ;;
+          esac
+          if [ -n "$object" ] && ! [[ "$existing" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::读不出 $tag 指向哪个 commit；什么都没动"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          release_exists=false
+          if [ -n "$existing" ] && [ "$existing" != "$SHIPPED_SHA" ]; then
+            # 列表没有这个版本时回空，和「查不了」分得开。这个作业有写权限，草稿也看得见：
+            # 草稿只会出现在上过更新源之后的收尾那一步，算「发过」。
+            if ! releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].tag_name'); then
+              echo "::error::查不了 $tag 有没有 Release；什么都没动，过几分钟重新触发"
+              exit 1
+            fi
+            # 不经管道喂给 grep：grep -q 一找到就退出，列表长的话 printf 写到一半被 SIGPIPE
+            # 打断，pipefail 下整个判断算「没有」，tag 就会被当成没发过挪走。
+            if grep -Fxq -- "$tag" <<< "$releases"; then release_exists=true; fi
+          fi
+          base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
+          base=${base%/}
+          live="$RUNNER_TEMP/release-tag-live"
+          mkdir -p "$live"
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
+            code=$(curl --silent --show-error --max-time 60 --output "$live/$manifest" \
+              --write-out '%{http_code}' "$base/$manifest")
+            case "$code" in
+              200) ;;
+              404) rm -f "$live/$manifest" ;;
+              *) echo "::error::读取线上 $manifest 失败（HTTP $code），确认不了这个版本有没有发过；什么都没动"; exit 1 ;;
+            esac
+          done
+          status_file=''
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/release-tag-status.json" \
+            --write-out '%{http_code}' "$base/service-status.json")
+          case "$code" in
+            200) status_file="$RUNNER_TEMP/release-tag-status.json" ;;
+            404) ;;
+            *) echo "::error::读取线上 service-status.json 失败（HTTP $code），确认不了这个版本有没有被撤回；什么都没动"; exit 1 ;;
+          esac
+          plan=$(node scripts/release-tag-plan.cjs --version "$version" --shipped "$SHIPPED_SHA" \
+            --tag-target "$existing" --release-exists "$release_exists" --live-dir "$live" --status "$status_file")
+          printf '%s\n' "$plan"
+          printf '%s\n' "$plan" >> "$GITHUB_OUTPUT"
+
+      # 动手：上一步的结论对过格式、再核一遍 tag 现在的样子才动。
+      - name: Reserve the release tag on the commit being built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.plan.outputs.action }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          PLANNED_FROM: ${{ steps.plan.outputs.from }}
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+          SHIPPED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            none) echo '这次不对外发，不占 tag'; exit 0 ;;
+            create|keep|move) ;;
+            *) echo "::error::看不懂上一步给的结论（$ACTION）；tag 没动"; exit 1 ;;
+          esac
+          # 只动这一次要发的那个版本的 tag。用 [[ =~ ]] 而不是 grep：grep 按行匹配，夹一个
+          # 换行就能混过去。
+          if [ "$TAG" != "v$CONFIRM_VERSION" ] \
+            || ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag 名字不对（$TAG）；tag 没动"
+            exit 1
+          fi
+          if [ "$ACTION" = 'move' ] && ! [[ "$PLANNED_FROM" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::要挪的 tag 原来指向哪个提交不对（$PLANNED_FROM）；tag 没动"
+            exit 1
+          fi
+          # tag 现在指向的 commit，没有这个 tag 时为空；查不了返回非零，不当成「没有」。
+          tag_target() {
+            local refs object sha=''
+            refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" --paginate \
+              --jq '.[] | [.ref, .object.type, .object.sha] | join(" ")') || return 1
+            object=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$TAG" '$1 == ref { print $2 " " $3 }')
+            case "$object" in
+              '') return 0 ;;
+              'tag '*) sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${object#tag }" --jq '.object.sha') || return 1 ;;
+              'commit '*) sha=${object#commit } ;;
+              *) return 1 ;;
+            esac
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+            printf '%s' "$sha"
+          }
+          if ! current=$(tag_target); then
+            echo "::error::查不了 $TAG 现在指向哪里；tag 没动，过几分钟重新触发"
+            exit 1
+          fi
+          create_tag() {
+            if gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$TAG" -f "sha=$SHIPPED_SHA" --silent; then
+              echo "$TAG 已建在本次出包的 $SHIPPED_SHA 上"
+              return 0
+            fi
+            # 建不上时先看是不是刚被别处建好了，再下结论。
+            if after=$(tag_target) && [ "$after" = "$SHIPPED_SHA" ]; then
+              echo "$TAG 已经指向本次出包的 $SHIPPED_SHA"
+              return 0
+            fi
+            echo "::error::GitHub 不让在 $SHIPPED_SHA 上建 $TAG：多半是触发之后 main 又合进了改 .github/workflows 的提交，这个令牌建不了工作流文件和 main 对不上的提交上的 tag。这次什么都还没发，从最新的 main 重新触发一次就好"
+            return 1
+          }
+          case "$ACTION" in
+            keep)
+              if [ "$current" != "$SHIPPED_SHA" ]; then
+                echo "::error::$TAG 在检查之后变了（现在指向 ${current:-（没有）}）；tag 没动，重新触发一次"
+                exit 1
+              fi
+              echo "$TAG 已经指向本次出包的 $SHIPPED_SHA，不用动"
+              ;;
+            create)
+              if [ "$current" = "$SHIPPED_SHA" ]; then
+                echo "$TAG 已经指向本次出包的 $SHIPPED_SHA"
+                exit 0
+              fi
+              if [ -n "$current" ]; then
+                echo "::error::$TAG 在检查之后被建在了 $current 上；tag 没动，重新触发一次"
+                exit 1
+              fi
+              create_tag
+              ;;
+            move)
+              # 上一步刚确认那一版没发出去过（没有 Release、线上清单都比它旧、不在撤回名单
+              # 里）；这里只再核一次 tag 没被别人动过。先删再建而不是改 ref：改 ref 等于推一次
+              # 从旧提交到新提交的更新，两次触发之间合进过改工作流的提交（补进来重出包常常
+              # 就是）就会被同一条规矩拒掉；删掉再建，建的那一下和触发时一样落在 main 的
+              # 最新提交上。
+              case "$current" in
+                "$SHIPPED_SHA")
+                  echo "$TAG 已经指向本次出包的 $SHIPPED_SHA"
+                  exit 0
+                  ;;
+                "$PLANNED_FROM")
+                  if ! gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" --silent; then
+                    echo "::error::删不掉还指向 $PLANNED_FROM 的旧 $TAG；什么都还没发，过几分钟重新触发。一直删不掉的话，在仓库的 Tags 页面手动删掉 $TAG 再触发（那一版没发出去过，删掉不影响客户）"
+                    exit 1
+                  fi
+                  echo "$TAG 原来指向 $PLANNED_FROM（那一版没发出去过），已删掉"
+                  ;;
+                *)
+                  echo "::error::$TAG 在检查之后变了（现在指向 ${current:-（没有）}）；tag 没动，重新触发一次"
+                  exit 1
+                  ;;
+              esac
+              create_tag
+              ;;
+          esac
+
   windows-build:
-    if: ${{ inputs.platforms != 'macos' }}
+    needs: release-tag
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'windows' }}
     runs-on: windows-latest
     # 这个作业不读任何 secret，也不挂 environment：它只是出包。凭据集中在 publish
     # 作业里，那里才有需要保护的东西。
@@ -99,6 +347,13 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
+      # Electron 43 的 npm 包不带二进制：release:build 里的 npm test 第一次
+      # require('electron') 时才现下，只试一次，网络一抖就红（#319、#796）。这里先
+      # 限时、带重试地装好，见 scripts/ci-ensure-electron-binary.cjs。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+
       - name: Install the Chromium the layout tests need
         run: npx --no-install playwright install chromium
 
@@ -128,7 +383,8 @@ jobs:
 
 
   macos-build:
-    if: ${{ inputs.platforms != 'windows' }}
+    needs: release-tag
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'macos' }}
     runs-on: macos-15
     # 这个作业要读发布证书的 .p12，所以也挂 release 环境，也就同样停下来等批准。
     # 批准它放行的只是「用真证书出一份包」，产物仍然只进 Actions artifact。
@@ -160,6 +416,11 @@ jobs:
           echo "version=$declared" >> "$GITHUB_OUTPUT"
 
       - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 同 windows-build：dist:mac:free 里的 npm test 要 Electron 二进制，先装好。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
 
       # dist:mac:free 自己会跑 npm test，其中的浏览器套件要这个。
       - run: npx --no-install playwright install chromium
@@ -238,15 +499,194 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # Linux 的两个出包作业共用一份源码，类型检查和测试在 x64 上跑一遍就够，和
+  # package-for-testing 的 Linux 那半一样。跑的是 Windows 那条 release:build:unsigned
+  # 里同样会跑的套件；Electron 开发目录冒烟与 ASAR 篡改校验为什么不在 Linux 上跑，见
+  # scripts/run-linux-release-package.cjs。
+  linux-checks:
+    needs: release-tag
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'linux' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').version")
+          if [ "$declared" != "$CONFIRM_VERSION" ]; then
+            echo "::error::版本不一致：package.json 是 $declared，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 同 windows-build：下面的 npm test 要 Electron 二进制，先装好。
+      - name: Install the Electron binary before the release gate loads it
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+
+      - run: npx --no-install playwright install chromium
+
+      - name: Install Chromium's system libraries
+        # 与 quality.yml 的 linux-test 同一个脚本：每次尝试限时，卡住就清掉 apt
+        # 残留进程再重试一次。
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run test:v2
+
+      - run: npm run test:canvas
+
+      - run: npm run test:ui
+
+  linux-build:
+    needs: linux-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # arm64 用 GitHub 的原生 arm 机器：x64 机器上装不了 arm64 的包，模拟器里起
+          # Electron 也说明不了真机。
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # 与 windows-build 一样不读任何 secret、不挂 environment：Linux 不签名，出包不需要
+    # 凭据，也就不会多出一次批准。
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        id: metadata
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').version")
+          if [ "$declared" != "$CONFIRM_VERSION" ]; then
+            echo "::error::版本不一致：package.json 是 $declared，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Build the deb through the Linux release gate
+        # 线上清单比本次旧 → 编译 → 出 deb → 加固校验 → deb 与更新清单校验。
+        timeout-minutes: 20
+        run: npm run release:package:linux -- --arch "$PACKAGE_ARCH"
+
+      # 与 quality.yml 的 linux-package 一样：像客户那样用 apt 装上，再以普通用户真开
+      # 一次、确认渲染进程在沙箱里，最后卸干净，过了才上传。只看产物的检查看不见「装
+      # 上去打不开」，2026-09-19 的 macOS 包就是这么漏过去的。
+      - name: Install the deb the way a customer would
+        timeout-minutes: 10
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          # 绝对路径：apt 会把相对的「目录/文件名」当成包名。
+          deb="$(node -p "require('node:path').resolve('release-' + process.env.PACKAGE_VERSION, require('./scripts/linux-artifact-names.cjs').debFileName(process.env.PACKAGE_VERSION, process.env.PACKAGE_ARCH))")"
+          sudo timeout --kill-after=20s 240 apt-get update
+          sudo timeout --kill-after=20s 300 apt-get install -y --no-install-recommends xvfb "$deb"
+
+      - name: Turn on Ubuntu 24.04's user-namespace restriction
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          fi
+
+      - name: Launch the installed app as an ordinary user and require its sandbox
+        timeout-minutes: 5
+        run: xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
+
+      - name: Run the packaged hardening smoke against the installed app
+        timeout-minutes: 6
+        run: xvfb-run -a node e2e/packaged-hardening-smoke.mjs /usr/bin/xingmang-ai-manager
+
+      - name: Remove the deb and require that nothing is left behind
+        timeout-minutes: 5
+        run: |
+          sudo timeout --kill-after=20s 240 apt-get remove -y xingmang-ai-manager
+          for leftover in /opt/xingmang-ai-manager /usr/bin/xingmang-ai-manager /etc/alternatives/xingmang-ai-manager \
+            /usr/share/applications/xingmang-ai-manager.desktop /etc/apparmor.d/xingmang-ai-manager; do
+            if [ -e "$leftover" ] || [ -L "$leftover" ]; then
+              echo "::error::removing the package left $leftover behind"
+              exit 1
+            fi
+          done
+
+      - name: Print artifact checksums
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: sha256sum "release-$PACKAGE_VERSION"/*.deb "release-$PACKAGE_VERSION"/latest-linux*.yml
+
+      - name: Upload the Linux release artifacts for the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-${{ matrix.arch }}-${{ steps.metadata.outputs.version }}
+          path: |
+            release-${{ steps.metadata.outputs.version }}/*.deb
+            release-${{ steps.metadata.outputs.version }}/latest-linux*.yml
+          retention-days: 14
+          if-no-files-found: error
+
   publish:
-    needs: [windows-build, macos-build]
+    needs: [release-tag, windows-build, macos-build, linux-checks, linux-build]
     # 只发一个平台时另一个作业是 skipped，而被跳过的 needs 默认会把依赖它的作业也
-    # 跳过。这里显式写出「没取消、没有失败的依赖、至少有一个出了包」。
+    # 跳过。这里显式写出「没取消、tag 已经占好、没有失败的依赖、至少有一个出了包」。
+    # tag 没占好时出包作业本来就全被跳过，这里再写一遍，是不让收尾那一步在没有 tag
+    # 的情况下跑起来。
+    #
+    # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 两个作业
+    # 红了也不挡 Windows / macOS，它的包也不会被下载；只选了 linux 又关着，这个作业
+    # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，要求 linux-build 成功，而不只
+    # 是「没失败」：超时的作业结果是 cancelled 而不是 failure，linux-checks 失败或超时
+    # 时 linux-build 又是 skipped，只挡 failure 会让 Windows / macOS 悄悄不带 Linux 发出去。
+    # GitHub 比较字符串不分大小写，TRUE、True 也算打开。
     if: >-
       ${{ !cancelled()
+      && needs.release-tag.result == 'success'
       && needs.windows-build.result != 'failure'
       && needs.macos-build.result != 'failure'
-      && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success') }}
+      && (vars.XINGMANG_PUBLISH_LINUX != 'true'
+        || (inputs.platforms != 'all' && inputs.platforms != 'linux')
+        || needs.linux-build.result == 'success')
+      && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success'
+        || (vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success')) }}
     # 写更新目录的三条工作流（这里、rollback-release、service-status）共用这个并发组
     # （#492）。它们都是「读线上的清单或状态 → 算出新内容 → 写回去」，交错执行时后写
     # 的会盖掉先写的：回滚刚把清单换回旧版、发布又把新版盖上去，撤回名单里却还写着它。
@@ -260,12 +700,18 @@ jobs:
     # 指定任意 ref。
     environment: release
     permissions:
-      # 只有这一段需要写权限：打 tag 和建 Release。出包那一段仍是只读。
+      # 建 Release、tag 万一不在了还要补建，所以要写权限。出包作业仍是只读；另一个拿着
+      # 写权限的是一开始占 tag 的 release-tag。
       contents: write
     timeout-minutes: 60
+    outputs:
+      # 这次实际发没发 Linux。cos-sync 照它决定同不同步 Linux：cos-sync 可能排队几个小时，
+      # 重跑时更可能已经过了好几天，到那时再看 XINGMANG_PUBLISH_LINUX，开关一变就会把这次
+      # 没发的 Linux 包同步出去。
+      linux: ${{ steps.linux-artifacts.outcome == 'success' }}
     env:
-      # 两个出包作业各自核对过 confirm_version 与 package.json 一致，取跑过的那个。
-      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version }}
+      # 出包作业各自核对过 confirm_version 与 package.json 一致，取跑过的那个。
+      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version || needs.linux-build.outputs.version }}
       # R2 桶里的前缀，也是 R2 凭据被限制到的那个前缀。
       OBJECT_PREFIX: xingmang-manager
     steps:
@@ -307,6 +753,16 @@ jobs:
           name: macos-release-${{ needs.macos-build.outputs.version }}
           path: release-artifacts
 
+      # Linux 开关关着时不下载 Linux 的包，下面每一步就都碰不到它：护栏、上传、复核、
+      # 清单和 Release 附件都只按 release-artifacts 里实际有什么来做。
+      - id: linux-artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
+        with:
+          pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
+          merge-multiple: true
+          path: release-artifacts
+
       - name: List what is about to be published
         run: |
           ls -l release-artifacts
@@ -323,11 +779,17 @@ jobs:
 
       # 第零步：往更新目录写任何东西之前，确认这一版可以发（#493）。放在上传前而不是
       # 收尾：只发 Mac 时原来要到最后打 tag 才发现版本号撞车，线上的 Mac 包那时已经被
-      # 同名覆盖了。两件事：
+      # 同名覆盖了。三件事：
       #   1. tag 已存在且指向别的 commit：同一个版本号已经从别处出过包，停下。先发
-      #      Windows、之后在同一个 commit 上补发 Mac 仍然放行。
+      #      Windows、之后在同一个 commit 上补发 Mac 仍然放行。tag 一开始就由 release-tag
+      #      占好了，这会儿不在多半是有人删了：在这里补建，建不上就停下，不让更新源先换成
+      #      新版本、收尾时才发现打不上 tag。
       #   2. 线上清单已经是这个版本或更高：只有和本次是同一批文件（同一次出包的发布
       #      作业被重跑）才放行，见 scripts/publish-guard.cjs。
+      #   3. 这个版本已经在 service-status.json 的撤回名单里（#548）：回退之后重跑它的
+      #      发布会把清单又指回坏版本，停下。这里只读状态文件，不改它。
+      # 任何一样查不清（GitHub 接口报错、线上文件读不到）都当成「不能发」，不当成
+      # 「没有」（#493）：此刻线上还是旧版本，停下没有代价。
       - name: Refuse to overwrite a version that already shipped
         env:
           GH_TOKEN: ${{ github.token }}
@@ -336,25 +798,64 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$PACKAGE_VERSION"
-          object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
-            --jq '[.object.type, .object.sha] | join(" ")' 2> /dev/null || true)
+          # matching-refs 没有这个 tag 时回空列表而不是 404，于是任何报错都只能是真的
+          # 查不了（权限、网络、GitHub 故障），不会和「没有这个 tag」混在一起。它按前缀
+          # 匹配，所以下面再按完整的 ref 名挑出这一个。
+          if ! refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --paginate \
+            --jq '.[] | [.ref, .object.type, .object.sha] | join(" ")'); then
+            echo "::error::查不了 $tag 是否已存在（不是「没有这个 tag」，是 GitHub 接口报错），确认不了会不会和已发过的版本撞车，线上什么都没改；过几分钟重跑"
+            exit 1
+          fi
+          object=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$tag" '$1 == ref { print $2 " " $3 }')
           existing=''
           case "$object" in
+            '') ;;
             'tag '*) existing=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${object#tag }" --jq '.object.sha') ;;
             'commit '*) existing=${object#commit } ;;
+            *) echo "::error::$tag 指向的不是 commit 也不是附注 tag（$object），线上什么都没改"; exit 1 ;;
           esac
+          if [ -n "$object" ] && ! printf '%s' "$existing" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::读不出 $tag 指向哪个 commit，线上什么都没改"
+            exit 1
+          fi
           if [ -n "$existing" ] && [ "$existing" != "$SHIPPED_SHA" ]; then
             echo "::error::$tag 已存在且指向 $existing，与本次出包的 $SHIPPED_SHA 不一致；同一个版本号不能从别的 commit 再发，请先提升版本号。线上什么都没改"
             exit 1
           fi
+          # 不用数组传参：macOS 自带的 bash 3.2 在 set -u 下把空数组当成未定义变量。
+          status_file=''
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/guard-service-status.json" \
+            --write-out '%{http_code}' "$PUBLIC_BASE/service-status.json")
+          case "$code" in
+            200) status_file="$RUNNER_TEMP/guard-service-status.json" ;;
+            404) echo "线上还没有 service-status.json，没有撤回名单" ;;
+            *) echo "::error::读取线上 service-status.json 失败（HTTP $code），确认不了这一版有没有被撤回，线上什么都没改"; exit 1 ;;
+          esac
+          guard() {
+            if [ -n "$status_file" ]; then
+              node scripts/publish-guard.cjs "$@" --status "$status_file"
+            else
+              node scripts/publish-guard.cjs "$@"
+            fi
+          }
+          # Linux 两个架构同一次发布：只有一份清单，说明另一个架构的包没到，宁可停下也
+          # 不要让一半的 Linux 客户看到新版本、另一半看不到。
+          linux_manifests=0
+          for manifest in latest-linux.yml latest-linux-arm64.yml; do
+            if [ -f "release-artifacts/$manifest" ]; then linux_manifests=$((linux_manifests + 1)); fi
+          done
+          if [ "$linux_manifests" -eq 1 ]; then
+            echo "::error::产物里只有一个架构的 Linux 更新清单，x64 与 arm64 必须一起发，线上什么都没改"
+            exit 1
+          fi
           checked=0
-          for manifest in latest.yml latest-mac.yml; do
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/guard-live-$manifest" \
               --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
             case "$code" in
-              200) node scripts/publish-guard.cjs --local "release-artifacts/$manifest" --name "$manifest" --live "$RUNNER_TEMP/guard-live-$manifest" ;;
-              404) node scripts/publish-guard.cjs --local "release-artifacts/$manifest" --name "$manifest" ;;
+              200) guard --local "release-artifacts/$manifest" --name "$manifest" --live "$RUNNER_TEMP/guard-live-$manifest" ;;
+              404) guard --local "release-artifacts/$manifest" --name "$manifest" ;;
               *) echo "::error::读取线上 $manifest 失败（HTTP $code），确认不了会不会覆盖已发布的版本，线上什么都没改"; exit 1 ;;
             esac
             checked=$((checked + 1))
@@ -362,6 +863,15 @@ jobs:
           if [ "$checked" -eq 0 ]; then
             echo "::error::产物里没有任何更新清单，线上什么都没改"
             exit 1
+          fi
+          # 都过了才补建 tag：停在上面的，不该把别人删掉的 tag 又建回来。
+          if [ -z "$existing" ]; then
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$tag" -f "sha=$SHIPPED_SHA" --silent; then
+              echo "::error::$tag 不在了，这个令牌也补建不了（多半是出包之后 main 改过工作流文件），线上什么都没改。请用有 workflow 权限的账号把 $tag 建在 $SHIPPED_SHA 上（gh api --method POST repos/$GITHUB_REPOSITORY/git/refs -f ref=refs/tags/$tag -f sha=$SHIPPED_SHA），再用 Re-run failed jobs 重跑；或者从最新的 main 重新触发"
+              exit 1
+            fi
+            echo "$tag 不在了，已补建在本次出包的 $SHIPPED_SHA 上"
           fi
 
       # 第一步：安装包与 blockmap。这些文件先落地，客户端此刻还不知道有新版本。
@@ -377,11 +887,12 @@ jobs:
           # 只发一个平台时另一半的通配符不该展开成字面量再被 aws 当成文件名。
           shopt -s nullglob
           endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
-          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap; do
+          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap release-artifacts/*.deb; do
             case "$file" in
               *Setup.exe) type=application/vnd.microsoft.portable-executable ;;
               *.dmg) type=application/x-apple-diskimage ;;
               *.zip) type=application/zip ;;
+              *.deb) type=application/vnd.debian.binary-package ;;
               *) type=application/octet-stream ;;
             esac
             aws s3 cp "$file" "s3://$R2_BUCKET/$OBJECT_PREFIX/$(basename "$file")" \
@@ -398,7 +909,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           checked=0
-          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap; do
+          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap release-artifacts/*.deb; do
             name=$(basename "$file")
             curl --fail --silent --show-error --location --max-time 900 \
               --output "$RUNNER_TEMP/$name" "$PUBLIC_BASE/$name"
@@ -416,7 +927,7 @@ jobs:
           echo "已逐字节复核 $checked 个产物"
 
       # 第三步，且必须是最后一步：更新清单。到这里为止线上仍是旧版本，随时可以放弃。
-      # 两份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序
+      # 每份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序
       # 形同虚设，由 scripts/publish-workflow-config.test.cjs 钉住。
       #
       # 覆盖之前先把线上那一份按它自己的版本号备份到 manifests/<版本>/，新清单也同样
@@ -435,7 +946,7 @@ jobs:
         run: |
           set -euo pipefail
           endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
-          for manifest in latest.yml latest-mac.yml; do
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/live-$manifest" \
               --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
@@ -458,7 +969,7 @@ jobs:
               --content-type text/yaml \
               --cache-control 'no-cache'
           done
-          for manifest in latest.yml latest-mac.yml; do
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             aws s3 cp "release-artifacts/$manifest" \
               "s3://$R2_BUCKET/$OBJECT_PREFIX/$manifest" \
@@ -478,6 +989,12 @@ jobs:
         if: ${{ needs.macos-build.result == 'success' }}
         run: npm run update:verify-feed -- --platform=macos
 
+      - name: Re-verify the published Linux update feed end to end
+        # 两个架构一起查：同一次发布、同一次回滚，只查一个的话另一个架构的客户拿到
+        # 半发布的清单要等他们点更新才暴露。
+        if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
+        run: npm run update:verify-feed -- --platform=linux
+
       - name: Tag the commit that shipped and create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -490,20 +1007,43 @@ jobs:
           # 产物与覆盖清单**之后**——在这里失败，线上已经是新版本了，作业却报红，
           # 正是最难判断的那种半完成状态。所以两件事都写成「没有就建，有就补」。
           #
-          # 打标不走 git push。GITHUB_TOKEN 是 GitHub App 令牌，推一个新的 ref 会撞上
-          # 「没有 workflows 权限就不许创建或更新 .github/workflows/*」这条 pre-receive
-          # 规则——0.2.8 就是这样红在最后一步的，那时更新源已经切过去了。而 workflows
-          # 不在 GITHUB_TOKEN 可以被授予的权限里，加不上。`gh release create --target`
-          # 由服务端给一个已存在的 commit 建 ref，不引入任何 blob，不受那条规则约束。
-          object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
-            --jq '[.object.type, .object.sha] | join(" ")' 2> /dev/null || true)
+          # tag 正常情况下早就在了：release-tag 一开始就把它建在本次出包的 commit 上，上传前
+          # 那道关发现它不在时还会补建一次。现在才建会撞上 GITHUB_TOKEN 的老问题：它没有、
+          # 也拿不到 workflows 权限，出包之后 main 只要改过 .github/workflows，GitHub 就不让它
+          # 在出包的 commit 上建 ref，git push（0.2.8）和 API 都一样。同一条规矩也管 Release
+          # 的 target_commitish，所以下面建 Release 不传 --target（缺省按默认分支判断）：
+          # 0.2.14 传了，两次都是 HTTP 403。
+          #
+          # 查 tag 用 matching-refs：没有这个 tag 时回空列表，任何报错都只能是真的查不了，
+          # 不会被当成「没有 tag」去补建。
+          if ! refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --paginate \
+            --jq '.[] | [.ref, .object.type, .object.sha] | join(" ")'); then
+            echo "::error::查不了 $tag 指向哪里（GitHub 接口报错）。更新源已经是新版本了，只差 GitHub 发布页；过几分钟用 Re-run failed jobs 重跑"
+            exit 1
+          fi
+          object=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$tag" '$1 == ref { print $2 " " $3 }')
           existing=''
           case "$object" in
+            '') ;;
             # 附注 tag 的 ref 指向的是 tag 对象，要再解一层才拿得到 commit。
             'tag '*) existing=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${object#tag }" --jq '.object.sha') ;;
             'commit '*) existing=${object#commit } ;;
+            *) echo "::error::$tag 指向的不是 commit 也不是附注 tag（$object）"; exit 1 ;;
           esac
-          if [ -n "$existing" ] && [ "$existing" != "$SHIPPED_SHA" ]; then
+          if [ -n "$object" ] && ! printf '%s' "$existing" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::读不出 $tag 指向哪个 commit。更新源已经是新版本了，只差 GitHub 发布页；过几分钟用 Re-run failed jobs 重跑"
+            exit 1
+          fi
+          if [ -z "$existing" ]; then
+            # 走到这里多半是有人把占好的 tag 删了。现在补建，只有 main 的工作流文件仍和
+            # 出包的 commit 一致时 GitHub 才接受；不接受就停下，说清楚要人做什么。
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$tag" -f "sha=$SHIPPED_SHA" --silent; then
+              echo "::error::$tag 不在了，这个令牌也补建不了（出包之后 main 改过工作流文件）。更新源已经是新版本了，只差 GitHub 发布页：请用有 workflow 权限的账号把 $tag 建在 $SHIPPED_SHA 上（gh api --method POST repos/$GITHUB_REPOSITORY/git/refs -f ref=refs/tags/$tag -f sha=$SHIPPED_SHA），再用 Re-run failed jobs 重跑这一步"
+              exit 1
+            fi
+            echo "$tag 已补建在 $SHIPPED_SHA 上"
+          elif [ "$existing" != "$SHIPPED_SHA" ]; then
             # 已存在的 tag 指着别的 commit，说明同一个版本号发过两份不同的产物。
             # 这必须有人来看，不能默默接着传。tag 本身不动：移动一个已发布的 tag
             # 会让所有按 tag 取源码的人拿到和当初不同的东西。
@@ -513,7 +1053,7 @@ jobs:
           # release-notes.md 里是从 0.1.x 起的全部历史，Release 正文只要这一版那一节。
           node scripts/extract-release-notes.cjs --version "$PACKAGE_VERSION" --output "$RUNNER_TEMP/release-section.md"
           shopt -s nullglob
-          assets=(release-artifacts/*Setup.exe release-artifacts/*.dmg)
+          assets=(release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.deb)
           if gh release view "$tag" > /dev/null 2>&1; then
             # Release 已经在了，只把这一次出的包挂上去。正文不重写：发布者可能已经
             # 在上面补过话，补发一个平台不该把那些改动冲掉。
@@ -523,12 +1063,88 @@ jobs:
               echo "没有可上传的安装包，Release 保持原样"
             fi
           else
-            # tag 不在就顺手建在本次实际出包的那个 commit 上，不是「今天的 main」——
-            # 提升版本号之后、构建之前可能又合进了别的改动。tag 已经在了就忽略
-            # --target，上面已经核过它指向同一个 commit。
+            # 挂到上面核过的那个 tag 上，它指着本次实际出包的 commit。--verify-tag：tag
+            # 万一这会儿不在了就停下，不让 GitHub 在今天的 main 上新建一个。
             gh release create "$tag" \
-              --target "$SHIPPED_SHA" \
+              --verify-tag \
               --title "$PACKAGE_VERSION" \
               --notes-file "$RUNNER_TEMP/release-section.md" \
               "${assets[@]}"
           fi
+
+  # 发布成功后把这一批包同步到腾讯云 COS，教程页的国内下载按钮读的就是它。
+  #
+  # 单独成一个作业，不接在 publish 末尾（2026-10-04）：GitHub 的机器往 COS 上海只能
+  # 传 120～200 KB/s，0.2.15 一批 709 MB 要传一到一个半小时，网络还会整段断上几分钟；
+  # 塞在 60 分钟的 publish 里传不完，0.2.15 就停在这一步、靠手动导入补齐。这里给足
+  # 时间。还是失败的话单独重跑这个作业（Re-run this job）：已经传好、核对过的文件不再
+  # 上传，不用再批一次，R2 更新源和 GitHub Release 也不会再动。别用 Re-run failed jobs：
+  # 同一次运行里还有别的作业红着时（比如 Linux 开关关着、Linux 出包红了），它会把依赖
+  # 它们的 publish 也带着重跑，又要批一次、又传一遍更新源。
+  #
+  # GITHUB_TOKEN 建的 Release 不会触发 release:published 工作流，所以在这里显式同步；
+  # 补发平台和重跑走同一条路。开关 XINGMANG_COS_SYNC_ENABLED 默认关着。COS 只是多一个
+  # 下载地址，客户端更新仍走 R2，这里慢了或失败了都不影响客户自动更新。
+  cos-sync:
+    needs: [publish, windows-build, macos-build, linux-build]
+    # 只认 publish 成功：那一下 Approve 放行的就是这一版。被跳过的出包作业不能把它也
+    # 带着跳过，所以和 publish 一样写 !cancelled()。
+    if: ${{ !cancelled() && needs.publish.result == 'success' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    # 和手动导入（sync-published-manager-cos）共用一个组，两边都会改 xingmang/latest.json。
+    # 不进 update-feed：这里不碰 R2，一传几个小时也不该挡住回滚和维护开关。
+    concurrency:
+      group: cos-manager-publish
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    # 挂 cos-sync（只放行 main、不设人工批准，凭据和手动导入是同一套），不挂 release：
+    # 挂 release 每次发版就要多批一次。
+    environment: cos-sync
+    # GitHub 托管的作业最长 6 小时，留半小时余量。
+    timeout-minutes: 330
+    env:
+      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version || needs.linux-build.outputs.version }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install locked script dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # publish 发了哪些平台，这里就同步哪些。Windows / macOS 只看出包结果，整次运行里不会
+      # 变，条件和 publish 的一字不差；Linux 照 publish 当时实际下没下（outputs.linux），
+      # 不再看开关。
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ needs.windows-build.result == 'success' }}
+        with:
+          name: windows-release-${{ needs.windows-build.outputs.version }}
+          path: release-artifacts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ needs.macos-build.result == 'success' }}
+        with:
+          name: macos-release-${{ needs.macos-build.outputs.version }}
+          path: release-artifacts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ needs.publish.outputs.linux == 'true' }}
+        with:
+          pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
+          merge-multiple: true
+          path: release-artifacts
+
+      - name: List what is about to be synchronized
+        run: ls -l release-artifacts
+
+      - name: Synchronize the successful release to Tencent COS
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
+          XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
+        run: node scripts/sync-manager-release-cos.cjs --directory release-artifacts --version "$PACKAGE_VERSION"

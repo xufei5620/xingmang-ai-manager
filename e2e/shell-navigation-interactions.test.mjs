@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage, waitForFixtureMount } from './fixture-readiness.mjs'
 import { createBrowserFixture, defaultViewport } from './harness.mjs'
+
+// The release build runs these suites on Windows, where a runner now and then
+// loses a navigation outright (net::ERR_NO_BUFFER_SPACE a few ms into goto, the
+// 0.2.17 release build). Every open goes through the shared retry, which spends
+// the same budget as several navigations rather than failing on the first.
+function navigateFixture(page, url, mount = (timeout) => waitForFixtureMount(page, { timeout })) {
+  return openFixturePage(page, url, mount, { label: 'shell navigation fixture' })
+}
 
 const shell = createBrowserFixture({ sameOriginOnly: true })
 before(async () => { await shell.start() })
@@ -9,8 +17,7 @@ after(async () => { await shell.stop(); shell.assertNoPageErrors() })
 
 async function fixture(query = '', viewport = defaultViewport) {
   const page = await shell.newPage({ viewport })
-  await page.goto(`${shell.baseUrl}/e2e/shell-navigation-fixture.html?${query}`)
-  await page.locator('.shell-topbar').waitFor({ timeout: fixtureReadyTimeoutMs })
+  await navigateFixture(page, `${shell.baseUrl}/e2e/shell-navigation-fixture.html?${query}`, (timeout) => page.locator('.shell-topbar').waitFor({ timeout }))
   return page
 }
 

@@ -2,17 +2,26 @@ html, body, #root { margin: 0; width: 100%; height: 100%; }
 * { box-sizing: border-box; }
 body { color: var(--text); background: var(--win); font: var(--font-body)/var(--line-body) var(--font); letter-spacing: 0; }
 button, input, select, textarea { font: inherit; }
-.v2-root { width: 1280px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+/* 外壳铺满窗口：标题栏、侧栏、顶栏、横条和状态栏跟着窗口走，每页正文最宽 1000、在侧栏右边居中。 */
+.v2-root { width: 100%; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .v2-titlebar { height: 36px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 150px 0 12px; background: var(--rail); color: var(--text-2); border-bottom: 1px solid var(--line); font-size: var(--font-small-compact); -webkit-app-region: drag; }
 .v2-root[data-os='mac'] .v2-titlebar { height: 46px; padding-left: 84px; }
 .v2-shell { display: grid; grid-template-columns: 216px minmax(0, 1fr); flex: 1; min-height: 0; }
-.v2-shell.sidebar-collapsed { grid-template-columns: 60px minmax(0, 1fr); }
+.v2-shell.sidebar-collapsed, .v2-shell.sidebar-overlay { grid-template-columns: 60px minmax(0, 1fr); }
+/* 窗口窄、侧栏自动收着时点「展开侧栏」：侧栏浮在页面上面展开，那一列照旧 60 宽，正文不跟着挤。 */
+.v2-shell.sidebar-overlay > .v2-sidebar { width: 216px; z-index: 20; box-shadow: var(--shadow); }
 .v2-sidebar { position: relative; display: flex; flex-direction: column; padding: 12px 10px 10px; min-height: 0; background: linear-gradient(180deg, var(--accent-soft), transparent 180px), var(--rail); border-right: 1px solid var(--line); }
 .v2-brand { display: flex; align-items: center; gap: 8px; padding: 6px 4px 14px; flex: none; }
 .v2-brand .xm-logo-wordmark { width: auto; min-width: 0; }
 .v2-brand .xm-btn { margin-left: auto; }
 .v2-sidebar-nav { display: flex; flex-direction: column; gap: 1px; min-height: 0; flex: 1; }
 .v2-sidebar-scroll { display: flex; flex-direction: column; gap: 1px; flex: 0 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+/* 放不下时上下边缘渐隐，看得出还能滚（Shell 按滚动位置写 data-fade）。 */
+.v2-sidebar-scroll[data-fade='top'] { mask-image: linear-gradient(to bottom, transparent, #000 20px); }
+.v2-sidebar-scroll[data-fade='bottom'] { mask-image: linear-gradient(to top, transparent, #000 20px); }
+.v2-sidebar-scroll[data-fade='both'] { mask-image: linear-gradient(to bottom, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
+/* 「更多」和「设置」钉在侧栏底部，展开的四项夹在两者之间；上面那段滚动区先让位。 */
+.v2-sidebar-pinned { display: flex; flex-direction: column; gap: 1px; flex: none; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
 .v2-nav-group { padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .v2-nav-group:last-of-type { padding-bottom: 0; margin-bottom: 0; border: 0; }
 .v2-nav-item { position: relative; width: 100%; min-height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 7px; padding: 8px 10px; color: var(--text-2); background: transparent; font-size: var(--font-body); line-height: 20px; cursor: pointer; }
@@ -24,24 +33,37 @@ button, input, select, textarea { font: inherit; }
 .v2-nav-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: var(--font-micro); line-height: 1; }
 .sidebar-collapsed .v2-nav-badge { position: absolute; top: 1px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border: 2px solid var(--rail); background: var(--accent); color: var(--accent-fg); }
 
-.v2-account-entry { margin-top: 4px; padding: 10px; flex: none; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--tile-ring); }
+.v2-account-entry { margin-top: 8px; padding: 8px 10px; flex: none; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--tile-ring); }
 .v2-account-top, .v2-account-top > button { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 账号卡两行：头像小一号，恢复登录时换成空白头像，不把「正在恢复登录」的第一个字当名字。 */
+.v2-account-entry .v2-local-avatar-36, .v2-account-placeholder { width: 28px; height: 28px; border-radius: 9px; font-size: var(--font-body); }
+.v2-account-placeholder { display: inline-grid; place-items: center; flex: none; border: 1px solid var(--line); background: var(--panel-2); color: var(--text-3); }
+/* 名字长、放不下「历史账号」标签时，标签折到名字下面，不把名字挤成几个字加省略号。 */
+.v2-account-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
+.v2-account-who .v2-account-tag { flex: none; overflow: visible; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--text-2); font-size: var(--font-micro-compact); line-height: 16px; }
 .v2-account-top > button:first-child { flex: 1; border: 0; background: transparent; padding: 0; color: var(--text); text-align: left; cursor: pointer; }
 .v2-account-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: var(--xm-navy); color: var(--xm-gold); border: 1px solid var(--line-2); flex: none; }
 .v2-account-who { display: grid; min-width: 0; line-height: 1.25; }
 .v2-account-who strong, .v2-account-who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-account-who strong { font-size: var(--font-body); }
 .v2-account-who small { font-size: var(--font-micro-compact); color: var(--text-3); }
-.v2-account-balance { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 4px 8px; padding-top: 8px; margin-top: 8px; border-top: 1px solid var(--line); }
+.v2-account-balance { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; padding-top: 6px; margin-top: 6px; border-top: 1px solid var(--line); }
 .v2-account-balance small { color: var(--text-3); font-size: var(--font-micro-compact); }
 .v2-account-balance-summary { min-width: 0; }
-.v2-account-balance-label { display: flex; align-items: center; gap: 4px; min-height: var(--control-xs); }
+.v2-account-balance-amount { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: var(--control-xs); }
+.v2-account-balance-placeholder { display: block; width: 72px; height: 14px; border-radius: 4px; background: var(--panel-2); }
 .v2-account-balance strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-h2) var(--mono); }
+.v2-account-balance-subscription { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-account-balance > .v2-balance-error { grid-column: 1 / -1; }
 .v2-account-balance .v2-balance-error, .v2-statusbar .v2-balance-error { color: var(--warn); }
 .sidebar-collapsed .v2-sidebar { padding-inline: 8px; }
-.sidebar-collapsed .v2-brand { flex-direction: column; gap: 8px; padding-inline: 0; }
-.sidebar-collapsed .v2-brand .xm-btn { margin: 0; }
+.sidebar-collapsed .v2-brand { justify-content: center; padding: 2px 0 10px; }
+/* 窄条顶上只有标志；鼠标停上去或键盘移到上面，标志换成「展开侧栏」的图标。 */
+.v2-brand-toggle { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-2); cursor: pointer; }
+.v2-brand-toggle > * { grid-area: 1 / 1; }
+.v2-brand-toggle > svg, .v2-brand-toggle:is(:hover, :focus-visible) > img { opacity: 0; }
+.v2-brand-toggle:is(:hover, :focus-visible) { background: var(--panel-2); color: var(--text); }
+.v2-brand-toggle:is(:hover, :focus-visible) > svg { opacity: 1; }
 .sidebar-collapsed .v2-nav-item { justify-content: center; padding-inline: 0; }
 .sidebar-collapsed .v2-sidebar-nav .xm-tooltip-anchor { width: 100%; }
 .sidebar-collapsed .v2-nav-item span, .sidebar-collapsed .v2-nav-item > svg:last-child:not(:first-child) { display: none; }
@@ -51,7 +73,7 @@ button, input, select, textarea { font: inherit; }
 .sidebar-collapsed .v2-account-balance { display: flex; flex-direction: column; align-items: center; border: 0; padding: 0; justify-content: center; }
 .v2-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); background-image: var(--glow-top); background-repeat: no-repeat; }
 .v2-workspace-starfield { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
-.v2-workspace > .v2-topbar, .v2-workspace > .v2-content, .v2-workspace > .v2-statusbar, .v2-workspace > .v2-announcement-banner { position: relative; z-index: 1; }
+.v2-workspace > .v2-topbar, .v2-workspace > .v2-content, .v2-workspace > .v2-statusbar, .v2-workspace > .v2-announcement-banner, .v2-workspace > .v2-promo-card, .v2-workspace > .v2-promo-bar, .v2-workspace > .v2-offline-banner { position: relative; z-index: 1; }
 .v2-topbar { height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 20px; border-bottom: 1px solid var(--line); }
 .v2-command-trigger { display: flex; align-items: center; gap: 8px; width: 320px; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); color: var(--text-3); cursor: pointer; font-size: var(--font-small); }
 .v2-command-trigger span { flex: 1; text-align: left; }
@@ -61,7 +83,9 @@ button, input, select, textarea { font: inherit; }
 .v2-topbar-actions .xm-btn:hover:not(:disabled) { color: var(--text); }
 .v2-topbar-actions .xm-btn svg { width: 18px; height: 18px; }
 .v2-unread { position: absolute; top: 4px; right: 5px; display: block; width: 7px; height: 7px; border: 2px solid var(--bg); border-radius: 50%; background: var(--bad); }
-.v2-content { min-height: 0; min-width: 0; flex: 1; overflow: auto; padding: 28px 32px 40px; }
+/* 正文最宽 1000：窗口再宽只是两边留白变多；窗口窄了留白从 32 一路收到 16，正文先保住 1000。
+   百分比按工作区的宽度算，滚动条照旧贴着窗口右边。上边的留白写成变量：页面里吸顶的东西（教程的「第几步」细条）要往上提这么多才贴着正文顶边。 */
+.v2-content { --v2-content-padding-top: 28px; min-height: 0; min-width: 0; flex: 1; overflow: auto; padding: var(--v2-content-padding-top) max(16px, calc((100% - 1000px) / 2)) 40px; }
 .v2-content-chat { padding: 0; overflow: hidden; }
 .v2-content-chat .v2-page-host, .v2-chat-host { height: 100%; min-height: 0; }
 .v2-chat-host[hidden] { display: none; }
@@ -79,13 +103,27 @@ button, input, select, textarea { font: inherit; }
 .v2-dot.is-ok { background: var(--ok); }
 .v2-dot.is-warn { background: var(--warn); }
 .v2-notification { position: absolute; right: 20px; bottom: 46px; width: 420px; z-index: 18; }
+.v2-notification > .xm-notice { box-shadow: var(--shadow); }
 /* 启动期后台检查的提示停在右上角，避开右下角的更新通知；容器不吃指针事件，
-   提示自己才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。 */
-.v2-startup-notices { position: fixed; top: 64px; right: 20px; width: 380px; max-width: calc(100vw - 40px); z-index: 30; display: grid; gap: 8px; pointer-events: none; }
-.v2-startup-notices > * { pointer-events: auto; }
+   只有卡片那一摞和「还有 N 条」才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。
+   卡片区有高度上限、超出就在区内滚：小屏或「大字」下展开全部时，最后一张的按钮也够得着；
+   上限留出顶栏（64px）、底部状态栏和「还有 N 条」那一行。
+   顶边留在 64px、压着顶栏下沿：挪到正文顶上会正好盖住各页页头右边那颗主按钮（检查页的「重新检查」、
+   备份页的「重新加载」这些），提示卡没关掉之前点不到。 */
+.v2-startup-notices { position: fixed; top: 64px; right: 20px; width: 380px; max-width: calc(100vw - 40px); max-height: calc(100vh - 120px); z-index: 30; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; pointer-events: none; }
+/* 滚动区往外多留一圈再用负边距抵回去，给卡片的投影留地方。投影只用卡片那一档：
+   弹框那一档（24px 偏移、64px 模糊）比这一圈大得多，会被滚动区裁成卡片后面一整块半透明方块。 */
+.v2-startup-notices-list { display: grid; gap: 8px; align-content: start; min-height: 0; margin: -4px -12px -14px; padding: 4px 12px 14px; overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
+.v2-startup-notices-list > .xm-notice { box-shadow: var(--surface-card-shadow); }
+.v2-startup-notices > button { justify-self: end; pointer-events: auto; }
 .v2-startup-notice-items { margin: 6px 0 0; padding-left: 1.2em; }
 .v2-startup-notice-items li + li { margin-top: 2px; }
-.v2-command-results { display: grid; max-height: 340px; overflow: auto; margin-top: 12px; }
+/* 最多露 8 行，多了在框里滚。 */
+.v2-command-results { display: grid; max-height: 320px; overflow: auto; }
+.v2-command-search { position: relative; }
+.v2-command-search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; z-index: 1; }
+.v2-command-search input:not([type='checkbox']) { padding-left: 36px; }
+.v2-command-hint { margin: 0; color: var(--text-3); font-size: var(--font-micro); }
 .v2-command-results button { display: flex; align-items: center; gap: 12px; padding: 10px; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .v2-command-results button span { flex: 1; }
 .v2-command-results [aria-selected='true'] { background: var(--accent-soft); }
@@ -95,3 +133,13 @@ button, input, select, textarea { font: inherit; }
 .v2-skip-link:not(:focus), .v2-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* 正文区只是焦点落点，不是可操作的控件；给整块内容画一圈焦点框只会让人以为选中了什么。 */
 .v2-content:focus { outline: none; }
+.v2-command-entry { display: grid; }
+.v2-command-group { margin: 8px 10px 4px; color: var(--text-3); font-size: var(--font-small); }
+.v2-command-entry:first-child .v2-command-group { margin-top: 0; }
+.v2-command-empty { display: grid; justify-items: start; gap: 8px; }
+/* 窗口矮（按缩放折算不到 660）时导航每行 36 → 32，分组之间的空隙减半，侧栏放得下。 */
+@media (max-height: 659px) {
+  .v2-nav-item { min-height: 32px; padding-block: 6px; }
+  .v2-nav-group { padding-bottom: 4px; margin-bottom: 4px; }
+  .v2-sidebar-pinned { padding-top: 4px; }
+}

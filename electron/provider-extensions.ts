@@ -2,10 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { readBoundedUtf8FileSync } from './bounded-file'
+import { mapWithConcurrency } from './async-map'
+import { readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
-import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-directory'
+import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import { readCodexSkillEnablement } from './codex-extensions'
@@ -49,6 +50,7 @@ const MAX_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_CLAUDE_ROOT_CONFIG_BYTES = 16 * 1024 * 1024
 const MAX_SKILL_DEFINITION_BYTES = 2 * 1024 * 1024
 const MAX_SKILL_DIRECTORY_ENTRIES = 10_000
+const SKILL_SCAN_CONCURRENCY = 16
 const MAX_PROVIDER_VERSION_RESPONSE_BYTES = 512 * 1024
 const PROVIDER_VERSION_TIMEOUT_MS = 12_000
 const MAX_GIT_POINTER_BYTES = 4 * 1024
@@ -352,6 +354,31 @@ function safeSource(value: string | undefined): string {
   return result
 }
 
+// 私有仓库常被整条贴成 https://user:token@host/repo（#537）。地址照样交给 CLI，
+// 用户已有的用法不受影响；但账号和令牌要作为敏感值传给 command-runner，失败时
+// 的 argv、CLI 输出、运行日志和反馈报告里才不会原样留下它们。
+function sourceCredentials(value: string | undefined): string[] {
+  const text = value?.trim()
+  if (!text) return []
+  let parsed: URL
+  try {
+    parsed = new URL(text.replace(/^git\+/i, ''))
+  } catch {
+    return []
+  }
+  const values = new Set<string>()
+  for (const part of [parsed.username, parsed.password]) {
+    if (!part) continue
+    values.add(part)
+    try {
+      values.add(decodeURIComponent(part))
+    } catch {
+      // 百分号编码不完整时 URL 里出现的就是原文，上面已经收下。
+    }
+  }
+  return [...values]
+}
+
 function safeUrl(value: string): string {
   let parsed: URL
   try {
@@ -569,10 +596,10 @@ function parseMcpJson(output: string): RawMcpServer[] {
   return values.map(rawMcpFromJson)
 }
 
-function readJsonFile(filePath: string, maximumBytes = MAX_CONFIG_BYTES): Record<string, unknown> | null {
+async function readJsonFile(filePath: string, maximumBytes = MAX_CONFIG_BYTES): Promise<Record<string, unknown> | null> {
   let info: fs.Stats
   try {
-    info = fs.lstatSync(filePath)
+    info = await fs.promises.lstat(filePath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
@@ -580,7 +607,7 @@ function readJsonFile(filePath: string, maximumBytes = MAX_CONFIG_BYTES): Record
   if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) {
     throw new Error(`配置文件不是单链接普通文件：${filePath}`)
   }
-  const parsed = JSON.parse(readBoundedUtf8FileSync(
+  const parsed = JSON.parse(await readBoundedUtf8File(
     filePath,
     maximumBytes,
     '扩展配置文件',
@@ -618,11 +645,11 @@ interface ConfiguredMcpServers {
   warnings: string[]
 }
 
-function readConfiguredMcpServers(
+async function readConfiguredMcpServers(
   provider: 'claude' | 'gemini',
   homeDirectory: string,
   repositoryRoot: string | null,
-): ConfiguredMcpServers {
+): Promise<ConfiguredMcpServers> {
   const claudeRootConfig = path.join(homeDirectory, '.claude.json')
   // 每个文件对应 CLI 里的一层 scope。移除时必须带着它，否则 `mcp remove`
   // 会去默认那一层找，项目里的连接删不掉，同名的全局连接反倒被删了（#488）。
@@ -654,14 +681,14 @@ function readConfiguredMcpServers(
     if (!file) continue
     // 单个文件损坏或超限只降级为警告，避免拖垮其余配置来源。
     try {
-      for (const server of configMcpEntries(readJsonFile(file.path, limitFor(file.path)), file.scope)) record(server)
+      for (const server of configMcpEntries(await readJsonFile(file.path, limitFor(file.path)), file.scope)) record(server)
     } catch (error) {
       recordFailure(file.path, error)
     }
   }
   if (provider === 'claude' && repositoryRoot && !failedFiles.has(claudeRootConfig)) {
     try {
-      const root = readJsonFile(claudeRootConfig, MAX_CLAUDE_ROOT_CONFIG_BYTES)
+      const root = await readJsonFile(claudeRootConfig, MAX_CLAUDE_ROOT_CONFIG_BYTES)
       const projects = isRecord(root?.projects) ? root.projects : null
       const projectValue = projects
         ? Object.entries(projects).find(([projectPath]) => equivalentProjectPath(projectPath, repositoryRoot))?.[1]
@@ -761,92 +788,116 @@ function skillRoots(
   return [...result.values()]
 }
 
-function findGitRoot(start: string, boundary: string): string | null {
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.promises.access(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function findGitRoot(start: string, boundary: string): Promise<string | null> {
   let current = path.resolve(start)
   const limit = path.resolve(boundary)
   while (current === limit || current.startsWith(`${limit}${path.sep}`)) {
-    if (fs.existsSync(path.join(current, '.git'))) return current
+    if (await pathExists(path.join(current, '.git'))) return current
     if (current === limit) break
     current = path.dirname(current)
   }
   return null
 }
 
-function scanSkills(
+// The Skills page lists every provider at once, so this walk must stay off the
+// main thread's synchronous path: skill directories are inspected with async
+// fs calls a few at a time, then folded back in directory order so later roots
+// still win on duplicate ids exactly as before.
+async function scanSkills(
   provider: ProviderId,
   home: string,
   codexHome: string,
   repository: string | null,
   isEnabled: (definitionPath: string) => boolean = () => true,
-): MutableExtensionItem[] {
+): Promise<MutableExtensionItem[]> {
   const result = new Map<string, MutableExtensionItem>()
   for (const root of skillRoots(provider, home, codexHome, repository)) {
     let rootInfo: fs.Stats
     let realRoot: string
     try {
-      rootInfo = fs.lstatSync(root.path)
+      rootInfo = await fs.promises.lstat(root.path)
       if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) continue
-      realRoot = fs.realpathSync(root.path)
+      realRoot = await fs.promises.realpath(root.path)
     } catch {
       continue
     }
     let directories: fs.Dirent[]
     try {
-      directories = readDirectoryEntriesSync(root.path, MAX_SKILL_DIRECTORY_ENTRIES, `${provider} Skill 目录`)
+      directories = await readDirectoryEntries(root.path, MAX_SKILL_DIRECTORY_ENTRIES, `${provider} Skill 目录`)
     } catch (error) {
       if (error instanceof DirectoryEntryLimitError) throw error
       continue
     }
-    for (const directory of directories) {
-      const skillDirectory = path.join(root.path, directory.name)
-      const definitionPath = path.join(skillDirectory, 'SKILL.md')
-      let skillDirectoryInfo: fs.Stats
-      let definitionInfo: fs.Stats
-      let realDefinition: string
-      let frontmatter: Record<string, unknown> = {}
-      try {
-        skillDirectoryInfo = fs.lstatSync(skillDirectory)
-        definitionInfo = fs.lstatSync(definitionPath)
-        realDefinition = fs.realpathSync(definitionPath)
-        if (!skillDirectoryInfo.isDirectory() || skillDirectoryInfo.isSymbolicLink()) continue
-        if (!definitionInfo.isFile() || definitionInfo.isSymbolicLink() || definitionInfo.nlink > 1) continue
-        if (!pathInside(realDefinition, realRoot)) continue
-        frontmatter = yamlFrontmatter(readBoundedUtf8FileSync(
-          realDefinition,
-          MAX_SKILL_DEFINITION_BYTES,
-          `${provider} SKILL.md`,
-        ))
-      } catch {
-        continue
-      }
-      const name = nullableText(frontmatter.name) ?? directory.name
-      const gitRoot = findGitRoot(skillDirectory, root.path)
-      const source: ProviderExtensionSource = gitRoot
-        ? { kind: 'git', locator: gitRoot, reference: null }
-        : { kind: 'local', locator: skillDirectory, reference: null }
-      const id = path.resolve(definitionPath)
-      const key = process.platform === 'win32' ? id.toLowerCase() : id
-      result.set(key, {
-        provider,
-        kind: 'skill',
-        id,
-        name,
-        description: nullableText(frontmatter.description) ?? '',
-        installed: true,
-        enabled: isEnabled(id),
-        scope: root.scope,
-        currentVersion: null,
-        latestVersion: null,
-        source,
-        sourceLocalPath: gitRoot ?? undefined,
-        update: gitRoot
-          ? defaultUpdate('unsupported', '尚未查询 Git 远端提交')
-          : defaultUpdate('unsupported', '本地 Skill 没有可验证的 Git 来源'),
-        operations: nativeOperations(provider, 'skill'),
-      })
+    const items = await mapWithConcurrency(directories, SKILL_SCAN_CONCURRENCY, (directory) => (
+      scanSkillDirectory(provider, root, realRoot, directory.name, isEnabled)
+    ))
+    for (const item of items) {
+      if (!item) continue
+      const key = process.platform === 'win32' ? item.id.toLowerCase() : item.id
+      result.set(key, item)
     }
   }
   return [...result.values()]
+}
+
+async function scanSkillDirectory(
+  provider: ProviderId,
+  root: SkillRoot,
+  realRoot: string,
+  directoryName: string,
+  isEnabled: (definitionPath: string) => boolean,
+): Promise<MutableExtensionItem | null> {
+  const skillDirectory = path.join(root.path, directoryName)
+  const definitionPath = path.join(skillDirectory, 'SKILL.md')
+  let frontmatter: Record<string, unknown> = {}
+  try {
+    const skillDirectoryInfo = await fs.promises.lstat(skillDirectory)
+    const definitionInfo = await fs.promises.lstat(definitionPath)
+    const realDefinition = await fs.promises.realpath(definitionPath)
+    if (!skillDirectoryInfo.isDirectory() || skillDirectoryInfo.isSymbolicLink()) return null
+    if (!definitionInfo.isFile() || definitionInfo.isSymbolicLink() || definitionInfo.nlink > 1) return null
+    if (!pathInside(realDefinition, realRoot)) return null
+    frontmatter = yamlFrontmatter(await readBoundedUtf8File(
+      realDefinition,
+      MAX_SKILL_DEFINITION_BYTES,
+      `${provider} SKILL.md`,
+    ))
+  } catch {
+    return null
+  }
+  const name = nullableText(frontmatter.name) ?? directoryName
+  const gitRoot = await findGitRoot(skillDirectory, root.path)
+  const source: ProviderExtensionSource = gitRoot
+    ? { kind: 'git', locator: gitRoot, reference: null }
+    : { kind: 'local', locator: skillDirectory, reference: null }
+  const id = path.resolve(definitionPath)
+  return {
+    provider,
+    kind: 'skill',
+    id,
+    name,
+    description: nullableText(frontmatter.description) ?? '',
+    installed: true,
+    enabled: isEnabled(id),
+    scope: root.scope,
+    currentVersion: null,
+    latestVersion: null,
+    source,
+    sourceLocalPath: gitRoot ?? undefined,
+    update: gitRoot
+      ? defaultUpdate('unsupported', '尚未查询 Git 远端提交')
+      : defaultUpdate('unsupported', '本地 Skill 没有可验证的 Git 来源'),
+    operations: nativeOperations(provider, 'skill'),
+  }
 }
 
 function pathInside(candidate: string, root: string): boolean {
@@ -1094,11 +1145,14 @@ export function parseProviderPluginList(
 }
 
 /** 官方目录里的插件补上 plugin.json 里的显示名与一句说明；别的市场原样不动。 */
-export function describeCodexCatalogPlugins(items: MutableExtensionItem[], codexHome: string): void {
+export async function describeCodexCatalogPlugins(items: MutableExtensionItem[], codexHome: string): Promise<void> {
   const suffix = `@${CODEX_API_CURATED_MARKETPLACE_NAME}`
-  for (const item of items) {
-    if (!item.id.endsWith(suffix)) continue
-    const face = readCodexCatalogPluginInterface(codexHome, item.id.slice(0, -suffix.length))
+  const catalogItems = items.filter((item) => item.id.endsWith(suffix))
+  const faces = await mapWithConcurrency(catalogItems, SKILL_SCAN_CONCURRENCY, (item) => (
+    readCodexCatalogPluginInterface(codexHome, item.id.slice(0, -suffix.length))
+  ))
+  for (const [index, item] of catalogItems.entries()) {
+    const face = faces[index]
     if (!face) continue
     if (face.displayName) item.name = face.displayName
     if (!item.description && face.shortDescription) item.description = face.shortDescription
@@ -1943,7 +1997,7 @@ export class ProviderExtensionService {
       if (argv) {
         servers = parseMcpJson(await this.invoke(provider, argv, { maxOutputBytes: MAX_OUTPUT_BYTES }))
       } else {
-        const configured = readConfiguredMcpServers(provider as 'claude' | 'gemini', this.homeDirectory, this.repositoryRoot)
+        const configured = await readConfiguredMcpServers(provider as 'claude' | 'gemini', this.homeDirectory, this.repositoryRoot)
         servers = configured.servers
         warnings.push(...configured.warnings.map((warning) => `${cliCatalog[provider].name} ${warning}`))
       }
@@ -1962,7 +2016,7 @@ export class ProviderExtensionService {
         })
         items.push(...parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot))
       } else {
-        items.push(...scanSkills(
+        items.push(...await scanSkills(
           provider,
           this.homeDirectory,
           this.codexHome,
@@ -1990,7 +2044,7 @@ export class ProviderExtensionService {
         provider === 'gemini' ? 'user' : null,
         provider === 'claude' ? this.repositoryRoot : undefined,
       )
-      if (provider === 'codex') describeCodexCatalogPlugins(plugins, this.codexHome)
+      if (provider === 'codex') await describeCodexCatalogPlugins(plugins, this.codexHome)
       items.push(...plugins)
     } catch (error) {
       const noun = provider === 'gemini' ? 'Extension' : 'Plugin'
@@ -2199,14 +2253,17 @@ export class ProviderExtensionService {
   }
 
   /** 按列表里的 ID（SKILL.md 路径）从 CLI 当前的输出里找回技能名与所在层。 */
-  private async resolveGeminiSkill(input: ProviderExtensionMutation): Promise<GeminiSkillTarget | undefined> {
+  private async resolveGeminiSkill(
+    input: ProviderExtensionMutation,
+    repositoryRoot: string | null,
+  ): Promise<GeminiSkillTarget | undefined> {
     if (input.provider !== 'gemini' || input.kind !== 'skill' || input.action === 'install') return undefined
     const requested = safeIdentifier(input.id, '扩展 ID')
     const output = await this.invoke('gemini', ['skills', 'list', '--all'], {
-      cwd: this.repositoryRoot ?? undefined,
+      cwd: repositoryRoot ?? undefined,
       maxOutputBytes: MAX_OUTPUT_BYTES,
     })
-    const items = parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot)
+    const items = parseGeminiSkillList(output, this.homeDirectory, repositoryRoot)
     const byPath = path.isAbsolute(requested)
       ? items.find((item) => equivalentProjectPath(item.id, requested))
       : undefined
@@ -2215,31 +2272,37 @@ export class ProviderExtensionService {
       ?? items.find((item) => item.name === requested && item.scope === input.scope)
       ?? items.find((item) => item.name === requested)
     if (!item) return undefined
-    return {
-      name: safeIdentifier(item.name, 'Skill 名称'),
-      scope: isMutationScope(item.scope) ? item.scope : undefined,
+    const scope = isMutationScope(item.scope) ? item.scope : undefined
+    // 认不出技能在哪一层时，缺省的 --scope user 会删到同名的用户级技能（#488）。
+    // 停用不删文件，内置和扩展自带的技能本来就只能在用户层停用，照旧放行。
+    if (!scope && input.action === 'uninstall') {
+      throw new Error('没法确定这个技能装在哪里，请刷新列表后再试。')
     }
+    return { name: safeIdentifier(item.name, 'Skill 名称'), scope }
   }
 
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
     if (!providerIds.includes(input.provider)) throw new Error('未知的 Provider')
-    const geminiSkill = await this.resolveGeminiSkill(input)
+    // 选工作目录或保存设置会随时改写 this.repositoryRoot；一次操作从查找技能到
+    // 执行命令必须落在同一个项目里，否则列表在 A 读、命令在 B 跑（#488）。
+    const repositoryRoot = this.repositoryRoot
+    const geminiSkill = await this.resolveGeminiSkill(input, repositoryRoot)
     const { argv, secrets } = this.mutationArgv(input, geminiSkill)
     const scope = geminiSkill ? geminiSkill.scope : input.scope
     const projectBound = input.provider === 'claude' || input.provider === 'gemini'
     // 这两家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
     // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。
-    if (projectBound && scope && scope !== 'user' && !this.repositoryRoot) {
+    if (projectBound && scope && scope !== 'user' && !repositoryRoot) {
       throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
     }
     if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {
       await this.ensureClaudeOfficialMarketplace()
     }
     await this.invoke(input.provider, argv, {
-      cwd: projectBound ? this.repositoryRoot ?? undefined : undefined,
+      cwd: projectBound ? repositoryRoot ?? undefined : undefined,
       timeoutMs: MUTATION_TIMEOUT_MS,
       maxOutputBytes: MAX_OUTPUT_BYTES,
-      sensitiveValues: secrets,
+      sensitiveValues: [...secrets, ...sourceCredentials(input.source), ...sourceCredentials(input.id)],
       ...(isNetworkBoundExtensionMutation(input)
         ? { extraEnvironment: await this.networkEnvironment() }
         : {}),

@@ -98,4 +98,23 @@ describe('ttl cache', () => {
     expect(await cache.read()).toBe('recovered')
     expect(load).toHaveBeenCalledTimes(2)
   })
+
+  it('peeks at the last result even after it went stale, and forgets it on invalidate', async () => {
+    const time = clock()
+    let answer = 'first'
+    const load = vi.fn(async () => answer)
+    const cache = createTtlCache({ load, ttlMs: 60_000, now: time.now })
+
+    expect(cache.peek()).toBeNull()
+    await cache.read()
+    time.advance(120_000)
+    answer = 'second'
+    // 过期了 peek 照给上一次的，而且 peek 本身不触发读取。
+    expect(cache.peek()).toBe('first')
+    expect(load).toHaveBeenCalledTimes(1)
+    await cache.read()
+    expect(cache.peek()).toBe('second')
+    cache.invalidate()
+    expect(cache.peek()).toBeNull()
+  })
 })

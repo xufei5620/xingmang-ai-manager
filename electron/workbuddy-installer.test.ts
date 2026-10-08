@@ -237,6 +237,25 @@ describe('WorkBuddy official installer fallback', () => {
     expect(f.execute).toHaveBeenCalledOnce()
   })
 
+  it('tells the caller right before the Tencent installer runs, and only if nothing was cancelled', async () => {
+    const order: string[] = []
+    const f = await fixture({ onInstallStarting: () => order.push('install starting') })
+    f.execute.mockImplementation(async (spec) => {
+      order.push(spec.executable === powershell ? 'signature check' : 'installer')
+      return result(spec, spec.executable === powershell ? JSON.stringify({ status: 'Valid', subject: publisher }) : '')
+    })
+    await installWorkBuddyFromOfficial(f.options)
+    expect(order).toEqual(['signature check', 'install starting', 'installer'])
+
+    const controller = new AbortController()
+    const onInstallStarting = vi.fn()
+    const cancelled = await fixture({ signal: controller.signal, onInstallStarting })
+    cancelled.options.onProgress = (event) => { if (event.phase === 'installing') controller.abort() }
+    await expect(installWorkBuddyFromOfficial(cancelled.options)).rejects.toThrow('WorkBuddy 安装已取消')
+    expect(onInstallStarting).not.toHaveBeenCalled()
+    expect(cancelled.execute).toHaveBeenCalledOnce()
+  })
+
   it('handles partial file writes without losing or duplicating bytes', async () => {
     const f = await fixture()
     const actualOpen = fs.promises.open.bind(fs.promises)

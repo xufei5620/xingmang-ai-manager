@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   managedCliKeyProfiles,
   providerIds,
@@ -11,13 +14,14 @@ import {
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
-import type { StoredManagedCliKey } from './managed-cli-key-store'
+import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
+import type { SafeStorageLike } from './account-session-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 
-type AccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'listUsableGroups'>
+type AccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'listUsableGroups' | 'getActiveSiteId'>
 type ConfigurationService = Pick<SystemService, 'fetchAvailableModels' | 'saveConfig'>
 
 function managedKey(provider: ProviderId): StoredManagedCliKey {
@@ -613,9 +617,13 @@ function siteAwareProvisioner(siteId: RelaySiteId) {
   })
 }
 
-function recordingKeyStore(initial: StoredManagedCliKey[] = []): ManagedCliKeyStoreLike & { cached: StoredManagedCliKey[] } {
+function recordingKeyStore(
+  initial: StoredManagedCliKey[] = [],
+  siteId?: 'solov' | 'solov-api',
+): ManagedCliKeyStoreLike & { cached: StoredManagedCliKey[] } {
   const state = { cached: initial.map((entry) => ({ ...entry })) }
   return {
+    ...(siteId ? { getSiteId: () => siteId } : {}),
     get cached() { return state.cached },
     read: vi.fn(async () => state.cached.map((entry) => ({ ...entry }))),
     save: vi.fn(async (_userId: number, keys: readonly StoredManagedCliKey[]) => {
@@ -678,6 +686,18 @@ describe('relay-site-specific managed CLI key groups', () => {
     )
     const xmKeys = new Set(providerIds.map((provider) => siteManagedKey('solov', provider).key))
     for (const entry of store.cached) expect(xmKeys.has(entry.key)).toBe(false)
+  })
+
+  it('rejects a cache bound to another site even when its group names match', async () => {
+    const foreignKeys = providerIds.map((provider) => siteManagedKey('solov', provider))
+    const store = { ...recordingKeyStore(foreignKeys), getSiteId: () => 'solov-api' }
+    const provisionCliKey = siteAwareProvisioner('solov')
+    const accountService = siteAwareAccountService(provisionCliKey, () => 'solov')
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.failed).toEqual([])
+    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
   })
 
   it('writes the sub2api group key of each CLI into its config payload', async () => {
@@ -902,5 +922,333 @@ describe('managed CLI groups resolved from the account backend', () => {
       name: managedCliKeyProfiles.claude.keyName,
       group: renamedGroups.claude,
     })
+  })
+})
+
+describe('history-account subscriptions decide the managed key group', () => {
+  const sub2Api = profilesBySite['solov-api']
+  const platforms: Record<ProviderId, string> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini', grok: 'grok' }
+
+  function subscriptionAccountService(state: { subscribed: string[]; groupsFail?: boolean; listed?: string[]; withoutUsual?: ProviderId[] }) {
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: input.group === 'Claude 包月' ? 900 : 100,
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group}-plaintext-secret-123456`,
+    }))
+    const getSubscriptionSelf = vi.fn(async () => ({
+      billingPreference: null,
+      activeSubscriptions: state.subscribed.map((groupName, index) => ({
+        id: index + 1, planId: index + 1, status: 'active', source: 'sub2api', groupName,
+        amountTotal: null, amountUsed: null, startedAt: '', endsAt: '', nextResetAt: null,
+      })),
+      allSubscriptions: [],
+    }))
+    const listUsableGroups = vi.fn(async () => {
+      if (state.groupsFail) throw new Error('连接服务器失败')
+      return [
+        ...providerIds.filter((provider) => !state.withoutUsual?.includes(provider))
+          .map((provider) => ({ name: sub2Api[provider].group, description: '', ratio: 1, platform: platforms[provider] })),
+        ...(state.listed ?? state.subscribed).map((name) => ({ name, description: '', ratio: 1, platform: 'anthropic' })),
+      ]
+    })
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: () => 'solov-api',
+      provisionCliKey,
+      listUsableGroups,
+      getSubscriptionSelf,
+    } as unknown as AccountService
+    return { accountService, provisionCliKey, listUsableGroups }
+  }
+
+  it('moves only the subscribed CLI into its subscription group and reports it as regrouped', async () => {
+    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov-api', provider)), 'solov-api')
+    const { accountService, provisionCliKey, listUsableGroups } = subscriptionAccountService({ subscribed: ['Claude 包月'] })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    // The complete cache does not short-circuit here: a purchase is invisible locally.
+    expect(listUsableGroups).toHaveBeenCalledTimes(1)
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: sub2Api.claude.keyName, group: 'Claude 包月' }])
+    expect(summary.regrouped).toEqual(['claude'])
+    expect(summary.ready.find((entry) => entry.provider === 'claude')?.group).toBe('Claude 包月')
+    expect(store.cached.find((entry) => entry.provider === 'codex')?.key).toBe(siteManagedKey('solov-api', 'codex').key)
+  })
+
+  it('moves the CLI back to its usual group once the subscription is gone', async () => {
+    const store = recordingKeyStore([
+      { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
+      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+    ], 'solov-api')
+    const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: [] })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: sub2Api.claude.keyName, group: sub2Api.claude.group }])
+    expect(summary.regrouped).toEqual(['claude'])
+  })
+
+  it('keeps a cached subscription key when the groups cannot be read', async () => {
+    const store = recordingKeyStore([
+      { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
+      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+    ], 'solov-api')
+    const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], groupsFail: true })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(summary.failed).toEqual([])
+    expect(summary.regrouped).toBeUndefined()
+    expect(summary.ready.find((entry) => entry.provider === 'claude')?.group).toBe('Claude 包月')
+  })
+
+  it('keeps an expired subscription key when the account offers no other group for that CLI', async () => {
+    // 服务端还列着这个分组、却再给不出这家工具的普通分组时，换去写死的名字只会签 Key 失败，
+    // 配置里照样是这把旧 Key；留着它，用户至少看到服务端「订阅已到期」的原话。
+    const store = recordingKeyStore([
+      { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
+      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+    ], 'solov-api')
+    const { accountService, provisionCliKey } = subscriptionAccountService({
+      subscribed: [], listed: ['Claude 包月'], withoutUsual: ['claude'],
+    })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(summary.regrouped).toBeUndefined()
+    expect(summary.ready.find((entry) => entry.provider === 'claude')?.group).toBe('Claude 包月')
+  })
+
+  it('leaves the xm account alone: its subscriptions do not depend on the key group', async () => {
+    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov', provider)), 'solov')
+    const getSubscriptionSelf = vi.fn()
+    const listUsableGroups = vi.fn()
+    const provisionCliKey = vi.fn()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: () => 'solov',
+      provisionCliKey,
+      listUsableGroups,
+      getSubscriptionSelf,
+    } as unknown as AccountService
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.regrouped).toBeUndefined()
+    expect(getSubscriptionSelf).not.toHaveBeenCalled()
+    expect(listUsableGroups).not.toHaveBeenCalled()
+    expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+})
+
+describe('dynamic groups with the encrypted managed key store', () => {
+  const directories: string[] = []
+  const groups: Record<ProviderId, string> = {
+    claude: 'Claude-Pro-Relay',
+    codex: 'Codex-Professional-Relay',
+    gemini: 'Gemini-Pro-Relay',
+    grok: 'Grok-Pro-Relay',
+  }
+
+  function storage(): SafeStorageLike {
+    return {
+      isEncryptionAvailable: () => true,
+      encryptString: (plainText) => Buffer.from(`fixture-cipher:${plainText}`),
+      decryptString: (ciphertext) => {
+        const encoded = ciphertext.toString('utf8')
+        if (!encoded.startsWith('fixture-cipher:')) throw new Error('unknown fixture ciphertext')
+        return encoded.slice('fixture-cipher:'.length)
+      },
+    }
+  }
+
+  function storePath(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-dynamic-cli-group-'))
+    directories.push(directory)
+    return path.join(directory, 'managed-cli-keys.dat')
+  }
+
+  function provisioner() {
+    return vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const provider = providerIds.find((candidate) => groups[candidate] === input.group)
+      if (!provider) throw new Error(`unexpected group: ${input.group}`)
+      return {
+        id: providerIds.indexOf(provider) + 1,
+        name: input.name ?? managedCliKeyProfiles[provider].keyName,
+        key: `sk-${provider}-dynamic-secret-123456`,
+      }
+    })
+  }
+
+  afterEach(() => {
+    for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('keeps a key moved into a subscription group across a restart', async () => {
+    const filePath = storePath()
+    const sub2Api = profilesBySite['solov-api']
+    const platforms: Record<ProviderId, string> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini', grok: 'grok' }
+    const listUsableGroups = vi.fn(async () => [
+      ...providerIds.map((provider) => ({ name: sub2Api[provider].group, platform: platforms[provider] })),
+      { name: 'Claude 包月', platform: 'anthropic' },
+    ])
+    const getSubscriptionSelf = vi.fn(async () => ({
+      activeSubscriptions: [{ status: 'active', groupName: 'Claude 包月', endsAt: '2999-01-01T00:00:00Z' }],
+    }))
+    const issueKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: input.group === 'Claude 包月' ? 900 : 100 + providerIds.findIndex((provider) => sub2Api[provider].group === input.group),
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group === 'Claude 包月' ? 'subscription' : 'usual'}-plaintext-secret-123456`,
+    }))
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov-api'),
+      provisionCliKey: issueKey,
+      listUsableGroups,
+      getSubscriptionSelf,
+    } as unknown as AccountService
+
+    const first = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage(), 'solov-api'))
+    expect(first.failed).toEqual([])
+    expect(first.storageWarning).toBeUndefined()
+    expect(first.ready.find((entry) => entry.provider === 'claude')?.group).toBe('Claude 包月')
+
+    issueKey.mockClear()
+    const online = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage(), 'solov-api'))
+    expect(online.ready).toEqual(first.ready)
+    expect(online.regrouped).toBeUndefined()
+    expect(issueKey).not.toHaveBeenCalled()
+
+    const offlineService = {
+      getSessionState: accountService.getSessionState,
+      getActiveSiteId: accountService.getActiveSiteId,
+      provisionCliKey: vi.fn(async () => { throw new Error('offline key provisioning') }),
+      listUsableGroups: vi.fn(async () => { throw new Error('offline group list') }),
+      getSubscriptionSelf: vi.fn(async () => { throw new Error('offline subscriptions') }),
+    } as unknown as AccountService
+    const offline = await syncManagedCliKeySummary(offlineService, new ManagedCliKeyStore(filePath, storage(), 'solov-api'))
+    expect(offline.ready).toEqual(first.ready)
+    expect(offline.failed).toEqual([])
+    expect(offlineService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('persists renamed groups and reuses every key after an offline restart', async () => {
+    const filePath = storePath()
+    const firstStore = new ManagedCliKeyStore(filePath, storage())
+    const issueKey = provisioner()
+    const listUsableGroups = vi.fn(async () => providerIds.map((provider) => ({ name: groups[provider] })))
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups,
+    } as unknown as AccountService
+
+    const first = await syncManagedCliKeySummary(accountService, firstStore)
+    expect(first.failed).toEqual([])
+    expect(first.storageWarning).toBeUndefined()
+    expect(first.ready.map((entry) => entry.group)).toEqual(providerIds.map((provider) => groups[provider]))
+    expect(issueKey).toHaveBeenCalledTimes(providerIds.length)
+
+    const reopened = new ManagedCliKeyStore(filePath, storage())
+    const offlineService = {
+      getSessionState: accountService.getSessionState,
+      getActiveSiteId: accountService.getActiveSiteId,
+      provisionCliKey: vi.fn(async () => { throw new Error('offline key provisioning') }),
+      listUsableGroups: vi.fn(async () => { throw new Error('offline group list') }),
+    } as unknown as AccountService
+    const second = await syncManagedCliKeySummary(offlineService, reopened)
+    expect(second).toEqual(first)
+    expect(offlineService.listUsableGroups).not.toHaveBeenCalled()
+    expect(offlineService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('keeps a partially cached renamed group when the group list is offline', async () => {
+    const filePath = storePath()
+    const firstStore = new ManagedCliKeyStore(filePath, storage())
+    const codexKey = {
+      ...managedKey('codex'),
+      group: groups.codex,
+      key: 'sk-codex-dynamic-secret-123456',
+    }
+    await firstStore.save(73, [codexKey])
+    const issueKey = vi.fn(async () => { throw new Error('offline key provisioning') })
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups: vi.fn(async () => { throw new Error('offline group list') }),
+    } as unknown as AccountService
+
+    const result = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage()))
+    expect(result.ready).toContainEqual({ provider: 'codex', group: groups.codex, name: codexKey.name })
+    expect(result.failed.map((entry) => entry.provider).sort()).toEqual(['claude', 'gemini', 'grok'])
+    expect(issueKey).not.toHaveBeenCalledWith(expect.objectContaining({ group: groups.codex }))
+  })
+
+  it('persists a replacement in the renamed group after a cached key receives 401', async () => {
+    const filePath = storePath()
+    const oldKey = { ...managedKey('codex'), group: groups.codex, key: 'sk-codex-old-secret-123456' }
+    const firstStore = new ManagedCliKeyStore(filePath, storage())
+    await firstStore.save(73, [oldKey])
+    const issueKey = provisioner()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups: vi.fn(async () => providerIds.map((provider) => ({ name: groups[provider] }))),
+    } as unknown as AccountService
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === oldKey.key) throw new Error('模型查询失败，服务返回 401')
+      return ['codex-model']
+    })
+    const saveConfig = vi.fn(async () => ({ backups: [], files: [] }))
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      ['codex'], {}, false, new ManagedCliKeyStore(filePath, storage()),
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(issueKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: groups.codex })
+    expect(saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex', apiKey: 'sk-codex-dynamic-secret-123456' }),
+      false, expect.any(Function), expect.any(Object),
+    )
+    const stored = await new ManagedCliKeyStore(filePath, storage()).read(73)
+    expect(stored.find((entry) => entry.provider === 'codex')).toMatchObject({
+      group: groups.codex,
+      key: 'sk-codex-dynamic-secret-123456',
+    })
+  })
+
+  it('replaces a revoked dynamic-group key when the group list is temporarily unavailable', async () => {
+    const filePath = storePath()
+    const oldKey = { ...managedKey('codex'), group: groups.codex, key: 'sk-codex-old-secret-123456' }
+    await new ManagedCliKeyStore(filePath, storage()).save(73, [oldKey])
+    const issueKey = provisioner()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups: vi.fn(async () => { throw new Error('group endpoint unavailable') }),
+    } as unknown as AccountService
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === oldKey.key) throw new Error('模型查询失败，服务返回 401')
+      return ['codex-model']
+    })
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig: vi.fn(async () => ({ backups: [], files: [] })) } as unknown as ConfigurationService,
+      ['codex'], {}, false, new ManagedCliKeyStore(filePath, storage()),
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(issueKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: groups.codex })
+    expect((await new ManagedCliKeyStore(filePath, storage()).read(73))[0].group).toBe(groups.codex)
   })
 })

@@ -49,17 +49,29 @@
 .xm-pill.xm-tone-accent { background: var(--accent-soft); border-color: transparent; }
 .xm-pill.xm-tone-ok i { box-shadow: 0 0 6px var(--ok); }
 .xm-pill.xm-tone-warn i { box-shadow: 0 0 6px var(--warn); }
-.xm-card { background: var(--card-grad); border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; box-shadow: var(--surface-card-shadow); overflow: hidden; }
+/* 深色皮肤的 --card-grad 几乎透明，背后的星点透出来、字不好认，卡片一律用皮肤里的实心面板色（浅色两者本来一样）。 */
+.xm-card { background: var(--panel-solid); border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; box-shadow: var(--surface-card-shadow); overflow: hidden; }
 .xm-card-none > .xm-card-body { padding: 0; }
 .xm-card-md > .xm-card-body { padding: 14px 16px; }
 .xm-card-head { box-sizing: border-box; height: 48px; min-height: 48px; padding: 8px 16px; display: flex; justify-content: space-between; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); }
 .xm-card-head > div:first-child { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
-.xm-card-head h2 { font-size: var(--font-h2); margin: 0; font-weight: 600; }
-.xm-card-head small { color: var(--text-3); font-size: var(--font-small-compact); }
+.xm-card-head h2 { flex: none; font-size: var(--font-h2); margin: 0; font-weight: 600; white-space: nowrap; }
+.xm-card-head small { min-width: 0; overflow: hidden; color: var(--text-3); font-size: var(--font-small-compact); text-overflow: ellipsis; white-space: nowrap; }
+.xm-card-lead { margin: 0 0 12px; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; }
+.xm-card-none > .xm-card-body > .xm-card-lead { margin: 0; padding: 12px 16px; }
 .xm-card-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .xm-list-row { min-height: 64px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--line); }
 .xm-list-row:hover { background: var(--panel-hover); }
 .xm-list-row.is-off .xm-row-title { color: var(--text-3); }
+/* 整行可点的行：标题那颗按钮的 ::after 盖满整行，行里另有的按钮叠在它上面，各点各的；焦点框画在整行上。 */
+.xm-list-row.is-openable { position: relative; cursor: pointer; }
+.xm-row-open { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.xm-row-open::after { content: ''; position: absolute; inset: 0; }
+/* 右边那一格里只有按钮这类控件叠在 ::after 上面；箭头图标、两颗按钮中间的空、看不见的占位都照样点开整行，不吞点击。 */
+.xm-list-row.is-openable .xm-row-actions { position: relative; z-index: 1; pointer-events: none; }
+.xm-list-row.is-openable .xm-row-actions :is(button, a, input, select, textarea) { pointer-events: auto; }
+.xm-list-row .xm-row-open:focus-visible { outline: none; }
+.xm-list-row.is-openable:has(.xm-row-open:focus-visible) { outline: 2px solid var(--info); outline-offset: -2px; }
 .xm-row-icon { width: 32px; height: 32px; border-radius: var(--radius-input); background: var(--panel-2); display: grid; place-items: center; color: var(--text-2); flex: none; }
 .xm-row-main { flex: 1; min-width: 0; }
 .xm-row-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: var(--font-body); }
@@ -70,6 +82,11 @@
 .xm-tool-row { display: grid; grid-template-columns: 40px minmax(120px, 200px) minmax(var(--tool-status-min), 1fr) 72px 92px 32px; align-items: center; gap: 12px; min-height: 62px; padding: 11px 16px; border-top: 1px solid var(--line); }
 .xm-tool-row:hover { background: var(--panel-hover); }
 .xm-tool-row, .xm-list-row { transition: background var(--duration-fast) var(--ease-standard); }
+/* 卡片里的列表：分隔线通到卡片两边；卡片头本来就有一道下边线，第一行上面不再叠一道。 */
+.xm-card-md > .xm-card-body > :is(.xm-list-row, .xm-tool-row) { margin-inline: -16px; }
+.xm-card-md > .xm-card-body > :is(.xm-list-row, .xm-tool-row):first-child { margin-top: -14px; }
+.xm-card-md > .xm-card-body > :is(.xm-list-row, .xm-tool-row):last-child { margin-bottom: -14px; }
+.xm-card-body > :is(.xm-list-row, .xm-tool-row):first-child { border-top: 0; }
 .xm-tool-name { min-width: 0; line-height: 1.25; }
 .xm-tool-name strong { display: block; font-size: var(--font-body-l); font-weight: 600; }
 .xm-tool-name small, .xm-tool-name code { display: block; font-family: var(--mono); font-size: var(--font-micro); color: var(--text-3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -130,7 +147,11 @@
 .xm-modal[open] { display: flex; flex-direction: column; }
 .xm-dialog { width: var(--dialog-width); border-radius: var(--radius-dialog); corner-shape: squircle; max-height: 88%; overflow: hidden; }
 .xm-dialog-640 { width: var(--dialog-wide); }
-.xm-drawer { position: fixed; margin: 0 0 0 auto; inset: 0; width: var(--drawer-width); height: 100%; max-height: 100%; max-width: none; border-radius: 0; border: 0; border-left: 1px solid var(--line-2); background: var(--panel-solid); box-shadow: var(--surface-drawer-shadow); }
+/* 详情抽屉从正文顶边（顶栏和公告条下面，外壳量好写在 --v2-content-top）到状态栏上面，不盖标题栏、顶栏和状态栏；
+   不是模态框，背后不罩、不模糊，列表照样能点。 */
+.xm-drawer { position: fixed; inset: var(--v2-content-top, 82px) 0 30px auto; margin: 0; width: var(--drawer-width); height: auto; max-height: none; max-width: none; padding: 0; overflow: hidden; border-radius: 0; border: 0; border-left: 1px solid var(--line-2); background: var(--panel-solid); box-shadow: var(--surface-drawer-shadow); }
+.xm-drawer:popover-open { display: flex; flex-direction: column; }
+.xm-drawer::backdrop { background: none; backdrop-filter: none; }
 .xm-modal > header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--line); flex: none; }
 .xm-modal > header > div { flex: 1; min-width: 0; }
 .xm-dialog > header { gap: 12px; padding: 18px 20px 0; border: 0; }
@@ -143,14 +164,17 @@
 .xm-dialog-body > .xm-segment { align-self: flex-start; }
 .xm-modal-content > footer { padding: 12px 20px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; }
 .xm-dialog .xm-modal-content > footer { border: 0; padding: 14px 20px 18px; }
-.xm-drawer .xm-modal-content > footer { padding: 12px 18px; }
+.xm-drawer .xm-modal-content > footer { padding: 12px 18px; justify-content: flex-start; flex-wrap: wrap; }
 .xm-discard { padding: 20px; }
 .xm-discard h3 { font-size: var(--font-h2); margin: 0 0 8px; }
 .xm-discard p { color: var(--text-2); }
 .xm-discard > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .xm-ack { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
-.xm-notice { position: relative; display: flex; gap: 12px; padding: 14px 14px 12px; border: 1px solid var(--line-2); border-radius: var(--radius-dialog); corner-shape: squircle; background: var(--surface-dialog-background); box-shadow: var(--shadow); align-items: flex-start; }
+/* 嵌在页面里的提示框只留细边框，不浮起来；浮在角上的（开机提示、更新通知）由外壳给阴影。 */
+.xm-notice { position: relative; display: flex; gap: 12px; padding: 14px 14px 12px; border: 1px solid var(--line-2); border-radius: var(--radius-dialog); corner-shape: squircle; background: var(--surface-dialog-background); align-items: flex-start; }
 .xm-notice > svg { box-sizing: border-box; flex: none; width: 38px; height: 38px; padding: 10px; border-radius: 11px; background: linear-gradient(135deg, var(--accent-2), var(--accent)); color: var(--accent-fg); box-shadow: 0 6px 16px var(--accent-glow); }
+.xm-notice.xm-tone-bad > svg { background: var(--bad-soft); color: var(--bad); box-shadow: none; }
+.xm-notice.xm-tone-warn > svg { background: var(--warn-soft); color: var(--warn); box-shadow: none; }
 .xm-notice > .xm-icon-btn { position: absolute; top: 8px; right: 8px; }
 .xm-notice strong { display: block; padding-right: 18px; font-size: var(--font-body); font-weight: 600; }
 .xm-notice-body { margin-top: 2px; color: var(--text-2); font-size: var(--font-small); line-height: 1.55; }
@@ -162,7 +186,10 @@
 .xm-progress-bar.xm-tone-accent { background: linear-gradient(90deg, var(--accent), var(--accent-2)); box-shadow: 0 0 10px var(--accent-glow); }
 .xm-progress > span { display: block; font-size: var(--font-small); margin-top: 4px; color: var(--text-2); }
 .xm-toasts { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: var(--z-toast); pointer-events: none; }
-.xm-toast { padding: 9px 14px; border-radius: 12px; corner-shape: squircle; background: var(--surface-toast-background); border: 0; font-size: var(--font-small); box-shadow: var(--shadow), 0 0 0 1px var(--line-2); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+/* Only the toasts themselves take the mouse (hover pauses them, × closes warnings); the gaps around them still click through to the page. */
+.xm-toast { display: flex; align-items: center; gap: 8px; max-width: min(560px, calc(100vw - 32px)); pointer-events: auto; padding: 9px 14px; border-radius: 12px; corner-shape: squircle; background: var(--surface-toast-background); border: 0; font-size: var(--font-small); box-shadow: var(--shadow), 0 0 0 1px var(--line-2); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.xm-toast-close { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; margin-right: -6px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); cursor: pointer; }
+.xm-toast-close:hover { background: var(--panel-2); color: var(--text); }
 .xm-menu, .xm-popover { display: inline-flex; }
 .xm-menu-pop, .xm-popover-panel { position: fixed; inset: auto; margin: 0; min-width: 160px; max-width: calc(100vw - 16px); padding: 5px; background: var(--panel-solid); color: var(--text); border: 1px solid var(--line-2); border-radius: var(--radius-input); box-shadow: var(--shadow); z-index: var(--z-popover); font: inherit; max-height: calc(100vh - 16px); overflow-y: auto; }
 .xm-menu-pop { padding: 4px; border-radius: 12px; corner-shape: squircle; }
@@ -177,6 +204,7 @@
 .xm-empty > svg { color: var(--text-3); margin-bottom: 10px; }
 .xm-empty h3 { font-size: var(--font-body-l); font-weight: 600; color: var(--text); margin: 0 0 4px; }
 .xm-empty p { margin: 0 0 14px; font-size: var(--font-small); line-height: var(--line-body); }
+.xm-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .xm-skeleton { display: flex; flex-direction: column; gap: 10px; }
 .xm-skeleton i { height: 14px; background: var(--panel-2); border-radius: 4px; animation: xm-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes xm-pulse { to { opacity: .45; } }
@@ -191,7 +219,7 @@
 .xm-page-head-copy { min-width: 0; }
 .xm-page-head-actions { display: flex; align-items: center; gap: var(--space-2); flex: none; margin-left: auto; padding-top: var(--space-1); }
 .xm-page-head h1 { font-size: var(--font-h1); line-height: var(--line-heading); margin: 0 0 6px; }
-.xm-page-head p { margin: 0; color: var(--text-2); font-size: var(--font-body); max-width: 64ch; }
+.xm-page-head p { margin: 0; color: var(--text-2); font-size: var(--font-body); max-width: 46em; }
 .xm-toolbar { padding: 10px 0; justify-content: flex-start; }
 .xm-toolbar-left, .xm-toolbar-search, .xm-toolbar-right { display: flex; align-items: center; gap: 8px; }
 .xm-toolbar-right { margin-left: auto; }
@@ -205,3 +233,11 @@
 .xm-kbd { font-family: var(--mono); font-size: var(--font-micro-compact); color: var(--text-3); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; background: var(--kbd-bg); }
 [data-system-reduced-motion="true"] .xm-spin, [data-system-reduced-motion="true"] .xm-skeleton i, [data-reduce-motion="1"] .xm-spin, [data-reduce-motion="1"] .xm-skeleton i { animation: none; }
 [data-system-reduced-motion="true"] :is(.xm-btn, .xm-progress-bar, .xm-switch i), [data-reduce-motion="1"] :is(.xm-btn, .xm-progress-bar, .xm-switch i) { transition: none; }
+.xm-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* 没有标题行的弹框（顶部搜索）：框顶钉在窗口约六分之一处，结果变多变少框不跳；窗口太矮时在框里滚。 */
+.xm-dialog-headless { margin-top: calc(100vh / 6); max-height: calc(100vh - 100vh / 6 - 16px); }
+.xm-dialog-headless .xm-dialog-body { padding: 18px 20px 14px; }
+/* 从搜索或别的页跳过来要落的那一行亮一下再退掉（features/app/row-focus.ts）；减少动画时不闪，只围一圈边框。 */
+[data-anchor-focus='true'] { animation: xm-anchor-flash 2s ease-out; }
+@keyframes xm-anchor-flash { 0%, 50% { background-color: var(--accent-soft); } }
+:is([data-reduce-motion='1'], [data-reduced-motion='true'], [data-system-reduced-motion='true']) [data-anchor-focus='true'] { animation: none; box-shadow: inset 0 0 0 2px var(--accent); }

@@ -7,7 +7,8 @@ const http = require('node:http')
 const zlib = require('node:zlib')
 const { createHash } = require('node:crypto')
 const YAML = require('yaml')
-const { RollbackInputError, inspectBackup, manifestVersion, requirePlainVersion, verifyBackup } = require('./rollback-release.cjs')
+const { spawnSync } = require('node:child_process')
+const { RollbackInputError, inspectBackup, manifestVersion, planPlatform, requirePlainVersion, verifyBackup } = require('./rollback-release.cjs')
 
 const root = path.resolve(__dirname, '..')
 
@@ -25,7 +26,10 @@ test('reads the version of a manifest so it can be backed up under it', () => {
   const manifest = writeManifest('0.2.9')
   try {
     assert.equal(manifestVersion(manifest.target, 'latest.yml'), '0.2.9')
-    assert.throws(() => manifestVersion(manifest.target, 'latest-linux.yml'), RollbackInputError)
+    // Linux 两个架构的清单也要能备份；不认识的名字照样拒绝。
+    assert.equal(manifestVersion(manifest.target, 'latest-linux.yml'), '0.2.9')
+    assert.equal(manifestVersion(manifest.target, 'latest-linux-arm64.yml'), '0.2.9')
+    assert.throws(() => manifestVersion(manifest.target, 'latest-linux-ia32.yml'), RollbackInputError)
   } finally { manifest.cleanup() }
 })
 
@@ -150,4 +154,173 @@ test('the rollback workflow fully verifies every backup before it writes anythin
   assert.match(script, /--base "\$PUBLIC_BASE"/)
   // 只 HEAD 一下确认「在」正是 #494 那个缺口，别让它以别的写法回来。
   assert.doesNotMatch(script, /--head/)
+})
+
+// #547：两个平台分开判断。
+test('a platform already on the target version is skipped instead of blocking the other one', () => {
+  // Windows 升到了坏的 0.2.11，Mac 还在 0.2.10，退回 0.2.10。
+  assert.equal(planPlatform('0.2.11', '0.2.10'), 'rollback')
+  assert.equal(planPlatform('0.2.10', 'v0.2.10'), 'skip')
+  // 线上比目标还旧：不是回退，照样停下。
+  assert.throws(() => planPlatform('0.2.9', '0.2.10'), /这不是回退/)
+  assert.throws(() => planPlatform('0.2.10', '../0.2.9'), RollbackInputError)
+})
+
+function runPlanStep({ live, backups }) {
+  const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'rollback-release.yml'), 'utf8'))
+  const step = workflow.jobs.rollback.steps.find((entry) => /Check the backups/.test(String(entry.name)))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rollback-plan-'))
+  const bin = path.join(workspace, 'bin')
+  const scripts = path.join(workspace, 'scripts')
+  const feed = path.join(workspace, 'feed')
+  for (const directory of [bin, scripts, feed]) fs.mkdirSync(directory)
+  fs.symlinkSync(path.join(root, 'node_modules'), path.join(workspace, 'node_modules'))
+  // verify 要从更新目录完整下载安装包，那一半已由上面的用例在本机回环地址上验过；这里
+  // 只看两个平台各自走哪条路，所以 verify 换成记一笔，其余命令照原样交给真脚本。
+  fs.writeFileSync(path.join(scripts, 'rollback-release.cjs'), `const real = ${JSON.stringify(path.join(root, 'scripts', 'rollback-release.cjs'))}
+if (require.main !== module) { module.exports = require(real); return }
+const { spawnSync } = require('node:child_process')
+const args = process.argv.slice(2)
+if (args[0] === 'verify') { console.log('VERIFY ' + args[args.indexOf('--name') + 1]); process.exit(0) }
+const result = spawnSync(process.execPath, [real, ...args], { stdio: 'inherit' })
+process.exit(result.status ?? 1)
+`)
+  for (const [name, version] of Object.entries(live)) fs.writeFileSync(path.join(feed, name), fs.readFileSync(writeManifestFile(workspace, version, name)))
+  for (const [name, version] of Object.entries(backups)) {
+    fs.mkdirSync(path.join(feed, 'manifests', version), { recursive: true })
+    fs.writeFileSync(path.join(feed, 'manifests', version, name), fs.readFileSync(writeManifestFile(workspace, version, name)))
+  }
+  // 最后一个参数是地址，去掉更新目录前缀后在 feed 里找，没有就是 404。
+  const curl = path.join(bin, 'curl')
+  fs.writeFileSync(curl, `#!/bin/bash
+output=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  shift
+done
+file=${JSON.stringify(feed)}/\${1#https://updates.example.test/xingmang-manager/}
+if [ -f "$file" ]; then cp "$file" "$output"; printf 200; else printf 404; fi
+`)
+  fs.chmodSync(curl, 0o755)
+  const result = spawnSync('/bin/bash', ['-c', step.run], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: {
+      PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+      HOME: workspace,
+      RUNNER_TEMP: workspace,
+      GITHUB_OUTPUT: path.join(workspace, 'output'),
+      PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
+      TO_VERSION: '0.2.10',
+    },
+  })
+  const outputs = fs.existsSync(path.join(workspace, 'output')) ? fs.readFileSync(path.join(workspace, 'output'), 'utf8') : ''
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { status: result.status, log: result.stdout + result.stderr, outputs }
+}
+
+const FIXTURE_INSTALLERS = {
+  'latest.yml': (version) => `XingMang-AI-Manager-${version}-Setup.exe`,
+  'latest-mac.yml': (version) => `XingMang-AI-Manager-${version}-arm64-mac.zip`,
+  'latest-linux.yml': (version) => `xingmang-ai-manager_${version}_amd64.deb`,
+  'latest-linux-arm64.yml': (version) => `xingmang-ai-manager_${version}_arm64.deb`,
+}
+
+function writeManifestFile(workspace, version, name) {
+  const target = path.join(workspace, `fixture-${version}-${name}`)
+  const file = FIXTURE_INSTALLERS[name](version)
+  const sha512 = createHash('sha512').update(version).digest('base64')
+  fs.writeFileSync(target, YAML.stringify({ version, files: [{ url: file, sha512, size: 10 }], path: file, sha512, releaseDate: '2026-09-23T00:00:00.000Z' }))
+  return target
+}
+
+const posixOnly = { skip: process.platform === 'win32' ? '工作流步骤是 bash，只在 POSIX 上跑' : false }
+
+test('the rollback plan skips a platform already on the target and still rolls back the other', posixOnly, () => {
+  const run = runPlanStep({
+    live: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10' },
+  })
+  assert.equal(run.status, 0, run.log)
+  assert.match(run.log, /latest\.yml：线上已经是 0\.2\.10，这个平台不用退回/)
+  assert.match(run.log, /VERIFY latest-mac\.yml/)
+  assert.doesNotMatch(run.log, /VERIFY latest\.yml/)
+  assert.match(run.outputs, /^platforms= latest-mac\.yml$/m)
+  // 只撤回真正退回的那一边的线上版本。
+  assert.match(run.outputs, /^withdrawn=0\.2\.11 $/m)
+})
+
+test('the rollback plan stops when no platform needs rolling back or one is older than the target', posixOnly, () => {
+  const nothing = runPlanStep({
+    live: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10' },
+  })
+  assert.notEqual(nothing.status, 0)
+  assert.match(nothing.log, /::error::没有哪个平台需要退回到 0\.2\.10/)
+  const older = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-mac.yml': '0.2.9' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10' },
+  })
+  assert.notEqual(older.status, 0)
+  assert.match(older.log, /这不是回退/)
+  assert.equal(older.outputs, '')
+})
+
+test('the rollback plan rolls Linux back with the others and leaves it alone when it never shipped', posixOnly, () => {
+  const all = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-mac.yml': '0.2.11', 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10', 'latest-linux.yml': '0.2.10', 'latest-linux-arm64.yml': '0.2.10' },
+  })
+  assert.equal(all.status, 0, all.log)
+  assert.match(all.log, /VERIFY latest-linux\.yml/)
+  assert.match(all.log, /VERIFY latest-linux-arm64\.yml/)
+  assert.match(all.outputs, /^platforms= latest\.yml latest-mac\.yml latest-linux\.yml latest-linux-arm64\.yml$/m)
+  assert.match(all.outputs, /^withdrawn=0\.2\.11 $/m)
+
+  // Linux 开关没打开过：线上没有 Linux 清单，跳过它，不挡 Windows / macOS 的回退。
+  const never = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-mac.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10', 'latest-mac.yml': '0.2.10' },
+  })
+  assert.equal(never.status, 0, never.log)
+  assert.match(never.log, /线上没有 latest-linux\.yml，跳过这个平台/)
+  assert.match(never.outputs, /^platforms= latest\.yml latest-mac\.yml$/m)
+
+  // Linux 第一次发的就是坏版本，没有更早的 Linux 备份可退：Linux 保持不动并报警告，
+  // 别的平台照样退回。
+  const firstLinux = runPlanStep({
+    live: { 'latest.yml': '0.2.11', 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest.yml': '0.2.10' },
+  })
+  assert.equal(firstLinux.status, 0, firstLinux.log)
+  assert.match(firstLinux.log, /::warning::没有 0\.2\.10 的 latest-linux\.yml 备份/)
+  assert.match(firstLinux.outputs, /^platforms= latest\.yml$/m)
+})
+
+function runReverifyStep(platforms) {
+  const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'rollback-release.yml'), 'utf8'))
+  const step = workflow.jobs.rollback.steps.find((entry) => /Re-verify/.test(String(entry.name)))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rollback-reverify-'))
+  const bin = path.join(workspace, 'bin')
+  fs.mkdirSync(bin)
+  const log = path.join(workspace, 'npm.log')
+  fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\n`)
+  fs.chmodSync(path.join(bin, 'npm'), 0o755)
+  const result = spawnSync('/bin/bash', ['-c', step.run], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: { PATH: `${bin}:/usr/bin:/bin`, HOME: workspace, PLATFORMS: platforms },
+  })
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []
+  fs.rmSync(workspace, { recursive: true, force: true })
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  return calls
+}
+
+test('after a rollback each restored platform is re-verified, and Linux is never mistaken for Windows', posixOnly, () => {
+  const verify = (platform) => `run update:verify-feed -- --platform=${platform}`
+  assert.deepEqual(runReverifyStep(' latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml'), [verify('windows'), verify('macos'), verify('linux')])
+  // 「latest-linux.yml」里没有「latest.yml」这个子串，只退回 Linux 时不该去复核 Windows。
+  assert.deepEqual(runReverifyStep(' latest-linux.yml latest-linux-arm64.yml'), [verify('linux')])
+  assert.deepEqual(runReverifyStep(' latest-mac.yml'), [verify('macos')])
 })

@@ -3,13 +3,19 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import {
   CuratedDetails,
   CuratedShelf,
+  backupMatchesQuery,
   curatedPlaceholderField,
   curatedRuntimeCommand,
   curatedVersionText,
+  extensionFailureTarget,
   extensionRowState,
+  fillCuratedPlaceholders,
   findNativeSkill,
   mcpCommandRuntime,
   mcpHealthView,
+  preferredExtensionProvider,
+  parseCommandArguments,
+  parseEnvironmentVariables,
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   runExtensionAction,
@@ -36,16 +42,20 @@ function mcpInstall(id: string) {
 }
 
 describe('curated extension shelf', () => {
-  it('lists one row per curated entry with its risk badges and network need', () => {
+  // 联网说明以前在每一行右边各写一遍，把说明挤成两行；点「安装」后的确认框里本来就有。
+  it('lists one row per curated entry with its risk badges and leaves the network need to the confirm dialog', () => {
     const markup = renderToStaticMarkup(
       <CuratedShelf items={curatedItemsFor('mcp', 'claude')} onPick={() => {}} />,
     )
     expect(markup).toContain('星芒精选')
+    expect(markup).toContain('我们挑过的，装之前会先给你看它要什么权限')
     expect(markup).toContain('data-testid="curated-row-files"')
     expect(markup).toContain('data-testid="curated-install-browser"')
     expect(markup).toContain('会改你的文件')
     expect(markup).toContain('需要先登录')
-    expect(markup).toContain('第一次使用时需要联网下载')
+    expect(markup).not.toContain('第一次使用时需要联网下载')
+    expect(markup).not.toContain('点「安装」会先让你确认一次')
+    expect(renderToStaticMarkup(<CuratedDetails item={item('files')} />)).toContain('第一次使用时需要联网下载')
   })
 
   it('renders nothing on the pages that have no curated entries yet', () => {
@@ -87,7 +97,8 @@ describe('curated extension shelf', () => {
     expect(markup).toContain('data-testid="curated-install-commit-commands"')
     expect(markup).toContain('会多用额度')
     expect(markup).toContain('会动 Git 仓库')
-    expect(markup).toContain('安装时需要联网下载一次')
+    expect(markup).not.toContain('安装时需要联网下载一次')
+    expect(renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)).toContain('安装时需要联网下载一次')
   })
 
   // 装插件要先保证官方市场在册，所以确认框里是两条命令；钉不住版本这件事也必须写出来。
@@ -375,6 +386,16 @@ function extensionApi() {
   }
 }
 
+describe('extension failure wording', () => {
+  it('treats every extension change as a config write except installing Python', () => {
+    // 已知29：MCP、技能、插件改的都是工具自己的配置；「安装 Python」装的是运行环境。
+    for (const failed of ['enable', 'uninstall', 'curated', 'add', 'marketplace-ensure', 'market-update', 'market-delete', 'delete', 'auth'])
+      expect([failed, extensionFailureTarget(failed)]).toEqual([failed, 'config'])
+    expect(extensionFailureTarget('python')).toBeUndefined()
+    expect(extensionFailureTarget('')).toBeUndefined()
+  })
+})
+
 describe('extension row actions', () => {
   it('sends the scope a project copy was listed under, so the user copy is left alone', async () => {
     const api = extensionApi()
@@ -432,19 +453,74 @@ describe('extension row actions', () => {
 
   it('keeps only the Codex system skills read-only', () => {
     const row = listItem({ provider: 'codex', kind: 'skill', id: '/codex/skills/.system/x/SKILL.md' })
-    expect(extensionRowState(row, nativeSkill({ scope: 'system', managed: false, enabled: true }))).toMatchObject({
+    expect(extensionRowState(row, nativeSkill({ path: row.id, scope: 'system', managed: false, enabled: true }))).toMatchObject({
       readonly: true,
       canToggle: false,
       canUninstall: false,
     })
   })
 
-  it('matches a Codex skill by its path before falling back to its name', () => {
+  it('matches a Codex skill by its path when two installed skills share a name', () => {
     const user = nativeSkill({ path: '/home/me/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'user' })
     const repo = nativeSkill({ path: '/work/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'repo' })
     const row = listItem({ provider: 'codex', kind: 'skill', id: repo.path, name: 'Dup' })
 
     expect(findNativeSkill([user, repo], row)).toBe(repo)
+  })
+
+  it.each(['enable', 'disable', 'uninstall'] as const)('refuses to %s a missing path instead of changing the same-named skill', async (action) => {
+    const api = extensionApi()
+    const other = nativeSkill({ path: '/home/me/.agents/skills/b/SKILL.md', name: 'Dup' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/work/.agents/skills/a/SKILL.md', name: 'Dup' })
+    const matched = findNativeSkill([other], row)
+
+    expect(matched).toBeUndefined()
+    expect(extensionRowState(row, matched)).toMatchObject({ canToggle: false, canUninstall: false })
+    await expect(runExtensionAction(api, row, action, matched)).rejects.toThrow('刷新')
+    expect(api.toggleSkill).not.toHaveBeenCalled()
+    expect(api.uninstallSkill).not.toHaveBeenCalled()
+    expect(api.mutateProviderExtension).not.toHaveBeenCalled()
+    expect(other.enabled).toBe(false)
+  })
+
+  it('rejects a mismatched native path even if a stale caller supplies it directly', async () => {
+    const api = extensionApi()
+    const other = nativeSkill({ path: '/home/me/.agents/skills/b/SKILL.md', name: 'Dup' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/work/.agents/skills/a/SKILL.md', name: 'Dup' })
+
+    expect(extensionRowState(row, other)).toMatchObject({ canToggle: false, canUninstall: false })
+    await expect(runExtensionAction(api, row, 'uninstall', other)).rejects.toThrow('刷新')
+    expect(api.uninstallSkill).not.toHaveBeenCalled()
+  })
+
+  it('uses name compatibility only for a pathless legacy id with one candidate', async () => {
+    const api = extensionApi()
+    const user = nativeSkill({ path: '/home/me/.agents/skills/dup/SKILL.md', name: 'Dup' })
+    const repo = nativeSkill({ path: '/work/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'repo' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: 'legacy-id', name: 'Dup' })
+
+    expect(findNativeSkill([user], row)).toBe(user)
+    expect(findNativeSkill([user, repo], row)).toBeUndefined()
+    await runExtensionAction(api, row, 'enable', findNativeSkill([user], row))
+    expect(api.toggleSkill).toHaveBeenCalledWith(user.path, true)
+  })
+
+  it.each([
+    ['C:/Users/Me/.agents/skills/demo/SKILL.md', 'c:\\users\\me\\.agents\\skills\\demo\\skill.md'],
+    ['\\\\server\\share\\skills\\demo\\SKILL.md', '//SERVER/share/skills/demo/skill.md'],
+    ['\\\\?\\C:\\Users\\Me\\skills\\demo\\SKILL.md', 'C:/Users/Me/skills/demo/SKILL.md'],
+  ])('preserves Windows path identity across supported spelling differences: %s', (id, nativePath) => {
+    const skill = nativeSkill({ path: nativePath })
+    const row = listItem({ provider: 'codex', kind: 'skill', id, name: skill.name })
+
+    expect(findNativeSkill([skill], row)).toBe(skill)
+  })
+
+  it('does not case-fold POSIX paths into a different same-named skill', () => {
+    const skill = nativeSkill({ path: '/work/alpha/SKILL.md', name: 'Dup' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/work/Alpha/SKILL.md', name: 'Dup' })
+
+    expect(findNativeSkill([skill], row)).toBeUndefined()
   })
 
   it('still treats a built-in row as read-only for the other tools', () => {
@@ -454,5 +530,58 @@ describe('extension row actions', () => {
       canUninstall: false,
       canUpdate: false,
     })
+  })
+})
+
+describe('extension page default tool', () => {
+  it('opens on the first installed command-line tool in navigation order', () => {
+    expect(preferredExtensionProvider(['grok', 'codex'])).toBe('codex')
+    expect(preferredExtensionProvider(['gemini'])).toBe('gemini')
+  })
+  it('falls back to Claude when nothing is installed or detection has not finished', () => {
+    expect(preferredExtensionProvider([])).toBe('claude')
+    expect(preferredExtensionProvider(undefined)).toBe('claude')
+    expect(preferredExtensionProvider(['codexDesktop'])).toBe('claude')
+  })
+})
+
+describe('curated folder placeholders', () => {
+  it('fills the chosen folder into parsed arguments and environment without JSON escaping', () => {
+    const folder = 'C:\\Users\\张三\\项目'
+    expect(fillCuratedPlaceholders(['-y', 'pkg', '{{directory}}'], { MEMORY_FILE_PATH: '{{directory}}/ai-memory.jsonl' }, { directory: folder })).toEqual({
+      args: ['-y', 'pkg', folder],
+      env: { MEMORY_FILE_PATH: `${folder}/ai-memory.jsonl` },
+    })
+  })
+  it('leaves a placeholder in place until a folder is chosen', () => {
+    expect(fillCuratedPlaceholders(['{{directory}}'], {}, { directory: '  ' }).args).toEqual(['{{directory}}'])
+  })
+  it('explains a pasted Windows path in Chinese instead of surfacing the JSON parser error', () => {
+    expect(() => parseCommandArguments('["C:\\Users"]')).toThrow('选择文件夹')
+    expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('环境变量的格式不对')
+  })
+})
+
+describe('backup search', () => {
+  const now = new Date(2026, 9, 4, 15, 0).getTime()
+  const createdAt = new Date(2026, 9, 2, 18, 5).toISOString()
+
+  it('finds a backup by the date the list shows', () => {
+    expect(backupMatchesQuery(createdAt, '10月2日', now)).toBe(true)
+    expect(backupMatchesQuery(new Date(2026, 9, 4, 9, 30).toISOString(), '今天', now)).toBe(true)
+  })
+
+  it('also finds it by the full time shown on hover', () => {
+    expect(backupMatchesQuery(createdAt, '18:05', now)).toBe(true)
+    expect(backupMatchesQuery(createdAt, ' 2026/10/2 ', now)).toBe(true)
+  })
+
+  it('keeps everything for an empty search and drops what does not match', () => {
+    expect(backupMatchesQuery(createdAt, '  ', now)).toBe(true)
+    expect(backupMatchesQuery(createdAt, '9月30日', now)).toBe(false)
+  })
+
+  it('no longer matches the backup id the list does not show', () => {
+    expect(backupMatchesQuery(createdAt, 'backup-1', now)).toBe(false)
   })
 })

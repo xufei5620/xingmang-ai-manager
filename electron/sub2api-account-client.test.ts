@@ -125,7 +125,7 @@ describe('sub2api user-account adapter', () => {
   it('loads user announcements with bearer authentication and acknowledges without a body', async () => {
     const example = fixture([response([{ id: 42, title: '公告', content: '内容', read_at: null }]), response({ message: 'ok' })])
     assert.deepEqual(await example.client.listAnnouncements(saved(), signal()), [
-      { id: '42', title: '公告', content: '内容', readAt: null, updatedAt: null },
+      { id: '42', title: '公告', content: '内容', readAt: null, updatedAt: null, publishedAt: null },
     ])
     await example.client.markAnnouncementRead(saved(), '42', signal())
     assert.deepEqual(example.calls.map(({ url }) => url), [

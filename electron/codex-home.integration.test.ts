@@ -190,8 +190,8 @@ it('routes every Codex-owned surface to one custom root and leaves all sentinels
   })
 
   expect(config.hasApiKey).toBe(true)
-  expect(sessions.list().items.map((item) => item.id)).toContain('custom-session')
-  expect(extensions.listSkills().map((item) => item.name)).toContain('Custom Skill')
+  expect((await sessions.list()).items.map((item) => item.id)).toContain('custom-session')
+  expect((await extensions.listSkills()).map((item) => item.name)).toContain('Custom Skill')
   expect((await extensions.listMcpServers()).map((item) => item.name)).toContain('custom')
   expect((await extensions.listPlugins()).plugins.map((item) => item.pluginId)).toContain('sample@curated')
   const providerExtensionsSnapshot = await providerExtensions.list('codex')

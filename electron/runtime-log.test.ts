@@ -2,7 +2,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CommandRunnerError } from './command-runner'
 import {
+  buildFeedbackAccountLine,
   describeRuntimeLogWriteFailure,
   redactHomeDirectory,
   RuntimeLogStore,
@@ -99,6 +101,26 @@ describe('summarizeRuntimeLogFile', () => {
     expect(summary.entries[0].message).toBe('第 2100 条')
     expect(summary.entries[1_999].message).toBe('第 4099 条')
   })
+
+  it('keeps a separate tail of non-debug entries so debug noise cannot push them out of the report', () => {
+    const line = (index: number, level: string) => JSON.stringify({
+      id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level,
+      source: 'ipc', event: 'entry', message: `第 ${index} 条`, detail: { apiKey: 'private-key' },
+    })
+    const summary = summarizeRuntimeLogFile([
+      line(0, 'info'),
+      line(1, 'warn'),
+      ...Array.from({ length: 2_500 }, (_, index) => line(index + 2, 'debug')),
+      line(2_502, 'error'),
+    ].join('\n'))
+
+    expect(summary.entries).toHaveLength(2_000)
+    expect(summary.entries.some((entry) => entry.message === '第 0 条')).toBe(false)
+    expect(summary.nonDebugEntries.map((entry) => entry.message)).toEqual(['第 0 条', '第 1 条', '第 2502 条'])
+    expect(summary.nonDebugEntries[0].detail).toEqual({ apiKey: '[REDACTED]' })
+    // The newest entry sits in both tails as one sanitized object.
+    expect(summary.nonDebugEntries[2]).toBe(summary.entries[1_999])
+  })
 })
 
 describe('RuntimeLogStore', () => {
@@ -113,6 +135,15 @@ describe('RuntimeLogStore', () => {
 
     expect(redacted.toLowerCase()).not.toContain('users')
     expect(redacted.match(/%USERPROFILE%/g)).toHaveLength(3)
+  })
+
+  it('resolves idle only after every queued entry has reached the file', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
+    temporaryDirectories.push(directory)
+    const store = new RuntimeLogStore({ directory, appName: '星芒AI管理工具', appVersion: '1.0.0', packaged: false })
+    store.log('error', 'main', 'app.unexpected-exit.relaunched', 'last words')
+    await store.idle()
+    expect(fs.readFileSync(store.filePath, 'utf8')).toContain('app.unexpected-exit.relaunched')
   })
 
   it('adopts a pre-startup failure record so it reaches feedback and diagnostics', async () => {
@@ -228,6 +259,64 @@ describe('RuntimeLogStore', () => {
     expect(report.text).not.toContain('private-error-credential')
   })
 
+  it('records the cause a translated error wraps, redacted like the rest of the entry', async () => {
+    const store = createStore()
+    const projectFolder = path.join(os.homedir(), 'project')
+    const cause = new CommandRunnerError('命令执行失败（退出码 1）：open', {
+      code: 'EXIT_NON_ZERO',
+      executable: '/usr/bin/open',
+      argv: ['-a', 'Terminal', '/private/var/folders/xm/T/launch.zsh'],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: `LSOpenURLsWithRole() failed for ${projectFolder} with sk-private-cause-value`,
+      outputBytes: 64,
+      maxOutputBytes: 1024,
+      durationMs: 4,
+    })
+    store.exception('ipc', 'cli:launch', new Error('未能打开 Claude Code：命令执行失败（退出码 1）：open', { cause }))
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(entry.detail).toMatchObject({
+      error: {
+        message: '未能打开 Claude Code：命令执行失败（退出码 1）：open',
+        cause: {
+          name: 'CommandRunnerError',
+          code: 'EXIT_NON_ZERO',
+          executable: '/usr/bin/open',
+          exitCode: 1,
+          stderr: expect.stringContaining('LSOpenURLsWithRole() failed'),
+        },
+      },
+    })
+    expect(JSON.stringify(entry)).not.toContain('sk-private-cause-value')
+    const report = await store.captureFeedbackReport()
+    expect(report.text).toContain('LSOpenURLsWithRole() failed')
+    expect(report.text).not.toContain(projectFolder)
+  })
+
+  it('bounds a cause chain that loops back on itself', async () => {
+    const store = createStore()
+    const error = new Error('loop')
+    // Same shape `new Error(message, { cause })` gives the property: not enumerable.
+    Object.defineProperty(error, 'cause', { value: error, writable: true, configurable: true, enumerable: false })
+    expect(() => store.exception('main', 'cyclic-cause', error)).not.toThrow()
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(entry.detail?.error).toMatchObject({
+      message: 'loop',
+      cause: { message: 'loop', cause: { message: 'loop', cause: { message: 'loop', cause: '[TRUNCATED]' } } },
+    })
+  })
+
+  it('adds nothing to an error that wraps no cause', async () => {
+    const store = createStore()
+    store.exception('main', 'plain', Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(Object.keys(entry.detail?.error ?? {})).toEqual(['code', 'name', 'message', 'stack'])
+  })
+
   it('puts the tool and configuration summary ahead of the log lines', async () => {
     const store = createStore()
     store.attachEnvironmentDescriber(async () => [
@@ -333,6 +422,20 @@ describe('RuntimeLogStore', () => {
     expect(report.text).toContain('important early entry')
   })
 
+  it('still fills the report from older files when thousands of debug polls came after them', async () => {
+    const store = createStore()
+    writeArchive(store, 1, '轮转前的登录记录')
+    fs.writeFileSync(store.filePath, Array.from({ length: 2_500 }, (_, index) => JSON.stringify({
+      id: `poll-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level: 'debug',
+      source: 'ipc', event: 'account:get-notice', message: `poll ${index}`, detail: { durationMs: 12 },
+    })).join('\n') + '\n', 'utf8')
+    const report = await store.captureFeedbackReport(600)
+
+    expect(report.text).toContain('轮转前的登录记录')
+    expect(report.text).not.toContain('poll 0')
+    expect(report.text).toContain('日志条数: 2501（附最近 1 条，调试级 2500 条未附）')
+  })
+
   it('puts the runtime environment before tools and self-check, with home paths redacted', async () => {
     const store = createStore()
     store.attachHostDescriber(async () => [`系统 Node.js: 已安装 v22.12.0，位置 ${path.join(os.homedir(), 'node', 'node.exe')}`])
@@ -344,6 +447,34 @@ describe('RuntimeLogStore', () => {
     expect(report.text).not.toContain(os.homedir())
     expect(report.text.indexOf('运行环境:')).toBeLessThan(report.text.indexOf('工具与配置:'))
     expect(report.text.indexOf('工具与配置:')).toBeLessThan(report.text.indexOf('最近一次自检:'))
+  })
+
+  it('puts only the numeric account id right under the app version', async () => {
+    const store = createStore()
+    store.attachAccountDescriber(() => ({ authenticated: true, userId: 10086 }))
+    const report = await store.captureFeedbackReport()
+    const lines = report.text.split('\n')
+
+    expect(lines[lines.findIndex((line) => line.startsWith('应用版本:')) + 1]).toBe('账号 ID: 10086')
+  })
+
+  it('says not signed in, and leaves the line out when no id or no reader is available', async () => {
+    const signedOut = createStore()
+    signedOut.attachAccountDescriber(() => ({ authenticated: false, userId: null }))
+    expect((await signedOut.captureFeedbackReport()).text).toContain('账号 ID: 未登录')
+
+    const unreadable = createStore()
+    unreadable.attachAccountDescriber(() => { throw new Error('not ready') })
+    expect((await unreadable.captureFeedbackReport()).text).not.toContain('账号 ID')
+
+    expect((await createStore().captureFeedbackReport()).text).not.toContain('账号 ID')
+  })
+
+  it('never invents an account id', () => {
+    for (const userId of [0, -1, 1.5, Number.NaN, null, undefined]) {
+      expect(buildFeedbackAccountLine({ authenticated: true, userId })).toBeNull()
+    }
+    expect(buildFeedbackAccountLine({ authenticated: true, userId: 7 })).toBe('账号 ID: 7')
   })
 
   it('labels the bundled Node so it is not mistaken for the system one', async () => {

@@ -5,12 +5,11 @@ export function createAppApi(bridge: XingmangApi) {
   return {
     bridge,
     async bootstrap() {
-      const [settings, platform, session, update, capabilities, config] = await Promise.all([
+      const [settings, platform, session, update, capabilities] = await Promise.all([
         bridge.getSettings(), bridge.getPlatformCapabilities(), bridge.getAccountSession(),
         bridge.getUpdateState(), bridge.getWindowCapabilities(),
-        bridge.getConfig(),
       ])
-      return { settings, platform, session, update, capabilities, config }
+      return { settings, platform, session, update, capabilities }
     },
     session: () => bridge.getAccountSession(),
     balance: () => bridge.getAccountBalance(),
@@ -18,6 +17,7 @@ export function createAppApi(bridge: XingmangApi) {
     readSettings: () => bridge.getSettings(),
     savePreferences: (patch: Parameters<XingmangApi['saveSettings']>[0]) => bridge.saveSettings(patch),
     startupUpdate: () => bridge.runStartupUpdate(),
+    relaunch: () => bridge.relaunchApp(),
     openCanvas: () => bridge.openCanvasWindow(),
     openExternal: (url: string) => bridge.openExternal(url),
     announcement: (mode?: RelayNoticeReadMode) => mode === undefined ? bridge.getAccountNotice() : bridge.getAccountNotice(mode),

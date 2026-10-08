@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
-import { createFixtureServer } from '../../../../e2e/harness.mjs'
-import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
+import { createFixtureServer, observeFixtureBootstrap } from '../../../../e2e/harness.mjs'
+import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-auth-v2')
@@ -25,14 +26,57 @@ async function open(query = '', app = false) {
     if (url.hostname !== '127.0.0.1') return route.abort()
     await route.continue()
   })
-  await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
-  // Vite transforms the module graph on demand, so first paint can take seconds on
-  // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
-  // so a test whose first statement is one of them reads an empty page and fails on
-  // the value rather than on a timeout. Wait for the mount before handing the page over.
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
-  return page
+  const bootstrap = observeFixtureBootstrap(page, server)
+  try {
+    // Vite transforms the module graph on demand, so first paint can take seconds on
+    // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
+    // so a test whose first statement is one of them reads an empty page and fails on
+    // the value rather than on a timeout. Wait for the mount before handing the page over.
+    //
+    // Quality run 37146053083 (#806) lost this open outright: the request for
+    // Splash.tsx failed with net::ERR_NO_BUFFER_SPACE, nothing mounted, and the one
+    // navigation spent the whole budget on an empty page while the next login case
+    // passed in a second. openFixturePage spends the same budget as up to three
+    // navigations instead.
+    await openFixturePage(page, `${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`,
+      (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label: 'auth fixture' })
+    return page
+  } catch (error) {
+    const evidence = await bootstrap.snapshot().catch(() => ({ diagnosticsUnavailable: true }))
+    try { process.stderr.write(`[fixture-bootstrap] auth ${JSON.stringify(evidence)}\n`) } catch {}
+    await page.close().catch(() => {})
+    throw error
+  } finally { try { bootstrap.dispose() } catch {} }
 }
+
+test('bootstrap diagnostics capture failed modules without fixture secrets or filesystem details', async () => {
+  class DiagnosticPage extends EventEmitter {
+    mainFrame() { return null }
+    async evaluate() { return { readyState: 'complete', rootChildren: 0 } }
+  }
+  const page = new DiagnosticPage()
+  const bootstrap = observeFixtureBootstrap(page, { environments: { client: { depsOptimizer: { metadata: { optimized: {}, discovered: {} } } } } })
+  const privateValue = 'do-not-record-fixture-details'
+  const request = { resourceType: () => 'script', url: () => `http://127.0.0.1:1234/node_modules/.vite/deps/react.js?private=${privateValue}`, failure: () => ({ errorText: `net::ERR_ABORTED ${privateValue}` }) }
+  page.emit('request', request)
+  page.emit('response', { request: () => request, status: () => 504, url: request.url, statusText: () => 'Outdated Optimize Dep' })
+  page.emit('requestfailed', request)
+  page.emit('pageerror', new TypeError(privateValue))
+  page.emit('console', { type: () => 'error', text: () => `Failed to load module script ${privateValue}`, location: () => ({ url: `http://127.0.0.1:1234/@fs/${privateValue}` }) })
+  const socket = new EventEmitter()
+  page.emit('websocket', socket)
+  socket.emit('framereceived', { payload: JSON.stringify({ type: 'full-reload', private: privateValue }) })
+  const evidence = await bootstrap.snapshot()
+  assert.equal(evidence.failedResponses, 1)
+  assert.equal(evidence.requestFailures, 1)
+  assert.equal(evidence.pageErrors, 1)
+  assert.equal(evidence.fullReloads, 1)
+  assert.equal(evidence.events.find(event => event.kind === 'module-http-error').outdatedOptimizeDep, true)
+  assert.equal(JSON.stringify(evidence).includes(privateValue), false)
+  bootstrap.dispose()
+  assert.equal(page.listenerCount('response'), 0)
+  assert.equal(socket.listenerCount('framereceived'), 0)
+})
 // 「账号来源」默认收起：星芒账号不用点，历史账号先点底部那行（它会顺手选中历史账号）。
 async function chooseAccountSource(page, label) {
   const segment = page.getByTestId('auth-source')
@@ -64,6 +108,32 @@ test('login preserves drafts through legal documents and only authenticates afte
     await page.getByTestId('login-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'remember', 'authenticated'])
+  } finally { await page.close() }
+})
+
+test('registration status read retries once, names proxy software, and explains the disabled button', async () => {
+  const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
+  try {
+    await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '先把它关掉' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
+    await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
+    await page.getByTestId('register-status-retry').click()
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), false)
+    assert.equal(await page.getByTestId('register-submit-hint').count(), 0)
+  } finally { await page.close() }
+})
+
+test('registration status read says the computer is offline and reloads when the network returns', async () => {
+  const page = await open('scenario=register&statusFail=offline')
+  try {
+    await page.getByTestId('register-status-error').filter({ hasText: '没连上网' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov')
+    await page.evaluate(() => window.dispatchEvent(new Event('online')))
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-status-error').count(), 0)
   } finally { await page.close() }
 })
 
@@ -107,6 +177,7 @@ test('recovery validates reset links and keeps the generated password available 
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset'])
     await page.getByTestId('forgot-token').fill('https://xm.solov.cc/reset?token=one%2Btwo')
     await page.getByTestId('forgot-reset').click()
+    await page.getByTestId('forgot-use-temp').click()
     await page.getByTestId('forgot-new-password').waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').getAttribute('type'), 'password')
     await page.getByTestId('forgot-copy-password').click()
@@ -118,6 +189,103 @@ test('recovery validates reset links and keeps the generated password available 
     assert.equal(await page.getByTestId('login-password').inputValue(), '')
     assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
     assert.deepEqual((await calls(page)).find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
+  } finally { await page.close() }
+})
+
+async function reachNewPasswordStep(page, email = 'person@example.test') {
+  await page.getByTestId('forgot-email').fill(email)
+  await page.getByTestId('forgot-send').click()
+  await page.getByTestId('forgot-token').fill('a-valid-reset-token')
+  await page.getByTestId('forgot-reset').click()
+  // The step focuses its first field one frame after the request settles. Filling before
+  // that lets the late focus pull the second field's text into the first one.
+  await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
+}
+
+test('recovery lets the user set their own password and signs in without ever showing the temporary one', async () => {
+  const page = await open('scenario=recovery')
+  try {
+    await reachNewPasswordStep(page)
+    assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
+    assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
+    await page.getByTestId('forgot-set-password').fill('short')
+    await page.getByTestId('forgot-set-confirm').fill('short')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('新密码至少 8 位').waitFor()
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-passwor')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('两次输入的新密码不一样').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset'])
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-remember').check()
+    await page.getByTestId('forgot-set-confirm').press('Enter')
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.find((item) => item.method === 'login').input, { username: 'person@example.test', password: 'new-test-password', siteId: 'solov' })
+    assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
+    assert.deepEqual(recorded.find((item) => item.method === 'remember').input, { identifier: 'person@example.test', password: 'my-own-password' })
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '密码已改好，已经登录')
+  } finally { await page.close() }
+})
+
+test('recovery shows the temporary password when the change fails after signing in, and continuing still completes the login', async () => {
+  const page = await open('scenario=recovery&changeFail=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-new-password').waitFor()
+    assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
+    await page.getByTestId('auth-message').filter({ hasText: '新密码没设上' }).waitFor()
+    assert.equal(await page.getByTestId('forgot-finish').count(), 0)
+    assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
+    await page.getByTestId('forgot-continue').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'authenticated'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated'])
+    assert.equal(recorded.find((item) => item.method === 'remember').input, null)
+  } finally { await page.close() }
+})
+
+test('recovery falls back to the temporary password and the login page when signing in with it fails', async () => {
+  const page = await open('scenario=recovery&fail=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-new-password').waitFor()
+    await page.getByTestId('auth-error').waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    await page.getByTestId('forgot-finish').click()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
+  } finally { await page.close() }
+})
+
+test('recovery on an account with two-step verification asks for the code before changing the password', async () => {
+  const page = await open('scenario=recovery&totp=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-2fa-code').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    assert.equal(await page.getByTestId('login-cancel').count(), 0)
+    await page.getByTestId('login-2fa-back').click()
+    await page.getByTestId('forgot-set-password').waitFor()
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-2fa-code').fill('123456')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'login', 'two-factor', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
   } finally { await page.close() }
 })
 
@@ -189,6 +357,109 @@ test('a failed switch keeps the step and offers the matching way out', async () 
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
     await page.getByTestId('guide-exit-support').click()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'exit'])
+  } finally { await page.close() }
+})
+
+// 已知29：写不进配置文件时不再叫人去查安装目录，按钮照旧。
+test('a switch that cannot write the config file says what to close and keeps the same buttons', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-switch-account').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
+    assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
+    assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
+    assert.equal((await page.getByTestId('guide-exit-log').textContent())?.trim(), '查看日志')
+    assert.equal(await page.getByTestId('guide-exit-support').count(), 0)
+    const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
+    assert.equal(failure.reason, '写不进配置文件')
+    assert.match(failure.detail, /EPERM/)
+    assert.doesNotMatch(failure.detail, /Users/)
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    const copied = await page.evaluate(() => window.copiedSupport)
+    assert.match(copied, /做什么：新手引导 · Codex CLI 改用当前账号/)
+    assert.match(copied, /原因：写不进配置文件/)
+    assert.doesNotMatch(copied, /写不进安装目录|Users/)
+    await page.getByTestId('guide-retry').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'switch'])
+  } finally { await page.close() }
+})
+
+// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
+// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
+test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1&replaceNode=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: '点「换成新版 Node.js」，换好后星芒会接着装' }).waitFor()
+    assert.match(await page.getByTestId('guide-exit-replaceNode').getAttribute('class') ?? '', /primary/)
+    await page.getByTestId('guide-exit-replaceNode').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit', 'install'])
+  } finally { await page.close() }
+})
+
+test('an install failure without a Node.js replacement still leaves a way out', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('guide-exit-replaceNode').count(), 0)
+    await page.getByTestId('guide-exit-support').click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit'])
+  } finally { await page.close() }
+})
+
+// 第二十一批 1：引导里认不出原因的失败也留原话、能「复制给客服」，和错误框一个待遇，
+// 并记进帮助框的「最近一次出错」。
+test('an unrecognised install failure keeps the raw text and copies it for support', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&oddFail=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。' }).waitFor()
+    const raw = page.getByTestId('guide-error-raw')
+    assert.equal(await raw.getAttribute('open'), '')
+    assert.match(await raw.textContent() ?? '', /给客服看的原话.*E999/)
+    assert.doesNotMatch(await raw.textContent() ?? '', /abcdefghijklmnop/)
+    const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
+    assert.equal(failure.action, '新手引导 · 安装 Claude Code')
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    const copied = await page.evaluate(() => window.copiedSupport)
+    assert.match(copied, /^星芒AI管理工具 · 给客服的信息\n账号 peaker（ID 7）/)
+    assert.match(copied, /做什么：新手引导 · 安装 Claude Code/)
+    assert.match(copied, /原因：没认出是哪一类问题，原话在下面/)
+    assert.match(copied, /原话：npm ERR! code E999/)
+    assert.doesNotMatch(copied, /abcdefghijklmnop/)
+    await page.getByTestId('guide-retry').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.equal(await page.getByTestId('guide-copy-support').count(), 0)
+  } finally { await page.close() }
+})
+
+test('a support copy that cannot reach the clipboard lays the lines out to select', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&oddFail=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '没能写进剪贴板，手动选中下面这几行复制就行' }).waitFor()
+    assert.match(await page.getByTestId('guide-copy-support-text').textContent() ?? '', /做什么：新手引导 · 安装 Claude Code/)
   } finally { await page.close() }
 })
 
@@ -284,6 +555,86 @@ test('a failed tool launch in the guide keeps the real reason and can be retried
     await page.getByTestId('guide-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'launch', 'launch', 'complete'])
+  } finally { await page.close() }
+})
+
+test('the setup result keeps installation, billing and first-task completion as separate facts', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&launchFail=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-result').waitFor()
+    assert.match(await page.getByTestId('guide-result-install').innerText(), /已装好/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号[\s\S]*设置已读到/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '已复制' }).waitFor()
+    assert.equal(await page.evaluate(() => window.copiedFirstTask), await page.getByTestId('guide-first-task-prompt').innerText())
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch' || entry.method === 'complete'), false)
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'complete'), false)
+    await page.getByTestId('guide-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+  } finally { await page.close() }
+})
+
+test('a real backup and a verified switch appear after account switching, and a fresh scan can revoke readiness', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /可能不扣当前账号的余额/)
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.equal(await page.getByTestId('guide-switched-note').getAttribute('data-backup-id'), 'fixture-backup')
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号 peaker[\s\S]*能连上/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /已改用 peaker。原来的设置已备份/)
+    await page.getByTestId('guide-ready-rescan').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((entry) => entry.method === 'detect').length === 2)
+    await page.evaluate(() => window.authHarness.setTool('codexDesktop', { installed: false }))
+    await page.getByTestId('guide-result-install').filter({ hasText: '还没装好' }).waitFor()
+    assert.equal(await page.getByTestId('guide-open-tool').isDisabled(), true)
+    assert.equal(await page.getByTestId('guide-home').isDisabled(), true)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch'), false)
+  } finally { await page.close() }
+})
+
+// #622 接手时的回归：切换后没试通，原因（余额不足、网络不通）必须留在回执里。
+test('an unverified switch still shows why it could not be confirmed', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1&switchUnverified=1')
+  try {
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.locator('.auth-guide-lead').first().innerText(), /已改用你的账号，但这次没能确认能用/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /当前账号余额不足，充值后就能用。原来的设置已备份/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /没试通/)
+  } finally { await page.close() }
+})
+
+test('official login remains pending and a denied first-task copy offers selectable text', async () => {
+  const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /ChatGPT 账号，还没登录/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /不扣当前账号的余额/)
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-config').click()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '手动选中' }).waitFor()
+    assert.match(await page.getByTestId('guide-first-task-prompt').innerText(), /用中文/)
   } finally { await page.close() }
 })
 
@@ -416,6 +767,54 @@ test('registration fills the username from the email until the user edits it', a
   } finally { await page.close() }
 })
 
+test('a mistyped mailbox is pointed out before the code is sent, and can still be sent on purpose', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('123456@qq.con')
+    await page.getByTestId('register-send-code').click()
+    await page.getByTestId('register-email-suggestion').filter({ hasText: '你是不是想填 123456@qq.com？' }).waitFor()
+    assert.deepEqual((await calls(page)).filter((item) => item.method === 'verification'), [])
+    await page.getByTestId('register-email-fix').click()
+    assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
+    assert.equal(await page.getByTestId('register-email-suggestion').count(), 0)
+    await page.getByTestId('register-send-code').click()
+    await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com。几分钟内没收到的话，看看垃圾邮件。' }).waitFor()
+    assert.deepEqual((await calls(page)).filter((item) => item.method === 'verification').map((item) => item.input), ['123456@qq.com'])
+  } finally { await page.close() }
+  const insisting = await open('scenario=register')
+  try {
+    await insisting.getByTestId('register-email').fill('someone@gmial.com')
+    await insisting.getByTestId('register-send-code').click()
+    await insisting.getByTestId('register-email-suggestion').filter({ hasText: '再点一次「获取验证码」' }).waitFor()
+    await insisting.getByTestId('register-send-code').click()
+    await insisting.getByTestId('register-send-code').filter({ hasText: '秒后重发' }).waitFor()
+    assert.deepEqual((await calls(insisting)).filter((item) => item.method === 'verification').map((item) => item.input), ['someone@gmial.com'])
+  } finally { await insisting.close() }
+})
+
+test('leaving the email field points out a mistyped mailbox without sending anything', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('abc@163.co')
+    assert.equal(await page.getByTestId('register-email-suggestion').count(), 0)
+    await page.getByTestId('register-password').click()
+    await page.getByTestId('register-email-suggestion').filter({ hasText: '你是不是想填 abc@163.com？' }).waitFor()
+    assert.deepEqual(await calls(page), [])
+  } finally { await page.close() }
+})
+
+test('a full-width at sign and full stop are corrected instead of rejected', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill(' 123456＠qq。com ')
+    assert.equal(await page.getByTestId('register-user').inputValue(), '123456')
+    await page.getByTestId('register-send-code').click()
+    await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com' }).waitFor()
+    assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
+    assert.equal(await page.getByText('请填写正确的邮箱', { exact: true }).count(), 0)
+  } finally { await page.close() }
+})
+
 test('a taken username points at the username field instead of a generic failure', async () => {
   const page = await open('scenario=register&usernameTaken=1')
   try {
@@ -441,6 +840,74 @@ test('an invitation link opens the registration with the invitation field alread
   try {
     assert.equal(await page.getByTestId('register-invite').inputValue(), '6B4j')
     assert.equal(await page.getByTestId('register-invite-toggle').count(), 0)
+  } finally { await page.close() }
+})
+
+// 第二十批 4：红字说清原因，下面给能点的出口。
+test('a network failure on login names proxy software and offers retry and support', async () => {
+  const page = await open('loginFail=timeout')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
+    await page.getByTestId('auth-exit-help').click()
+    assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
+    await page.getByTestId('auth-exit-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'help', 'login', 'remember', 'authenticated'])
+  } finally { await page.close() }
+})
+
+test('a login without network waits for the network and then says to try again', async () => {
+  const page = await open('loginFail=offline')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '这台电脑现在没连上网。连上网后再试一次。' }).waitFor()
+    await page.context().setOffline(true)
+    await page.context().setOffline(false)
+    await page.getByTestId('auth-message').filter({ hasText: '网络回来了' }).waitFor()
+    assert.equal(await page.getByTestId('auth-error').count(), 0)
+    await page.getByTestId('auth-exit-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+  } finally { await page.close() }
+})
+
+test('a wrong password offers password recovery and registration under the red text', async () => {
+  const page = await open('fail=1')
+  try {
+    await page.getByTestId('login-account').fill('person@example.test')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '账号或密码不正确' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
+    await page.getByTestId('auth-exit-register').waitFor()
+    await page.getByTestId('auth-exit-forgot').click()
+    await page.getByTestId('forgot-password-dialog').waitFor()
+    assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
+    assert.equal(await page.getByTestId('auth-exits').count(), 0)
+  } finally { await page.close() }
+})
+
+test('an email that is already registered offers to log in with it', async () => {
+  const page = await open('scenario=register&emailTaken=1')
+  try {
+    await page.getByTestId('register-email').fill('fixture@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-password-confirm').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '该邮箱已被注册' }).waitFor()
+    await page.getByTestId('auth-exit-login').click()
+    await page.getByTestId('login-dialog').waitFor()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture@example.test')
   } finally { await page.close() }
 })
 
@@ -500,6 +967,8 @@ test('recovery requests block closing and focus each next field only after compl
     assert.equal(await page.getByTestId('forgot-change-email').isDisabled(), true)
     assert.equal(await page.getByTestId('forgot-back-login').isDisabled(), true)
     await page.evaluate(() => window.authHarness.release('reset'))
+    await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
+    await page.getByTestId('forgot-use-temp').click()
     await page.waitForFunction(() => document.activeElement?.id === 'forgot-new-password')
     await page.getByTestId('forgot-copy-password').click()
     assert.equal(await page.getByTestId('forgot-finish').isDisabled(), true)
@@ -531,7 +1000,7 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       assert.ok(await page.locator('.auth-orbit-ring').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationPlayState === 'paused')))
       const geometry = await page.evaluate(() => ({ width: document.querySelector('.auth-welcome').getBoundingClientRect().width, logo: document.querySelector('.auth-welcome-brand img').getBoundingClientRect().height, footer: document.querySelector('.auth-welcome-foot').getBoundingClientRect().bottom, hud: document.querySelector('.auth-orbit-hud').getBoundingClientRect().right }))
       assert.equal(geometry.width, 1280)
-      assert.equal(geometry.logo, 128)
+      assert.equal(geometry.logo, 64)
       assert.ok(geometry.footer <= 900, 'welcome feature strip remains visible')
       assert.ok(geometry.hud <= 1280, 'orbit status labels remain inside the viewport')
       const titlebar = await page.getByTestId('window-titlebar').evaluate((element) => ({ height: element.getBoundingClientRect().height, drag: getComputedStyle(element).getPropertyValue('-webkit-app-region') }))
@@ -540,6 +1009,76 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }
   }
+})
+
+// 品牌和侧栏同一套（标志加「星芒 AI」字样），标志下面不再有一排和星轨重复的四个工具。
+test('welcome shows the sidebar brand without the row of tools under it', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    const sources = await page.locator('.auth-welcome-brand img').evaluateAll((images) => images.map((image) => image.getAttribute('src')))
+    assert.equal(sources.length, 2)
+    assert.match(sources[0], /symbol/)
+    assert.match(sources[1], /wordmark/)
+    assert.equal(await page.locator('.auth-welcome img[src*="horizontal"]').count(), 0)
+    assert.equal(await page.locator('.auth-welcome-brands').count(), 0)
+    assert.equal(await page.locator('.auth-welcome-copy').getByText('Claude Code').count(), 0)
+  } finally { await page.close() }
+})
+
+// 四个工具在同一条轨道上等距、同向公转：转到哪个角度都不会叠在一起。
+test('welcome keeps the four tools evenly spaced on one orbit so they never overlap', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await page.locator('.auth-orbit-ring').count(), 1)
+    for (let spin = 0; spin < 90; spin += 5) {
+      const boxes = await page.evaluate((angle) => {
+        const ring = document.querySelector('.auth-orbit-ring')
+        ring.style.setProperty('--auth-spin', `${angle}deg`)
+        const center = ring.getBoundingClientRect()
+        const cx = center.left + center.width / 2, cy = center.top + center.height / 2
+        return [...ring.querySelectorAll('.auth-orbit-satellite')].map((item) => {
+          const rect = item.getBoundingClientRect()
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, distance: Math.hypot(rect.left + rect.width / 2 - cx, rect.top + rect.height / 2 - cy) }
+        })
+      }, spin)
+      assert.equal(boxes.length, 4)
+      for (const box of boxes) assert.ok(Math.abs(box.distance - boxes[0].distance) < 1, `every tool is on the same orbit at ${spin}deg`)
+      for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
+        const apart = boxes[a].right <= boxes[b].left || boxes[b].right <= boxes[a].left || boxes[a].bottom <= boxes[b].top || boxes[b].bottom <= boxes[a].top
+        assert.ok(apart, `tools ${a} and ${b} do not overlap at ${spin}deg`)
+      }
+    }
+  } finally { await page.close() }
+})
+
+// 不再定死最少 700 高：1280×690 一屏放得下；更矮的窗口外面那层能滚到客服二维码。
+test('welcome fits a 1280 by 690 window and scrolls to the support code in a 560 one', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    await page.setViewportSize({ width: 1280, height: 690 })
+    const fit = await page.evaluate(() => {
+      const content = document.querySelector('.auth-window-content')
+      return { scroll: content.scrollHeight - content.clientHeight, support: document.querySelector('[data-testid="welcome-support"]').getBoundingClientRect().bottom, hud: document.querySelector('.auth-orbit-hud').getBoundingClientRect().bottom, scene: document.querySelector('.auth-orbit-scene').getBoundingClientRect().bottom }
+    })
+    assert.ok(fit.scroll <= 0, `nothing to scroll at 690: ${JSON.stringify(fit)}`)
+    assert.ok(fit.support <= 690, `the support card is on the first screen at 690: ${JSON.stringify(fit)}`)
+    assert.ok(fit.hud <= fit.scene, 'the orbit labels stay inside the orbit scene')
+    await page.setViewportSize({ width: 1280, height: 560 })
+    const support = page.getByTestId('welcome-support')
+    await support.scrollIntoViewIfNeeded()
+    const box = await support.boundingBox()
+    // 滚到底时卡片下沿可能落在半个像素上。
+    assert.ok(box.y >= 0 && box.y + box.height <= 561, `the support card can be scrolled into view at 560: ${JSON.stringify(box)}`)
+    const overlap = await page.evaluate(() => {
+      const copy = document.querySelector('.auth-welcome-copy').getBoundingClientRect()
+      const foot = document.querySelector('.auth-welcome-foot').getBoundingClientRect()
+      return copy.bottom - foot.top
+    })
+    assert.ok(overlap <= 0, 'the hero never runs into the cards below it')
+  } finally { await page.close() }
 })
 
 test('welcome stops every animation when motion is reduced, and on a low-end computer', async () => {
@@ -636,6 +1175,56 @@ test('a pending explicit login locks its source and 2FA retains its source witho
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('external'))
     assert.deepEqual((await calls(page)).map((entry) => entry.method), ['login', 'external'])
     assert.equal((await calls(page))[1].input, 'https://api.solov.cc')
+  } finally { await page.close() }
+})
+
+test('a current account with two-step verification finishes login with the code from its authenticator', async () => {
+  const page = await open('totp=1')
+  try {
+    await page.getByTestId('login-account').fill('totp@example.test')
+    await page.getByTestId('login-password').fill('test-password')
+    await page.getByTestId('login-remember').check()
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('login-2fa-hint').filter({ hasText: '6 位数字' }).waitFor()
+    assert.equal(await page.getByTestId('auth-error').count(), 0)
+    assert.equal(await page.getByTestId('auth-open-website').count(), 0)
+    assert.equal(await page.getByTestId('login-password').count(), 0)
+    await page.waitForFunction(() => document.activeElement?.id === 'login-2fa-code')
+    await page.getByTestId('login-2fa-code').fill('12345')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '6 位数字' }).waitFor()
+    await page.getByTestId('login-2fa-code').fill('111111')
+    await page.keyboard.press('Enter')
+    await page.getByTestId('auth-error').filter({ hasText: '验证码不对或已过期' }).waitFor()
+    assert.equal(await page.getByTestId('login-2fa-code').inputValue(), '')
+    await page.getByTestId('login-2fa-code').fill('123 456')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((entry) => entry.method === 'two-factor').map((entry) => entry.input), ['111111', '123456'])
+    assert.deepEqual(recorded.find((entry) => entry.method === 'remember').input, { identifier: 'totp@example.test', password: 'test-password' })
+    assert.equal(recorded.filter((entry) => entry.method === 'login').length, 1)
+  } finally { await page.close() }
+})
+
+test('two-step verification offers a backup code and sends the user back to the password once the wait is too long', async () => {
+  const page = await open('totp=1&totpExpired=1')
+  try {
+    await page.getByTestId('login-account').fill('totp@example.test')
+    await page.getByTestId('login-password').fill('test-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('login-2fa-switch').click()
+    await page.getByTestId('login-2fa-hint').filter({ hasText: '备用码' }).waitFor()
+    assert.equal(await page.getByTestId('login-2fa-code').getAttribute('placeholder'), '备用码')
+    await page.getByTestId('login-2fa-code').fill('abcd-efgh')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '等太久了，请重新输入密码登录' }).waitFor()
+    await page.getByTestId('login-password').waitFor()
+    assert.equal(await page.getByTestId('login-password').inputValue(), '')
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'totp@example.test')
+    assert.equal((await calls(page)).find((entry) => entry.method === 'two-factor').input, 'abcd-efgh')
   } finally { await page.close() }
 })
 

@@ -115,8 +115,9 @@ export function buildTrayAccelerationEntry(input: TrayAccelerationInput): TrayAc
   if (state.phase === 'connecting') return { statusLabel: `${statusPrefix}正在连接`, ...busyEntry, action: 'start' }
   if (state.phase === 'active') {
     return {
-      // 软件替他连上的（打开 Codex 桌面端时）标出来：关掉桌面端不会跟着断开。
-      statusLabel: `${statusPrefix}${state.autoStartedBy ? '已自动连接' : '已连接'} · ${remainingLabel(state.remainingSeconds, input.elapsedSeconds ?? 0)}`,
+      // 软件替他在后台连的那一次（打开 Codex 桌面端时）宿主已经换成没连上的样子
+      // （acceleration-service 的 userAccelerationState），这里不会见到它。
+      statusLabel: `${statusPrefix}已连接 · ${remainingLabel(state.remainingSeconds, input.elapsedSeconds ?? 0)}`,
       actionLabel: disconnectLabel, actionEnabled: true, action: 'stop',
     }
   }

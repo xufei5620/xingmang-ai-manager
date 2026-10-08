@@ -95,8 +95,9 @@ describe('platform presentation', () => {
     const installNodeRuntime = vi.fn()
     const openExternal = vi.fn().mockResolvedValue(true)
 
+    // Linux 版拆分 ② 起没有哪个平台的 Node.js 还是 external，这里直接给一份 external 的能力。
     await expect(performNodeRuntimeAction(
-      platformCapabilitiesFor('darwin', 'arm64'),
+      { ...platformCapabilitiesFor('linux', 'x64'), nodeRuntimeInstall: 'external' },
       { installNodeRuntime, openExternal },
     )).resolves.toEqual({ kind: 'external' })
 

@@ -19,7 +19,7 @@ describe('MaintenanceNotice', () => {
 
   it('renders as a non-modal status notice in the startup corner', () => {
     const markup = renderToStaticMarkup(<StartupNotices notices={[]} onDismiss={() => undefined} onOpen={() => undefined}
-      leading={<MaintenanceNotice maintenance={{ message: '升级中' }} onDismiss={() => undefined} />} />)
+      leading={[<MaintenanceNotice key="maintenance" maintenance={{ message: '升级中' }} onDismiss={() => undefined} />]} />)
     expect(markup).toContain('data-testid="startup-notices"')
     expect(markup).toContain('data-testid="service-maintenance-notice"')
     expect(markup).toContain('服务正在维护')

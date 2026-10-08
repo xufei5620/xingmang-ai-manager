@@ -91,6 +91,10 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 软件装的、也由本软件更新，账号来源换了这一点没变。更新提醒仍走首页的新版本角标与一键更新
 （A5），那条路径走 npm 官方源并对 SHA-512，CLI 自己的 `npm install -g` 没有这一层。
 
+写这几个键时不看安装方式，官方原生安装器装的那份 Claude Code 也一样被关掉了自更新，而本软件
+又不能用 npm 原地升级它。所以首页对它照给更新按钮（第三十一批 B）：点了先问一句，客户同意后
+先卸掉官方那份、再用 npm 装上本软件的，见 `CLI-NATIVE-INSTALLS.md` 的「识别口径」。
+
 **验证依据**（沙箱，2026-09-22，空 HOME，装的都是名单里的推荐版本）：
 
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
@@ -98,7 +102,11 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`。同一台机器上不写这个键时是
   `Auto-updates: enabled` 外加一行 `- Can't auto-update: npm global folder isn't writable`。
   二进制里那段判定先看 `DISABLE_UPDATES`、再看 `DISABLE_AUTOUPDATER`，与安装方式无关，所以
-  对官方原生安装器装的那一份同样生效（这一条是读二进制得出的，没有真机演过）。
+  对官方原生安装器装的那一份同样生效。2026-10-03 第三十一批在沙箱里用真二进制演过：把 npm 上的
+  Claude Code Linux 二进制按官方安装器的样子摆好，2.1.277 与 2.1.288 的 `claude doctor` 都认出
+  是官方安装器装的（2.1.288 原文 `Running: native (2.1.288)`），写了这个键是
+  `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`，不写是 `Auto-updates: enabled`。
+  Windows 与 Mac 真机没演过。
   刻意**不用** `DISABLE_UPDATES`：那个连手动 `claude update` 也一起禁掉。
 - **Codex 0.155.1 — 跑起来看到了**。`~/.codex/config.toml` 写
   `check_for_update_on_startup = false` 后跑 `codex doctor`，Updates 一节的
@@ -131,16 +139,21 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
 | Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
-| Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
+| Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
 | Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
+| Codex 干活时不让电脑睡 | `~/.codex/config.toml` 的 `[features] prevent_idle_sleep` | 关（0.156.1 实验功能） | `true`（用户写过就不动；切回 ChatGPT 不收回） | 只在一轮进行中生效；笔记本跑长任务睡着，连接断了这一轮就白扣 |
+| Codex 的后台服务 | `~/.codex/config.toml` 的 `[features] daemon_auto_start`；从本软件打开时另带 `--no-daemon`（已装 ≥ 0.156.0） | 0.157.0 起开：交互会话自动拉起多窗口共享用的后台服务，退出 Codex 后仍常驻 | `false`（用户写过就不动；切回 ChatGPT 不收回） | 低配电脑上是没人要的常驻开销；Windows 上外层 Job Object 不许脱离时直接报错退出。`codex agents` 自己会按需拉起服务，不受影响；0.155.x 只在日志记一行未知键 |
+| Codex 的型号名单 | `~/.codex/config.toml` 顶层的 `model_catalog_json`，指向同目录的 `xingmang-models.json` | 只用二进制自带的名单（桌面端自带的 Codex 常比命令行旧，26.930 那批没有 GPT-6.1 Sol） | 随包官方名单里当前 Key 能用的那几项，原样照抄（用户自己设过就不动；命令行低于名单要求的版本、桌面端早于 26.917 那批不写；切回 ChatGPT 收回） | 不写的话中转开了新型号，桌面端菜单里也选不到；见 `docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」 |
+| Codex 在 Windows 上的沙箱档位 | `~/.codex/config.toml` 的 `[windows] sandbox`（只在 Windows 上写） | 未设：第一次跑命令弹英文沙箱设置，推荐档还要一次管理员确认 | `"unelevated"`（用户写过就不动；切回 ChatGPT 不收回） | `sandbox_mode` 仍是 `workspace-write`，只是换成不需要提权的实现；按 0.156.1 源码（`tui/src/app/platform_actions.rs`）配了档位就不再弹引导，**Windows 真机没验证** |
 | Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
-| Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |
+| Grok 的钩子（提醒与防睡） | `~/.grok/config.toml` 的 `[compat.claude] hooks` 与 `[[hooks.*]]` | 兼容开：顺手跑 `~/.claude/settings.json` 的钩子；自己没有钩子 | 兼容关（用户写过就不动）；每轮开始 / 结束 / 出错 / 打断 / 等人 / 退出各挂一条起随包脚本的命令。Windows 上按 Grok 会挑的 shell 写 PowerShell 或 sh 写法，推不出来（`GROK_SHELL=cmd`）就不写 | Grok 不认 Claude 钩子的 `args`，兼容开着每轮报错；没有自己的钩子就没有中文提醒、也挡不住睡眠 |
+| Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份，凭同目录 `xingmang-gemini-usage-statistics.json` 的记录认，没有记录的不收回；从备份恢复出来的 settings.json 里没有这一项时，记录随即作废） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
@@ -231,6 +244,23 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   连 `ab.chatgpt.com`。TUI 退出从约 1.3 秒降到约 0.9 秒。app-server 默认不开统计，只有桌面端这类
   第一方客户端用 `--analytics-default-enabled` 拉起时才开，而 `enabled = false` 能压过这个参数。
   请求体不受影响。
+- **Grok 1.0.44 Windows 版跑钩子用哪个 shell —— 只读了程序里的字符串，没在真机跑过**。源码路径
+  `crates/codegen/xai-grok-config/src/shell.rs`：环境变量 `GROK_SHELL`（`pwsh|powershell|bash|cmd`，
+  认不出的值忽略）优先；否则 PATH 上有 `pwsh` 用它，再否则看 `%ProgramFiles%\Git\bin\bash.exe`、
+  `%ProgramFiles(x86)%\Git\bin\bash.exe`、`%LOCALAPPDATA%\Programs\Git\bin\bash.exe` 三处有没有
+  Git Bash，都没有就用 `System32\WindowsPowerShell\v1.0\powershell.exe`。用 Git Bash 时设了
+  `MSYS_NO_PATHCONV`，参数不改写。`cli-hooks.ts` 的 `resolveGrokWindowsShell` 照这个顺序推，
+  星芒装好 Git 后重写一次 Grok 配置。**抬 Grok 版本时要重新核这段顺序**；真机复核：没装 Git、
+  装了 Git、装了 PowerShell 7 三种电脑各从星芒打开 Grok 跑一个一分钟以上的任务，做完时弹「Grok 做完了」、
+  终端里没有钩子报错即过。
+  客户自己装或卸 Git、PowerShell 7 之后：首页 Grok 那行按「现在该用哪个 shell」和「钩子是哪种写法」比对，
+  对不上就出「提醒设置要修」（小字「Grok 换了命令行…」），从星芒打开 Grok 前也会先静默改好（日志
+  `grok-hooks.shell-changed`）。推 shell 时 PATH 用启动时快照再补上注册表里整台电脑 + 当前账号的 PATH
+  （`windows-live-path.ts`），从星芒打开 Grok 时补同样几段，星芒开着时装的 PowerShell 7 也看得见。
+  真机复核（没演过）：①没装 Git 的电脑先从星芒打开 Grok 一次，关掉星芒自己装 Git for Windows（默认目录），
+  重开星芒，首页 Grok 出「提醒设置要修」，点「修好它」后再打开 Grok 跑一轮不报红；②同上但不点「修好它」、
+  直接点「打开」，终端里不报红、日志有 `grok-hooks.shell-changed`；③装了 Git 的电脑，**星芒开着**时装
+  PowerShell 7，不重开星芒直接打开 Grok，一轮做完不报红；④卸掉 Git 后再打开一次，同样不报红。
 - **Grok 1.0.40 的型号名单 —— 跑起来看到了**。二进制里的配置表写明 `models.allowed_models` 是
   「Glob allowlist for the model picker, default, and `-m`」，`models.session_summary` 是
   「Model used for session titles and summaries」。不加名单时 `grok models` 列出
@@ -257,6 +287,25 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   2026-09-24 补测：CC Switch 另写的 `ANTHROPIC_DEFAULT_FABLE_MODEL` 让 `--model fable` 直接请求它指定的
   别家型号名；`CLAUDE_CODE_SUBAGENT_MODEL` 在二进制里有读取点、指定子任务型号，这一项没单独跑。两项已并进收起清单。
 
+### 老客户的配置怎么跟上这张表
+
+这张表里的项只在「保存配置」那几条路上落盘（保存、改用当前账号、重新写入 Key、第一次登录），
+开机恢复账号只核对连没连上、一个字不写。所以 `config-files.ts` 有一个整数
+`relayTemplateRevision`，它记在工具配置来源记录（`tool-config-ownership.ts` 的 `templateRevision`）里：
+
+- 每次完整保存都记下当前版本号。
+- 开机恢复账号后，渲染层调 `config:fill-template-defaults`：对来源确认是当前账号、版本号落后的配置，
+  由 `fillRelayTemplateDefaults` **只补缺省的键**（用户写过的值哪怕是 `false` 也不动，不碰 Key、
+  地址、型号、钩子、状态行），补之前在「备份」页留一份整套备份，写入走两阶段 + `.bak`；工具开着或
+  看不出开没开的这次跳过，记进结果的 `pending`，渲染层每 10 分钟、或窗口回到前台时带 `retry` 再要一次，
+  只补欠着的、换了账号不补，最多 6 次（`template-fill-retry.ts`）；失败只记日志、版本号不前进，下次开机再试。
+  首页角落说一次补了哪几个工具（补做那次补上了也说）。
+- 官方账号、手填、来源没确认、被改动过的配置一律不碰。
+
+**规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
+`relayTemplateRevision` 加一**，否则老客户拿不到。只在保存路径里加、不进补缺清单的项（比如跟着
+Key 走的型号菜单）不用抬。
+
 ## 站点维度
 
 `VerifiedCliRelease.verifiedSites` 与 `BlockedCliVersionRange.sites` 记录条目对应哪些中转站点（`relay-sites.ts` 的 `RelaySite.id`）。
@@ -269,18 +318,119 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 1. 读上游 changelog（Claude Code 是 `https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md`），找与 `ANTHROPIC_BASE_URL` / 第三方端点 / 网关相关的修复与回归。
 2. 有新的回归窗口 → 往 `blocked` 里加一条，`introduced` 写 changelog 明说的引入版本，`fixed` 写修复版本，`reason` 用一句用户读得懂的中文。
 3. 实测新版本可用 → 更新 `recommended`：`version` 填确切版本号，`verifiedAt` 填验证日期，`verifiedSites` 填实测过的站点 id（没实测就留空数组并在 `note` 里说明依据）。
-4. `npm test` 会验证：名单覆盖全部 provider、版本号是精确 semver、**推荐版本不落在自己的 `blocked` 区间里**、每条推荐都有验证日期和中文备注。
+4. 抬 `recommended` 时**同时改写 `userNote`**：一句给客户看的话，说换到这一版他碰到的哪个现象好了（如「修好了一个会让每次提问都失败的问题」），不写 npm、400、中转、网关、base URL 这类词。它会接在首页工具行的「推荐 x」后面，也是「更新」按钮的悬停说明；只在推荐版本比已装的新、且没开「总是装最新版」时出现。说不清修了什么就删掉这一行，界面只写版本号——别把上一版的话留给新版本。
+5. `npm test` 会验证：名单覆盖全部 provider、版本号是精确 semver、**推荐版本不落在自己的 `blocked` 区间里**、每条推荐都有验证日期和中文备注、`userNote` 与 `reason` 里没有技术词。
 
 ### 名单今天覆盖到哪
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
-| Codex CLI | `0.156.1`（2026-09-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1 的依据见下一段 |
-| Gemini CLI | `0.60.0`（2026-09-21） | 无 | 当前 npm `latest`；0.57~0.60 四个正式版全是安全加固，未发现与第三方 base URL 相关的回归 |
-| Grok CLI | 无 | 无 | 还没有遇到过需要挡的版本，行为与从前一致（装 npm `latest`） |
+| Claude Code | `2.1.291`（2026-10-06） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291 的依据见下文 |
+| Codex CLI | `0.160.1`（2026-10-06） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1 的依据见下文 |
+| Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文 |
+| Grok CLI | `1.0.46`（2026-10-05） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44 与 1.0.46 各一遍，见下文） |
 
-三条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这三个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+
+**Grok 进名单（2026-09-30）：它发版太密，而接当前账号靠的几项配置都挂在它的键名上。**
+npm 上 9-15 到 9-29 两周发了 1.0.32 → 1.0.45 十几版（1.0.45 只打了 `alpha`），名单为空时客户每点一次
+「更新」就装到一个没人看过的版本、也没有退路。更要紧的是出图工具的地址、型号名单、起标题用的型号这几项
+（见上面「本软件替用户改了哪些 CLI 默认值」）：哪一版改了键名，出图就又带着当前账号的 Key 去连 `api.x.ai`，
+而且没人知道。
+
+Grok 不走普通的 npm 安装：Windows 从 xAI 官方下载目录取已签名的 `grok-<版本>-windows-<架构>.exe`，
+Mac 从 npm 装 `@xai-official/grok` 再核二进制签名。两条路原先都只装 xAI stable 清单
+（`https://x.ai/cli/stable`，备用 `storage.googleapis.com/grok-build-public-artifacts/cli/stable`）上写的那一版，
+名单和「退回」点名的版本都被忽略，所以这次一并改成**点名的版本不超过 stable 就装它，超过了照旧装 stable**
+（`grok-update.ts` 的 `resolveGrokInstallVersion`，只收 `x.y.z`，预发布号会从「不超过」底下钻过去）。
+签名校验一步没少；旧版本的二进制仍在同一个官方目录里（2026-09-30 抽查 1.0.40、1.0.41、1.0.44 的
+Windows x64 / ARM 两种包都在）。「总是装最新版」打开时装的就是 stable。
+更新前的版本号改为装之前问一次 Grok 自己（它没有 npm 目录可读），记下来供「退回更新前的版本」用。
+
+**验证依据**（沙箱，2026-09-30，`@xai-official/grok@1.0.44`，一次性 HOME，按 `config-files.ts` 的 Grok 模板写配置，
+base URL 指本地假接口，型号名故意起成内置目录里没有的 `relay-x`，出网代理记录并拒掉一切去外面的连接）：
+
+- **型号名单（K3）—— 跑起来看到了**。有 `allowed_models = ["grok"]` 时 `grok models` 只列中转那一项；
+  去掉它就又出现 `grok-4.6`、`grok-4.5`。
+- **起标题的型号（K4）—— 跑起来看到了**。`grok -p` 一轮共 3 次 `/v1/responses`：写了
+  `session_summary = "grok"` 时三次都是 `relay-x`；去掉后起标题那次变回字面量 `grok-4.6`。
+- **出图地址（K1）—— 跑起来看到了**。假接口让模型调一次 `image_gen`（`--always-approve`）：写了
+  `[endpoints] xai_api_base_url` 时请求打到本地的 `POST /v1/images/generations`（型号
+  `grok-imagine-image-quality`，带 `Authorization`），出网代理一条记录都没有；去掉这一项后出网代理
+  记下 `CONNECT api.x.ai:443`——Key 外流那条路仍然只靠这个键堵着。
+- **钩子 —— 跑起来看到了**。`[compat.claude] hooks = false` 加六类 `[[hooks.*]]` 时，一轮 `-p` 触发了
+  `UserPromptSubmit`、`Stop`、`SessionEnd`，配置无解析错误。
+- **Windows 上挑哪个 shell —— 只读了程序里的字符串**。1.0.44 Windows 版里 `GROK_SHELL` 覆盖、`pwsh`、
+  三处 Git Bash、`System32\WindowsPowerShell\v1.0\powershell.exe` 兜底的字样与顺序和上面记的一致。
+- 没做的：中转上的真实请求（`scripts/probe-cli-relay.cjs` 还没有 Grok 的探测，名单里的 Grok 条目会被它跳过）；
+  `[cli] auto_update = false` 前后在 `-p` 下看不出差别，仍停在「配置被接受」。
+
+**维护节奏**：Grok 一周能发好几版，名单一旦有它就得跟着看，最少每周一次，否则等于把客户钉在老版本上。
+抬版本前按上面五条在沙箱里重跑一遍（假接口脚本思路：本地 HTTP 服务回 Responses 流、另起一个只记录不放行的
+出网代理），挑一个**同时是 npm `latest` 和 xAI stable** 的版本——只打 `alpha` 或没打 `latest` 的不选。
+
+**Claude Code 2.1.277 → 2.1.281（2026-09-24）：修的都是接中转才碰得到的毛病，没有新回归。**
+npm `latest` 是 2.1.281（2.1.279 没发过）。上游 changelog 2.1.278、2.1.280、2.1.281 三段逐条读过，
+跟代理、网关、第三方端点、鉴权、400、请求体、型号沾边的全部是修复，没有「自某版起」的回归：
+
+- 2.1.281：*Fixed responses cut short by a proxy or gateway that closes the stream cleanly being shown
+  as complete with no warning, and tool calls running twice on duplicated stream events*；
+  *Fixed responses failing with "Content block not found" when a proxy drops a stream event
+  mid-response*；*Fixed the stop reason being lost when a proxy sends a trailing usage-only frame*；
+  *Fixed an empty completed response being requested twice when the connection dropped before the
+  stream's final event*；*Fixed interactive startup waiting on the managed-settings network request
+  (about 80 ms, 17+ seconds when the network is unreachable) when no MCP servers or plugins are
+  configured*；*Fixed API errors from an HTML error page (such as a proxy's 429 or 502 page) printing
+  the page's raw markup*。
+- 2.1.280：*Fixed conversations with the advisor on failing every turn with API Error 400 "Input tag
+  'advisor_20260301'" behind a proxy or gateway that doesn't support it; the request now retries
+  without it*——比 2.1.277 的修法多了一层兜底；另外把 Opus 5.5 设为默认 Opus，本产品写了
+  `ANTHROPIC_DEFAULT_MODEL` 与 `modelPicker`，不受影响。
+- 2.1.278：只改了 auto mode 在网关上默认用服务端分类器；本产品模板写的是 `bypassPermissions`，不走 auto mode。
+
+沙箱实测（空 HOME、非 root、`env -i`、出网代理指死端口，`settings.json` 按本产品模板写
+`ANTHROPIC_BASE_URL` 指本地假接口、`bypassPermissions`、`skipWebFetchPreflight`、`language`、
+`DISABLE_AUTOUPDATER`）与 2.1.277 对照：`claude -p "hi"` 两版都正常拿到假接口的回复；请求体字段、
+`anthropic-beta` 头、鉴权头（只有 `Authorization`、没有 `x-api-key`）完全一样；不写 deny 时两版都发
+21 个工具（含 `DesignSync`、不含 `Artifact`），每个工具的输入 schema 一字不差，写上
+`deny: ['Artifact', 'DesignSync']` 后都剩 20 个；`claude doctor` 仍是
+`Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`；`--continue` 还在。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**Claude Code 2.1.281 → 2.1.289（2026-10-05 每周巡检）：没有新的网关回归，但上下文窗口的算法变了。**
+2.1.282~2.1.289 逐条读过，和接中转有关的修复：
+
+- 2.1.282：*Fixed every request failing with a 400 error in conversations whose history holds web search
+  results the API cannot decrypt (for example, from a turn answered through a third-party gateway)*。
+- 2.1.284：流被打坏时不再把「JSON Parse error」或单词 undefined 写进回答；认不出的型号 id（比如代理后面的
+  自定义型号）下 Explore 子任务不再擅自换成 Opus。
+- 2.1.286：*Fixed API 400 errors after a tool or hook returned an object, number or boolean instead of text*。
+- 2.1.288：*Fixed session titles, memory recall and prompt hooks failing on Mantle or behind gateways that
+  reject structured outputs*，并加了 `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS`。
+
+看着会咬到我们、实际不会的：2.1.283 / 2.1.285 把没配权限模式的会话（含 `claude -p`）默认改成 auto mode，
+模板写死 `permissions.defaultMode: 'bypassPermissions'`；2.1.284 把 Sonnet 5.5 设为 API 上的默认 Sonnet，
+模板用 `modelPicker` 整份换掉菜单、`ANTHROPIC_DEFAULT_MODEL` 自己写。
+
+**上下文窗口变了（2.1.285）**：原文 *Changed sessions behind a custom `ANTHROPIC_BASE_URL` to use the 1M
+context window of models that have one (Opus 4.7+, Sonnet 5+, Fable); run `/autocompact 200k` if your gateway
+stops at 200K*。沙箱里按模板写配置跑 `claude -p /context`：2.1.277 显示 `1.9k / 200k`，2.1.289 显示
+`2k / 1m`——也就是到 200K 附近不再自动压缩，要一路涨到 1M 才压。2026-10-06 yoyo 确认中转支持 1M 上下文，
+所以模板不压，交给 Claude Code 按 1M 算。哪天某个渠道只收 200K，退路是在 `env` 里写
+`CLAUDE_CODE_DISABLE_1M_CONTEXT=1`（2.1.289 实测写了以后显示 `2k / 200k`，请求照常）。
+
+沙箱实测（同上一段的做法）与 2.1.277 对照：`claude -p "hi"` 两版都拿到假接口的回复；请求体字段一样
+（`model`、`messages`、`system`、`tools`、`metadata`、`max_tokens`、`thinking`、`context_management`、
+`output_config`、`stream`），写了 deny 后都是 20 个工具、没有 `Artifact` / `DesignSync`，鉴权只有
+`Authorization`；`anthropic-beta` 头 2.1.289 少了 `fallback-credit-2026-06-01`，没有新增。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**2.1.289 → 2.1.291（2026-10-06，合并前 npm latest 又往前走了两版）。** 2.1.290 和接中转有关的是
+*Fixed requests failing behind proxies and gateways that reject one of Claude Code's beta headers with a status
+other than 400, or together with a second beta*；2.1.291 修了 2.1.288 起退出时可能丢掉会话最后几条消息
+（2.1.289 也带着这个毛病）。没有新的网关回归，上下文窗口的算法没再变。沙箱同上：`claude -p "hi"` 拿到
+回复，请求体字段、20 个工具、只带 `Authorization` 都和 2.1.289 一样；`/context` 是 `2k / 1m`，
+写了 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 是 `2k / 200k`，退路照样管用。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
@@ -300,23 +450,107 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 没做的：中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；中转那边有没有开这两个模型要在
 服务端「GPT-中转/订阅」分组的渠道里看。配置窗口的模型下拉取自当前账号的模型清单，开了就能选到。
 
+**Codex 0.156.1 → 0.160.0、Grok 1.0.44 → 1.0.46（2026-10-05 每周巡检）。**
+
+Codex 区间内的正式版是 0.157.0、0.157.1、0.158.0、0.159.0~0.159.3、0.160.0，逐个读了
+`rust-v<版本>` 的 release note（0.157.1 的正文是空的）。和本产品写的配置有关的只有这几条，
+没有一条是对自定义 `model_providers` / `base_url` / `wire_api` 的回归：
+
+- 0.157.0：交互会话默认自动拉起后台服务——上面那张表的 `daemon_auto_start = false` 与
+  `--no-daemon` 就是为它加的；0.160.0 的 `codex --help` 里 `--no-daemon` 仍在。
+- 0.158.0：修了 Windows 沙箱在普通 Windows 10 路径上失败；提权运行的命令默认要确认终端输入
+  （本软件不提权，碰不到）。
+- 0.159.0 / 0.159.2 / 0.160.0：Windows 上 MCP、后台程序、沙箱命令不再弹黑色窗口；PowerShell
+  回退与长路径权限修复。
+- 0.159.1：随包型号名单的默认型号换成 GPT-6.1 Sol。本产品写自己的 `model_catalog_json`，随包名单
+  已经是 `rust-v0.160.0`，这次不用换。
+- 0.160.0：重连后排队的消息不再重复发送；显式给出型号名单的 provider 不再混进它不支持的内置型号。
+- 0.160.1（2026-10-06 合并前抬上来）：只有一条，Windows 上启动远程 stdio MCP 时保留 `SYSTEMROOT` /
+  `TEMP` / `TMP`。`codex-rs/models-manager/models.json` 与 `rust-v0.160.0` 逐字相同（sha256 一致），
+  随包名单不用换；同样的沙箱实测 `codex exec` 拿到回复，请求与出网记录和 0.160.0 一样。
+
+沙箱实测（空 HOME、`env -i`、按 `buildCodexRelayConfigTemplate` 写配置，`model_catalog_json`
+指随包名单，base URL 指本地假接口，出网代理只记录不放行）：0.160.0 的 `codex debug models` 列出
+名单里全部 11 个型号；`codex exec` 用 `gpt-6.1-sol` 拿到假接口的回复，没有
+`Model metadata ... not found`，Key 从 `auth.json` 进 `Authorization`，配置无告警。出网代理记下的
+`github.com`、`api.github.com`、`chatgpt.com` 几条连接 0.156.1 也一模一样，不是新出现的。
+
+Grok 没有可读的变更记录（x.ai 与 docs.x.ai 在沙箱里连不上，npm 包没写仓库地址）。npm 上 1.0.47~1.0.49
+已经发了，但 `latest` 与 xAI stable 都还停在 1.0.46，所以选它。用上一节同样的办法（一次性 HOME、
+按 `config-files.ts` 的模板写配置、型号名 `relay-x`、出网代理只记录不放行）在 1.0.46 上重跑：
+
+- **型号名单（K3）**：有 `allowed_models` 时 `grok models` 只列 `grok`；去掉后又出现 `grok-4.6`、`grok-4.5`。
+- **起标题的型号（K4）**：`grok -p` 一轮里起标题那次请求是 `relay-x`；去掉 `session_summary` 变回 `grok-4.6`。
+- **出图地址（K1）**：假接口让模型调一次 `image_gen`，请求打到本地 `POST /v1/images/generations`
+  （型号 `grok-imagine-image-quality`，带 `Authorization`），出网代理一条记录都没有；去掉
+  `[endpoints] xai_api_base_url` 后出网代理记下 `CONNECT api.x.ai:443`。
+- **钩子**：`[compat.claude] hooks = false` 加六类 `[[hooks.*]]`，一轮 `-p` 触发 `UserPromptSubmit`、
+  `Stop`、`SessionEnd`，配置无解析错误。
+
+没做的：两家都没有中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；Grok 1.0.46 Windows 版挑
+哪个 shell 没有重读二进制字符串。
+
+**Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
+上游只有 8 个提交，和中转有关的是两条：
+
+- `ed2ac40df` *fix(core): preserve explicit versioned Flash model IDs*（#29252）：0.60.0 用 API Key 登录时，
+  **名字以 `flash` 结尾的型号一律改发成 `gemini-3.5-flash`**。本软件早就靠
+  `geminiCliCompatibleModel` 把 `gemini-3.7-flash` / `gemini-3.8-flash` 写成带 `-high` 的名字绕开，
+  默认的 `gemini-3.8-flash-high` 也不受影响，所以今天的客户基本碰不到；碰得到的是自己选了别的
+  `*-flash` 型号（比如 `gemini-2.5-flash`）的人。
+- `62364cb20` *Feat/gemini 3.8 flash 3.5 flash lite*（#29443，以 cherry-pick 进 0.61.0-preview.1）：内置表加了
+  `gemini-3.8-flash` 与 `gemini-3.5-flash-lite`，`/model` 菜单里也列着它们；另外给 API Key 这条路
+  **新加了一层出网前的改名**（`getBackendModelMappings`）：`gemini-3.5-flash`、`gemini-3-flash` 改发
+  `gemini-3.8-flash`，`gemini-3.1-flash-lite` 改发 `gemini-3.5-flash-lite`。这一层在
+  `modelConfigs.customOverrides` 之后，本软件改不动。
+
+其余是安全加固（构建文件改动引起的间接提示注入、沙箱文件边界）和一处内部对象展开的修复；设置
+文件、`.env`、信任目录、MCP 状态行、base URL 与鉴权那几段代码没有改动。
+
+沙箱实测（空 HOME、`GEMINI_API_KEY` + `GOOGLE_GEMINI_BASE_URL` 指本地假接口、按
+`config-files.ts` 写 `settings.json`，看假接口收到的型号）：
+
+| 配的型号 | 0.60.0 实际发出 | 0.61.0 实际发出 |
+|---|---|---|
+| `gemini-3.8-flash-high`（默认） | 原样 | 原样 |
+| `gemini-3.8-flash` / `gemini-3.7-flash`（不经本软件改名时） | `gemini-3.5-flash` | 原样 |
+| `gemini-2.5-flash` | `gemini-3.5-flash` | 原样 |
+| `gemini-3-flash` | `gemini-3.5-flash` | `gemini-3.8-flash` |
+| `gemini-3.5-flash` | 原样 | `gemini-3.8-flash`，且联网搜索那一请求丢了 `googleSearch` 工具 |
+| `gemini-3.1-flash-lite` | 原样 | `gemini-3.5-flash-lite` |
+
+- 主型号 `gemini-3.8-flash-high` 下，联网搜索（带 `googleSearch`）、读网页（带 `urlContext`）、
+  Auto 模式的分流请求与之后的主请求，两版都只发中转型号。不写改写时 0.61.0 的 Auto 分流改用
+  `gemini-3.5-flash-lite`（0.60.0 是 `gemini-3.1-flash-lite`），现有的 `flash-lite` 改写照样接住。
+- 在 `/model` 里选 `gemini-3.8-flash` / `gemini-3.5-flash-lite`：旧改写表下 0.61.0 原样发出官方
+  型号名，所以两者已补进 `geminiRelayHelperModels`，补后都改发中转型号。
+- 完整的本软件模板（含 `ide`、`sessionRetention`、`context.fileName`）加信任目录读 `~/.gemini/.env`：
+  0.61.0 正常启动、请求打到 base URL，终端输出与 0.60.0 一致。
+
+**要留意的一点**：中转的 Gemini 分组如果有型号恰好叫 `gemini-3.5-flash`、`gemini-3-flash` 或
+`gemini-3.1-flash-lite`，0.61.0 上选它们会被改发成别的型号（见上表），本软件在客户端这边拦不住。
+今天默认的 `gemini-3.8-flash-high` 不在其列。没做的：中转上的真实请求（secret 没配，`verifiedSites`
+仍为空）。
+
+**Gemini CLI 0.61.0 → 0.62.0（2026-10-05 每周巡检）。** v0.62.0 的 release note 大多是 PTY、终端、OAuth 刷新
+的修复，没有一条碰到 `GOOGLE_GEMINI_BASE_URL`、`selectedType`、`.env` 或 `modelConfigs`；「Added support for
+Gemini 3.8, Flash 3.5, and Flash Lite models」那条在 0.61.0 已经以 cherry-pick 进来（见上一段）。装上两版对比
+bundle：`DEFAULT_MODEL_CONFIGS` 整个对象逐字相同，出网前改名的 `getBackendModelMappings` 也逐字相同，所以
+上一段补过的改写表不用再动。沙箱实测（同上一段的做法，按 `config-files.ts` 写 `settings.json` 与 `.env`）：
+`gemini -p` 默认发 `gemini-3.8-flash-high`；`-m gemini-3.8-flash`、`-m gemini-3.5-flash-lite`、
+`-m gemini-3.1-flash-lite` 都改发成 `gemini-3.8-flash-high`，Key 走 `x-goog-api-key`。没做的：中转上的真实请求。
+
 加第四个工具只需要填上它的 `recommended`，其余代码不用动；要让中转实测也覆盖它，还得在 `scripts/probe-cli-relay.cjs` 的 `probeRunners` 里加一条。
 
 ## 谁来跑：每周巡检
 
 名单越旧，默认装的版本离上游越远；而没人盯着的话，它只会在客户报障那天才被想起来。所以有一条每周的巡检例程（Routine）替人盯着：
 
-- **名字**：`Claude Code 新版每周巡检`
+- **名字**：`四家 CLI 新版每周巡检`（2026-10-01 前叫「Claude Code 新版每周巡检」，只看 Claude Code）
 - **频率**：每周一 01:00 UTC（北京时间周一 09:00）
-- **它做什么**：取 npm 上 `@anthropic-ai/claude-code` 的 `latest`，和名单里的推荐版本比。一样就只回一句「本周无新版」；不一样就把这两个版本之间的上游 changelog 逐条读一遍，摘出与网关 / 代理 / 第三方 base URL / 鉴权 / 400 相关的行。没有回归就开一个**草稿 PR** 抬推荐版本（含文档与 `changes/unreleased/` 分片）；有回归就改为把新版加进 `blocked` 并写清原因。
+- **它做什么**：四家各取 npm `latest`（Grok 再和 xAI stable 取小），和名单比。都一样就只回一句「本周四家无新版」；有新版的逐个读上游变更记录——Claude Code 读仓库的 `CHANGELOG.md`，Codex 读 GitHub Releases 的 `rust-v*`（仓库里的 CHANGELOG 只是占位），Gemini 读 `docs/changelogs/index.md` 加缺的 release 页，Grok 没有可读的变更记录、只能装上新版在本地假接口重核配置。没有回归就抬推荐版本，有回归就加 `blocked`；一次巡检只开**一个草稿 PR**，含文档与 `changes/unreleased/` 分片。某个工具已经有别的 PR 在抬，就不再为它开，改为把评估结论交给那条线程。
 - **它不做什么**：不自己合并。抬版本的 PR 一律留给人复核——中转实测没跑过、或者跑红了，都不许合。
-
-**建议把这条巡检扩到 Codex 与 Gemini**（这份 PR 没有动 routine 本身，它归「Claude Code 新版每周巡检」那条线程管）：
-
-- **Codex 最该扩**。它现在几乎每天发 alpha、正式版每周一发，0.155.0 那次回归的窗口只有一天——每周看一次仍会漏，但至少名单不会一直停在几个月前。上游看 `https://github.com/openai/codex/releases`（`rust-v*` tag），关注的关键词是 reasoning summary、wire API、`requires_openai_auth`、third-party provider。
-- **Gemini 一并扩，但频次可以低**。它一周一个正式版，0.57~0.60 都是安全加固；要盯的是 `GOOGLE_GEMINI_BASE_URL` 与 `security.auth.selectedType` 这两处——上游已经把带 base URL 的情形单独识别成 `AuthType.GATEWAY`，哪天它把 `gateway` 做成正式的 `selectedType`，本产品写的 `gemini-api-key` 就要跟着改。
-- **Grok 暂不扩**：名单里没有它的条目，巡检也没有可比的基准。
-- 扩之后那条 routine 的判据不变：只看 npm `latest`（`stable` 这个 dist-tag 不可信，它曾经指向 blocked 区间里的版本），比对上游 changelog，开草稿 PR，不自合。
+- **抬 Codex 推荐版本时顺手换随包型号名单**（`bundled-catalog/codex-models/models.json`，步骤见同目录 README）：桌面端菜单靠它列出中转开着的新 GPT 型号，名单停在旧 tag 上，新型号就进不了菜单。
 
 npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指向 `2.1.267`，而那个版本正落在名单里 2.1.265–2.1.268 那条不兼容区间内。只看 `latest`。
 
@@ -345,3 +579,13 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 
 - 不要把 `recommended` 写成 `latest`、`^2.1.0` 这类范围或 dist-tag。IPC 侧只接受精确 semver（`ipc.ts` 的 `parseCliInstallVersion`），范围表达式会让 npm 自己去决定装什么，等于绕过名单。
 - 不要为了「让用户拿到新功能」把过期的 `recommended` 留着不动——名单越旧，默认装的版本离上游越远。上游发了新版就跑一次验证。
+
+## Codex 桌面端的已知问题表
+
+桌面端从微软商店 / 镜像装，装哪一版不归星芒定，所以没有「推荐版本」，只有一张已知打不开的版本表：
+`electron/codex-desktop-known-issues.ts` 的 `codexDesktopKnownBrokenVersions`。命中时首页桌面端那一行、
+打开失败的提示框都会说「这一版已知在一些电脑上打不开」，并给「改用 Codex 命令行版」。
+
+- 加一行：上游确认（或真机复现）某一版在 Windows 上自己起不来时，写商店包的四段版本号，注释里写上游 issue 号。
+- 删一行：商店出了新版、真机核过能打开之后，下一版把旧版那一行删掉。不删也不会误报新版，只是多留一行死数据。
+- 不做「退回上一版」：商店会把退回去的版本自动更新回来，镜像的上一版是哪一版也核不了（第十九批 7）。

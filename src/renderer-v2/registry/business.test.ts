@@ -2,14 +2,40 @@ import { describe, expect, it } from 'vitest';
 import type { PlatformNotificationKind } from '../../../electron/platform/contract';
 import type { UpdateFailedStep } from '../../../electron/ipc-contract';
 import {
+  accountTabGroups,
+  accountTabs,
+  autoUpdateBubbleBody,
+  autoUpdateSettingDescription,
   notificationOptions,
+  notificationSettingsItemId,
+  settingsGroups,
+  settingsItemAvailable,
+  settingsItemLabel,
+  settingsItems,
+  standardAccountUpdateNotice,
+  standardAccountUpdateText,
+  updateBubbleRepeatsUpdatesPage,
   updateBubbleTitle,
   updateCardTitle,
+  updateDiskShortfallText,
+  updateDownloadDetail,
+  formatDownloadRemaining,
   updateFailureFallback,
   updateFailureLabel,
   updateFailureLabels,
+  updateInstallNote,
+  updateInstallActionLabel,
+  updateNewVersion,
+  updatesPageLead,
   withdrawnVersionAdvice,
 } from './business';
+
+describe('account center tab groups', () => {
+  // 左边子导航按组画，搜索结果按 accountTabs 排；两边次序一致，每个分页只出现一次。
+  it('lists every account tab in exactly one group, in the order of the tab list', () => {
+    expect(accountTabGroups.flatMap((group) => group.tabs)).toEqual(accountTabs.map((tab) => tab.value));
+  });
+});
 
 describe('renderer-v2 notification settings registry', () => {
   // 设置页是 notificationOptions.map 渲染的，所以少一条就是「主进程会发这种通知，
@@ -21,7 +47,10 @@ describe('renderer-v2 notification settings registry', () => {
       task: true,
       cliUpdate: true,
       announcement: true,
+      spend: true,
       acceleration: true,
+      cliTrouble: true,
+      cliTurn: true,
     };
     expect([...notificationOptions.map(option => option.value)].sort())
       .toEqual(Object.keys(expected).sort());
@@ -36,8 +65,71 @@ describe('renderer-v2 notification settings registry', () => {
   it('describes the CLI update reminder in the customer’s own words', () => {
     const option = notificationOptions.find(entry => entry.value === 'cliUpdate');
     expect(option?.label).toBe('工具有新版本');
+    // Codex 桌面端出新版也走这一项，只装了桌面端的客户也要能认出这一项跟自己有关（第三十二批 B）。
+    expect(option?.description).toBe('你装的工具出新版本时提醒一次');
     // 站点名、内部代号不进面向用户的文案（双站点对用户无感）。
-    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI/i);
+    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI|命令行/i);
+  });
+});
+
+describe('renderer-v2 settings rows registry', () => {
+  // 顶部搜索按 id 翻到设置里那一行，id 和组名撞了，搜到的那一条会被当成一组打开。
+  it('gives every row an id of its own that no group uses', () => {
+    const ids = settingsItems.map(item => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const group of settingsGroups) expect(ids).not.toContain(group.value);
+  });
+
+  it('puts at least one row in every group and only uses known groups', () => {
+    for (const group of settingsGroups) expect(settingsItems.some(item => item.group === group.value), group.value).toBe(true);
+  });
+
+  it('lists the four rows the settings page moved or renamed under their new groups', () => {
+    const groupOf = (id: string) => settingsItems.find(item => item.id === id)?.group;
+    expect(groupOf('latest-cli')).toBe('tools');
+    expect(groupOf('update-check')).toBe('about');
+    expect(groupOf('auto-update')).toBe('about');
+    expect(settingsItemLabel('workspace')).toBe('打开工具时进入的文件夹');
+    expect(settingsItemLabel('test-notification')).toBe('测试通知');
+    expect(settingsGroups.find(group => group.value === 'about')?.label).toBe('更新与关于');
+    expect(settingsGroups.find(group => group.value === 'startup')?.keywords).not.toContain('自动更新');
+  });
+
+  it('carries one row per notification switch, titled like the switch', () => {
+    for (const option of notificationOptions) expect(settingsItemLabel(notificationSettingsItemId(option.value))).toBe(option.label);
+  });
+
+  it('refuses a row id nobody registered instead of rendering a blank title', () => {
+    expect(() => settingsItemLabel('no-such-row')).toThrow();
+  });
+
+  it('only offers the rows this computer and this login have', () => {
+    const context = { mac: false, autoUpdate: false, acceleration: false, signedIn: false };
+    const visible = (id: string, overrides: Partial<typeof context> = {}) => {
+      const item = settingsItems.find(entry => entry.id === id);
+      if (!item) throw new Error(id);
+      return settingsItemAvailable(item, { ...context, ...overrides });
+    };
+    expect(visible('uninstall')).toBe(true);
+    expect(visible('uninstall-app')).toBe(false);
+    expect(visible('uninstall', { mac: true })).toBe(false);
+    expect(visible('uninstall-app', { mac: true })).toBe(true);
+    expect(visible('auto-update')).toBe(false);
+    expect(visible('auto-update', { autoUpdate: true })).toBe(true);
+    expect(visible(notificationSettingsItemId('acceleration'))).toBe(false);
+    expect(visible(notificationSettingsItemId('acceleration'), { acceleration: true })).toBe(true);
+    expect(visible('logout')).toBe(false);
+    expect(visible('logout', { signedIn: true })).toBe(true);
+    expect(visible('theme')).toBe(true);
+  });
+
+  it('never names a site or an internal term in a row title or search word', () => {
+    for (const item of settingsItems) expect(`${item.label} ${item.keywords.join(' ')}`).not.toMatch(/solov|new-api|sub2api|relay/i);
+  });
+
+  it('describes automatic updates the same way on the settings and update pages', () => {
+    expect(autoUpdateSettingDescription('system-installer')).toContain('由你点下载');
+    expect(autoUpdateSettingDescription(undefined)).toContain('由你点安装');
   });
 });
 
@@ -90,5 +182,155 @@ describe('renderer-v2 withdrawn version and rollback wording', () => {
     expect(withdrawnVersionAdvice(stranded)).toContain('修好的版本准备好后');
     expect(withdrawnVersionAdvice({ ...stranded, phase: 'available', availableVersion: '0.2.11' })).toContain('修好的 0.2.11');
     expect(updateCardTitle({ ...base, phase: 'not-available' })).toBe('已是最新版本');
+  });
+});
+
+describe('renderer-v2 updates page version rows', () => {
+  it('names the new version under the current one only when there is one', () => {
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false })).toBe('0.2.11');
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: null, rollback: false })).toBeNull();
+    expect(updateNewVersion(null)).toBeNull();
+  });
+
+  it('does not call the older version of a rollback new', () => {
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true })).toBeNull();
+    expect(updateNewVersion({ currentVersion: '0.2.10', availableVersion: '0.2.10', rollback: false })).toBeNull();
+  });
+});
+
+describe('renderer-v2 update bubble on the updates page', () => {
+  const base = { currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false, currentVersionWithdrawn: false, error: null, failedStep: null } as const;
+  const failed = (step: UpdateFailedStep) => ({ ...base, phase: 'error', error: { code: 'UPDATE_ERROR', message: '失败' }, failedStep: step } as const);
+
+  it('leaves out the three bubbles that repeat what the page already says', () => {
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'downloading' })).toBe(true);
+    expect(updateBubbleRepeatsUpdatesPage(failed('download'))).toBe(true);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'available' })).toBe(true);
+  });
+
+  it('keeps the other bubbles, the known-problem one included', () => {
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'not-available', availableVersion: null, currentVersionWithdrawn: true })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'available', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'available', diskShortfall: { neededBytes: 2, freeBytes: 1 } })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...base, phase: 'downloaded' })).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage(failed('check'))).toBe(false);
+    expect(updateBubbleRepeatsUpdatesPage({ ...failed('install'), phase: 'downloaded' })).toBe(false);
+  });
+});
+
+describe('renderer-v2 auto-update bubble wording', () => {
+  it('tells the user what happens next when auto-update is on', () => {
+    expect(autoUpdateBubbleBody('downloaded', true)).toContain('关掉软件或下次打开时自动装上');
+    expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
+    expect(autoUpdateBubbleBody('downloaded', false)).toBe('查看更新内容和安装状态。');
+  });
+});
+
+describe('renderer-v2 wording for a Windows account outside the administrators group', () => {
+  it('uses the sentence yoyo approved, the same one the system notification uses', () => {
+    // 2026-10-06 批的原话（句末补了句号）；主进程 desktop-notifications.ts 那一份也钉着同一句。
+    expect(standardAccountUpdateText).toBe('这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。');
+    expect(standardAccountUpdateNotice.body).toContain(`「${updateInstallActionLabel(undefined)}」`);
+  });
+
+  it('replaces the downloaded bubble whether or not auto-update is on', () => {
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, true)).toBe(standardAccountUpdateText);
+    expect(autoUpdateBubbleBody('downloaded', false, undefined, true)).toBe(standardAccountUpdateText);
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, false)).toBe(autoUpdateBubbleBody('downloaded', true));
+  });
+
+  it('stops promising an automatic install before the update is downloaded', () => {
+    // 他 2026-10-06 回「改」批的原话。
+    expect(autoUpdateBubbleBody('downloading', true, undefined, true)).toBe('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。');
+    expect(autoUpdateBubbleBody('available', true, undefined, true)).toBe(autoUpdateBubbleBody('downloading', true, undefined, true));
+    expect(autoUpdateBubbleBody('downloading', false, undefined, true)).toBe('查看更新内容和安装状态。');
+    expect(updatesPageLead(true, undefined, true)).toBe('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。');
+    // 自动更新关着时本来就不说会装，也不会在后台下。
+    expect(updatesPageLead(false, undefined, true)).toBe(updatesPageLead(false));
+    expect(autoUpdateSettingDescription(undefined, true)).toBe('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装');
+    for (const text of [autoUpdateBubbleBody('downloading', true, undefined, true), updatesPageLead(true, undefined, true), autoUpdateSettingDescription(undefined, true)]) {
+      expect(text).not.toMatch(/关掉软件或下次打开时自动装上|UAC|管理员权限/);
+    }
+    // 管理员账号照旧。
+    expect(autoUpdateBubbleBody('downloading', true, undefined, false)).toBe(autoUpdateBubbleBody('downloading', true));
+    expect(updatesPageLead(true, undefined, false)).toBe(updatesPageLead(true));
+    expect(autoUpdateSettingDescription(undefined, false)).toBe(autoUpdateSettingDescription(undefined));
+  });
+});
+
+describe('renderer-v2 updates page wording', () => {
+  it('does not promise the user decides when auto-update is on', () => {
+    expect(updatesPageLead(true)).toContain('自动装上');
+    expect(updatesPageLead(true)).not.toContain('不会自己重启');
+    expect(updatesPageLead(false)).toBe('新版本什么时候安装由你决定，不会自己重启。');
+  });
+
+  it('explains what to do before installing without internal jargon', () => {
+    expect(updateInstallNote).not.toContain('关闭保护');
+    expect(updateInstallNote).toContain('保存');
+  });
+});
+
+describe('renderer-v2 update disk shortfall wording', () => {
+  const MB = 1024 ** 2;
+  const blocked = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false, currentVersionWithdrawn: false, diskShortfall: { neededBytes: 600 * MB, freeBytes: 380 * MB } } as const;
+
+  it('says how much is missing and whether it will download on its own', () => {
+    expect(updateBubbleTitle(blocked)).toBe('新版本先不下载');
+    expect(updateDiskShortfallText(blocked, true)).toBe('新版本先不下载：电脑磁盘只剩 380 MB，装更新大约要 600 MB，还要再清出 220 MB。清出来以后会自动下载，不用你再点。');
+    expect(updateDiskShortfallText(blocked, false)).toContain('现在下载多半会失败');
+  });
+
+  it('stays silent when nothing is blocked or the phase moved on', () => {
+    expect(updateDiskShortfallText({ ...blocked, diskShortfall: null }, true)).toBeNull();
+    expect(updateDiskShortfallText({ ...blocked, phase: 'downloading' }, true)).toBeNull();
+    expect(updateDiskShortfallText(null, true)).toBeNull();
+  });
+});
+
+describe('update download detail', () => {
+  const mb = 1024 ** 2;
+  it('shows how much is done, how fast, and how long is left', () => {
+    expect(updateDownloadDetail({ percent: 34, bytesPerSecond: 1, transferred: 38 * mb, total: 112 * mb, averageBytesPerSecond: 1.8 * mb, secondsRemaining: 42 }))
+      .toBe('已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 50 秒');
+  });
+  it('only shows the amount while the speed is still unknown', () => {
+    expect(updateDownloadDetail({ percent: 0, bytesPerSecond: 0, transferred: 0, total: 112 * mb, averageBytesPerSecond: null, secondsRemaining: null }))
+      .toBe('已下载 0 KB / 共 112 MB');
+    // 旧快照没有平均速度字段：不拿 electron-updater 那个乱跳的瞬时值顶上。
+    expect(updateDownloadDetail({ percent: 50, bytesPerSecond: 3 * mb, transferred: 5.5 * mb, total: 11 * mb }))
+      .toBe('已下载 5.5 MB / 共 11 MB');
+  });
+  it('drops the total when the feed did not say how big the package is', () => {
+    expect(updateDownloadDetail({ percent: 0, bytesPerSecond: 0, transferred: 1.2 * 1024 ** 3, total: 0, averageBytesPerSecond: 512 * 1024, secondsRemaining: null }))
+      .toBe('已下载 1.2 GB · 每秒 512 KB');
+  });
+  it('has nothing to say without progress', () => {
+    expect(updateDownloadDetail(null)).toBeNull();
+  });
+  it('rounds the remaining time coarsely so it does not tick every second', () => {
+    expect(formatDownloadRemaining(5)).toBe('马上就好');
+    expect(formatDownloadRemaining(11)).toBe('大约还要 20 秒');
+    expect(formatDownloadRemaining(59)).toBe('大约还要 50 秒');
+    expect(formatDownloadRemaining(61)).toBe('大约还要 2 分钟');
+    expect(formatDownloadRemaining(3600)).toBe('大约还要 1 小时');
+    expect(formatDownloadRemaining(4800)).toBe('大约还要 1 小时 20 分钟');
+  });
+});
+
+describe('renderer-v2 wording when the system installer takes over (Linux)', () => {
+  it('never promises that the update installs itself or that the app restarts', () => {
+    const linux = 'system-installer' as const;
+    expect(autoUpdateBubbleBody('downloaded', true, linux)).toBe('已经下好了，到更新页点「安装新版本」就能装上。');
+    expect(autoUpdateBubbleBody('downloaded', false, linux)).toBe('已经下好了，到更新页点「安装新版本」就能装上。');
+    expect(autoUpdateBubbleBody('downloading', true, linux)).toBe('正在后台下载，下好后到更新页点「安装新版本」。');
+    expect(updatesPageLead(true, linux)).toContain('输入开机密码');
+    expect(updatesPageLead(true, linux)).not.toContain('自动装上');
+    expect(updatesPageLead(false, linux)).toBe(updatesPageLead(false));
+    expect(updateInstallActionLabel(linux)).toBe('安装新版本');
+    expect(updateInstallActionLabel(undefined)).toBe('重启安装');
+    const rollback = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
+    expect(withdrawnVersionAdvice({ ...rollback, installMethod: linux })).toContain('再点「安装新版本」');
+    expect(withdrawnVersionAdvice(rollback)).toContain('再点「重启安装」');
   });
 });

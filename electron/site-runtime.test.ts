@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
 import { providerBaseUrls, providerIds } from './catalog'
-import { relaySites, requireRelaySite, type RelaySite } from './relay-sites'
+import { relayProviderBaseUrls, relaySites, requireRelaySite, type RelaySite } from './relay-sites'
 import { createSiteRuntime, requireXmSiteRuntimeDefinition } from './site-runtime'
 import type { AccountIdentitySource } from './active-identity'
 
@@ -39,6 +39,17 @@ describe('xm-only site runtime', () => {
     assert.equal(requireRelaySite('solov').providerBaseUrls, providerBaseUrls)
     assert.equal(Reflect.defineProperty(definition.providerBaseUrls, 'claude', { value: 'https://other.example.invalid' }), false)
     assert.equal(definition.aiBaseUrl, 'https://xm.solov.cc')
+  })
+
+  it('keeps the same site and realm while binding all runtime calls to the selected transport', () => {
+    const definition = requireXmSiteRuntimeDefinition('solov', 'direct')
+    assert.equal(definition.siteId, 'solov')
+    assert.equal(definition.realmId, 'xm-account')
+    assert.equal(definition.backend, 'new-api')
+    assert.equal(definition.accountOrigin, 'https://xm-direct.solov.cc')
+    assert.equal(definition.aiBaseUrl, definition.accountOrigin)
+    assert.deepEqual(definition.providerBaseUrls, relayProviderBaseUrls('solov', 'direct'))
+    assert.equal(requireRelaySite('solov').accountBaseUrl, 'https://xm.solov.cc')
   })
 
   // 'sub2api' joins this list in D-10: an account boundary takes a live site

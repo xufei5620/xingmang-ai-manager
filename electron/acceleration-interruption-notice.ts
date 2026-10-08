@@ -19,6 +19,10 @@
  *   恢复正常」；读不到、或者停不下来，只说「网络可能暂时连不上」，绝不替没发生的事
  *   打包票。
  * - **只提醒本次运行里亲眼看着在加速的会话**，同一次连接最多提醒一次。
+ * - **软件替他悄悄连的那种（打开 Codex 桌面端时，autoStartedBy）断了、网络也已
+ *   改回，只记日志不提醒**：那次连接他本来就没察觉，告诉他「断了、可以重连」只是
+ *   打扰（yoyo 2026-10-01 定「悄悄连」）。没能确认网络改回来的照样提醒——那时他的
+ *   浏览器可能全部连不上，必须让他知道。
  *
  * 不含任何 Electron 依赖：时钟、定时器、通知与状态读取都由宿主注入。
  */
@@ -51,6 +55,8 @@ export interface AccelerationInterruptionNotice {
 interface PendingInterruption {
   scope: string
   key: string
+  /** 这次会话是不是软件替他自动连的。 */
+  automatic: boolean
   attempts: number
 }
 
@@ -77,7 +83,7 @@ export function createAccelerationInterruptionNotice(options: AccelerationInterr
   // 结束后仍然留着：内核退出时，渲染层的一次轮询可能比辅助进程的报告先到，
   // 那时这里已经读到了「已断开」，报告来了仍要认得这次会话。
   let last: AccelerationState | null = null
-  let seen: { scope: string; key: string } | null = null
+  let seen: { scope: string; key: string; automatic: boolean } | null = null
   let pending: PendingInterruption | null = null
   const notified = new Set<string>()
   let cancel: (() => void) | null = null
@@ -93,12 +99,16 @@ export function createAccelerationInterruptionNotice(options: AccelerationInterr
     cancel = null
   }
 
-  function send(outcome: AccelerationInterruptionOutcome, key: string): void {
+  function send(outcome: AccelerationInterruptionOutcome, key: string, automatic: boolean): void {
     pending = null
     clearTimer()
     if (notified.has(key)) return
     notified.add(key)
     while (notified.size > 64) notified.delete(notified.values().next().value!)
+    if (automatic && outcome === 'restored') {
+      log('info', 'acceleration.interrupted.quiet', '自动连接的加速意外断开、网络已恢复，不打扰用户')
+      return
+    }
     try { options.notify(outcome, key) }
     catch (error) {
       log('warn', 'acceleration.interrupted.notify.failed', '加速意外断开的通知没有发出',
@@ -131,15 +141,15 @@ export function createAccelerationInterruptionNotice(options: AccelerationInterr
   function retry(current: PendingInterruption): void {
     current.attempts += 1
     if (current.attempts >= maxSettleAttempts) {
-      send('unrestored', current.key)
+      send('unrestored', current.key, current.automatic)
       return
     }
     read(settleRetryMs)
   }
 
-  function begin(scope: string, key: string): void {
+  function begin(scope: string, key: string, automatic: boolean): void {
     if (notified.has(key) || pending?.key === key) return
-    pending = { scope, key, attempts: 0 }
+    pending = { scope, key, automatic, attempts: 0 }
     read(0)
   }
 
@@ -162,14 +172,16 @@ export function createAccelerationInterruptionNotice(options: AccelerationInterr
       retry(current)
       return
     }
-    send('restored', current.key)
+    send('restored', current.key, current.automatic)
   }
 
   return {
     observe(state) {
       if (disposed) return
       last = state
-      if (state.phase === 'active' && state.connectedAt) seen = { scope: state.scope, key: sessionKey(state) }
+      if (state.phase === 'active' && state.connectedAt) {
+        seen = { scope: state.scope, key: sessionKey(state), automatic: Boolean(state.autoStartedBy) }
+      }
       settle(state)
     },
     runtimeExited() {
@@ -180,7 +192,7 @@ export function createAccelerationInterruptionNotice(options: AccelerationInterr
         return
       }
       log('warn', 'acceleration.runtime.exited', '加速中加速组件意外退出，已先还原网络设置')
-      begin(scope, seen.key)
+      begin(scope, seen.key, seen.automatic)
     },
     helperExited(recovered) {
       if (disposed) return
@@ -191,11 +203,12 @@ export function createAccelerationInterruptionNotice(options: AccelerationInterr
       // 辅助进程退出前最后一次读到的状态还在加速，才可能有网络设置要还原。
       if (!scope || !last || last.scope !== scope || !isRunning(last)) return
       const key = seen?.scope === scope ? seen.key : sessionKey(last)
+      const automatic = seen?.scope === scope ? seen.automatic : Boolean(last.autoStartedBy)
       if (recovered) {
-        begin(scope, key)
+        begin(scope, key, automatic)
         return
       }
-      send('unrestored', key)
+      send('unrestored', key, automatic)
       // 读一次让托盘跟上；这一读会再试着拉起一次辅助进程，成功了网络也就回来了。
       void Promise.resolve().then(() => options.readState(scope)).catch(() => undefined)
     },

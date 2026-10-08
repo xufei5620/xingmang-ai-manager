@@ -11,6 +11,7 @@ import {
   gitForWindowsTag,
   gitForWindowsVersion,
   gitRuntimeDownloadSources,
+  gitRuntimeMissingAfterInstallMessage,
   installGitRuntimeWith,
   normalizeGitRuntimeArchitecture,
   validateGitRuntimeDownloadUrl,
@@ -192,6 +193,57 @@ describe('git-runtime-install', () => {
     expect(path.basename(deps.plans[0].executable)).toMatch(/^official-/)
   })
 
+  it('picks a dropped mirror download up where it stopped instead of switching sources', async () => {
+    const body = installerBytes(4)
+    const cut = 5 * 1024 * 1024
+    const [mirror] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const ranges: Array<string | null> = []
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      if (range) {
+        const response = new Response(new Uint8Array(body.subarray(cut)), {
+          status: 206,
+          headers: { 'content-range': `bytes ${cut}-${body.byteLength - 1}/${body.byteLength}` },
+        })
+        Object.defineProperty(response, 'url', { value: url })
+        return response
+      }
+      let sent = false
+      const response = new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) {
+            controller.error(new TypeError('fetch failed'))
+            return
+          }
+          sent = true
+          controller.enqueue(new Uint8Array(body.subarray(0, cut)))
+        },
+      }), { status: 200, headers: { 'content-length': String(body.byteLength), etag: '"git"' } })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const digest = createHash('sha256').update(body).digest('hex')
+    const deps = dependencies({
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+      waitBeforeResume: async () => undefined,
+    })
+    const events: GitRuntimeInstallProgress[] = []
+
+    const result = await installGitRuntimeWith('x64', {
+      networkRegion: 'mainland-china',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      onProgress: (event) => events.push(event),
+    }, deps)
+
+    expect(result.source).toBe('npmmirror')
+    expect(fetch.mock.calls.every(([url]) => url === mirror.url)).toBe(true)
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(events.some((event) => event.message === '网络断了一下，正在从国内镜像接着下载 Git')).toBe(true)
+  })
+
   it('reports both sources in plain words when neither works', async () => {
     const fetch = vi.fn(async (url: string) => streamResponse(Buffer.alloc(0), url, 404))
     const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
@@ -216,5 +268,67 @@ describe('git-runtime-install', () => {
       .rejects.toThrow('未经批准的地址')
     expect(fetch).not.toHaveBeenCalledWith('https://evil.example/Git.exe', expect.anything())
     expect(fetch).toHaveBeenCalledWith(mirror.url, expect.anything())
+  })
+  it('reports the version found after install instead of trusting the installer exit code', async () => {
+    const body = installerBytes(4)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const deps = dependencies({
+      fetch: vi.fn(async (url: string) => streamResponse(body, url)) as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    })
+    const verifyInstalled = vi.fn(async () => ({ version: '2.55.0' }))
+    const events: GitRuntimeInstallProgress[] = []
+
+    const result = await installGitRuntimeWith('x64', {
+      networkRegion: 'unknown',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      verifyInstalled,
+      onProgress: (event) => events.push(event),
+    }, deps)
+
+    expect(verifyInstalled).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({ installed: true, action: 'installed', version: '2.55.0' })
+    const phases = events.map((event) => event.phase)
+    expect(phases.lastIndexOf('verifying')).toBeGreaterThan(phases.indexOf('installing'))
+    expect(phases.at(-1)).toBe('complete')
+  })
+
+  it('fails in plain words when the installer exits 0 but Git still cannot be found', async () => {
+    const body = installerBytes(5)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const fetch = vi.fn(async (url: string) => streamResponse(body, url))
+    const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch, expectedSha256: () => digest })
+    const events: GitRuntimeInstallProgress[] = []
+
+    await expect(installGitRuntimeWith('x64', {
+      networkRegion: 'unknown',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      verifyInstalled: async () => null,
+      onProgress: (event) => events.push(event),
+    }, deps)).rejects.toThrow(gitRuntimeMissingAfterInstallMessage)
+
+    // 再换一个源重下重装也一样被拦，所以只装一次。
+    expect(deps.plans).toHaveLength(1)
+    expect(events.some((event) => event.phase === 'complete')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ phase: 'error', message: gitRuntimeMissingAfterInstallMessage })
+    expect(gitRuntimeMissingAfterInstallMessage).not.toMatch(/PowerShell|bash|PATH|环境变量/)
+  })
+
+  it('treats a failing recheck the same as Git not being found', async () => {
+    const body = installerBytes(6)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const deps = dependencies({
+      fetch: vi.fn(async (url: string) => streamResponse(body, url)) as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    })
+
+    await expect(installGitRuntimeWith('x64', {
+      networkRegion: 'unknown',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      verifyInstalled: async () => { throw new Error('probe crashed') },
+    }, deps)).rejects.toThrow(gitRuntimeMissingAfterInstallMessage)
   })
 })

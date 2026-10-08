@@ -3,6 +3,8 @@ import { providerConfigDirectoryNames } from './catalog'
 import {
   buildSensitiveWorkspacePrompt,
   classifyWorkspace,
+  resolveRememberedWorkspace,
+  sensitiveWorkspaceAsksAtLaunch,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
@@ -217,5 +219,53 @@ describe('buildSensitiveWorkspacePrompt', () => {
     expect(prompt.buttons[prompt.continueIndex]).toBe('仍然打开')
     expect(prompt.createIndex).toBeNull()
     expect(prompt.detail).not.toContain('新建一个项目文件夹')
+  })
+})
+
+// 已知39：首页「打开」从记录推出来的目录不经过选择器，主目录、桌面这类开新对话前也要先问。
+describe('sensitiveWorkspaceAsksAtLaunch', () => {
+  it('asks before every new conversation in any sensitive folder', () => {
+    expect(allKinds.filter((kind) => !sensitiveWorkspaceAsksAtLaunch(kind, false))).toEqual([])
+  })
+
+  it('only asks before resuming in the folders it warns about every time', () => {
+    expect(allKinds.filter((kind) => sensitiveWorkspaceAsksAtLaunch(kind, true))).toEqual(['system', 'provider-config'])
+  })
+})
+
+describe('resolveRememberedWorkspace', () => {
+  const windows = { ...windowsContext, defaultWorkspace: 'C:\\Users\\peaker' }
+  const mac = { ...macContext, defaultWorkspace: '/Users/alex' }
+
+  it('keeps an ordinary project folder the user picked', () => {
+    expect(resolveRememberedWorkspace('C:\\Users\\peaker\\Documents\\XingmangProjects\\my-project', windows))
+      .toBe('C:\\Users\\peaker\\Documents\\XingmangProjects\\my-project')
+    expect(resolveRememberedWorkspace('D:\\code\\shop', windows)).toBe('D:\\code\\shop')
+    expect(resolveRememberedWorkspace('/Users/alex/code/shop', mac)).toBe('/Users/alex/code/shop')
+  })
+
+  it('ignores the never-picked default, which is the home directory', () => {
+    expect(resolveRememberedWorkspace('C:\\Users\\peaker', windows)).toBeNull()
+    expect(resolveRememberedWorkspace('c:\\users\\PEAKER\\', windows)).toBeNull()
+    expect(resolveRememberedWorkspace('/Users/alex', mac)).toBeNull()
+  })
+
+  it('ignores the default home even when it differs from the configured home', () => {
+    const drifted = { platform: 'win32' as const, home: 'D:\\Profiles\\peaker', defaultWorkspace: 'C:\\Users\\peaker' }
+    expect(resolveRememberedWorkspace('C:\\Users\\peaker', drifted)).toBeNull()
+    expect(resolveRememberedWorkspace('C:\\Users\\peaker\\Desktop', drifted)).toBeNull()
+  })
+
+  it('never remembers a sensitive folder, so opening there still asks', () => {
+    for (const workspace of ['C:\\', 'C:\\Users\\peaker\\Desktop', 'C:\\Users\\peaker\\Downloads', 'C:\\Windows', 'C:\\Users\\peaker\\.codex']) {
+      expect(resolveRememberedWorkspace(workspace, windows)).toBeNull()
+    }
+    expect(resolveRememberedWorkspace('/Users/alex/Desktop', mac)).toBeNull()
+  })
+
+  it('gives nothing for empty, relative, or unreadable-home input', () => {
+    expect(resolveRememberedWorkspace('', windows)).toBeNull()
+    expect(resolveRememberedWorkspace('projects\\shop', windows)).toBeNull()
+    expect(resolveRememberedWorkspace('D:\\code\\shop', { ...windows, home: '' })).toBeNull()
   })
 })

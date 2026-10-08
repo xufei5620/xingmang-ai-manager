@@ -1,8 +1,12 @@
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
-// 只读：localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。
-export interface ChatStorage { getItem: (key: string) => string | null }
+// 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
+const unreadableHistory = '以前的聊天记录暂时读不出来，原文件没动'
+
+// localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
+// 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
+export interface ChatStorage { getItem: (key: string) => string | null; setItem?: (key: string, value: string) => void; removeItem?: (key: string) => void }
 const MAX_CONVERSATIONS = 50
 const HISTORY_VERSION = 3
 const ASSET_ID = /^[A-Za-z0-9_-]{43}$/
@@ -11,6 +15,30 @@ export class ChatStorageError extends Error {}
 const limitMessage = '聊天记录超过本地保存上限（50 个对话），原始记录已保留，未进行截断'
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
+function migratedKey(scope: string): string { return `xingmang-ui-v2:chat-migrated:${encodeURIComponent(scope)}` }
+// Every localStorage key readWorkspace may read for this scope: its own, and for
+// the xm realm the two old site aliases and the v1 key (see importLegacyHistory).
+export function legacyHistoryKeys(scope: string): string[] {
+  const keys = [historyKey(scope)]
+  const xm = /^xm-account:([1-9][0-9]*)$/.exec(scope)
+  if (xm && Number.isSafeInteger(Number(xm[1]))) keys.push(historyKey(`solov:${xm[1]}`), historyKey(`sub2api:${xm[1]}`), `xingmang-ai-chat:v1:${encodeURIComponent(xm[1])}`)
+  return keys
+}
+function hasMigrated(storage: ChatStorage, scope: string): boolean {
+  try { return storage.getItem(migratedKey(scope)) !== null } catch { return false }
+}
+// Called only once the file store holds a record for this account, so the
+// localStorage copies are stale duplicates nothing reads again. Left in place, a
+// conversation deleted in the app would survive there verbatim, and a cleared
+// history folder would bring it back as a fresh migration. The marker goes first
+// so that even a removal that fails can never be read back. Best effort: storage
+// may be disabled or full, and the file store is already authoritative.
+export function forgetLegacyHistory(storage: ChatStorage, scope: string): void {
+  try { storage.setItem?.(migratedKey(scope), '1') } catch { /* The removals below still apply. */ }
+  for (const key of legacyHistoryKeys(scope)) {
+    try { storage.removeItem?.(key) } catch { /* Keep trying the remaining keys. */ }
+  }
+}
 function object(value: unknown): Record<string, unknown> | null { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null }
 function text(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -59,7 +87,9 @@ function readConversation(value: unknown): Conversation {
   if (!conversation || !Array.isArray(conversation.messages)) throw new ChatStorageError('聊天对话格式无效，原始记录已保留')
   const messages = conversation.messages.map(readMessage)
   assertUniqueIds(messages)
-  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages }
+  if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
+  const draftImages = (conversation.draftImages ?? []).map(readAsset)
+  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))
@@ -123,7 +153,7 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
       if (legacy) return { state: legacy, exists: true }
     }
     return empty()
-  } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留' } }
+  } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : unreadableHistory } }
 }
 // The history files sit unencrypted in the user profile, and chat text is the one
 // surface where a pasted key, an Authorization header or a whole base64 image
@@ -145,6 +175,9 @@ export function redactPersistentChatText(value: string): string {
 function persistedSettings(settings: ChatSettings): ChatSettings {
   return { ...settings, systemPrompt: redactPersistentChatText(settings.systemPrompt) }
 }
+function persistedAsset({ localUrl: _runtimeUrl, ...asset }: AiChatAsset) {
+  return { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
+}
 function persistedMessage(message: ChatMessage) {
   return {
     ...message,
@@ -153,20 +186,20 @@ function persistedMessage(message: ChatMessage) {
     reasoning: redactPersistentChatText(message.reasoning),
     ...(message.error === undefined ? {} : { error: redactPersistentChatText(message.error) }),
     ...(message.settings ? { settings: persistedSettings(message.settings) } : {}),
-    assets: message.assets?.map(({ localUrl: _runtimeUrl, ...asset }) => (
-      { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
-    )),
+    assets: message.assets?.map(persistedAsset),
   }
 }
 function persistedConversation(conversation: Conversation) {
-  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
+  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), draftImages: conversation.draftImages?.map(persistedAsset), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
 }
 
 // What the file store holds after the last successful save. Conversations are
 // compared by identity: state updates replace only the conversation they
 // touch, so a save rewrites just those files instead of the whole history.
 export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>; conversations: ReadonlyMap<string, Conversation> }
-export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; saved: SavedHistory | null }
+// afterFirstSave is set only when the state came from localStorage (or from nothing,
+// before any migration): the writer runs it once the first save has succeeded.
+export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; saved: SavedHistory | null; afterFirstSave?: () => void }
 
 export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | null): { write: AiChatHistoryWrite; saved: SavedHistory } | null {
   if (state.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
@@ -222,19 +255,39 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 
 // The file store wins once it has a record for this account. Before that the
 // localStorage record of earlier versions (and its account aliases and the v1
-// key) is loaded and becomes the first save, which is the whole migration.
+// key) is loaded and becomes the first save, which is the whole migration. The
+// source keys are removed only after that save succeeded; a failed save keeps
+// them for the next attempt. Once migrated, a missing file store stays empty.
 export async function loadChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
   let snapshot: AiChatHistorySnapshot
-  try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
-  if (snapshot.index === null) return { ...readWorkspace(storage, scope), saved: null }
-  try { return { ...parseHistorySnapshot(snapshot, scope), exists: true } }
-  catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
+  try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: unreadableHistory, saved: null } }
+  if (snapshot.index === null) {
+    if (hasMigrated(storage, scope)) return { state: createWorkspace(scope), exists: false, saved: null }
+    const legacy = readWorkspace(storage, scope)
+    return legacy.warning ? { ...legacy, saved: null } : { ...legacy, saved: null, afterFirstSave: () => forgetLegacyHistory(storage, scope) }
+  }
+  try {
+    const loaded = { ...parseHistorySnapshot(snapshot, scope), exists: true }
+    // Also covers earlier versions, which migrated without removing anything.
+    forgetLegacyHistory(storage, scope)
+    return loaded
+  }
+  catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : unreadableHistory, saved: null } }
+}
+
+// Saves still on their way to the file store, from every writer including
+// ones whose chat page has just unmounted (its last save runs after unmount).
+// Importing waits on these so an older snapshot cannot land on top of it.
+const inFlightSaves = new Set<Promise<void>>()
+export async function settleHistoryWrites(): Promise<void> {
+  while (inFlightSaves.size) await Promise.allSettled([...inFlightSaves])
 }
 
 // One save runs at a time; a save requested meanwhile only replaces the
 // pending snapshot, so bursts of edits collapse into the newest one.
-export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWrite) => Promise<void> }, saved: SavedHistory | null) {
+export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWrite) => Promise<void> }, saved: SavedHistory | null, afterFirstSave?: () => void) {
   let committed = saved
+  let firstSaved = afterFirstSave
   let pending: ChatWorkspace | null = null
   let running: Promise<void> | null = null
   async function drain(): Promise<void> {
@@ -246,6 +299,9 @@ export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWr
         if (!plan) continue
         await api.writeHistory(plan.write)
         committed = plan.saved
+        const run = firstSaved
+        firstSaved = undefined
+        run?.()
       }
     } finally { running = null }
   }
@@ -253,7 +309,12 @@ export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWr
     save(state: ChatWorkspace): Promise<void> {
       pending = state
       // Start on a microtask so `running` is assigned before drain can clear it.
-      if (!running) running = Promise.resolve().then(drain)
+      if (!running) {
+        const started = Promise.resolve().then(drain)
+        running = started
+        inFlightSaves.add(started)
+        void started.catch(() => undefined).then(() => { inFlightSaves.delete(started) })
+      }
       return running
     },
   }
@@ -280,4 +341,128 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
     const conversation = { ...createConversation(settings), title: '之前的聊天', messages }
     return { ...createWorkspace(scope), conversations: [conversation], activeId: conversation.id }
   } catch (error) { throw error instanceof ChatStorageError ? error : new ChatStorageError('之前的聊天记录暂时无法读取，原始数据已保留') }
+}
+
+// ---- 搬到新电脑 ----
+const transferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
+const imageLeftBehind = '[图片没有一起搬过来]'
+
+function portableMessage(message: ReturnType<typeof persistedMessage>) {
+  // 图片文件只在这台电脑上，带过去也打不开；留一句说明代替。还在等的请求到了新电脑上
+  // 也不会再回来，不带「可能还会完成」。
+  const { assets, requestId: _requestId, mayStillComplete: _pending, ...rest } = message
+  if (!assets?.length) return rest
+  return { ...rest, content: rest.content ? `${rest.content}\n\n${imageLeftBehind}` : imageLeftBehind }
+}
+
+/** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
+export function exportableConversations(state: ChatWorkspace): unknown[] {
+  return state.conversations.map((conversation) => {
+    const persisted = persistedConversation(conversation)
+    return { ...persisted, messages: persisted.messages.map(portableMessage) }
+  })
+}
+
+// 文件是用户随便选来的：每个对话都按读本机记录的同一套规则严格校验，有一个不对就
+// 整份不导入，不写一半（I5）。
+export function parseImportedConversations(values: unknown[]): Conversation[] {
+  if (values.length > MAX_CONVERSATIONS) throw new ChatStorageError(transferInvalidMessage)
+  try {
+    const conversations = values.map(readConversation).map((conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map(({ mayStillComplete: _pending, ...message }) => message),
+    }))
+    assertUniqueIds(conversations)
+    return conversations
+  } catch { throw new ChatStorageError(transferInvalidMessage) }
+}
+
+/**
+ * 已有的对话不覆盖（同一个对话导两次不会多出一份）；合起来超过 50 个时按最后修改时间
+ * 留最近的 50 个。added 是真正留下来的新对话数。
+ */
+export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace; added: number } {
+  const present = new Set(state.conversations.map((conversation) => conversation.id))
+  const fresh = imported
+    .filter((conversation) => !present.has(conversation.id))
+    .map((conversation) => conversation.id === state.draftConversation.id ? { ...conversation, id: createId() } : conversation)
+  const conversations = [...state.conversations, ...fresh]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_CONVERSATIONS)
+  const kept = new Set(conversations.map((conversation) => conversation.id))
+  const added = fresh.filter((conversation) => kept.has(conversation.id)).length
+  const activeId = state.activeId && kept.has(state.activeId) ? state.activeId : null
+  return { state: { ...state, conversations, activeId }, added }
+}
+
+/**
+ * 「重新读取」读出了以前的记录：这一回在窗口里聊的对话还没存过，一个不丢地排在读出来的
+ * 前面。合起来超过 50 个时照常存不进去、提示先删掉一些，不替用户删。这一回什么都没动过
+ * 就停在上次看的那段，动过就停在正在看的那段；输入框里这一回打了字就留这一回的。
+ */
+export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWorkspace): ChatWorkspace {
+  // Ids are random, so a clash is not expected; a duplicate would make the saved record unreadable, though.
+  const used = new Set([loaded.draftConversation.id, ...loaded.conversations.map((conversation) => conversation.id)])
+  function unused(id: string): string {
+    let candidate = id
+    while (used.has(candidate)) candidate = createId()
+    used.add(candidate)
+    return candidate
+  }
+  const ids = new Map<string, string>()
+  const added = session.conversations.map((conversation) => {
+    const id = unused(conversation.id)
+    ids.set(conversation.id, id)
+    return id === conversation.id ? conversation : { ...conversation, id }
+  })
+  const typed = Boolean(session.draftConversation.draft.trim() || session.draftConversation.draftImages?.length)
+  const draftId = typed ? unused(session.draftConversation.id) : ''
+  const draftConversation = !typed ? loaded.draftConversation : draftId === session.draftConversation.id ? session.draftConversation : { ...session.draftConversation, id: draftId }
+  const activeId = session.activeId ? ids.get(session.activeId) ?? null : typed || added.length ? null : loaded.activeId
+  return { ...loaded, activeId, conversations: [...added, ...loaded.conversations], draftConversation }
+}
+
+/**
+ * Reads this account's record the same way the chat page does, merges the
+ * imported conversations and saves once. The caller unmounts the chat page and
+ * waits on settleHistoryWrites first, so nothing else writes this account's
+ * history in between.
+ */
+export async function importConversationsIntoHistory(
+  api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; writeHistory: (input: AiChatHistoryWrite) => Promise<void> },
+  storage: ChatStorage,
+  scope: string,
+  imported: Conversation[],
+): Promise<number> {
+  const loaded = await loadChatHistory(api, storage, scope)
+  if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
+  const merged = mergeImportedConversations(loaded.state, imported)
+  if (!merged.added) return 0
+  const plan = planHistoryWrite(merged.state, loaded.saved)
+  if (plan) await api.writeHistory(plan.write)
+  loaded.afterFirstSave?.()
+  return merged.added
+}
+
+function timeText(value: number): string {
+  if (!value) return ''
+  const date = new Date(value)
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** 「导出这段对话」的纯文本：标题、每条消息谁说的和什么时候，图片只留一句说明。 */
+export function conversationPlainText(conversation: Conversation): string {
+  const lines = [conversation.title || '新对话', '']
+  for (const message of conversation.messages) {
+    const who = message.role === 'user' ? '我' : 'AI'
+    const when = timeText(message.createdAt)
+    lines.push(when ? `${who}（${when}）：` : `${who}：`)
+    const content = redactPersistentChatText(message.content)
+    if (content) lines.push(content)
+    if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，没有放进这个文件]`)
+    if (message.status === 'error' && message.error) lines.push(`[没有回复成功：${redactPersistentChatText(message.error)}]`)
+    lines.push('')
+  }
+  return lines.join('\n')
 }

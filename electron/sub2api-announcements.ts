@@ -8,6 +8,7 @@ export interface Sub2ApiAnnouncement {
   content: string
   readAt: string | null
   updatedAt: string | null
+  publishedAt: string | null
 }
 
 function protocol(): never { throw new RealmAccountError('PROTOCOL') }
@@ -17,6 +18,21 @@ function timestamp(value: unknown): string | null {
   if (value === undefined || value === null) return null
   if (typeof value !== 'string' || value.length > 64 || !Number.isFinite(Date.parse(value))) protocol()
   return new Date(value).toISOString()
+}
+
+// 定时公告要到开始时间才对用户可见，比创建时间晚；开始时间早于创建时间时，创建那一刻就已可见。
+function resolvePublishedAt(startsAt: string | null, createdAt: string | null): string | null {
+  if (startsAt === null || createdAt === null) return startsAt ?? createdAt
+  return Date.parse(startsAt) > Date.parse(createdAt) ? startsAt : createdAt
+}
+
+function publishedTime({ publishedAt }: Sub2ApiAnnouncement): number {
+  return publishedAt === null ? -Infinity : Date.parse(publishedAt)
+}
+
+// Sub2API 把已读的排到所有未读后面，最新一条读过后会沉到列表底部；这里不分已读未读，最近发布的排最前面。
+function newestFirst(a: Sub2ApiAnnouncement, b: Sub2ApiAnnouncement): number {
+  return publishedTime(b) - publishedTime(a) || Number(b.id) - Number(a.id)
 }
 
 /** Only user-facing fields leave this parser; admin/credential fields never propagate. */
@@ -34,7 +50,8 @@ export function parseSub2ApiAnnouncements(payload: unknown): Sub2ApiAnnouncement
     if (ids.has(id) || totalLength > maximumAnnouncementBytes) protocol()
     ids.add(id)
     return { id, title: value.title.trim(), content: value.content.trim(),
-      readAt: timestamp(value.read_at), updatedAt: timestamp(value.updated_at) }
+      readAt: timestamp(value.read_at), updatedAt: timestamp(value.updated_at),
+      publishedAt: resolvePublishedAt(timestamp(value.starts_at), timestamp(value.created_at)) }
   })
 }
 
@@ -43,9 +60,12 @@ export function sub2ApiAnnouncementNotice(announcements: Sub2ApiAnnouncement[]):
   // Read state does not change the content identity; request order does not either.
   const identity = announcements.map(({ id, title, content, updatedAt }) => ({ id, title, content, updatedAt }))
     .sort((a, b) => Number(a.id) - Number(b.id))
+  const ordered = [...announcements].sort(newestFirst)
   return {
     id: `sub2api-${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
-    text: announcements.map(({ title, content }) => `${title}\n\n${content}`).join('\n\n---\n\n'),
-    entries: announcements.map(({ id, title, content, readAt }) => ({ id, title, text: content, read: readAt !== null })),
+    text: ordered.map(({ title, content }) => `${title}\n\n${content}`).join('\n\n---\n\n'),
+    entries: ordered.map(({ id, title, content, readAt, publishedAt }) => ({
+      id, title, text: content, read: readAt !== null, ...(publishedAt === null ? {} : { publishedAt }),
+    })),
   }
 }

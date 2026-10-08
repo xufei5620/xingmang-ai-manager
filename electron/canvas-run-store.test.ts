@@ -88,6 +88,82 @@ describe('CanvasRunStore', () => {
     expect(await store.getRun(8, 'run-3')).toBeNull()
   })
 
+  it('evicts the oldest history to stay within the byte budget instead of failing every later save', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-runs-'))
+    roots.push(root)
+    const store = new CanvasRunStore({
+      rootDirectory: root,
+      assets: { readOwned: async () => { throw new Error('missing') } },
+      maximumBytes: 64 * 1024,
+    })
+    const longText = '长'.repeat(5_000)
+    function longRecord(runId: string, status: CanvasRunRecord['status'] = 'succeeded'): CanvasRunRecord {
+      const base = record(runId, status)
+      return {
+        ...base,
+        nodes: [{
+          ...base.nodes[0],
+          attempts: [{
+            attemptId: `attempt-${runId}`,
+            fingerprint: 'f'.repeat(64),
+            state: 'succeeded',
+            startedAt: '2026-08-13T00:00:00.000Z',
+            completedAt: '2026-08-13T00:00:01.000Z',
+            durationMs: 1_000,
+            cached: false,
+            candidates: [],
+            outputText: longText,
+          }],
+        }],
+      }
+    }
+    await store.saveRun(7, longRecord('still-running', 'running'))
+    for (let index = 1; index <= 12; index += 1) await store.saveRun(7, longRecord(`run-${index}`))
+    const runs = (await store.listRuns(7)).map((run) => run.runId)
+    expect(runs[0]).toBe('run-12')
+    expect(runs).toContain('still-running')
+    expect(runs).not.toContain('run-1')
+    expect(runs.length).toBeLessThan(13)
+    const filePath = path.join(root, 'user-7', 'canvas-runtime.json')
+    expect(fs.statSync(filePath).size).toBeLessThanOrEqual(64 * 1024)
+  })
+
+  it('drops the oldest cache entries once history alone cannot fit the budget', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-runs-'))
+    roots.push(root)
+    const store = new CanvasRunStore({
+      rootDirectory: root,
+      assets: { readOwned: async () => { throw new Error('missing') } },
+      maximumBytes: 32 * 1024,
+    })
+    function textCache(fingerprintCharacter: string): CanvasRunCacheEntry {
+      return {
+        version: 1,
+        fingerprint: fingerprintCharacter.repeat(64),
+        nodeKind: 'text',
+        outputText: '文'.repeat(3_000),
+        createdAt: '2026-08-13T00:00:00.000Z',
+        lastUsedAt: '2026-08-13T00:00:00.000Z',
+      }
+    }
+    for (const character of ['a', 'b', 'c', 'd', 'e']) await store.storeCache(7, textCache(character))
+    await expect(store.resolveCache(7, 'e'.repeat(64))).resolves.toMatchObject({ outputText: '文'.repeat(3_000) })
+    await expect(store.resolveCache(7, 'a'.repeat(64))).resolves.toBeNull()
+  })
+
+  it('still refuses a single record larger than the whole budget', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-runs-'))
+    roots.push(root)
+    const store = new CanvasRunStore({
+      rootDirectory: root,
+      assets: { readOwned: async () => { throw new Error('missing') } },
+      maximumBytes: 4 * 1024,
+    })
+    const oversized = record('huge')
+    oversized.nodes[0].errorMessage = 'x'.repeat(8 * 1024)
+    await expect(store.saveRun(7, oversized)).rejects.toThrow('画布运行记录超过安全上限')
+  })
+
   it('recovers nonterminal runs as interrupted without replaying them', async () => {
     const { store } = fixture()
     await store.saveRun(7, record('running', 'running'))

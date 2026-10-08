@@ -15,8 +15,12 @@ export type AccelerationStartFailureStage =
   | 'core-architecture'
   | 'core-integrity'
   | 'core-launch'
+  | 'core-blocked'
+  | 'core-exited'
+  | 'core-port'
   | 'core-storage'
   | 'line-unavailable'
+  | 'line-unreachable'
   | 'runtime-invalid'
   | 'ledger-write'
   | 'proxy-authorization'
@@ -69,6 +73,15 @@ export interface AccelerationDevelopmentBackendOptions {
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
   /**
+   * 软件替用户发起的连接（打开 Codex 桌面端时）。与 startAcceleration 同一条路，
+   * 只是这次会话不扣免费时长、免费时长用完也照样连，也就没有到点断开这回事；
+   * 什么时候断由宿主决定（codex-desktop-acceleration.ts）。状态里带 `autoStartedBy`，
+   * 加速页与托盘上看不见它（acceleration-service 的 userAccelerationState），所以它
+   * 连不上、意外断开、撞上别的代理软件都不在加速页上留话。
+   * 刻意不进 AccelerationApi：渲染层没有通道能要到一次不计时的连接。
+   */
+  startAutomaticAcceleration(scope: string, mode: AccelerationState['mode'], lineId?: string): Promise<AccelerationState>
+  /**
    * 下载专用线路：起内核、只交出本机回环端口，**不碰系统代理**，所以它既不
    * 出现在界面的加速状态里，也不需要用户点「连接」。按持有数计数，多个下载
    * 共用同一个内核（见 download-acceleration.ts）。
@@ -107,6 +120,8 @@ interface Session {
   scope: string
   phase: 'connecting' | 'active' | 'stopping'
   line: AccelerationLine | null
+  /** 内核的本机端口。停下后内核还要多留一会儿时（见 holdCoreForDrain）用得上。 */
+  port: number | null
   connectedAt: string | null
   startedMono: number | null
   stoppedMono: number | null
@@ -114,17 +129,30 @@ interface Session {
   pausedMono: number | null
   /** 已经扣掉的睡眠时长，不计入免费时长。 */
   pausedMs: number
+  /** false = 软件替用户连的：不扣免费时长，也不到点断开。 */
+  billed: boolean
   error: string | null
 }
 
 /**
  * 下载临时加速是否计入免费时长。按「不计入」：这次加速是软件为了把包下下来
- * 自己发起的，不是用户点的，把它算进那 20 分钟等于替用户花钱。额度本身仍然
- * 是门槛——用完的账号不再起临时线路——所以这不是一条无限免费的路。
+ * 自己发起的，不是用户点的，把它算进那 20 分钟等于替用户花钱。免费时长用完的
+ * 账号照样起（yoyo 2026-10-01 定）：线路只给本软件的下载用，不改系统代理，
+ * 下载一完就收，替他把工具装上比守住这几分钟更要紧。
  * 改成 true 即可按会话计费（届时 startDownloadRoute 要像 startAcceleration
  * 一样写 startedAt，stopDownloadRoute 要结算 usedMs）。
  */
 export const downloadRouteBillsFreeAllowance = false
+
+/**
+ * 软件替用户连的那次加速（打开 Codex 桌面端时）停下后，内核再留多久才停。
+ * 系统代理照旧当场改回，之后的新请求都直连；只有停下前就已经走在本机端口上的
+ * 连接还靠着内核，最要紧的是 Codex 正在流式返回的那条回复。#772 起用星芒 Key
+ * 的约两分钟就断，第一次提问很可能还没写完，内核一停它就显示「正在重新连接」
+ * 并把这次请求整个重发。十分钟够一条很长的回复写完。
+ * 用户自己点的、计时的加速停下时不留：时长到点就该停。
+ */
+export const automaticSessionDrainMs = 10 * 60_000
 
 /**
  * 主程序没了、辅助进程还原网络设置一直失败时，下一次重试等多久。每轮要起
@@ -144,12 +172,33 @@ function accountTotalMs(entry: AccountUsage): number {
 const legacyVersion1MaximumUsedMs = 3_600_000
 const ledgerLabel = '本机免费加速时长账本'
 const ledgerFailure = '本机测试时长无法读取或保存，请检查本地数据目录后重试。'
-const startFailure = '加速连接失败，请检查线路和网络连接后重试。'
-function connectionFailure(error: unknown): string {
-  if (error instanceof Error && 'code' in error && error.code === 'MACOS_PROXY_AUTHORIZATION') {
-    return 'macOS 网络设置授权未完成，请允许系统授权后重试。'
-  }
-  return startFailure
+const startFailure = '加速没能打开，请再点「开始加速」试一次；还不行就点「查看日志」，把日志发给客服。'
+
+/**
+ * 加速页上开不了加速时只有这一行字，所以每句都说清「卡在哪」和「客户自己能做的下一步」。
+ * 刻意不带端口号、文件路径、错误原文：这句话会跨进程送到界面，还会进托盘菜单（I13），
+ * 细节只留在日志的阶段名里。加速只接管系统的网络设置、不开 TUN，文案里也不许改口。
+ */
+export const accelerationStartFailureMessages: Record<AccelerationStartFailureStage, string> = {
+  'core-architecture': '加速没能打开：加速组件和这台电脑的系统不匹配。请到官网下载适合这台电脑的安装包重新安装。',
+  'core-integrity': '加速没能打开：本机的加速组件不完整或被改动过，常见是安全软件动过它。请重新安装一次星芒；还不行就联系客服。',
+  'core-launch': '加速没能打开：加速组件没有按时启动。请再点「开始加速」试一次；反复这样就完全退出软件（含托盘图标）后重新打开。',
+  'core-blocked': '加速没能打开：加速组件刚要运行就被拦下了，常见是安全软件拦的。到安全软件的拦截记录里把星芒的文件恢复或加入信任，再点「开始加速」。',
+  'core-exited': '加速没能打开：加速组件刚启动就被关掉了，常见是安全软件拦的，或别的加速器占着它要用的位置。放行星芒、关掉别的加速器后，再点「开始加速」。',
+  'core-port': '加速没能打开：这台电脑上加速要用的本机通道被别的程序占满了。关掉别的加速器或下载工具后，再点「开始加速」。',
+  'core-storage': '加速没能打开：本机的加速文件没通过安全检查。请完全退出软件（含托盘图标）后重新打开；还不行就联系客服。',
+  'line-unavailable': '加速没能打开：现在没有能连通的线路。请检查这台电脑能不能正常上网，稍后再点「开始加速」。',
+  'line-unreachable': '加速没能打开：这条线路现在连不通。点「换线路」换一条线路试试。',
+  'runtime-invalid': startFailure,
+  'ledger-write': startFailure,
+  'proxy-authorization': 'macOS 网络设置授权未完成，请允许系统授权后重试。',
+  'proxy-helper': '加速没能打开：改网络设置用的组件不见了，常见是安全软件删了它。请重新安装一次星芒；还不行就联系客服。',
+  'proxy-enable': '加速没能打开：系统不让改网络设置，可能是安全软件或公司电脑的管理规定拦着。放行星芒后再点「开始加速」；公司电脑请找管理员。',
+  unknown: startFailure,
+}
+
+function connectionFailure(error: unknown, phase: AccelerationStartFailurePhase): string {
+  return accelerationStartFailureMessages[classifyAccelerationStartFailure(error, phase)]
 }
 const stopFailure = '加速尚未完全停止，正在保留恢复状态，请再次点击停止。'
 const exitFailure = '加速意外断开了，网络已恢复正常，可以重新连接。'
@@ -199,8 +248,12 @@ export function classifyAccelerationStartFailure(
   if (phase === 'verify') return 'runtime-invalid'
   if (/架构/.test(message)) return 'core-architecture'
   if (/校验失败|Mach-O|不是可执行程序/.test(message)) return 'core-integrity'
-  if (/内核启动失败|内核已退出|内核意外退出/.test(message)) return 'core-launch'
+  if (message === '加速内核未能运行') return 'core-blocked'
+  if (/^加速内核(启动后退出|意外退出)/.test(message)) return 'core-exited'
+  if (message === '加速内核本地端口分配失败') return 'core-port'
+  if (/^加速内核(启动失败|未能及时启动|控制|返回了无效状态|端口校验失败)/.test(message)) return 'core-launch'
   if (/^暂无可用加速线路/.test(message)) return 'line-unavailable'
+  if (/^(所选加速线路|加速线路)/.test(message)) return 'line-unreachable'
   if (/^加速(运行目录|内核|连接配置)/.test(message)) return 'core-storage'
   return 'unknown'
 }
@@ -251,6 +304,15 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   // 下载专用线路：holders 是还在下载的数量，route 是它们共用的那个端口。
   let downloadHolders = 0
   let downloadRoute: { port: number; line: AccelerationLine } | null = null
+  // 不计时的会话停下后内核多留的那一段（见 automaticSessionDrainMs）。端口记在
+  // downloadRoute 上，持有单独记一份，不进 downloadHolders：下载那边一次多余的
+  // stop 不该把它减掉。到点、被接管或作废时放手。
+  let drainHeld = false
+  let cancelDrain: (() => void) | null = null
+  let drainGeneration = 0
+  // 收尾到点后没停掉的内核的重试。单独一格：内核随后自己退出、或下载线路重置时
+  // 收尾的持有会被作废，这份清理却还欠着。
+  let cancelCleanupRetry: (() => void) | null = null
   const lastErrors = new Map<string, string>()
   const lastConflicts = new Map<string, AccelerationConflictKind[]>()
   const lastSessionSeconds = new Map<string, number>()
@@ -265,6 +327,21 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     if (current.startedMono === null) return 0
     const end = current.stoppedMono ?? current.pausedMono ?? monotonicNow()
     return Math.max(0, Math.floor(end - current.startedMono - current.pausedMs))
+  }
+  /** 这次会话从免费时长里扣掉的部分：不计时的会话一分不扣。 */
+  function billedElapsed(current: Session): number {
+    return current.billed ? elapsed(current) : 0
+  }
+  /** 这次会话还能连多久：只有计时的会话会到点，不计时的没有上限。 */
+  function sessionLeftMs(current: Session): number {
+    if (!current.billed) return Number.POSITIVE_INFINITY
+    const entry = usage(current.scope)
+    return accountTotalMs(entry) - entry.usedMs - elapsed(current)
+  }
+  /** 计时的会话按剩余时长定到期；不计时的不定，免得一个无限长的定时器。 */
+  function armExpiry(current: Session) {
+    if (current.billed) arm(sessionLeftMs(current))
+    else clearTimer()
   }
   /**
    * 睡眠那段一律不计时，不管单调钟在睡眠里走不走：Windows 的单调钟跨睡眠照走，
@@ -340,22 +417,23 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     const entry = usage(scope)
     const totalMs = accountTotalMs(entry)
     const totalSeconds = totalMs / 1000
-    const spent = current ? elapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
+    const spent = current ? billedElapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
     const remainingMs = Math.max(0, totalMs - entry.usedMs - spent)
     const error = current?.error ?? recoveryError ?? lastErrors.get(scope) ?? null
     const conflicts = current ? [] : lastConflicts.get(scope) ?? []
     const pendingRecovery = needsRecovery && entry.startedAt !== null
-    const phase = current ? current.phase === 'active' && remainingMs === 0 ? 'stopping' : current.phase
+    const phase = current ? current.phase === 'active' && current.billed && remainingMs === 0 ? 'stopping' : current.phase
       : pendingRecovery ? 'stopping' : remainingMs === 0 ? 'exhausted' : error ? 'error' : 'idle'
     const result: AccelerationState = {
       scope, phase, mode: 'system-proxy', totalSeconds,
       remainingSeconds: Math.ceil(remainingMs / 1000),
-      sessionSeconds: current ? Math.min(totalSeconds, Math.floor(spent / 1000)) : lastSessionSeconds.get(scope) ?? 0,
+      sessionSeconds: current ? Math.min(totalSeconds, Math.floor(elapsed(current) / 1000)) : lastSessionSeconds.get(scope) ?? 0,
       measuredAt: new Date(now()).toISOString(),
       connectedAt: current?.connectedAt ?? (pendingRecovery ? new Date(entry.startedAt!).toISOString() : null),
       line: current?.line ?? null, error,
       entitlementSource, supportedModes: ['system-proxy'],
       ...(conflicts.length ? { conflicts } : {}),
+      ...(current && !current.billed ? { autoStartedBy: 'codex-desktop' as const } : {}),
     }
     return result
   }
@@ -376,8 +454,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   }
   /** Runs before any OS state is touched, so a refused start costs no time and
    *  leaves nothing to undo. A detector that cannot read the platform reports
-   *  nothing, which is the pre-check behavior. */
-  async function detectConflicts(scope: string, ignore: boolean): Promise<boolean> {
+   *  nothing, which is the pre-check behavior. `record` = false 时照样拒绝，
+   *  只是不把冲突留在加速页上：那次连接不是用户点的（见 startSession）。 */
+  async function detectConflicts(scope: string, ignore: boolean, record: boolean): Promise<boolean> {
     if (!options.detectConflicts) return false
     let conflicts: AccelerationConflictKind[] = []
     try { conflicts = await options.detectConflicts() }
@@ -389,6 +468,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       catch { /* Reporting must not change what the user asked for. */ }
     }
     if (ignore) return false
+    if (!record) return true
     lastConflicts.set(scope, conflicts)
     lastErrors.set(scope, accelerationConflictNotice)
     return true
@@ -410,16 +490,79 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   }
   /**
    * 停内核。下载专用线路还有人握着时留着它：一次游戏加速的结束并不代表那边
-   * 的下载也结束了，端口一没就是下到一半的包断在那里。
+   * 的下载也结束了，端口一没就是下到一半的包断在那里。后台连接停下后的收尾
+   * 同理（见 holdCoreForDrain）。
    */
   function stopCore(): Promise<void> {
     return stopStage('core-stop', async () => {
-      if (downloadHolders > 0 && downloadRoute) return
+      if ((downloadHolders > 0 || drainHeld) && downloadRoute) return
       // A previous stop can exit the process yet fail to remove its private
       // config. Retry the idempotent cleanup even when isRunning is false.
       await options.runtime.stop()
       if (options.runtime.isRunning()) throw new Error(stopFailure)
     })
+  }
+  function forgetDrain() {
+    drainHeld = false
+    drainGeneration += 1
+    cancelDrain?.()
+    cancelDrain = null
+  }
+  /** 内核换了、没了或要整个停掉：下载线路和收尾的持有一起作废。 */
+  function forgetCoreHolders() {
+    downloadRoute = null
+    downloadHolders = 0
+    forgetDrain()
+  }
+  /** 收尾放手。返回 true 表示内核已经没人要了，由调用方去停。 */
+  function endDrain(): boolean {
+    if (!drainHeld) return false
+    forgetDrain()
+    if (downloadHolders > 0) return false
+    downloadRoute = null
+    return true
+  }
+  /**
+   * 不计时的会话刚把系统代理改回去：内核先不停，把端口记成下载线路，
+   * 等 automaticSessionDrainMs 再放手。这期间再连同一条线路的直接接管它，
+   * 下载临时加速也接着用它（都走下载线路原有的那几条路）。
+   * 没真正连上过的会话没有在途的连接，内核已经不在的也没什么可留，都照旧马上停。
+   */
+  function holdCoreForDrain(current: Session) {
+    if (current.billed || current.connectedAt === null || current.port === null || current.line === null
+      || drainHeld || closing || disposed || !options.runtime.isRunning()) return
+    downloadRoute ??= { port: current.port, line: current.line }
+    drainHeld = true
+    const generation = drainGeneration
+    cancelDrain = schedule(() => {
+      if (generation !== drainGeneration) return
+      cancelDrain = null
+      void enqueue(async () => {
+        // 到点时下载还握着内核：交给下载去停（stopDownloadRoute）。
+        if (generation !== drainGeneration || !endDrain() || session) return
+        probeNeedsCleanup = true
+        await cleanUpUnownedCore()
+      }).catch(() => undefined)
+    }, automaticSessionDrainMs)
+  }
+  /**
+   * 收尾到点后内核没人要了，按探测留下的内核来清。停不掉时 stopStage 照记 core-stop，
+   * 辅助进程也不算空闲；像会话停不掉时一样五秒后再试，下一次连接、停止、下载、
+   * 检测线路或退出也会顺手再清。
+   */
+  async function cleanUpUnownedCore() {
+    try { await stopSession() } catch { retryCoreCleanupAfter(5000) }
+  }
+  function retryCoreCleanupAfter(milliseconds: number) {
+    cancelCleanupRetry?.()
+    cancelCleanupRetry = schedule(() => {
+      cancelCleanupRetry = null
+      void enqueue(async () => {
+        // 别处已经清掉了，或者又有了会话（建会话前必先清掉）：都不用再试。
+        if (session || disposed || !probeNeedsCleanup) return
+        await cleanUpUnownedCore()
+      }).catch(() => undefined)
+    }, milliseconds)
   }
   async function stopSession() {
     if (!session) {
@@ -438,14 +581,19 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // Keep the core alive until proxy restoration succeeds. Otherwise an
         // incomplete restore could leave every proxied app pointing at a dead port.
         await stopStage('proxy-restore', () => options.proxy.restore())
+        holdCoreForDrain(current)
         await stopCore()
         current.stoppedMono = monotonicNow()
       }
-      const spent = elapsed(current)
+      const spent = billedElapsed(current)
       const totalMs = accountTotalMs(usage(current.scope))
-      await stopStage('ledger-write', () => saveAccount(current.scope,
-        { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
-      lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(spent / 1000)))
+      // 不计时的会话从没写过 startedAt，账本也就没什么要结算的。
+      if (current.billed) {
+        await stopStage('ledger-write', () => saveAccount(current.scope,
+          { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
+      }
+      // 加速页上那句「本次连接」只说他自己连的那一次：后台那次他看不见，时长也不该冒出来。
+      if (current.billed) lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
       lastErrors.delete(current.scope)
       lastConflicts.delete(current.scope)
       session = null
@@ -464,8 +612,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     if (!current || current.pausedMono === null) return
     foldPause(current)
     if (current.phase !== 'active' || !options.runtime.isRunning()) return
-    const entry = usage(current.scope)
-    arm(accountTotalMs(entry) - entry.usedMs - elapsed(current))
+    armExpiry(current)
   }
   async function inspect(scope: string) {
     try { await recover() } catch {
@@ -473,19 +620,94 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       return state(scope)
     }
     wakeSession()
-    if (session && (session.phase === 'active' && !options.runtime.isRunning()
-      || usage(session.scope).usedMs + elapsed(session) >= accountTotalMs(usage(session.scope)))) {
+    if (session && (session.phase === 'active' && !options.runtime.isRunning() || sessionLeftMs(session) <= 0)) {
       const oldScope = session.scope
       const exited = !options.runtime.isRunning()
+      const billed = session.billed
       try {
         await stopSession()
-        if (exited) lastErrors.set(oldScope, exitFailure)
+        if (exited && billed) lastErrors.set(oldScope, exitFailure)
       } catch { arm(5000) }
       if (exited) reportRuntimeInterrupted()
     }
     return state(scope)
   }
 
+  function startSession(scope: string, mode: AccelerationState['mode'], lineId: string | undefined, ignoreConflicts: boolean | undefined, billed: boolean): Promise<AccelerationState> {
+    assertScope(scope)
+    if (lineId !== undefined) assertLineId(lineId)
+    if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
+    return enqueue(async () => {
+      if (closing || disposed) throw new Error('本机加速服务正在关闭。')
+      if (mode !== 'system-proxy') throw new Error('本机开发加速暂不支持 TUN，请关闭 TUN 后重试。')
+      try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
+      if (probeNeedsCleanup) await stopSession()
+      if (session) {
+        if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
+          // 用户自己点「开始加速」时连着的若是软件替他在后台连的那一次（加速页上
+          // 看不见，见 acceleration-service 的 userAccelerationState），停掉它重新
+          // 连一次计时的，从这一刻起归他。时长用完的照旧原样返回，后台那次不动。
+          if (session.billed || !billed || usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
+        }
+        try { await stopSession() } catch { throw new Error(stopFailure) }
+      }
+      lastErrors.delete(scope)
+      lastConflicts.delete(scope)
+      // 软件替用户连的不扣时长，时长用完也照样连（yoyo 2026-09-30 定）。
+      if (billed && usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
+      if (await detectConflicts(scope, ignoreConflicts === true, billed)) return state(scope)
+      // 下载专用线路已经把内核跑起来了：同一条线路直接接管，不重起内核，
+      // 正在进行的下载因此不会断在半路。用户点名了另一条线路才必须重起。
+      // 上一次后台连接停下后还在收尾的内核也一样接管（见下面建会话处）。
+      let adopted: { port: number; line: AccelerationLine } | null = null
+      if (downloadRoute && options.runtime.isRunning() && (!lineId || lineId === downloadRoute.line.id)) {
+        adopted = downloadRoute
+      } else if (downloadRoute) {
+        forgetCoreHolders()
+        try { await options.runtime.stop() } catch { /* 下面的 start 会把失败重新报出来。 */ }
+      }
+      // Persist intent before touching OS state. A crash in the startup gap
+      // is conservatively billed; an ordinary failed start clears it unpaid.
+      // An unbilled session never records intent, so a crash charges it nothing;
+      // proxy restoration on recovery does not depend on the ledger.
+      if (billed) {
+        try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
+        catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
+      }
+      session = { scope, phase: 'connecting', line: null, port: null, connectedAt: null, startedMono: null, stoppedMono: null, pausedMono: null, pausedMs: 0, billed, error: null }
+      // 内核从这一刻起归这次会话，收尾就此结束。放在上面的账本写入之后：那里
+      // 失败就不会有会话，收尾得照旧到点把内核停掉。
+      if (adopted) endDrain()
+      // The user-facing text below collapses every cause into one sentence on
+      // purpose. `phase` is what survives that collapse for the log.
+      let phase: AccelerationStartFailurePhase = 'runtime'
+      try {
+        const result = adopted ? { line: adopted.line, proxyPort: adopted.port } : await options.runtime.start(lineId)
+        phase = 'verify'
+        if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65535 || !options.runtime.isRunning()) throw new Error(startFailure)
+        session.line = { id: result.line.id, name: result.line.name, region: result.line.region, latencyMs: result.line.latencyMs }
+        session.port = result.proxyPort
+        phase = 'proxy'
+        await options.proxy.enable(result.proxyPort)
+        phase = 'verify'
+        if (!options.runtime.isRunning()) throw new Error(startFailure)
+        session.startedMono = monotonicNow()
+        const startedAt = now()
+        session.connectedAt = new Date(startedAt).toISOString()
+        phase = 'ledger'
+        if (billed) await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
+        session.phase = 'active'
+        armExpiry(session)
+        return state(scope)
+      } catch (error) {
+        reportStartFailure(error, phase)
+        // 后台那次连不上只记日志（宿主那边），不在加速页上留一句他没点过的失败。
+        try { await stopSession(); if (billed) lastErrors.set(scope, connectionFailure(error, phase)) }
+        catch { arm(5000) }
+        return state(scope)
+      }
+    })
+  }
   return {
     getAccelerationState(scope) {
       assertScope(scope)
@@ -494,7 +716,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     isIdle() {
       return enqueue(async () => !closing && !disposed && !needsRecovery && recoveryError === null
         && !session && cancelTimer === null && !probeNeedsCleanup
-        && downloadHolders === 0 && !downloadRoute && !options.runtime.isRunning())
+        && downloadHolders === 0 && !drainHeld && !downloadRoute && !options.runtime.isRunning())
     },
     redeemAccelerationCode(scope, code): Promise<AccelerationRedemptionResult> {
       assertScope(scope)
@@ -510,71 +732,17 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // Publish the mark and allowance together only after the atomic write.
         // Failed writes leave both the in-memory balance and expiry untouched.
         await saveAccount(scope, { ...entry, bonusRedeemed: true })
-        if (session?.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
-          arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
+        if (session?.scope === scope && session.phase === 'active' && session.billed && options.runtime.isRunning()) {
+          armExpiry(session)
         }
         return { status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: state(scope) }
       })
     },
     startAcceleration(scope, mode, lineId, ignoreConflicts) {
-      assertScope(scope)
-      if (lineId !== undefined) assertLineId(lineId)
-      if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
-      return enqueue(async () => {
-        if (closing || disposed) throw new Error('本机加速服务正在关闭。')
-        if (mode !== 'system-proxy') throw new Error('本机开发加速暂不支持 TUN，请关闭 TUN 后重试。')
-        try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
-        if (probeNeedsCleanup) await stopSession()
-        if (session) {
-          if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) return state(scope)
-          try { await stopSession() } catch { throw new Error(stopFailure) }
-        }
-        lastErrors.delete(scope)
-        lastConflicts.delete(scope)
-        if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
-        if (await detectConflicts(scope, ignoreConflicts === true)) return state(scope)
-        // 下载专用线路已经把内核跑起来了：同一条线路直接接管，不重起内核，
-        // 正在进行的下载因此不会断在半路。用户点名了另一条线路才必须重起。
-        let adopted: { port: number; line: AccelerationLine } | null = null
-        if (downloadRoute && options.runtime.isRunning() && (!lineId || lineId === downloadRoute.line.id)) {
-          adopted = downloadRoute
-        } else if (downloadRoute) {
-          downloadRoute = null
-          downloadHolders = 0
-          try { await options.runtime.stop() } catch { /* 下面的 start 会把失败重新报出来。 */ }
-        }
-        // Persist intent before touching OS state. A crash in the startup gap
-        // is conservatively billed; an ordinary failed start clears it unpaid.
-        try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
-        catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
-        session = { scope, phase: 'connecting', line: null, connectedAt: null, startedMono: null, stoppedMono: null, pausedMono: null, pausedMs: 0, error: null }
-        // The user-facing text below collapses every cause into one sentence on
-        // purpose. `phase` is what survives that collapse for the log.
-        let phase: AccelerationStartFailurePhase = 'runtime'
-        try {
-          const result = adopted ? { line: adopted.line, proxyPort: adopted.port } : await options.runtime.start(lineId)
-          phase = 'verify'
-          if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65535 || !options.runtime.isRunning()) throw new Error(startFailure)
-          session.line = { id: result.line.id, name: result.line.name, region: result.line.region, latencyMs: result.line.latencyMs }
-          phase = 'proxy'
-          await options.proxy.enable(result.proxyPort)
-          phase = 'verify'
-          if (!options.runtime.isRunning()) throw new Error(startFailure)
-          session.startedMono = monotonicNow()
-          const startedAt = now()
-          session.connectedAt = new Date(startedAt).toISOString()
-          phase = 'ledger'
-          await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
-          session.phase = 'active'
-          arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
-          return state(scope)
-        } catch (error) {
-          reportStartFailure(error, phase)
-          try { await stopSession(); lastErrors.set(scope, connectionFailure(error)) }
-          catch { arm(5000) }
-          return state(scope)
-        }
-      })
+      return startSession(scope, mode, lineId, ignoreConflicts, true)
+    },
+    startAutomaticAcceleration(scope, mode, lineId) {
+      return startSession(scope, mode, lineId, false, false)
     },
     listAccelerationLines(scope) {
       assertScope(scope)
@@ -591,6 +759,12 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         if (closing || disposed) throw new Error('本机加速服务正在关闭。')
         try { await recover() } catch { throw new Error(ledgerFailure) }
         if (session) throw new Error('加速连接进行中，暂不能检测线路。')
+        // 只剩收尾握着内核时，给用户当面点的检测让路：交给探测前的清理去停，
+        // 停不掉也和探测留下的内核一样，由下一次 start / stop / dispose 再清。
+        if (drainHeld && downloadHolders === 0) {
+          endDrain()
+          probeNeedsCleanup = true
+        }
         // 探测要独占内核，而下载专用线路正握着它。此时重起内核会把下载打断。
         if (downloadRoute) throw new Error('正在下载安装包，暂不能检测线路。')
         if (probeNeedsCleanup) await stopSession()
@@ -638,12 +812,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           return { status: 'ready', port: downloadRoute.port }
         }
         // 内核已经不在了，记录也就作废，别让后来的 stop 去减一个不存在的持有。
-        downloadRoute = null
-        downloadHolders = 0
+        forgetCoreHolders()
         try { if (probeNeedsCleanup) await stopSession() } catch { return { status: 'unavailable' } }
-        // 下载不计费（见 downloadRouteBillsFreeAllowance），但额度仍是门槛：
-        // 用完的账号不再起临时线路，免得这里变成一条绕开时长的免费通道。
-        if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return { status: 'unavailable' }
+        // 下载不计费，也不看免费时长还剩多少（见 downloadRouteBillsFreeAllowance）。
         try {
           const result = await options.runtime.start()
           if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65_535
@@ -654,8 +825,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         } catch (error) {
           // 失败照样进日志：这条路用户点不到，不记就完全看不见。
           reportStartFailure(error, 'runtime')
-          downloadRoute = null
-          downloadHolders = 0
+          forgetCoreHolders()
           // 起了一半的内核必须收掉，否则端口留在机器上没人管。
           try { await options.runtime.stop() } catch { /* 停不掉就交给下一次 start / dispose。 */ }
           return { status: 'unavailable' }
@@ -665,7 +835,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     stopDownloadRoute() {
       return enqueue(async () => {
         if (downloadHolders > 0) downloadHolders -= 1
-        if (downloadHolders > 0 || !downloadRoute) return
+        // 后台连接停下后的收尾还握着内核：到点由它去停（见 holdCoreForDrain）。
+        if (downloadHolders > 0 || !downloadRoute || drainHeld) return
         downloadRoute = null
         // 下载期间用户自己开了加速：内核已经归那个会话所有，不能在这里停。
         if (session) return
@@ -677,11 +848,11 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     notifyRuntimeExit: () => enqueue(async () => {
       if (options.runtime.isRunning()) return
       // 内核没了，下载线路的端口也就没了。记录必须跟着作废。
-      downloadRoute = null
-      downloadHolders = 0
+      forgetCoreHolders()
       if (!session || disposed) return
       const scope = session.scope
-      try { await stopSession(); lastErrors.set(scope, exitFailure) }
+      const billed = session.billed
+      try { await stopSession(); if (billed) lastErrors.set(scope, exitFailure) }
       catch { arm(5000); throw new Error(stopFailure) }
       finally { reportRuntimeInterrupted() }
     }),
@@ -704,9 +875,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       return enqueue(async () => {
         if (disposed) return
         await recover()
-        // 退出时下载线路没有豁免：内核必须停干净，端口不能留在机器上。
-        downloadHolders = 0
-        downloadRoute = null
+        // 退出时下载线路和收尾都没有豁免：内核必须停干净，端口不能留在机器上。
+        forgetCoreHolders()
         try { await stopSession() } catch { arm(5000); throw new Error(stopFailure) }
         if (options.runtime.isRunning()) {
           try {
@@ -715,6 +885,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           } catch { arm(5000); throw new Error(stopFailure) }
         }
         clearTimer()
+        cancelCleanupRetry?.()
+        cancelCleanupRetry = null
         disposed = true
       })
     },

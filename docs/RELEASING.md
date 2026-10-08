@@ -113,8 +113,10 @@ macOS 的自动更新不是本程序自己校验的：`electron-updater` 只在 
 （见 `scripts/verify-macos-free-artifacts.cjs` 的 `parseDesignatedRequirement`），叶证书哈希直接钉在
 里面。
 
-所以**换一张签名证书，所有已经装了正式 Mac 包的客户都会失去自动更新**：包能下载完，点「重启并安装」
-那一刻被 Squirrel 拒绝，之后每 3 小时重试一次、一直失败，只能每人手动重新下载安装一次。
+所以**换一张签名证书，所有已经装了正式 Mac 包的客户都会失去自动更新**：包能下载完，到安装那一步被
+Squirrel 拒绝，之后发的版本也是新证书签的，一样过不了。软件也不会定时重试：停在「已下载」时，每 3 小时
+的定时检查直接跳过；重装只是把下好的同一个包再交给 Squirrel、不重新查更新源，装多少次都一样。所以这时
+更新页和首页气泡拿掉安装按钮、只给「打开下载页」，只能每人手动重新下载安装一次。
 
 `scripts/macos-published-signing-identity.cjs` 是已发布签名身份的台账：
 
@@ -165,6 +167,7 @@ CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执�
 - 在 `package.json` 提升版本号，版本必须高于已发布版本。
 - 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。
 - 汇总后把这两个标题改成本次版本号（`未发布` → `0.2.7`，`## Unreleased` → `## 0.2.7 - <日期>`），按需润色文案。`release-notes.md` 的内容会在打包时写入更新清单并显示在客户端更新页面。
+- 客户从旧版升上来、而旧版的更新方式和新版不一样时（比如 0.2.10 没有自动更新，要客户自己点「下载更新」「重启安装」、过一次 Windows 授权窗口），把**怎么装这个更新**写在这一版说明的第一条：旧版客户端的更新页直接显示新版这份说明，这是唯一能教到他们的地方。分片文件名以 `000-` 开头，汇总时就排在最前；客服话术用同一句。
 - `npm run compile` 的最后一步（`scripts/bundle-release-notes.cjs`）会把 `release-notes.md` 顶上那一节写进包内的 `dist-electron/release-notes.json`，客户端更新装完后第一次启动时据此显示「已更新到 x.y.z」和这一版的改动（不走网络）。只有文件第一行等于 `package.json` 版本号时才带内容，否则写 `notes: null`、客户端不显示改动，所以**先改好标题再编译**；`verify-packaged-hardening.cjs` 会核对包里这份文件存在且版本一致。
 - 发布前置检查（`npm run release:preflight`，`release:build` 的第一步）会断言 `release-notes.md` 的第一行等于 `package.json` 的版本号：忘了改标题时门禁直接失败，不会把「未发布」当成版本名发到客户端更新页（审查总表 P-14）。
 - 使用专用 Windows 发布机，系统时间正确，依赖锁文件未被临时改写。
@@ -247,7 +250,7 @@ git push origin v0.2.7
 
 约定三条：tag 名固定为 `v` 加 `package.json` 里的版本号；用附注 tag（`-a`）而不是轻量 tag，让 tag 自带打标时间和打标人；tag 推上去之后不移动、不删除。本次产物有问题时提升版本号重新发布，按第 8 节回滚，不要让同一个 tag 指向另一个 commit。
 
-走 `publish-release` 工作流发布时这一步是自动的，但建出来的是**轻量 tag**：那条作业用的 `GITHUB_TOKEN` 是 GitHub App 令牌，`git push` 一个新的 ref 会被「没有 `workflows` 权限就不许创建或更新 `.github/workflows/*`」这条服务端规则拒掉，而 `workflows` 不在 `GITHUB_TOKEN` 可以被授予的权限里。所以那边改成让 `gh release create --target <出包的 commit>` 由服务端建 ref。手工发布时仍然用附注 tag。
+走 `publish-release` 工作流发布时这一步是自动的，但建出来的是**轻量 tag**，而且是**一开始就建好**，不是发完才打。原因是那条作业用的 `GITHUB_TOKEN` 是 GitHub App 令牌，没有、也拿不到 `workflows` 权限，GitHub 对它有一条服务端规则：要建的 ref、建 Release 时指定的提交（`target_commitish`），只要那个提交里 `.github/workflows/` 下的文件和 main 对不上就拒绝。`git push` 新 ref 撞过一次（0.2.8）；0.2.14 出包之后 main 合进了改工作流的 #774、#776，收尾时 `gh release create --target <出包的 commit>` 两次都是 HTTP 403，tag 和 Release 只能手工补。现在的做法：第一个作业 `release-tag` 用 API 把 tag 建在本次出包的 commit 上（触发那一刻它就是 main 的最新提交），出包作业都等它；收尾建 Release 时不再传 `--target`，挂到这个已有的 tag 上。上面「不移动、不删除」只有一个例外：工作流占好 tag 之后那一版没发出去就取消了，重新触发时 `release-tag` 会把它挪到新的 commit 上（见下面「触发时就占 tag」）。手工发布时仍然用附注 tag。
 
 #### 补打历史版本的 tag
 
@@ -277,13 +280,30 @@ git push origin v0.2.6
 工作流在 Actions 页面选 **publish-release**，点 Run workflow，填两项：
 
 - **要发布的版本号**：必须与 `package.json` 完全一致，对不上直接失败（防误发）。
-- **这次发布哪些平台的包**：`both` / `windows` / `macos`。
+- **这次发布哪些平台的包**：`all`（默认，Windows、macOS、Linux）/ `both`（和原来一样，只有 Windows 与 macOS）/ `windows` / `macos` / `linux`。
 
-然后它会：出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`** → 两个平台各跑一次 `update:verify-feed` → 给出包的 commit 打 tag、建 GitHub Release。
+然后它会：先把这一版的 tag 占在本次出包的 commit 上（见下面「触发时就占 tag」）→ 出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ 出 Linux 的 x64 与 arm64 两个 deb（见下面「Linux 开关」）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`（以及 Linux 的两份清单）** → 每个平台各跑一次 `update:verify-feed` → 在占好的 tag 上建 GitHub Release。
+
+**Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
+
+- 不是 `true`（包括没建这个变量，现在就是没建）：publish 作业不下载 Linux 的包，客户看不到任何 Linux 的东西；Linux 两个作业红了**不代表这次发布失败**，也不挡 Windows / macOS；只选 `linux` 时 publish 作业整个跳过，不会停下来等批准。Linux 包留在那次运行的 Actions artifact（`linux-release-<架构>-<版本>`）里 14 天，可以下下来装机验收。
+- 是 `true`：Linux 和别的平台一样，这次选了 Linux 而 Linux 作业没有成功（失败、超时被取消都算）就不发；两个架构的清单必须一起到，只到一个就在上传前停下。
+- 打开：仓库 **Settings → Secrets and variables → Actions → Variables → New repository variable**，Name 填 `XINGMANG_PUBLISH_LINUX`，Value 填 `true`（GitHub 比较时不分大小写，`TRUE`、`True` 也算打开）。关掉就删掉它，或改成 `false` 这类不是 true 的值。第一次对外发 Linux 版之前要在真机上过一遍（`docs/LINUX.md`）。已经发过 Windows / macOS 的版本，打开开关后可以在**同一个 commit** 上再点一次 Run workflow、选 `linux` 补发。
+- 打开以后发版尽量选 `all`，让三个平台停在同一个版本。只发一个平台会让别的平台落后，之后要回滚到比落后平台还新的版本时，rollback-release 会在第一步停下（某个平台线上比要退回的版本还旧，见 `docs/SERVICE-STATUS.md`）。
+- Linux 两个作业不读任何 secret、不挂 release 环境，所以不会多一次批准。
 
 这个顺序是发布正确性的一部分，不是风格问题：清单先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。`scripts/publish-workflow-config.test.cjs` 把它钉住了。
 
-上传之前还有一道关（#493，`scripts/publish-guard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 可以；某个平台已经发过这个版本，要重发就先提升版本号。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
+**触发时就占 tag。** 第一个作业 `release-tag` 先看这一版的 tag 该建、该留还是该挪（判断逻辑在 `scripts/release-tag-plan.cjs`），再照做，出包作业都等它。它是批准之前唯一拿着写权限的作业，所以不装任何依赖，只跑 `gh`、`curl` 和仓库里两个不依赖第三方包的脚本。通常触发后一两分钟就跑完；排在前一次发布后面时，要等那一次跑完才轮到它。几种情况：
+
+- 这个版本号已经从别的 commit 发过（GitHub 上有它的 Release，或者线上清单已经是它）、线上清单已经比它高、或者它在撤回名单里：直接停下，不出包、不用批。原来要等一个多小时出完包、批过一次，到上传前那道关才发现。同一个 commit 上重跑、补发另一个平台照常放行。
+- 上一次触发占了 tag、没发出去就取消了（补进来重出包），合进修复后从 main 重新触发：tag 会挪到新的 commit 上。挪之前同样要确认那一版没有 Release、线上清单都比它旧。
+- 这一步报「GitHub 不让在 … 上建 …」：触发之后、轮到它之前，main 又合进了改工作流的提交。什么都还没发，从最新的 main 重新触发就好。
+- 正式发布要从 main 触发，从别的分支或 tag 触发直接拒绝，免得 tag 占在一个发不出去的 commit 上。只选 `linux` 而 Linux 开关没开时不占 tag。
+- 出包期间有人把 tag 删了：上传前那道关检查都过了以后先补建，再往线上传；补建不了就停下，线上什么都不改。
+- 取消之后改了版本号再发，旧版本号的 tag 会留在仓库里，指向一个没发出去的 commit。它不影响发布；要清理就在仓库的 Tags 页面手动删掉。
+
+上传之前还有一道关（#493，`scripts/publish-guard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 或 Linux 可以；某个平台已经发过这个版本，要重发就先提升版本号。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
 
 **一次发布要批准两次。** 读 `.p12` 的 macOS 出包作业和上传的 publish 作业都挂 `environment: release`，运行会各停一次等你按 Approve。第一次批准之后什么都还没有对外发生，产物只躺在 Actions artifact 里——把包下下来装机验收，过了再批第二次。这两下就是本节开头说的「明确发布授权」。
 
@@ -313,6 +333,12 @@ git push origin v0.2.6
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
 `.p12` 只能从钥匙串里导出、用 GitHub 的 secret 输入框直接粘，**不要经过任何聊天、工单或邮件**：那份私钥泄露等于别人能签出一个客户端会当成「同一发布者」的更新包。`XINGMANG_MAC_SIGNING_SHA256` 填的必须是 2.2 里登记的那张已发布证书的指纹，换一张证书会在签名预检那一步直接失败。
+
+### 可选的 COS 国内文件分发同步
+
+配置 `XINGMANG_COS_SYNC_ENABLED=true` 及受限的 COS 上传凭据后，publish 作业建好 GitHub Release，同一次运行里单独的 `cos-sync` 作业接着把本次完整发布产物同步到 COS：挂 `cos-sync` 环境，不多一次批准，最长跑 330 分钟。它失败不影响更新源和 GitHub Release；到运行页面单独重跑 `cos-sync` 这一个作业（Re-run this job），已经传好的文件不再上传。别点 Re-run failed jobs：运行里还有别的作业红着时，它会把 publish 也带着重跑、再要一次批准。`cos-sync` 只同步 publish 当时实际发了的平台，之后改了 Linux 开关再重跑也不会多出 Linux。同步没传完时这条工作流的下一次发布会排队等它；着急就在上一次运行页面点 Cancel workflow 停掉同步，新版本同步完会把 COS 的 latest 换成新版。独立工作流也可以定时同步官方 ChatGPT 安装包。环境、权限、文件校验、断网重试、全球加速与首次运行步骤见 [COS-SYNC.md](COS-SYNC.md)。
+
+这条可选链路提供独立下载索引，尚未接入既有客户端更新源、R2 撤回与回滚；不能用它绕过本手册中的正式发布批准或 Linux 分发开关。
 
 ### Codex Desktop 国内镜像
 
@@ -347,12 +373,33 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 
 ## 6. 客户端更新行为
 
-- 正式包默认在启动页检查一次更新；用户可在设置中关闭该启动预检。
-- 启动检查发现新版本后自动下载，下载进度显示在启动页；下载校验完成后约 300ms 自动调用安装并重启。
-- 启动检查等待上限为 8 秒。超时后先显示主界面，但检查请求不会取消；若后台稍后发现版本，仍继续自动下载、校验和重启安装。
-- 正式包运行期间每 3 小时检查一次。定时检查只报告新版本，不自动下载；用户点击下载后，已校验的下载仍会自动重启安装。
-- 关闭“启动时检查主程序更新”只跳过启动预检，不影响运行期间的 3 小时检查。
-- 开发态默认禁用更新；设置 `XINGMANG_UPDATE_DEV=1` 后只允许检查与下载，安装始终被服务端拒绝。
+只有用发布模式（`XINGMANG_UNSIGNED_RELEASE=1`、`XINGMANG_MAC_FREE_RELEASE=1`）打的包开着更新，`package-for-testing` 出的测试包也开着；普通 `npm run build` 和 `XINGMANG_LOCAL_BUILD=1` 打的包关着（`xingmangLocalBuild`）。下面说的是开着时的行为，细节以 `electron/updater.ts`、`electron/auto-update-install.ts`、`electron/main.ts` 为准。
+
+**什么时候查**
+
+- 打开后查一次：主界面出来以后才查，不在启动页等。「启动时检查新版本」默认开，关掉的只是这次检查。8 秒没查完，界面说「网络有点慢……在后台接着查」，请求接着跑；一个字节也收不到满 45 秒才掐掉，下次检查重新发。开机自启那次，等用户第一次打开窗口、或者启动满 3 分钟再查。
+- 运行期间每 3 小时查一次，不管「启动时检查新版本」开没开；已经下好（包括装失败）时跳过。
+- 状态文件（`service-status.json`，见 `docs/SERVICE-STATUS.md`）打开时读一次，之后每 15 分钟一次（维护中 5 分钟）。它把 `minimumVersion` 抬到当前版本以上时，马上补查一次。
+
+**下载**
+
+- 「自动更新」默认开（只有用户关掉时才写进配置）。开着时，打开时查到的、定时查到的、打开开关时已经查到的新版本都在后台下载；关着时只提示，用户点了才下。Windows 的无签名通道 2026-09-25 起也跟这个开关走。
+- 进度在首页气泡和更新页。每次下完都复核 SHA-512，对不上算下载失败。磁盘不够（安装包的 3 倍、至少 300 MB，不知道包多大按 600 MB）就不下，给「仍要下载」。
+- 分批放量只管自动检查，用户在界面上点的检查不受限；撤回名单里的版本谁都不给，下载中或下好以后被撤回的也收回。
+
+**安装**：下好以后软件自己从不当场装（以前「下载校验完约 300ms 自动安装重启」那条已经没有了，见全面检测 Q42），装的时机只有下面几种。
+
+- 用户在更新页点「重启安装」再点「确认重启安装」，或者从托盘菜单装，「自动更新」开没开都行。
+- 「自动更新」开着：用户退出时直接装（同一个版本只自动试一次）。上次运行就下好的版本，下次打开时（开始查更新后 2 分钟内认出来）先预告 5 秒再装。开机自启、窗口一直没打开过时，Mac 上程序所在位置当前用户能写、又没连着加速，就在后台悄悄装；Windows 等用户第一次打开窗口，再预告再装；其余留到退出。
+- 「自动更新」关着：打开时不装，退出时问「顺手装上吗？」（安装并退出 / 先退出，下次再装）。
+- 系统关机、重启、注销时不装也不问，下次打开照常自动装。自动装过一次没装上（授权窗口点了「否」、安装程序没起来），下次打开说「新版本上次没装上」，之后只给「重新安装」，不再自动装，退出时也不再问。
+- Windows 安装包装在「所有用户」目录下，每次装都弹授权窗口。账号不是管理员的电脑照样自动下载，但从不自动装、退出时也不问，更新页写明要有管理员账号的人来点；「自动更新」关着时，退出照旧问。
+- Mac 交给 Squirrel.Mac 装。签名身份对不上（见 2.2）报 `UPDATE_SIGNATURE_REJECTED`，只给「打开下载页」。
+- Linux 只有发布用的 deb 开着更新：下载跟「自动更新」走，但从不自动装，退出时每次都问（关掉并安装 / 先退出，下次再装）。装的时候用系统的 `/usr/bin/xdg-open` 打开下好的 .deb，用户在系统安装窗口里输开机密码，装完从应用菜单自己重新打开。别的装法只给「打开下载页」。
+
+**必须更新**：状态文件的 `minimumVersion` 高于当前版本时，盖一层关不掉的提示，用户点一次「立即更新」就接着查、下、装，不受分批放量限制；走不通时给「打开下载页」。Linux 只在更新目录已经给了够得上最低版本的新包时才拦。
+
+**开发态**：没打包的开发版默认关。设 `XINGMANG_UPDATE_DEV=1` 后能查、能下（读 `dev-app-update.yml`，定时检查也跑），装被主进程拒绝（「开发环境禁止执行安装更新」），打开和退出时也不装，也没有「必须更新」那层。这个变量打开不了打包时关掉的本地包；用 `XINGMANG_RELEASE` 或 `XINGMANG_MAC_FREE_RELEASE` 打包时设了它，直接报错。
 
 ## 7. 开发态更新验证
 
@@ -384,7 +431,7 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 - 若新 `latest.yml` 已发布但验收失败，原子恢复旧 `latest.yml`。保留新产物用于调查，不要让它继续被元数据引用。
 - 不得用修改后的同版本安装程序覆盖线上文件。任何二进制变化都必须提升版本并重新生成 `latest.yml`。
 
-## 8. 崩溃上报的 source map（暂未接入）
+## 9. 崩溃上报的 source map（暂未接入）
 
 打包产物经过 `scripts/minify-electron.cjs` 压缩，Sentry 后台看到的堆栈因此是压缩后的行列号。
 接上 source map 之后才能直接定位到源文件。这一步**当前没有做**，因为它需要一个 Sentry

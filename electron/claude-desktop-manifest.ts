@@ -1,6 +1,7 @@
 import path from 'node:path'
 import os from 'node:os'
 import { runCommand, trustedCommandEnvironment } from './command-runner'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 export interface ClaudeDesktopStoreVirtualization {
@@ -48,13 +49,20 @@ function parseVirtualization(value: unknown, windowsBuild: number): ClaudeDeskto
  * every platform instead of by cold-starting powershell.exe, which is what kept outlasting the
  * Windows runner's budget (#244, run 36042396731). The path arrives base64-encoded; `version` and
  * `architecture` come from `storeExecutablePattern`, which admits only digits, dots and three
- * fixed architecture names.
+ * fixed architecture names. ConvertTo-Json's module is imported by name: under
+ * trustedCommandEnvironment() an autoloaded cmdlet costs the whole System32 module scan, longer
+ * than the 15 s this gets (see buildPowerShellModuleImportStatement).
  */
+export const claudeDesktopPowerShellModules = ['Microsoft.PowerShell.Utility'] as const
+
+export const claudeDesktopPowerShellTimeoutMs = 15_000
+
 export function buildClaudeDesktopManifestInspectionScript(manifestPath: string, version: string, architecture: string): string {
   const encodedPath = Buffer.from(manifestPath, 'utf16le').toString('base64')
   return String.raw`
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(claudeDesktopPowerShellModules)}
 $manifestPath=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}'))
 if(([IO.File]::GetAttributes($manifestPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'manifest-reparse-point'}
 $stream=[IO.File]::Open($manifestPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
@@ -108,7 +116,7 @@ export async function inspectClaudeDesktopStoreVirtualization(options: ClaudeDes
     const result = await (options.execute ?? runCommand)({
       executable: (options.resolvePowerShell ?? resolveWindowsPowerShellExecutable)(),
       argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    }, { env: trustedCommandEnvironment(), trustedOnly: true, windowsHide: true, timeoutMs: 15000, maxOutputBytes: 512 * 1024 })
+    }, { env: trustedCommandEnvironment(), trustedOnly: true, windowsHide: true, timeoutMs: claudeDesktopPowerShellTimeoutMs, maxOutputBytes: 512 * 1024 })
     return parseVirtualization(JSON.parse(result.stdout.replace(/^\uFEFF/, '')), windowsBuild)
   } catch {
     throw new Error('Claude Desktop 商店版安装包清单无法安全读取，未确认配置目录，请重新检测或修复安装')

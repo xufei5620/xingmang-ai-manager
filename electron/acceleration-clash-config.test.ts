@@ -216,4 +216,32 @@ describe('buildIsolatedMihomoConfig', () => {
     expect(config.proxies[0]).not.toHaveProperty('dialer-proxy')
     expect(config.proxies[0].name).toBe('line-1')
   })
+
+  it('routes the given hosts direct ahead of the catch-all line rule', () => {
+    const profile = parseClashAccelerationProfile(source())
+    const config = parse(buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: ['xm.solov.cc', 'api.solov.cc', 'xm.solov.cc'] }))
+    expect(config.rules).toEqual(['DOMAIN,xm.solov.cc,DIRECT', 'DOMAIN,api.solov.cc,DIRECT', 'MATCH,XINGMANG'])
+  })
+
+  it('refuses direct hosts that are not plain lowercase DNS names', () => {
+    const profile = parseClashAccelerationProfile(source())
+    for (const host of ['127.0.0.1', 'bad_host.example.com', 'a.com,DIRECT\n- MATCH', 'Xm.Solov.cc', '']) {
+      expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: [host] })).toThrow('加速直连地址无效')
+    }
+    const many = Array.from({ length: 33 }, (_, index) => `h${index}.example.com`)
+    expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: many })).toThrow('加速直连地址过多')
+  })
+
+  it('routes literal IP endpoints as exact CIDRs without accepting rule input', () => {
+    const profile = parseClashAccelerationProfile(source())
+    const config = parse(buildIsolatedMihomoConfig(profile, { mixedPort: 27901,
+      directHosts: ['xm.solov.cc'], directIps: ['38.147.105.28', '2001:db8::1', '38.147.105.28'] }))
+    expect(config.rules).toEqual(['DOMAIN,xm.solov.cc,DIRECT', 'IP-CIDR,38.147.105.28/32,DIRECT,no-resolve',
+      'IP-CIDR6,2001:db8::1/128,DIRECT,no-resolve', 'MATCH,XINGMANG'])
+    for (const ip of ['38.147.105.28/24', 'xm.solov.cc', '38.147.105.28,DIRECT', '[2001:db8::1]', '']) {
+      expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directIps: [ip] })).toThrow('IP 地址无效')
+    }
+    const many = Array.from({ length: 33 }, (_, index) => `192.0.2.${index + 1}`)
+    expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directIps: many })).toThrow('加速直连地址过多')
+  })
 })

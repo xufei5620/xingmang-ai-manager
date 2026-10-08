@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OperationErrorDialog, operationErrorActions } from './OperationErrorDialog'
+import { toolCertificateMessages } from '../../../../electron/network-failure'
+import { OperationErrorDialog, operationErrorActions, supportFailureOf } from './OperationErrorDialog'
 
 describe('renderer-v2 operation error dialog', () => {
   it('leads with the catalog heading and keeps the backend sentence underneath', () => {
@@ -13,6 +14,16 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toContain(raw)
     expect(markup).toContain('operation-error-retry')
     expect(markup).toContain('operation-error-log')
+  })
+
+  it('draws 重置 Codex beside retry when the Codex window never appeared', () => {
+    const raw = 'Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。'
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('operation-error-retry')
+    expect(markup).toContain('operation-error-resetCodexDesktop')
+    expect(markup).toContain('重置 Codex')
   })
 
   it('gives an unrecognised failure the fallback buttons instead of only 返回', () => {
@@ -59,6 +70,23 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toContain(directory)
   })
 
+  it('names the config file and offers retry and support instead of the install directory when a config write is refused', () => {
+    // 已知29：改用当前账号、重新写入 Key 写的是配置文件，安装目录跟它没关系，不出「复制路径」。
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件'"
+    const directory = 'C:\\Users\\peaker\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code'
+    const failure = { message: raw, tool: 'claude' as const, target: 'config' as const, retry: () => undefined }
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={failure} installDirectory={directory} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('写不进配置文件')
+    expect(markup).toContain('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
+    expect(markup).not.toContain('写不进安装目录')
+    expect(markup).not.toContain('operation-error-copyPath')
+    expect(markup).not.toContain(directory)
+    expect(operationErrorActions(failure, directory).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
+    expect(supportFailureOf(failure, new Date(0)).reason).toBe('写不进配置文件')
+  })
+
   it('hides 复制路径 when no directory is known, rather than copying an empty string', () => {
     const raw = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
     const markup = renderToStaticMarkup(
@@ -75,5 +103,63 @@ describe('renderer-v2 operation error dialog', () => {
     expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['log'])
     expect(operationErrorActions({ message: permission }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
       .toEqual(['copyPath', 'log'])
+  })
+
+  it('offers to replace an outdated Node.js as the way out, and 找客服 where it cannot', () => {
+    const raw = `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}`
+    const failure = { message: raw, retry: () => undefined }
+    expect(operationErrorActions(failure, null, true).map((action) => action.id)).toEqual(['replaceNode', 'retry', 'log'])
+    // Mac 上换不了：重试只会撞同一个错，出口是找客服，不能是一颗按了没用的按钮。
+    expect(operationErrorActions(failure, null, false).map((action) => action.id)).toEqual(['retry', 'log', 'support'])
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={failure} canReplaceNode onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('换成新版 Node.js')
+    expect(markup).not.toContain('安装卸载')
+    // 换 Node.js 才是出路，它当主按钮，重试退到次要。
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-replaceNode"/)
+    expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-retry"/)
+  })
+
+  it('turns a swallowed English original into the catalog reason and folds the original away', () => {
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', action: '打开 Codex 桌面端', detail: 'EBUSY: resource busy or locked' }}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('工具正在运行')
+    expect(markup).toContain('文件被占用')
+    expect(markup).toContain('给客服看的原话')
+    expect(markup).not.toMatch(/<details open/)
+  })
+
+  it('keeps a reason line and opens the original when nothing recognises it', () => {
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' }}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('操作没有完成')
+    expect(markup).toContain('operation-error-reason')
+    expect(markup).toContain('原因：')
+    expect(markup).toMatch(/<details open=""[^>]*data-testid="operation-error-raw"/)
+    expect(markup).toContain('spawn ENOSYS')
+    // 目录里 unknown 那句「已自动撤回」从没验证过，不许再上屏。
+    expect(markup).not.toContain('已自动撤回')
+  })
+
+  it('puts 复制给客服 right before 找客服 once the caller knows who the user is', () => {
+    const support = { signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.11', os: 'win' as const }
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' }} support={support}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toMatch(/operation-error-copySupport[\s\S]*operation-error-support"/)
+    expect(renderToStaticMarkup(<OperationErrorDialog failure={{ message: 'x' }} onClose={() => undefined} onAction={() => undefined} />))
+      .not.toContain('operation-error-copySupport')
+  })
+
+  it('builds the support failure from the recognised heading', () => {
+    const at = new Date(2026, 8, 29, 14, 37)
+    expect(supportFailureOf({ message: '打开 Codex 桌面端没有完成', action: '打开 Codex 桌面端', detail: 'ENOSPC' }, at))
+      .toEqual({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '磁盘空间不够', detail: 'ENOSPC' })
   })
 })

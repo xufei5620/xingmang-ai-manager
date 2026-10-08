@@ -4,7 +4,10 @@ import {
 } from './realm-account'
 import type { RealmAccountVault, RealmLoginHintSummary } from './realm-account-vault'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
-import type { NewApiLoginInput, NewApiLoginResult, NewApiPersistableSession, NewApiSessionState } from './new-api-client'
+import {
+  NewApiNetworkError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError,
+  type NewApiLoginInput, type NewApiLoginResult, type NewApiPersistableSession, type NewApiSessionState,
+} from './new-api-client'
 import { savedAccountId, type SavedAccountSummary } from './saved-accounts'
 
 export type RealmAccountSiteId = 'solov' | 'solov-api'
@@ -12,6 +15,8 @@ export interface RealmAccountSessionState extends NewApiSessionState {
   siteId: RealmAccountSiteId
   realmId: AccountRealmId
   capabilities: RelayBackendCapabilities
+  /** 这台电脑没法安全保存登录（见 resolveCredentialPersistence）：登录只留到软件关掉。 */
+  sessionOnly?: true
   /** 只在开机恢复因为联不上而搁着时出现：登录还在本机，等下一次重试。 */
   restoring?: { account: { siteId: RealmAccountSiteId; userId: number }; retrying: true }
 }
@@ -19,6 +24,7 @@ export interface RealmAccountLoginResult extends NewApiLoginResult {
   siteId: RealmAccountSiteId
   realmId: AccountRealmId
   capabilities: RelayBackendCapabilities
+  sessionOnly?: true
 }
 export interface RealmAccountClientHandle {
   client: RelayBackendClient
@@ -36,6 +42,8 @@ export interface RealmAccountServiceOptions {
   /** Drain the host's real work before preparing a different identity. */
   quiesce(): Promise<void>
   prepareTimeoutMs?: number
+  /** 开机恢复第一次超时后，隔多久悄悄再试一次。缺省 3 秒；0 = 立即再试。 */
+  startupRetryDelayMs?: number
   onChanged?(siteId: RealmAccountSiteId, session: RealmAccountSessionState): void
   legacy?: {
     list(): Promise<SavedAccountSummary[]>
@@ -49,6 +57,11 @@ export interface RealmAccountService {
   assertReady(): void
   getPublicClient(siteId: RealmAccountSiteId): RelayBackendClient
   login(input: NewApiLoginInput & { siteId?: RealmAccountSiteId }): Promise<RealmAccountLoginResult>
+  /**
+   * 登录抛出 NewApiTwoFactorRequiredError 后的第二步。flow token 只存在这里的内存里，
+   * 渲染层只交验证码；没有待验证的登录或已过期都抛 NewApiTwoFactorExpiredError。
+   */
+  completeTwoFactorLogin(code: string): Promise<RealmAccountLoginResult>
   logout(): Promise<void>
   listSavedAccounts(): Promise<SavedAccountSummary[]>
   switchSavedAccount(id: string): Promise<RealmAccountSessionState>
@@ -77,6 +90,15 @@ function restoreMayRecover(error: unknown): boolean {
   return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'ACCOUNT_LIMIT', 'UNSUPPORTED'].includes(error.code))
 }
 
+// 只认「等满了没回话」：联不上、维护这些几秒内不会好，照旧交给 30 秒那一轮。
+function restoreTimedOut(error: unknown): boolean {
+  if (error instanceof RealmAccountError) return error.code === 'TIMEOUT'
+  return error instanceof NewApiNetworkError && error.reason === 'timeout'
+}
+
+// 两个账号客户端单个请求最多等 10 秒，再留 2 秒给换来的令牌落库（见 restoreAllowingOneTimeout）。
+const startupRetryMinimumBudgetMs = 12000
+
 /** Promote the authenticated client itself: rotating cookies are never restored twice. */
 export function createRealmAccountService(options: RealmAccountServiceOptions): RealmAccountService {
   let active: RuntimeHandle
@@ -88,8 +110,13 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   let migration: Promise<void> | undefined
   let restoring: { siteId: RealmAccountSiteId; userId: number } | null = null
   let stalled: { siteId: RealmAccountSiteId; userId: number } | null = null
+  // At most one password-verified login waits for its second factor. A new
+  // login attempt, a sign-out or the flow's own expiry drops it.
+  let twoFactor: { siteId: RealmAccountSiteId; identifier: string; flowToken: string; expiresAt: number } | null = null
   const prepareTimeoutMs = options.prepareTimeoutMs ?? 30000
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs < 1 || prepareTimeoutMs > 120000) throw new RealmAccountError('INVALID')
+  const startupRetryDelayMs = options.startupRetryDelayMs ?? 3000
+  if (!Number.isSafeInteger(startupRetryDelayMs) || startupRetryDelayMs < 0 || startupRetryDelayMs > 10000) throw new RealmAccountError('INVALID')
   const publicClients = new Map<RealmAccountSiteId, RelayBackendClient>()
   const publicMethods = new Set<keyof RelayBackendClient>([
     'getLegalDocument', 'sendEmailVerification', 'register',
@@ -103,7 +130,8 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     if (busy) throw new RealmAccountError('BUSY')
   }
   function metadata(handle = active) {
-    return { siteId: handle.siteId, realmId: realmForExplicitSite(handle.siteId), capabilities: handle.client.capabilities }
+    return { siteId: handle.siteId, realmId: realmForExplicitSite(handle.siteId), capabilities: handle.client.capabilities,
+      ...(options.vault.sessionOnly ? { sessionOnly: true as const } : {}) }
   }
   function session(): RealmAccountSessionState {
     const state = { ...active.client.getSessionState(), ...metadata() }
@@ -260,7 +288,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     // 重新输密码登录同一个账号（#476）：新登录是服务端的一个新会话，本机账号库里这个
     // 账号原来那份凭据马上被覆盖，旧会话从此没人能用也没人去注销，攒到 50 个就登不进了。
     // 所以提交成功后把它注销掉。切换已保存账号、开机恢复用的就是库里那份，不能动。
-    const stored = fresh ? await options.vault.get(saved).catch(() => null) : null
+    // 读不出库里原来那份就不往下写：写了就把它盖掉，那个旧会话再也没人能注销（#476
+    // 复核 F05）。这里报错后 login 的 finally 会把刚登上的新会话注销，本机什么都没变。
+    const stored = fresh ? await options.vault.get(saved).catch(() => { throw new RealmAccountError('STORAGE') }) : null
     await options.vault.activate(saved, identifier)
     // No await between durable commit and the synchronous pointer swap.
     const previous = active
@@ -286,11 +316,20 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       // this machine already recorded for the identifier; a rejection ends the
       // attempt. Probing the other backend with the same secret would hand a
       // password the user only ever meant for one site to both of them.
+      twoFactor = null
       const siteId = selected ?? await options.vault.preferredLoginSite(captured.identifier) ?? 'solov'
       const candidate = createHandle(siteId)
       try {
-        const result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
-          ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
+        let result: NewApiLoginResult
+        try {
+          result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
+            ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
+        } catch (error) {
+          if (error instanceof NewApiTwoFactorRequiredError) {
+            twoFactor = { siteId, identifier: captured.identifier, flowToken: error.flowToken, expiresAt: error.expiresAt }
+          }
+          throw error
+        }
         await promote(candidate, undefined, captured.identifier, true)
         return { ...result, ...metadata() }
       } finally {
@@ -303,8 +342,38 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       }
     }, true)
   }
+  async function completeTwoFactorLogin(code: string): Promise<RealmAccountLoginResult> {
+    const pending = twoFactor
+    if (!pending || pending.expiresAt <= Date.now()) { twoFactor = null; throw new NewApiTwoFactorExpiredError() }
+    return transition(async () => {
+      if (twoFactor !== pending) throw new NewApiTwoFactorExpiredError()
+      const candidate = createHandle(pending.siteId)
+      try {
+        const complete = candidate.client.completeTwoFactorLogin
+        if (!complete) { twoFactor = null; throw new NewApiTwoFactorExpiredError() }
+        let result: NewApiLoginResult
+        try { result = await prepare(() => complete.call(candidate.client, { flowToken: pending.flowToken, code })) }
+        catch (error) {
+          // 输错、限流都还能接着输：服务端只在验证通过后才作废 flow token。
+          if (error instanceof NewApiTwoFactorExpiredError) twoFactor = null
+          throw error
+        }
+        // 服务端这时已经作废了 flow token；后面存本机失败也只能从输密码重来。
+        twoFactor = null
+        await promote(candidate, undefined, pending.identifier, true)
+        return { ...result, ...metadata() }
+      } finally {
+        // Same as login(): a server session this machine failed to keep is ended at once.
+        if (active !== candidate) {
+          if (candidate.client.getSessionState().authenticated) endServerSession(candidate)
+          dispose(candidate)
+        }
+      }
+    }, true)
+  }
   async function logout(): Promise<void> {
     return transition(async () => {
+      twoFactor = null
       const replacement = createHandle(active.siteId)
       // 先把本机账号库里的这份凭据删掉再注销服务端：本机删不掉（存储出错）时
       // 退出整体失败、登录照旧可用，不能出现本机还「登着」而服务端已经作废的状态。
@@ -341,7 +410,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       const owner = Number.isSafeInteger(userId) && userId > 0 ? { siteId: site(accountRealms[saved.realmId].siteId), userId } : null
       restoring = owner
       try {
-        try { if (await restore(saved)) return true } catch (error) {
+        try { if (await restoreAllowingOneTimeout(saved)) return true } catch (error) {
           // 只有服务明确说登录失效（401）才清掉本机登录。联不上、维护、超时都不是
           // 凭据的问题：登录留着，记下来等重试，界面也不按「没登录」处理。
           if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') {
@@ -356,6 +425,30 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
         return false
       } finally { restoring = null }
     })
+  }
+  // 线路差的电脑上，账号服务偶尔有一次请求十秒没回、下一次又好了（A014 实测两个半
+  // 小时里约四次撞一次）。开机恢复只发一两次请求，撞上就要挂「暂时连不上」等 30 秒。
+  // 所以第一次超时先隔几秒再试一次，这段时间界面照旧是「正在恢复登录」；两次都超时
+  // 才按联不上处理。仍在同一个 transition 的 prepare 期限里，不会无限拖长。
+  //
+  // 第一次可能已经续过期：服务端换了新令牌、旧续期令牌当场作废，新的已经存进本机
+  // 账号库，超时的是紧接着那个请求。再拿出发前读的那份去试只会被当成登录失效，把
+  // 库里刚存好的新令牌连同账号一起删掉。所以重试前从库里取这个账号最新的一份；
+  // 取不到就按第一次的超时交给 30 秒那一轮，那一轮会重新读库。
+  //
+  // 重试本身也会续期（星芒账号每次恢复都先续期），续期请求一到服务端旧令牌就作废，
+  // 换来的新令牌要等回话到了才落库。重试要是被剩下的期限从半路掐断，候选句柄当场
+  // 作废、回话没人接，库里只剩作废的那份，30 秒后那一轮照样把账号当失效删掉。所以
+  // 剩下的期限不够一个请求跑完就不快速重试，直接交给 30 秒那一轮，它有自己的整段期限。
+  async function restoreAllowingOneTimeout(saved: RealmSavedAccount): Promise<boolean> {
+    try { return await restore(saved) } catch (error) {
+      if (!restoreTimedOut(error)) throw error
+      await new Promise<void>((resolve) => { setTimeout(resolve, startupRetryDelayMs) })
+      if (prepareDeadline - Date.now() < startupRetryMinimumBudgetMs) throw error
+      const latest = await options.vault.get(saved).catch(() => null)
+      if (!latest) throw error
+      return restore(latest)
+    }
   }
   // 「暂时连不上，登录还在」之后的自动重试（全面检测 Q9）。以前每次重试都走一遍
   // transition：先推 revision、再占 busy，网络那一段（超时时十几秒）里读工具配置、
@@ -503,7 +596,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       }
     },
   })
-  return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, logout, listSavedAccounts,
+  return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, completeTwoFactorLogin, logout, listSavedAccounts,
     switchSavedAccount, removeSavedAccount, restoreActive, migrateLegacy,
     restoringAccount: () => restoring ? { ...restoring } : null,
     stalledAccount: () => stalled ? { ...stalled } : null,

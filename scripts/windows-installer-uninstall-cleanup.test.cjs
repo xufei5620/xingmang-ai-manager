@@ -34,7 +34,9 @@ test('the cleanup runs only on a real uninstall, before any file is removed', ()
   const body = macroBody('customUnInstall')
   // An upgrade runs the previous uninstaller with --updated. Clearing the login
   // item there would silently switch off the user's autostart on every update.
-  assert.match(body, /\$\{IfNot\} \$\{isUpdated\}\s+Call un\.xingmangUninstallCleanup\s+\$\{EndIf\}/)
+  // The guard may hold other real-uninstall-only calls after this one (the
+  // fallback shortcut removal, pinned in windows-installer-shortcuts.test.cjs).
+  assert.match(body, /\$\{IfNot\} \$\{isUpdated\}\s+Call un\.xingmangUninstallCleanup\s+(?:Call un\.\w+\s+)*\$\{EndIf\}/)
   // electron-builder runs customUnInstall after CHECK_APP_RUNNING has stopped the
   // app and before customRemoveFiles; the cleanup needs the exe still on disk.
   assert.ok(include.indexOf('!macro customUnInstall') < include.indexOf('!macro customRemoveFiles'))
@@ -79,7 +81,7 @@ test('the uninstall welcome page carries an unticked clear-login box', () => {
   // electron-builder inserts this macro in place of its own MUI_UNPAGE_WELCOME.
   assert.match(page, /!define MUI_PAGE_CUSTOMFUNCTION_SHOW un\.xingmangWelcomeShow\s+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un\.xingmangWelcomeLeave\s+!insertmacro MUI_UNPAGE_WELCOME/)
   const show = functionBody('un.xingmangWelcomeShow')
-  assert.match(show, /\$\{NSD_CreateCheckbox\} [^\n]*"同时清除登录记录"/)
+  assert.match(show, /\$\{NSD_CreateCheckbox\} [^\n]*"同时清除登录记录和聊天记录"/)
   // Default is keep: the box is ticked only when coming back to a page already ticked.
   assert.match(show, /\$\{If\} \$xingmangClearLogin == "1"\s+\$\{NSD_Check\} \$xingmangClearLoginCheckbox\s+\$\{EndIf\}/)
   assert.match(functionBody('un.xingmangWelcomeLeave'), /\$\{NSD_GetState\} \$xingmangClearLoginCheckbox/)
@@ -88,4 +90,17 @@ test('the uninstall welcome page carries an unticked clear-login box', () => {
   // The variables exist only in the uninstaller build; an unused one elsewhere is
   // a makensis warning, and warnings are errors (-WX).
   assert.match(include, /!ifdef BUILD_UNINSTALLER\s+(?:#[^\n]*\n\s*)*Var xingmangClearLogin\s+Var xingmangClearLoginCheckbox\s+!endif/)
+})
+
+test('the uninstall details the user reads are Chinese and the other-account code matches the cleanup', () => {
+  // DetailPrint / Abort text shows in the install and uninstall windows. Any
+  // message without a CJK character is an English line a customer would read.
+  const messages = [...include.matchAll(/^\s*(?:DetailPrint|Abort)\s+(["`])(.*)\1\s*$/gm)].map((match) => match[2])
+  assert.ok(messages.length > 0)
+  for (const message of messages) assert.match(message, /[一-鿿]/, message)
+
+  const otherAccount = fs.readFileSync(path.join(root, 'electron', 'uninstall-cleanup.ts'), 'utf8')
+    .match(/^\s*otherAccount: (\d+),$/m)?.[1]
+  assert.ok(otherAccount)
+  assert.match(functionBody('un.xingmangUninstallCleanup'), new RegExp(`\\$\\{ElseIf\\} \\$R0 == ${otherAccount}\\n`))
 })

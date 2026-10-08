@@ -4,15 +4,19 @@ import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, ProviderI
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
 import { officialAccountNames, officialAccountNotes, tools } from '../../registry/tools'
-import { foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
+import { brokenConfigOf, brokenConfigRepairTarget, foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
-import { describeChineseLocale, describeChineseLocaleResult } from './locale-status'
+import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
 import { codexModelChoices, codexModelFilterSaveIssue, type CodexModelFilter } from './model-filter'
-import { errorMessage } from '../../business-common'
+import { errorMessage, FailureReason, failureWithDetail } from '../../business-common'
+import { currentWindowOs } from '../app/window-os'
 
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
+// 保存这类操作失败时连原话一起留着，红字和页顶红条一个认法（FailureReason）：认得出是「工具正在
+// 运行」这类原因就先说原因，原来那句跟在后面。没过前置检查的提示还是一句话。
+type DialogError = string | ReturnType<typeof failureWithDetail>
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
 interface ConfigDialogProps {
   api: ToolsApi
@@ -23,6 +27,11 @@ interface ConfigDialogProps {
   onClose(): void
   onRefresh(): Promise<void>
   onSaved(warning?: string): void
+  /**
+   * 主进程已经把一把新的 Key（或官方登录）写进这个工具；原样沿用现有 Key 的保存不算。
+   * 密钥页靠它收起「还在用刚撤销的密钥」（#546）。缺省 = 不通知（旧行为）。
+   */
+  onKeyWritten?(tool: ToolId): void
   onLogin(): void
   onKeys(): void
   onHelp(): void
@@ -36,12 +45,14 @@ interface ConfigDialogProps {
   onSwitchAccount?(tool: ToolId): Promise<AccountSourceSwitchResult | null>
 }
 
-export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
+export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
   const [tab, setTab] = useState<ToolId>(tool)
   const [drafts, setDrafts] = useState<Partial<Record<ProviderId, ConfigDraft>>>({})
   const [keys, setKeys] = useState<AccountKey[]>([])
   const [models, setModels] = useState<string[]>([])
   const [modelsDetected, setModelsDetected] = useState(false)
+  // 打开时自动读的那一次的编号，0 = 没在读。按编号清：先发的那次晚到时，关不掉后发那次的转圈。
+  const [autoDetectId, setAutoDetectId] = useState(0)
   const [modelFilter, setModelFilter] = useState<CodexModelFilter>(initialModelFilter)
   const [keyError, setKeyError] = useState('')
   const [keyRevision, setKeyRevision] = useState(0)
@@ -49,7 +60,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
   const [keyMetadata, setKeyMetadata] = useState<Partial<Record<ProviderId, ConfigKeyMetadata>>>({})
   const [metadataErrors, setMetadataErrors] = useState<Partial<Record<ProviderId, string>>>({})
   const [metadataLoading, setMetadataLoading] = useState<Partial<Record<ProviderId, boolean>>>({})
-  const [error, setError] = useState('')
+  const [error, setError] = useState<DialogError>('')
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState('')
   const [confirmation, setConfirmation] = useState<'reset' | null>(null)
@@ -62,16 +73,22 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
   const metadataRequest = useRef(0)
   const lastKeyRefresh = useRef(0)
   const modelFilterStatusId = useId()
+  // 只用来分 Mac 的说法：Mac 上星芒不会替人重开 Codex，也不开那条本机通道。
+  const os = currentWindowOs()
   const provider = providerFor(tab)
   const native = config.providers[provider]
   const definition = tools.find((item) => item.id === tab)!
   const sourceStorage = getSourceMarkerStorage()
   const switchLabel = switchAccountLabel(accountName)
   const currentSource = sourceFor(native, provider, sourceStorage)
+  // 工具自己读不了的文件，星芒读不出 Key 时会认成官方账号（已知44）。这时先选上首页「修好它」
+  // 会用的那边，展开「高级」点重置就和点「修好它」一样；读得出官方登录的照旧是官方账号。
+  const broken = brokenConfigOf(native, provider)
+  const initialSource = currentSource === 'official' && broken && brokenConfigRepairTarget(broken, native) === 'account' ? 'account' : currentSource
   const draft: ConfigDraft = drafts[provider] ?? {
     // 「被改过」在这个对话框里和「来源未确认」走同一条路：都要先让用户挑一个来源，
     // 挑完保存就把所有权重新写清楚。
-    source: currentSource === 'missing' ? 'account' : currentSource === 'changed' ? 'unknown' : currentSource,
+    source: initialSource === 'missing' ? 'account' : initialSource === 'changed' ? 'unknown' : initialSource,
     keyId: initialKeyChoice(native), secret: '', model: native.model || defaultCliModels[provider], validatedSecret: '', dirty: false,
   }
   const selectedKey = keys.find((key) => String(key.id) === draft.keyId && key.status === 1)
@@ -133,8 +150,26 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     request.current++
     setModels([])
     setModelsDetected(false)
+    setAutoDetectId(0)
     setError('')
   }, [tab, draft.source, draft.keyId, draft.secret])
+  // 下拉框里只有已选的那一个型号时，客户会以为只能用它（「为什么没有 6.1 Sol」）。
+  // 工具里已经是当前账号的 Key，就在打开窗口、换到另一个工具时替他读一次：只把读到的
+  // 放进下拉框，选中的型号不动、也不算改动（关窗口不会问要不要放弃）；不锁窗口；
+  // 读不到不出红字，「检测模型」还在，点了照旧说清原因。没登录不读（这时账号相关的
+  // 选项都是灰的），也免得没登录跑的 Mac 界面检查拿占位 Key 去请求正式服务。
+  useEffect(() => {
+    if (!signedIn || draft.source !== 'account' || !usingCurrentKey || !native.hasApiKey || !native.matchesRelay) return
+    const id = ++request.current
+    setAutoDetectId(id)
+    void api.configuredModels(tab).then((result) => {
+      if (!active.current || id !== request.current) return
+      setModels(result)
+      setModelsDetected(true)
+    }).catch(() => undefined).finally(() => {
+      if (active.current) setAutoDetectId((current) => current === id ? 0 : current)
+    })
+  }, [tab])
   useEffect(() => { setWarning(''); setNotice('') }, [tab])
   async function detectModels() {
     if (locked.current) return
@@ -166,7 +201,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     if (locked.current) return
     locked.current = true; setBusy(label); setError(''); setWarning('')
     try { await operation() }
-    catch (cause) { if (active.current) setError(errorMessage(cause, `${label}没有成功`)) }
+    catch (cause) { if (active.current) setError(failureWithDetail(cause, `${label}没有成功`)) }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
   // 一键改用当前账号：成功后留在对话框里说一句结果（一闪而过的提示容易看漏），
@@ -177,6 +212,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     locked.current = true; setBusy('改用当前账号'); setError(''); setWarning(''); setNotice('')
     try {
       const result = await onSwitchAccount(tab)
+      if (result) onKeyWritten?.(tab)
       if (!active.current || !result) return
       setDrafts((current) => { const next = { ...current }; delete next[provider]; return next })
       setNotice(result.verified ? `已${switchLabel}，可以开始用了。` : `已${switchLabel}。${result.message.replace(/^已改用当前账号[，。]?/, '')}`)
@@ -222,6 +258,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
       if (!outcome.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
       saved = true
+      onKeyWritten?.(tab)
       const markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       if (!active.current) return
       // 首页状态刷新失败不影响已经写好的配置，模型照样检测。主进程可能因为分组里
@@ -242,7 +279,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     } catch (cause) {
       if (!active.current || id !== request.current) return
       // 写进去了就要说清楚，否则用户会以为什么都没改、再去点一遍。
-      setError(saved ? `配置已保存，但模型列表暂时没读到：${errorMessage(cause, '请稍后再点一次')}` : errorMessage(cause, '保存并检测模型没有成功'))
+      setError(saved ? `配置已保存，但模型列表暂时没读到：${errorMessage(cause, '请稍后再点一次')}` : failureWithDetail(cause, '保存并检测模型没有成功'))
     }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
@@ -251,6 +288,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     void run('保存配置', async () => {
       const provider = providerFor(tab)
       let markerWarning = ''
+      let keyWritten = true
       if (draft.source === 'official') {
         await api.official(tab, mode)
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
@@ -263,6 +301,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         // Empty is the main-process reuse sentinel. It never reveals or
         // replaces the local key and must not mark its source as manual.
         await api.saveManual({ provider, apiKey: '', model: draft.model, mode })
+        keyWritten = false
       }
       else if (selectedKey) {
         await api.saveAccountKey({ provider, keyId: selectedKey.id, model: draft.model, mode })
@@ -275,6 +314,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else throw new Error('请选择要保存的密钥。')
+      if (keyWritten) onKeyWritten?.(tab)
       if (!active.current) return
       // The host has committed the write. Close through the owner so feedback
       // survives this dialog's unmount; a later refresh cannot undo that save.
@@ -305,6 +345,8 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     : metadataErrors[provider] ? '自动准备 · 账号信息暂时没读到' : '自动准备 · 正在读取账号信息'
   const keySummary = usingAutomaticKey ? '保存时自动准备好密钥，不用自己创建'
     : `${usingCurrentKey ? '继续用现在这把密钥' : '用你选的这把密钥'}：${keyDescription.name} · ${keyDescription.preview}`
+  // 这个窗口里的动作改的都是工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
+  const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   return <>
     <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" icon={Settings} width={640}
@@ -340,7 +382,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
             <Select label="默认模型" testId="tool-default-model" value={draft.model} options={[...(!draft.model ? [{ value: '', label: activeModelFilter === 'non-gpt' ? '请选择别家模型' : '请先检测模型', disabled: true }] : []), ...modelChoices.options]} onChange={(event) => change({ model: event.target.value })} />
             {draft.source === 'account' && usingAutomaticKey
               ? <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-save-detect-models" loading={busy === '保存并检测'} onClick={() => void saveAndDetectModels()} disabled={activeModelFilter !== 'all' || !metadata || Boolean(metadataLoading[provider]) || Boolean(metadataErrors[provider])}>保存并检测模型</Button>
-              : <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-detect-models" loading={busy === '检测模型'} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>检测模型</Button>}
+              : <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-detect-models" loading={busy === '检测模型' || autoDetectId !== 0} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>检测模型</Button>}
             {provider === 'codex' && <p>列表里的模型来自当前账号，不是每个都能在 Codex 里用，拿不准就选默认的。</p>}
             {nonGptSaveIssue && <p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p>}
             {draft.source === 'account' && usingAutomaticKey && activeModelFilter === 'all' && <p>点「保存并检测模型」会先把密钥准备好、保存，再列出能用的模型。</p>}
@@ -348,12 +390,12 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         </>}
       </>}
       <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button></div>
-      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary><p>已设置中文但仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
-        <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p><div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value)) })}>检查中文界面</Button>
-        <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result)) } })}>启用中文界面</Button>
-        <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result)) })}>跟随系统语言</Button>
+      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary>{os === 'mac' ? <p>{macLocaleNote}</p> : <><p>中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
+        <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p></>}<div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value, os)) })}>检查中文界面</Button>
+        <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result, os)) } })}>启用中文界面</Button>
+        <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result, os)) })}>跟随系统语言</Button>
         <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`文件夹：${result.workspace}，${result.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹' : result.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'}`) })}>查看文件夹权限</Button>
-        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { await api.trustWorkspace(); if (active.current) setLocaleText('文件夹信任已保存') })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
+        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { const result = await api.trustWorkspace(); if (active.current) setLocaleText(describeWorkspaceTrustResult(result.changed, os)) })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
       <details data-testid="tool-config-advanced"><summary>高级</summary>
         <p>点「保存配置」只改账号、密钥和模型，你在工具里做的其他设置都会留着；改之前会先自动备份。</p>
         {!manualVisible && <Button size="sm" variant="ghost" icon={KeyRound} onClick={() => change({ source: 'manual' })} testId="tool-manual-key">自己填写密钥</Button>}
@@ -362,9 +404,9 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         <div className="v2-code-preview">{native.files.map((file) => <div key={file.path}><code>{file.path}</code><span>{file.exists ? '已存在' : '尚未创建'}</span></div>)}</div>
         {draft.source !== 'unknown' && <div className="v2-save-options"><Button variant="danger" onClick={requestReset} disabled={Boolean(nonGptSaveIssue)} testId="tool-save-reset"><strong>重置为初始状态</strong><small>配置乱了想从头来过时再用：先备份，再按上面选的账号重新生成配置。历史会话会保留。</small></Button></div>}</details>
       </fieldset>
-      {error && !confirmation && <p className="v2-callout is-bad" role="alert">{error}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
+      {error && !confirmation && <p className="v2-callout is-bad" role="alert">{errorText}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
     </Dialog>
-    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置（在「备份」页能找回），再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
+    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置（在「备份」页能找回），再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{errorText}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
     {exitAction && <Confirm title="要放弃未保存的修改吗？" body="关闭后，这次修改不会保存。" okLabel="放弃修改" cancelLabel="继续编辑" danger onClose={() => setExitAction(null)} onOk={() => { const action = exitAction; setExitAction(null); action() }} />}
   </>
 }

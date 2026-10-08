@@ -5,11 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildCliTerminalAccessPlan,
   buildEnsureUserPathScript,
+  buildRemoveUserPathScript,
   createCliTerminalAccess,
   ensureDirectoryOnWindowsUserPath,
   isNpmPowerShellShim,
   parseEnsureUserPathOutput,
+  parseRemoveUserPathOutput,
   pathListIncludesDirectory,
+  removeDirectoryFromWindowsUserPath,
   removeNpmPowerShellShim,
 } from './windows-cli-shell-access'
 
@@ -290,6 +293,81 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
   })
 })
 
+describe('buildRemoveUserPathScript', () => {
+  const script = buildRemoveUserPathScript()
+
+  // The old clean-up read and wrote PATH through [Environment], which stores the
+  // expanded text as REG_SZ and froze every %VAR% entry the user kept (已知48).
+  it('reads and writes the raw user PATH so the entries that stay keep their %VAR% form', () => {
+    expect(script).toContain('DoNotExpandEnvironmentNames')
+    expect(script).toContain('$key.SetValue("Path", ($kept -join ";"), $kind)')
+    expect(script).not.toContain('SetEnvironmentVariable("Path"')
+    expect(script).not.toContain('GetEnvironmentVariable("Path"')
+  })
+
+  it('expands an entry only to compare it, so a %USERPROFILE% spelling of the directory goes too', () => {
+    expect(script).toContain('[Environment]::ExpandEnvironmentVariables($entry.Trim().Trim(\'"\'))')
+  })
+
+  it('writes nothing when no entry matches', () => {
+    const bail = script.indexOf('if (-not $removed) { "absent"; return }')
+    expect(bail).toBeGreaterThan(-1)
+    expect(bail).toBeLessThan(script.indexOf('$key.SetValue('))
+  })
+
+  it('takes the directory from the environment instead of splicing it into the script', () => {
+    expect(script).toContain('$env:XINGMANG_REMOVE_PATH')
+  })
+
+  it('never touches the machine PATH or the execution policy', () => {
+    expect(script).not.toContain('LocalMachine')
+    expect(script).not.toContain('"Machine"')
+    expect(script).not.toMatch(/ExecutionPolicy/i)
+    expect(script).toContain('[Microsoft.Win32.Registry]::CurrentUser')
+  })
+})
+
+describe('parseRemoveUserPathOutput', () => {
+  it('takes the last non-empty line', () => {
+    expect(parseRemoveUserPathOutput('removed\r\n')).toBe('removed')
+    expect(parseRemoveUserPathOutput('\r\nabsent\r\n\r\n')).toBe('absent')
+  })
+
+  it('throws on anything else', () => {
+    expect(() => parseRemoveUserPathOutput('')).toThrow('无法确认')
+    expect(() => parseRemoveUserPathOutput('Access is denied.')).toThrow('无法确认')
+  })
+})
+
+describe('removeDirectoryFromWindowsUserPath', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('hands the directory to PowerShell through the trusted environment', async () => {
+    vi.stubEnv('NODE_OPTIONS', '--require C:\\Users\\Ann\\evil.js')
+    const runPowerShell = vi.fn(async (_script: string, _env: NodeJS.ProcessEnv) => 'removed\r\n')
+
+    await expect(removeDirectoryFromWindowsUserPath('C:\\Users\\Ann\\.grok\\bin', { runPowerShell })).resolves.toBe('removed')
+    expect(runPowerShell).toHaveBeenCalledTimes(1)
+    const [script, env] = runPowerShell.mock.calls[0]
+    expect(script).toBe(buildRemoveUserPathScript())
+    expect(env.XINGMANG_REMOVE_PATH).toBe('C:\\Users\\Ann\\.grok\\bin')
+    // The uninstall may run under an elevated token.
+    expect(env.NODE_OPTIONS).toBeUndefined()
+  })
+
+  it('rejects a directory that would split into several PATH entries', async () => {
+    const runPowerShell = vi.fn(async () => 'removed')
+
+    await expect(removeDirectoryFromWindowsUserPath('C:\\grok;C:\\Windows', { runPowerShell }))
+      .rejects.toThrow('命令行工具目录无效')
+    await expect(removeDirectoryFromWindowsUserPath('.grok\\bin', { runPowerShell }))
+      .rejects.toThrow('命令行工具目录无效')
+    expect(runPowerShell).not.toHaveBeenCalled()
+  })
+})
+
 describe('buildCliTerminalAccessPlan', () => {
   const base = {
     platform: 'win32' as const,
@@ -456,20 +534,267 @@ describe('createCliTerminalAccess', () => {
     expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
   })
 
-  it('does nothing on macOS', async () => {
+  it('touches no shim or PATH on macOS and checks the shell profile once per session instead', async () => {
     const prefix = npmPrefixWithShims('claude')
     const ensureUserPath = vi.fn(async () => 'added' as const)
+    const ensureShellProfile = vi.fn(async () => 'added')
     const access = createCliTerminalAccess({
       platform: 'darwin',
       executionMode: 'same-user',
       isManaged: () => false,
       ensureUserPath,
+      ensureShellProfile,
     })
 
     await access.sweepOnce([{ provider: 'claude', installation: npmInstall(prefix) }])
+    expect(ensureShellProfile).not.toHaveBeenCalled()
+
     await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+    await access.prepare({ provider: 'codex', installation: npmInstall(prefix) }, 'install')
 
     expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
     expect(ensureUserPath).not.toHaveBeenCalled()
+    expect(ensureShellProfile).toHaveBeenCalledTimes(1)
+    expect(ensureShellProfile).toHaveBeenCalledWith('install')
+  })
+
+  it('on macOS checks the shell profile at startup only for an install the app made', async () => {
+    const prefix = binDirectory()
+    const ensureShellProfile = vi.fn(async () => 'present')
+    const access = createCliTerminalAccess({
+      platform: 'darwin',
+      executionMode: 'same-user',
+      isManaged: (installation) => installation.npmPrefix === prefix,
+      ensureShellProfile,
+    })
+
+    await access.sweepOnce([
+      { provider: 'claude', installation: npmInstall('/opt/homebrew') },
+      { provider: 'codex', installation: npmInstall(prefix) },
+    ])
+
+    expect(ensureShellProfile).toHaveBeenCalledTimes(1)
+    expect(ensureShellProfile).toHaveBeenCalledWith('startup')
+  })
+
+  it('on macOS tries the shell profile again on the next install after a failure', async () => {
+    const ensureShellProfile = vi.fn()
+      .mockRejectedValueOnce(new Error('终端启动设置必须是单链接普通文件'))
+      .mockResolvedValueOnce('added')
+    const log = vi.fn()
+    const access = createCliTerminalAccess({
+      platform: 'darwin',
+      executionMode: 'same-user',
+      isManaged: () => true,
+      ensureShellProfile,
+      log,
+    })
+    const target = { provider: 'claude' as const, installation: npmInstall('/Users/ann/Library/Application Support/XingMangAI/Cli/npm') }
+
+    await expect(access.prepare(target, 'install')).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'cli.shell-profile.failed', expect.any(String), expect.objectContaining({ error: '终端启动设置必须是单链接普通文件' })))
+    await access.prepare(target, 'install')
+
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', expect.any(String), expect.objectContaining({ outcome: 'added' })))
+    expect(ensureShellProfile).toHaveBeenCalledTimes(2)
+  })
+
+  it('on macOS says in the log that a login shell it does not handle was left alone', async () => {
+    const cases = [
+      ['added', '已让新开的终端可以直接敲工具名'],
+      ['present', '终端启动设置无需改动'],
+      ['already-handled', '终端启动设置无需改动'],
+      ['unsupported-shell', '登录 shell 不是 zsh、bash、fish，没改终端启动设置'],
+    ] as const
+    for (const [outcome, message] of cases) {
+      const log = vi.fn()
+      const access = createCliTerminalAccess({
+        platform: 'darwin',
+        executionMode: 'same-user',
+        isManaged: () => true,
+        ensureShellProfile: async () => outcome,
+        log,
+      })
+
+      await access.prepare({ provider: 'claude', installation: npmInstall('/Users/ann/Library/Application Support/XingMangAI/Cli/npm') }, 'install')
+
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', message, { provider: 'claude', reason: 'install', outcome }))
+    }
+  })
+
+  it('does nothing on release outside Linux', async () => {
+    const ensureShellProfile = vi.fn(async () => 'added')
+    const syncTerminalCommands = vi.fn(async () => ({ outcome: 'removed', skipped: [] }))
+    for (const platform of ['win32', 'darwin'] as const) {
+      const access = createCliTerminalAccess({ platform, executionMode: 'same-user', isManaged: () => true, ensureShellProfile, syncTerminalCommands })
+      await access.release('claude')
+      // The Linux hook is never used off Linux, even when one is passed.
+      await access.prepare({ provider: 'claude', installation: npmInstall(binDirectory()) }, 'install')
+    }
+    expect(syncTerminalCommands).not.toHaveBeenCalled()
+  })
+
+  it('takes an uninstalled directory back out of PATH without waiting for it, and logs the outcome', async () => {
+    let finish: (outcome: 'removed' | 'absent') => void = () => undefined
+    const removeUserPath = vi.fn(() => new Promise<'removed' | 'absent'>((resolve) => { finish = resolve }))
+    const log = vi.fn()
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      removeUserPath,
+      log,
+    })
+
+    access.forgetUserPath('grok', 'C:\\Users\\Ann\\.grok\\bin')
+
+    await vi.waitFor(() => expect(removeUserPath).toHaveBeenCalledWith('C:\\Users\\Ann\\.grok\\bin'))
+    expect(log).not.toHaveBeenCalled()
+    finish('removed')
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.user-path.removed', expect.any(String), { provider: 'grok', outcome: 'removed' }))
+  })
+
+  it('only logs a PATH removal that failed, however the remover failed', async () => {
+    const failures = [
+      vi.fn(async (): Promise<'removed'> => { throw new Error('Command failed: powershell.exe') }),
+      vi.fn((): Promise<'removed'> => { throw new Error('Command failed: powershell.exe') }),
+    ]
+    for (const removeUserPath of failures) {
+      const log = vi.fn()
+      const access = createCliTerminalAccess({ platform: 'win32', executionMode: 'trusted-only', isManaged: () => false, removeUserPath, log })
+
+      expect(() => access.forgetUserPath('grok', 'C:\\Users\\Ann\\.grok\\bin')).not.toThrow()
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'cli.user-path.remove-failed', expect.any(String), {
+        provider: 'grok',
+        error: 'Command failed: powershell.exe',
+      }))
+    }
+  })
+
+  it('never touches PATH outside Windows', async () => {
+    const removeUserPath = vi.fn(async () => 'removed' as const)
+    for (const platform of ['darwin', 'linux'] as const) {
+      createCliTerminalAccess({ platform, executionMode: 'same-user', isManaged: () => false, removeUserPath })
+        .forgetUserPath('grok', '/home/ann/.grok/bin')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(removeUserPath).not.toHaveBeenCalled()
+  })
+
+  describe('on Linux', () => {
+    function linuxAccess(overrides: Partial<Parameters<typeof createCliTerminalAccess>[0]> = {}) {
+      const syncTerminalCommands = vi.fn(async (reason: string) => ({ outcome: reason === 'uninstall' ? 'removed' : 'added', skipped: [] as string[] }))
+      const ensureShellProfile = vi.fn(async () => 'added')
+      const ensureUserPath = vi.fn(async () => 'added' as const)
+      const log = vi.fn()
+      const access = createCliTerminalAccess({
+        platform: 'linux',
+        executionMode: 'same-user',
+        isManaged: (installation) => installation.npmPrefix === '/home/ann/.local/share/XingMangAI/Cli/npm',
+        syncTerminalCommands,
+        ensureShellProfile,
+        ensureUserPath,
+        log,
+        ...overrides,
+      })
+      return { access, syncTerminalCommands, ensureShellProfile, ensureUserPath, log }
+    }
+    const managed = { source: 'npm' as const, npmPrefix: '/home/ann/.local/share/XingMangAI/Cli/npm' }
+
+    it('syncs after every install, touching no shim, PATH or macOS profile', async () => {
+      const prefix = npmPrefixWithShims('claude')
+      const { access, syncTerminalCommands, ensureShellProfile, ensureUserPath, log } = linuxAccess()
+
+      await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+      await access.prepare({ provider: 'codex', installation: managed }, 'install')
+
+      // Each install may add a launcher, so a second one in the same session syncs again.
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(2))
+      expect(syncTerminalCommands).toHaveBeenNthCalledWith(1, 'install')
+      expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
+      expect(ensureShellProfile).not.toHaveBeenCalled()
+      expect(ensureUserPath).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', '已让新开的终端可以直接敲工具名', expect.objectContaining({ provider: 'codex', reason: 'install', outcome: 'added' })))
+    })
+
+    it('at startup syncs once, and only when one of the installs is the app\'s own', async () => {
+      const first = linuxAccess()
+      await first.access.sweepOnce([
+        { provider: 'claude', installation: npmInstall('/usr/local') },
+        { provider: 'codex', installation: managed },
+        { provider: 'gemini', installation: managed },
+      ])
+      await first.access.sweepOnce([{ provider: 'codex', installation: managed }])
+      await vi.waitFor(() => expect(first.syncTerminalCommands).toHaveBeenCalledTimes(1))
+      expect(first.syncTerminalCommands).toHaveBeenCalledWith('startup')
+
+      const second = linuxAccess({ isManaged: () => { throw new Error('未找到有效的用户主目录') } })
+      await second.access.sweepOnce([{ provider: 'codex', installation: npmInstall('/usr/local') }])
+      await second.access.prepare({ provider: 'codex', installation: npmInstall('/usr/local') }, 'startup')
+      expect(second.syncTerminalCommands).not.toHaveBeenCalled()
+    })
+
+    it('at startup also syncs for Grok, which never lives in the app\'s npm folder', async () => {
+      const { access, syncTerminalCommands } = linuxAccess()
+      const grok = { source: 'native' as const, npmPrefix: null }
+
+      await access.sweepOnce([
+        { provider: 'claude', installation: npmInstall('/usr/local') },
+        { provider: 'grok', installation: grok },
+      ])
+
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(1))
+      expect(syncTerminalCommands).toHaveBeenCalledWith('startup')
+    })
+
+    it('syncs again after an uninstall and logs that the lines came out', async () => {
+      const { access, syncTerminalCommands, log } = linuxAccess()
+
+      await access.release('codex')
+
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.removed', expect.any(String), expect.objectContaining({ provider: 'codex', reason: 'uninstall', outcome: 'removed' })))
+      expect(syncTerminalCommands).toHaveBeenCalledWith('uninstall')
+    })
+
+    it('runs one sync at a time so two installs never append to the same file together', async () => {
+      let running = 0
+      let overlapped = false
+      const releases: Array<() => void> = []
+      const syncTerminalCommands = vi.fn(async () => {
+        running += 1
+        if (running > 1) overlapped = true
+        await new Promise<void>((resolve) => releases.push(resolve))
+        running -= 1
+        return { outcome: 'added', skipped: [] as string[] }
+      })
+      const { access } = linuxAccess({ syncTerminalCommands })
+
+      await access.prepare({ provider: 'claude', installation: managed }, 'install')
+      await access.release('codex')
+      await vi.waitFor(() => expect(releases).toHaveLength(1))
+      releases[0]()
+      await vi.waitFor(() => expect(releases).toHaveLength(2))
+      releases[1]()
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(2))
+
+      expect(overlapped).toBe(false)
+    })
+
+    it('logs skipped files and failures without failing the install, and tries again next time', async () => {
+      const syncTerminalCommands = vi.fn()
+        .mockResolvedValueOnce({ outcome: 'added', skipped: ['~/.bashrc'] })
+        .mockRejectedValueOnce(new Error('终端启动器目录无效'))
+        .mockResolvedValueOnce({ outcome: 'present', skipped: [] })
+      const { access, log } = linuxAccess({ syncTerminalCommands })
+
+      await expect(access.prepare({ provider: 'claude', installation: managed }, 'install')).resolves.toBeUndefined()
+      await access.prepare({ provider: 'claude', installation: managed }, 'install')
+      await access.prepare({ provider: 'claude', installation: managed }, 'install')
+
+      await vi.waitFor(() => expect(syncTerminalCommands).toHaveBeenCalledTimes(3))
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', '终端启动设置无需改动', expect.objectContaining({ outcome: 'present' })))
+      expect(log).toHaveBeenCalledWith('warn', 'cli.shell-profile.skipped', expect.any(String), expect.objectContaining({ skipped: ['~/.bashrc'] }))
+      expect(log).toHaveBeenCalledWith('warn', 'cli.shell-profile.failed', expect.any(String), expect.objectContaining({ error: '终端启动器目录无效' }))
+    })
   })
 })

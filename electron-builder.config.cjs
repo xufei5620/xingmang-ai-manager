@@ -101,6 +101,41 @@ function assertDistributableMacPlatform(electronPlatformName) {
   }
 }
 
+// The deb payload lands in /opt/<productName>, and that name is then spelled
+// into postinst/postrm, update-alternatives and the AppArmor attachment path.
+// An ASCII directory keeps every one of those consumers out of locale and
+// parser questions; the menu still shows the Chinese name through
+// linux.desktop.entry.Name. productName cannot be set per platform in
+// electron-builder, so the Linux scripts set this marker and beforePack
+// refuses a Linux build without it (and any other platform with it).
+const linuxExecutableName = 'xingmang-ai-manager'
+const linuxPackageMarker = process.env.XINGMANG_LINUX_PACKAGE
+if (linuxPackageMarker !== undefined
+  && linuxPackageMarker !== ''
+  && linuxPackageMarker !== '0'
+  && linuxPackageMarker !== '1') {
+  throw new Error('XINGMANG_LINUX_PACKAGE 只接受精确的 0 或 1')
+}
+const linuxPackageMode = linuxPackageMarker === '1'
+const productName = linuxPackageMode ? linuxExecutableName : '星芒AI管理工具'
+
+function assertLinuxPackageMode(electronPlatformName) {
+  if (electronPlatformName === 'linux' && !linuxPackageMode) {
+    throw new Error('Linux 安装包请用 npm run build:linux 或 build:linux:ci 打包（需要 XINGMANG_LINUX_PACKAGE=1，安装目录才是英文名）。')
+  }
+  if (electronPlatformName !== 'linux' && linuxPackageMode) {
+    throw new Error(`XINGMANG_LINUX_PACKAGE=1 只用于 Linux 安装包，不能用来构建 ${electronPlatformName}。`)
+  }
+  // Linux has no code signature, so its only release channel is the unsigned
+  // one (npm run release:package:linux, docs/LINUX.md). XINGMANG_RELEASE=1
+  // promises a Windows Authenticode signature and XINGMANG_MAC_FREE_RELEASE=1 a
+  // self-signed Mac identity; a deb built under either would ship an updater
+  // whose metadata claims a check the package can never pass.
+  if (electronPlatformName === 'linux' && publicReleaseMode) {
+    throw new Error('Linux 安装包没有代码签名，发布只能走 npm run release:package:linux（XINGMANG_UNSIGNED_RELEASE=1）。')
+  }
+}
+
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
 const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
 // Library validation loads a library only when its team identifier matches the
@@ -121,10 +156,17 @@ const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责�
 const adHocSigningMode = !ephemeralMacSigningMode && !freeMacReleaseMode && !releaseMode
 const selfSignedMacSigningMode = adHocSigningMode || ephemeralMacSigningMode || freeMacReleaseMode
 const macEntitlementsPrefix = selfSignedMacSigningMode ? 'build/entitlements.mac.adhoc' : 'build/entitlements.mac'
+const macPrivacyUsageDescriptions = {
+  NSDocumentsFolderUsageDescription: '星芒把 AI 画的图、做的视频存进“文稿”里的 XingmangAI 文件夹；你放在“文稿”里的项目，也要读得到才能帮你打开。',
+  NSDesktopFolderUsageDescription: '你放在桌面上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  NSDownloadsFolderUsageDescription: '你放在“下载”里的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  NSRemovableVolumesUsageDescription: '你放在 U 盘、移动硬盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+  NSNetworkVolumesUsageDescription: '你放在共享盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
+}
 
 module.exports = {
   appId: 'com.xingmang.ai.manager',
-  productName: '星芒AI管理工具',
+  productName,
   protocols: [{ name: '星芒AI管理工具', schemes: ['xingmang'] }],
   copyright: 'Copyright © 2026 绍兴星芒文化传媒有限责任公司',
   asar: true,
@@ -152,6 +194,19 @@ module.exports = {
     // updater to user-confirmed download/install plus its own SHA-512 check.
     xingmangUnsignedRelease: unsignedReleaseMode,
     ...(accelerationBundle.metadata ? { xingmangAccelerationBundle: accelerationBundle.metadata } : {}),
+    // Linux packages only, so the Windows and macOS payloads stay byte-for-byte
+    // what they were.
+    ...(linuxPackageMode ? {
+      // Electron takes the Linux app_id / WM_CLASS from this, and
+      // electron-builder writes the same name into StartupWMClass, so the
+      // running window groups with its menu entry.
+      desktopName: `${linuxExecutableName}.desktop`,
+      // The deb control file's Homepage. Without it fpm falls back to whatever
+      // the checkout's git origin happens to be.
+      homepage: 'https://github.com/xufei5620/xingmang-ai-manager',
+      // The deb control file's License; fpm writes "unknown" otherwise. See LICENSE.
+      license: 'Proprietary',
+    } : {}),
   },
   files: [
     'dist/**/*',
@@ -167,6 +222,11 @@ module.exports = {
     'bundled-catalog/project-instructions/**/*',
     // Claude Code 状态行脚本。只读 CLI 从 stdin 递来的会话信息，不出网、不读 Key。
     'bundled-catalog/cli-status-line/**/*',
+    // Claude Code / Gemini CLI 钩子脚本。只把事件类型写进星芒数据目录，不出网、不读 Key。
+    'bundled-catalog/cli-hooks/**/*',
+    // 官方 Codex 型号名单（原样拷自 openai/codex，Apache-2.0，LICENSE / NOTICE 同目录）。
+    // 主进程按账号挑出能用的型号写给 Codex，见 electron/codex-model-catalog.ts。
+    'bundled-catalog/codex-models/**/*',
     'package.json',
   ],
   extraResources: [
@@ -187,6 +247,12 @@ module.exports = {
       to: 'bundled-catalog/cli-status-line',
       filter: ['**/*'],
     },
+    // 同上：钩子命令由 CLI 起的外部 node 执行。
+    {
+      from: 'bundled-catalog/cli-hooks',
+      to: 'bundled-catalog/cli-hooks',
+      filter: ['**/*'],
+    },
     ...accelerationBundle.resources,
   ],
   // The last point at which an unshippable build mode can still be rejected,
@@ -194,6 +260,7 @@ module.exports = {
   // directory is selected by default, including CI and ordinary source builds.
   beforePack: async (context) => {
     assertDistributableMacPlatform(context.electronPlatformName)
+    assertLinuxPackageMode(context.electronPlatformName)
     if (!accelerationBundle.metadata) return
     await verifyAccelerationBundleCore(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR, accelerationBundle.metadata, undefined, {
       platform: context.electronPlatformName, arch: Arch[context.arch],
@@ -235,6 +302,9 @@ module.exports = {
     entitlements: `${macEntitlementsPrefix}.plist`,
     entitlementsInherit: `${macEntitlementsPrefix}.inherit.plist`,
     icon: 'assets/brand/v3/app-icon.icns',
+    // macOS 第一次碰「文稿」「桌面」「下载」、U 盘、共享盘时弹的隐私询问框，标题是系统写的，
+    // 下面那行说明取这几项；不写就只有「不允许」「好」两个按钮，客户不知道为什么要给（已知34）。
+    extendInfo: macPrivacyUsageDescriptions,
     // Local packages need an ad-hoc signature after Electron fuses are changed,
     // otherwise macOS rejects the invalidated upstream seal. This is not a
     // distributable Developer ID signature; release mode discovers that identity.
@@ -283,5 +353,63 @@ module.exports = {
     include: 'installer.nsh',
     shortcutName: '星芒AI管理工具',
     uninstallDisplayName: '星芒AI管理工具',
+  },
+  linux: {
+    // deb only (docs/LINUX.md): it is the one format that installs a root-owned
+    // /opt tree and runs postinst, which is what gives Chromium its sandbox on
+    // Ubuntu 24.04. AppImage would start without one there.
+    target: [{ target: 'deb', arch: ['x64', 'arm64'] }],
+    executableName: linuxExecutableName,
+    // Never set executableArgs: whatever is listed lands in the menu entry's
+    // Exec line, and that is exactly where --no-sandbox would hide.
+    syncDesktopName: true,
+    icon: 'assets/brand/v3/app-icon.png',
+    category: 'Development',
+    synopsis: '星芒AI管理工具',
+    description: '一键安装、配置和启动 Claude Code、Codex、Gemini、Grok 等 AI 编程工具。',
+    maintainer: '绍兴星芒文化传媒有限责任公司',
+    vendor: '绍兴星芒文化传媒有限责任公司',
+    desktop: {
+      entry: {
+        Name: '星芒AI管理工具',
+        GenericName: 'AI 编程工具管理',
+        Keywords: 'AI;Claude;Codex;Gemini;Grok;星芒;',
+        StartupNotify: 'true',
+      },
+    },
+  },
+  deb: {
+    packageName: linuxExecutableName,
+    // Debian section; fpm writes "default" otherwise, which software centres show as is.
+    packageCategory: 'devel',
+    priority: 'optional',
+    // Everything the Electron binary links against (readelf NEEDED), plus the
+    // libraries Chromium opens at run time. Ubuntu 24.04 renamed several of
+    // them with a t64 suffix; Debian 12, Ubuntu 22.04 and the Debian-based
+    // UOS/deepin/Kylin releases still use the old names.
+    depends: [
+      'libgtk-3-0t64 | libgtk-3-0',
+      'libnotify4',
+      'libnss3',
+      'libxss1',
+      'libxtst6',
+      'xdg-utils',
+      'libatspi2.0-0t64 | libatspi2.0-0',
+      'libuuid1',
+      'libsecret-1-0',
+      'libgbm1',
+      'libasound2t64 | libasound2',
+      'libxkbcommon0',
+      'libcups2t64 | libcups2',
+      'libudev1',
+    ],
+    // The whole interface is Chinese, and the login session is kept in the
+    // desktop's password store. Recommends, not Depends: a machine that already
+    // has another CJK font or keyring stays installable.
+    recommends: [
+      'fonts-noto-cjk | fonts-wqy-microhei | fonts-wqy-zenhei',
+      'gnome-keyring | kwalletmanager',
+    ],
+    afterInstall: 'build/linux/after-install.tpl',
   },
 }

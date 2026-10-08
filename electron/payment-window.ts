@@ -5,6 +5,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import QRCode from 'qrcode'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
+import { networkFailureCode } from './network-failure'
 import type { PaymentOrderStatusReader } from './payment-status-reader'
 import { RealmAccountError } from './realm-account'
 
@@ -15,12 +16,34 @@ const paymentWindowMonitorIntervalMs = 1_000
 const paymentOrderMonitorIntervalMs = 3_000
 const paymentWindowMaxLifetimeMs = 10 * 60_000
 const paymentPageSnapshotLimit = 8_192
+// 窗口关了以后接着问这笔订单：前 2 分钟每 5 秒、之后每 30 秒，最多 15 分钟。
+// 窗口开着时是每 3 秒一次，这里只会更稀。账号服务对查订单接口的限流没有核实过
+// （推测不会比窗口开着时更紧），所以取比现有更保守的间隔。
+const paymentFollowUpFastIntervalMs = 5_000
+const paymentFollowUpFastWindowMs = 2 * 60_000
+const paymentFollowUpSlowIntervalMs = 30_000
+export const paymentFollowUpMaxMs = 15 * 60_000
 
-export type PaymentWindowTerminalStatus = 'success' | 'expired' | 'failed' | 'closed'
+export type PaymentWindowTerminalStatus = 'success' | 'expired' | 'failed' | 'closed' | 'unconfirmed'
 
 export interface PaymentWindowTerminalEvent {
   status: PaymentWindowTerminalStatus
   tradeNo: string | null
+  /** 只出现在 closed 上：窗口关了，主进程还在后台确认这笔订单。缺省 = 不再确认（旧行为）。 */
+  confirming?: boolean
+}
+
+export interface PaymentWindowTerminalContext {
+  /** 结果是窗口关掉以后在后台查到的；用户多半已经不在看付款这件事了。 */
+  afterClose: boolean
+}
+
+/** 关窗后第 elapsedMs 毫秒时，距离下一次查询还要等多久；null = 不再查。 */
+export function paymentFollowUpDelayMs(elapsedMs: number): number | null {
+  if (!Number.isFinite(elapsedMs) || elapsedMs >= paymentFollowUpMaxMs) return null
+  const elapsed = Math.max(0, elapsedMs)
+  const interval = elapsed < paymentFollowUpFastWindowMs ? paymentFollowUpFastIntervalMs : paymentFollowUpSlowIntervalMs
+  return Math.min(interval, paymentFollowUpMaxMs - elapsed)
 }
 
 export const paymentFormLimits = Object.freeze({
@@ -47,7 +70,7 @@ export interface PaymentWindowControllerOptions {
   iconPath?: string
   createWindow?: (options: BrowserWindowConstructorOptions) => BrowserWindow
   onBlockedNavigation?: (url: string) => void
-  onTerminalState?: (event: PaymentWindowTerminalEvent) => void
+  onTerminalState?: (event: PaymentWindowTerminalEvent, context: PaymentWindowTerminalContext) => void
   createOrderStatusReader?: (tradeNo: string) => PaymentOrderStatusReader | undefined
 }
 
@@ -251,7 +274,76 @@ export function createPaymentWindowController(
   let orderMonitorTimer: NodeJS.Timeout | null = null
   let monitorGeneration = 0
   let openRequestGeneration = 0
+  let followUpTimer: NodeJS.Timeout | null = null
+  let followUpGeneration = 0
+  // 当前窗口对应的订单与查询器；窗口被用户关掉时拿它接着在后台问。
+  let activeOrder: { window: BrowserWindow; tradeNo: string; reader: PaymentOrderStatusReader } | null = null
   const silentClosures = new WeakSet<BrowserWindow>()
+
+  function emit(event: PaymentWindowTerminalEvent, afterClose = false): void {
+    options.onTerminalState?.(event, { afterClose })
+  }
+
+  function stopFollowUp(): void {
+    if (followUpTimer) clearTimeout(followUpTimer)
+    followUpTimer = null
+    followUpGeneration += 1
+  }
+
+  /** Keeps asking the authenticated account backend after the window is gone.
+   * Same trust rule as the in-window monitor: only the backend's order status
+   * may report success, and STALE ownership ends the follow-up silently. */
+  function startFollowUp(tradeNo: string, reader: PaymentOrderStatusReader): void {
+    stopFollowUp()
+    const generation = followUpGeneration
+    const startedAt = Date.now()
+    const isCurrent = () => generation === followUpGeneration
+    const finish = (status: PaymentWindowTerminalStatus | null) => {
+      followUpTimer = null
+      followUpGeneration += 1
+      if (status) emit({ status, tradeNo }, true)
+    }
+    const schedule = () => {
+      const delay = paymentFollowUpDelayMs(Date.now() - startedAt)
+      if (delay === null) {
+        finish('unconfirmed')
+        return
+      }
+      followUpTimer = setTimeout(() => void check(), delay)
+      followUpTimer.unref?.()
+    }
+    const check = async () => {
+      if (!isCurrent()) return
+      followUpTimer = null
+      try {
+        const status = await reader()
+        if (!isCurrent()) return
+        if (status === 'success' || status === 'failed' || status === 'expired') {
+          finish(status)
+          return
+        }
+      } catch (error) {
+        if (!isCurrent()) return
+        if (error instanceof RealmAccountError && error.code === 'STALE') {
+          finish(null)
+          return
+        }
+        // 断网、服务端一时出错：下一轮再问，绝不当成到账。
+      }
+      schedule()
+    }
+    schedule()
+  }
+
+  /** 窗口被关掉（不是到账、失败、过期自动关）：订单还在，能确认就接着确认。 */
+  function reportClosed(order: typeof activeOrder, tradeNo: string | null): void {
+    if (order) {
+      startFollowUp(order.tradeNo, order.reader)
+      emit({ status: 'closed', tradeNo, confirming: true })
+    } else {
+      emit({ status: 'closed', tradeNo })
+    }
+  }
 
   function stopMonitoring(): void {
     if (monitorTimer) clearInterval(monitorTimer)
@@ -265,6 +357,7 @@ export function createPaymentWindowController(
     if (paymentWindow !== window) return
     stopMonitoring()
     paymentWindow = null
+    if (activeOrder?.window === window) activeOrder = null
   }
 
   function destroySilently(window: BrowserWindow): void {
@@ -288,6 +381,8 @@ export function createPaymentWindowController(
     expiresAt: string | null = null,
   ): Promise<void> {
     stopMonitoring()
+    // 一次只跟一笔订单：开了新的付款，上一笔关窗后的后台确认就交给「我的订单」。
+    stopFollowUp()
     if (paymentWindow && !paymentWindow.isDestroyed()) destroySilently(paymentWindow)
     const orderStatusReader = tradeNo ? options.createOrderStatusReader?.(tradeNo) : undefined
     const generation = monitorGeneration
@@ -318,6 +413,7 @@ export function createPaymentWindowController(
       },
     })
     paymentWindow = window
+    activeOrder = tradeNo && orderStatusReader ? { window, tradeNo, reader: orderStatusReader } : null
     const isCurrent = () => !window.isDestroyed() && paymentWindow === window && monitorGeneration === generation
 
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
@@ -334,8 +430,9 @@ export function createPaymentWindowController(
     window.on('closed', () => {
       const wasActive = paymentWindow === window
       const wasSilent = silentClosures.delete(window)
+      const order = activeOrder?.window === window ? activeOrder : null
       release(window)
-      if (wasActive && !wasSilent) options.onTerminalState?.({ status: 'closed', tradeNo })
+      if (wasActive && !wasSilent) reportClosed(order, tradeNo)
     })
     window.on('page-title-updated', (event) => {
       event.preventDefault()
@@ -369,7 +466,7 @@ export function createPaymentWindowController(
         // handler. Destroy first so the UI never reports a window still open.
         destroySilently(window)
         release(window)
-        options.onTerminalState?.({ status, tradeNo })
+        emit({ status, tradeNo })
       }
       const inspect = async () => {
         if (!isCurrent()) return
@@ -430,7 +527,10 @@ export function createPaymentWindowController(
       if (isCurrent()) stopMonitoring()
       if (!window.isDestroyed()) destroySilently(window)
       release(window)
-      throw new Error('支付页面打开失败，请稍后重试', { cause: error })
+      // 运行日志会记下 cause。Electron 加载失败的原错误把整个付款地址写在 message 和 url 上，
+      // 订单号、签名都在里面（二维码那一页连付款码图片也在），而付款这边的日志一向只记 origin。
+      // 所以原因只留错误码：证书、解析、被重置照样分得清，ipc 记失败时的 networkFailure 也还认得出。
+      throw new Error('支付页面打开失败，请稍后重试', { cause: { code: networkFailureCode(error) } })
     }
   }
 
@@ -466,11 +566,20 @@ export function createPaymentWindowController(
     },
     close() {
       openRequestGeneration += 1
+      const window = paymentWindow
+      const order = activeOrder
       stopMonitoring()
-      if (paymentWindow && !paymentWindow.isDestroyed()) closeSilently(paymentWindow)
+      if (window && !window.isDestroyed()) {
+        closeSilently(window)
+        // 点界面上的「关闭支付窗口」和点窗口右上角的 × 是一回事：付过款的照样等到账。
+        // 没有能查的订单时仍旧不出声（旧行为），界面自己收起提示。
+        if (order?.window === window) reportClosed(order, order.tradeNo)
+      }
     },
     destroy() {
       openRequestGeneration += 1
+      // 换账号、退出、关主窗口都走这里：后台确认跟着停，不替别的账号报到账。
+      stopFollowUp()
       const window = paymentWindow
       if (window && !window.isDestroyed()) destroySilently(window)
       if (window) release(window)

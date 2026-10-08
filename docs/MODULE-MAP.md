@@ -8,11 +8,28 @@
 - `electron/macos-platform.ts` — macOS 终端启动器与平台能力
 - `electron/macos-codex.ts` / `macos-codex-app.ts` — Codex CLI 与桌面端的 macOS 实现
 - `electron/macos-grok.ts` — Grok 的 macOS 安装
+- `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；失败的那几句话主进程与渲染层共用
 - `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
+- `electron/shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
 - `src/platform-presentation.ts` — 渲染层的平台差异表达
 
 **改跨平台代码前先读 `platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
+
+## Linux 相关模块
+
+- `electron/linux-path-trust.ts` — 路径信任判定（组可写按 `/etc/group` 实际成员判），规则见 `.claude/rules/linux-platform.md`
+- `electron/linux-launch-guard.ts` — 拒绝以 root 或替别的账号运行，`platform/entry.ts` 最先调用
+- `electron/linux-renderer-sandbox.ts` — 画布打开前确认渲染进程的系统沙箱（`Seccomp: 2`）真的生效
+- `electron/linux-node-runtime.ts` — Linux 上代下 Node.js：钉版本与每个架构的 SHA-256，只用 root 所有的系统 tar 解进 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，核对后原子替换（Linux 版拆分 ②）
+- `electron/linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反）
+- `electron/linux-shell-profile.ts` — 客户自己开的终端里直接敲 claude / codex / gemini / grok：每个托管工具一个小启动器，`~/.bashrc` / `~/.zshrc` / `~/.profile` 末尾的标记段与 fish 的 conf.d 文件，卸掉最后一个时逐字撤掉（Linux 版拆分 ④）
+- `electron/linux-terminal.ts` — Linux 上「打开」工具：找命令窗口程序（按桌面、系统默认、再按表）、写一次性 sh 启动脚本、等脚本删掉自己才算打开；启动脚本文件的写入与清理和 macOS 共用 `electron/terminal-launcher-files.ts`（Linux 版拆分 ⑤）
+- `electron/linux-tray-host.ts` — 启动时问会话总线有没有托盘接收方（`org.kde.StatusNotifierWatcher`），只跑固定路径的 dbus-send / gdbus；没有就不建托盘、关窗直接退出（Linux 版拆分 ⑩）
+- `electron/linux-autostart.ts` — Linux 的开机自动启动：写 XDG autostart 里的 .desktop 文件，读写走 safe-local-data（Linux 版拆分 ⑩）
+- `electron/linux-ime.ts` — Wayland 会话下给 Chromium 开文字输入协议的启动开关，中文输入法才收得到输入（Linux 版拆分 ⑩）
+- `electron/linux-os-release.ts` — 读 `/etc/os-release` 得到发行版名字，给检查页、复制给客服和启动日志（Linux 版拆分 ⑩）
+- `electron/linux-grok.ts` — Grok 的 Linux 安装核对与卸载：没有 codesign，改为和 npm 官方锁校验过的平台包逐字节对账，再核版本；链接快照与回滚复用 `macos-grok.ts`（Linux 版拆分 ③）
 
 ## `electron/` 主进程
 
@@ -27,6 +44,7 @@
 - `security.ts` (179) — URL 策略。外链白名单要求 `href` **全等**匹配
 - `windows-elevation.ts` (462) — 提权模式判定、可信命令断言、PowerShell 启动计划
 - `windows-machine-paths.ts` (532) — 从注册表推导真实系统根 + ACL 校验
+- `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），只给推 Grok 跑钩子的 shell 与从星芒打开 Grok 用，不进提权路径解析
 - `trusted-temp.ts` (494) — 受 ACL 保护的临时目录
 - `managed-path-trust.ts` / `system-shell.ts`
 
@@ -34,17 +52,23 @@
 - `system-service.ts` (3751) — **最大模块**。`createSystemService` 之前是纯函数库（可直接单测），它之后是闭包工厂
 - `tool-installation.ts` (705) / `node-runtime.ts` (1198) / `grok-installer.ts` (662) / `grok-update.ts` (161)
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
+- `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面
 
 **配置与数据**
 - `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**；打开目录时替用户写下的工作区信任也在这里，字段实测记录见 `docs/WORKSPACE-TRUST.md`
+- `codex-config-syntax.ts` — 判断 Codex 自己读不读得了 `config.toml`（读不了时桌面端停在「无法加载组织设置」，首页写「配置文件坏了」）。本软件用的 `@iarna/toml` 只懂 TOML 0.5、Codex 读 TOML 1.1，所以只认两边都拒绝的那几类，比对记录在文件头
+- `cli-config-health.ts` — 判断 Claude Code、Gemini CLI 自己读不读得了 `settings.json`，Codex 读不读得了 `auth.json`（读不了时首页同样写「配置文件坏了」）。本软件自己的读法比这几个工具都宽，读得出 Key 不代表工具读得了；每条都拿真工具试过，版本写在各函数注释里
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
 - `claude-model-picker.ts` — Claude Code 的 `/model` 菜单：接当前账号时按 Key 实际可用的模型生成 `modelPicker` 与 `ANTHROPIC_DEFAULT_MODEL`、认出本软件写的菜单、切回官方时收回
+- `codex-model-catalog.ts` — Codex（命令行与桌面端共用）的型号名单：随包官方名单（`bundled-catalog/codex-models`，按 sha256 钉住）按账号挑出能用的型号，写成 `CODEX_HOME/xingmang-models.json` 并在 `config.toml` 顶层指向它；本机命令行或桌面端太旧、默认型号不在名单里就不写。何时重写见 `tool-model-check.ts`，版本变了在本机就地收回见 `system-service.ts` 的 `takeBackUnreadableCodexModelCatalog`
+- `tool-model-check.ts` — 打开工具前每天核一次账号能用的型号：默认型号下架了交给界面问，Claude Code 菜单与 Codex 型号名单悄悄刷新；开机另对一次 Codex 型号名单（`syncPicker`）
 - `app-settings.ts` (453) / `backups.ts` (891)
 - `codex-sessions.ts` (1427) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
 - `provider-sessions.ts` (1199) — 四工具统一会话视图
 - `codex-desktop.ts` (497) — 桌面端清单/包解析的纯函数层
-- `codex-desktop-service.ts` (2211) — 桌面端探测、镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）
+- `codex-desktop-service.ts` (2211) — 桌面端探测、OpenAI 官网离线安装包与镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）；Windows 上的安装顺序是微软商店 → 官网离线安装包 → 国内镜像
+- `claude-desktop-msix-installer.ts` / `claude-desktop-install-failure.ts` — Windows 上 Claude Desktop 的第二路：系统 winget 装不上或没有时，从 Claude 官网下离线 MSIX（只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）；失败那句话主进程与渲染层共用
 
 **账号与计费（新增）**
 - `new-api-client.ts` (3377) — **唯一对账号后端出网的模块**，I10 的参考实现：`performRequest` 超时 + 体积上限 + `redirect:'manual'` 且拒绝 3xx 且校验响应 origin（三重）+ 强制 https 拒内嵌凭据；上游文案 `redactCommandText` 脱敏 + 剥控制字符 + 截 300 字
@@ -62,8 +86,9 @@
 - `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
 - `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
 - `canvas-project-package.ts` / `canvas-prompt-preset-store.ts` — 项目导入导出（导出会清理凭据/本机路径/远端 URL）与提示词预设
-- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` / `ai-output-location.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘（保存位置在「文档/XingmangAI」，启动时把老版本安装目录旁 output 里的作品搬过来）
+- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` / `ai-output-location.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘（保存位置在「文档/XingmangAI」，「文档」不让写时启动即改用主目录下的 XingmangAI（`chooseAiOutputRoot`，试写与权限判定在 `documents-fallback.ts`）；启动时把老版本安装目录旁 output 里的作品搬过来）
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（`userData/chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写入和大小上限
+- `ai-chat-attachments.ts` — AI 聊天里附带的图片：只从系统选文件框和剪贴板在主进程里取，太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片资产目录；发送时按账号读回转成 data URI（`chat:pick-images` / `chat:paste-image`）
 - `chat-credential-coordinator.ts` (211) — **按分组按需签发并缓存 Key**（`xingmang-chat-*`）：命中缓存先验、失效自愈（被吊销就重签）、账号切换即失效。这是 2026-08-12 画布 503（令牌分组下无可用渠道）的根治方案
 - `canvas-v2/` 是当前画布源码；`dist-canvas/` 是构建产物**不入 git**。`npm run canvas:prepare` 构建源码并由 `scripts/copy-canvas-assets.mjs` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖）。云端测试包与 CI 正式包都现场构建 `canvas-v2` 打入
 

@@ -5,12 +5,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import {
+  cleanCommandOutput,
   isUserWritableResolvedPathSync,
   trustedCommandEnvironment,
   type CommandSpec,
 } from './command-runner'
 import { cliExitHintLines } from './cli-exit-hint'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const execFileAsync = promisify(execFile)
 
@@ -391,6 +393,12 @@ export interface WindowsCliExecutionModeResolution {
   elapsedMs: number
   /** 只有探测失败时才有；这时 mode 可能是 same-user，也可能是 trusted-only。 */
   probeFailure?: WindowsExecutionProbeFailure
+  /**
+   * 这个进程是不是 High 完整性：自带 Administrator（没开管理员批准模式）、关了 UAC、右键
+   * 「以管理员身份运行」都是。这时提权装 Node.js、Codex 桌面端、装更新都不会再弹授权窗口，
+   * 界面就不说会弹（已知19）。只有读出了完整性标签才有这一项。
+   */
+  highIntegrity?: boolean
 }
 
 const PROBE_FAILURE_DETAIL_LIMIT = 300
@@ -477,13 +485,14 @@ export async function resolveWindowsCliExecutionModeDetailed(
   const platform = options.platform ?? process.platform
   const now = options.now ?? Date.now
   const startedAt = now()
+  let integrityRid: number | null = null
   const settle = (mode: WindowsCliExecutionMode, probeFailure?: WindowsExecutionProbeFailure) => ({
     mode,
     elapsedMs: Math.max(0, now() - startedAt),
     ...(probeFailure ? { probeFailure } : {}),
+    ...(integrityRid === null ? {} : { highIntegrity: integrityRid >= highMandatoryIntegrityRid }),
   })
   if (platform !== 'win32') return settle('same-user')
-  let integrityRid: number | null = null
   try {
     // Below High integrity the token cannot be the elevated half of a split
     // admin token, which is the only case that answers trusted-only, so the
@@ -522,6 +531,20 @@ function requireWindowsLaunchValue(value: string, label: string): string {
 // one literal copy of the second, so doubling each one in place keeps the text.
 export function powerShellLiteral(value: string): string {
   return `'${value.replace(/['\u2018-\u201b]/g, '$&$&')}'`
+}
+
+// Some path parameters are always resolved as wildcard patterns and have no
+// -LiteralPath twin, Start-Process -WorkingDirectory among them
+// (PathUtils.ResolveFilePath without isLiteralPath). Unescaped, D:\作业[1]
+// means "作业1" and fails with "the wildcard path ... did not resolve to a
+// file". The backtick is the escape character itself, so it is escaped too, or
+// a name such as a`[1] turns back into a pattern. [WildcardPattern]::Escape
+// leaves the backtick alone before PowerShell 7.6, Windows PowerShell 5.1 (the
+// shell tried first) included, which is why this is done here and not in the
+// script. Wrap the result in powerShellLiteral: a verbatim string hands the
+// backticks over as typed.
+export function escapePowerShellWildcard(value: string): string {
+  return value.replace(/[`[\]*?]/g, '`$&')
 }
 
 export function encodeWindowsPowerShellCommand(script: string): string {
@@ -571,6 +594,11 @@ function windowsCliExitHint(lines: readonly string[], color: 'Cyan' | 'Yellow'):
   return ["Write-Host ''", ...lines.map((line) => `Write-Host ${powerShellLiteral(line)} -ForegroundColor ${color}`)].join('; ')
 }
 
+export const cliTerminalScriptModules = ['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'] as const
+// The broker gets 10 s to hand back the terminal's process id (launchCliPowerShell).
+export const cliLaunchBrokerModules = ['Microsoft.PowerShell.Management'] as const
+export const cliLaunchBrokerTimeoutMs = 10_000
+
 export function buildCliLaunchPlan(
   request: WindowsCliLaunchRequest,
   resolvedPowerShellExecutable = windowsPowerShellExecutable(),
@@ -593,6 +621,10 @@ export function buildCliLaunchPlan(
     // 引入一次 PATH 查找系统可执行文件（I14）。设不上只是继续乱码，不能因此让
     // 用户点「打开」后 CLI 根本起不来，所以整句吞掉异常。
     'try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
+    // 以管理员身份打开时这个窗口的基底是 trustedCommandEnvironment，下面的 Remove-Item /
+    // Set-Location / Write-Host 留给 PowerShell 自己找模块，要先把系统模块整个扫一遍
+    // （CI 上 20 多秒），工具迟迟不出来。先按名字导入。
+    buildPowerShellModuleImportStatement(cliTerminalScriptModules),
     `$Host.UI.RawUI.WindowTitle = ${powerShellLiteral(title)}`,
     `$env:TERM = 'xterm-256color'`,
     `$env:COLORTERM = 'truecolor'`,
@@ -617,9 +649,18 @@ export function buildCliLaunchPlan(
     terminalEncodedCommand,
   ]
   const brokerScript = [
+    // 这一步的报错由 launchCliPowerShell 按 UTF-8 读回，describeWindowsCliLaunchError 再按
+    // 中文字认原因；中文 Windows 默认 GBK，不切过来客户和客服看到的都是乱码，中文那几条
+    // 也认不上。这个脚本不读控制台输入，所以只切输出；设不上照旧往下走，同终端窗口那句。
+    'try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
+    buildPowerShellModuleImportStatement(cliLaunchBrokerModules),
     '$ErrorActionPreference = "Stop"',
-    `$process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(workspace)} -WindowStyle Normal -PassThru`,
-    '[Console]::Out.WriteLine($process.Id)',
+    // -WorkingDirectory 把方括号当通配符，文件夹叫「作业[1]」时每次都打不开，所以先转义；
+    // 终端里那句 Set-Location 用的是 -LiteralPath，照原样给。
+    // 出错时只把原因写回去：留给 PowerShell 自己报，它会包上一层 CLIXML，再附上出错的那行
+    // 脚本，错误框里就是一串 XML。写 $_ 而不是 $_.Exception.Message：通配符那种报错的原因
+    // 只在 ErrorDetails 里，异常本身只有一句「找不到文件」，还会被认成 PowerShell 不见了。
+    `try { $process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(escapePowerShellWildcard(workspace))} -WindowStyle Normal -PassThru; [Console]::Out.WriteLine($process.Id) } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`,
   ].join('; ')
 
   return {
@@ -636,20 +677,79 @@ export function buildCliLaunchPlan(
   }
 }
 
+// The broker's whole script travels base64-encoded on its command line, folder and home
+// directory included, where the log's home-directory redaction cannot reach them. Node's
+// message has it as -EncodedCommand <base64>; PowerShell's own error view quotes the line
+// that launches the terminal, '-EncodedCommand', '<base64>'.
+function redactEncodedCommand(value: string): string {
+  return value.replace(/(-EncodedCommand['",\s]+)[A-Za-z0-9+/=]+/gi, '$1[REDACTED]')
+}
+
 function compactErrorDetail(value: string): string {
-  return value
-    .replace(/-EncodedCommand\s+\S+/gi, '-EncodedCommand [REDACTED]')
+  return redactEncodedCommand(value)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 400)
 }
 
+const clixmlEntities: Record<string, string> = { lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' }
+
+// XML escapes first, then PowerShell's own _xHHHH_ escapes for line breaks and other
+// characters XML cannot hold; a literal "_x" in the text was itself written as _x005F_x.
+function decodeClixmlText(value: string): string {
+  return value
+    .replace(/&(lt|gt|quot|apos|amp);/g, (_match, name: string) => clixmlEntities[name])
+    .replace(/_x([0-9A-Fa-f]{4})_/g, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+}
+
+// What the error view puts around the cause, none of it the cause. Windows PowerShell 5.1
+// says where the error happened, "At line:1 char:236" or "所在位置 行:1 字符: 236", then
+// quotes the script and gives the category on lines starting with "+"; a failed command's
+// cause comes before all that, but that of a script it never ran, such as one an antivirus
+// blocked, after the quote. PowerShell 7 opens the latter with the reason alone
+// ("ParserError:"), "Line |" and the quote as "1 | ...", then puts a row of "~" and the
+// cause behind a "|".
+const errorViewDecoration = /^(?:At line:\d+ char:\d+|所在位置 行:\d+ 字符: ?\d+|\+|Line \|$|\d+ \||~+$|[A-Za-z][\w.-]*:$)/
+// A failed command's view opens with its name, "Start-Process : " or "Start-Process: ".
+const errorViewCommandName = /^[A-Z][a-z]+-[A-Za-z]+ ?: /
+
+// The broker's catch writes the cause alone, as plain text. Should the catch fail too, as
+// its [Console] call does under Constrained Language Mode, or the script never run at all,
+// PowerShell reports the error itself, and for a redirected stream the host wraps the
+// report in CLIXML: <S S="Error"> elements holding the error view. Windows PowerShell 5.1
+// breaks it over lines at the console width; PowerShell 7 colours it with ANSI escapes
+// (both seen on the Windows CI runner).
+export function parseWindowsCliLaunchCause(stderr: string): string | null {
+  const text = cleanCommandOutput(stderr)
+  // The host writes the CLIXML header the first time it reports anything, progress
+  // included, but holds the XML until it exits, so what the catch wrote lands outside both.
+  const written = text.replace(/#< CLIXML/g, '').replace(/<Objs[\s\S]*?(?:<\/Objs>|$)/g, '').trim()
+  if (written) return written
+  const lines = cleanCommandOutput([...text.matchAll(/<S S="Error">([^<]*)<\/S>/g)]
+    .map((match) => decodeClixmlText(match[1]))
+    .join(''))
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^\|\s*/, ''))
+  // The first run of lines that are not decoration: 5.1 wraps the category lines as well,
+  // and what they spill onto the next line does not start with "+".
+  const start = lines.findIndex((line) => line && !errorViewDecoration.test(line))
+  if (start < 0) return null
+  const end = lines.findIndex((line, index) => index > start && errorViewDecoration.test(line))
+  const cause = lines.slice(start, end < 0 ? undefined : end).filter(Boolean).join(' ')
+  return cause.replace(errorViewCommandName, '') || null
+}
+
 export function describeWindowsCliLaunchError(error: unknown): string {
   const candidate = error as NodeJS.ErrnoException & { stderr?: unknown; stdout?: unknown; message?: unknown }
-  const detail = compactErrorDetail([
-    typeof candidate?.stderr === 'string' ? candidate.stderr : '',
-    typeof candidate?.message === 'string' ? candidate.message : String(error ?? ''),
-  ].filter(Boolean).join(' '))
+  // When the broker ran and failed, execFile's message only puts the whole command line in
+  // front of its stderr, so the cause is read from stderr alone; a timeout leaves none and
+  // falls through to the advice to look at the log. When PowerShell could not be started at
+  // all, execFile still attaches an empty stderr, but the error names the spawn syscall and
+  // its message says what went wrong, as do errors raised in launchCliPowerShell itself.
+  const stderr = typeof candidate?.stderr === 'string' && typeof candidate.syscall !== 'string' ? candidate.stderr : null
+  const detail = compactErrorDetail(stderr !== null
+    ? parseWindowsCliLaunchCause(stderr) ?? ''
+    : typeof candidate?.message === 'string' ? candidate.message : String(error ?? ''))
   const code = typeof candidate?.code === 'string' ? candidate.code.toUpperCase() : ''
   if (code === 'ENOENT' || /cannot find|找不到.*文件|系统找不到/i.test(detail)) {
     return '系统 PowerShell 启动文件不存在或已被移除，请修复 Windows PowerShell 或安装 PowerShell 7'
@@ -669,6 +769,41 @@ export function describeWindowsCliLaunchError(error: unknown): string {
     : 'Windows 无法启动 PowerShell，请查看反馈与诊断日志'
 }
 
+/** What the broker and Node reported about a launch that failed, for the log only. */
+export interface WindowsCliLaunchOutput {
+  stderr: string | null
+  message: string | null
+  /** The broker's exit code, or the errno when PowerShell could not be started at all. */
+  code: number | string | null
+  /** Set, along with killed, when the broker ran past cliLaunchBrokerTimeoutMs. */
+  signal: string | null
+  killed: boolean
+}
+
+export function buildWindowsCliLaunchOutput(error: unknown): WindowsCliLaunchOutput {
+  const candidate = error as { stderr?: unknown; message?: unknown; code?: unknown; signal?: unknown; killed?: unknown } | null | undefined
+  const stderr = typeof candidate?.stderr === 'string' ? candidate.stderr.trim() : ''
+  const code = candidate?.code
+  return {
+    stderr: stderr ? redactEncodedCommand(stderr) : null,
+    message: typeof candidate?.message === 'string' ? redactEncodedCommand(candidate.message) : null,
+    code: typeof code === 'number' || typeof code === 'string' ? code : null,
+    signal: typeof candidate?.signal === 'string' ? candidate.signal : null,
+    killed: candidate?.killed === true,
+  }
+}
+
+export class WindowsCliLaunchError extends Error {
+  /** The message is all the error dialog shows; the rest goes to the log from here. */
+  readonly launchOutput: WindowsCliLaunchOutput
+
+  constructor(message: string, launchOutput: WindowsCliLaunchOutput) {
+    super(message)
+    this.name = 'WindowsCliLaunchError'
+    this.launchOutput = launchOutput
+  }
+}
+
 function assertAccessibleWorkspace(workspace: string): void {
   try {
     if (!fs.statSync(workspace).isDirectory()) throw new Error('not-directory')
@@ -682,50 +817,80 @@ function assertAccessibleWorkspace(workspace: string): void {
   }
 }
 
+/** 命令窗口里给人看的几句话，全是固定文案，不许拼进渲染进程传来的字。 */
+export interface UnelevatedCommandWindowText {
+  title: string
+  /** 命令开始前那一行。 */
+  running: string
+  /** 命令退出码为 0 时那一行。 */
+  succeeded: string
+  /** 命令失败时那一行，{code} 换成退出码。 */
+  failed: string
+}
+
 export interface UnelevatedCommandWindowRequest {
   /** 固定拼装的命令行，禁止直接拼入渲染进程传来的字符串。 */
   commandLine: string
-  title: string
+  text: UnelevatedCommandWindowText
   env?: NodeJS.ProcessEnv
   machinePaths?: WindowsMachinePaths
 }
 
+/**
+ * 拼出那个 .cmd。命令行只许 ASCII；说明文字可以是中文（已知33），但不许带 cmd 会当成
+ * 命令符号的字（引号、百分号、&|<>^、半角括号、换行）：它们原样写进批处理，带上就成了
+ * 另一条命令。
+ *
+ * 文件按 UTF-8（不带 BOM）写。cmd.exe 按当前代码页一行一行地读 .cmd：头两行只有 ASCII，
+ * 第二行把这个窗口的代码页换成 UTF-8（65001），之后读到的每一行都按 UTF-8 解，中文才不乱码。
+ * 以前这里全写英文，理由是「chcp 管不到解析」；那只对 chcp 那一行之前读进来的内容成立。
+ * 这一点要在 Windows 真机上看过（星芒本来只支持 Windows 10 以上）。
+ *
+ * chcp 是 System32 里的外部程序，按固定解析出来的绝对路径叫它，不在窗口里查 PATH（I14 的
+ * 口径；这个窗口虽然已经降权，也不多开这个口子）。
+ */
+export function buildUnelevatedCommandScript(commandLine: string, text: UnelevatedCommandWindowText, chcpPath: string): string {
+  if (!/^[\x20-\x7E]+$/.test(commandLine)) {
+    throw new Error('降权命令包含非 ASCII 字符，已拒绝执行')
+  }
+  if (!/^[\x20-\x7E]+$/.test(chcpPath) || chcpPath.includes('"') || !path.win32.isAbsolute(chcpPath)) {
+    throw new Error('系统 chcp 路径无效，已拒绝执行')
+  }
+  for (const line of [text.title, text.running, text.succeeded, text.failed.replaceAll('{code}', '')]) {
+    if (!line.trim() || /["%&|<>^()\r\n]/.test(line)) throw new Error('降权命令窗口的说明文字含有命令符号，已拒绝执行')
+  }
+  return [
+    '@echo off',
+    `"${chcpPath}" 65001 >nul`,
+    `title ${text.title}`,
+    `echo ${text.running}`,
+    'echo.',
+    `call ${commandLine}`,
+    'echo.',
+    `if errorlevel 1 (echo ${text.failed.replaceAll('{code}', '%errorlevel%')}) else (echo ${text.succeeded})`,
+    'echo.',
+    'pause',
+    'del "%~f0"',
+    '',
+  ].join('\r\n')
+}
+
 /** 从提权进程以登录用户身份打开一个命令窗口。explorer.exe 始终以 shell 用户的
  * 令牌运行，它拉起的进程因此不会继承管理员令牌——这是不引入原生模块就能降权的
- * 常规做法。用于执行位于用户可写目录、不应以管理员身份运行的卸载脚本。
- *
- * 批处理内容一律使用 ASCII：cmd.exe 按当前代码页逐行解析 .cmd，写入 UTF-8 中文
- * 会乱码，而 chcp 只对其后的输出生效、管不到解析本身。 */
+ * 常规做法。用于执行位于用户可写目录、不应以管理员身份运行的卸载脚本。 */
 export async function launchUnelevatedCommandWindow(
   request: UnelevatedCommandWindowRequest,
 ): Promise<void> {
   if (process.platform !== 'win32') {
     throw new Error('降权命令窗口仅支持 Windows')
   }
-  if (!/^[\x20-\x7E]+$/.test(request.commandLine)) {
-    throw new Error('降权命令包含非 ASCII 字符，已拒绝执行')
-  }
   const machinePaths = request.machinePaths ?? resolveWindowsMachinePaths()
+  const script = buildUnelevatedCommandScript(request.commandLine, request.text, path.win32.join(machinePaths.system32, 'chcp.com'))
   const explorer = path.win32.join(machinePaths.systemRoot, 'explorer.exe')
   if (!fs.existsSync(explorer)) throw new Error('未找到 Windows 资源管理器，无法降权执行')
 
-  const script = [
-    '@echo off',
-    `title ${request.title}`,
-    `echo Running: ${request.commandLine}`,
-    'echo.',
-    `call ${request.commandLine}`,
-    'echo.',
-    'if errorlevel 1 (echo FAILED with code %errorlevel%) else (echo Completed successfully.)',
-    'echo.',
-    'echo You can close this window and refresh the app.',
-    'pause',
-    'del "%~f0"',
-    '',
-  ].join('\r\n')
-
   const scriptPath = path.join(os.tmpdir(), `xingmang-uninstall-${randomUUID()}.cmd`)
-  await fs.promises.writeFile(scriptPath, script, { encoding: 'ascii', flag: 'wx', mode: 0o600 })
+  await fs.promises.writeFile(scriptPath, script, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
   const child = spawn(explorer, [scriptPath], {
     detached: true,
     stdio: 'ignore',
@@ -752,7 +917,7 @@ export async function launchCliPowerShell(
       cwd: plan.cwd,
       env: request.env ?? process.env,
       windowsHide: plan.windowsHide,
-      timeout: 10_000,
+      timeout: cliLaunchBrokerTimeoutMs,
       maxBuffer: 64 * 1024,
       encoding: 'utf8',
     })
@@ -760,6 +925,6 @@ export async function launchCliPowerShell(
       throw new Error('PowerShell 启动代理未返回有效的终端进程 ID')
     }
   } catch (error) {
-    throw new Error(describeWindowsCliLaunchError(error))
+    throw new WindowsCliLaunchError(describeWindowsCliLaunchError(error), buildWindowsCliLaunchOutput(error))
   }
 }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyNetworkFailure,
+  isHtmlContentType,
   isJsonContentType,
   isServiceUnavailableResponse,
   matchNetworkFailureMessage,
+  networkFailureCode,
   networkFailureMessages,
   networkFailureReasonForMessage,
   parsesAsJsonObject,
@@ -119,6 +121,46 @@ describe('restricted network failure classification', () => {
   })
 })
 
+describe('network failure codes for the log', () => {
+  it('takes the Chromium code out of the message net.fetch throws', () => {
+    expect(networkFailureCode(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))).toBe('ERR_TUNNEL_CONNECTION_FAILED')
+    expect(networkFailureCode(new Error('net::ERR_PROXY_CONNECTION_FAILED'))).toBe('ERR_PROXY_CONNECTION_FAILED')
+  })
+
+  it('takes the errno a fetch failure carries on its cause', () => {
+    expect(networkFailureCode({ cause: { code: 'ECONNREFUSED' } })).toBe('ECONNREFUSED')
+    const cause = Object.assign(new Error('getaddrinfo EAI_AGAIN relay.example'), { code: 'EAI_AGAIN' })
+    expect(networkFailureCode(new TypeError('fetch failed', { cause }))).toBe('EAI_AGAIN')
+  })
+
+  // 页面加载失败时 Electron 把整个地址写进原错误，付款页的地址里带着订单号和签名。
+  it('gives the code of a page that failed to load without any of its address', () => {
+    const address = 'https://pay.example.com/submit?out_trade_no=XM-1&sign=private-signature'
+    const error = Object.assign(new Error(`ERR_NAME_NOT_RESOLVED (-105) loading '${address}'`), {
+      errno: -105,
+      code: 'ERR_NAME_NOT_RESOLVED',
+      url: address,
+    })
+    expect(networkFailureCode(error)).toBe('ERR_NAME_NOT_RESOLVED')
+  })
+
+  it('answers null rather than any of the text when there is no code', () => {
+    expect(networkFailureCode(new Error('something unexpected'))).toBeNull()
+    // 大写的英文词不是错误码：errno 只认挂在 code 上的那个。
+    expect(networkFailureCode(new Error('ERROR proxy refused the request'))).toBeNull()
+    expect(networkFailureCode(new Error(networkFailureMessages.proxy))).toBeNull()
+    expect(networkFailureCode(null)).toBeNull()
+    expect(networkFailureCode(undefined)).toBeNull()
+    expect(networkFailureCode(42)).toBeNull()
+  })
+
+  it('stops walking causes instead of following a cycle', () => {
+    const outer: { message: string; cause?: unknown } = { message: 'outer' }
+    outer.cause = outer
+    expect(networkFailureCode(outer)).toBeNull()
+  })
+})
+
 describe('restricted network failure copy', () => {
   it('round-trips every reason through the message the main process throws', () => {
     for (const reason of Object.keys(networkFailureMessages) as NetworkFailureReason[]) {
@@ -206,5 +248,15 @@ describe('service unavailable responses', () => {
     expect(parsesAsJsonObject('{"error":{}}')).toBe(true)
     expect(parsesAsJsonObject('<html></html>')).toBe(false)
     expect(parsesAsJsonObject('')).toBe(false)
+  })
+
+  it('tells a web page from the answers the service gives', () => {
+    expect(isHtmlContentType('text/html; charset=utf-8')).toBe(true)
+    expect(isHtmlContentType(' TEXT/HTML')).toBe(true)
+    expect(isHtmlContentType('application/xhtml+xml')).toBe(true)
+    expect(isHtmlContentType('application/json')).toBe(false)
+    expect(isHtmlContentType('text/event-stream')).toBe(false)
+    expect(isHtmlContentType('text/plain')).toBe(false)
+    expect(isHtmlContentType(null)).toBe(false)
   })
 })

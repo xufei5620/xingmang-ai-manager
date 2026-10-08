@@ -21,7 +21,7 @@
 | 平台 | 里面是什么 | 怎么装 |
 |---|---|---|
 | Windows | `星芒AI管理工具 Setup <版本>.exe`，外加 `.blockmap` 和 `latest.yml` | 双击 exe。会弹「未知发布者」，这是预期的，0.2.7 本来就没有代码签名证书 |
-| macOS | 两个 `.dmg`（`Apple-Silicon-arm64` / `Intel-x64`）、两个 `.zip`、`latest-mac.yml`、`SHA256SUMS` | 按自己的芯片打开对应的 dmg（「关于本机」里写 Apple M 系列就选 Apple-Silicon，写 Intel 就选 Intel），把 App 拖进「应用程序」，**第一次要右键点图标选「打开」**，直接双击会被拦 |
+| macOS | 两个 `.dmg`（`Apple-Silicon-arm64` / `Intel-x64`）、两个 `.zip`、`latest-mac.yml`、`SHA256SUMS` | 按自己的芯片打开对应的 dmg（「关于本机」里写 Apple M 系列就选 Apple-Silicon，写 Intel 就选 Intel），把 App 拖进「应用程序」，**第一次先双击一次（提示框点「完成」），再去「系统设置 → 隐私与安全性」点「仍要打开」并输密码**；macOS 15 起右键「打开」已经放不了行 |
 
 `.blockmap` / `latest.yml` / `latest-mac.yml` 是给自动更新用的，本地安装用不到，留着是为了这份产物和正式发布的产物形状完全一致。
 
@@ -117,17 +117,19 @@ node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$RU
 
 ### 5.1 一次发布，两次批准
 
-工作流分三个作业：
+工作流分这几个作业：
 
+0. **release-tag** —— 一开始跑就把这一版的 tag 占在要出包的 commit 上，后面的作业都等它。这个版本号已经从别的 commit 发过、线上已经比它高、或者被撤回，就在这里停下，不出包、不用批（`docs/RELEASING.md`「触发时就占 tag」）。它拿着写权限，所以不装任何依赖。
 1. **windows-build** —— 走 `release:build:unsigned` 的完整发布门禁，带第 4 节的加速线路。不读任何 secret。
 2. **macos-build** —— 用**已发布的那张签名证书**出双架构包，带加速线路，出完立刻把包启动一遍。它要读 `.p12`，所以挂 `environment: release`，会停下来等第一次 Approve。
-3. **publish** —— 传 R2、打 tag、建 Release。同样挂 `environment: release`，等第二次 Approve。
+3. **linux-checks / linux-build** —— 先在 x64 上跑一遍类型检查和全部测试，再 x64、arm64 各出一个 deb、真装真开。不读 secret、不用批准。传不传出去看仓库变量 `XINGMANG_PUBLISH_LINUX`，没设就只留在 Actions artifact 里，红了也不挡另外两个平台（`docs/RELEASING.md`「Linux 开关」）。
+4. **publish** —— 传 R2，在占好的 tag 上建 Release。同样挂 `environment: release`，等第二次 Approve。
 
 第一次批准放行的只是「用真证书出一份包」，产物只躺在 Actions artifact 里，对外什么都没发生。把包下下来装机验收，过了再批第二次。
 
 macOS 这一半与第 1 节那条测试路径的区别就在这张证书：测试包用 runner 现场生成的一次性身份，**绝不能**进更新源；正式包必须沿用已发布的那张，换一张等于让所有已装的 Mac 客户静默失去自动更新（原理见 `docs/RELEASING.md` 的 2.2）。签名预检会拿证书指纹跟 `scripts/macos-published-signing-identity.cjs` 里登记的台账对账，对不上直接失败。
 
-上传顺序固定为**先安装包和 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`**；反了的话用户会在文件还没传完时就被告知有新版本。`scripts/publish-workflow-config.test.cjs` 把这个顺序钉住了。
+上传顺序固定为**先安装包和 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`（Linux 开关打开时还有两份 Linux 清单）**；反了的话用户会在文件还没传完时就被告知有新版本。`scripts/publish-workflow-config.test.cjs` 把这个顺序钉住了。
 
 ### 5.2 要准备的 secret
 

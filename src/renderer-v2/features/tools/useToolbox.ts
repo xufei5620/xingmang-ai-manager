@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, ExternalToolId, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
 import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
 import { errorMessage } from '../../business-common'
+import { isWindowInFront, resolveInstallNoticeOutcome, type InstallNoticePlan } from './install-notice'
+import { installProgressLabel } from './install-stage-text'
 
 export interface ToolJob {
   label: string
@@ -13,11 +15,17 @@ export interface ToolJob {
   cancellable?: boolean
   /** 取消已经发出去，还在等主进程收尾。 */
   cancelling?: boolean
+  /** 卸载也挂在工具编号下：别处据此分清是在装还是在卸；缺省 = 安装、更新这类（旧行为）。 */
+  kind?: 'uninstall'
 }
 
 export interface ToolJobOptions {
   /** 提供后工具行会出现「取消」；返回主进程是否真的接受了这次取消。 */
   cancel?: () => Promise<InstallCancelResult>
+  /** 装好、更新好或没装上时发一条系统通知（设置里「安装 / 更新结果」管着）；缺省不发。 */
+  notice?: InstallNoticePlan
+  /** 见 ToolJob.kind。 */
+  kind?: ToolJob['kind']
 }
 
 /** 让长任务在运行途中改写工具行上那句话（安装完成后还要同步 Key、重新检测）。 */
@@ -33,6 +41,15 @@ export const installedToolSyncLabel = '安装完成，正在同步账号 Key 并
  */
 export function planConfigRefresh(input: { hasSnapshot: boolean; scansInFlight: boolean }): 'config-only' | 'rescan' {
   return input.hasSnapshot || input.scansInFlight ? 'config-only' : 'rescan'
+}
+
+/**
+ * 刚打开的那个客户端先写成「运行中」：后台那次悄悄重扫回来之前，那一行就该是这样（第三十一批 C）。
+ * 别的行原样不动，已经是「运行中」的不换新数组。
+ */
+export function withExternalRunning(statuses: ExternalClientStatus[], tool: ExternalToolId): ExternalClientStatus[] {
+  if (!statuses.some((entry) => entry.tool === tool && !entry.running)) return statuses
+  return statuses.map((entry) => entry.tool === tool ? { ...entry, running: true } : entry)
 }
 
 /**
@@ -57,6 +74,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const [externalLoading, setExternalLoading] = useState(false)
   const [externalError, setExternalError] = useState('')
   const externalRequest = useRef(0)
+  // 真的检测回来过一次以后，换账号重跑开机那段时不再要上次落盘的那份：主进程那时也只会回空列表。
+  const externalScanned = useRef(false)
   const [jobs, setJobs] = useState<Record<string, ToolJob>>({})
   const request = useRef(0)
   const active = useRef(true)
@@ -83,21 +102,47 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     externalRequest.current++
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
-  const refreshExternal = useCallback(async (force = false) => {
+  // quiet 只给打开客户端之后那一次：重扫换来的只是那一行的「运行中」，不该让三行按钮一起变灰、
+  // 右上角转圈。没读到就留着上次的结果，不出红条（第三十一批 C）。
+  const refreshExternal = useCallback(async (force = false, options: { quiet?: boolean } = {}) => {
     if (!bridge || currentScope.current !== scope) return
     const id = ++externalRequest.current
-    setExternalLoading(true); setExternalError('')
+    if (!options.quiet) { setExternalLoading(true); setExternalError('') }
     try {
       const statuses = await createToolsApi(bridge).readExternal(force)
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalClients(statuses)
+      externalScanned.current = true
+      if (active.current && currentScope.current === scope && id === externalRequest.current) {
+        setExternalClients(statuses)
+        if (options.quiet) setExternalError('')
+      }
     } catch (cause) {
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
+      const current = active.current && currentScope.current === scope && id === externalRequest.current
+      // 手上只有开机先摆的上次结果（cachedAt）时没读到：撤下旧的，同以前开机没读到一样只留红条和「重新检测」。
+      if (current) setExternalClients((rows) => rows.some((entry) => entry.cachedAt) ? [] : rows)
+      if (options.quiet) return
+      if (current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
+  // 开机首屏那一次：先摆上次落盘的客户端检测结果（cachedAt），主进程只读文件、不起盘点（已知13）。
+  // 真的那轮照旧排在首屏扫描之后。读的这一下里真的那轮已经开始、或手上已经有结果，就不拿旧的盖它。
+  const showCachedExternal = useCallback(async () => {
+    if (!bridge || externalScanned.current || currentScope.current !== scope) return
+    const id = externalRequest.current
+    const statuses = await createToolsApi(bridge).readCachedExternal().catch((): ExternalClientStatus[] => [])
+    if (!statuses.length || !active.current || currentScope.current !== scope || id !== externalRequest.current) return
+    setExternalClients((current) => current.length ? current : statuses)
+  }, [bridge, scope])
+  // 打开客户端以后：先把那一行写成「运行中」，再在后台悄悄核一次（主进程打开后已作废缓存）。
+  const noteExternalLaunched = useCallback((tool: ExternalToolId) => {
+    if (currentScope.current !== scope) return
+    setExternalClients((current) => withExternalRunning(current, tool))
+    void refreshExternal(false, { quiet: true })
+  }, [refreshExternal, scope])
   // acceptCached 只在开机首屏那一次为真：主进程先回上次落盘的检测结果，这里先把它
-  // 画出来（loading 保持为真，按钮照旧不可点），紧接着在同一个请求号下再读一次真的
-  // ——它接的是主进程开窗前就起好的那一轮，不会多扫一遍。
+  // 画出来（loading 保持为真；首页这时只放开「打开」「接着聊」，见 Home 的
+  // launchReadyBeforeScan），紧接着在同一个请求号下再读一次真的——它接的是主进程
+  // 开窗前就起好的那一轮，不会多扫一遍。
   const load = useCallback(async (force: boolean, acceptCached: boolean) => {
     if (!bridge) return
     // Login completion can retain this callback from the preceding render.
@@ -139,51 +184,72 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
   }, [bridge])
   const refresh = useCallback((force = false) => load(force, false), [load])
-  /**
-   * 账号 Key 写完之后的刷新入口。只重读配置，不重跑环境探测、不清主进程缓存：
-   * 用户看到的还是那份「已连接当前账号」，但开机不用再把整轮扫描走第二遍。
-   * 手动「重新检测」仍走 refresh(true)，行为不变。
-   */
-  const refreshConfig = useCallback(async () => {
-    if (!bridge) return
+  // A saved model needs a confirmed config read: a failed read cannot be
+  // reported as a failed save, and an older account cannot commit the result.
+  const refreshSavedConfig = useCallback(async (isRequestCurrent: () => boolean): Promise<boolean> => {
+    if (!bridge) return false
     const requestScope = currentScope.current
-    if (planConfigRefresh({ hasSnapshot: snapshotRef.current !== null, scansInFlight: scansInFlight.current > 0 }) === 'rescan') {
-      await refresh().catch(() => undefined)
-      return
-    }
     const { config, failure } = await createToolsApi(bridge).readConfigPartition()
-    if (!active.current || currentScope.current !== requestScope) return
+    if (!active.current || currentScope.current !== requestScope || !isRequestCurrent()) return false
     if (config) {
       configRevision.current++
       latestConfig.current = config
       setSnapshot((current) => withToolboxConfig(current, config))
     }
     setFailures((current) => withConfigFailure(current, failure))
-  }, [bridge, refresh])
+    return config !== null
+  }, [bridge])
+  /**
+   * 账号 Key 写完之后的刷新入口。只重读配置，不重跑环境探测、不清主进程缓存：
+   * 用户看到的还是那份「已连接当前账号」，但开机不用再把整轮扫描走第二遍。
+   * 手动「重新检测」仍走 refresh(true)，行为不变。
+   */
+  const refreshConfig = useCallback(async () => {
+    if (planConfigRefresh({ hasSnapshot: snapshotRef.current !== null, scansInFlight: scansInFlight.current > 0 }) === 'rescan') {
+      await refresh().catch(() => undefined)
+      return
+    }
+    await refreshSavedConfig(() => true)
+  }, [refresh, refreshSavedConfig])
   useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
   useEffect(() => {
     active.current = true
     let current = true
     // 外部客户端那轮盘点（Windows 上是一整段 PowerShell）排在首屏扫描之后：
-    // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。
-    if (enabled) void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+    // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。等的这阵先摆上次的结果。
+    if (enabled) {
+      void showCachedExternal()
+      void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+    }
     return () => { current = false; active.current = false; request.current++; externalRequest.current++ }
-  }, [enabled, load, refreshExternal])
+  }, [enabled, load, refreshExternal, showCachedExternal])
   useEffect(() => {
     if (!bridge) return
-    const update = (key: string, label: string, percent?: number) => setJobs((current) => {
+    const update = (key: string, label: string, percent?: number, logLine = label) => setJobs((current) => {
       const job = current[key]
       // 展开原来的 job：进度事件不能把「能不能取消」「正在取消」这两个标记洗掉，
       // 否则安装一有输出，取消按钮就消失了。
       if (!job) return current
-      return { ...current, [key]: { ...job, label, percent, log: [...job.log, label].slice(-200) } }
+      return { ...current, [key]: { ...job, label, percent, log: [...job.log, logLine].slice(-200) } }
+    })
+    const appendLog = (key: string, line: string) => setJobs((current) => {
+      const job = current[key]
+      if (!job) return current
+      return { ...current, [key]: { ...job, log: [...job.log, line].slice(-200) } }
     })
     const callbacks = [
-      bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message, event.percent)),
+      bridge.onInstallProgress((event: InstallProgress) => {
+        // 进度那一行只放白话，主进程原话留在日志里给客服看。
+        const label = installProgressLabel(event)
+        if (label === null) appendLog(event.provider, event.message)
+        else update(event.provider, label, event.percent, event.message)
+      }),
       bridge.onNodeRuntimeInstallProgress((event) => update('node', event.message, event.percent ?? undefined)),
       bridge.onPythonRuntimeInstallProgress((event) => update('python', event.message, event.percent ?? undefined)),
       bridge.onGitRuntimeInstallProgress((event) => update('git', event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopInstallProgress((event) => update('codexDesktop', event.message, event.percent ?? undefined)),
+      // 打开桌面端最长要等近一分钟，这句「等了多久」替掉工具行上的「正在打开」。
+      bridge.onCodexDesktopLaunchProgress((event) => update('launch:codexDesktop', event.message)),
       bridge.onExternalClientInstallProgress((event) => update(event.tool, event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopStatus((event) => {
         desktopRevision.current++
@@ -198,7 +264,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     locks.current.add(key)
     cancelRequests.current.delete(key)
     if (options?.cancel) cancellers.current.set(key, options.cancel)
-    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel) } }))
+    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel), ...(options?.kind ? { kind: options.kind } : {}) } }))
     const report: ToolJobReport = (next, percent) => {
       if (!active.current) return
       setJobs((current) => {
@@ -208,16 +274,21 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
         return { ...current, [key]: { ...job, label: next, percent, log: [...job.log, next].slice(-200) } }
       })
     }
+    // 任务的 key 就是工具编号（claude、node、git……），主进程按它换成工具名。
+    const notify = (succeeded: boolean) => {
+      const outcome = options?.notice && resolveInstallNoticeOutcome(options.notice, succeeded)
+      if (!outcome || isWindowInFront(typeof document === 'undefined' ? undefined : document)) return
+      void platformApi()?.notifyActivity('install', `install:${key}:${outcome}:${Date.now()}`, { tool: key, outcome }).catch(() => undefined)
+    }
     try {
       await operation(report)
-      if (!key.startsWith('launch:') && /安装|更新|准备运行环境/.test(label)) {
-        void platformApi()?.notifyActivity('install', `install:${key}:${Date.now()}`).catch(() => undefined)
-      }
+      notify(true)
       return true
     } catch (cause) {
       // 用户自己点的取消不是失败：吞掉这次拒绝，调用方按「没做完」处理，
-      // 界面就不会再弹一条红色的「安装工具没有完成」。
+      // 界面就不会再弹一条红色的「安装工具没有完成」，也不发「没装上」的通知。
       if (cancelRequests.current.has(key)) return false
+      notify(false)
       throw cause
     } finally {
       locks.current.delete(key)
@@ -249,5 +320,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     return outcome
   }, [markCancelling])
-  return { snapshot, loading, error, failures, refresh, refreshConfig, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, noteExternalLaunched, jobs, run, cancel, setSnapshot }
 }

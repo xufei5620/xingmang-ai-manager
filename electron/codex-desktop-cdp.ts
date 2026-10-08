@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import type { WindowsMachinePaths } from './windows-machine-paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -13,6 +15,9 @@ const cdpCommandTimeoutMs = 5_000
 const cdpDiscoveryAttempts = 30
 const cdpDiscoveryDeadlineMs = 20_000
 const cdpPortOwnershipRevalidateMs = 5_000
+const cdpPortOwnerLookupFailureLimit = 3
+// 进了用户看到的「未确认中文界面生效」提示，不带命令原文，也不说技术词。
+const cdpPortOwnerUnconfirmedMessage = '这次没能确认 Codex 已经准备好'
 
 /**
  * This is deliberately a small, mechanism-level patch. It does not replace
@@ -360,22 +365,77 @@ export function getAvailableLoopbackPort(): Promise<number> {
 
 export type CodexDesktopCdpPortOwnership = 'unbound' | 'owned' | 'foreign'
 
-const cdpPortOwnerScript = String.raw`$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$port = [int]$env:XINGMANG_CODEX_CDP_PORT
-Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
-  ForEach-Object { [string]$_.OwningProcess }`
+/**
+ * The activation script runs under trustedCommandEnvironment(), where a cmdlet
+ * left to autoloading costs the whole System32 module scan (20 s and more on
+ * the CI runner, see buildPowerShellModuleImportStatement) against a 10 s limit.
+ */
+export const codexDesktopActivationModules = ['Microsoft.PowerShell.Utility'] as const
+export const codexDesktopCdpCommandTimeoutMs = 10_000
 
-export function parseCodexDesktopCdpPortOwners(output: string): number[] {
+/**
+ * The port's listeners come from the inbox netstat.exe, which reads the same
+ * TCP owner table Get-NetTCPConnection took OwningProcess from. The cmdlet
+ * went through a PowerShell start, the NetTCPIP module and WMI's network
+ * provider, a path no other probe in this app takes. Across 44 packaging runs
+ * on 2026-10-03 it took 1.1 s at the median, over 3 s in six and past this
+ * limit in two (#796, #816), while the CIM process queries in the same runs
+ * never reached 1.4 s. The lookup repeats while Codex starts, so each slow one
+ * was a lost round.
+ */
+export const codexDesktopCdpPortOwnerArguments = ['-a', '-n', '-o'] as const
+// netstat prints every connection on the machine, about 90 bytes a row, and
+// download or P2P clients hold thousands. A table cut off at the buffer is a
+// failed lookup, never a partial answer.
+const codexDesktopCdpPortOwnerOutputBytes = 8 * 1024 * 1024
+// A listening socket has no remote end. The state column is translated on
+// some Windows languages (German prints ABHÖREN); the address never is.
+const listeningRemoteEndpoints = new Set(['0.0.0.0:0', '[::]:0'])
+
+function endpointPort(endpoint: string): number | null {
+  const value = endpoint.slice(endpoint.lastIndexOf(':') + 1)
+  return /^\d{1,5}$/.test(value) ? Number(value) : null
+}
+
+/**
+ * Reads `netstat -a -n -o`, whose TCP rows are
+ *   TCP  <local address>:<port>  <remote address>:<port>  <state>  <pid>
+ * with IPv6 addresses in brackets. Only rows listening on the port count. An
+ * accepted connection, or one left in TIME_WAIT (PID 0) once it closed, keeps
+ * the port as its local end without listening on it, and another process's
+ * outgoing connection can use the same port number on another local address.
+ * The PID is the last column, so a state translated into several words cannot
+ * shift it. A listener whose PID cannot be read gives null rather than being
+ * left out: dropping it could pass a port that someone else also listens on.
+ *
+ * Only the protocol, the two addresses and the PID are read. On Windows in
+ * other languages netstat writes its header in the console code page (GBK on
+ * Simplified Chinese Windows), which reaches us through execFile's UTF-8
+ * decoding as replacement characters, and German Windows translates the state
+ * too; none of the columns read here is ever translated.
+ */
+export function parseCodexDesktopCdpPortOwners(output: string, port: number): number[] | null {
+  assertCdpPort(port)
   const owners: number[] = []
+  let tcpRows = 0
   for (const line of output.split(/\r?\n/)) {
-    const value = line.trim()
-    if (!/^\d+$/.test(value)) continue
-    const processId = Number(value)
-    if (Number.isInteger(processId) && processId > 0 && !owners.includes(processId)) owners.push(processId)
+    const columns = line.trim().split(/\s+/)
+    if (columns.length < 4 || !/^TCP(?:v6)?$/i.test(columns[0])) continue
+    const localPort = endpointPort(columns[1])
+    if (localPort === null) continue
+    tcpRows += 1
+    if (localPort !== port) continue
+    if (!listeningRemoteEndpoints.has(columns[2]) && columns[3].toUpperCase() !== 'LISTENING') continue
+    const value = columns.length > 4 ? columns[columns.length - 1] : ''
+    const processId = /^\d+$/.test(value) ? Number(value) : 0
+    if (!Number.isSafeInteger(processId) || processId <= 0) return null
+    if (!owners.includes(processId)) owners.push(processId)
   }
-  return owners
+  // Windows always listens on a few ports of its own (RPC on 135 among them),
+  // so output without a single TCP row is a table this parser cannot read, not
+  // an idle machine. Read as "nobody listens", it would wait out the whole
+  // deadline on every launch; as a failed lookup it gives up after three rounds.
+  return tcpRows ? owners : null
 }
 
 /**
@@ -392,36 +452,49 @@ export function classifyCodexDesktopCdpPortOwnership(
   return owners.every((owner) => owner === expectedProcessId) ? 'owned' : 'foreign'
 }
 
+export interface CodexDesktopCdpPortOwnerLookupOptions {
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  machinePaths?: WindowsMachinePaths
+  /** Test seam; production runs netstat through execFile. */
+  run?: (executable: string, argv: readonly string[], env: NodeJS.ProcessEnv) => Promise<string>
+}
+
+async function runNetstat(executable: string, argv: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
+  const { stdout } = await execFileAsync(executable, [...argv], {
+    env,
+    windowsHide: true,
+    timeout: codexDesktopCdpCommandTimeoutMs,
+    maxBuffer: codexDesktopCdpPortOwnerOutputBytes,
+  })
+  return stdout
+}
+
 export async function resolveCodexDesktopCdpPortOwners(
   port: number,
-  baseEnv: NodeJS.ProcessEnv = process.env,
+  options: CodexDesktopCdpPortOwnerLookupOptions = {},
 ): Promise<number[]> {
   assertCdpPort(port)
-  const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-EncodedCommand',
-    encodePowerShellCommand(cdpPortOwnerScript),
-  ], {
-    env: {
-      ...trustedCommandEnvironment(baseEnv),
-      XINGMANG_CODEX_CDP_PORT: String(port),
-    },
-    windowsHide: true,
-    timeout: 10_000,
-    maxBuffer: 256 * 1024,
-  })
-  return parseCodexDesktopCdpPortOwners(stdout)
+  if ((options.platform ?? process.platform) !== 'win32') throw new Error('Codex Desktop 调试端口归属查询仅支持 Windows')
+  const env = options.env ?? process.env
+  const stdout = await (options.run ?? runNetstat)(
+    windowsSystemExecutable('netstat.exe', env, 'win32', options.machinePaths),
+    codexDesktopCdpPortOwnerArguments,
+    trustedCommandEnvironment(env, options.machinePaths),
+  )
+  const owners = parseCodexDesktopCdpPortOwners(stdout, port)
+  if (!owners) throw new Error('Codex Desktop 调试端口的监听进程无法识别')
+  return owners
 }
 
 function encodePowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-const appActivationScript = String.raw`$ErrorActionPreference = 'Stop'
+export const codexDesktopActivationScript = String.raw`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(codexDesktopActivationModules)}
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -464,7 +537,28 @@ export async function activateCodexDesktopWithCdp(
     return await activateCodexDesktop(appUserModelId, buildCodexDesktopCdpArguments(port), baseEnv)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Codex Desktop 中文增强启动失败：${message.slice(0, 500)}`)
+    throw new Error(`Codex Desktop 中文增强启动失败：${message.slice(0, 500)}`, { cause: error })
+  }
+}
+
+/**
+ * The launch service answers a failed CDP activation by falling back to an
+ * ordinary launch and leaves only a console line, which a packaged build does
+ * not keep. Production wraps the seam with this so the failure, with the
+ * PowerShell error on its cause chain, reaches the runtime log and the
+ * feedback report; the launch itself sees the same rejection as before.
+ */
+export function withCodexDesktopCdpFailureReport(
+  activate: typeof activateCodexDesktopWithCdp,
+  report: (error: unknown) => void,
+): typeof activateCodexDesktopWithCdp {
+  return async (appUserModelId, port, baseEnv) => {
+    try {
+      return await activate(appUserModelId, port, baseEnv)
+    } catch (error) {
+      report(error)
+      throw error
+    }
   }
 }
 
@@ -491,7 +585,7 @@ export async function activateCodexDesktop(
       '-NoProfile',
       '-NonInteractive',
       '-EncodedCommand',
-      encodePowerShellCommand(appActivationScript),
+      encodePowerShellCommand(codexDesktopActivationScript),
     ], {
       env: {
         ...trustedCommandEnvironment(baseEnv),
@@ -499,7 +593,7 @@ export async function activateCodexDesktop(
         XINGMANG_CODEX_ARGS: argumentsValue,
       },
       windowsHide: true,
-      timeout: 10_000,
+      timeout: codexDesktopCdpCommandTimeoutMs,
       maxBuffer: 256 * 1024,
     })
     return parseCodexDesktopActivationProcessId(stdout)
@@ -507,7 +601,7 @@ export async function activateCodexDesktop(
     const failure = error as { stderr?: unknown; message?: unknown }
     const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : ''
     const message = stderr || (typeof failure.message === 'string' ? failure.message.trim() : '')
-    throw new Error(`Codex Desktop AppX 激活失败：${(message || 'Windows AppX 激活失败').slice(0, 500)}`)
+    throw new Error(`Codex Desktop AppX 激活失败：${(message || 'Windows AppX 激活失败').slice(0, 500)}`, { cause: error })
   }
 }
 
@@ -783,11 +877,22 @@ export async function injectCodexDesktopChineseLocale(
   const delay = options.delay ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const resolvePortOwnerProcessIds = options.resolvePortOwnerProcessIds ?? resolveCodexDesktopCdpPortOwners
   let ownershipVerifiedAt = 0
-  // Re-reading the TCP table costs a PowerShell start, so a confirmation is
-  // reused for a short while instead of running on every discovery attempt.
-  const inspectPortOwnership = async (): Promise<CodexDesktopCdpPortOwnership> => {
+  // Re-reading the TCP table starts a process, so a confirmation is reused for
+  // a short while instead of running on every discovery attempt.
+  // null means the lookup itself failed or ran out of time. That says nothing
+  // about who holds the port, so the round sends nothing, exactly as for an
+  // unbound port, and the next round asks again inside the same deadline.
+  // 当初用 PowerShell 查，第一次查就可能吃完 10 秒限时（2026-10-01 打包冒烟实测到
+  // 10 秒以上），这一下就让切中文整步放弃，提示里还冒出整串 PowerShell 命令。
+  const inspectPortOwnership = async (): Promise<CodexDesktopCdpPortOwnership | null> => {
     if (ownershipVerifiedAt && Date.now() - ownershipVerifiedAt < cdpPortOwnershipRevalidateMs) return 'owned'
-    const ownership = classifyCodexDesktopCdpPortOwnership(await resolvePortOwnerProcessIds(port), expectedProcessId)
+    let owners: number[]
+    try {
+      owners = await resolvePortOwnerProcessIds(port)
+    } catch {
+      return null
+    }
+    const ownership = classifyCodexDesktopCdpPortOwnership(owners, expectedProcessId)
     if (ownership === 'foreign') {
       throw new Error(`Codex Desktop 调试端口 ${port} 被其他进程占用，已取消中文增强`)
     }
@@ -795,6 +900,7 @@ export async function injectCodexDesktopChineseLocale(
     return ownership
   }
   let lastError: unknown = null
+  let unansweredLookups = 0
   let injectedTargets = 0
   const sessions = new Map<string, CdpInjectionSession>()
   const reloadStates = new Map<string, { attempted: boolean; previousDocument: number | null }>()
@@ -804,7 +910,19 @@ export async function injectCodexDesktopChineseLocale(
     for (let attempt = 1; attempt <= cdpDiscoveryAttempts && Date.now() < deadline; attempt += 1) {
       // A squatted port must abort the whole injection: retrying would only
       // keep handing the payload to whoever answers on it.
-      if (await inspectPortOwnership() === 'unbound') {
+      const ownership = await inspectPortOwnership()
+      if (ownership === null) {
+        unansweredLookups += 1
+        lastError = new Error(cdpPortOwnerUnconfirmedMessage)
+        // A lookup that can never work here (netstat blocked or missing) must
+        // not start another process every half second until the deadline; a
+        // slow one gets its retries.
+        if (unansweredLookups >= cdpPortOwnerLookupFailureLimit) break
+        await delay(500)
+        continue
+      }
+      unansweredLookups = 0
+      if (ownership === 'unbound') {
         lastError = new Error('Codex Desktop 调试端口尚未就绪')
         await delay(500)
         continue
@@ -857,5 +975,8 @@ export async function injectCodexDesktopChineseLocale(
   }
   const detail = lastError instanceof Error ? `：${lastError.message}` : ''
   if (rendererFound) throw new Error(`Codex Desktop 页面已启动，但未确认中文配置生效${detail}`)
+  // No page was looked for after the last lookup failed, so "no page found"
+  // would be the wrong reason to give.
+  if (unansweredLookups) throw new Error(cdpPortOwnerUnconfirmedMessage)
   throw new Error(`Codex Desktop 启动后未找到可注入的页面${detail}`)
 }

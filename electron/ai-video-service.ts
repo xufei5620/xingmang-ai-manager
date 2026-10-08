@@ -5,6 +5,7 @@ import {
   type MiniMaxVideoAspectRatio,
   type MiniMaxVideoMode,
   type MiniMaxVideoResolution,
+  type VideoModelProvider,
 } from './ai-chat-protocol'
 import { createHash } from 'node:crypto'
 import { lookup as nodeLookup } from 'node:dns/promises'
@@ -87,6 +88,7 @@ export interface AiVideoAssetWriter {
 }
 
 export interface AiVideoCancelResult {
+  /** 本机不再等这次生成；不代表服务端的任务被取消了，界面不能据此说「取消成功」。 */
   canceled: boolean
   mayStillComplete: boolean
 }
@@ -100,8 +102,6 @@ interface ActiveVideoRequest {
   // credential resolves must still match the submitting account.
   expectedUserId?: number
   taskId?: string
-  apiKey?: string
-  provider?: 'grok-video' | 'minimax-h3'
   dispatched: boolean
 }
 
@@ -148,7 +148,7 @@ function videoRequestFailure(
   status: number,
   detail: string,
   retryAfter?: string | null,
-  provider?: ActiveVideoRequest['provider'],
+  provider?: VideoModelProvider,
 ): Error {
   if (provider === 'minimax-h3' && /invalid\s+url\s*\(\s*post\b.*(?:video_generation|\[本地路径\])/i.test(detail)) {
     return new Error('MiniMax 视频渠道协议配置错误：当前渠道仍在使用旧 Hailuo 接口，请管理员改为 Sora/OpenAI Video 透传后重试；本次未创建任务')
@@ -680,8 +680,6 @@ export function createAiVideoService(options: {
       }
       const capability = resolveAiModelCapability(input.model)
       if (capability.kind !== 'video') throw new Error('当前模型不是可用的视频模型')
-      operation.apiKey = credential.apiKey
-      operation.provider = capability.provider
       await options.assets.prepareProject?.(credential.userId, input.projectId)
       await options.assets.assertWritable?.(credential.userId, input.projectId)
       const imageAssetIds = [
@@ -819,22 +817,13 @@ export function createAiVideoService(options: {
     }
   }
 
-  async function cancelRemoteTask(operation: ActiveVideoRequest): Promise<void> {
-    if (operation.provider !== 'minimax-h3' || !operation.taskId || !operation.apiKey) return
-    const controller = new AbortController()
-    await authorizedJson(
-      `${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(operation.taskId)}/cancel`,
-      operation.apiKey,
-      controller.signal,
-      { method: 'POST' },
-    )
-  }
-
+  // 「停止」只停本机这边的等待，不去服务端取消：new-api 没有 /v1/videos/{id}/cancel 这条
+  // 路由，默认线路和直连都回 404「Invalid URL」（服务端 2026-10-06 确认）。已提交的任务照常
+  // 生成、照常扣费，本地任务记录留着，下次启动接着把视频取回来。
   function cancel(senderId: number, requestIdInput: string, expectedUserId?: number): AiVideoCancelResult {
     const requestId = requiredIdentifier(requestIdInput, '视频请求标识', 160)
     const operation = active.get(requestKey(senderId, requestId))
     if (!operation || !ownedBy(operation, expectedUserId) || operation.controller.signal.aborted) return { canceled: false, mayStillComplete: false }
-    void cancelRemoteTask(operation).catch(() => undefined)
     operation.controller.abort(new Error('用户停止等待视频生成'))
     return { canceled: true, mayStillComplete: operation.dispatched }
   }

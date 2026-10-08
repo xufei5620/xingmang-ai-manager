@@ -1,10 +1,12 @@
 .v2-page { width: 100%; min-width: 0; padding: 0; }
+/* 上下相邻的卡片、提示框统一空 16：原来首尾贴在一起，读不到时的红框直接压在卡片上。 */
+.v2-page > :is(.xm-card, .xm-notice, .v2-business-notice) + :is(.xm-card, .xm-notice, .v2-business-notice) { margin-top: 16px; }
 .v2-bootstrap-notice { display: flex; align-items: center; gap: 8px; min-height: 36px; margin: -10px 0 16px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small); }
 .v2-bootstrap-notice > span:nth-child(2) { flex: 1; min-width: 0; }
 .v2-bootstrap-notice.is-warn { color: var(--warn); background: var(--warn-soft); }
 .v2-home-grid { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 18px; align-items: start; }
 .v2-home > .xm-page-head .xm-btn { font-size: var(--font-small-compact); }
-.v2-home-main, .v2-home-aside { display: grid; gap: 18px; min-width: 0; }
+.v2-home-main, .v2-home-aside { display: grid; gap: 16px; min-width: 0; }
 /* 「打开」记住上次目录后，按钮上多了一个目录名和一个下拉箭头（N7）。
    只有带下拉的那些行把按钮列放宽，其余工具行保持原来的 92px；每一行的总宽一样，
    按钮和「…」仍然贴着行尾对齐，看不出错位。 */
@@ -20,6 +22,8 @@
 .v2-runtime-actions { padding: 4px 16px 12px; display: flex; flex-wrap: wrap; gap: 8px; }
 .v2-runtime-actions:empty { display: none; }
 .v2-runtime-hint { padding: 0 16px 4px; margin: 0; color: var(--warn); font-size: var(--font-small); line-height: 1.5; }
+/* 一个命令行工具都没用的客户，Node.js 只是可选：说明照给，不用橙字。 */
+.v2-runtime-hint.is-quiet { color: var(--text-2); }
 /* macOS 上 Node / Python 要客户自己装，步骤和可复制的命令都排在这张卡里。 */
 .v2-runtime-guide { padding: 0 16px 8px; font-size: var(--font-small); line-height: 1.6; }
 .v2-runtime-guide > p:first-child { margin: 0 0 6px; color: var(--warn); }
@@ -32,6 +36,8 @@
 [data-testid='home-suggestions'] .xm-row-icon { width: 16px; height: 18px; background: transparent; }
 [data-testid='home-suggestions'] .xm-row-icon svg { width: 14px; height: 14px; }
 [data-testid='home-suggestions'] .xm-row-title { font-weight: 400; font-size: var(--font-small); }
+/* 首页「最近」一条只占一行：标题再长也截成省略号，完整内容放在悬停提示里。 */
+.v2-recent-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-balance-body { padding: 20px 16px 16px; }
 .v2-balance-body strong { font: 500 28px var(--mono); }
 .v2-balance-body small { margin-left: 6px; color: var(--text-3); font-size: var(--font-micro); }
@@ -80,10 +86,53 @@
 .v2-official-summary { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line-2); border-radius: var(--radius-card); }
 .v2-official-summary > div { flex: 1; min-width: 0; }
 .v2-official-summary p { color: var(--text-2); font-size: var(--font-small); }
-.v2-support { display: grid; justify-items: center; gap: 12px; }
+/* 帮助与客服：左边扫码，右边复制身份；常用去向在下面一行。 */
+.v2-support { display: grid; grid-template-columns: 232px minmax(0, 1fr); align-items: center; gap: 20px; }
+/* 左栏那句一行放得下；开了大字放不下时两行折得一样长，不剩一个孤字。 */
+.v2-support-contact { display: grid; justify-items: center; gap: 8px; text-align: center; text-wrap: balance; }
 .v2-support img { width: 160px; height: 160px; }
 .v2-support h3, .v2-support p { margin: 0; }
+.v2-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.v2-support-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-support-identity { display: grid; gap: 6px; width: 100%; }
+.v2-support-identity > p { color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-support-identity > div { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-support-identity code { flex: 1; min-width: 0; font-family: inherit; overflow-wrap: anywhere; user-select: text; }
 .v2-announcement-banner { display: flex; align-items: center; gap: 10px; height: 36px; flex: none; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small-compact); }
+.v2-offline-banner { display: flex; align-items: center; gap: 10px; min-height: 36px; flex: none; padding: 4px 14px; border-bottom: 1px solid var(--line); color: var(--warn); background: var(--panel-2); font-size: var(--font-small-compact); }
+.v2-offline-banner > span { flex: 1; color: var(--text-2); }
+.v2-promo-card { display: flex; align-items: flex-start; gap: 14px; flex: none; margin: 14px 32px 0; padding: 16px 18px; border: 1px solid var(--accent); border-radius: var(--radius-card); background: var(--accent-soft); color: var(--text); }
+.v2-promo-card-icon { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--bg); }
+.v2-promo-card-body { display: grid; gap: 6px; min-width: 0; flex: 1; }
+.v2-promo-card-eyebrow { margin: 0; color: var(--accent); font-size: var(--font-small-compact); font-weight: 600; }
+.v2-promo-card-title { margin: 0; font-size: var(--font-body); color: var(--text); overflow-wrap: anywhere; }
+.v2-promo-card-text { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; overflow-wrap: anywhere; }
+.v2-promo-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+.v2-promo-card-spacer { flex: 1; }
+div.v2-promo-card-text { display: grid; gap: 2px; }
+div.v2-promo-card-text > p { margin: 0; }
+.v2-promo-tiers { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
+.v2-promo-tiers > li { display: flex; min-width: 0; }
+.v2-promo-tier { position: relative; display: grid; gap: 2px; flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid var(--line-2); border-radius: var(--radius-input); background: var(--panel-solid); color: var(--text); font: inherit; text-align: left; font-variant-numeric: tabular-nums; }
+button.v2-promo-tier { cursor: pointer; }
+button.v2-promo-tier:hover { border-color: var(--accent); }
+button.v2-promo-tier:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.v2-promo-tiers > li.is-best .v2-promo-tier { border-color: var(--warn); }
+.v2-promo-tier-pay, .v2-promo-tier-get { color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-promo-tier-get strong { color: var(--text); font-weight: 600; }
+.v2-promo-tier-gift { color: var(--accent); font-size: var(--font-body); font-weight: 700; }
+.v2-promo-tiers > li.is-best .v2-promo-tier-gift { color: var(--warn); }
+.v2-promo-tier-badge { position: absolute; top: -9px; right: 8px; padding: 0 6px; border-radius: 5px; background: var(--warn); color: var(--panel-solid); font-size: 11px; font-weight: 600; line-height: 17px; }
+.v2-promo-card-more { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--line-2); color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-promo-card-more > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-promo-bar { display: flex; align-items: center; gap: 10px; min-height: 36px; flex: none; padding: 4px 10px 4px 14px; border-bottom: 1px solid var(--line); background: var(--bad-soft); color: var(--text); font-size: var(--font-small-compact); }
+.v2-promo-bar-tag { flex: none; padding: 0 7px; border-radius: 5px; background: var(--bad); color: var(--panel-solid); font-weight: 700; line-height: 20px; }
+.v2-promo-bar-items { display: flex; flex-wrap: wrap; gap: 2px 14px; flex: 1; min-width: 0; }
+.v2-promo-bar-item { display: inline-flex; align-items: baseline; gap: 6px; padding: 0; border: 0; background: none; color: var(--bad); font: inherit; font-weight: 600; cursor: pointer; }
+.v2-promo-bar-item:hover { text-decoration: underline; }
+.v2-promo-bar-item:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; border-radius: 3px; }
+.v2-promo-bar-item small { color: var(--text-2); font-size: inherit; font-weight: 400; }
+.v2-restart-reminder { flex: none; padding: 10px 14px 0; }
 .v2-announcement-banner > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-announcement-content, .v2-announcement-rich { display: grid; gap: 10px; max-height: min(62vh, 560px); overflow: auto; padding-right: 4px; color: var(--text); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-announcement-content > *, .v2-announcement-rich > * { min-width: 0; }

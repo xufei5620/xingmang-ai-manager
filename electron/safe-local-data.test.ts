@@ -4,10 +4,13 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   appendSafeUtf8File,
+  appendSafeUtf8FileSync,
   assertNoReparseComponents,
   findReparseComponent,
   readSafeUtf8File,
   readSafeUtf8FileSync,
+  renameWithTransientRetry,
+  renameWithTransientRetrySync,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
 
@@ -83,6 +86,21 @@ describe('safe local data files', () => {
     await writeAtomicSafeUtf8File(filePath, 'first', '测试导出')
     await writeAtomicSafeUtf8File(filePath, 'second', '测试导出')
     expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
+  })
+
+  it.runIf(process.platform !== 'win32')('creates the file owner-only by default and with the requested bits otherwise, whatever the umask', async () => {
+    const directory = fs.realpathSync(temporaryDirectory())
+    const plain = path.join(directory, 'state.json')
+    const launcher = path.join(directory, 'launcher')
+    const umask = process.umask(0o077)
+    try {
+      await writeAtomicSafeUtf8File(plain, '{}', '测试导出')
+      await writeAtomicSafeUtf8File(launcher, '#!/bin/sh\n', '测试导出', { mode: 0o755 })
+    } finally {
+      process.umask(umask)
+    }
+    expect(fs.statSync(plain).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(launcher).mode & 0o777).toBe(0o755)
   })
 
   it('retries a briefly locked rename instead of aborting the write', async () => {
@@ -213,5 +231,165 @@ describe('safe local data files', () => {
     await expect(appendSafeUtf8File(filePath, 'new\n', '运行日志')).rejects.toThrow('打开期间发生变化')
     expect(fs.readFileSync(filePath, 'utf8')).toBe('replacement\n')
     expect(fs.readFileSync(displacedPath, 'utf8')).toBe('original\n')
+  })
+
+  it('appends synchronously to a new file and then to the existing one', () => {
+    const directory = temporaryDirectory()
+    const filePath = path.join(directory, 'operations.jsonl')
+
+    appendSafeUtf8FileSync(filePath, 'first\n', '操作日志', { durable: true })
+    appendSafeUtf8FileSync(filePath, 'second\n', '操作日志')
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('first\nsecond\n')
+    expect(fs.lstatSync(filePath).nlink).toBe(1)
+  })
+
+  it('refuses to append through a hard link in both the async and sync variants', async () => {
+    const directory = temporaryDirectory()
+    const victim = path.join(directory, 'victim.txt')
+    const filePath = path.join(directory, 'operations.jsonl')
+    fs.writeFileSync(victim, 'victim\n', 'utf8')
+    fs.linkSync(victim, filePath)
+
+    await expect(appendSafeUtf8File(filePath, 'new\n', '操作日志', { durable: true }))
+      .rejects.toThrow('单链接普通文件')
+    expect(() => appendSafeUtf8FileSync(filePath, 'new\n', '操作日志', { durable: true }))
+      .toThrow('单链接普通文件')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a synchronous append through a symbolic link', () => {
+    const directory = temporaryDirectory()
+    const victim = path.join(directory, 'victim.txt')
+    const filePath = path.join(directory, 'operations.jsonl')
+    fs.writeFileSync(victim, 'victim\n', 'utf8')
+    fs.symlinkSync(victim, filePath)
+
+    expect(() => appendSafeUtf8FileSync(filePath, 'new\n', '操作日志')).toThrow('单链接普通文件')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+  })
+})
+
+describe('renames that wait out a transient lock', () => {
+  function lockedRenameError(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: resource busy or locked, rename`), { code })
+  }
+
+  function replacementFixture(): { source: string; target: string } {
+    const directory = temporaryDirectory()
+    const source = path.join(directory, '.settings.json.tmp')
+    const target = path.join(directory, 'settings.json')
+    fs.writeFileSync(source, 'new', 'utf8')
+    fs.writeFileSync(target, 'old', 'utf8')
+    return { source, target }
+  }
+
+  it('backs off between synchronous attempts and checks the paths again before each one', () => {
+    const { source, target } = replacementFixture()
+    const originalRename = fs.renameSync.bind(fs)
+    let locked = 2
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (locked > 0) {
+        locked -= 1
+        throw lockedRenameError('EPERM')
+      }
+      originalRename(from, to)
+    })
+    const waitSpy = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out')
+    const renamesBeforeEachCheck: number[] = []
+
+    renameWithTransientRetrySync(source, target, () => {
+      renamesBeforeEachCheck.push(renameSpy.mock.calls.length)
+    })
+
+    expect(fs.readFileSync(target, 'utf8')).toBe('new')
+    expect(fs.existsSync(source)).toBe(false)
+    expect(renamesBeforeEachCheck).toEqual([0, 1, 2])
+    expect(waitSpy.mock.calls.map((call) => call[3])).toEqual([20, 40])
+  })
+
+  it('rethrows the last transient error unchanged after five synchronous attempts', () => {
+    const { source, target } = replacementFixture()
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw lockedRenameError('EBUSY')
+    })
+    const waitSpy = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out')
+
+    let thrown: unknown
+    try {
+      renameWithTransientRetrySync(source, target)
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(renameSpy).toHaveBeenCalledTimes(5)
+    expect(thrown).toBe(renameSpy.mock.results[4]?.value)
+    expect(waitSpy.mock.calls.map((call) => call[3])).toEqual([20, 40, 80, 160])
+    expect(fs.readFileSync(target, 'utf8')).toBe('old')
+    expect(fs.readFileSync(source, 'utf8')).toBe('new')
+  })
+
+  it('does not wait out an error that a retry cannot fix', () => {
+    const { target } = replacementFixture()
+    const renameSpy = vi.spyOn(fs, 'renameSync')
+    const waitSpy = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out')
+
+    expect(() => renameWithTransientRetrySync(path.join(path.dirname(target), 'missing.tmp'), target))
+      .toThrow(expect.objectContaining({ code: 'ENOENT' }))
+    expect(renameSpy).toHaveBeenCalledTimes(1)
+    expect(waitSpy).not.toHaveBeenCalled()
+  })
+
+  it('stops at a failed path check instead of renaming after the wait', () => {
+    const { source, target } = replacementFixture()
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw lockedRenameError('EPERM')
+    })
+    vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out')
+    let checks = 0
+
+    expect(() => renameWithTransientRetrySync(source, target, () => {
+      checks += 1
+      if (checks === 2) throw new Error('配置路径包含符号链接，已拒绝写入')
+    })).toThrow('符号链接')
+    expect(renameSpy).toHaveBeenCalledTimes(1)
+    expect(fs.readFileSync(target, 'utf8')).toBe('old')
+  })
+
+  it('retries an asynchronous rename and checks the paths again before each attempt', async () => {
+    const { source, target } = replacementFixture()
+    const originalRename = fs.promises.rename.bind(fs.promises)
+    let locked = 2
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (locked > 0) {
+        locked -= 1
+        throw lockedRenameError('EACCES')
+      }
+      return originalRename(from, to)
+    })
+    const renamesBeforeEachCheck: number[] = []
+
+    await renameWithTransientRetry(source, target, () => {
+      renamesBeforeEachCheck.push(renameSpy.mock.calls.length)
+    })
+
+    expect(fs.readFileSync(target, 'utf8')).toBe('new')
+    expect(renamesBeforeEachCheck).toEqual([0, 1, 2])
+  })
+
+  it('rethrows the last transient error unchanged after five asynchronous attempts', async () => {
+    const { source, target } = replacementFixture()
+    const errors: NodeJS.ErrnoException[] = []
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async () => {
+      const error = lockedRenameError('EPERM')
+      errors.push(error)
+      throw error
+    })
+
+    const thrown = await renameWithTransientRetry(source, target).then(() => null, (error: unknown) => error)
+
+    expect(renameSpy).toHaveBeenCalledTimes(5)
+    expect(thrown).toBe(errors[4])
+    expect(fs.readFileSync(target, 'utf8')).toBe('old')
   })
 })

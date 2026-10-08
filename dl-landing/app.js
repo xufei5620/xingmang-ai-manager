@@ -313,8 +313,8 @@ function resolveSubmitAffCode(rawInvite) {
 function renderDownloads(latest, downloadsNode = els.downloads, releaseNode = els.releaseVersion) {
   const items = [
     { title: 'Windows', detail: '64 位安装包 · .exe · 需要 Windows 10 或更新的系统', icon: 'windows' },
-    { title: 'macOS Apple Silicon', detail: 'M 系列芯片 · .dmg', icon: 'mac' },
-    { title: 'macOS Intel', detail: 'Intel 芯片 · .dmg', icon: 'mac' }
+    { title: 'macOS Apple Silicon', detail: 'M 系列芯片 · 需要 macOS 13 或更新', icon: 'mac' },
+    { title: 'macOS Intel', detail: 'Intel 芯片 · 需要 macOS 13 或更新', icon: 'mac' }
   ]
   const icons = {
     windows: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M1 2.4 7.1 1.5v6.1H1zm7.2-.9L15 0v7.6H8.2zM1 8.6h6.1V15L1 14zm7.2 0H15V16l-6.8-1z"/></svg>',

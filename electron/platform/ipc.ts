@@ -3,9 +3,12 @@ import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from '../security'
 import { platformChannels } from './contract'
 import type {
   PlatformActivityKind,
+  PlatformInstallNotice,
+  PlatformInstallOutcome,
   PlatformNotificationKind,
   PlatformNotificationResult,
   PlatformPrivacyPreference,
+  PlatformSpendNotice,
 } from './contract'
 import { isPlatformTheme } from './settings-store'
 import type { PlatformSystemService } from './system-service'
@@ -47,13 +50,19 @@ function isActivityKind(value: unknown): value is PlatformActivityKind {
     value === 'balance' ||
     value === 'task' ||
     value === 'cliUpdate' ||
-    value === 'announcement'
+    value === 'announcement' ||
+    value === 'spend'
   )
 }
 
-// 偏好开关比活动通知多一类：加速那两条由主进程发出，用户仍然要能关掉它。
+// 偏好开关比活动通知多几类：加速和终端里那几条由主进程发出，用户仍然要能关掉它们。
 function isNotificationKind(value: unknown): value is PlatformNotificationKind {
-  return isActivityKind(value) || value === 'acceleration'
+  return (
+    isActivityKind(value) ||
+    value === 'acceleration' ||
+    value === 'cliTrouble' ||
+    value === 'cliTurn'
+  )
 }
 
 function isPrivacyPreference(
@@ -69,6 +78,42 @@ function isActivityKey(value: unknown): value is string {
     value.length <= 160 &&
     /^[A-Za-z0-9:._-]+$/.test(value)
   )
+}
+
+function isInstallOutcome(value: unknown): value is PlatformInstallOutcome {
+  return (
+    value === 'installed' ||
+    value === 'updated' ||
+    value === 'installFailed' ||
+    value === 'updateFailed'
+  )
+}
+
+// 只认编号的字形，不认名单：名单在 notifications.ts，名单外的编号那边一律说成
+//「工具」。这里挡的是把任意文字塞进通知或日志。
+function isInstallTool(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(value)
+}
+
+// Rebuilt field by field so nothing else the renderer attached rides along.
+function readInstallNotice(value: unknown): PlatformInstallNotice | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { tool, outcome } = value as Record<string, unknown>
+  if (!isInstallTool(tool) || !isInstallOutcome(outcome)) return null
+  return { tool, outcome }
+}
+
+// 上限只挡明显不是真账的数：一小时十万美元、十万倍都已经远超任何真实用量。
+function isBoundedInteger(value: unknown, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= max
+}
+
+function readSpendNotice(value: unknown): PlatformSpendNotice | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { cents, multiple } = value as Record<string, unknown>
+  if (!isBoundedInteger(cents, 10_000_000)) return null
+  if (multiple !== null && !isBoundedInteger(multiple, 100_000)) return null
+  return { cents, multiple }
 }
 
 function isNotificationResult(
@@ -121,6 +166,8 @@ export function summarizePlatformInvocation(
   if (channel === platformChannels.notifyActivity) {
     if (isActivityKind(args[0])) detail.kind = args[0]
     if (isActivityKey(args[1])) detail.eventKey = args[1]
+    const install = readInstallNotice(args[2])
+    if (install) Object.assign(detail, install)
   }
   if (isNotificationResult(result)) detail.result = result
   return detail
@@ -154,7 +201,7 @@ export function registerPlatformHandlers(options: {
   const log: PlatformIpcLogger = options.log ?? (() => undefined)
   const handle = (
     channel: string,
-    count: number,
+    count: number | readonly [min: number, max: number],
     action: (...args: unknown[]) => unknown,
   ) => {
     const label = platformOperationLabels[channel] ?? channel
@@ -196,7 +243,9 @@ export function registerPlatformHandlers(options: {
         throw error
       }
       try {
-        if (args.length !== count) throw new Error('系统设置请求参数不正确。')
+        const [min, max] = typeof count === 'number' ? [count, count] : count
+        if (args.length < min || args.length > max)
+          throw new Error('系统设置请求参数不正确。')
         const result = action(...args)
         if (isPromiseLike(result))
           return Promise.resolve(result).then((value) => {
@@ -245,12 +294,24 @@ export function registerPlatformHandlers(options: {
   handle(platformChannels.testNotification, 0, () =>
     options.service().testNotification(),
   )
-  handle(platformChannels.notifyActivity, 2, (kind, key) => {
+  handle(platformChannels.notifyActivity, [2, 3], (kind, key, detail) => {
     // 加速那两条只能由主进程发：渲染层拿到这条通道也只会被拒，免得它绕过
     // 「亲眼看着连上」那层判断去弹一条「加速已断开」。
     if (!isActivityKind(kind)) throw new Error('未知的通知类型。')
     if (!isActivityKey(key)) throw new Error('通知事件编号无效。')
-    return options.service().notifyActivity(kind, key)
+    if (detail === undefined) {
+      // 花费通知的正文全靠这两个数，没有就不发一条空话。
+      if (kind === 'spend') throw new Error('通知内容无效。')
+      return options.service().notifyActivity(kind, key)
+    }
+    if (kind === 'spend') {
+      const spend = readSpendNotice(detail)
+      if (!spend) throw new Error('通知内容无效。')
+      return options.service().notifyActivity(kind, key, spend)
+    }
+    const install = readInstallNotice(detail)
+    if (kind !== 'install' || !install) throw new Error('通知内容无效。')
+    return options.service().notifyActivity(kind, key, install)
   })
   return () => {
     for (const channel of registered) options.ipcMain.removeHandler(channel)

@@ -200,6 +200,31 @@ async function openSafeDataFileForAppend(
   }
 }
 
+function openSafeDataFileForAppendSync(
+  filePath: string,
+  label: string,
+): { descriptor: number; snapshot: fs.BigIntStats } {
+  assertNoReparseComponents(path.dirname(path.resolve(filePath)), label)
+  const existed = assertSafeDataFile(filePath, label)
+  let descriptor: number
+  try {
+    descriptor = fs.openSync(filePath, existed ? 'r+' : 'wx', 0o600)
+  } catch (error) {
+    if (existed || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    if (!assertSafeDataFile(filePath, label)) throw error
+    descriptor = fs.openSync(filePath, 'r+', 0o600)
+  }
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true })
+    validateOpenedSafeDataFile(filePath, opened, label)
+    safeNumericSize(opened.size, label)
+    return { descriptor, snapshot: opened }
+  } catch (error) {
+    fs.closeSync(descriptor)
+    throw error
+  }
+}
+
 export function readSafeUtf8FileSync(
   requestedPath: string,
   label: string,
@@ -264,7 +289,17 @@ export async function readSafeUtf8File(
   }
 }
 
-export async function appendSafeUtf8File(requestedPath: string, content: string, label: string): Promise<void> {
+export interface SafeAppendOptions {
+  /** fsync before closing, for journals whose records must survive a crash. */
+  durable?: boolean
+}
+
+export async function appendSafeUtf8File(
+  requestedPath: string,
+  content: string,
+  label: string,
+  options: SafeAppendOptions = {},
+): Promise<void> {
   const filePath = resolveRelocatedPath(requestedPath)
   const { handle, snapshot } = await openSafeDataFileForAppend(filePath, label)
   try {
@@ -289,8 +324,46 @@ export async function appendSafeUtf8File(requestedPath: string, content: string,
       throw new Error(`${label}在追加写入过程中发生变化`)
     }
     validateOpenedSafeDataFile(filePath, after, label)
+    if (options.durable) await handle.sync()
   } finally {
     await handle.close()
+  }
+}
+
+export function appendSafeUtf8FileSync(
+  requestedPath: string,
+  content: string,
+  label: string,
+  options: SafeAppendOptions = {},
+): void {
+  const filePath = resolveRelocatedPath(requestedPath)
+  const { descriptor, snapshot } = openSafeDataFileForAppendSync(filePath, label)
+  try {
+    const buffer = Buffer.from(content, 'utf8')
+    const position = safeNumericSize(snapshot.size, label)
+    let offset = 0
+    while (offset < buffer.length) {
+      const bytesWritten = fs.writeSync(
+        descriptor,
+        buffer,
+        offset,
+        buffer.length - offset,
+        position + offset,
+      )
+      if (bytesWritten === 0) throw new Error(`${label}追加写入不完整`)
+      offset += bytesWritten
+    }
+    const after = fs.fstatSync(descriptor, { bigint: true })
+    if (
+      !sameFileIdentity(snapshot, after)
+      || after.size !== snapshot.size + BigInt(buffer.length)
+    ) {
+      throw new Error(`${label}在追加写入过程中发生变化`)
+    }
+    validateOpenedSafeDataFile(filePath, after, label)
+    if (options.durable) fs.fsyncSync(descriptor)
+  } finally {
+    fs.closeSync(descriptor)
   }
 }
 
@@ -298,6 +371,12 @@ export async function removeSafeDataFile(requestedPath: string, label: string): 
   const filePath = resolveRelocatedPath(requestedPath)
   if (!assertSafeDataFile(filePath, label)) return
   await fs.promises.rm(filePath)
+}
+
+export function removeSafeDataFileSync(requestedPath: string, label: string): void {
+  const filePath = resolveRelocatedPath(requestedPath)
+  if (!assertSafeDataFile(filePath, label)) return
+  fs.rmSync(filePath)
 }
 
 export async function writeAtomicSafeUtf8File(
@@ -324,24 +403,84 @@ export interface SafeAtomicWriteOptions {
    * non-atomic replacement. Disabled by default for configuration/state data.
    */
   allowNonAtomicFallback?: boolean
+  /**
+   * Permission bits for the new file; default 0o600. Set explicitly after open so
+   * the process umask cannot take bits away (a launcher has to stay executable).
+   */
+  mode?: number
 }
+
+const replaceAttempts = 5
 
 function isTransientReplaceError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code
   return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'EAGAIN'
 }
 
+function replaceRetryDelayMs(attempt: number): number {
+  return 20 * (2 ** attempt)
+}
+
 function delayReplaceRetry(attempt: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, 20 * (2 ** attempt))
+    setTimeout(resolve, replaceRetryDelayMs(attempt))
   })
+}
+
+function delayReplaceRetrySync(attempt: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, replaceRetryDelayMs(attempt))
 }
 
 /**
  * `rename(tmp, dest)` is atomic on a quiet disk. Windows Defender and the
  * indexer often hold the destination for a few milliseconds, which surfaces
- * as EPERM and used to abort canvas autosave mid-keystroke.
+ * as EPERM and used to abort canvas autosave mid-keystroke. A transient error
+ * is retried with backoff; anything else, or the last transient error, is
+ * rethrown unchanged so every caller keeps its existing wording.
+ *
+ * Pass the caller's own checks as `beforeAttempt`. It runs right before every
+ * attempt, the first one included, so nothing a check saw before the wait
+ * vouches for the retried rename: a link may have been planted meanwhile, or
+ * the program that held the file may have saved its own change.
  */
+export async function renameWithTransientRetry(
+  sourcePath: string,
+  targetPath: string,
+  beforeAttempt?: () => void | Promise<void>,
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    if (beforeAttempt) await beforeAttempt()
+    try {
+      await fs.promises.rename(sourcePath, targetPath)
+      return
+    } catch (error) {
+      if (!isTransientReplaceError(error) || attempt === replaceAttempts - 1) throw error
+    }
+    await delayReplaceRetry(attempt)
+  }
+}
+
+/**
+ * Synchronous twin for the configuration transaction, which cannot yield to
+ * the event loop. It blocks only after a failed attempt, 300 ms in total.
+ */
+export function renameWithTransientRetrySync(
+  sourcePath: string,
+  targetPath: string,
+  beforeAttempt?: () => void,
+): void {
+  for (let attempt = 0; ; attempt += 1) {
+    beforeAttempt?.()
+    try {
+      fs.renameSync(sourcePath, targetPath)
+      return
+    } catch (error) {
+      if (!isTransientReplaceError(error) || attempt === replaceAttempts - 1) throw error
+    }
+    delayReplaceRetrySync(attempt)
+  }
+}
+
 async function replaceSafeDataFile(
   temporaryPath: string,
   filePath: string,
@@ -349,15 +488,12 @@ async function replaceSafeDataFile(
   options: SafeAtomicWriteOptions,
 ): Promise<void> {
   let lastError: unknown
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await fs.promises.rename(temporaryPath, filePath)
-      return
-    } catch (error) {
-      lastError = error
-      if (!isTransientReplaceError(error)) throw error
-      if (attempt < 4) await delayReplaceRetry(attempt)
-    }
+  try {
+    await renameWithTransientRetry(temporaryPath, filePath)
+    return
+  } catch (error) {
+    if (!isTransientReplaceError(error)) throw error
+    lastError = error
   }
   if (options.allowNonAtomicFallback && assertSafeDataFile(filePath, label)) {
     try {
@@ -401,6 +537,7 @@ async function writeAtomicSafeFile(
   let handle: fs.promises.FileHandle | null = null
   try {
     handle = await fs.promises.open(temporaryPath, 'wx', 0o600)
+    if (options.mode !== undefined) await handle.chmod(options.mode)
     await handle.writeFile(content, { encoding })
     await handle.sync()
     await handle.close()

@@ -36,6 +36,12 @@ const defaultMaxResponseBytes = 512 * 1024
 // separate from the 512 KB cap used by authenticated/business endpoints.
 const noticeMaxResponseBytes = 4 * 1024 * 1024
 const noticeMaxContentLength = 4 * 1024 * 1024
+// 公告比别的接口大得多（服务端压过以后仍有约 400 KB），直连下行只有几十 KB/s 的客户 10 秒下不完：
+// 给它单独一个更长的时限，让它慢慢下完（#941 第 4 节）。
+const noticeTimeoutMs = 60_000
+// 定时那一路（跟着每分钟的余额刷新）还没读到过公告时，隔这么久才再读一次：以前没读下来的每分钟
+// 都从头全量下一遍，慢的网络上每次下到一半超时，一分钟后再来（#941 第 4 节）。
+const noticeRetryIntervalMs = 10 * 60 * 1_000
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 // 退出登录时顺手告诉服务端「这台设备不用了」。这一下只是尽力而为：联不上、
 // 超时、服务报错都不影响本机退出，所以等得比普通请求短得多，也不需要读多大的应答。
@@ -52,6 +58,7 @@ const timelineStaleMs = 5 * 60 * 1_000
 const verificationPath = '/api/verification'
 const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
+const loginTwoFactorPath = '/api/user/login/2fa'
 const refreshPath = '/api/user/auth/refresh'
 const serverLogoutPath = '/api/user/auth/logout'
 const selfPath = '/api/user/self'
@@ -119,6 +126,21 @@ export interface NewApiClientOptions {
   // after refresh rotates its cookie, including restore candidates whose
   // subsequent /self validation can fail. This must never activate a user.
   onCredentialRotation?: (persistable: NewApiPersistableSession) => void | Promise<void>
+  // Main process only. Asked once after a request fails at the network layer
+  // (timeout, proxy, connection failure): resolve true when the host has just
+  // taken this client's requests off a system proxy that stopped forwarding,
+  // or found that a proxy which refused the request was only restarting and
+  // answers again, so the same request is worth one more try. The host owns
+  // the proxy decision (and which session the next request goes through);
+  // this client only decides which failures may be replayed safely.
+  retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
+}
+
+export interface NewApiRetryOffProxyFailure {
+  reason: NetworkFailureReason
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  /** Date.now() when the failed attempt was sent. */
+  startedAt: number
 }
 
 export interface NewApiAccountStatus {
@@ -170,6 +192,11 @@ export interface NewApiLoginInput {
   username: string
   password: string
   turnstileToken?: string
+}
+
+export interface NewApiTwoFactorLoginInput {
+  flowToken: string
+  code: string
 }
 
 // RECON (docs/RECON-new-api.md section A) confirms /api/user/register wants
@@ -290,6 +317,9 @@ export interface NewApiTopupInfo {
   minTopup: number
   amountOptions: number[]
   discounts: Record<string, number>
+  // Set only by accounts whose tiers are the amount paid: the balance credited is
+  // amount × creditMultiplier. Absent = the tier is the amount credited (new-api).
+  creditMultiplier?: number
   topupLink: string | null
 }
 
@@ -403,6 +433,16 @@ export type NewApiSubscriptionCheckout =
       url: string
       tradeNo: string | null
       expiresAt: string | null
+    }
+  // Only the history-account backend answers some channels (WeChat Native)
+  // with a code to scan; new-api subscription checkout never does.
+  | {
+      kind: 'qrcode'
+      code: string
+      tradeNo: string | null
+      expiresAt: string | null
+      amount: number
+      currency: string
     }
 
 export interface SubscriptionQuotaPeriod {
@@ -799,6 +839,8 @@ export interface NewApiClientService extends RelayBackendClient {
   resetPassword(input: NewApiResetPasswordInput): Promise<NewApiResetPasswordResult>
   register(input: NewApiRegisterInput): Promise<void>
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
+  // Second step after login() threw NewApiTwoFactorRequiredError.
+  completeTwoFactorLogin(input: NewApiTwoFactorLoginInput): Promise<NewApiLoginResult>
   // Local only: drops the in-memory session and nothing else. Saved-account
   // switching and discarded login/restore candidates call this too, and those
   // credentials must stay valid on the server -- see endServerSession below.
@@ -930,6 +972,39 @@ export class NewApiLoginRejectedError extends NewApiAuthenticationError {
   }
 }
 
+// 渲染层按这几句原文认出两步验证的各个分支（electron 不 import src，那边有意重复一份）。
+// 第一句与改造前抛的原文一字不差：旧界面（已冻结）照旧只看到这句报错。
+export const twoFactorRequiredMessage = '此账号需要双重验证，请先完成验证'
+export const twoFactorUnsupportedMessage = '此账号需要双重验证，客户端暂不支持这种验证方式'
+export const twoFactorExpiredMessage = '等太久了，请重新输入密码登录'
+export const twoFactorInvalidCodeMessage = '验证码不对或已过期，请看验证器里最新的数字再试'
+export const twoFactorRateLimitedMessage = '试得太频繁了，请过一会儿再试'
+
+/**
+ * Password accepted, second factor still owed. The flow token is the only
+ * thing that can finish this login, so it lives in a private field: neither
+ * the message, JSON.stringify nor a structured-clone across IPC carries it.
+ */
+export class NewApiTwoFactorRequiredError extends Error {
+  readonly #flowToken: string
+  readonly expiresAt: number
+  constructor(flowToken: string, expiresAt: number) {
+    super(twoFactorRequiredMessage)
+    this.name = 'NewApiTwoFactorRequiredError'
+    this.#flowToken = flowToken
+    this.expiresAt = expiresAt
+  }
+  get flowToken(): string { return this.#flowToken }
+}
+
+/** The server no longer knows the flow token: the password step must be redone. */
+export class NewApiTwoFactorExpiredError extends Error {
+  constructor() {
+    super(twoFactorExpiredMessage)
+    this.name = 'NewApiTwoFactorExpiredError'
+  }
+}
+
 /**
  * 受限网络（校园网常见）下的失败不再统一冒一句「请求失败」：reason 是排查用的
  * 分类，message 已经是能直接上屏的中文，detail 只是给日志留一句现场。
@@ -979,6 +1054,7 @@ interface RequestContext {
   timeoutMs: number
   maxResponseBytes: number
   origin: string
+  retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
 }
 
 interface PerformRequestInit {
@@ -986,6 +1062,11 @@ interface PerformRequestInit {
   headers?: Record<string, string>
   body?: unknown
   maxResponseBytes?: number
+  // 缺省按 method 算：GET 发两次和发一次一样，其余不算。发验证码、发重置邮件虽然是
+  // GET，服务端每收到一次就记一个新码、寄一封信，新码顶掉上一封的（rc.24 的
+  // common/verification.go 按邮箱只留最后一个），所以这两个标 false。不标的话，经
+  // 代理超时后会自动直连再发一次，客户收到两封，填了先到的那封却报验证码不对。
+  idempotent?: boolean
 }
 
 interface NewApiRawResponse {
@@ -1066,7 +1147,41 @@ function buildAuthHeaders(session: InternalSession): Record<string, string> {
   }
 }
 
+// 只有这几类失败可能是「系统代理活着但不转发」：超时、代理本身连不上、连接被断。
+// 证书、门户拦截、解析不出地址、服务不可用都与走不走代理无关，改直连也不会好，
+// 而 tls 那一类更不能拿换线路去「绕」。
+const proxyRetryReasons: ReadonlySet<NetworkFailureReason> = new Set(['timeout', 'proxy', 'refused'])
+
+// A plain read can always be replayed. Anything that does something -- a
+// login, a key creation, a payment, or one of the GETs that sends an email --
+// is replayed only when the proxy itself refused the tunnel, i.e. the request
+// provably never reached the service: after a timeout or a reset mid-flight it
+// may already have happened, and sending it again could do it twice. Those
+// still take the requests off the proxy, so the user's next attempt goes
+// through.
+function mayReplayOffProxy(init: PerformRequestInit, reason: NetworkFailureReason): boolean {
+  return (init.idempotent ?? init.method === 'GET') || reason === 'proxy'
+}
+
 async function performRequest(
+  ctx: RequestContext,
+  pathName: string,
+  init: PerformRequestInit,
+  label: string,
+): Promise<NewApiRawResponse> {
+  const startedAt = Date.now()
+  try {
+    return await performRequestOnce(ctx, pathName, init, label)
+  } catch (error) {
+    if (!ctx.retryOffProxy || !(error instanceof NewApiNetworkError) || !proxyRetryReasons.has(error.reason)) throw error
+    const reason = error.reason
+    const direct = await ctx.retryOffProxy({ reason, method: init.method, startedAt }).catch(() => false)
+    if (!direct || !mayReplayOffProxy(init, reason)) throw error
+    return performRequestOnce(ctx, pathName, init, label)
+  }
+}
+
+async function performRequestOnce(
   ctx: RequestContext,
   pathName: string,
   init: PerformRequestInit,
@@ -1210,8 +1325,51 @@ function unwrapLoginEnvelope(raw: NewApiRawResponse, secrets: readonly string[])
   const limited = loginLimitMessage(raw, envelope)
   if (limited) throw new Error(limited)
   const data = unwrapEnvelope(raw, '账号登录', secrets)
-  if (isRecord(data) && data.require_2fa === true) throw new Error('此账号需要双重验证，请先完成验证')
+  const challenge = parseTwoFactorChallenge(data)
+  if (challenge) throw challenge
   return data
+}
+
+// Longest a flow token is honoured locally, whatever expires_at claims.
+// rc.24 controller/user.go Login issues it for 5 minutes.
+export const twoFactorFlowTtlMs = 5 * 60_000
+
+/**
+ * rc.24 (controller/user.go Login) answers a 2FA account with
+ * `{require_2fa, flow_token, expires_at}`. Upstream main renamed it to
+ * `{require_verification, flow_token, expires_at, methods:[{method, available}]}`
+ * (service/login_verification.go LoginChallenge) and still completes a
+ * `2fa` method at POST /api/user/login/2fa. Production has not moved yet, so
+ * the second shape is read from upstream source only. A challenge the
+ * client cannot finish (only passkey/email offered, or no flow token) keeps
+ * the old "go to the website" outcome instead of a dead code prompt.
+ */
+export function parseTwoFactorChallenge(data: unknown, now = Date.now()): Error | null {
+  if (!isRecord(data) || (data.require_2fa !== true && data.require_verification !== true)) return null
+  if (data.require_verification === true && data.require_2fa !== true && Array.isArray(data.methods)
+    && !data.methods.some((entry) => isRecord(entry) && entry.method === '2fa' && entry.available !== false)) {
+    return new Error(twoFactorUnsupportedMessage)
+  }
+  const flowToken = typeof data.flow_token === 'string' ? data.flow_token : ''
+  if (!flowToken || flowToken.length > 512 || /[^\x21-\x7e]/.test(flowToken)) return new Error(twoFactorUnsupportedMessage)
+  const claimed = typeof data.expires_at === 'number' && Number.isFinite(data.expires_at) ? data.expires_at * 1000 : Infinity
+  return new NewApiTwoFactorRequiredError(flowToken, Math.min(now + twoFactorFlowTtlMs, claimed))
+}
+
+// rc.24 controller/twofa.go Verify2FALogin answers every failure as HTTP 200
+// `success:false` with a fixed Chinese message; model/twofa.go adds the
+// lockout text. The flow survives a wrong code (ConsumeAuthFlow runs only
+// after a match), so only the "会话已过期" family ends the second step.
+function unwrapTwoFactorLoginEnvelope(raw: NewApiRawResponse, secrets: readonly string[]): unknown {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  if (raw.status === 429) throw new Error(twoFactorRateLimitedMessage)
+  if (raw.ok && envelope?.success === false) {
+    const message = typeof envelope.message === 'string' ? envelope.message : ''
+    if (/过期|重新登录|expired/i.test(message)) throw new NewApiTwoFactorExpiredError()
+    if (/锁定|频繁|locked|too many/i.test(message)) throw new Error(twoFactorRateLimitedMessage)
+    if (/验证码|备用码|code/i.test(message)) throw new Error(twoFactorInvalidCodeMessage)
+  }
+  return unwrapEnvelope(raw, '两步验证登录', secrets)
 }
 
 /**
@@ -2359,6 +2517,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     timeoutMs,
     maxResponseBytes,
     origin,
+    retryOffProxy: options.retryOffProxy,
   }
 
   const legalDocumentCache = new Map<NewApiLegalDocumentKind, { expiresAt: number; value: NewApiLegalDocument }>()
@@ -2390,6 +2549,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return request
   }
   let lastNotice: string | null = null
+  // 上一次去读公告是什么时候（读成没读成都算），没读成的原因，和正在读的那一次。
+  let noticeReadAt: number | null = null
+  let noticeFailure: unknown = null
+  let noticeInFlight: Promise<string> | null = null
 
   let session: InternalSession | null = null
   let ownerGeneration = 0
@@ -2570,7 +2733,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const readNoticeText = async (): Promise<string> => {
     const raw = await performRequest(
-      ctx,
+      { ...ctx, timeoutMs: Math.max(ctx.timeoutMs, noticeTimeoutMs) },
       '/api/notice',
       { method: 'GET', maxResponseBytes: noticeMaxResponseBytes },
       '公告读取',
@@ -2581,12 +2744,41 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return data.trim()
   }
 
+  // 同一时刻只下一份：打开公告和定时那一路撞在一起时共用这一次。
+  const fetchNoticeText = (): Promise<string> => {
+    noticeInFlight ??= (async () => {
+      try {
+        const text = await readNoticeText()
+        lastNotice = text
+        noticeFailure = null
+        return text
+      } catch (error) {
+        noticeFailure = error
+        throw error
+      } finally {
+        noticeReadAt = Date.now()
+        noticeInFlight = null
+      }
+    })()
+    return noticeInFlight
+  }
+
   // `cached` is the renderer's periodic check that follows each balance
   // refresh: it must not add requests of its own, so it reuses the last
-  // /api/notice text and the timeline that refresh just stored.
+  // /api/notice text and the timeline that refresh just stored. With no text
+  // yet (the last read failed), it reads again at most every
+  // noticeRetryIntervalMs and repeats the last failure in between.
+  const readNotice = async (mode?: RelayNoticeReadMode): Promise<string> => {
+    if (mode !== 'cached') return fetchNoticeText()
+    if (lastNotice !== null) return lastNotice
+    if (noticeInFlight) return noticeInFlight
+    const since = noticeReadAt === null ? null : Date.now() - noticeReadAt
+    if (since !== null && since >= 0 && since < noticeRetryIntervalMs && noticeFailure !== null) throw noticeFailure
+    return fetchNoticeText()
+  }
+
   const getNotice = async (mode?: RelayNoticeReadMode): Promise<RelayNotice | null> => {
-    const text = mode === 'cached' && lastNotice !== null ? lastNotice : await readNoticeText()
-    lastNotice = text
+    const text = await readNotice(mode)
     if (!timeline || Date.now() - timeline.fetchedAt >= timelineStaleMs) {
       // The timeline is an addition; its failure must never hide the system
       // notice or show up as an announcement error.
@@ -2636,7 +2828,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const raw = await performRequest(
       ctx,
       `${verificationPath}?email=${encodeURIComponent(trimmed)}`,
-      { method: 'GET' },
+      { method: 'GET', idempotent: false },
       '发送邮箱验证码',
     )
     unwrapEnvelope(raw, '发送邮箱验证码', [])
@@ -2661,7 +2853,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const raw = await performRequest(
       ctx,
       `${resetPasswordEmailPath}?email=${encodeURIComponent(trimmed)}`,
-      { method: 'GET' },
+      { method: 'GET', idempotent: false },
       '发送密码重置邮件',
     )
     unwrapEnvelope(raw, '发送密码重置邮件', [])
@@ -2743,6 +2935,25 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     // Strip accessToken before it ever leaves the main process (I3/I13).
+    return { account: data.account, accessExpiresAt: data.accessExpiresAt }
+  }
+
+  // POST /api/user/login/2fa (rc.24 router/api-router.go:74, CriticalRateLimit,
+  // no Turnstile). A match runs the same setupLogin as the password route, so
+  // the reply and the refresh cookie are handled exactly like login() above.
+  const completeTwoFactorLogin = async (input: NewApiTwoFactorLoginInput): Promise<NewApiLoginResult> => {
+    const code = input.code.trim()
+    if (!code) throw new Error(twoFactorInvalidCodeMessage)
+    const attempt = ++authAttemptGeneration
+    const owner = ownerGeneration
+    const body = { code, flow_token: input.flowToken }
+    let raw: NewApiRawResponse
+    try { raw = await performRequest(ctx, loginTwoFactorPath, { method: 'POST', body }, '两步验证登录') }
+    catch (error) { assertAuthAttempt(attempt, owner); throw error }
+    assertAuthAttempt(attempt, owner)
+    const data = parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken]))
+    const cookies = extractSessionCookies(raw.headers)
+    setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     return { account: data.account, accessExpiresAt: data.accessExpiresAt }
   }
 
@@ -3556,6 +3767,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     resetPassword,
     register,
     login,
+    completeTwoFactorLogin,
     logout,
     endServerSession,
     endPersistedServerSession,

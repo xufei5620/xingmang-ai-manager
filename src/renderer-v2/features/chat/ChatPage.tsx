@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, ArrowUpRight, ChevronDown, Copy, Download, Image as ImageIcon, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Square, Trash2, User, X } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from 'react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, Copy, Download, FileText, Image as ImageIcon, ImagePlus, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Square, Trash2, User, X } from 'lucide-react'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
-import { BrandIcon, Button, Confirm, Dialog, Empty, Input, Menu, Pill, Popover, SearchInput, Segment, Select, Textarea } from '../../ui'
-import { createChatApi, inspectModel, type ChatApi } from './api'
-import { chatErrorAction, chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
+import { BrandIcon, Button, Confirm, Dialog, Empty, Input, Menu, Pill, Popover, SearchInput, Segment, Select, Textarea, useToast } from '../../ui'
+import { canReadImages, chatLimits, createChatApi, inspectModel, type ChatApi } from './api'
+import { chatErrorAction, chatErrorMessage, filterConversations, isConversationTooLongMessage, isGenerating, noImageModelMessage, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatWorkspace } from './state'
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
-import { loadChatHistory, type LoadedChatHistory } from './storage'
+import { inspectChatLink, plainText } from './links'
+import { prepareChatMath, readChatMath, renderChatMath, type ChatMath } from './math'
+import { conversationPlainText, loadChatHistory, mergeSessionIntoHistory, type LoadedChatHistory } from './storage'
 import './chat.css'
+
+const remarkPlugins = [remarkGfm]
+// 点了只填进输入框，不直接发：发一句就要花钱，得让人看一眼再发。
+const chatExamples = ['解释一段报错是什么意思', '帮我写一个 Python 小脚本', '把这段话翻译成英文']
 
 export interface ChatPageProps { bridge: XingmangApi; accountScope: string; active?: boolean; onOpenAccount?: (tab: 'recharge' | 'keys') => void }
 type Confirmation = { kind: 'retry' | 'delete-message' | 'delete-conversation' | 'clear' | 'stop'; id?: string; mayStillComplete?: boolean } | null
@@ -25,27 +31,40 @@ interface ChatScopeProps { api: ChatApi; scope: string; active: boolean; onOpenA
 // asynchronously. The page waits for it instead of starting empty: an early
 // autosave or keystroke must never race the record it is about to replace.
 function ChatScope(props: ChatScopeProps) {
-  const [history, setHistory] = useState<LoadedChatHistory | null>(null)
+  const [history, setHistory] = useState<{ loaded: LoadedChatHistory; generation: number } | null>(null)
   useEffect(() => {
     let current = true
-    void loadChatHistory(props.api, window.localStorage, props.scope).then((loaded) => { if (current) setHistory(loaded) })
+    void loadChatHistory(props.api, window.localStorage, props.scope).then((loaded) => { if (current) setHistory({ loaded, generation: 0 }) })
     return () => { current = false }
   }, [props.api, props.scope])
+  // While the old record cannot be read, nothing is written to it. Reading it again only swaps in a new view
+  // once it reads cleanly, carrying over what was said meanwhile; a reply still arriving would be cut off, so
+  // the swap waits until nothing is generating.
+  const reload = async (session: () => ChatWorkspace) => {
+    const loaded = await loadChatHistory(props.api, window.localStorage, props.scope)
+    const latest = session()
+    if (loaded.warning || latest.conversations.some(isGenerating) || isGenerating(latest.draftConversation)) return
+    setHistory((previous) => ({ loaded: { ...loaded, state: mergeSessionIntoHistory(loaded.state, latest) }, generation: (previous?.generation ?? 0) + 1 }))
+  }
   if (!history) return <section className="chat-page" hidden={!props.active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={props.scope} data-loading="true" aria-busy="true" />
-  return <ChatView {...props} history={history} />
+  return <ChatView key={history.generation} {...props} history={history.loaded} onReloadHistory={reload} />
 }
 
-function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps & { history: LoadedChatHistory }) {
+function ChatView({ api, scope, active, onOpenAccount, history, onReloadHistory }: ChatScopeProps & { history: LoadedChatHistory; onReloadHistory: (session: () => ChatWorkspace) => Promise<void> }) {
   const chat = useChatController(api, scope, history, active)
+  const toast = useToast()
   const { conversation, preparations } = chat
   const [search, setSearch] = useState('')
   const [confirmationState, setConfirmation] = useState<Confirmation>(null)
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const [copyFallback, setCopyFallback] = useState<string | null>(null)
-  const [preview, setPreview] = useState<AiChatAsset | null>(null)
+  const [preview, setPreview] = useState<{ asset: AiChatAsset; mine: boolean } | null>(null)
   const [stopping, setStopping] = useState(false)
   const [customSize, setCustomSize] = useState(false)
+  const [reloading, setReloading] = useState(false)
   const composing = useRef(false)
+  const latestState = useRef(chat.state)
+  latestState.current = chat.state
   const surface = useRef<HTMLElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const navigationScroll = useRef(0)
@@ -76,6 +95,20 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
   const models = (preparation?.models ?? []).filter((model) => inspectModel(model).kind === (conversation.settings.mode === 'image' ? 'image' : 'chat'))
   const capability = conversation.settings.model ? inspectModel(conversation.settings.model) : null
   const imageCapability = capability?.kind === 'image' ? capability : null
+  const draftImages = conversation.draftImages ?? []
+  const textMode = conversation.settings.mode === 'text'
+  const seesImages = textMode && Boolean(conversation.settings.model) && canReadImages(conversation.settings.model)
+  const imagesBlocked = draftImages.length > 0 && !seesImages
+  const attachTitle = !textMode ? '生成图片时还不能带图片' : !seesImages ? '当前模型看不了图片，换一个能看图的模型才能发图' : draftImages.length >= chatLimits.imagesPerMessage ? `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片` : '加图片（也可以直接粘贴截图）'
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const hasImage = [...event.clipboardData.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    if (!hasImage) return
+    // 截图只在主进程从剪贴板里读，这里只负责拦下默认粘贴。
+    event.preventDefault()
+    if (pending) return
+    if (!seesImages) { chat.setError(textMode ? noImageModelMessage : '生成图片时还不能带图片'); return }
+    void chat.pasteImage()
+  }
   const candidates = useMemo(() => active ? filterConversations(chat.state.conversations, search) : [], [active, chat.state.conversations, search])
   const task = async (work: () => Promise<unknown>, done: string) => {
     const ticket = owner.current
@@ -87,12 +120,56 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
     try { await api.copyText(text); if (ticket === owner.current) chat.setNotice('内容已复制') }
     catch { if (ticket === owner.current) setCopyFallback(text) }
   }
+  const copyCode = async (text: string) => {
+    const ticket = owner.current
+    try { await api.copyText(text); if (ticket === owner.current) toast.show('已复制', 'ok'); return true }
+    catch { if (ticket === owner.current) setCopyFallback(text); return false }
+  }
+  const copyCodeRef = useRef(copyCode)
+  copyCodeRef.current = copyCode
+  const copyLink = async (url: string) => {
+    const ticket = owner.current
+    try { await api.copyText(url); if (ticket === owner.current) toast.show('网址已复制，粘贴到浏览器地址栏就能打开', 'ok') }
+    catch { if (ticket === owner.current) setCopyFallback(url) }
+  }
+  const copyLinkRef = useRef(copyLink)
+  copyLinkRef.current = copyLink
+  // react-markdown treats each renderer as a component type, so a new function
+  // every render would remount the code blocks and drop their 已复制 state.
+  const markdownComponents = useMemo<Components>(() => ({ a: ({ href, children }) => <ChatLinkText href={href} onCopy={(url) => void copyLinkRef.current(url)}>{children}</ChatLinkText>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span>, pre: ({ children }) => <CodeBlock onCopy={(text) => copyCodeRef.current(text)}>{children}</CodeBlock> }), [])
+  // Only replies get formulas: what the user typed shows exactly as typed.
+  const replyComponents = useMemo<Components>(() => ({ ...markdownComponents, code: ({ children, className }) => { const math = readChatMath(children); return math ? <ChatFormula math={math} /> : <code className={className}>{children}</code> } }), [markdownComponents])
   const saveAsset = async (assetId: string) => {
     const ticket = owner.current
     try { const result = await api.saveAsset(assetId); if (ticket === owner.current && result.saved) chat.setNotice('图片已保存') }
     catch { if (ticket === owner.current) chat.setError('图片没有保存成功，可以重试') }
   }
+  // Rows are memoized, so they get one stable object that always calls the
+  // latest handlers instead of fresh closures that would re-render all of them.
+  const latestMessageActions = useRef<MessageActions | null>(null)
+  latestMessageActions.current = { copyText: (text) => void copyText(text), preview: (asset, mine) => setPreview({ asset, mine }), copyAsset: (assetId) => void task(() => api.copyAsset(assetId), '图片已复制'), saveAsset: (assetId) => void saveAsset(assetId), assetMenu: (assetId) => void task(() => api.assetMenu(assetId), ''), confirm: setConfirmation, edit: setEditing, openAccount: (tab) => onOpenAccount?.(tab) }
+  const messageActions = useMemo<MessageActions>(() => ({ copyText: (text) => latestMessageActions.current?.copyText(text), preview: (asset, mine) => latestMessageActions.current?.preview(asset, mine), copyAsset: (assetId) => latestMessageActions.current?.copyAsset(assetId), saveAsset: (assetId) => latestMessageActions.current?.saveAsset(assetId), assetMenu: (assetId) => latestMessageActions.current?.assetMenu(assetId), confirm: (value) => latestMessageActions.current?.confirm(value), edit: (value) => latestMessageActions.current?.edit(value), openAccount: (tab) => latestMessageActions.current?.openAccount(tab) }), [])
+  const exportConversation = async (id: string) => {
+    const item = chat.state.conversations.find((candidate) => candidate.id === id)
+    if (!item) return
+    const ticket = owner.current
+    try {
+      const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
+      if (ticket === owner.current && result) chat.setNotice('这段对话已存成文本文件')
+    } catch { if (ticket === owner.current) chat.setError('这段对话没有导出成功，可以重试') }
+  }
   const stop = async () => { const ticket = owner.current; setStopping(true); await chat.stop(); if (owner.current === ticket) setStopping(false) }
+  const reloadHistory = async () => {
+    const ticket = owner.current
+    setReloading(true)
+    try { await onReloadHistory(() => latestState.current) } finally { if (owner.current === ticket) setReloading(false) }
+  }
+  const fillExample = (text: string) => {
+    chat.setDraft(text)
+    const input = surface.current?.querySelector<HTMLTextAreaElement>('#chatIn')
+    input?.focus()
+    requestAnimationFrame(() => input?.setSelectionRange(text.length, text.length))
+  }
   const confirmAction = () => {
     const action = confirmation
     setConfirmation(null)
@@ -122,38 +199,86 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
     <aside className="chat-conversations" aria-label="聊天会话">
       <div className="chat-conversations-top"><Button icon={Plus} onClick={chat.newConversation} testId="chat-conversation-new">新对话</Button></div>
       {(chat.state.conversations.length > 4 || search) && <div className="chat-conversation-search"><SearchInput value={search} onChange={setSearch} placeholder="搜索对话" testId="chat-conversation-search" /></div>}
-      <nav className="chat-conversation-list" aria-label="已保存的对话">{candidates.map((item) => <div key={item.id} className="chat-conversation-item" data-active={item.id === chat.state.activeId}><button type="button" className="chat-conversation-select" onClick={() => switchConversation(item.id)} aria-current={item.id === chat.state.activeId ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在生成' : new Date(item.updatedAt).toLocaleDateString('zh-CN')} · {item.messages.length} 条</span></button><Menu label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`管理对话 ${item.title}`} title="对话操作" />} items={[{ label: '删除对话', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => setConfirmation({ kind: 'delete-conversation', id: item.id }) }]} /></div>)}{candidates.length === 0 && <Empty icon={search ? Search : MessageSquare} title={search ? '没找到相关对话' : '还没有对话'} description={search ? '换个词再试试' : ''} />}</nav>
+      <nav className="chat-conversation-list" aria-label="已保存的对话">{candidates.map((item) => <div key={item.id} className="chat-conversation-item" data-active={item.id === chat.state.activeId}><button type="button" className="chat-conversation-select" onClick={() => switchConversation(item.id)} aria-current={item.id === chat.state.activeId ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在生成' : new Date(item.updatedAt).toLocaleDateString('zh-CN')} · {item.messages.length} 条</span></button><Menu label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`管理对话 ${item.title}`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => void exportConversation(item.id) }, { label: '删除对话', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => setConfirmation({ kind: 'delete-conversation', id: item.id }) }]} /></div>)}{candidates.length === 0 && (search ? <Empty icon={Search} title="没找到相关对话" description="换个词再试试" /> : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable ? '以前的对话暂时读不出来' : '聊过的对话会存在这里'}</p>)}</nav>
     </aside>
     <div className="chat-conversation">
       <header className="chat-bar"><strong title={conversation.title}>{chat.state.activeId ? conversation.title : '聊天'}</strong><div className="chat-bar-actions">{active && <Popover label="参数设置" title="参数设置" anchor={<Button icon={SlidersHorizontal} variant="ghost" size="sm" aria-label="参数设置" title="参数设置" testId="chat-parameters-open" />}><ParametersPanel key={conversation.id} settings={conversation.settings} onChange={chat.changeSettings} /></Popover>}<Button icon={Trash2} variant="ghost" size="sm" aria-label="清空对话" title="清空对话" disabled={pending || !conversation.messages.length} onClick={() => setConfirmation({ kind: 'clear' })} testId="chat-conversation-clear" /></div></header>
-      {(chat.groupError || chat.error || chat.notice || chat.storageError || preparation?.warning) && <div className="chat-banner" data-tone={chat.groupError || chat.error || chat.storageError ? 'bad' : 'neutral'} role={chat.groupError || chat.error || chat.storageError ? 'alert' : 'status'}><span>{chat.storageError || chat.groupError || chat.error || chat.notice || preparation?.warning}</span>{chat.groupError && <Button size="xs" icon={RefreshCw} onClick={() => void chat.refreshGroups()} testId="chat-groups-retry">重试</Button>}{!chat.groupError && !chat.storageError && !preparation?.warning && <Button variant="ghost" size="xs" icon={X} aria-label="关闭提示" title="关闭提示" onClick={() => { chat.setError(''); chat.setNotice('') }} />}</div>}
+      {(chat.groupError || chat.error || chat.notice || chat.storageError || preparation?.warning) && <div className="chat-banner" data-tone={chat.groupError || chat.error || chat.storageError ? 'bad' : 'neutral'} role={chat.groupError || chat.error || chat.storageError ? 'alert' : 'status'}><span>{chat.storageError || chat.groupError || chat.error || chat.notice || preparation?.warning}</span>{chat.historyUnreadable && chat.storageError && <Button size="xs" icon={RefreshCw} loading={reloading} disabled={running} onClick={() => void reloadHistory()} testId="chat-history-reload">重新读取</Button>}{chat.groupError && <Button size="xs" icon={RefreshCw} onClick={() => void chat.refreshGroups()} testId="chat-groups-retry">重试</Button>}{!chat.groupError && !chat.storageError && isConversationTooLongMessage(chat.error) && <Button size="xs" variant="primary" icon={Plus} onClick={chat.continueInNew} testId="chat-continue-new">带着这句话开新对话</Button>}{!chat.groupError && !chat.storageError && !preparation?.warning && <Button variant="ghost" size="xs" icon={X} aria-label="关闭提示" title="关闭提示" onClick={() => { chat.setError(''); chat.setNotice('') }} />}</div>}
       <div className="chat-messages" ref={list} aria-label="消息记录" onScroll={(event) => { if (!active) return; const element = event.currentTarget; stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; scrolls.current.set(conversation.id, element.scrollTop) }}>
-        {!conversation.messages.length && <Empty icon={MessageSquare} title="开始一段新对话" description="" />}
-        {conversation.messages.map((message) => <div key={message.id} className="chat-message" data-role={message.role} data-status={message.status} data-testid={`chat-message-${message.id}`}>
-          <span className="chat-avatar">{message.role === 'user' ? <User size={15} aria-hidden="true" /> : <BrandIcon model={message.settings?.model ?? conversation.settings.model} size={18} />}</span>
-          <div className="chat-message-main">
-            {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => void copyText(message.reasoning)} /></details>}
-            <div className="chat-bubble">{message.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span> }}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
-              {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label="查看生成图片" onClick={() => setPreview(asset)} onContextMenu={(event) => { event.preventDefault(); void task(() => api.assetMenu(asset.assetId), '') }}><img src={asset.localUrl} alt={asset.revisedPrompt || '生成的图片'} onError={(event) => { event.currentTarget.dataset.failed = 'true'; event.currentTarget.alt = '预览暂不可用，仍可尝试复制或另存图片' }} /></button><div className="chat-asset-actions"><Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => void task(() => api.copyAsset(asset.assetId), '图片已复制')} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => void saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => void task(() => api.assetMenu(asset.assetId), '')} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
-            </div>
-            {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={onOpenAccount} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
-            <div className="chat-message-tools">{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制内容" title="复制内容" onClick={() => void copyText(message.content)} />}{message.role === 'assistant' ? <Button size="xs" icon={RefreshCw} variant="ghost" aria-label="重新生成" title="重新生成" disabled={pending || !chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} onClick={() => setConfirmation({ kind: 'retry', id: message.id, mayStillComplete: message.mayStillComplete })} testId={`chat-message-retry-${message.id}`} /> : <Button size="xs" icon={Pencil} variant="ghost" aria-label="编辑消息" title="编辑消息" disabled={pending} onClick={() => setEditing({ id: message.id, text: message.content })} testId={`chat-message-edit-${message.id}`} />}<Button size="xs" icon={Trash2} variant="ghost" aria-label="删除消息" title="删除消息" disabled={pending} onClick={() => setConfirmation({ kind: 'delete-message', id: message.id })} testId={`chat-message-delete-${message.id}`} /></div>
-          </div>
-        </div>)}
+        {!conversation.messages.length && <Empty icon={MessageSquare} title="开始一段新对话" description="选好分组和模型，直接在下面输入。" action={textMode && !conversation.draft.trim() ? chatExamples.map((text, index) => <Button key={text} size="sm" onClick={() => fillExample(text)} testId={`chat-example-${index + 1}`}>{text}</Button>) : undefined} testId="chat-empty" />}
+        {conversation.messages.map((message) => <ChatMessageItem key={message.id} message={message} model={message.settings?.model ?? conversation.settings.model} pending={pending} canRetry={chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} canOpenAccount={Boolean(onOpenAccount)} markdownComponents={markdownComponents} replyComponents={replyComponents} actions={messageActions} />)}
       </div>
       <div className="chat-composer">
-        <div className="chat-compose-options"><Segment options={[{ value: 'text', label: '文本对话' }, { value: 'image', label: '生成图片' }]} value={conversation.settings.mode} onChange={onModeChange} testId="chat-mode" /><Select aria-label="分组" title={selectedGroup?.description || selectedGroup?.name} options={groupOptions.length ? groupOptions : [{ value: '', label: chat.groupLoading ? '正在读取分组' : '暂无可用分组' }]} value={conversation.settings.group} onChange={(event) => chat.selectGroup(event.target.value)} onPointerDown={chat.refreshOnInteraction} onFocus={chat.refreshOnInteraction} onKeyDown={(event) => { if (['Enter', ' ', 'ArrowDown', 'ArrowUp', 'F4'].includes(event.key)) chat.refreshOnInteraction() }} aria-busy={chat.groupLoading} disabled={!chat.groupsLoaded && chat.groupLoading} testId="chat-group" /><div className="chat-model-select"><BrandIcon model={conversation.settings.model} size={16} /><Select aria-label="模型" value={conversation.settings.model} options={[...(!conversation.settings.model || selectedModelMissing ? [{ value: conversation.settings.model, label: preparation?.phase === 'loading' ? '正在准备模型' : '请选择模型' }] : []), ...models.map((model) => ({ value: model, label: model }))]} onChange={(event) => { chat.selectModel(event.target.value); setCustomSize(false) }} disabled={preparation?.phase !== 'ready' || !models.length} testId="chat-model" /></div><Button icon={RefreshCw} variant="ghost" size="sm" aria-label="刷新分组和模型" title="刷新分组和当前模型" loading={preparation?.phase === 'loading'} onClick={() => void chat.refreshGroupsAndModels()} testId="chat-group-prepare" />{conversation.settings.mode === 'text' && <span className="chat-cost-hint">自动 · 费用不可预测</span>}</div>
+        {shouldShowLengthNotice(conversation) && !isConversationTooLongMessage(chat.error) && <div className="chat-length-notice" role="status" data-testid="chat-length-notice"><span>这段对话已经很长了。每发一句，前面的内容都会一起发给 AI，对话越长，每次回复一般花得越多、也越慢。要换个话题，点「新对话」接着聊，刚写的话会一起带过去。</span><Button size="xs" icon={Plus} disabled={pending} onClick={chat.continueInNew} testId="chat-length-new">新对话</Button><Button size="xs" variant="ghost" onClick={chat.dismissLengthNotice} testId="chat-length-dismiss">知道了</Button></div>}
+        <div className="chat-compose-options"><Segment options={[{ value: 'text', label: '文本对话' }, { value: 'image', label: '生成图片' }]} value={conversation.settings.mode} onChange={onModeChange} testId="chat-mode" /><Select aria-label="分组" title={selectedGroup?.description || selectedGroup?.name} options={groupOptions.length ? groupOptions : [{ value: '', label: chat.groupLoading ? '正在读取分组' : '暂无可用分组' }]} value={conversation.settings.group} onChange={(event) => chat.selectGroup(event.target.value)} onPointerDown={chat.refreshOnInteraction} onFocus={chat.refreshOnInteraction} onKeyDown={(event) => { if (['Enter', ' ', 'ArrowDown', 'ArrowUp', 'F4'].includes(event.key)) chat.refreshOnInteraction() }} aria-busy={chat.groupLoading} disabled={!chat.groupsLoaded && chat.groupLoading} testId="chat-group" /><div className="chat-model-select"><BrandIcon model={conversation.settings.model} size={16} /><Select aria-label="模型" value={conversation.settings.model} options={[...(!conversation.settings.model || selectedModelMissing ? [{ value: conversation.settings.model, label: preparation?.phase === 'loading' ? '正在准备模型' : '请选择模型' }] : []), ...models.map((model) => ({ value: model, label: model }))]} onChange={(event) => { chat.selectModel(event.target.value); setCustomSize(false) }} disabled={preparation?.phase !== 'ready' || !models.length} testId="chat-model" /></div><Button icon={RefreshCw} variant="ghost" size="sm" aria-label="刷新分组和模型" title="刷新分组和当前模型" loading={preparation?.phase === 'loading'} onClick={() => void chat.refreshGroupsAndModels()} testId="chat-group-prepare" /></div>
         {selectedGroupMissing && <p className="chat-message-error" role="alert" data-testid="chat-group-unavailable">当前分组已不可用，请选择可用分组。已保存的消息和草稿继续保留。</p>}{preparation?.phase === 'error' && <p className="chat-message-error" role="alert">{preparation.error}</p>}{preparation?.phase === 'ready' && models.length === 0 && <p className="chat-hint">这个分组暂未提供{conversation.settings.mode === 'image' ? '图片' : '聊天'}模型，请切换分组。</p>}
         {conversation.settings.mode === 'image' && imageCapability && <div className="chat-image-options"><Select aria-label="图片尺寸" value={customSize ? 'custom' : conversation.settings.size} options={[...imageSizes.map((size) => ({ value: size, label: size === 'auto' ? '自动尺寸' : size.replace('x', ' × ') })), ...(imageCapability.sizePolicy.kind === 'divisible' ? [{ value: 'custom', label: '自定义尺寸' }] : [])]} onChange={(event) => { const value = event.target.value; setCustomSize(value === 'custom'); if (value !== 'custom') chat.changeSettings({ size: value }) }} testId="chat-image-size" />{imageCapability.qualities.length > 0 && <Select aria-label="画质" value={conversation.settings.quality} options={imageCapability.qualities.map((quality) => ({ value: quality, label: ({ low: '低画质', medium: '中画质', high: '高画质', auto: '自动画质' })[quality] }))} onChange={(event) => chat.changeSettings({ quality: event.target.value as 'low' | 'medium' | 'high' | 'auto' })} testId="chat-image-quality" />}{imageCapability.resolutions.length > 1 && <Select aria-label="分辨率" value={conversation.settings.imageResolution} options={imageCapability.resolutions.map((resolution) => ({ value: resolution, label: resolution }))} onChange={(event) => chat.changeSettings({ imageResolution: event.target.value as '1K' | '2K' | '4K' })} testId="chat-image-resolution" />}{customSize && imageCapability.sizePolicy.kind === 'divisible' && <><Input type="number" aria-label="图片宽度" min={imageCapability.sizePolicy.min} max={imageCapability.sizePolicy.max} step={imageCapability.sizePolicy.divisor} value={conversation.settings.size.split('x')[0]} onChange={(event) => chat.changeSettings({ size: `${event.target.value}x${conversation.settings.size.split('x')[1]}` })} /><span>×</span><Input type="number" aria-label="图片高度" min={imageCapability.sizePolicy.min} max={imageCapability.sizePolicy.max} step={imageCapability.sizePolicy.divisor} value={conversation.settings.size.split('x')[1]} onChange={(event) => chat.changeSettings({ size: `${conversation.settings.size.split('x')[0]}x${event.target.value}` })} /></>}</div>}
-        <div className="chat-compose-box"><Textarea id="chatIn" aria-label={conversation.settings.mode === 'image' ? '图片描述' : '消息内容'} value={conversation.draft} onChange={(event) => chat.setDraft(event.target.value)} onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }} onKeyDown={(event) => { if (shouldSendOnEnter(event.nativeEvent, composing.current)) { event.preventDefault(); if (!pending) void chat.send() } }} rows={3} maxLength={40000} placeholder={conversation.settings.mode === 'image' ? '描述画面、风格、构图和细节' : '输入消息'} testId="chat-composer-input" />{pending ? <Button icon={Square} aria-label="停止生成" title="停止生成" loading={stopping} onClick={() => { if (activeRequest?.settings?.mode === 'image') setConfirmation({ kind: 'stop' }); else void stop() }} testId="chat-stop" /> : <Button variant="primary" icon={conversation.settings.mode === 'image' ? ImageIcon : ArrowUp} aria-label={conversation.settings.mode === 'image' ? '生成图片' : '发送消息'} title={conversation.settings.mode === 'image' ? '生成图片' : '发送消息'} disabled={!selectedGroup || !conversation.draft.trim() || preparation?.phase !== 'ready' || !conversation.settings.model} onClick={() => void chat.send()} testId="chat-send" />}</div>
-        <div className="chat-compose-foot"><span>按服务端实际用量计费</span>{pending && <Pill tone="accent">正在生成</Pill>}</div>
+        {draftImages.length > 0 && <div className="chat-draft-images" data-testid="chat-draft-images">{draftImages.map((image) => <div className="chat-draft-image" key={image.assetId}><img src={image.localUrl} alt="要发的图片" onError={(event) => { event.currentTarget.dataset.failed = 'true' }} /><Button size="xs" variant="ghost" icon={X} aria-label="去掉这张图片" title="去掉这张图片" disabled={pending} onClick={() => chat.removeImage(image.assetId)} testId="chat-draft-image-remove" /></div>)}</div>}
+        {imagesBlocked && <p className="chat-message-error" role="alert" data-testid="chat-images-unsupported">{textMode ? noImageModelMessage : '生成图片时还不能带图片，请先把图片去掉'}</p>}
+        <div className="chat-compose-box"><Textarea id="chatIn" aria-label={conversation.settings.mode === 'image' ? '图片描述' : '消息内容'} value={conversation.draft} onChange={(event) => chat.setDraft(event.target.value)} onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }} onKeyDown={(event) => { if (shouldSendOnEnter(event.nativeEvent, composing.current)) { event.preventDefault(); if (!pending) void chat.send() } }} onPaste={onPaste} rows={1} maxLength={40000} placeholder={conversation.settings.mode === 'image' ? '描述画面、风格、构图和细节' : seesImages ? '输入消息，也可以粘贴截图' : '输入消息'} testId="chat-composer-input" />{textMode && <Button variant="ghost" icon={ImagePlus} aria-label="加图片" title={attachTitle} loading={chat.attaching} disabled={pending || !seesImages || draftImages.length >= chatLimits.imagesPerMessage} onClick={() => void chat.pickImages()} testId="chat-attach-image" />}{pending ? <Button icon={Square} aria-label="停止生成" title="停止生成" loading={stopping} onClick={() => { if (activeRequest?.settings?.mode === 'image') setConfirmation({ kind: 'stop' }); else void stop() }} testId="chat-stop" /> : <Button variant="primary" icon={conversation.settings.mode === 'image' ? ImageIcon : ArrowUp} aria-label={conversation.settings.mode === 'image' ? '生成图片' : '发送消息'} title={conversation.settings.mode === 'image' ? '生成图片' : '发送消息'} disabled={!selectedGroup || (!conversation.draft.trim() && !draftImages.length) || imagesBlocked || chat.attaching || preparation?.phase !== 'ready' || !conversation.settings.model} onClick={() => void chat.send()} testId="chat-send" />}</div>
+        <div className="chat-compose-foot"><span data-testid="chat-cost-note">{!textMode ? draftImages.length ? '按服务端实际用量计费，带图片的提问会更贵一些' : '按服务端实际用量计费' : draftImages.length ? '按实际用量计费，带图片的提问会更贵一些' : '按实际用量计费，回复越长花得越多'}</span>{pending && <Pill tone="accent">正在生成</Pill>}</div>
       </div>
     </div>
     {confirmation && <Confirm title={confirmation.kind === 'retry' ? '重新生成这条回复？' : confirmation.kind === 'stop' ? '停止等待图片生成？' : confirmation.kind === 'clear' ? '清空当前对话？' : confirmation.kind === 'delete-conversation' ? '删除这段对话？' : '删除这条及之后的消息？'} body={confirmation.kind === 'retry' ? <><p>{confirmation.mayStillComplete ? '上次请求可能仍在服务端处理。' : ''}重新生成会发起新的付费请求，并替换这条及之后的回复。</p>{retrySettings && <p>{retrySettings.group} · {retrySettings.model}</p>}</> : confirmation.kind === 'stop' ? <p>停止等待后服务端仍可能继续生成图片并计费。已产生的费用不会自动退回。</p> : <p>将移除对应的本地消息记录，无法撤销。已产生的用量不会改变。</p>} okLabel={confirmation.kind === 'retry' ? '重新生成' : confirmation.kind === 'stop' ? '停止等待' : '确认删除'} danger={confirmation.kind !== 'retry'} requireAck={confirmation.mayStillComplete || confirmation.kind === 'stop'} onOk={confirmAction} onClose={() => setConfirmation(null)} testId="chat-confirm" />}
     {active && editing && <Dialog open title="编辑消息" subtitle="修改后重新发送，将移除这条消息之后的回复，并产生新的请求用量。" width={480} onClose={() => setEditing(null)} dirty={editing.text !== conversation.messages.find((message) => message.id === editing.id)?.content} footer={<><Button onClick={() => setEditing(null)}>取消</Button><Button variant="primary" icon={ArrowUp} disabled={!editing.text.trim()} onClick={() => { const value = editing; setEditing(null); void chat.send({ editId: value.id, prompt: value.text }) }} testId="chat-edit-send">修改并重发</Button></>} testId="chat-edit-dialog"><Textarea label="消息内容" value={editing.text} onChange={(event) => setEditing({ ...editing, text: event.target.value })} rows={8} maxLength={40000} testId="chat-edit-input" /></Dialog>}
     {active && copyFallback !== null && <Dialog open title="手动复制内容" subtitle="无法访问剪贴板，选中文字后使用系统复制操作。" width={640} onClose={() => setCopyFallback(null)} footer={<Button variant="primary" onClick={() => setCopyFallback(null)}>关闭</Button>} testId="chat-copy-fallback"><Textarea label="待复制内容" value={copyFallback} readOnly rows={12} onFocus={(event) => event.currentTarget.select()} /></Dialog>}
-    {active && preview && <Dialog open title="生成的图片" width={640} onClose={() => setPreview(null)} footer={<><Button icon={Copy} onClick={() => void task(() => api.copyAsset(preview.assetId), '图片已复制')}>复制图片</Button><Button icon={Download} onClick={() => void saveAsset(preview.assetId)}>另存图片</Button><Button icon={ArrowUpRight} onClick={() => void task(() => api.assetMenu(preview.assetId), '')}>更多操作</Button></>} testId="chat-image-preview"><img className="chat-preview-image" src={preview.localUrl} alt={preview.revisedPrompt || '生成的图片'} /></Dialog>}
+    {active && preview && <Dialog open title={preview.mine ? '你发的图片' : '生成的图片'} width={640} onClose={() => setPreview(null)} footer={<><Button icon={Copy} onClick={() => void task(() => api.copyAsset(preview.asset.assetId), '图片已复制')}>复制图片</Button><Button icon={Download} onClick={() => void saveAsset(preview.asset.assetId)}>另存图片</Button><Button icon={ArrowUpRight} onClick={() => void task(() => api.assetMenu(preview.asset.assetId), '')}>更多操作</Button></>} testId="chat-image-preview"><img className="chat-preview-image" src={preview.asset.localUrl} alt={preview.mine ? '你发的图片' : preview.asset.revisedPrompt || '生成的图片'} /></Dialog>}
   </section>
+}
+
+interface MessageActions { copyText: (text: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
+interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
+
+// Every keystroke in the composer rewrites the conversation's draft. Messages
+// keep their object identity through that, so a memoized row skips parsing its
+// markdown again; without it a long conversation re-parsed every reply per key.
+const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending, canRetry, canOpenAccount, markdownComponents, replyComponents, actions }: ChatMessageItemProps) {
+  return <div className="chat-message" data-role={message.role} data-status={message.status} data-testid={`chat-message-${message.id}`}>
+    <span className="chat-avatar">{message.role === 'user' ? <User size={15} aria-hidden="true" /> : <BrandIcon model={model} size={18} />}</span>
+    <div className="chat-message-main">
+      {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => actions.copyText(message.reasoning)} /></details>}
+      {(message.content || message.assets?.length || message.status === 'pending' || message.status === 'streaming') && <div className="chat-bubble">{message.content ? message.role === 'assistant' ? <ReactMarkdown remarkPlugins={remarkPlugins} components={replyComponents}>{prepareChatMath(message.content)}</ReactMarkdown> : <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
+        {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><img src={asset.localUrl} alt={message.role === 'user' ? '你发的图片' : asset.revisedPrompt || '生成的图片'} onError={(event) => { event.currentTarget.dataset.failed = 'true'; event.currentTarget.alt = '预览暂不可用，仍可尝试复制或另存图片' }} /></button><div className="chat-asset-actions"><Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
+      </div>}
+      {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={canOpenAccount ? actions.openAccount : undefined} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
+      <div className="chat-message-tools">{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制内容" title="复制内容" onClick={() => actions.copyText(message.content)} />}{message.role === 'assistant' ? <Button size="xs" icon={RefreshCw} variant="ghost" aria-label="重新生成" title="重新生成" disabled={pending || !canRetry} onClick={() => actions.confirm({ kind: 'retry', id: message.id, mayStillComplete: message.mayStillComplete })} testId={`chat-message-retry-${message.id}`} /> : <Button size="xs" icon={Pencil} variant="ghost" aria-label="编辑消息" title="编辑消息" disabled={pending} onClick={() => actions.edit({ id: message.id, text: message.content })} testId={`chat-message-edit-${message.id}`} />}<Button size="xs" icon={Trash2} variant="ghost" aria-label="删除消息" title="删除消息" disabled={pending} onClick={() => actions.confirm({ kind: 'delete-message', id: message.id })} testId={`chat-message-delete-${message.id}`} /></div>
+    </div>
+  </div>
+})
+
+// Commands arrive wrapped in explanation, and pasting the whole reply into a
+// terminal runs the explanation too. Each block copies only its own text, read
+// from the rendered element so whatever markdown put inside stays exact.
+// Links are copied, never opened: model output can point anywhere, and the
+// main process would reject the navigation anyway (I12).
+function ChatLinkText({ href, children, onCopy }: { href?: string; children: ReactNode; onCopy: (url: string) => void }) {
+  const link = inspectChatLink(href, plainText(children))
+  if (!link) return <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>
+  return <button type="button" className="chat-link" title="点一下复制网址" onClick={() => onCopy(link.url)} data-testid="chat-link">{children}{link.showHost && <span className="chat-link-host">（{link.host}）</span>}</button>
+}
+
+function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: string) => Promise<boolean> }) {
+  const block = useRef<HTMLPreElement>(null)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 2000)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  const copy = async () => {
+    const text = (block.current?.textContent ?? '').replace(/\n$/, '')
+    if (await onCopy(text)) setCopied(true)
+  }
+  return <div className="chat-code"><pre ref={block}>{children}</pre><Button size="xs" variant="ghost" icon={copied ? Check : Copy} aria-label={copied ? '已复制' : '复制这段'} title="只复制这一段" onClick={() => void copy()} testId="chat-code-copy">{copied ? '已复制' : '复制'}</Button></div>
+}
+
+// KaTeX escapes every piece of text it emits and, with trust off, emits no
+// links or attributes of its own choosing, so its MathML can go in as markup.
+// A formula it cannot read stays as the text the model wrote.
+function ChatFormula({ math }: { math: ChatMath }) {
+  const html = useMemo(() => renderChatMath(math), [math.tex, math.display])
+  if (html === null) return <code className="chat-math-raw" title="这个公式没能显示，保留原文">{math.source}</code>
+  return <span className={math.display ? 'chat-math chat-math-block' : 'chat-math'} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 function ErrorLine({ message, onOpenAccount }: { message?: string; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {

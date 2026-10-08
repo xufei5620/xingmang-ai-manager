@@ -2,6 +2,7 @@ import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
+import type { RelayEndpointRoutingSnapshot } from './relay-sites'
 import type { CliStatus, DesktopAppStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
 import {
   describeWindowsExecutionProbeFailure,
@@ -27,7 +28,7 @@ export type FeedbackCliStatus = Pick<
 
 export type FeedbackCliConfig = Pick<
   NativeConfigInspection,
-  'exists' | 'hasApiKey' | 'matchesRelay' | 'model'
+  'exists' | 'hasApiKey' | 'matchesRelay' | 'model' | 'codexProviderName' | 'codexProviderShadowed'
 >
 
 /**
@@ -90,7 +91,19 @@ function configText(config: FeedbackCliConfig | null): string {
   if (!config.exists) return '配置：未配置'
   const account = config.matchesRelay ? '指向当前账号' : '未指向当前账号'
   const model = config.model.trim()
-  return model ? `配置：${account}，模型 ${model}` : `配置：${account}`
+  const head = model ? `配置：${account}，模型 ${model}` : `配置：${account}`
+  return `${head}${codexProviderText(config)}`
+}
+
+/**
+ * Codex 的连接名单独写一句：写在 openai 这类内置名下的老配置首页看着「指向当前
+ * 账号」，Codex 却不认那张表，客服只看上一行会被带偏。名字是用户能改的配置项，
+ * 只留字母数字与 ._- 并截短，免得一份报告里混进换行或长串。
+ */
+function codexProviderText(config: FeedbackCliConfig): string {
+  const name = config.codexProviderName?.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 40)
+  if (!name) return ''
+  return config.codexProviderShadowed === true ? `，连接名 ${name}（Codex 不认，要修）` : `，连接名 ${name}`
 }
 
 function readConfigQuietly(
@@ -165,6 +178,16 @@ export interface FeedbackRuntimeInput {
    * （这时按哪种方式处理看 executionMode）。
    */
   executionProbeFailure?: WindowsExecutionProbeFailureReason | null
+  /**
+   * 「检查」页最近一次「安全证书」那一项的结论（没检查过、或这台电脑没装 Node.js
+   * 没出这一项时缺省）。只读已有结果，生成报告不为它起进程。
+   */
+  certificateTrust?: string | null
+  /**
+   * 当前账号那个站这次运行生效的线路选项（「自动」再写明这会儿用的是哪条），由
+   * resolveFeedbackRelayRoute 给出；不写地址。缺省时这一行不出。
+   */
+  relayRoute?: string | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -238,6 +261,20 @@ export function pickFeedbackRuntimeSnapshot(snapshot: SystemSnapshot | null): Fe
 }
 
 /**
+ * 「连接线路」那一行写什么：当前账号那个站这次运行生效的选项，「自动」再写明这会儿用的是
+ * 哪条。选项开机时按设置定下（routing 就是那一份），设置里刚改、还没重启的不算，所以不读
+ * 设置里的选择。
+ */
+export function resolveFeedbackRelayRoute(routing: RelayEndpointRoutingSnapshot, siteId: string | null | undefined): string | null {
+  const site = routing.resolve(siteId)
+  if (site.id !== 'solov' && site.id !== 'solov-api') return null
+  const preference = routing.preferences[site.id]
+  if (preference === 'direct') return '只用直连'
+  if (preference === 'primary') return '只用默认线路'
+  return routing.lines()[site.id].line === 'direct' ? '自动（这次用的是直连）' : '自动（这次用的是默认线路）'
+}
+
+/**
  * 客服排障最先问的是「你 Node 几、装在哪」「是不是管理员模式」「国内还是海外
  * 网络」。这些主进程早就知道，这里只把上一次扫描的快照排成几行，不为生成报告
  * 再发任何探测。路径原样给出，家目录由 runtime-log 统一换成占位符（I13）。
@@ -251,6 +288,8 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   }
   lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
+  if (input.relayRoute?.trim()) lines.push(`连接线路: ${input.relayRoute.trim()}`)
+  if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)
   }

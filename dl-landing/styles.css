@@ -436,6 +436,10 @@ input {
   background: rgba(245, 190, 74, 0.06);
 }
 
+.win-guide + .mac-guide {
+  margin-top: 14px;
+}
+
 .mac-guide-head {
   display: flex;
   align-items: flex-start;

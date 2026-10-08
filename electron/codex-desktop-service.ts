@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { AppSettingsStore } from './app-settings'
@@ -20,6 +21,8 @@ import {
   parseWindowsProcessesJson,
   selectCodexDesktopApp,
   selectCodexDesktopPackage,
+  selectCodexDesktopProcessesForPackage,
+  stableInstallFamilyName,
   stopCodexDesktopProcesses,
   type CodexDesktopMirrorRelease,
   type CodexDesktopPackageEntry,
@@ -47,9 +50,12 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
-import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { installMacosDesktopApp, MacosDesktopInstallError, type MacosDesktopArchitecture } from './macos-desktop-app-installer'
+import { macosDesktopInstallFailedMessage } from './macos-desktop-install-failure'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
+import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import {
   activateCodexDesktop as activateCodexDesktopDefault,
@@ -67,10 +73,23 @@ import type {
   UpdateSource,
   VersionUpdateStatus,
 } from './system-service'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { repairCodexDesktopGlobalState } from './codex-desktop-state'
 import { addCodexDesktopPackage } from './codex-desktop-appx'
+import {
+  buildCodexDesktopInstallFailureMessage,
+  classifyCodexDesktopInstallFailure,
+  codexDesktopNoStoreNotice,
+  codexDesktopOfficialPackageFailedNotice,
+  codexDesktopTechnicalWords,
+  isCodexDesktopInstallFailureMessage,
+  isPlainCodexDesktopInstallMessage,
+  type CodexDesktopInstallFailureReason,
+} from './codex-desktop-install-failure'
+import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
+import { inspectWindowsStoreAvailability } from './windows-store-app-launch'
 
 const execFileAsync = promisify(execFile)
 
@@ -98,6 +117,20 @@ const codexDesktopMirrorFallbackPackageUrls = {
   x64: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
   arm64: 'https://codexapp-r2.agentsmirror.com/latest/win-arm64',
 } as const
+// 商店没走通时的第二路：OpenAI 官网的离线安装包，和商店里那一版是同一个官方签名的包
+// （scripts/sync-chatgpt-official-cos.cjs 同步的也是这两条）。直链、不跳转，所以沿用
+// validateCodexDesktopResourceUrl 对非镜像主机的规矩：只认同一主机、同一路径。
+const codexDesktopOfficialPackageUrls = {
+  x64: 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix',
+  arm64: 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix',
+} as const
+const codexDesktopOfficialLabel = 'OpenAI 官网'
+// 官网那一路照当时的速度还要再下这么久以上，就不等了，换国内镜像（0.2.15 发版前回归检查③）。
+// 国内镜像一两分钟就能下完，没开加速的客户直连官网常常「慢但不断」，以前只能干等或点取消。
+// 看的是「还要多久」而不是「一共多久」：快下完的不会因为前面慢过而被扔掉重下。
+export const codexDesktopOfficialDownloadLimitMs = 10 * 60_000
+// 刚开始那半分钟速度还没稳（建连接、TCP 慢启动），不据此放弃。
+export const codexDesktopSlowDownloadGraceMs = 30_000
 const codexDesktopMirrorHosts = new Set([
   'codexapp.agentsmirror.com',
   'codexapp-r2.agentsmirror.com',
@@ -125,6 +158,10 @@ const maximumCodexDesktopManifestBytes = 1024 * 1024
 const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
+/** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
+const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。'
+/** Mac 上检测没做完，说不准装没装：点「打开」和点「安装」时都照这句说。 */
+const codexDesktopDetectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
 // 之后既打不开也更新不了。这是拒绝取消时给用户看的原因。
 const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。'
@@ -142,71 +179,179 @@ export interface CodexDesktopLaunchPlan {
   windowsHide: boolean
 }
 
-export interface CodexDesktopWindowsLaunchContext {
-  userSid: string | null
-  isBuiltInAdministrator: boolean
-  uacEnabled: boolean | null
-  filterAdministratorToken: boolean | null
-}
-
-const emptyCodexDesktopWindowsLaunchContext: CodexDesktopWindowsLaunchContext = {
-  userSid: null,
-  isBuiltInAdministrator: false,
-  uacEnabled: null,
-  filterAdministratorToken: null,
-}
+// 客户会原样看到这几句话（失败对话框把后端原话放在最下面），所以只说他看得懂、
+// 做得到的事。以前这里写着 wsreset.exe、AppModel、AppX、UAC，客户既不知道那是
+// 什么，照着跑 wsreset 也几乎从来没用——它只清应用商店的缓存，不管已经装好的
+// 程序为什么没起来。渲染层按开头那半句归类（operation-error.ts 的
+// codexDesktopNotStarted），改开头要两边一起改。
+export const codexDesktopNotStartedPrefix = 'Codex 桌面端没有打开'
 
 /**
- * Parses the small JSON probe used after AppX activation fails. Keep this
- * parser tolerant because PowerShell may add a trailing newline or warning
- * text when a policy value is unavailable.
+ * 失败时这一次到底等了多久、Codex 有没有被 Windows 拉起来过。缺省 = 旧的那句
+ * 「等了将近一分钟」（调用方拿不到计时时照旧）。
  */
-export function parseCodexDesktopWindowsLaunchContext(
-  output: string,
-): CodexDesktopWindowsLaunchContext {
-  const lines = output.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const jsonLine = [...lines].reverse().find((line) => line.startsWith('{') && line.endsWith('}'))
-  if (!jsonLine) return { ...emptyCodexDesktopWindowsLaunchContext }
-  try {
-    const value = JSON.parse(jsonLine) as Record<string, unknown>
-    const userSid = typeof value.sid === 'string' && /^S-1-\d+(?:-\d+)+$/.test(value.sid)
-      ? value.sid
-      : null
-    const parseBoolean = (candidate: unknown): boolean | null => {
-      if (candidate === true || candidate === 1 || candidate === '1') return true
-      if (candidate === false || candidate === 0 || candidate === '0') return false
-      return null
-    }
-    return {
-      userSid,
-      isBuiltInAdministrator: userSid?.endsWith('-500') ?? false,
-      uacEnabled: parseBoolean(value.uacEnabled),
-      filterAdministratorToken: parseBoolean(value.filterAdministratorToken),
-    }
-  } catch {
-    return { ...emptyCodexDesktopWindowsLaunchContext }
-  }
+export interface CodexDesktopLaunchWaitOutcome {
+  waitedSeconds: number
+  /** Windows 交回过 Codex 的进程号，说明它起过、只是没等到窗口。 */
+  processSeen: boolean
 }
 
 export function describeCodexDesktopLaunchFailure(
-  context: CodexDesktopWindowsLaunchContext,
+  outcome?: CodexDesktopLaunchWaitOutcome,
+  knownIssueVersion?: string | null,
 ): string {
-  const hints: string[] = []
-  if (context.isBuiltInAdministrator) {
-    hints.push('当前 Windows 账户是内置 Administrator（SID 以 -500 结尾）')
+  // 这里不再按账户类型下结论（自带 Administrator、关了用户账户控制），原因见
+  // windows-store-app-launch.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
+  // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
+  // 直接说清楚，并给命令行版这条路（第十九批 7）。
+  if (knownIssueVersion) {
+    const waited = outcome
+      ? `等了 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已经启动，但它的窗口一直没出来' : 'Codex 没有启动起来'}。`
+      : '等了将近一分钟，没有等到它的窗口。'
+    return `${codexDesktopNotStartedPrefix}：${waited}${codexDesktopKnownIssueLaunchSentence(knownIssueVersion)}`
   }
-  if (context.uacEnabled === false) hints.push('UAC 已关闭')
-  if (hints.length) {
-    return [
-      'Windows 无法创建 Codex Desktop 进程（AppModel 常见错误 0xC0EA0001）',
-      `${hints.join('，')}。`,
-      '请先运行 wsreset.exe，再使用普通 Windows 账户重新安装或启动 Codex Desktop。',
-    ].join('；')
+  if (!outcome) {
+    return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
+      + '先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。'
   }
+  // 客户自己分不清是 Codex 起不来还是星芒没叫动它，只会一直点重试或找客服。
+  // 从开始菜单直接开一次就能分清：那边也起不来，就是 Codex 这一版自己的问题。
+  const what = outcome.processSeen
+    ? 'Codex 已经启动，但它的窗口一直没出来'
+    : 'Codex 没有启动起来'
+  return `${codexDesktopNotStartedPrefix}：等了 ${outcome.waitedSeconds} 秒，${what}。`
+    + '先关掉所有 Codex 窗口，再点「重试」。想知道是不是 Codex 自己的问题：在开始菜单里搜「Codex」直接点开，'
+    + '也起不来的话就是 Codex 这一版自己的问题，不是星芒，可以等微软商店更新它，或先用 Codex CLI；'
+    + '开始菜单里能打开、从星芒打不开，请联系客服。'
+}
+
+// 一键重置做不成时，客户自己在系统设置里点的是同一个按钮。
+/**
+ * The modules each PowerShell script in this file calls into. Every one of
+ * them runs under trustedCommandEnvironment(), where a single cmdlet left to
+ * command autoloading costs the whole module analysis (about 22 s on the CI
+ * runner, see buildPowerShellModuleImportStatement). Most of these probes get
+ * 8 s, so one missing import is a timeout, and a timeout reads as "not found"
+ * or "could not look". The unit tests map every cmdlet in each script to one
+ * of these names, so a new cmdlet cannot slip in without its module.
+ */
+export const codexDesktopStartAppProbeModules = ['Microsoft.PowerShell.Utility', 'StartLayout'] as const
+export const codexDesktopProcessProbeModules = ['Microsoft.PowerShell.Utility', 'CimCmdlets'] as const
+export const codexDesktopPackageProbeModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
+export const codexDesktopAppxCommandModules = ['Appx'] as const
+export const codexDesktopPackageInspectionModules = ['Microsoft.PowerShell.Utility'] as const
+
+/**
+ * The limit for the probes that run on their own: start menu, the scan and
+ * launch process lists, and the Appx package query before an install, update,
+ * uninstall or reset. Exported so the packaged-job smoke holds each probe to
+ * the limit the app actually gives it.
+ */
+export const codexDesktopSingleProbeTimeoutMs = 8_000
+
+const codexDesktopResetManualHint = '没能自动重置 Codex 桌面端。可以自己重置：打开 Windows「设置 → 应用 → 已安装的应用」，'
+  + '找到 Codex，点右边的「…」→「高级选项」→「重置」，再回星芒打开。'
+
+/**
+ * Reset-AppxPackage is the cmdlet behind Settings' "Reset" button: it deletes
+ * the package's own per-user data (LocalState, caches) and leaves the install
+ * and everything outside the package folder — ~/.codex, where the relay
+ * configuration lives — untouched. The package name comes from the verified
+ * Get-AppxPackage probe and is still passed as a literal, never interpolated.
+ */
+export function buildCodexDesktopResetScript(packageFullName: string): string {
   return [
-    'Windows 已接受 Codex Desktop 启动请求，但 AppModel 没有创建进程。',
-    '这通常与 Microsoft Store 授权、AppX 状态或 UAC 策略有关，请先运行 wsreset.exe 后重试；如果仍失败，请使用反馈与诊断中的启动日志。',
-  ].join('')
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(codexDesktopAppxCommandModules),
+    '$ErrorActionPreference = "Stop"',
+    `Reset-AppxPackage -Package ${powerShellLiteral(packageFullName)}`,
+  ].join('; ')
+}
+
+export function buildCodexDesktopUninstallScript(packageFullName: string): string {
+  return [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(codexDesktopAppxCommandModules),
+    '$ErrorActionPreference = "Stop"',
+    `Remove-AppxPackage -Package ${powerShellLiteral(packageFullName)} -ErrorAction Stop`,
+  ].join('; ')
+}
+
+/**
+ * 重置失败时客户能做的只有一件事：去系统设置里点同一个按钮。Windows 10 2004 以前
+ * 没有 Reset-AppxPackage，那种电脑的设置里也有「重置」，所以两种失败给同一个出口。
+ */
+export function describeCodexDesktopResetFailure(error: unknown): string {
+  const record = error && typeof error === 'object' ? error as { killed?: unknown } : {}
+  if (record.killed === true) return `重置 Codex 桌面端等了两分钟还没做完。${codexDesktopResetManualHint}`
+  return codexDesktopResetManualHint
+}
+
+/** 等窗口满这么久还没出来，就多提一句「先去开始菜单看看」。 */
+const codexDesktopLaunchStartMenuHintSeconds = 20
+
+/**
+ * 打开桌面端途中每隔几秒给客户看的那句话。以前这段最长近一分钟，界面上只有
+ * 「打开中」三个字，客户不知道在等什么、还要等多久。
+ */
+export function describeCodexDesktopLaunchWait(
+  stage: CodexDesktopLaunchWaitStage,
+  elapsedSeconds: number,
+): string {
+  if (stage === 'preparing') return `正在准备打开 Codex 桌面端，已经等了 ${elapsedSeconds} 秒。`
+  // 窗口已经在客户眼前，星芒还在给它换中文。以前这段照旧说「正在等窗口出现」，
+  // 满 20 秒还叫人去开始菜单找它（第二十七批 D），所以这一段不带开始菜单那句。
+  if (stage === 'switching-language') return `Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 ${elapsedSeconds} 秒。`
+  const head = `正在等 Codex 桌面端的窗口出现，已经等了 ${elapsedSeconds} 秒。Codex 第一次打开有时要一分钟`
+  return elapsedSeconds >= codexDesktopLaunchStartMenuHintSeconds
+    ? `${head}，可以先去开始菜单看看它有没有弹出来。`
+    : `${head}。`
+}
+
+export type CodexDesktopLaunchWaitStage = 'preparing' | 'waiting-window' | 'switching-language'
+
+export interface CodexDesktopLaunchProgress {
+  elapsedSeconds: number
+  message: string
+}
+
+export interface CodexDesktopLaunchHeartbeat {
+  setStage: (stage: CodexDesktopLaunchWaitStage) => void
+  elapsedSeconds: () => number
+  stop: () => void
+}
+
+export const codexDesktopLaunchHeartbeatIntervalMs = 5_000
+
+/**
+ * 打开途中按固定间隔报一次「等了多久」。只报进度，不碰超时本身；stop 之后
+ * 再也不发，免得失败框弹出来之后工具行又冒出一句「还在等」。
+ */
+export function startCodexDesktopLaunchHeartbeat(
+  report: (progress: CodexDesktopLaunchProgress) => void,
+  options: { intervalMs?: number; now?: () => number } = {},
+): CodexDesktopLaunchHeartbeat {
+  const now = options.now ?? Date.now
+  const startedAt = now()
+  let stage: CodexDesktopLaunchWaitStage = 'preparing'
+  let stopped = false
+  function elapsedSeconds(): number {
+    return Math.max(0, Math.round((now() - startedAt) / 1000))
+  }
+  const timer = setInterval(() => {
+    if (stopped) return
+    const elapsed = elapsedSeconds()
+    report({ elapsedSeconds: elapsed, message: describeCodexDesktopLaunchWait(stage, elapsed) })
+  }, options.intervalMs ?? codexDesktopLaunchHeartbeatIntervalMs)
+  timer.unref?.()
+  return {
+    setStage(next) { stage = next },
+    elapsedSeconds,
+    stop() {
+      stopped = true
+      clearInterval(timer)
+    },
+  }
 }
 
 export interface CodexDesktopPackageProbe {
@@ -283,12 +428,44 @@ export interface CodexDesktopPackageSource {
   url: string
   expectedContentLength?: number
   expectedSha256Base64?: string
+  /**
+   * 官网的 CDN 没承诺固定的 Content-Type，只挡住明显是网页或报错正文的响应；真伪靠
+   * 下载后核对的包身份、发布者与签名，以及 Windows 安装时自己的签名校验。
+   * 缺省 = 只认 MSIX 与二进制流（国内镜像那一路照旧）。
+   */
+  acceptAnyBinaryContentType?: boolean
+  /**
+   * 只给后面还有退路的那一路（OpenAI 官网的离线安装包）：照目前的平均速度还要这么久以上
+   * 才下得完，就不等了，当这一路没下成，由调用方换国内镜像。
+   * 缺省 = 多慢都下完（国内镜像是最后一路，照旧）。
+   */
+  maximumRemainingMs?: number
+}
+
+/** 下载那一步留给测试的接缝：断线后等多久、多久没数据算停住、判「太慢」用的时钟。 */
+export interface CodexDesktopDownloadSeams extends Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'> {
+  now?: () => number
+}
+
+/** 照开始以来的平均速度，这次下载还要多久才下得完。还没收到数据时算不出来，返回 null。 */
+export function estimateCodexDesktopDownloadRemainingMs(elapsedMs: number, transferred: number, total: number): number | null {
+  if (transferred <= 0 || elapsedMs < 0) return null
+  return Math.max(0, total - transferred) * elapsedMs / transferred
+}
+
+/** 下了半分钟以上，照目前的速度还要超过 limitMs 才下得完（或者还一个字节都没收到）。 */
+export function isCodexDesktopDownloadTooSlow(elapsedMs: number, transferred: number, total: number, limitMs: number): boolean {
+  if (elapsedMs < codexDesktopSlowDownloadGraceMs) return false
+  const remaining = estimateCodexDesktopDownloadRemainingMs(elapsedMs, transferred, total)
+  return remaining === null || remaining > limitMs
 }
 
 export interface CodexDesktopDownloadProgress {
   transferred: number
   total: number
   percent: number
+  /** 网络断了一下、正要在同一条线路上接着下时为 true。 */
+  resuming?: boolean
 }
 
 export interface CodexDesktopDownloadResult {
@@ -424,8 +601,8 @@ export async function fetchTrustedCodexDesktopResource(
 }
 
 /**
- * 微软商店是 Codex 桌面端唯一的官方发行渠道，所以先交给系统自带的 winget 从商店装；
- * 装不上再退到国内镜像。winget 的路径只能来自 resolveSystemWingetExecutable
+ * 先交给系统自带的 winget 从微软商店装；装不上再换 OpenAI 官网的离线安装包，最后才是
+ * 国内镜像。winget 的路径只能来自 resolveSystemWingetExecutable
  * 校验过的 App Installer 包目录，这里再拦一次明显不对的值。
  */
 export function buildCodexDesktopStoreInstallCommand(executable: string): CommandSpec {
@@ -465,7 +642,52 @@ export function describeCodexDesktopStoreFailure(error: unknown): string {
   if (exitCode === 0x8a15002b) return '商店里暂时还没有更新的版本'
   // APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND：这台电脑所在地区的商店查不到它。
   if (exitCode === 0x8a150014) return '商店里没找到 Codex 桌面端'
-  return `错误码 0x${exitCode.toString(16)}`
+  // 认不出的退出码不上屏（客户看了也不知道做什么），原样进日志：见 codexDesktopStoreExitCode。
+  return '商店那边没说原因'
+}
+
+/** 商店那一路的原始退出码，只写进日志，客服查的时候用。 */
+export function codexDesktopStoreExitCode(error: unknown): string | null {
+  if (!(error instanceof CommandRunnerError) || error.exitCode === null) return null
+  return `0x${(error.exitCode >>> 0).toString(16)}`
+}
+
+/**
+ * 商店那一路常常几分钟没有一行输出，进度条停在原地和卡死看上去一模一样。
+ * 心跳按这个间隔把「已经等了多久」说出来，用户才知道该等还是该关。
+ */
+export const codexDesktopStoreHeartbeatMs = 15_000
+// 离超时只剩这么久时改口成「最多再等 X 分钟」，让用户知道等待是有头的。
+const codexDesktopStoreDeadlineNoticeMs = 3 * 60_000
+
+// system-service 已经 import 本模块，反过来 import 它的 formatElapsedDuration
+// 会成环，所以这里留一份同样写法的。
+function formatCodexDesktopStoreElapsed(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.round(elapsedMs / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
+}
+
+/**
+ * 商店安装期间给用户看的那一行。只说大白话：不出现商店安装组件、软件源这些名字。
+ * 超时后会自动换 OpenAI 官网的离线安装包，所以临近超时时说「最多再等」而不是「失败」。
+ */
+export function buildCodexDesktopStoreWaitMessage(
+  elapsedMs: number,
+  percent: number | null,
+  timeoutMs: number = codexDesktopStoreInstallTimeoutMs,
+): string {
+  const progress = percent === null ? '' : `（${percent}%）`
+  if (elapsedMs < codexDesktopStoreHeartbeatMs) {
+    return `正在从微软商店下载安装 Codex 桌面端${progress}，要等几分钟，请别关窗口`
+  }
+  const remainingMs = timeoutMs - elapsedMs
+  if (remainingMs <= codexDesktopStoreDeadlineNoticeMs) {
+    const minutes = Math.max(1, Math.ceil(remainingMs / 60_000))
+    return `还在等微软商店${progress}，最多再等 ${minutes} 分钟；还不行星芒会自动换 OpenAI 官网的离线安装包接着装，请别关窗口`
+  }
+  return `正在从微软商店下载安装 Codex 桌面端${progress}，已经等了 ${formatCodexDesktopStoreElapsed(elapsedMs)}。`
+    + '商店有时要十来分钟，不用管它，请别关窗口'
 }
 
 /** 商店输出的进度条里带百分比时取最后一个，取不到就返回 null。 */
@@ -516,7 +738,8 @@ export function describeCodexDesktopPrimaryMirrorSkip(
     if (separator < 0) continue
     if (!codexDesktopPrimaryMirrorLabels.has(error.slice(0, separator))) continue
     const detail = error.slice(separator + 1).trim()
-    return detail ? `国内镜像本次不可用（${detail}）` : '国内镜像本次不可用'
+    // 带着 HTTP 状态码、SHA-256 这类词的原因客户看不懂，只说不可用；原话在清单探测的日志里。
+    return detail && !codexDesktopTechnicalWords.test(detail) ? `国内镜像本次不可用（${detail}）` : '国内镜像本次不可用'
   }
   return null
 }
@@ -530,9 +753,9 @@ export function describeCodexDesktopDownloadAttempt(
   attemptIndex: number,
   previousFailure: string | null,
   probeErrors: readonly string[],
-  storeFailure: string | null = null,
+  store: string | null | Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing' | 'officialFailure'> = null,
 ): string {
-  const storeNotice = storeFailure ? `微软商店这次没装上（${storeFailure}），` : ''
+  const storeNotice = describeCodexDesktopStoreNotice(typeof store === 'string' || store === null ? { storeFailure: store } : store)
   if (attemptIndex > 0 && previousFailure) return `${storeNotice}前一路镜像未通过校验，已改从${packageSource.label}下载`
   const primaryMirrorSkip = attemptIndex === 0
     ? describeCodexDesktopPrimaryMirrorSkip(packageSource, probeErrors)
@@ -810,110 +1033,121 @@ export async function fetchCodexDesktopPreviousManifestCandidates(
   )
 }
 
+function isCodexDesktopPackageContentType(contentType: string, acceptAnyBinary: boolean): boolean {
+  if (
+    contentType.includes('application/vnd.ms-appx')
+    || contentType.includes('application/octet-stream')
+    || contentType.includes('binary/octet-stream')
+  ) {
+    return true
+  }
+  // 网页、JSON、XML 一类的正文多半是 CDN 的拦截页或报错，不是安装包。
+  return acceptAnyBinary && !/^text\/|json|xml|html/.test(contentType)
+}
+
 export async function downloadCodexDesktopPackage(
   source: CodexDesktopPackageSource,
   destination: string,
   onProgress: (progress: CodexDesktopDownloadProgress) => void,
   fetchImplementation: typeof fetch,
   cancelSignal?: AbortSignal,
+  seams: CodexDesktopDownloadSeams = {},
 ): Promise<CodexDesktopDownloadResult> {
-  const controller = new AbortController()
-  const responseTimeout = setTimeout(() => controller.abort(), 20_000)
-  // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：
-  // 下面的 catch 靠 cancelSignal 判断，而不是把两者都说成「下载超时」。
-  const abortOnCancel = () => controller.abort(cancelSignal?.reason)
-  if (cancelSignal?.aborted) abortOnCancel()
-  cancelSignal?.addEventListener('abort', abortOnCancel, { once: true })
-  let file: fs.promises.FileHandle | null = null
+  const { now = Date.now, ...resumeOptions } = seams
+  let total = 0
+  let lastPercent = -1
+  const percentOf = (transferred: number) => Math.min(100, Math.floor((transferred / total) * 100))
+  // 「太慢、不等了」单独一个信号：要和客户点的取消分得开，前者换下一路，后者整次停下。
+  const limitMs = source.maximumRemainingMs
+  const slow = new AbortController()
+  const downloadSignal = limitMs === undefined ? cancelSignal
+    : cancelSignal ? AbortSignal.any([cancelSignal, slow.signal]) : slow.signal
+  const startedAt = now()
   try {
-    const response = await fetchTrustedCodexDesktopResource(source.url, {
-      headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
-      signal: controller.signal,
-    }, fetchImplementation)
-    clearTimeout(responseTimeout)
-    if (!response.ok) throw new Error(`${source.label}返回 HTTP ${response.status}`)
-
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (
-      !contentType.includes('application/vnd.ms-appx')
-      && !contentType.includes('application/octet-stream')
-      && !contentType.includes('binary/octet-stream')
-    ) {
-      throw new Error(`${source.label}返回的不是 MSIX 文件（Content-Type: ${contentType || '缺失'}）`)
-    }
-
-    const total = Number(response.headers.get('content-length'))
-    if (!Number.isSafeInteger(total) || total < minimumCodexDesktopPackageBytes) {
-      throw new Error(`${source.label}返回的安装包大小无效`)
-    }
-    if (total > maximumCodexDesktopPackageBytes) {
-      throw new Error(`${source.label}返回的安装包超过 1.5 GB 安全上限`)
-    }
-    if (
-      source.expectedContentLength !== undefined
-      && total !== source.expectedContentLength
-    ) {
-      throw new Error(
-        `${source.label}返回的 Content-Length 与镜像清单不一致：应为 ${source.expectedContentLength} 字节，实际 ${total} 字节`,
-      )
-    }
-    if (!response.body) throw new Error(`${source.label}未返回安装包内容`)
-
-    file = await fs.promises.open(destination, 'wx', 0o600)
-    const reader = response.body.getReader()
-    const sha256 = createHash('sha256')
-    let transferred = 0
-    let lastPercent = -1
-    while (true) {
-      const idleTimeout = setTimeout(() => controller.abort(), 45_000)
-      let chunk: ReadableStreamReadResult<Uint8Array>
-      try {
-        chunk = await reader.read()
-      } finally {
-        clearTimeout(idleTimeout)
-      }
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      transferred += chunk.value.byteLength
-      if (transferred > total || transferred > maximumCodexDesktopPackageBytes) {
-        throw new Error(`${source.label}返回的数据超过声明的安装包大小`)
-      }
-      sha256.update(chunk.value)
-      await file.write(chunk.value)
-      const percent = Math.min(100, Math.floor((transferred / total) * 100))
-      if (percent !== lastPercent) {
+    const download = await downloadWithResume({
+      targetPath: destination,
+      fileMode: 0o600,
+      maximumBytes: maximumCodexDesktopPackageBytes,
+      oversizeMessage: `${source.label}返回的数据超过声明的安装包大小`,
+      signal: downloadSignal,
+      responseTimeoutMs: 20_000,
+      idleTimeoutMs: 45_000,
+      ...resumeOptions,
+      request: (headers, signal) => fetchTrustedCodexDesktopResource(source.url, {
+        headers: { Accept: 'application/vnd.ms-appx, application/octet-stream', ...headers },
+        signal,
+      }, fetchImplementation),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`${source.label}返回 HTTP ${response.status}`)
+        const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+        if (!isCodexDesktopPackageContentType(contentType, source.acceptAnyBinaryContentType === true)) {
+          throw new Error(`${source.label}返回的不是 MSIX 文件（Content-Type: ${contentType || '缺失'}）`)
+        }
+        const declared = Number(response.headers.get('content-length'))
+        if (!Number.isSafeInteger(declared) || declared < minimumCodexDesktopPackageBytes) {
+          throw new Error(`${source.label}返回的安装包大小无效`)
+        }
+        if (declared > maximumCodexDesktopPackageBytes) {
+          throw new Error(`${source.label}返回的安装包超过 1.5 GB 安全上限`)
+        }
+        if (
+          source.expectedContentLength !== undefined
+          && declared !== source.expectedContentLength
+        ) {
+          throw new Error(
+            `${source.label}返回的 Content-Length 与镜像清单不一致：应为 ${source.expectedContentLength} 字节，实际 ${declared} 字节`,
+          )
+        }
+        if (!response.body) throw new Error(`${source.label}未返回安装包内容`)
+        total = declared
+        return declared
+      },
+      onProgress: (transferred) => {
+        // 每收到一块就算一次：只按整百分比算的话，慢到一分钟走不了 1% 时要好几分钟才看得出来。
+        if (limitMs !== undefined && !slow.signal.aborted) {
+          const elapsedMs = now() - startedAt
+          if (isCodexDesktopDownloadTooSlow(elapsedMs, transferred, total, limitMs)) {
+            const remaining = estimateCodexDesktopDownloadRemainingMs(elapsedMs, transferred, total)
+            slow.abort(new Error(remaining === null
+              ? `${source.label}下载太慢`
+              : `${source.label}下载太慢：照目前的速度还要 ${Math.ceil(remaining / 60_000)} 分钟才下得完`))
+            return
+          }
+        }
+        const percent = percentOf(transferred)
+        if (percent === lastPercent) return
         lastPercent = percent
         onProgress({ transferred, total, percent })
-      }
+      },
+      onResume: (transferred) => {
+        onProgress({ transferred, total, percent: percentOf(transferred), resuming: true })
+      },
+    })
+    if (download.size !== total) {
+      throw new Error(`${source.label}下载不完整：应为 ${total} 字节，实际 ${download.size} 字节`)
     }
-    if (transferred !== total) {
-      throw new Error(`${source.label}下载不完整：应为 ${total} 字节，实际 ${transferred} 字节`)
-    }
-    const sha256Base64 = sha256.digest('base64')
+    const sha256Base64 = download.sha256.toString('base64')
     if (
       source.expectedSha256Base64 !== undefined
       && sha256Base64 !== source.expectedSha256Base64
     ) {
       throw new Error(`${source.label}安装包 SHA-256 与镜像清单不一致，文件可能已损坏`)
     }
-    await file.sync()
-    return { transferred, total, sha256Base64 }
+    return { transferred: download.size, total, sha256Base64 }
   } catch (error) {
-    // reason 兜一层:本函数是导出的,调用方给的信号不一定带 reason,
-    // 少了这一层就会 throw undefined,上层只能报一句没有内容的失败。
-    const cause = cancelSignal?.aborted
-      ? cancelSignal.reason ?? new InstallCancelledError()
-      : error instanceof Error && error.name === 'AbortError'
-        ? new Error(`${source.label}连接或下载超时`)
-        : error
-    await file?.close().catch(() => undefined)
-    file = null
     await fs.promises.rm(destination, { force: true }).catch(() => undefined)
-    throw cause
-  } finally {
-    clearTimeout(responseTimeout)
-    cancelSignal?.removeEventListener('abort', abortOnCancel)
-    await file?.close().catch(() => undefined)
+    // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：靠 cancelSignal
+    // 判断，而不是把两者都说成「下载超时」。reason 兜一层：本函数是导出的，调用方
+    // 给的信号不一定带 reason，少了这一层就会 throw undefined。
+    if (cancelSignal?.aborted) throw cancelSignal.reason ?? new InstallCancelledError()
+    if (slow.signal.aborted) throw slow.signal.reason
+    if (
+      error instanceof DownloadStalledError
+      || (error instanceof Error && error.name === 'AbortError')
+    ) {
+      throw new Error(`${source.label}连接或下载超时`)
+    }
+    throw error
   }
 }
 
@@ -998,6 +1232,95 @@ export async function downloadCodexDesktopPackageFromCandidates(
   throw new Error(`所有国内镜像均未通过完整校验：${failures.join('；') || '没有可用镜像'}`)
 }
 
+export function buildCodexDesktopOfficialPackageSource(architecture: 'x64' | 'arm64'): CodexDesktopPackageSource {
+  return {
+    label: codexDesktopOfficialLabel,
+    url: codexDesktopOfficialPackageUrls[architecture],
+    acceptAnyBinaryContentType: true,
+    maximumRemainingMs: codexDesktopOfficialDownloadLimitMs,
+  }
+}
+
+export interface CodexDesktopOfficialDownloadOptions {
+  architecture: 'x64' | 'arm64'
+  destination: string
+  /** 本机装着的那一版；官网那一版不比它新就不下。null = 首次安装。 */
+  installedVersion: string | null
+  /** 开始装时已经读到的官网版本；null 就在这里再读一次（调用方已经接上星芒下载线路）。 */
+  knownVersion: string | null
+  /** 必填，理由同 CodexDesktopCandidateDownloadOptions.fetchImplementation。 */
+  fetchImplementation: typeof fetch
+  signal?: AbortSignal
+  /** 读到要下的版本、开始下载之前。 */
+  onVersion?: (version: string) => void
+  onProgress?: (version: string, progress: CodexDesktopDownloadProgress) => void
+  onValidating?: () => void
+  /** 测试替身；生产用 inspectCodexDesktopPackageFile。 */
+  inspectPackage?: (packagePath: string) => Promise<CodexDesktopPackageMetadata>
+  resumeOptions?: CodexDesktopDownloadSeams
+}
+
+export type CodexDesktopOfficialDownloadResult =
+  | { status: 'downloaded'; version: string; download: CodexDesktopDownloadResult }
+  | { status: 'not-newer'; version: string }
+
+/**
+ * 第二路：从 OpenAI 官网下离线安装包。官网不像国内镜像那样给一份带 SHA-256 的清单，
+ * 所以真伪靠下载后的包身份、发布者、签名核对（和镜像那一路同一套），装的时候 Windows
+ * 还会再验一次签名。没读到版本、没下成、没过校验都抛错，由调用方换国内镜像；照当时的
+ * 速度还要下 10 分钟以上（codexDesktopOfficialDownloadLimitMs）也算没下成。客户点的取消
+ * 照旧原样抛出，调用方据此整次停下。
+ */
+export async function downloadCodexDesktopOfficialPackage(
+  options: CodexDesktopOfficialDownloadOptions,
+): Promise<CodexDesktopOfficialDownloadResult> {
+  const { architecture, destination, installedVersion, fetchImplementation, signal } = options
+  signal?.throwIfAborted()
+  let version = options.knownVersion
+  if (!version) {
+    try {
+      version = (await fetchCodexDesktopManifestCandidate(
+        { kind: 'official', label: codexDesktopOfficialLabel, url: codexDesktopUpdateManifestUrl },
+        architecture,
+        fetchImplementation,
+      )).version
+    } catch (error) {
+      signal?.throwIfAborted()
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`${codexDesktopOfficialLabel}版本清单读取失败：${detail || '查询失败'}`)
+    }
+    signal?.throwIfAborted()
+  }
+  if (installedVersion) {
+    const comparison = compareWindowsPackageVersions(installedVersion, version)
+    if (comparison === null) {
+      throw new Error(`无法比较已安装版本 ${installedVersion} 与${codexDesktopOfficialLabel}版本 ${version}`)
+    }
+    if (comparison >= 0) return { status: 'not-newer', version }
+  }
+  const expectedVersion = version
+  options.onVersion?.(expectedVersion)
+  const download = await downloadCodexDesktopPackage(
+    buildCodexDesktopOfficialPackageSource(architecture),
+    destination,
+    (progress) => options.onProgress?.(expectedVersion, progress),
+    fetchImplementation,
+    signal,
+    options.resumeOptions,
+  )
+  try {
+    signal?.throwIfAborted()
+    options.onValidating?.()
+    const metadata = await (options.inspectPackage ?? inspectCodexDesktopPackageFile)(destination)
+    const validationError = codexDesktopPackageValidationError(metadata, expectedVersion, architecture)
+    if (validationError) throw new Error(validationError)
+    return { status: 'downloaded', version: metadata.version, download }
+  } catch (error) {
+    await fs.promises.rm(destination, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
 /**
  * The package path is the only outside value in the script, and it only ever
  * appears as a single-quoted PowerShell literal. The manifest's compressed
@@ -1006,6 +1329,7 @@ export async function downloadCodexDesktopPackageFromCandidates(
 export function buildCodexDesktopPackageInspectionScript(packagePath: string): string {
   return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(codexDesktopPackageInspectionModules),
     '$ErrorActionPreference = \'Stop\'',
     'Add-Type -AssemblyName System.IO.Compression.FileSystem',
     `$archive = [System.IO.Compression.ZipFile]::OpenRead(${powerShellLiteral(packagePath)})`,
@@ -1111,12 +1435,17 @@ function codexDesktopStartAppsQuery(): string {
   return "@(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)"
 }
 
-export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> {
-  const script = [
+export function buildCodexDesktopStartAppProbeScript(): string {
+  return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopStartAppProbeModules),
     `$apps = ${codexDesktopStartAppsQuery()}`,
     '$apps | ConvertTo-Json -Compress',
   ].join('\n')
+}
+
+export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> {
+  const script = buildCodexDesktopStartAppProbeScript()
 
   try {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
@@ -1128,7 +1457,7 @@ export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> 
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: codexDesktopSingleProbeTimeoutMs,
       maxBuffer: 1024 * 1024,
     })
     return selectCodexDesktopApp(parseStartAppsJson(stdout))
@@ -1137,8 +1466,37 @@ export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> 
   }
 }
 
-function codexDesktopProcessQuery(): string {
-  return String.raw`@(Get-CimInstance Win32_Process | ForEach-Object {
+type CodexDesktopProcessScope = 'roots' | 'all'
+
+interface CodexDesktopProcessListOptions {
+  processIds?: ReadonlySet<number>
+  // Only paths that are about to terminate processes (install, update,
+  // uninstall, restart) must fail closed. Status and launch paths keep the
+  // old "nothing found" answer so a slow WMI query never breaks 打开.
+  strict?: boolean
+}
+
+function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: ReadonlySet<number>): string {
+  const targetIds = processIds
+    ? `@(${[...processIds].filter((id) => Number.isSafeInteger(id) && id > 0).join(',')})`
+    : '$null'
+  // The close paths also take helpers that run from the same package
+  // directory (bundled CLI, command runner, ripgrep). Without taskkill /T
+  // they would otherwise keep files in the package open during replacement.
+  const nameFilter = scope === 'roots' ? " AND (Name='ChatGPT.exe' OR Name='Codex.exe')" : ''
+  const ownerTargets = scope === 'roots'
+    ? String.raw`$pidFamilies = @{}
+      foreach ($candidate in $candidates) { $pidFamilies[[int]$candidate.Process.ProcessId] = $candidate.PackageFamilyName }
+      $toCheck = @($candidates | Where-Object {
+        (-not $pidFamilies.ContainsKey([int]$_.Process.ParentProcessId)) -or
+          ($pidFamilies[[int]$_.Process.ParentProcessId] -ne $_.PackageFamilyName)
+      })`
+    : '$toCheck = $candidates'
+  return String.raw`& {
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    $targetIds = ${targetIds}
+    $candidates = @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId${nameFilter}" | ForEach-Object {
       $path = [string]$_.ExecutablePath
       # WMI can omit ExecutablePath for a normal user. The packaged app's
       # command line still carries the immutable WindowsApps path, so recover
@@ -1148,26 +1506,63 @@ function codexDesktopProcessQuery(): string {
         $candidate = [regex]::Match($commandLine, '(?i)"(?<path>[^"]*\\WindowsApps\\OpenAI.Codex(?:Beta)?_[^"]+\\[^"]+.exe)"')
         if ($candidate.Success) { $path = $candidate.Groups['path'].Value }
       }
-      if ($path -match '(?i)\\WindowsApps\\OpenAI.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
-        [pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; ExecutablePath = $path }
+      $package = [regex]::Match($path, '(?i)\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__(?<publisher>[A-Za-z0-9.]+)\\')
+      if ($package.Success -and $null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and ($null -eq $targetIds -or ($targetIds -contains [int]$_.ProcessId))) {
+        $packageFamilyName = $package.Groups['name'].Value + '_' + $package.Groups['publisher'].Value
+        [pscustomobject]@{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
       }
-    })`
+    })
+    ${ownerTargets}
+    @($toCheck | ForEach-Object {
+      $candidate = $_
+      $process = $candidate.Process
+      if ($null -ne $process) {
+        $owner = $null
+        try { $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop } catch {}
+        # Unknown ownership must never become a taskkill target.
+        if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and $owner.Sid -eq $currentSid) {
+          [pscustomobject]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
+        }
+      }
+    })
+  }`
 }
 
-export function buildCodexDesktopProcessProbeScript(): string {
+export const codexDesktopProcessCheckFailedMessage = '没能确认哪些 Codex 桌面端窗口需要先关掉，请稍等片刻再试'
+
+export function buildCodexDesktopProcessProbeScript(
+  scope: CodexDesktopProcessScope = 'roots',
+  processIds?: ReadonlySet<number>,
+): string {
   return [
     codexDesktopProbeScriptHeader,
-    `$items = ${codexDesktopProcessQuery()}`,
+    buildPowerShellModuleImportStatement(codexDesktopProcessProbeModules),
+    `$items = ${codexDesktopProcessQuery(scope, processIds)}`,
     '$items | ConvertTo-Json -Compress',
   ].join('; ')
 }
 
-export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]> {
+export async function collectCodexDesktopProcesses(
+  runProbe: (script: string, timeoutMs: number) => Promise<string>,
+  scope: CodexDesktopProcessScope,
+  options: CodexDesktopProcessListOptions,
+): Promise<WindowsProcessEntry[]> {
+  const script = buildCodexDesktopProcessProbeScript(scope, options.processIds)
+  try {
+    return parseWindowsProcessesJson(await runProbe(script, scope === 'roots' ? codexDesktopSingleProbeTimeoutMs : 60_000))
+  } catch {
+    if (options.strict) throw new Error(codexDesktopProcessCheckFailedMessage)
+    return []
+  }
+}
+
+export async function listCodexDesktopProcesses(
+  scope: CodexDesktopProcessScope = 'roots',
+  options: CodexDesktopProcessListOptions = {},
+): Promise<WindowsProcessEntry[]> {
   if (process.platform !== 'win32') return []
 
-  const script = buildCodexDesktopProcessProbeScript()
-
-  try {
+  return collectCodexDesktopProcesses(async (script, timeoutMs) => {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
       '-NoLogo',
       '-NoProfile',
@@ -1177,13 +1572,150 @@ export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: timeoutMs,
       maxBuffer: 1024 * 1024,
     })
-    return parseWindowsProcessesJson(stdout)
+    return stdout
+  }, scope, options)
+}
+
+/**
+ * 「打开」只需要知道 Codex 的窗口在不在这个登录会话里，它从不关任何进程。
+ *
+ * The owner-checked probe above exists so a termination can never reach a
+ * process we do not own; it pays one GetOwnerSid call per window and drops
+ * every process whose owner cannot be confirmed. Launch detection inherited
+ * that filter in #640, and a window that WMI would not attribute to us
+ * (slow WMI, an elevated built-in Administrator token) then counted as
+ * "nothing started" even while Codex sat on screen. Opening only needs
+ * "some process of this package runs in my session": the session boundary
+ * already keeps other signed-in users out, and the result is reduced to PIDs
+ * so it cannot be handed to a close path by mistake.
+ */
+function codexDesktopSessionProcessQuery(): string {
+  return String.raw`& {
+    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId" | ForEach-Object {
+      $path = [string]$_.ExecutablePath
+      if (-not $path -and @('ChatGPT.exe', 'Codex.exe') -contains ([string]$_.Name)) {
+        $commandLine = [string]$_.CommandLine
+        $candidate = [regex]::Match($commandLine, '(?i)"(?<path>[^"]*\\WindowsApps\\OpenAI.Codex(?:Beta)?_[^"]+\\[^"]+.exe)"')
+        if ($candidate.Success) { $path = $candidate.Groups['path'].Value }
+      }
+      if ($null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and $path -match '(?i)\\WindowsApps\\OpenAI\.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
+        [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $path }
+      }
+    })
+  }`
+}
+
+export function buildCodexDesktopSessionProcessProbeScript(): string {
+  return [
+    codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopProcessProbeModules),
+    `$items = ${codexDesktopSessionProcessQuery()}`,
+    '$items | ConvertTo-Json -Compress',
+  ].join('; ')
+}
+
+/** PIDs of this package's processes in the current session; see the query above. */
+export function parseCodexDesktopSessionProcessIds(
+  output: string,
+  packageFamilyName: string | null,
+): number[] {
+  const trimmed = output.trim().replace(/^﻿/, '')
+  if (!trimmed) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(trimmed) } catch { return [] }
+  const values = Array.isArray(parsed) ? parsed : [parsed]
+  const processIds: number[] = []
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue
+    const record = value as Record<string, unknown>
+    const processId = record.ProcessId
+    const executablePath = record.ExecutablePath
+    if (typeof processId !== 'number' || !Number.isSafeInteger(processId) || processId <= 0) continue
+    if (typeof executablePath !== 'string') continue
+    const entry = parseCodexDesktopPackagePath(executablePath)
+    if (!entry) continue
+    if (packageFamilyName !== null && entry.packageFamilyName.toLowerCase() !== packageFamilyName.toLowerCase()) continue
+    processIds.push(processId)
+  }
+  return processIds
+}
+
+/**
+ * 桌面端在这个登录会话里还有没有进程：true / false / null（查不出来）。
+ *
+ * 打开桌面端时软件替用户连上的加速不扣免费时长，所以桌面端一关就要断开，
+ * 否则等于白送一条不限时的线路（codex-desktop-acceleration.ts 定时来问）。
+ * 与上面那条「打开」用的探测不同，这里失败不能折成「没在跑」：一次 WMI 超时
+ * 就把正在用的人断掉，比晚断一两分钟糟得多。
+ */
+export async function probeCodexDesktopRunning(platform: NodeJS.Platform = process.platform): Promise<boolean | null> {
+  if (platform === 'darwin') return probeMacosCodexRunning()
+  if (platform !== 'win32') return null
+  let stdout: string
+  try {
+    ({ stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopSessionProcessProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: codexDesktopSingleProbeTimeoutMs,
+      maxBuffer: 1024 * 1024,
+    }))
   } catch {
+    return null
+  }
+  return codexDesktopRunningFromProbeOutput(stdout)
+}
+
+/** 空输出就是一个都没有；读不懂的输出算「查不出来」。 */
+export function codexDesktopRunningFromProbeOutput(output: string): boolean | null {
+  const trimmed = output.trim().replace(/^\uFEFF/, '')
+  if (!trimmed) return false
+  try { JSON.parse(trimmed) } catch { return null }
+  return parseCodexDesktopSessionProcessIds(trimmed, null).length > 0
+}
+
+async function listCodexDesktopSessionProcessIds(packageFamilyName: string | null): Promise<number[]> {
+  if (process.platform !== 'win32') return []
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopSessionProcessProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: codexDesktopSingleProbeTimeoutMs,
+      maxBuffer: 1024 * 1024,
+    })
+    return parseCodexDesktopSessionProcessIds(stdout, packageFamilyName)
+  } catch {
+    // Same contract as the status probe: a slow WMI never breaks 打开.
     return []
   }
+}
+
+async function waitForCodexDesktopSessionProcesses(
+  timeoutMs: number,
+  packageFamilyName: string | null,
+): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs
+  let processIds = await listCodexDesktopSessionProcessIds(packageFamilyName)
+  while (!processIds.length && Date.now() < deadline) {
+    await delay(250)
+    processIds = await listCodexDesktopSessionProcessIds(packageFamilyName)
+  }
+  return processIds
 }
 
 function codexDesktopPackageProbeStatements(): string[] {
@@ -1202,7 +1734,7 @@ function codexDesktopPackageProbeStatements(): string[] {
     '$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0',
     '$errorMessage = $null',
     'if ($null -ne $currentError) {',
-    '  $errorMessage = \'无法读取 Codex Desktop 的 Windows Appx 安装信息，请使用安装该应用的 Windows 账户启动星芒 AI 管理工具后重试。\'',
+    '  $errorMessage = \'读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。\'',
     '}',
     '$packageProbe = [pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
   ]
@@ -1211,6 +1743,7 @@ function codexDesktopPackageProbeStatements(): string[] {
 export function buildCodexDesktopPackageProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopPackageProbeModules),
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '$packageProbe | ConvertTo-Json -Compress',
@@ -1226,15 +1759,31 @@ export function buildCodexDesktopPackageProbeScript(): string {
  * processes used to give for free, and the install-state logic downstream
  * depends on telling "no package" apart from "could not look".
  */
+/**
+ * Every module the merged probe calls into. Runs under trustedCommandEnvironment(),
+ * where one autoloaded cmdlet costs a full module analysis (about 22 s on the CI
+ * runner, see buildPowerShellModuleImportStatement). The first attempt in #714
+ * imported every module here except Appx and saw no gain, because
+ * Get-AppxPackage alone still paid the whole autoload. The unit test maps each
+ * cmdlet in the script to one of these names so a new one cannot slip past.
+ */
+export const codexDesktopCombinedProbeModules = [
+  'Microsoft.PowerShell.Utility',
+  'CimCmdlets',
+  'StartLayout',
+  'Appx',
+] as const
+
 export function buildCodexDesktopCombinedProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopCombinedProbeModules),
     '$startApps = $null',
     '$startAppsError = $null',
     `try { $startApps = ${codexDesktopStartAppsQuery()} } catch { $startAppsError = $_.Exception.Message }`,
     '$processes = $null',
     '$processesError = $null',
-    `try { $processes = ${codexDesktopProcessQuery()} } catch { $processesError = $_.Exception.Message }`,
+    `try { $processes = ${codexDesktopProcessQuery('roots')} } catch { $processesError = $_.Exception.Message }`,
     '$packageProbe = $null',
     '$packageError = $null',
     'try {',
@@ -1333,11 +1882,11 @@ export function buildCodexDesktopCombinedProbeFailure(reason: unknown): CodexDes
 
 /**
  * 三段串在一条脚本里跑，总预算不能再按单段的 8 秒算：一次冷启动加
- * Get-StartApps、Win32_Process 全枚举、Get-AppxPackage 三段串起来，低配机上
+ * Get-StartApps、Win32_Process 查询、Get-AppxPackage 三段串起来，低配机上
  * 比任何单段都慢。取三段旧预算之和，谁都不比合并前更紧 —— 宁可极端情况下多
  * 等，也不要把装好的 Codex 桌面端误判成没装。
  */
-const codexDesktopCombinedProbeTimeoutMs = 24_000
+export const codexDesktopCombinedProbeTimeoutMs = 24_000
 
 async function runCodexDesktopCombinedProbe(): Promise<CodexDesktopCombinedProbe> {
   try {
@@ -1372,7 +1921,7 @@ export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageP
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: codexDesktopSingleProbeTimeoutMs,
       maxBuffer: 1024 * 1024,
     })
     return parseCodexDesktopPackageProbeJson(stdout)
@@ -1429,16 +1978,38 @@ export async function verifyInstalledCodexDesktop(
   return installedProbe.value
 }
 
+export function assertCodexDesktopUninstalled(
+  previousPackageFullName: string,
+  remaining: CodexDesktopPackageProbe,
+): void {
+  if (!remaining.error && remaining.confirmedAbsent === true && !remaining.value) return
+  if (remaining.value?.packageFullName === previousPackageFullName) {
+    throw new Error('Windows 仍报告 Codex 桌面端 Appx 包存在，卸载未完成')
+  }
+  throw new Error('卸载命令已执行，但未能确认 Codex 桌面端已经移除。请重新检测安装状态后再试')
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+/**
+ * Signal 0 only asks whether the PID exists. On Windows libuv opens the
+ * process with terminate rights to answer, so a packaged app that denies us
+ * those rights reports EPERM while it is very much alive. Only ESRCH means
+ * the process is gone.
+ */
+export function processExistsFromSignalError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  return code === 'EPERM'
 }
 
 function isProcessAlive(processId: number): boolean {
   try {
     process.kill(processId, 0)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    return processExistsFromSignalError(error)
   }
 }
 
@@ -1451,53 +2022,39 @@ async function waitForProcessId(processId: number, timeoutMs: number): Promise<b
   return isProcessAlive(processId)
 }
 
-async function inspectCodexDesktopWindowsLaunchContext(): Promise<CodexDesktopWindowsLaunchContext> {
-  if (process.platform !== 'win32') return { ...emptyCodexDesktopWindowsLaunchContext }
-  const script = [
-    '$ErrorActionPreference = "SilentlyContinue"',
-    '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()',
-    '$policy = Get-ItemProperty -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"',
-    '$uacEnabled = $null',
-    '$filterAdministratorToken = $null',
-    'if ($null -ne $policy.EnableLUA) { $uacEnabled = [int]$policy.EnableLUA }',
-    'if ($null -ne $policy.FilterAdministratorToken) { $filterAdministratorToken = [int]$policy.FilterAdministratorToken }',
-    '[pscustomobject]@{ sid = [string]$identity.User.Value; uacEnabled = $uacEnabled; filterAdministratorToken = $filterAdministratorToken } | ConvertTo-Json -Compress',
-  ].join('; ')
-  try {
-    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      script,
-    ], {
-      env: trustedCommandEnvironment(),
-      windowsHide: true,
-      timeout: 3_000,
-      maxBuffer: 64 * 1024,
-    })
-    return parseCodexDesktopWindowsLaunchContext(stdout)
-  } catch {
-    return { ...emptyCodexDesktopWindowsLaunchContext }
-  }
-}
-
 export async function waitForCodexDesktopState(
   running: boolean,
   timeoutMs: number,
+  packageFamilyName: string | null,
+  originalProcessIds?: ReadonlySet<number>,
 ): Promise<WindowsProcessEntry[]> {
   const deadline = Date.now() + timeoutMs
-  let processes = await listCodexDesktopProcesses()
+  // Waiting for selected PIDs to exit belongs to a close path; waiting for a
+  // launch to appear does not.
+  async function list(): Promise<WindowsProcessEntry[]> {
+    const listed = originalProcessIds === undefined
+      ? await listCodexDesktopProcesses('roots')
+      : await listCodexDesktopProcesses('all', { processIds: originalProcessIds, strict: true })
+    return selectCodexDesktopProcessesForPackage(listed, packageFamilyName, originalProcessIds)
+  }
+  let processes = await list()
   while ((processes.length > 0) !== running && Date.now() < deadline) {
     await delay(250)
-    processes = await listCodexDesktopProcesses()
+    processes = await list()
   }
   return processes
 }
 
-export async function terminateCodexDesktopProcesses(processes: WindowsProcessEntry[]): Promise<void> {
+export async function terminateCodexDesktopProcesses(
+  processes: WindowsProcessEntry[],
+  packageFamilyName: string,
+): Promise<void> {
+  const targetProcesses = selectCodexDesktopProcessesForPackage(processes, packageFamilyName)
+  const originalProcessIds = new Set(targetProcesses.map((entry) => entry.processId))
   const taskkill = async (processId: number, force: boolean): Promise<void> => {
-    const args = ['/PID', String(processId), '/T']
+    // /T would also terminate descendants that have not passed the owner,
+    // session and package checks above.
+    const args = ['/PID', String(processId)]
     if (force) args.push('/F')
     await execFileAsync(windowsSystemExecutable('taskkill.exe'), args, {
       env: trustedCommandEnvironment(),
@@ -1506,10 +2063,12 @@ export async function terminateCodexDesktopProcesses(processes: WindowsProcessEn
     })
   }
 
-  await stopCodexDesktopProcesses(processes, {
+  await stopCodexDesktopProcesses(targetProcesses, {
     requestClose: (processId) => taskkill(processId, false),
     forceClose: (processId) => taskkill(processId, true),
-    waitUntilStopped: (timeoutMs) => waitForCodexDesktopState(false, timeoutMs),
+    waitUntilStopped: (timeoutMs) => waitForCodexDesktopState(
+      false, timeoutMs, packageFamilyName, originalProcessIds,
+    ),
   })
 }
 
@@ -1537,6 +2096,11 @@ interface DesktopManifestProbeBundle {
   mirrorCandidates: CodexDesktopManifestCandidate[]
   /** 逐个镜像源的探测失败原因；一路镜像可用时 `mirror.error` 会是 null，但下载提示仍要说明主源怎么了。 */
   mirrorErrors: string[]
+  /**
+   * 官网清单自己说的版本（`latest` 取的是官网与镜像里最新的那个）。直连读不到时是
+   * null，官网那一路会接上星芒下载线路后再读一次。
+   */
+  officialVersion: string | null
 }
 
 export type CodexDesktopInstallPhase =
@@ -1557,6 +2121,124 @@ export interface CodexDesktopInstallResult {
   action: 'installed' | 'updated' | 'unchanged'
   previousVersion: string | null
   installedVersion: string | null
+  /** 国内镜像比微软商店慢一步、这次没能更新到商店里的最新版时，商店那一版的版本号。 */
+  storeNewerVersion?: string
+}
+
+/** 一次安装 / 更新途中记下的、失败时要说给客户和日志听的几件事。 */
+export interface CodexDesktopInstallAttempt {
+  storeFailure: string | null
+  storeExitCode: string | null
+  updating: boolean
+  /** 这台电脑没有微软商店，这次没走商店。缺省 = 有商店或没查出来。 */
+  storeUnavailable?: boolean
+  /** 商店在，但装东西要用的那个系统组件不在（老 Windows 10 常见，推测）。 */
+  storeInstallerMissing?: boolean
+  /** 第二路（OpenAI 官网的离线安装包）没下成或没过校验的原因，只进日志。缺省 = 没走那一路或走通了。 */
+  officialFailure?: string | null
+  /** 这次装的是官网的离线安装包（已经下好、核过）。缺省 = 国内镜像的。 */
+  officialPackage?: boolean
+}
+
+type CodexDesktopStoreOutcome = Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing'>
+
+// 商店那一路怎么了，不带结尾标点。没有商店就别说「这次没装上」，那听起来像是还能再试。
+function describeCodexDesktopStoreOutcome(attempt: CodexDesktopStoreOutcome, withReason: boolean): string {
+  if (attempt.storeUnavailable) return codexDesktopNoStoreNotice
+  if (attempt.storeInstallerMissing) return '微软商店少一个安装组件'
+  if (!attempt.storeFailure) return ''
+  return withReason ? `微软商店这次没装上（${attempt.storeFailure}）` : '微软商店这次没装上'
+}
+
+/**
+ * 换到国内镜像时，进度提示开头交代前面几路怎么了的半句话。官网那一路也没下成时
+ * 不再带商店的原因：一句话里挂两个括号太长，原因都在日志里。
+ */
+export function describeCodexDesktopStoreNotice(
+  attempt: CodexDesktopStoreOutcome & Pick<CodexDesktopInstallAttempt, 'officialFailure'>,
+): string {
+  if (attempt.officialFailure) {
+    const store = describeCodexDesktopStoreOutcome(attempt, false)
+    return `${store ? `${store}，` : ''}${codexDesktopOfficialPackageFailedNotice}，`
+  }
+  if (attempt.storeUnavailable) return `${codexDesktopNoStoreNotice}，直接用国内线路装：`
+  if (attempt.storeInstallerMissing) return '微软商店少一个安装组件，先用国内线路装：'
+  return attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），` : ''
+}
+
+/**
+ * 第二路（OpenAI 官网的离线安装包）下载时给用户看的那一行。版本还没读到（正在接星芒
+ * 下载线路、读官网清单）时不带版本和百分比，免得那几秒还停在「正在等微软商店」。
+ */
+export function describeCodexDesktopOfficialDownload(
+  attempt: CodexDesktopStoreOutcome,
+  version: string | null,
+  progress: Pick<CodexDesktopDownloadProgress, 'percent' | 'resuming'> | null = null,
+): string {
+  if (version && progress?.resuming) {
+    return `网络断了一下，正在接着从 OpenAI 官网下载 Codex 桌面端 ${version} 的离线安装包（已下 ${progress.percent}%）`
+  }
+  const store = describeCodexDesktopStoreOutcome(attempt, true)
+  const head = store ? `${store}，` : ''
+  return version
+    ? `${head}正在从 OpenAI 官网下载 Codex 桌面端 ${version} 的离线安装包（${progress?.percent ?? 0}%）`
+    : `${head}正在从 OpenAI 官网下载 Codex 桌面端的离线安装包`
+}
+
+/**
+ * 安装 / 更新失败后抛给界面的那个错误。message 是大白话；detail 是原来那句带着
+ * SHA-256、Content-Type、退出码的原话，作为自有字段挂着，ipc.ts 记失败时连同
+ * error 一起写进 runtime.jsonl（sanitizeValue 会带上 Error 的自有字段）。cause 留着
+ * 原始错误，network-failure.ts 顺着 cause 仍认得出是 DNS 还是证书。
+ */
+export class CodexDesktopInstallFailure extends Error {
+  readonly detail: string
+  readonly reason: CodexDesktopInstallFailureReason
+  readonly storeExitCode: string | null
+
+  constructor(message: string, options: { detail: string; reason: CodexDesktopInstallFailureReason; storeExitCode: string | null; cause: unknown }) {
+    super(message, { cause: options.cause })
+    this.name = 'CodexDesktopInstallFailure'
+    this.detail = options.detail
+    this.reason = options.reason
+    this.storeExitCode = options.storeExitCode
+  }
+}
+
+export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDesktopInstallAttempt): Error {
+  const raw = error instanceof Error ? error.message : String(error)
+  if (isPlainCodexDesktopInstallMessage(raw) || isCodexDesktopInstallFailureMessage(raw)) {
+    return error instanceof Error ? error : new Error(raw)
+  }
+  const reason = classifyCodexDesktopInstallFailure(raw)
+  const store = attempt.storeUnavailable
+    ? `${codexDesktopNoStoreNotice}，`
+    : attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），` : ''
+  const official = attempt.officialFailure ? `${codexDesktopOfficialPackageFailedNotice}（${attempt.officialFailure}），` : ''
+  // 官网的包下好、核过却装不上时不再换国内镜像重下，这时失败的是官网那一份。
+  const route = attempt.officialPackage ? 'OpenAI 官网的离线安装包' : '国内镜像'
+  const detail = store || official ? `${store}${official}${route}也没装上：${raw}` : raw
+  return new CodexDesktopInstallFailure(
+    buildCodexDesktopInstallFailureMessage(reason, {
+      storeTried: attempt.storeFailure !== null,
+      storeUnavailable: attempt.storeUnavailable === true,
+      officialTried: Boolean(attempt.officialFailure),
+      updating: attempt.updating,
+    }),
+    { detail, reason, storeExitCode: attempt.storeExitCode, cause: error },
+  )
+}
+
+/**
+ * Mac 上装不成时的那句话。macos-desktop-app-installer.ts 抛的已经是大白话，磁盘不够、
+ * 别重复点这类本来就是写给客户看的也原样交出；其余一律说「没装好」，原话进 detail。
+ * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「去微软商店装」。
+ */
+export function toCodexDesktopMacInstallFailure(error: unknown): Error {
+  if (error instanceof MacosDesktopInstallError) return error
+  const raw = error instanceof Error ? error.message : String(error)
+  if (isPlainCodexDesktopInstallMessage(raw)) return error instanceof Error ? error : new Error(raw)
+  return new MacosDesktopInstallError(macosDesktopInstallFailedMessage('Codex 桌面端'), raw, error)
 }
 
 export interface CodexDesktopWindowsProbes {
@@ -1755,7 +2437,32 @@ export interface CodexDesktopServiceOptions {
   prepareAcceleration?: () => Promise<void>
   /** 找系统自带的 winget（微软商店那一路用）。缺省 = 校验过包身份与目录的系统解析器。 */
   resolveStoreInstaller?: (signal?: AbortSignal) => Promise<SystemWingetResolution>
-  /** Optional seams used by tests; production uses the constrained CDP module. */
+  /**
+   * 这台电脑有没有微软商店：false 才跳过商店、直接走国内线路；null（没查出来）
+   * 照旧先走商店。缺省 = windows-store-app-launch.ts 那条异步探测。
+   */
+  inspectStoreAvailability?: (signal?: AbortSignal) => Promise<boolean | null>
+  /**
+   * Mac 上装 Codex 桌面端（官方包现在叫 ChatGPT）：下载、核签名、放进「应用程序」都在
+   * macos-desktop-app-installer.ts，和 OpenCode、Claude Desktop 同一套。测试换成假的。
+   */
+  installMacosDesktopApp?: typeof installMacosDesktopApp
+  /**
+   * 把星芒自己从官网下官方安装包的那次下载包进下载线路（临时加速，用完就还，不改系统代理；
+   * 和 OpenCode 同一条）：Windows 上是商店没走通后的官网离线安装包，Mac 上是那次官方包。
+   * 官网在海外，国内直连常常下不动；Windows 的国内镜像那一路用不着它。缺省 = 原样执行
+   * （测试与旧调用方照旧）；生产由 system-service 注入，拿不到线路时照常直连。
+   */
+  withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
+  /** Mac 上装进谁的 ~/Applications；缺省 = 当前用户。 */
+  userHome?: string
+  getuid?: () => number
+  /** Mac 上按哪种芯片挑安装包；缺省 = process.arch，测试换成假的。 */
+  architecture?: NodeJS.Architecture
+  /**
+   * Optional seams used by tests; production uses the constrained CDP module,
+   * with the CDP activation wrapped only to log why it failed.
+   */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
   getAvailableLoopbackPort?: typeof getAvailableLoopbackPortDefault
@@ -1779,11 +2486,17 @@ export interface CodexDesktopService {
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
+  /** 和 Windows「设置 → 应用 → 高级选项 → 重置」同一件事：只清 Codex 桌面端自己的应用数据。 */
+  resetCodexDesktop(): Promise<void>
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
     launchOptions?: CodexDesktopLaunchOptions,
   ): Promise<CodexDesktopLaunchResult>
+}
+
+function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+  return operation()
 }
 
 /**
@@ -1809,7 +2522,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     reloadDownloadProxyConfig,
     prepareAcceleration,
     assertInstallDiskSpace,
+    installMacosDesktopApp: installMacosApp = installMacosDesktopApp,
+    withDownloadRoute = runWithoutDownloadRoute,
+    userHome = os.homedir(),
+    getuid = () => process.getuid?.() ?? -1,
+    architecture: processArchitecture = process.arch,
     resolveStoreInstaller = resolveSystemWingetExecutable,
+    inspectStoreAvailability = (signal?: AbortSignal) => inspectWindowsStoreAvailability(signal ? { signal } : {}),
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
@@ -1853,6 +2572,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           mirrorCandidate: null,
           mirrorCandidates: [],
           mirrorErrors: [],
+          officialVersion: null,
         }
         if (generation === codexDesktopManifestGeneration) {
           codexDesktopManifestCache = {
@@ -1894,6 +2614,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         mirrorCandidate,
         mirrorCandidates,
         mirrorErrors,
+        officialVersion: result.candidates.find((candidate) => candidate.source.kind === 'official')?.version ?? null,
       }
       if (generation === codexDesktopManifestGeneration) {
         const ttl = result.errors.length === 0
@@ -1968,14 +2689,18 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       { status: 'fulfilled', value: combinedProbe.packageProbe },
       mirrorResult,
     )
-    const processPackage = processes
-      .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
-      .find((entry): entry is CodexDesktopPackageEntry => entry !== null) ?? null
-    // A running packaged app is conclusive evidence even when AppX
-    // enumeration is scoped to another user. Prefer registered metadata, but
-    // recover the same identity from WindowsApps' immutable path as fallback.
+    const processPackage = selectCodexDesktopPackage(
+      processes
+        .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
+        .filter((entry): entry is CodexDesktopPackageEntry => entry !== null),
+    )
+    // A process with a verified current-user SID and session remains useful
+    // evidence when AppX enumeration fails. Prefer registered metadata.
     const processPackageAllowed = packageProbe.confirmedAbsent !== true
     const installedPackage = packageProbe.value ?? (processPackageAllowed ? processPackage : null)
+    const targetProcesses = installedPackage
+      ? selectCodexDesktopProcessesForPackage(processes, installedPackage.packageFamilyName)
+      : []
     // A successful current-user AppX probe with no package is authoritative.
     // Windows may keep a stale StartApps registration after uninstalling the
     // package or when another account owns it; treating that entry as a valid
@@ -1991,7 +2716,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         mirrorError: mirrorProbe.error,
         path: null,
         installDirectory: null,
-        running: processes.length > 0,
+        running: false,
         detectionFailed,
         detectionError,
         ...desktopUpdateFields(
@@ -2030,7 +2755,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       mirrorError: mirrorProbe.error,
       path: appId,
       installDirectory: installedPackage?.installLocation || null,
-      running: processes.length > 0,
+      running: targetProcesses.length > 0,
       detectionFailed,
       detectionError,
       ...update,
@@ -2046,40 +2771,54 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   /**
    * 先从微软商店装。成功返回装好的包；商店这一路走不通就返回原因，由调用方
-   * 退到国内镜像。只有用户点了取消才抛错。
+   * 换 OpenAI 官网的离线安装包。只有用户点了取消才抛错。
    */
   async function installCodexDesktopFromStore(
     target: RendererMessageTarget,
     previousVersion: string | null,
+    packageFamilyName: string | null,
     cancellation?: InstallCancellationHandle,
-  ): Promise<{ installed: CodexDesktopPackageEntry } | { failure: string }> {
+  ): Promise<{ installed: CodexDesktopPackageEntry } | { failure: string; exitCode?: string | null; installerMissing?: boolean }> {
+    const storeStartedAt = Date.now()
     sendCodexDesktopInstallProgress(target, {
       phase: 'downloading',
-      percent: 0,
-      message: '正在通过微软商店安装 Codex 桌面端（0%）',
+      percent: null,
+      message: buildCodexDesktopStoreWaitMessage(0, null),
     })
     const resolution = await resolveStoreInstaller(cancellation?.signal)
     cancellation?.throwIfCancelled()
-    if (!resolution.executable) return { failure: '这台电脑上的微软商店安装组件用不了' }
+    if (!resolution.executable) return { failure: '这台电脑上的微软商店安装组件用不了', installerMissing: true }
     let command: CommandSpec
     try {
       command = buildCodexDesktopStoreInstallCommand(resolution.executable)
     } catch {
-      return { failure: '这台电脑上的微软商店安装组件用不了' }
+      return { failure: '这台电脑上的微软商店安装组件用不了', installerMissing: true }
     }
-    if (previousVersion) {
+    if (previousVersion && packageFamilyName) {
       // 商店更新一个正开着的桌面端会失败或卡住；镜像那一路也是装之前先关。
-      const processes = await listCodexDesktopProcesses()
+      const processes = selectCodexDesktopProcessesForPackage(
+        await listCodexDesktopProcesses('all', { strict: true }), packageFamilyName,
+      )
       if (processes.length) {
         sendCodexDesktopInstallProgress(target, {
           phase: 'closing',
           percent: null,
-          message: '正在关闭运行中的 Codex Desktop',
+          message: '正在关闭运行中的 Codex 桌面端',
         })
-        await terminateCodexDesktopProcesses(processes)
+        await terminateCodexDesktopProcesses(processes, packageFamilyName)
       }
     }
     let commandFailure: string | null = null
+    let commandExitCode: string | null = null
+    let lastPercent: number | null = null
+    function sendStoreWait(): void {
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'downloading',
+        percent: lastPercent,
+        message: buildCodexDesktopStoreWaitMessage(Date.now() - storeStartedAt, lastPercent),
+      })
+    }
+    const heartbeat = setInterval(sendStoreWait, codexDesktopStoreHeartbeatMs)
     try {
       await executeCommand(command, {
         // 解析器已经核过 App Installer 的包身份与真实目录（同 node-runtime、
@@ -2093,17 +2832,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         ...(cancellation ? { signal: cancellation.signal } : {}),
         onOutput: (event) => {
           const percent = parseCodexDesktopStoreProgress(event.text)
-          if (percent === null) return
-          sendCodexDesktopInstallProgress(target, {
-            phase: 'downloading',
-            percent,
-            message: `正在通过微软商店安装 Codex 桌面端（${percent}%）`,
-          })
+          if (percent === null || percent === lastPercent) return
+          lastPercent = percent
+          sendStoreWait()
         },
       })
     } catch (error) {
       cancellation?.throwIfCancelled()
       commandFailure = describeCodexDesktopStoreFailure(error)
+      commandExitCode = codexDesktopStoreExitCode(error)
+    } finally {
+      clearInterval(heartbeat)
     }
     // 不只看退出码：商店偶尔报错却已经装好，也可能报成功却没换版本。以本机实际
     // 装着的包为准（包身份与发布者由 selectCodexDesktopPackage 核过）。
@@ -2115,46 +2854,267 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         : -1
       if (comparison !== null && comparison < 0) return { installed }
     }
-    return { failure: commandFailure ?? '装完后没检测到新版本' }
+    return { failure: commandFailure ?? '装完后没检测到新版本', exitCode: commandExitCode }
+  }
+
+  /**
+   * 下好、核过的安装包交给 Windows 装，官网和国内镜像两路共用。以本机实际装上的
+   * 版本为准，不以退出码为准。
+   */
+  async function installDownloadedCodexDesktopPackage(
+    target: RendererMessageTarget,
+    packagePath: string,
+    downloaded: { version: string; sha256Base64: string; contentLength: number },
+    currentPackage: CodexDesktopPackageEntry | null,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<CodexDesktopInstallResult> {
+    const previousVersion = currentPackage?.version ?? null
+    cancellation?.throwIfCancelled()
+    // 从这里开始就会动这台机器上的 Codex Desktop：先关掉正在跑的进程，
+    // 再交给 Add-AppxPackage。中途中断会留下一个装了一半的包，所以封存。
+    cancellation?.seal(codexDesktopInstallSealReason)
+    const packageFamilyName = stableInstallFamilyName(currentPackage)
+    const processes = packageFamilyName
+      ? selectCodexDesktopProcessesForPackage(
+        await listCodexDesktopProcesses('all', { strict: true }), packageFamilyName,
+      )
+      : []
+    if (processes.length) {
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'closing',
+        percent: null,
+        message: '正在关闭运行中的 Codex 桌面端',
+      })
+      if (packageFamilyName) await terminateCodexDesktopProcesses(processes, packageFamilyName)
+    }
+    sendCodexDesktopInstallProgress(target, {
+      phase: 'installing',
+      percent: null,
+      message: `正在安装 Codex 桌面端 ${downloaded.version}`,
+    })
+    await addCodexDesktopPackage(packagePath, {
+      sha256Base64: downloaded.sha256Base64,
+      contentLength: downloaded.contentLength,
+      onElevationRequired: () => sendCodexDesktopInstallProgress(target, {
+        phase: 'installing', percent: null,
+        message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
+      }),
+    })
+    const installedPackage = await verifyInstalledCodexDesktop(downloaded.version)
+    invalidateCodexDesktopManifestCache()
+    const action = previousVersion ? 'updated' : 'installed'
+    sendCodexDesktopInstallProgress(target, {
+      phase: 'completed',
+      percent: 100,
+      message: previousVersion
+        ? `Codex 桌面端已从 ${previousVersion} 更新到 ${installedPackage.version}`
+        : `Codex 桌面端 ${installedPackage.version} 装好了`,
+    })
+    return { action, previousVersion, installedVersion: installedPackage.version }
+  }
+
+  /**
+   * 第二路：商店没走通时，接上星芒下载线路从 OpenAI 官网下离线安装包。没下成或没过
+   * 校验就记下原因、返回 null，由调用方换国内镜像；官网那一版不比本机新也返回 null。
+   * 下好、核过却装不上时直接抛错：包是好的，换国内镜像重下一遍也一样装不上。
+   */
+  async function installCodexDesktopFromOfficial(
+    target: RendererMessageTarget,
+    attempt: CodexDesktopInstallAttempt,
+    architecture: 'x64' | 'arm64',
+    currentPackage: CodexDesktopPackageEntry | null,
+    knownVersion: string | null,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<CodexDesktopInstallResult | null> {
+    const previousVersion = currentPackage?.version ?? null
+    if (previousVersion && knownVersion) {
+      const comparison = compareWindowsPackageVersions(previousVersion, knownVersion)
+      // 直连就读到了官网不比本机新：不用为它拉一次线路。
+      if (comparison !== null && comparison >= 0) return null
+    }
+    // 没有商店时开头那句已经说了先用官网的包；其余情形先把这一行换掉，免得拉线路、
+    // 读清单那几秒还停在「正在等微软商店」。
+    if (!attempt.storeUnavailable || knownVersion) {
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'downloading',
+        percent: knownVersion ? 0 : null,
+        message: describeCodexDesktopOfficialDownload(attempt, knownVersion),
+      })
+    }
+    const temporaryDirectory = await createInstallTemporaryDirectory('codex-desktop')
+    const packagePath = path.join(temporaryDirectory, `ChatGPT-${architecture}.msix`)
+    try {
+      let downloaded: CodexDesktopOfficialDownloadResult
+      try {
+        downloaded = await withDownloadRoute(() => downloadCodexDesktopOfficialPackage({
+          architecture,
+          destination: packagePath,
+          installedVersion: previousVersion,
+          knownVersion,
+          fetchImplementation: downloadFetch,
+          ...(cancellation ? { signal: cancellation.signal } : {}),
+          onVersion: (version) => {
+            if (version === knownVersion) return
+            sendCodexDesktopInstallProgress(target, {
+              phase: 'downloading',
+              percent: 0,
+              message: describeCodexDesktopOfficialDownload(attempt, version),
+            })
+          },
+          onProgress: (version, progress) => sendCodexDesktopInstallProgress(target, {
+            phase: 'downloading',
+            percent: progress.percent,
+            message: describeCodexDesktopOfficialDownload(attempt, version, progress),
+          }),
+          onValidating: () => sendCodexDesktopInstallProgress(target, {
+            phase: 'validating',
+            percent: null,
+            message: '正在检查下载下来的安装包是不是完整的官方版',
+          }),
+        }))
+      } catch (error) {
+        // 取消之后不再换国内镜像：那是另一次完整下载。
+        if (isInstallCancelledError(error)) throw error
+        cancellation?.throwIfCancelled()
+        const detail = error instanceof Error ? error.message : String(error)
+        attempt.officialFailure = detail || '下载或校验失败'
+        return null
+      }
+      if (downloaded.status === 'not-newer') return null
+      attempt.officialPackage = true
+      return await installDownloadedCodexDesktopPackage(target, packagePath, {
+        version: downloaded.version,
+        sha256Base64: downloaded.download.sha256Base64,
+        contentLength: downloaded.download.total,
+      }, currentPackage, cancellation)
+    } finally {
+      // 同国内镜像那一路：Add-AppxPackage 可能还攥着文件，放到后台删。
+      void fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 
   async function installCodexDesktopOperation(
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
-    const attempt: { storeFailure: string | null } = { storeFailure: null }
+    const attempt: CodexDesktopInstallAttempt = { storeFailure: null, storeExitCode: null, updating: false }
     try {
       return await installCodexDesktopFromSources(target, attempt, cancellation)
     } catch (error) {
-      if (!attempt.storeFailure || isInstallCancelledError(error) || cancellation?.cancelled === true) throw error
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`微软商店这次没装上（${attempt.storeFailure}），国内镜像也没装上：${detail}`)
+      if (isInstallCancelledError(error) || cancellation?.cancelled === true) throw error
+      if (platform === 'darwin') throw toCodexDesktopMacInstallFailure(error)
+      throw toCodexDesktopInstallFailure(error, attempt)
     }
+  }
+
+  /**
+   * 工具箱的 x64 版在 Apple 芯片上靠 Rosetta 也能跑，这时 process.arch 是 x64，但该装的是
+   * arm64 那个包：那才是给这台机器的（x64 那个还声明了 LSRequiresNativeExecution）。
+   */
+  async function resolveMacosInstallArchitecture(): Promise<MacosDesktopArchitecture> {
+    if (processArchitecture === 'arm64') return 'arm64'
+    if (processArchitecture !== 'x64') {
+      throw new MacosDesktopInstallError(macosDesktopInstallFailedMessage('Codex 桌面端'), `不认识的处理器架构 ${processArchitecture}`)
+    }
+    try {
+      const result = await executeCommand({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, {
+        env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: 5_000, maxOutputBytes: 1024,
+      })
+      if (result.stdout.trim() === '1') return 'arm64'
+    } catch {
+      // Only a "1" proves Apple silicon. Intel Macs report 0 or lack the key,
+      // in which case sysctl exits non-zero; both mean the x64 package.
+    }
+    return 'x64'
+  }
+
+  /** Mac 上没有商店也没有国内镜像：官方包先下，下载走下载线路，核过签名才放进「应用程序」。 */
+  async function installCodexDesktopOnMac(
+    target: RendererMessageTarget,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<CodexDesktopInstallResult> {
+    let current = await detectMacosCodexApp().catch(() => null)
+    // 检测没做完（深度核对签名超时、某条命令没起来，或者检测本身出错）不等于没装。照「没装」往下走的话，
+    // 「应用程序」里客户自己装好的正版 ChatGPT 会被安装那一步当成认不出来的同名应用，叫客户移到废纸篓。
+    // 所以再检测一次：慢多半是一时的（刚开机、别的程序在抢磁盘），首页同一时间的扫描核对过了，这次也直接
+    // 用它记下的结果（macos-codex-app.ts 的 verifiedBundles）。还没做完就照旧往下走，不在这里停下：没做完
+    // 的原因不一定和 ChatGPT.app 有关（Spotlight 查不了、扫应用目录超时），一律停下会让这些 Mac 再也装不上。
+    if (!current || (!current.app && current.detectionFailed)) {
+      // 检测慢正是客户会点「取消」的时候，点了就不再多等一次检测。
+      cancellation?.throwIfCancelled()
+      current = await detectMacosCodexApp().catch(() => null)
+    }
+    if (current?.app) {
+      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+      return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
+    }
+    // root 身份下装出来的应用归 root，客户自己的账号更新不了它（同 external-client-runtime）。
+    // 已经装好的那份不动它，照上面说一句就行，所以放在后面。
+    if (getuid() === 0) {
+      throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
+    }
+    // 两次都没做完时，安装那一步看到「应用程序」里占着名字、又自称是正版的那份，就说「检测未完成」：
+    // 它多半是客户装好的正版，只是没来得及核对，说「不是官方原版」、叫客户移到废纸篓就错了。
+    // 检测核对过、确定不过关的那份（签名不对、架构不兼容、可执行文件坏了）不算：再测几次都一样，
+    // 照旧说不是官方原版，客户才知道要把它挪走。别处另一份不过关的不连累它（rejectedPaths 按路径记）。
+    const detectionUnfinished = !current || current.detectionFailed
+    const architecture = await resolveMacosInstallArchitecture()
+    cancellation?.throwIfCancelled()
+    const signal = cancellation?.signal
+    const install = () => installMacosApp({
+      tool: 'codexDesktop',
+      architecture,
+      userHome,
+      environment: process.env,
+      fetch: downloadFetch,
+      runProcess: (plan) => executeCommand({ executable: plan.executable, argv: [...plan.argv] }, {
+        env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024,
+        ...(signal ? { signal } : {}),
+      }),
+      onProgress: (event) => sendCodexDesktopInstallProgress(target, {
+        phase: event.phase === 'checking' ? 'validating' : event.phase,
+        percent: event.percent,
+        message: event.message,
+      }),
+      ...(signal ? { signal } : {}),
+      ...(detectionUnfinished
+        ? { detectionUnfinished: { message: codexDesktopDetectionUnfinishedMessage, rejectedPaths: current?.rejectedPaths ?? [] } }
+        : {}),
+    })
+    const installed = await withDownloadRoute(install)
+    sendCodexDesktopInstallProgress(target, {
+      phase: 'completed',
+      percent: 100,
+      message: `Codex 桌面端 ${installed.version} 装好了，在「应用程序」里叫 ChatGPT`,
+    })
+    return { action: 'installed', previousVersion: null, installedVersion: installed.version }
   }
 
   async function installCodexDesktopFromSources(
     target: RendererMessageTarget,
-    attempt: { storeFailure: string | null },
+    attempt: CodexDesktopInstallAttempt,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
     // 排队等待期间点的取消在这里生效：一个字节都不用下。
     cancellation?.throwIfCancelled()
     // 安装包有几百兆，磁盘快满时下到一半才失败最难受；读不到空间照常放行。
     await assertInstallDiskSpace?.('Codex 桌面端安装失败')
-    if (platform === 'darwin') {
-      throw new Error('macOS 上 Codex App 的安装由 Codex App 管理，请使用“打开”操作由已验证的 Codex CLI 完成安装或启动')
-    }
+    if (platform === 'darwin') return installCodexDesktopOnMac(target, cancellation)
     if (platform !== 'win32') throw new Error('Codex 桌面端安装目前仅支持 Windows')
     const architecture = process.arch === 'x64' || process.arch === 'arm64'
       ? process.arch
       : null
     if (!architecture) throw new Error(`Codex 桌面端不支持当前处理器架构 ${process.arch}`)
 
-    const [currentProbe, startApp, runningProcesses] = await Promise.all([
+    const [currentProbe, startApp, runningProcesses, storeAvailable] = await Promise.all([
       inspectCodexDesktopPackage(),
       findCodexDesktopStartApp(),
       listCodexDesktopProcesses(),
+      // 探测自己吞掉错误；这里再兜一层，查不出来就当不知道，照旧先走商店。
+      inspectStoreAvailability(cancellation?.signal).catch(() => null),
     ])
+    cancellation?.throwIfCancelled()
+    attempt.storeUnavailable = storeAvailable === false
     if (currentProbe.error) throw new Error(currentProbe.error)
     const currentPackage = currentProbe.value
     const firstInstall = canAttemptCodexDesktopFirstInstallFallback(
@@ -2164,9 +3124,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       currentProbe.confirmedAbsent === true,
     )
     if (!firstInstall && !currentPackage) {
-      throw new Error('已检测到 Codex Desktop，但无法读取已安装版本，请先重新检测环境')
+      throw new Error('星芒看到了 Codex 桌面端，但读不到它装的是哪一版，请点「重新检测」后再试')
     }
     const previousVersion = currentPackage?.version ?? null
+    attempt.updating = previousVersion !== null
     // 刚打开加速就点更新时，Chromium 可能还拿着接管前的代理配置。刷新失败不
     // 影响安装本身，下载至多回到刷新前那条路。
     if (reloadDownloadProxyConfig) {
@@ -2175,8 +3136,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     invalidateCodexDesktopManifestCache()
     const manifestBundle = await inspectCodexDesktopManifestBundle()
     cancellation?.throwIfCancelled()
-    if (!previousVersion || shouldTryCodexDesktopStoreUpdate(previousVersion, manifestBundle.latest.version)) {
-      const storeResult = await installCodexDesktopFromStore(target, previousVersion, cancellation)
+    if (attempt.storeUnavailable) {
+      // 商店、官网离线安装包、国内镜像的先后不变；只是这台电脑根本没有商店，空等那一步没有意义。
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'downloading',
+        percent: null,
+        message: `${codexDesktopNoStoreNotice}，先用 OpenAI 官网的离线安装包${previousVersion ? '更新' : '装'} Codex 桌面端。`,
+      })
+    } else if (!previousVersion || shouldTryCodexDesktopStoreUpdate(previousVersion, manifestBundle.latest.version)) {
+      const storeResult = await installCodexDesktopFromStore(
+        target, previousVersion, stableInstallFamilyName(currentPackage), cancellation,
+      )
       if ('installed' in storeResult) {
         invalidateCodexDesktopManifestCache()
         const installedVersion = storeResult.installed.version
@@ -2184,8 +3154,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           phase: 'completed',
           percent: 100,
           message: previousVersion
-            ? `Codex Desktop 已从 ${previousVersion} 更新至 ${installedVersion}`
-            : `Codex Desktop ${installedVersion} 安装完成`,
+            ? `Codex 桌面端已从 ${previousVersion} 更新到 ${installedVersion}`
+            : `Codex 桌面端 ${installedVersion} 装好了`,
         })
         return {
           action: previousVersion ? 'updated' : 'installed',
@@ -2194,6 +3164,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         }
       }
       attempt.storeFailure = storeResult.failure
+      attempt.storeExitCode = storeResult.exitCode ?? null
+      attempt.storeInstallerMissing = storeResult.installerMissing === true
+    }
+    // 商店没走通（或者根本没有商店）才走第二路；商店没试是因为官网说没有更新的版本，
+    // 那官网的包也一样不用下。
+    if (attempt.storeUnavailable || attempt.storeFailure !== null) {
+      const officialResult = await installCodexDesktopFromOfficial(
+        target, attempt, architecture, currentPackage, manifestBundle.officialVersion, cancellation,
+      )
+      if (officialResult) return officialResult
     }
     const mirrorCandidates = manifestBundle.mirrorCandidates
     const mirrorCandidate = mirrorCandidates[0] ?? null
@@ -2216,7 +3196,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       sendCodexDesktopInstallProgress(target, {
         phase: 'downloading',
         percent: 0,
-        message: '当前镜像不可用，正在尝试 Codex Desktop 上一版本（0%）',
+        message: '这一版暂时下载不到，正在改装上一版 Codex 桌面端（0%）',
       })
     } else {
       if (firstInstall) {
@@ -2242,20 +3222,24 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         const latestComparison = latest.version
           ? compareWindowsPackageVersions(newestRelease.version, latest.version)
           : null
-        const mirrorLagNotice = latestComparison === -1
-          ? `；国内镜像当前仅提供 ${newestRelease.version}，微软商店官方最新为 ${latest.version}，可前往微软商店更新`
+        // 没有商店的电脑上不提「去微软商店更新」：那颗按钮在这里打不开。
+        const storeNewerVersion = !attempt.storeUnavailable && latestComparison === -1 && latest.version ? latest.version : null
+        // 渲染层看到 storeNewerVersion 会给一颗「去微软商店装」按钮，这里只说清楚现状。
+        const mirrorLagNotice = storeNewerVersion
+          ? `；微软商店里已经有 ${storeNewerVersion}，国内下载线路还没跟上，可以去微软商店更新`
           : ''
         const result: CodexDesktopInstallResult = {
           action: 'unchanged',
           previousVersion,
           installedVersion: previousVersion,
+          ...(storeNewerVersion ? { storeNewerVersion } : {}),
         }
         sendCodexDesktopInstallProgress(target, {
           phase: 'completed',
           percent: 100,
           message: comparison === 0
-            ? `Codex Desktop ${previousVersion} 已是国内镜像最新版${mirrorLagNotice}`
-            : `当前 Codex Desktop ${previousVersion} 高于国内镜像版本 ${newestRelease.version}，无需更新${mirrorLagNotice}`,
+            ? `Codex 桌面端 ${previousVersion} 已是国内下载线路上最新的一版${mirrorLagNotice}`
+            : `这台电脑上的 Codex 桌面端 ${previousVersion} 比国内下载线路上的还新，不用更新${mirrorLagNotice}`,
         })
         return result
       }
@@ -2282,22 +3266,24 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             attemptIndex,
             previousFailure,
             probeErrors,
-            attempt.storeFailure,
+            attempt,
           )
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent: 0,
-            message: `${attemptNotice} Codex Desktop ${release.version}（0%）`,
+            message: `${attemptNotice} Codex 桌面端 ${release.version}（0%）`,
           })
         },
-        onProgress: (candidate, { percent }) => {
+        onProgress: (candidate, { percent, resuming }) => {
           const release = candidate.release
           const source = candidate.packageSource
           if (!release || !source) return
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent,
-            message: `${attemptNotice ?? `正在从${source.label}下载`} Codex Desktop ${release.version}（${percent}%）`,
+            message: resuming
+              ? `网络断了一下，正在从${source.label}接着下载 Codex 桌面端 ${release.version}（已下 ${percent}%）`
+              : `${attemptNotice ?? `正在从${source.label}下载`} Codex 桌面端 ${release.version}（${percent}%）`,
           })
         },
         validatePackage: async (candidate) => {
@@ -2307,7 +3293,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           sendCodexDesktopInstallProgress(target, {
             phase: 'validating',
             percent: null,
-            message: `正在校验${source.label}安装包的身份、版本、架构和签名`,
+            message: '正在检查下载下来的安装包是不是完整的官方版',
           })
           const metadata = await inspectCodexDesktopPackageFile(packagePath)
           const validationError = codexDesktopPackageValidationError(
@@ -2338,7 +3324,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         sendCodexDesktopInstallProgress(target, {
           phase: 'downloading',
           percent: 0,
-          message: '当前版本镜像下载失败，正在尝试 Codex Desktop 上一版本（0%）',
+          message: '这一版没下载成功，正在改装上一版 Codex 桌面端（0%）',
         })
         const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture, downloadFetch)
         if (!previousProbe.candidates.length) {
@@ -2356,44 +3342,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
       const release = selected.candidate.release
       if (!release) throw new Error('镜像候选缺少安装元数据')
-
-      cancellation?.throwIfCancelled()
-      // 从这里开始就会动这台机器上的 Codex Desktop：先关掉正在跑的进程，
-      // 再交给 Add-AppxPackage。中途中断会留下一个装了一半的包，所以封存。
-      cancellation?.seal(codexDesktopInstallSealReason)
-      const processes = await listCodexDesktopProcesses()
-      if (processes.length) {
-        sendCodexDesktopInstallProgress(target, {
-          phase: 'closing',
-          percent: null,
-          message: '正在关闭运行中的 Codex Desktop',
-        })
-        await terminateCodexDesktopProcesses(processes)
-      }
-      sendCodexDesktopInstallProgress(target, {
-        phase: 'installing',
-        percent: null,
-        message: `正在安装 Codex Desktop ${release.version}`,
-      })
-      await addCodexDesktopPackage(packagePath, {
-        sha256Base64: release.sha256Base64,
-        contentLength: release.contentLength,
-        onElevationRequired: () => sendCodexDesktopInstallProgress(target, {
-          phase: 'installing', percent: null,
-          message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
-        }),
-      })
-      const installedPackage = await verifyInstalledCodexDesktop(release.version)
-      invalidateCodexDesktopManifestCache()
-      const action = previousVersion ? 'updated' : 'installed'
-      sendCodexDesktopInstallProgress(target, {
-        phase: 'completed',
-        percent: 100,
-        message: previousVersion
-          ? `Codex Desktop 已从 ${previousVersion} 更新至 ${installedPackage.version}`
-          : `Codex Desktop ${installedPackage.version} 安装完成`,
-      })
-      return { action, previousVersion, installedVersion: installedPackage.version }
+      return await installDownloadedCodexDesktopPackage(target, packagePath, release, currentPackage, cancellation)
     } finally {
       // Add-AppxPackage can keep a handle to the MSIX briefly after it has
       // completed. Waiting for Defender/WindowsApps to release that handle
@@ -2440,10 +3389,21 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     // 句柄在入队之前登记：排在别的安装后面等待时也要能取消。
     const cancellation = installCancellations.begin(codexDesktopInstallKey)
+    let started = false
     return installationQueue.enqueue(
       codexDesktopInstallKey,
-      () => installCodexDesktopOperationWithProgress(target, cancellation),
-    ).finally(() => cancellation.release())
+      () => {
+        started = true
+        return installCodexDesktopOperationWithProgress(target, cancellation)
+      },
+      { signal: cancellation.signal },
+    ).catch((error: unknown) => {
+      if (started) throw error
+      // 排着队时取消的那次直接出队，不用等前面那项装完；它没跑过，取消的那句和进度在这里补上。
+      const cancelled = new InstallCancelledError('Codex 桌面端安装已取消')
+      sendCodexDesktopInstallProgress(target, { phase: 'error', percent: null, message: cancelled.message })
+      throw cancelled
+    }).finally(() => cancellation.release())
   }
 
   function cancelCodexDesktopInstall(): InstallCancellationOutcome {
@@ -2465,26 +3425,31 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中')
     codexDesktopInstalling = true
     try {
-      const processes = await listCodexDesktopProcesses()
       const probe = await inspectCodexDesktopPackage()
+      if (probe.confirmedAbsent === true && !probe.error) {
+        return { outcome: 'not-installed', previousVersion: null }
+      }
+      const processes = await listCodexDesktopProcesses('all', { strict: true })
       if (probe.error && !processes.length) throw new Error(probe.error)
-      const processPackage = processes
-        .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
-        .find((entry): entry is CodexDesktopPackageEntry => entry !== null) ?? null
+      const processPackage = selectCodexDesktopPackage(
+        processes
+          .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
+          .filter((entry): entry is CodexDesktopPackageEntry => entry !== null),
+      )
       const installedPackage = probe.value ?? processPackage
       if (!installedPackage) return { outcome: 'not-installed', previousVersion: null }
-      if (processes.length) await terminateCodexDesktopProcesses(processes)
-      const script = [
-        '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-        '$ErrorActionPreference = "Stop"',
-        `Remove-AppxPackage -Package ${powerShellLiteral(installedPackage.packageFullName)} -ErrorAction Stop`,
-      ].join('; ')
+      const targetProcesses = selectCodexDesktopProcessesForPackage(
+        processes, installedPackage.packageFamilyName,
+      )
+      if (targetProcesses.length) {
+        await terminateCodexDesktopProcesses(targetProcesses, installedPackage.packageFamilyName)
+      }
       await execFileAsync(resolveWindowsPowerShellExecutable(), [
         '-NoLogo',
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        script,
+        buildCodexDesktopUninstallScript(installedPackage.packageFullName),
       ], {
         env: trustedCommandEnvironment(),
         windowsHide: true,
@@ -2492,9 +3457,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         maxBuffer: 4 * 1024 * 1024,
       })
       const remaining = await inspectCodexDesktopPackage()
-      if (remaining.value?.packageFullName === installedPackage.packageFullName) {
-        throw new Error('Windows 仍报告 Codex 桌面端 Appx 包存在，卸载未完成')
-      }
+      assertCodexDesktopUninstalled(installedPackage.packageFullName, remaining)
       invalidateCodexDesktopManifestCache()
       return { outcome: 'uninstalled', previousVersion: installedPackage.version }
     } finally {
@@ -2507,6 +3470,64 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       'desktop:codex:uninstall',
       () => uninstallCodexDesktopOperation(),
     )
+  }
+
+  async function resetCodexDesktopOperation(): Promise<void> {
+    if (platform !== 'win32') throw new Error('只有 Windows 上的 Codex 桌面端可以一键重置')
+    if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中')
+    codexDesktopInstalling = true
+    try {
+      const probe = await inspectCodexDesktopPackage()
+      const installedPackage = probe.value
+      if (!installedPackage) {
+        throw new Error(probe.confirmedAbsent === true
+          ? '这台电脑上没找到 Codex 桌面端，先在首页点「安装」装好它。'
+          : codexDesktopResetManualHint)
+      }
+      // Reset-AppxPackage stops the app itself, but a window that is still
+      // closing can keep files in LocalState open and make the reset fail
+      // half-way. Close the package's own processes first, the same way
+      // uninstall does.
+      const processes = await listCodexDesktopProcesses('all', { strict: true })
+      const targetProcesses = selectCodexDesktopProcessesForPackage(
+        processes, installedPackage.packageFamilyName,
+      )
+      if (targetProcesses.length) {
+        await terminateCodexDesktopProcesses(targetProcesses, installedPackage.packageFamilyName)
+      }
+      try {
+        await execFileAsync(resolveWindowsPowerShellExecutable(), [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          buildCodexDesktopResetScript(installedPackage.packageFullName),
+        ], {
+          env: trustedCommandEnvironment(),
+          windowsHide: true,
+          timeout: 2 * 60_000,
+          maxBuffer: 4 * 1024 * 1024,
+        })
+      } catch (error) {
+        throw new Error(describeCodexDesktopResetFailure(error))
+      }
+    } finally {
+      codexDesktopInstalling = false
+    }
+  }
+
+  function resetCodexDesktop(): Promise<void> {
+    return installationQueue.enqueue(
+      'desktop:codex:reset',
+      () => resetCodexDesktopOperation(),
+    )
+  }
+
+  function sendCodexDesktopLaunchProgress(
+    target: RendererMessageTarget,
+    progress: CodexDesktopLaunchProgress,
+  ): void {
+    if (!target.isDestroyed()) target.send('desktop:codex-launch-progress', progress)
   }
 
   function sendCodexDesktopStatus(
@@ -2532,6 +3553,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
     launchOptions: CodexDesktopLaunchOptions = {},
+    heartbeat?: CodexDesktopLaunchHeartbeat,
   ): Promise<CodexDesktopLaunchResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中，请稍后再试')
     if (platform === 'darwin' && mode === 'restart') {
@@ -2547,7 +3569,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // Reuse the bundle/architecture/OpenAI-signature verifier and bind
       // LaunchServices to that exact app, rather than a PATH or bundle alias.
       const desktopApp = await inspectCodexDesktop()
-      if (desktopApp.detectionFailed) throw new Error('Codex 桌面端检测未完成，请重新检测后再试')
+      if (desktopApp.detectionFailed) throw new Error(codexDesktopDetectionUnfinishedMessage)
       if (!desktopApp.installed || !desktopApp.path) {
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
@@ -2575,6 +3597,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('未检测到 Codex 桌面端，请先安装后重新检测')
     }
     const desktopAppPath = desktopApp.path
+    const installedFamilyName = desktopApp.installDirectory
+      ? parseCodexDesktopPackagePath(desktopApp.installDirectory)?.packageFamilyName ?? null
+      : null
+    const appIdFamilyName = /^(OpenAI\.Codex(?:Beta)?_[A-Za-z0-9.]+)!App$/i.exec(desktopAppPath)?.[1] ?? null
+    const packageFamilyName = installedFamilyName ?? appIdFamilyName
+    // Opening never closes anything, so an unknown family only widens which
+    // of the user's own Codex windows count as "already running".
+    if (!packageFamilyName && mode === 'restart') {
+      throw new Error('没能确认要重启的是哪一个 Codex 桌面端，请重新检测后再试')
+    }
     await connectAccelerationBeforeLaunch()
     const workspace = store.read().workspace
     let workspaceUrl: string | null = null
@@ -2586,7 +3618,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // the workspace is configured.
     }
 
-    const existingProcesses = await listCodexDesktopProcesses()
+    // Restart closes what it finds, so it keeps the owner-checked, fail-closed
+    // list. Open closes nothing and only asks whether a window already runs.
+    const existingProcesses = mode === 'restart'
+      ? selectCodexDesktopProcessesForPackage(
+        await listCodexDesktopProcesses('all', { strict: true }),
+        packageFamilyName,
+      )
+      : []
+    const alreadyRunning = mode === 'restart'
+      ? existingProcesses.length > 0
+      : (await listCodexDesktopSessionProcessIds(packageFamilyName)).length > 0
     const restarted = mode === 'restart' && existingProcesses.length > 0
     const repairPermissionState = async (): Promise<void> => {
       if (!launchOptions.repairPermissionModeVisibility || !codexEnv.CODEX_HOME) return
@@ -2600,7 +3642,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     if (mode === 'restart') {
       try {
-        await terminateCodexDesktopProcesses(existingProcesses)
+        // Restart without a known family already stopped above.
+        if (packageFamilyName) await terminateCodexDesktopProcesses(existingProcesses, packageFamilyName)
       } catch (error) {
         const currentStatus = await inspectCodexDesktop()
         sendCodexDesktopStatus(
@@ -2665,7 +3708,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // started with the flag, so keep that PID out of the later reassignment.
     let cdpActivationProcessId: number | null = null
     let activatedViaAppModel = false
-    const needsFreshActivation = mode === 'restart' || existingProcesses.length === 0
+    const needsFreshActivation = mode === 'restart' || !alreadyRunning
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
       && needsFreshActivation
     let chineseLocale: CodexDesktopLaunchResult['chineseLocale'] = launchOptions.injectChinese
@@ -2710,23 +3753,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
 
-    let startedProcesses = await waitForCodexDesktopState(
-      true,
+    heartbeat?.setStage('waiting-window')
+    let startedProcesses = await waitForCodexDesktopSessionProcesses(
       activatedViaAppModel || workspaceLaunchDelivered
         ? codexDesktopLaunchInitialWaitMs
         : codexDesktopLaunchFallbackWaitMs,
+      packageFamilyName,
     )
 
-    const processFromActivationPid = async (): Promise<WindowsProcessEntry[]> => {
+    const processFromActivationPid = async (): Promise<number[]> => {
       if (activationProcessId === null || !await waitForProcessId(activationProcessId, 2_000)) return []
-      return [{
-        processId: activationProcessId,
-        parentProcessId: 0,
-        name: 'ChatGPT.exe',
-        executablePath: desktopApp.installDirectory
-          ? path.join(desktopApp.installDirectory, 'app', 'ChatGPT.exe')
-          : '',
-      }]
+      return [activationProcessId]
     }
     if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
 
@@ -2739,9 +3776,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       cdpActivationProcessId = null
       try {
         await launchWithExplorer()
-        startedProcesses = await waitForCodexDesktopState(true, codexDesktopLaunchFallbackWaitMs)
+        startedProcesses = await waitForCodexDesktopSessionProcesses(
+          codexDesktopLaunchFallbackWaitMs, packageFamilyName,
+        )
       } catch {
-        // The common error below includes the same actionable launch context.
+        // The common error below reports this attempt as well.
       }
     }
     // AppX activation returns the application PID even when WMI is slow or
@@ -2750,10 +3789,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // process was still crossing the AppModel boundary at the first check.
     if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
     if (!startedProcesses.length) {
-      const launchContext = await inspectCodexDesktopWindowsLaunchContext()
-      throw new Error(describeCodexDesktopLaunchFailure(launchContext))
+      // 先停心跳：失败框弹出之前工具行不该再冒一句「还在等」。
+      const waitedSeconds = heartbeat?.elapsedSeconds()
+      heartbeat?.stop()
+      throw new Error(describeCodexDesktopLaunchFailure(
+        waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
+        resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
+      ))
     }
     if (cdpPort !== null) {
+      // Codex 已经起来了：下面等的是给它换中文（等调试端口、核对端口归属），不是等窗口。
+      heartbeat?.setStage('switching-language')
       try {
         const injection = await injectCodexDesktopChineseLocale(cdpPort, {
           expectedProcessId: cdpActivationProcessId,
@@ -2789,7 +3835,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   ): Promise<CodexDesktopLaunchResult> {
     return installationQueue.enqueue(
       `desktop:codex:launch:${mode}:${launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
-      () => launchCodexDesktopOperation(mode, target, launchOptions),
+      async () => {
+        // 只有 Windows 这一路会等窗口等到近一分钟；macOS 交给系统打开，几秒就回来。
+        const heartbeat = platform === 'win32'
+          ? startCodexDesktopLaunchHeartbeat((progress) => sendCodexDesktopLaunchProgress(target, progress))
+          : undefined
+        try {
+          return await launchCodexDesktopOperation(mode, target, launchOptions, heartbeat)
+        } finally {
+          heartbeat?.stop()
+        }
+      },
     )
   }
 
@@ -2799,6 +3855,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     installCodexDesktop,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop,
+    resetCodexDesktop,
     launchCodexDesktop,
   }
 }

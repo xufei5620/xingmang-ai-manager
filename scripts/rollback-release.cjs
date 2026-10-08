@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 // 坏版本回退用到的两件小事，给 publish-release 与 rollback-release 两个工作流调用：
 //
-//   version --manifest <file> --name latest.yml|latest-mac.yml
+//   version --manifest <file> --name <清单名>
 //     读出一份更新清单的版本号。发布新版之前，publish-release 用它把线上那份旧清单
 //     按版本号备份到 manifests/<版本>/ 下——R2 上的根目录清单一覆盖就没了，没有这份
 //     备份，发现坏版本时就没有东西可以退回去。
+//
+//   plan --live <线上版本> --expect <要退回的版本>
+//     一个平台该怎么办：线上已经是要退回的版本就打印 skip，比它新就打印 rollback，
+//     比它旧就报错。两个平台分开判断（#547）：只有 Windows 升到了坏版本、Mac 还停在
+//     要退回的那一版时，Mac 那一半该跳过，而不是连带挡住 Windows 的回退。
 //
 //   verify --manifest <file> --name … --expect <版本> --live <线上版本> --base <更新目录>
 //     核对一份备份清单确实是要退回的那个版本、而且比线上的旧，再把它引用的每个安装包
@@ -12,11 +17,17 @@
 //     在撤回版本、覆盖根目录清单**之前**跑它：只确认文件「在」不够，一个返回 200 却
 //     被同名覆盖或传坏的安装包，会让退回的人下载到一半校验失败，而此刻线上已经换过了。
 //
-// 版本号只收 x.y.z：它要拼进对象路径，任何别的写法都不该出现在这里。
+// 清单名只认 update-release-utils.cjs 的 UPDATE_MANIFEST_NAMES。版本号只收 x.y.z：它要
+// 拼进对象路径，任何别的写法都不该出现在这里。
 const fs = require('node:fs')
-const { compareReleaseVersions, parseLatestMetadata, verifyManifestArtifacts } = require('./update-release-utils.cjs')
+const {
+  UPDATE_MANIFEST_NAMES,
+  compareReleaseVersions,
+  parseLatestMetadata,
+  verifyManifestArtifacts,
+} = require('./update-release-utils.cjs')
 
-const MANIFEST_NAMES = new Set(['latest.yml', 'latest-mac.yml'])
+const MANIFEST_NAMES = new Set(UPDATE_MANIFEST_NAMES)
 const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
 
 class RollbackInputError extends Error {}
@@ -34,6 +45,18 @@ function readManifest(file, name) {
 
 function manifestVersion(file, name) {
   return requirePlainVersion(readManifest(file, name).version, `${name} 的版本号`)
+}
+
+/** 返回 'skip'（线上已经是这个版本）或 'rollback'；线上比要退回的还旧时抛错。 */
+function planPlatform(live, expected) {
+  const current = requirePlainVersion(live, '线上版本')
+  const target = requirePlainVersion(expected, '要退回的版本')
+  const comparison = compareReleaseVersions(target, current)
+  if (comparison === 0) return 'skip'
+  if (comparison > 0) {
+    throw new RollbackInputError(`线上是 ${current}，比要退回的 ${target} 还旧，这不是回退；修好的新版本请走正式发布`)
+  }
+  return 'rollback'
 }
 
 function inspectBackup(file, name, expected, live) {
@@ -76,6 +99,10 @@ async function main(argv) {
     console.log(manifestVersion(options.manifest, options.name))
     return
   }
+  if (command === 'plan') {
+    console.log(planPlatform(options.live, options.expect))
+    return
+  }
   if (command === 'verify') {
     await verifyBackup({
       file: options.manifest,
@@ -86,7 +113,7 @@ async function main(argv) {
     })
     return
   }
-  throw new RollbackInputError('用法：rollback-release.cjs version|verify --manifest <file> --name <latest.yml|latest-mac.yml> [--expect <版本> --live <版本> --base <更新目录>]')
+  throw new RollbackInputError(`用法：rollback-release.cjs version|plan|verify --manifest <file> --name <${UPDATE_MANIFEST_NAMES.join('|')}> [--expect <版本> --live <版本> --base <更新目录>]`)
 }
 
 if (require.main === module) {
@@ -96,4 +123,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { RollbackInputError, inspectBackup, manifestVersion, requirePlainVersion, verifyBackup }
+module.exports = { RollbackInputError, inspectBackup, manifestVersion, planPlatform, requirePlainVersion, verifyBackup }

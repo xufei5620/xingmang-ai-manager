@@ -1,5 +1,5 @@
-import { accountOrigin, siteIdForOrigin } from './account-context'
-import { resolveRelaySite } from '../../electron/relay-sites'
+import { accountOrigin, siteIdForOrigin, type AccountSiteId } from './account-context'
+import { relaySiteEndpointIdForBaseUrl } from '../../electron/relay-sites'
 import { isProviderId } from '../../electron/catalog'
 import { describeRunningTools, type RunningToolsReport } from '../../electron/running-tools'
 import { tools } from './registry/tools'
@@ -45,6 +45,12 @@ export interface AccountSyncContext {
   officialProviders: readonly Provider[]
   origin: string
 }
+// 一个站有几条写死的线路（默认线路、备用直连和它留着的别名），用哪条开机时定下。
+// 「还是这个站的地址」要按登记过的线路认，只认默认线路的话，选了备用直连以后
+// 星芒账号和历史账号互切，勾上的工具一个都换不过去。
+function siteRouteUrl(siteId: AccountSiteId, provider: Provider, value: string | undefined): boolean {
+  return value !== undefined && relaySiteEndpointIdForBaseUrl(siteId, provider, value) !== null
+}
 function unchangedPreviousRelay(
   previous: AccountSyncContext,
   current: AccountSyncContext,
@@ -56,18 +62,15 @@ function unchangedPreviousRelay(
   if (!previousSiteId || !currentSiteId) return false
   const before = previous.configs[provider]
   const after = current.configs[provider]
-  const oldSite = resolveRelaySite(previousSiteId)
-  const newSite = resolveRelaySite(currentSiteId)
-  const sameUrl = (left: string | undefined, right: string) => left?.replace(/\/$/, '') === right.replace(/\/$/, '')
   if (!current.clis[provider].installed || current.clis[provider].detectionFailed || current.officialProviders.includes(provider)
     || after.codexAuthMode === 'chatgpt' || after.authType === 'oauth-personal') return false
   // Only selected, previously known relay configs qualify. The new site's
-  // expected URL changes; the actual on-disk address must still be the old
-  // provider's exact route, with no observable edits to its credentials/auth.
+  // expected URL changes; the actual on-disk address must still be one of the
+  // old site's routes, with no observable edits to its credentials/auth.
   if (!before.hasApiKey || !before.matchesRelay || !after.hasApiKey
-    || !sameUrl(before.actualBaseUrl, oldSite.providerBaseUrls[provider])
-    || !sameUrl(after.actualBaseUrl, oldSite.providerBaseUrls[provider])
-    || !sameUrl(after.baseUrl, newSite.providerBaseUrls[provider])
+    || !siteRouteUrl(previousSiteId, provider, before.actualBaseUrl)
+    || !siteRouteUrl(previousSiteId, provider, after.actualBaseUrl)
+    || !siteRouteUrl(currentSiteId, provider, after.baseUrl)
     || !before.apiKeyPreview || !before.updatedAt) return false
   return (['actualBaseUrl', 'apiKeyPreview', 'updatedAt', 'model', 'authType', 'codexAuthMode', 'officialAccountEmail'] as const)
     .every((field) => before[field] === after[field])
@@ -291,9 +294,12 @@ export function accountSwitchRestartHint(result: AccountSwitchSyncResult): strin
   return result.runningTools ? describeRunningTools(result.runningTools, 'account') : ''
 }
 
-/** 这次切换还有要用户看的：有工具没同步好，或有写了新 Key 的工具还开着。 */
+/**
+ * 这次切换还有要用户看的：有工具没同步好、勾了却被跳过，或有写了新 Key 的工具还开着。
+ * 跳过的原因只写在切换框里，框一关用户就看不到那个工具还连着旧账号（#545）。
+ */
 export function accountSwitchNeedsAttention(result: AccountSwitchSyncResult): boolean {
-  return result.failed.length > 0 || accountSwitchRestartHint(result) !== ''
+  return result.failed.length > 0 || result.skipped.length > 0 || accountSwitchRestartHint(result) !== ''
 }
 
 const previousResults = new Map<string, AccountSwitchSyncResult>()

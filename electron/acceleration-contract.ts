@@ -14,6 +14,17 @@ export function isAccelerationBonusCode(value: unknown): value is string {
 
 export type AccelerationPhase = 'unavailable' | 'idle' | 'connecting' | 'active' | 'stopping' | 'exhausted' | 'error'
 export type AccelerationMode = 'system-proxy' | 'tun'
+/**
+ * 为什么开不了加速。缺省就是旧口径「线路还没准备好」；只有正式安装包里自带的加速
+ * 文件读不通（多半被杀毒软件隔离或改动）时才是 `bundle-damaged`：那种情况等多久都
+ * 不会好，界面要说清楚、给出能自己动手的办法。
+ */
+export type AccelerationUnavailableReason = 'bundle-damaged'
+/**
+ * 「重新检查」加速文件的结果。`repaired` 只说明文件现在读得通了：加速服务是启动时
+ * 按那份文件建起来的，要重新打开软件才用得上。
+ */
+export type AccelerationBundleCheck = 'damaged' | 'repaired'
 
 /**
  * Acceleration only takes over the OS proxy setting, so anything else holding
@@ -90,8 +101,10 @@ export interface AccelerationFailure extends Error {
   accelerationReason: AccelerationFailureReason
 }
 
-export function accelerationFailure(reason: AccelerationFailureReason): AccelerationFailure {
-  return withAccelerationReason(new Error(accelerationFailureMessages[reason]), reason)
+/** `message` lets a caller word the same reason for its own action (for example
+ *  a redemption rather than a connect) while the tray still reads the reason. */
+export function accelerationFailure(reason: AccelerationFailureReason, message = accelerationFailureMessages[reason]): AccelerationFailure {
+  return withAccelerationReason(new Error(message), reason)
 }
 
 /** Tags an error the host already worded for its own callers, so the service
@@ -164,8 +177,13 @@ export interface AccelerationState {
   /**
    * 这次连接不是用户亲手点的，而是软件替他连上的（目前只有打开 Codex 桌面端
    * 那一处）。只在这次会话还在跑时出现；缺省即旧行为，也就是用户自己连的。
+   * 带着它的会话不扣免费时长（yoyo 2026-09-30 定），`remainingSeconds` 在会话
+   * 期间保持不变，免费时长用完（为 0）也照样能连着；桌面端退出后由主进程断开
+   * （codex-desktop-acceleration.ts）。
    */
   autoStartedBy?: 'codex-desktop'
+  /** 只随 `phase: 'unavailable'` 出现；缺省 = 线路准备中（旧行为）。 */
+  unavailableReason?: AccelerationUnavailableReason
 }
 
 export interface AccelerationApi {
@@ -179,6 +197,8 @@ export interface AccelerationApi {
   listAccelerationLines?(scope: string): Promise<AccelerationLine[]>
   /** Measure a single line; credentials never leave the host. */
   pingAccelerationLine?(scope: string, lineId: string): Promise<AccelerationLine>
+  /** 加速文件坏了时重读一遍。只有启动时就读坏了的那次运行才有这个方法。 */
+  recheckAccelerationBundle?(): Promise<AccelerationBundleCheck>
 }
 
 export interface AccelerationRedemptionResult {

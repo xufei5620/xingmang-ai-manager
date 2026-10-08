@@ -1,6 +1,17 @@
 import type { ExternalClientStatus } from '../../../../electron/ipc-contract'
 import { clientConnections } from '../../registry/clients'
-import { snapshotErrorMessage } from '../../business-common'
+import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
+import type { WindowOs } from '../app/window-os'
+
+const noExternalClients: ExternalClientStatus[] = []
+
+/**
+ * Linux 上星芒装不了也打不开这几个桌面客户端（主进程那边一律「不支持此系统」），
+ * 列出来只是一排点不动的按钮，所以整行不列（Linux 版拆分 ⑩）。
+ */
+export function visibleExternalClients(os: WindowOs, statuses: ExternalClientStatus[]): ExternalClientStatus[] {
+  return os === 'linux' ? noExternalClients : statuses
+}
 
 /** Presentation only: external clients never enter the provider/configuration ToolId union. */
 export function presentExternalClients(statuses: ExternalClientStatus[]) {
@@ -13,10 +24,12 @@ export function presentExternalClients(statuses: ExternalClientStatus[]) {
     const action = status.detectionError ? 'scan' : !status.installed ? 'install' : ready ? 'launch' : 'configure'
     return [{ ...definition, status, ready, configurationStatus, action,
       disabled: action === 'install' ? !status.installSupported : action === 'launch' ? !status.launchSupported : false,
-      detail: snapshotErrorMessage(status.detectionError) ?? snapshotErrorMessage(status.configurationError) ?? (!status.installed ? status.installHint ?? definition.vendor
+      detail: detectionFailureMessage(status.detectionError) ?? snapshotErrorMessage(status.configurationError) ?? (!status.installed ? status.installHint ?? definition.vendor
         : [status.version ? `v${status.version.replace(/^v/, '')}` : '版本暂未识别', status.running ? '运行中' : null,
-          status.model ?? (status.tool === 'claudeDesktop' && status.configurationReady ? '自动获取模型'
-            : status.configurationSource === 'other' ? status.configurationReady === false ? '第三方推理配置待完善' : '已有第三方配置' : null)].filter(Boolean).join(' · ')),
+          // 换了线路、客户端开着这次没换成（第四十三批 A）：这时摆模型名，客户看不出这一行还连着原来那条。
+          status.running && status.routePending ? '连接线路暂未改动，完全退出后点「重新检测」'
+            : status.model ?? (status.tool === 'claudeDesktop' && status.configurationReady ? '自动获取模型'
+              : status.configurationSource === 'other' ? status.configurationReady === false ? '第三方推理配置待完善' : '已有第三方配置' : null)].filter(Boolean).join(' · ')),
     }]
   })
 }

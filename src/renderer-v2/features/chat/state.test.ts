@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
@@ -42,10 +43,52 @@ describe('v2 chat request transitions', () => {
     const long = 'a'.repeat(chatLimits.messageLength + 1)
     const completed = { ...first.conversation, messages: first.conversation.messages.map((message) => message.role === 'assistant' ? { ...message, status: 'complete' as const, content: long } : message) }
     const next = () => planTurn(completed, { prompt: 'next question', requestId: 'request-2', assistantId: 'assistant-2', userMessageId: 'user-2' })
-    expect(next).toThrow('这段对话里有一条回复太长，请新建对话后继续')
+    expect(next).toThrow(conversationReplyTooLongMessage)
     let thrown: unknown
     try { next() } catch (error) { thrown = error }
-    expect(chatErrorMessage(thrown)).toBe('这段对话里有一条回复太长，请新建对话后继续')
+    expect(chatErrorMessage(thrown)).toBe(conversationReplyTooLongMessage)
+    expect(isConversationTooLongMessage(chatErrorMessage(thrown))).toBe(true)
+  })
+  it('stops a conversation past the context limit with a message that offers to move on', () => {
+    const conversation = readyConversation()
+    conversation.messages = Array.from({ length: chatLimits.messageCount }, (_, index): ChatMessage => ({ id: `m-${index}`, role: index % 2 ? 'assistant' : 'user', content: `line ${index}`, reasoning: '', status: 'complete', createdAt: index }))
+    let thrown: unknown
+    try { planTurn(conversation, { prompt: 'one more', requestId: 'r', assistantId: 'a', userMessageId: 'u' }) } catch (error) { thrown = error }
+    expect(chatErrorMessage(thrown)).toBe(conversationTooLongMessage)
+    expect(isConversationTooLongMessage(conversationTooLongMessage)).toBe(true)
+    expect(isConversationTooLongMessage('请求太频繁，请稍候再试')).toBe(false)
+  })
+  it('warns once a text conversation carries seven tenths of either limit and stays quiet after it is dismissed', () => {
+    const conversation = readyConversation()
+    const lines = (count: number) => Array.from({ length: count }, (_, index): ChatMessage => ({ id: `m-${index}`, role: index % 2 ? 'assistant' : 'user', content: 'x', reasoning: '', status: 'complete', createdAt: index }))
+    expect(shouldShowLengthNotice({ ...conversation, messages: lines(69) })).toBe(false)
+    expect(shouldShowLengthNotice({ ...conversation, messages: lines(70) })).toBe(true)
+    const heavy = [{ ...lines(1)[0], content: 'x'.repeat(chatLimits.totalMessageLength * 0.7) }]
+    expect(conversationContextShare({ ...conversation, messages: heavy })).toBeCloseTo(0.7)
+    expect(shouldShowLengthNotice({ ...conversation, messages: heavy })).toBe(true)
+    // Failed replies and generated images are never sent back, so they must not count towards the warning.
+    const failed = lines(80).map((message) => message.role === 'assistant' ? { ...message, status: 'error' as const } : message)
+    expect(shouldShowLengthNotice({ ...conversation, messages: failed })).toBe(false)
+    expect(shouldShowLengthNotice({ ...conversation, messages: lines(70), lengthNoticeDismissed: true })).toBe(false)
+    expect(shouldShowLengthNotice({ ...conversation, settings: { ...conversation.settings, mode: 'image' }, messages: lines(70) })).toBe(false)
+  })
+  it('opens a new conversation with the same settings and moves the unsent text without sending it', () => {
+    const state = createWorkspace('owner')
+    const source = { ...readyConversation(), draft: 'unsent question', messages: [{ id: 'm', role: 'user' as const, content: 'old', reasoning: '', status: 'complete' as const, createdAt: 1 }] }
+    source.settings.parameters = { temperature: 0.3 }
+    state.conversations = [source]
+    state.activeId = source.id
+    const moved = continueInNewConversation(state, source.id, source.draft, true)
+    const next = activeConversation(moved)
+    expect(next.id).not.toBe(source.id)
+    expect(next).toMatchObject({ draft: 'unsent question', messages: [], settings: { group: 'group-a', model: 'gpt-test', parameters: { temperature: 0.3 } } })
+    expect(next.settings.parameters).not.toBe(source.settings.parameters)
+    expect(moved.conversations.find((item) => item.id === source.id)).toMatchObject({ draft: '', messages: source.messages })
+    // Text carried out of the edit dialog leaves the source draft alone.
+    const edited = continueInNewConversation(state, source.id, 'edited text', false)
+    expect(activeConversation(edited).draft).toBe('edited text')
+    expect(edited.conversations.find((item) => item.id === source.id)?.draft).toBe('unsent question')
+    expect(continueInNewConversation(state, 'missing', 'x', true)).toBe(state)
   })
   it('does not append a second user message when retrying and keeps the original model snapshot', () => {
     const first = turn()
@@ -242,5 +285,84 @@ describe('v2 chat conversation search', () => {
       expect(filterConversations(state.conversations, '历史')).toEqual([idle.conversation])
     }
     expect(idle.reads()).toBe(1)
+  })
+})
+
+describe('v2 chat attached images', () => {
+  const image = (letter: string): AiChatAsset => ({ assetId: letter.repeat(43), localUrl: `xingmang-asset://image/${letter.repeat(43)}`, mimeType: 'image/png', fileName: 'shot.png' })
+  function visionConversation() { const conversation = readyConversation(); conversation.settings.model = 'claude-test'; return conversation }
+
+  it('sends draft images with the new message, allows an empty prompt and clears the draft', () => {
+    const conversation = { ...visionConversation(), draftImages: [image('A')] }
+    const plan = planTurn(conversation, { prompt: '', images: conversation.draftImages, requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages).toEqual([{ role: 'user', content: '', images: ['A'.repeat(43)] }])
+    expect(plan.conversation.messages[0].assets).toEqual([image('A')])
+    expect(plan.conversation.draftImages).toBeUndefined()
+    expect(plan.conversation.title).toBe('图片提问')
+  })
+
+  it('refuses images for a model that cannot read them and for image generation', () => {
+    const plain = readyConversation()
+    expect(() => planTurn(plain, { prompt: 'x', images: [image('A')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(noImageModelMessage)
+    const drawing = visionConversation(); drawing.settings.mode = 'image'
+    expect(() => planTurn(drawing, { prompt: 'x', images: [image('A')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow('生成图片时还不能带图片')
+    expect(chatErrorMessage(new Error(noImageModelMessage))).toBe(noImageModelMessage)
+    expect(chatErrorMessage(new Error('this model cannot read images'))).toBe(noImageModelMessage)
+  })
+
+  it('keeps the newest images within the per-request limit and describes the rest', () => {
+    const conversation = visionConversation()
+    const user = (id: string, letters: string[]): ChatMessage => ({ id, role: 'user', content: id, reasoning: '', status: 'complete', createdAt: 1, assets: letters.map(image) })
+    const reply = (id: string): ChatMessage => ({ id, role: 'assistant', content: 'ok', reasoning: '', status: 'complete', createdAt: 1 })
+    conversation.messages = [user('old', ['A', 'B']), reply('r1'), user('mid', ['C', 'D', 'E', 'F']), reply('r2')]
+    const plan = planTurn(conversation, { prompt: 'new', images: ['G', 'H', 'I', 'J'].map(image), requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages[0]).toEqual({ role: 'user', content: 'old\n（这里附过 2 张图片，这次没有再发给 AI）' })
+    expect(plan.messages[2]).toMatchObject({ images: ['C', 'D', 'E', 'F'].map((letter) => letter.repeat(43)) })
+    expect(plan.messages[4]).toMatchObject({ images: ['G', 'H', 'I', 'J'].map((letter) => letter.repeat(43)) })
+    expect(plan.messages.flatMap((message) => message.images ?? [])).toHaveLength(chatLimits.imagesPerRequest)
+  })
+
+  it('describes earlier images to a model that cannot read them and still lets text through', () => {
+    const conversation = readyConversation()
+    conversation.messages = [{ id: 'old', role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 1, assets: [image('A')] }]
+    const plan = planTurn(conversation, { prompt: 'follow up', requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages[0]).toEqual({ role: 'user', content: '（这里附过 1 张图片，这次没有再发给 AI）' })
+  })
+
+  it('retries and edits keep the images of the message they resend', () => {
+    const conversation = visionConversation()
+    conversation.messages = [
+      { id: 'u1', role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 1, assets: [image('A')] },
+      { id: 'a1', role: 'assistant', content: 'ok', reasoning: '', status: 'complete', createdAt: 1 },
+    ]
+    expect(planTurn(conversation, { prompt: '', retryId: 'a1', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages).toEqual([{ role: 'user', content: '', images: ['A'.repeat(43)] }])
+    expect(planTurn(conversation, { prompt: '看这张', editId: 'u1', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages).toEqual([{ role: 'user', content: '看这张', images: ['A'.repeat(43)] }])
+  })
+
+  it('adds draft images without repeats up to the per-message limit and removes them', () => {
+    let conversation = addDraftImages(visionConversation(), [image('A'), image('B')])
+    conversation = addDraftImages(conversation, [image('B'), image('C'), image('D'), image('E')])
+    expect(conversation.draftImages?.map((item) => item.assetId[0])).toEqual(['A', 'B', 'C', 'D'])
+    for (const letter of ['A', 'B', 'C', 'D']) conversation = removeDraftImage(conversation, letter.repeat(43))
+    expect('draftImages' in conversation).toBe(false)
+  })
+
+  it('shows the main-process reason for a failed pick without the IPC prefix', () => {
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: 图片太大了，请截小一点再试"))).toBe('图片太大了，请截小一点再试')
+    expect(attachmentErrorMessage(new Error('boom'))).toBe('图片没有加上，请再试一次')
+  })
+
+  // 已知21：英文的写入失败里汉字只出现在路径上（Windows 的中文用户名、Mac 上的中文文件夹），
+  // 以前从第一个汉字截起，把半截路径端上了屏。
+  it('falls back to the plain line when an English failure has Chinese only inside a path', () => {
+    const fallback = '图片没有加上，请再试一次'
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Roaming\\xingmang-ai-manager\\ai-assets\\user-7\\.a.png.tmp'"))).toBe(fallback)
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:paste-image': Error: ENOSPC: no space left on device, write 'C:\\Users\\张 三\\AppData\\Roaming\\xingmang-ai-manager\\ai-assets\\a.png'"))).toBe(fallback)
+    expect(attachmentErrorMessage(new Error("EACCES: permission denied, mkdir '/Users/张三/Pictures/星芒 AI 作品/user-7'"))).toBe(fallback)
+  })
+
+  it('keeps a Chinese reason whole instead of cutting it at the first Chinese character', () => {
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: AI 图片资产不能经过符号链接或目录联接"))).toBe('AI 图片资产不能经过符号链接或目录联接')
+    expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:paste-image': Error: 请先登录星芒账号"))).toBe('请先登录，再加图片')
   })
 })

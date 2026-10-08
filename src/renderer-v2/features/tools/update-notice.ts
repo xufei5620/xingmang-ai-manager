@@ -1,5 +1,5 @@
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
-import type { ToolId, ToolPresentation } from './model'
+import { updatesOutsideApp, type ToolId, type ToolPresentation } from './model'
 
 /** 一个待更新的工具，以及这次要更到的版本。 */
 export interface ToolUpdateEntry {
@@ -22,6 +22,17 @@ export function pendingToolUpdates(tools: readonly ToolPresentation[]): ToolUpda
   return tools
     .filter((tool) => tool.status.installed && tool.updateAvailable)
     .map((tool) => ({ id: tool.id, version: tool.latestVersion ?? unknownVersion }))
+}
+
+/**
+ * 系统通知只说星芒自己更新得了的那几个：通知原话是「回到星芒的「你的工具」就能逐个
+ * 更新」。别的方式装的那份，首页那一行没有「更新」按钮（updatesOutsideApp），客户
+ * 被叫回来也找不到地方点；官方安装器装的 Claude Code 有按钮（换成星芒装的），照常算。
+ * 角标和「N 个有更新」照旧按 pendingToolUpdates 数：那里只说有新版本，那一行自己写着
+ * 该怎么更新。
+ */
+export function inAppToolUpdates(tools: readonly ToolPresentation[]): ToolUpdateEntry[] {
+  return pendingToolUpdates(tools.filter((tool) => !updatesOutsideApp(tool.id, tool.status)))
 }
 
 /**
@@ -64,6 +75,18 @@ export function rememberAnnouncedToolUpdates(entries: readonly ToolUpdateEntry[]
   return writeLocalPreference(
     storageKey,
     JSON.stringify(Object.fromEntries(entries.map((entry) => [entry.id, entry.version]))),
+  )
+}
+
+/**
+ * 用户主动退回旧版本之后，扫描会重新看到「有新版本」——正是他刚退掉的那一版。
+ * 退回之前先把它记成已提醒过，免得刚退完就弹一条通知劝他再更新回去。上游
+ * 之后再出更新的版本，目标版本变了，照常提醒。
+ */
+export function rememberRevertedToolUpdate(id: ToolId, latestVersion: string | null): boolean {
+  return writeLocalPreference(
+    storageKey,
+    JSON.stringify({ ...readAnnouncedToolUpdates(), [id]: latestVersion ?? unknownVersion }),
   )
 }
 

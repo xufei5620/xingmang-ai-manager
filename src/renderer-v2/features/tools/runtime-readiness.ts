@@ -1,5 +1,6 @@
-import type { PlatformCapabilities, SystemSnapshot } from '../../../../electron/ipc-contract'
+import type { PlatformCapabilities, ProviderId, SystemSnapshot } from '../../../../electron/ipc-contract'
 import { minimumSupportedNodeVersion } from '../../../../electron/versions'
+import { rawErrorMessage } from '../../business-common'
 
 type RuntimeSnapshot = SystemSnapshot['runtime']
 type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
@@ -39,6 +40,24 @@ export function pythonRuntimeReady(runtime: RuntimeSnapshot): boolean {
 
 export type InstallRuntimeId = 'node' | 'python'
 
+/**
+ * Windows 版 Grok 是独立程序，不用 Node.js（platform-capabilities 的 cliNeedsNodeRuntime）。
+ * 以前只想装 Grok 的客户也得先等一遍 Node.js 和一次系统管理员确认（第十八批 8）。
+ * 主进程没报这张表（旧版本）时按「要」处理，就是原来的行为。
+ */
+export function cliNeedsNodeRuntime(platform: Pick<PlatformCapabilities, 'cliNeedsNodeRuntime'> | null | undefined, provider: ProviderId): boolean {
+  return platform?.cliNeedsNodeRuntime?.[provider] ?? true
+}
+
+/**
+ * Gemini 要 Python 只为没有预编译包时现场编译一个可选组件，缺了它照样能装能用。主进程按平台
+ * 报这张表：Linux 先去掉（Linux 版拆分 ③），Windows、Mac 跟着去掉（第二十八批 C），现在四家
+ * 都不要。没报（旧版本）时按注册表的 requires 判断，就是原来的行为。
+ */
+export function cliNeedsPythonRuntime(platform: Pick<PlatformCapabilities, 'cliNeedsPythonRuntime'> | null | undefined, provider: ProviderId, requiresPython: boolean): boolean {
+  return platform?.cliNeedsPythonRuntime?.[provider] ?? requiresPython
+}
+
 export interface CliInstallPlan {
   /** 装工具之前要先代装的运行环境，按顺序跑。 */
   prepare: InstallRuntimeId[]
@@ -48,19 +67,22 @@ export interface CliInstallPlan {
 
 /**
  * 以前缺 Node.js 时「安装」直接报错，用户得先去点运行环境那颗按钮、等它装完，
- * 再回来点一次「安装」，Gemini 还要多点一次 Python（第十一批 2）。能代装的平台
- * （Windows，platform-capabilities 的 'managed'）把缺的环境排进同一次安装里；
- * 代装不了的平台（macOS）仍旧拦下，由运行环境卡给出装法。版本过低、版本认不出
- * 同样归「缺」：重新准备一遍就是修法，用户不需要知道 PATH 是什么。
+ * 再回来点一次「安装」，Gemini 还要多点一次 Python（第十一批 2）。能代装的
+ * （platform-capabilities 的 'managed'：Node.js 三个平台都是，Python 只有 Windows）
+ * 把缺的环境排进同一次安装里；代装不了的仍旧拦下，由运行环境卡给出装法。版本过低、
+ * 版本认不出同样归「缺」：重新准备一遍就是修法，用户不需要知道 PATH 是什么。Mac 上
+ * 客户自己那份太旧时，准备好的那份当场就用上，以后不再重下（第三十四批 A）。
  */
 export function planCliInstall(input: {
   runtime: RuntimeSnapshot
+  /** 缺省 = 要（旧行为）。 */
+  needsNode?: boolean
   needsPython: boolean
   nodeInstall: InstallManagement | undefined
   pythonInstall: InstallManagement | undefined
 }): CliInstallPlan {
   const prepare: InstallRuntimeId[] = []
-  if (!nodeRuntimeReady(input.runtime)) {
+  if (input.needsNode !== false && !nodeRuntimeReady(input.runtime)) {
     if (input.nodeInstall !== 'managed') return { prepare: [], blocked: cliRuntimeBlockMessage(input.runtime) }
     prepare.push('node')
   }
@@ -80,8 +102,10 @@ export function cliInstallStageLabel(stage: InstallRuntimeId | 'tool', index: nu
 /**
  * 运行环境那一段失败时，前缀要让人一眼分清「环境没装上」还是「工具没装上」；
  * 主进程原话留在后面，错误分类（下载超时、磁盘满……）照旧认得出来。
+ * 原话要先剥掉 Electron 那层「Error invoking remote method '…': Error:」再接上：
+ * 拼进句子中间以后，上屏前的 errorMessage 只剥开头，这串英文就原样进了错误框。
  */
-export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, detail: string): string {
+export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, cause: unknown): string {
   const name = runtime === 'node' ? 'Node.js' : 'Python'
-  return `${name} 运行环境没装上，${toolName} 还没开始安装。${detail}`.trim()
+  return `${name} 运行环境没装上，${toolName} 还没开始安装。${rawErrorMessage(cause)}`.trim()
 }

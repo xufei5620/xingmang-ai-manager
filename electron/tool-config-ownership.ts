@@ -2,7 +2,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import type { ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
-import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
+import { ensureSafeDataDirectory, readSafeUtf8FileSync, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
  * `changed` 只收窄 `unknown` 的一角：这份配置确实是本程序替当前账号写下的，
@@ -10,6 +10,16 @@ import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File 
  * 分出来是为了能在首页说一句「配置被改过」并给出修复入口；判不准的一律照旧
  * 落回 `unknown`，因为那一侧的每条路径都受「来源未确认就不自动改写」保护。
  */
+/** 开机补模板缺省项的结果：真的改了文件的那几个工具。 */
+export interface ToolTemplateFillResult {
+  filled: ProviderId[]
+  /**
+   * 工具可能正开着、这次没动的（Codex 的型号名单没按账号核对，也记在 codex 头上）。
+   * 缺省 = 什么都不欠；渲染层据此隔一阵再来要一次（第二十六批 E）。
+   */
+  pending?: ProviderId[]
+}
+
 export type ToolConfigOwnership = 'account' | 'manual' | 'unknown' | 'missing' | 'changed'
 interface OwnershipRecord {
   version: 1 | 2
@@ -17,6 +27,11 @@ interface OwnershipRecord {
   source: 'account' | 'manual' | 'unknown'
   identity: string
   owner?: string
+  /**
+   * 写下这份配置时用的是第几版模板（config-files.ts 的 relayTemplateRevision）。缺省 =
+   * 这个字段出现之前写的记录，按第 0 版算，开机会补一次缺省项。
+   */
+  templateRevision?: number
 }
 
 function normalizedPath(value: string): string {
@@ -41,14 +56,20 @@ export class ToolConfigOwnershipStore {
     return path.join(this.directory, `${provider}-${location}.json`)
   }
 
+  private record(provider: ProviderId, config: NativeConfigInspection): OwnershipRecord | null {
+    const raw = readSafeUtf8FileSync(this.file(provider, config), '工具配置来源', 4096)
+    if (raw === null) return null
+    const value = JSON.parse(raw) as OwnershipRecord
+    if ((value.version !== 1 && value.version !== 2) || value.provider !== provider) return null
+    return value
+  }
+
   read(provider: ProviderId, config: NativeConfigInspection, owner: string | null = null): ToolConfigOwnership {
     if (!config.exists && !config.hasApiKey) return 'missing'
     if (!config.hasApiKey) return 'unknown'
     try {
-      const raw = readSafeUtf8FileSync(this.file(provider, config), '工具配置来源', 4096)
-      if (raw === null) return 'unknown'
-      const value = JSON.parse(raw) as OwnershipRecord
-      if ((value.version !== 1 && value.version !== 2) || value.provider !== provider) return 'unknown'
+      const value = this.record(provider, config)
+      if (value === null) return 'unknown'
       // Legacy account records prove a write happened, but do not identify who consented.
       const ours = value.source === 'account' && value.version === 2 && Boolean(owner) && value.owner === owner
       if (value.identity !== toolConfigIdentity(config)) return ours ? 'changed' : 'unknown'
@@ -57,12 +78,48 @@ export class ToolConfigOwnershipStore {
     } catch { return 'unknown' }
   }
 
-  async write(provider: ProviderId, config: NativeConfigInspection, source: 'account' | 'manual' | 'unknown', owner: string | null = null): Promise<void> {
+  /**
+   * 原样记下这份配置眼下的来源记录（没有记录也算一种），返回把它放回去的办法。保存前要先把来源
+   * 记成「手动」以防写到一半崩掉；没写成、配置也一点没动时，就该一点痕迹都不留。读不出来时
+   * 返回 null：那样的记录本来就读成「未知」，不放回也照样挡着自动写入。
+   */
+  remember(provider: ProviderId, config: NativeConfigInspection): (() => Promise<void>) | null {
+    const file = this.file(provider, config)
+    let raw: string | null
+    try {
+      raw = readSafeUtf8FileSync(file, '工具配置来源', 4096)
+    } catch {
+      return null
+    }
+    return async () => {
+      if (raw === null) return removeSafeDataFile(file, '工具配置来源')
+      ensureSafeDataDirectory(this.directory, '工具配置来源目录')
+      await writeAtomicSafeUtf8File(file, raw, '工具配置来源')
+    }
+  }
+
+  /** 这份配置记录下来的模板版本；没有记录或读不懂 = null，老记录没有这个字段 = 0。 */
+  templateRevision(provider: ProviderId, config: NativeConfigInspection): number | null {
+    try {
+      const value = this.record(provider, config)
+      if (value === null) return null
+      return Number.isSafeInteger(value.templateRevision) ? value.templateRevision ?? 0 : 0
+    } catch { return null }
+  }
+
+  async write(
+    provider: ProviderId,
+    config: NativeConfigInspection,
+    source: 'account' | 'manual' | 'unknown',
+    owner: string | null = null,
+    templateRevision?: number,
+  ): Promise<void> {
     if (source === 'account' && !owner) throw new Error('请先登录账号再保存账号配置来源')
     ensureSafeDataDirectory(this.directory, '工具配置来源目录')
     const value: OwnershipRecord = {
       version: 2, provider, source, identity: toolConfigIdentity(config),
       ...(source === 'account' && owner ? { owner } : {}),
+      ...(templateRevision === undefined ? {} : { templateRevision }),
     }
     await writeAtomicSafeUtf8File(this.file(provider, config), JSON.stringify(value) + '\n', '工具配置来源')
   }

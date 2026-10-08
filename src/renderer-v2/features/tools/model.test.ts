@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -44,6 +45,49 @@ describe('renderer tool source', () => {
     expect(sourceFor({ ...blank, grokLoginMode: 'oidc' }, 'grok', storage)).toBe('official')
   })
 
+  it('keeps the account source but not readiness when Codex ignores the relay table', () => {
+    const storage = memoryStorage()
+    const shadowed = { ...relayConfig(), configurationOwnership: 'account' as const, codexProviderShadowed: true }
+    expect(sourceFor(shadowed, 'codex', storage)).toBe('account')
+    expect(connectionReady(shadowed, 'codex', storage)).toBe(false)
+    expect(codexNeedsRepair(shadowed, 'codex')).toBe(true)
+    expect(readyOnceRepaired(shadowed, 'codex', storage)).toBe(true)
+    expect(accountSwitchTarget({ provider: 'codex', source: 'account', status: { installed: true } as ToolPresentation['status'] })).toBe('official')
+    expect(codexNeedsRepair(shadowed, 'claude')).toBe(false)
+    expect(readyOnceRepaired({ ...shadowed, model: '' }, 'codex', storage)).toBe(false)
+    expect(readyOnceRepaired({ ...shadowed, codexProviderShadowed: false }, 'codex', storage)).toBe(false)
+  })
+
+  // 2026-10-02 客户的「无法加载组织设置」：Codex 自己读不了 config.toml。修的时候不换账号来源。
+  it('flags a Codex config Codex cannot read and repairs it on the account it already uses', () => {
+    const broken = { ...relayConfig(), configurationOwnership: 'account' as const, configBroken: true }
+    expect(brokenConfigOf(broken, 'codex')).toBe('codexConfig')
+    expect(brokenConfigOf({ ...broken, codexAuthBroken: true }, 'codex')).toBe('codexConfig')
+    expect(brokenConfigOf(relayConfig(), 'codex')).toBeNull()
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: 'chatgpt', actualBaseUrl: '' })).toBe('official')
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: 'apikey', actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('codexConfig', { codexAuthMode: null, actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('codexConfig', { actualBaseUrl: '' })).toBe('account')
+  })
+
+  // 已知44：Codex 读不了 auth.json 时当成没登录；Claude Code、Gemini CLI 读不了 settings.json 时星芒会把它认成官方账号。
+  it('flags the other files the tools cannot read and keeps an official login official', () => {
+    expect(brokenConfigOf({ codexAuthBroken: true }, 'codex')).toBe('codexAuth')
+    expect(brokenConfigOf({ configBroken: true }, 'claude')).toBe('claudeSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'gemini')).toBe('geminiSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'grok')).toBeNull()
+    expect(brokenConfigOf({ codexAuthBroken: true }, 'claude')).toBeNull()
+    expect(brokenConfigOf({ configBroken: false, codexAuthBroken: false }, 'codex')).toBeNull()
+
+    const relay = relayConfig()
+    expect(brokenConfigRepairTarget('codexAuth', relay)).toBe('account')
+    expect(brokenConfigRepairTarget('codexAuth', { ...relay, codexAuthMode: 'chatgpt' })).toBe('official')
+    expect(brokenConfigRepairTarget('codexAuth', { ...relay, actualBaseUrl: '' })).toBe('official')
+    expect(brokenConfigRepairTarget('claudeSettings', { ...relay, actualBaseUrl: '' })).toBe('account')
+    expect(brokenConfigRepairTarget('geminiSettings', relay)).toBe('account')
+    expect(brokenConfigRepairTarget('geminiSettings', { ...relay, authType: 'oauth-personal' })).toBe('official')
+  })
+
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {
     const storage = memoryStorage()
     const config = relayConfig()
@@ -53,6 +97,60 @@ describe('renderer tool source', () => {
     expect(sourceFor(config, 'codex', storage)).toBe('manual')
     expect(connectionReady(config, 'codex', storage)).toBe(true)
     expect(providerFor('codexDesktop')).toBe('codex')
+  })
+
+  describe('known routes for the same relay site', () => {
+    const primaryBaseUrl = relayProviderBaseUrls('solov', 'primary').codex
+    const directBaseUrl = relayProviderBaseUrls('solov', 'direct').codex
+    const routes = [
+      { baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://38.147.105.28:8443/v1' },
+      { baseUrl: 'https://38.147.105.28:8443/v1', actualBaseUrl: 'https://xm.solov.cc/v1' },
+      { baseUrl: primaryBaseUrl, actualBaseUrl: directBaseUrl },
+      { baseUrl: directBaseUrl, actualBaseUrl: primaryBaseUrl },
+    ]
+
+    it.each(routes)('recognizes the current account through $actualBaseUrl', (route) => {
+      const config = { ...relayConfig(), ...route, configurationOwnership: 'changed' as const, configurationAccountMatched: true }
+      expect(sourceFor(config, 'codex', null)).toBe('account')
+      expect(connectionReady(config, 'codex', null)).toBe(true)
+      expect(sourceFor({ ...config, configurationAccountMatched: false }, 'codex', null)).toBe('changed')
+    })
+
+    it.each(routes)('preserves manual ownership through $actualBaseUrl', (route) => {
+      const storage = memoryStorage()
+      const config = { ...relayConfig(), ...route, configurationOwnership: 'changed' as const, configurationAccountMatched: true }
+      expect(sourceFor({ ...config, configurationOwnership: 'manual' }, 'codex', null)).toBe('manual')
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('manual')
+      expect(connectionReady(config, 'codex', storage)).toBe(true)
+    })
+
+    it.each(routes)('keeps stale ChatGPT tokens over $actualBaseUrl in the repair state', (route) => {
+      const storage = memoryStorage()
+      const config = {
+        ...relayConfig(), ...route, hasApiKey: false, matchesRelay: false,
+        codexAuthMode: 'chatgpt' as const, configurationOwnership: 'account' as const,
+      }
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('changed')
+      expect(connectionReady(config, 'codex', storage)).toBe(false)
+      expect(sourceFor({ ...config, actualBaseUrl: '' }, 'codex', storage)).toBe('official')
+    })
+
+    it.each([
+      'https://api.solov.cc/v1',
+      'https://other.example/v1',
+      'https://xm-direct.solov.cc.evil.example/v1',
+    ])('does not turn a different site into the current account: %s', (actualBaseUrl) => {
+      const config = {
+        ...relayConfig(), actualBaseUrl, matchesRelay: false,
+        configurationOwnership: 'account' as const, configurationAccountMatched: true,
+      }
+      const storage = memoryStorage()
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('unknown')
+      expect(connectionReady(config, 'codex', storage)).toBe(false)
+    })
   })
 
   describe('a configuration CC Switch left behind', () => {
@@ -206,19 +304,21 @@ describe('renderer tool source', () => {
     expect(snapshot).toEqual(before)
   })
 
-  it('redacts the local path a failed detection puts in the home tool row (R-S7b)', () => {
-    // status.detectionError is whatever describeProbeFailure got from the probe,
-    // and the home row prints it verbatim as the row subtitle.
+  it('says a failed detection in Chinese on the home tool row and keeps the English reason off screen', () => {
+    // status.detectionError is whatever describeProbeFailure got from the probe.
+    // The English original goes to the runtime log (ipc.ts), not the row subtitle.
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
     const status = { installed: true, version: '1.0.0', path: '/fixture' }
     const failed = { ...status, detectionFailed: true, detectionError: "EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'" }
     const rows = presentTools({ config: { providers }, platform: { codexDesktop: { launch: true } },
       system: { clis: { claude: failed, codex: { ...status, detectionFailed: true, detectionError: null }, grok: status, gemini: status },
-        desktopApps: { codex: { ...status, appVersion: '1.0.0' } } },
+        desktopApps: { codex: { ...status, appVersion: '1.0.0', detectionFailed: true, detectionError: '读取 C:\\Users\\yoyo\\AppData 失败' } } },
     } as unknown as ToolboxSnapshot, memoryStorage())
     const claude = rows.find((row) => row.id === 'claude')
-    expect(claude?.error).toBe("EPERM: operation not permitted, scandir '本地配置文件")
-    expect(claude?.error).not.toContain('yoyo')
+    expect(claude?.error).toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。')
+    expect(claude?.error).not.toContain('EPERM')
+    // 主进程本来就说中文的照旧显示，只把路径脱敏（R-S7b）。
+    expect(rows.find((row) => row.id === 'codexDesktop')?.error).toBe('读取 本地配置文件 失败')
     // 探测失败但主进程没给原因时,原来的中文兜底文案不变。
     expect(rows.find((row) => row.id === 'codex')?.error).toBe('工具检测没有完成')
     expect(rows.find((row) => row.id === 'grok')?.error).toBeNull()
@@ -263,7 +363,7 @@ describe('renderer tool source', () => {
     expect(codexDesktopUpdateKind({ mirrorUpdateAvailable: true })).toBe('unknown')
   })
 
-  it('carries each CLI version advice through and never attaches one to the desktop app', () => {
+  it('carries each CLI version advice through and never gives the desktop app a CLI advice', () => {
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
     const status = { installed: true, version: '2.1.276', path: '/fixture' }
     const advice = { recommendedVersion: '2.1.277', blockedReason: '每次请求都 400', onRecommended: false, pinned: true, rollbackAvailable: true }
@@ -277,6 +377,25 @@ describe('renderer tool source', () => {
     expect(rows.find((row) => row.id === 'claude')?.versionAdvice).toEqual(advice)
     expect(rows.find((row) => row.id === 'codex')?.versionAdvice).toBeNull()
     expect(rows.find((row) => row.id === 'codexDesktop')?.versionAdvice).toBeNull()
+  })
+
+  it('marks the desktop version that is known not to start, without a version to switch to', () => {
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
+    const cli = { installed: true, version: '0.156.1', path: '/fixture' }
+    const snapshot = { config: { providers }, platform: { codexDesktop: { launch: true } },
+      system: {
+        clis: { claude: cli, codex: cli, grok: cli, gemini: cli },
+        desktopApps: { codex: { installed: true, version: '26.924.2738.0', appVersion: '26.924.2738', path: '/fixture' } },
+      },
+    } as unknown as ToolboxSnapshot
+    const desktop = presentTools(snapshot, memoryStorage()).find((row) => row.id === 'codexDesktop')
+    expect(desktop?.versionAdvice?.blockedReason).toContain('这一版（26.924.2738.0）在一些电脑上打不开')
+    expect(desktop?.versionAdvice?.recommendedVersion).toBeNull()
+    expect(desktop && rollbackVersion(desktop)).toBeNull()
+    expect(desktop && versionSubtitle(desktop)).toBe('26.924.2738')
+
+    expect(codexDesktopVersionAdvice({ installed: true, version: '26.925.100.0', appVersion: null })).toBeNull()
+    expect(codexDesktopVersionAdvice({ installed: false, version: '26.924.2738.0', appVersion: null })).toBeNull()
   })
 })
 
@@ -295,6 +414,14 @@ describe('renderer CLI version advice', () => {
   it('names the recommended version when the installed one merely differs', () => {
     expect(versionSubtitle(row({ recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true })))
       .toBe('2.1.276（推荐 2.1.277）')
+  })
+
+  it('says what the recommended version fixes next to its number and on the update button', () => {
+    const advice = { recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true, recommendedNote: '修好了一个会让每次提问都失败的问题' }
+    expect(versionSubtitle(row(advice))).toBe('2.1.276（推荐 2.1.277：修好了一个会让每次提问都失败的问题）')
+    expect(updateButtonHint(row(advice))).toBe('更新到 2.1.277：修好了一个会让每次提问都失败的问题')
+    expect(updateButtonHint(row({ ...advice, recommendedNote: undefined }))).toBeUndefined()
+    expect(updateButtonHint(row(null))).toBeUndefined()
   })
 
   it('stops recommending once the user chose to follow the latest release', () => {
@@ -324,6 +451,15 @@ describe('renderer CLI version advice', () => {
     expect(rollbackVersion(row(advice, null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row(null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row({ ...advice, rollbackAvailable: false }) as ToolPresentation)).toBeNull()
+  })
+
+  it('offers the pre-update version only for an installed tool this app manages', () => {
+    const installed = { installed: true, version: '2.1.282', path: '/fixture/claude', installDirectory: '/fixture' } as ToolPresentation['status']
+    expect(revertVersion({ status: installed, revertVersion: '2.1.277' })).toBe('2.1.277')
+    expect(revertVersion({ status: installed, revertVersion: null })).toBeNull()
+    expect(revertVersion({ status: installed })).toBeNull()
+    expect(revertVersion({ status: { ...installed, installed: false }, revertVersion: '2.1.277' })).toBeNull()
+    expect(revertVersion({ status: { ...installed, installSource: 'native' }, revertVersion: '2.1.277' })).toBeNull()
   })
 })
 
@@ -372,6 +508,15 @@ describe('renderer update offer for the start guide', () => {
   it('points an install made some other way at its own updater', () => {
     expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'native' } })))
       .toMatchObject({ manualHint: '该版本由官方安装器管理，请用它自己的方式更新' })
+    expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'path', uninstall: { available: true, reason: null, manualCommand: null } } })))
+      .toMatchObject({ manualHint: '该版本不是通过本工具安装的，更新请用它原本的安装方式' })
+  })
+
+  it('offers the official-installer Claude Code the same update button, since the app can switch it over', () => {
+    const native = { installed: true, version: '2.1.276', path: null, installDirectory: null, installSource: 'native' as const, uninstall: { available: true, reason: null, manualCommand: null } }
+    const blocked = { ...pinnedOld, blockedReason: '这个版本每次提问都会失败，换到推荐版本就好' }
+    expect(toolUpdateOffer(row({ status: native, versionAdvice: blocked })))
+      .toEqual({ version: '2.1.277', target: '2.1.277', newer: true, knownIssue: true, manualHint: null })
   })
 
   it('stays quiet for a missing tool or a failed detection', () => {
@@ -389,6 +534,11 @@ describe('renderer tool availability', () => {
     expect(availability.reason).toBe('npm 查询超时')
     // 没探到不是「未找到版本」,那是一个这次并没有得出的结论。
     expect(availability.versionFallback).toBe('版本未读到')
+  })
+
+  it('puts an English probe failure into plain words on the install page as well', () => {
+    expect(toolAvailability({ installed: false, detectionFailed: true, detectionError: "EBUSY: resource busy or locked, open 'C:\\Users\\yoyo\\.codex\\config.toml'" }).reason)
+      .toBe('这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。')
   })
 
   it('still says the probe failed when the main process sent no reason', () => {
@@ -440,6 +590,27 @@ describe('renderer install source labelling', () => {
     expect(isExternallyManagedInstall({ installed: true, installSource: 'npm' })).toBe(false)
     expect(isExternallyManagedInstall({ installed: true })).toBe(false)
     expect(isExternallyManagedInstall({ installed: false, installSource: 'native' })).toBe(false)
+  })
+
+  it('lets only the official-installer Claude Code the app can uninstall switch to the app', () => {
+    const uninstall = { available: true, reason: null, manualCommand: null }
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'native', uninstall })).toBe(true)
+    // Codex 官方那份星芒卸不掉；别的方式装的、npm 装的、没装的都不在此列。
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'native', uninstall: { ...uninstall, available: false } })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'native' })).toBe(false)
+    expect(canSwitchToManagedInstall('codex', { installed: true, installSource: 'native', uninstall })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'path', uninstall })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: true, installSource: 'npm', uninstall })).toBe(false)
+    expect(canSwitchToManagedInstall('claude', { installed: false, installSource: 'native', uninstall })).toBe(false)
+  })
+
+  it('updates outside the app only an external install that cannot switch over', () => {
+    const uninstall = { available: true, reason: null, manualCommand: null }
+    expect(updatesOutsideApp('claude', { installed: true, installSource: 'native', uninstall })).toBe(false)
+    expect(updatesOutsideApp('codex', { installed: true, installSource: 'native', uninstall })).toBe(true)
+    expect(updatesOutsideApp('claude', { installed: true, installSource: 'path', uninstall })).toBe(true)
+    expect(updatesOutsideApp('claude', { installed: true, installSource: 'npm', uninstall })).toBe(false)
+    expect(updatesOutsideApp('gemini', { installed: true })).toBe(false)
   })
 
   it('gives a source-specific passive hint instead of an npm update', () => {
@@ -601,5 +772,57 @@ describe('foreign key kinds', () => {
     expect(switchAccountLabel('')).toBe('改用当前账号')
     expect(switchAccountLabel('a-very-long-account@example.com')).toBe('改用 a-very-long-acc…')
     expect(switchAccountLabel('星芒用户名字特别特别特别长的账号名字')).toBe('改用 星芒用户名字特别特别特别长的账…')
+  })
+})
+
+describe('renderer subscription warning', () => {
+  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  const base = { name: null, remainingUsd: 3, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
+
+  it('stays quiet while the wallet can take over or nothing is running out', () => {
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 12)).toBeNull()
+    expect(subscriptionWarning(base, 0)).toBeNull()
+  })
+
+  it('names the end date or the remaining amount once the wallet is low', () => {
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10 月 3 日到期，到期后会从余额扣费。')
+    expect(subscriptionWarning({ ...base, lowRemaining: true }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
+  })
+
+  it('warns regardless of the wallet when only the subscription is spent', () => {
+    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10 月 3 日到期，到期后工具就用不了了，续费后可继续使用。')
+  })
+})
+
+describe('renderer official account subtitle', () => {
+  const now = new Date(2026, 9, 6, 12, 0, 0).getTime()
+
+  it('names the plan and how soon it renews, with the full date for the hover', () => {
+    const renewsAt = new Date(2026, 9, 10, 12, 0, 0).toISOString()
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: renewsAt }, now))
+      .toEqual({ text: '官方账号 · Plus · 4天后续期', renewal: '2026年10月10日续期' })
+  })
+
+  it('counts hours and minutes when the renewal is less than a day away', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Pro', officialAccountRenewsAt: new Date(now + 5 * 3_600_000).toISOString() }, now).text)
+      .toBe('官方账号 · Pro · 5小时后续期')
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Pro', officialAccountRenewsAt: new Date(now + 20 * 60_000).toISOString() }, now).text)
+      .toBe('官方账号 · Pro · 20分钟后续期')
+  })
+
+  it('shows the plan alone when no renewal date was read', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: null }, now))
+      .toEqual({ text: '官方账号 · Plus' })
+  })
+
+  it('leaves out a renewal date that has already passed or cannot be read', () => {
+    expect(officialAccountSubtitle({ officialAccountPlan: 'Plus', officialAccountRenewsAt: new Date(now - 86_400_000).toISOString() }, now))
+      .toEqual({ text: '官方账号 · Plus' })
+    expect(officialAccountSubtitle({ officialAccountPlan: null, officialAccountRenewsAt: 'not a date' }, now))
+      .toEqual({ text: '官方账号' })
+  })
+
+  it('keeps the plain wording when nothing about the plan is known', () => {
+    expect(officialAccountSubtitle({}, now)).toEqual({ text: '官方账号' })
   })
 })
