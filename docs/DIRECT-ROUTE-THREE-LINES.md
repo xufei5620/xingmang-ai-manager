@@ -172,7 +172,7 @@
   - 在设置快照里加一个新字段，例如 `relayToolRouteLines`（`system-service.ts:7603-7607`）。**不要复用** `relayRouteLines` 的含义。
   - 新字段是只读的运行时快照，和 `relayRouteLines` 一样：不落盘，`settings:save` 时忽略它。
   - **不要**像 `activeRelayEndpointIds` 那样核对回显（`ipc.ts:2931-2943`）。工具线路在运行中会变，冻结的 legacy 渲染层会把整份设置原样回传，带着旧值也不能让保存报错。
-- **加 IPC 通道**是串行任务（AGENTS.md T1，注册顺序与 `ipcInvokeChannels` 一致），计划里写清要加几个。
+- **加 IPC 通道**要三处一致（AGENTS.md T1：`ipc-contract.ts` / `ipc.ts` / `preload.ts`，不看先后顺序），计划里写清要加几个。
 
 **线路归属。** 把现在所有读 `relayRouting` / `activeRelaySite()` / `relayRouteController.route()` / `settings.relayRouteLines` 的地方全部列出来，逐个标出归属，写进计划。已知的有下面这些。其中几处不读这几个名字，grep 不到，要特别注意。
 
