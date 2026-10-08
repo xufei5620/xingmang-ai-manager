@@ -141,7 +141,9 @@ async function main() {
     // collected`). Acquiring the first renderer window establishes the ready
     // event before using main-process evaluation.
     const profile = await evaluateInMainProcess('profile path', ({ app }) => app.getPath('userData'))
-    assert.equal(path.resolve(profile), path.resolve(userData), 'Native smoke must use its isolated profile')
+    // macOS reports the temp root through its /private/var target while mkdtemp
+    // hands back the /var symlink, so both sides are compared resolved.
+    assert.equal(await fs.realpath(profile), await fs.realpath(userData), 'Native smoke must use its isolated profile')
     passedAssertions.push('runs-in-an-isolated-profile')
     page.on('pageerror', (error) => errors.push(error.message))
 
