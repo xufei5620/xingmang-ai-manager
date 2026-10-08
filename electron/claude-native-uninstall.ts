@@ -33,7 +33,12 @@ export interface ClaudeNativeUninstallResult {
   removedVersionFiles: string[]
   /** Version-named files the uninstall found but did not delete (locked, foreign owner, raced). */
   retainedVersionFiles: string[]
-  /** macOS keeps the renamed command link; see uninstallVerifiedNativeCliFiles. */
+  /**
+   * The renamed command entry, still on disk. macOS keeps its renamed command
+   * link by design (see uninstallVerifiedNativeCliFiles). On Windows it is the
+   * claude.exe a running Claude Code still has open: the rename goes through,
+   * the delete does not.
+   */
   retainedQuarantineFiles: string[]
 }
 
@@ -348,11 +353,36 @@ export async function uninstallVerifiedClaudeNativeInstallation(
   }
 }
 
+export interface ClaudeRetainedFiles {
+  /** Windows：Claude Code 还开着，改了名却删不掉的 claude.exe。 */
+  commandFiles: string[]
+  versionFiles: string[]
+}
+
+/**
+ * The leftovers the user is told about and offered to clean up. On Windows that
+ * includes the renamed claude.exe an open Claude Code still holds, which used to
+ * stay behind unreported (#935). macOS keeps its renamed command link by design
+ * and never reported it; that is unchanged.
+ */
+export function buildClaudeRetainedFiles(
+  result: ClaudeNativeUninstallResult,
+  platform: NodeJS.Platform,
+): ClaudeRetainedFiles {
+  return {
+    commandFiles: platform === 'win32' ? result.retainedQuarantineFiles : [],
+    versionFiles: result.retainedVersionFiles,
+  }
+}
+
 function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`
 }
 
-/** A copyable command for the version files the uninstall had to leave behind, or null when none. */
+/**
+ * A copyable command for the files the uninstall had to leave behind (version
+ * files, and on Windows a renamed claude.exe still running), or null when none.
+ */
 export function buildClaudeRetainedVersionFilesCommand(
   retainedVersionFiles: readonly string[],
   platform: NodeJS.Platform,
@@ -366,11 +396,20 @@ export function buildClaudeRetainedVersionFilesCommand(
   return `rm -f ${retainedVersionFiles.map(shellSingleQuote).join(' ')}`
 }
 
-/** 命令入口已经没了、只剩旧版本程序文件时给用户的说明；null 表示已全部清理干净。 */
+/**
+ * 命令入口已经没了、只剩旧版本程序文件时给用户的说明；null 表示已全部清理干净。
+ * retainedCommandFiles 是 Windows 上改了名却删不掉的 claude.exe（Claude Code 还开着），缺省 = 没有。
+ */
 export function buildClaudeRetainedVersionFilesReason(
   retainedVersionFiles: readonly string[],
   platform: NodeJS.Platform,
+  retainedCommandFiles: readonly string[] = [],
 ): string | null {
+  if (retainedCommandFiles.length > 0) {
+    // 改名后的文件名是一串乱码，路径也在下面的命令里，这里只说几个、为什么、先做什么。
+    const count = retainedCommandFiles.length + retainedVersionFiles.length
+    return `Claude Code 已卸载，但还有 ${count} 个程序文件没能删掉，多半是 Claude Code 还开着。先关掉所有 Claude Code 窗口，再清理这些文件；你的 Claude Code 设置和会话记录不受影响。`
+  }
   if (retainedVersionFiles.length === 0) return null
   const location = platform === 'win32'
     ? '%USERPROFILE%\\.local\\share\\claude\\versions'

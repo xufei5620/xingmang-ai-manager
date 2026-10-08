@@ -129,6 +129,11 @@ export interface AccountBootstrapResult {
    * （bootstrapOnlyFollowedRoute），运行日志照记。缺省 = 这一轮没改线路。
    */
   routeFollowed?: ProviderId[]
+  /**
+   * 星芒画图没装进工具、只因为这台电脑没有 Node.js 时主进程给的那句。不放进 warnings：说不说要跟着
+   * 首页运行环境卡对 Node.js 的说法走（Home 的 homeBootstrapWarnings）。缺省 = 没这回事。
+   */
+  drawingNeedsNode?: string
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -515,7 +520,7 @@ export async function bootstrapAccountTools(
     ...(synchronized?.imageSkillWarning
       ? [synchronized.imageSkillWarning]
       : []),
-    ...(synchronized?.imageMcpWarning
+    ...(synchronized?.imageMcpWarning && !synchronized.imageMcpNeedsNode
       ? [synchronized.imageMcpWarning]
       : []),
     ...(synchronized?.failed ?? [])
@@ -550,6 +555,9 @@ export async function bootstrapAccountTools(
       ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
       : {}),
     ...(followed.length ? { routeFollowed: followed } : {}),
+    ...(synchronized?.imageMcpWarning && synchronized.imageMcpNeedsNode
+      ? { drawingNeedsNode: synchronized.imageMcpWarning }
+      : {}),
   }
 }
 
