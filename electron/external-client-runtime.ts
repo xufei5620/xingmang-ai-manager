@@ -127,8 +127,9 @@ export interface ExternalClientRuntimeOptions {
    */
   onDetectionErrorDetail?: (failure: ExternalClientDetectionErrorDetail) => void
   /**
-   * 每点一次「打开」各段花了多久（排队、打开前那次检测和它里面的各段、交出去），只进运行日志：
-   * 客户说「打开还是慢」时，分得清是慢在星芒这边哪一段，还是客户端自己启动慢。
+   * 每次打开成了，各段花了多久（排队、打开前那次检测和它里面的各段、交出去），只进运行日志：
+   * 客户说「打开还是慢」时，分得清是慢在星芒这边哪一段，还是客户端自己启动慢。没打开成的不调，
+   * 那一次一共多久照旧记在「外部客户端启动」那一行。
    */
   onLaunchTiming?: (timing: ExternalClientLaunchTiming) => void
 }
@@ -152,7 +153,7 @@ export interface ExternalClientDetectionErrorDetail {
 export interface ExternalClientInventoryTimings {
   /** PowerShell 从起来到退出一共多久；减去下面各段（signatureMs 已算在 clientsMs 里），剩下的多半是它自己启动花的。 */
   powershellMs?: number
-  /** 导入要用的几个 PowerShell 模块。 */
+  /** 导入要用的几个 PowerShell 模块，再读入记住的签名结果（Windows PowerShell 头一回解析 JSON 也要加载组件）。 */
   importMs?: number
   /** 读三处卸载信息。 */
   registryMs?: number
@@ -409,8 +410,6 @@ $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModulesFor(only))}
 $ErrorActionPreference = 'Stop'
-$timings = [ordered]@{ importMs = [int]$clock.ElapsedMilliseconds }
-$clock.Restart()
 $knownSignatures = @{}
 # Windows PowerShell 5.1 emits a JSON array as one pipeline object; assigning it
 # first and then iterating enumerates the entries on every PowerShell version.
@@ -418,6 +417,10 @@ $knownList = ConvertFrom-Json ([System.Text.Encoding]::UTF8.GetString([Convert]:
 foreach ($entry in $knownList) {
   if ($entry -and $entry.path) { $knownSignatures[[string]$entry.path] = $entry }
 }
+# The first ConvertFrom-Json loads its serializer on Windows PowerShell 5.1, so it
+# is counted with the imports rather than as reading the registry.
+$timings = [ordered]@{ importMs = [int]$clock.ElapsedMilliseconds }
+$clock.Restart()
 $clients = [System.Collections.Generic.List[object]]::new()
 $errors = @{}
 # The screen gets only the Chinese sentence in $errors; what PowerShell said, most
@@ -988,7 +991,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (runningAsRoot()) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
-      options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings })
+      try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }
+      catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
     })
     // 打开之后「正在运行」就变了，下一次检测得重新盘点。
     void launched.then(invalidateScan, invalidateScan)

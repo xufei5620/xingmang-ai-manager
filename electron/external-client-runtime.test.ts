@@ -858,6 +858,14 @@ describe('external desktop client lifecycle', () => {
     expect(onLaunchTiming).not.toHaveBeenCalled()
   })
 
+  it('still reports a launch as done when its timings cannot be logged', async () => {
+    // The client is already with Explorer: a failure here must not send the customer to click again.
+    const f = fixture({ onLaunchTiming: () => { throw new Error('log unavailable') } })
+    f.setInventory([candidate('opencode')])
+    await expect(f.runtime.launch('opencode')).resolves.toBeUndefined()
+    expect(f.launchProcess).toHaveBeenCalledOnce()
+  })
+
   it('limits Windows installation to available official architectures', async () => {
     const f = fixture({ architecture: 'arm64' })
     const statuses = await f.runtime.scan()
