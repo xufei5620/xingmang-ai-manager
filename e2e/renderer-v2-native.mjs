@@ -150,6 +150,28 @@ async function main() {
     progress('waiting for the welcome page')
     await withDeadline('welcome page', stepBudgetMs, () => page.getByTestId('welcome-page').waitFor({ timeout: stepBudgetMs }))
     const platform = await withDeadline('platform preload', stepBudgetMs, () => page.evaluate(() => window.xingmangPlatform?.getState()))
+    if (!platform) {
+      // Without this the failure says only that the bridge is missing; these
+      // are the facts that tell which link of the chain broke.
+      evidence.platformBridge = await evaluateInMainProcess('platform bridge diagnosis', ({ BrowserWindow }) => {
+        const fs = require('node:fs')
+        const path = require('node:path')
+        return BrowserWindow.getAllWindows().map((window) => ({
+          title: window.getTitle(),
+          hasParent: window.getParentWindow() !== null,
+          type: window.webContents.getType(),
+          url: window.webContents.getURL(),
+          preloads: window.webContents.session.getPreloadScripts().map((script) => ({
+            type: script.type,
+            filePath: script.filePath,
+            exists: fs.existsSync(script.filePath),
+          })),
+          flag: fs.existsSync(path.join(process.cwd(), 'dist', 'renderer-v2.flag')),
+        }))
+      }).catch((error) => ({ error: String(error) }))
+      evidence.platformBridgePage = await page.evaluate(() => ({ platform: typeof window.xingmangPlatform, bridge: typeof window.xingmang })).catch((error) => ({ error: String(error) }))
+      process.stderr.write(`platform bridge diagnosis: ${JSON.stringify({ main: evidence.platformBridge, page: evidence.platformBridgePage }, null, 2)}\n`)
+    }
     assert.ok(platform, 'The isolated native platform preload must be available')
     passedAssertions.push('isolated-platform-preload-available')
     await assertNoStartupDialog(page, evidence, 'on the welcome page')
