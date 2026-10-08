@@ -192,11 +192,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 首页一键切换账号来源之后 Codex 桌面端还开着：问一次要不要替用户重开，记下切到了哪边。
   const [switchRestartOffer, setSwitchRestartOffer] = useState<AccountSourceTarget | null>(null)
   const [ccSwitchReminder, setCcSwitchReminder] = useState(false)
-  // 更新 Codex 桌面端时它还开着：先问一句再关（第三十二批 C）。答案交回 install 里等着的那一步。
-  const [codexDesktopCloseOffer, setCodexDesktopCloseOffer] = useState<{ answer: (close: boolean) => void } | null>(null)
+  // 更新 Codex 桌面端时它还开着：只提醒客户自己先退出，星芒不替他关（第三十二批 C）。
+  const [codexDesktopOpenReminder, setCodexDesktopOpenReminder] = useState(false)
   // 点了「更新」、正在现问它开没开的那一会儿，首页那颗「更新」转圈。
   const [codexDesktopUpdateCheck, setCodexDesktopUpdateCheck] = useState(false)
-  // 开装前那一问（现问 + 询问框）还没完：连点两下、或者首页和安装卸载页各点一下，只问一次。
+  // 开装前那一问还没回来：连点两下、或者首页和安装卸载页各点一下，只问一次。
   const codexDesktopUpdateAsking = useRef(false)
   const [modelSwap, setModelSwap] = useState<{ offer: ModelSwapOffer; answer: (choice: ModelSwapChoice) => void } | null>(null)
   // 官方安装器装的 Claude Code 换成星芒装的之前那一问（第三十一批 B）；answer(false) = 不换。
@@ -959,16 +959,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     let outcome: ToolInstallOutcome = 'installed'
     const updating = Boolean(current?.status.installed)
     // 第三十二批 C：Windows 上更新 Codex 桌面端，主进程装新版之前会先关掉它（5 秒没关掉就强行结束），
-    // 正在进行的回答会被打断。它正开着就先问一句，客户点了「关掉并更新」才往下装，装完替客户
-    // 重新打开；没开着照旧直接装。
-    let closeAgreed = false
+    // 正在进行的回答会被打断。yoyo 10-08 定「只做提醒，不强制更新」：它正开着就只提醒客户自己先退出，
+    // 这次不装，星芒也不替他关；没开着照旧直接装。
     if (id === 'codexDesktop' && checksCodexDesktopBeforeUpdate(os, updating)) {
       // 已经在问、或者已经在装：不再问第二遍。
       if (codexDesktopUpdateAsking.current || toolbox.jobs[id]) return 'skipped'
-      const answer = await askBeforeClosingCodexDesktop(state.system.desktopApps.codex)
-      if (answer === 'gone') return 'skipped'
-      if (answer === 'declined') return 'declined'
-      closeAgreed = answer === 'close'
+      const open = await checkCodexDesktopOpen(state.system.desktopApps.codex)
+      if (open === null) return 'skipped'
+      if (open) {
+        setCodexDesktopOpenReminder(true)
+        return 'declined'
+      }
     }
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
@@ -1023,10 +1024,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
     }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling || finishing ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
-      // 点了「关掉并更新」：这一趟不管装成、没换包、没装成还是中途取消，结束时它关着就照「打开」那条路重新打开
-      // （中文界面还没问过的先问，打不开时报的也是「打开」那几句）。不能只看装没装成：商店那一路是先关再装，
-      // 商店没装上、国内线路上又没有更新的版本时，结果是「没换包」，它却已经被关了。
-      .finally(() => { if (closeAgreed && mounted.current) requestLaunch('codexDesktop', undefined, 'new', 'choose', true) })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
   }
@@ -1060,20 +1057,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     return false
   }
   /**
-   * 点「更新」那一刻现问一次 Codex 桌面端开没开（同「打开」那条路）；开着就弹框等客户回答。
-   * 现问没问出来时按最近一次检测的结果算，见 codexDesktopRunningBeforeUpdate。
+   * 点「更新」那一刻现问一次 Codex 桌面端开没开（同「打开」那条路）。现问没问出来时按最近一次检测的
+   * 结果算，见 codexDesktopRunningBeforeUpdate。问完界面已经不在了是 null：什么都不用做了。
    */
-  async function askBeforeClosingCodexDesktop(scanned: DesktopAppStatus): Promise<'notRunning' | 'close' | 'declined' | 'gone'> {
+  async function checkCodexDesktopOpen(scanned: DesktopAppStatus): Promise<boolean | null> {
     codexDesktopUpdateAsking.current = true
     setCodexDesktopUpdateCheck(true)
     try {
       const live = await native.getCodexDesktopStatus().catch(() => null)
-      if (!mounted.current) return 'gone'
-      setCodexDesktopUpdateCheck(false)
-      if (!codexDesktopRunningBeforeUpdate(live, scanned)) return 'notRunning'
-      const close = await new Promise<boolean>((answer) => setCodexDesktopCloseOffer({ answer }))
-      if (mounted.current) setCodexDesktopCloseOffer(null)
-      return close ? 'close' : 'declined'
+      if (!mounted.current) return null
+      return codexDesktopRunningBeforeUpdate(live, scanned)
     } finally {
       codexDesktopUpdateAsking.current = false
       if (mounted.current) setCodexDesktopUpdateCheck(false)
@@ -1345,9 +1338,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (launchIsCurrent(epoch)) throw cause
     }
   }
-  // afterUpdate：「关掉并更新」那一趟结束后替客户重新打开 Codex 桌面端（第三十二批 C）。这时它还开着，
-  // 是主进程没动它（已是最新），或者装完它自己又起来了：什么都不用做，也不问「要不要重启」。
-  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', folder: LaunchFolder = 'choose', afterUpdate = false) {
+  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', folder: LaunchFolder = 'choose') {
     const request = { epoch: accountEpoch.current }
     if (launchRequest.current?.epoch === request.epoch) return
     launchRequest.current = request
@@ -1357,7 +1348,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if (id === 'codexDesktop') {
           const status = await native.getCodexDesktopStatus()
           if (!launchIsCurrent(request.epoch)) return
-          if (offersCodexDesktopRestartOnOpen(os, status.running)) { if (!afterUpdate) setRestartDialog(true); return }
+          if (offersCodexDesktopRestartOnOpen(os, status.running)) { setRestartDialog(true); return }
           const asking = await askForChineseRuntimePatch(request.epoch)
           if (!launchIsCurrent(request.epoch) || asking) return
         }
@@ -1794,10 +1785,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>先不用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>
     </>}><p>{switchRestartOffer === 'official' ? '它还在用刚才的账号，要重开才会换回官方账号。' : '它还在用刚才的账号，要重开才会用上当前账号。'}重开会打断它正在进行的回答。</p></Dialog>}
-    {/* 键盘焦点落在「先不更新」：随手一按回车不会关掉正在回答的 Codex。 */}
-    {codexDesktopCloseOffer && <Confirm title="Codex 桌面端还开着" body={<p>更新要先把它关掉，会打断它正在进行的回答。更新完星芒会帮你重新打开。</p>}
-      cancelLabel="先不更新" okLabel="关掉并更新" testId="codex-desktop-update-close"
-      onOk={() => codexDesktopCloseOffer.answer(true)} onClose={() => codexDesktopCloseOffer.answer(false)} />}
+    {codexDesktopOpenReminder && <Dialog open title="Codex 桌面端还开着" onClose={() => setCodexDesktopOpenReminder(false)} width={480} testId="codex-desktop-update-reminder"
+      footer={<Button variant="primary" onClick={() => setCodexDesktopOpenReminder(false)}>知道了</Button>}>
+      <p>更新前要先把 Codex 完全退出，托盘里有它的图标的话也要退掉。退出后回来再点一次。</p>
+    </Dialog>}
     {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
       <Button onClick={() => void perform('重启 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重启 Codex</Button>

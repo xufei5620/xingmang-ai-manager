@@ -196,8 +196,8 @@ type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConne
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
 /**
  * installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）；
- * declined：客户在开装前的确认框里点了不装（「换成星芒装的」点取消、Codex 桌面端还开着时点「先不更新」），
- * 什么都没动，也不用说什么。
+ * declined：开装前就停下了，什么都没动，也不用再说什么（「换成星芒装的」点了取消；
+ * Codex 桌面端还开着，已经提醒过客户先退出）。
  */
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
 export type BusinessActions = {

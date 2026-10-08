@@ -7,7 +7,8 @@ type RunningProbe = Pick<DesktopAppStatus, 'running' | 'detectionFailed'>
  * 点「更新」（或安装卸载页的「重新安装」）之前要不要先看 Codex 桌面端开没开（第三十二批 C）。
  * Windows 上主进程三条安装路线（商店、官网离线包、国内镜像）动手之前都先关掉它，5 秒没关掉
  * 就强行结束，正在进行的回答会被打断；商店那一路连商店有没有新版都还不知道就先关了。
- * Mac 上已经装好的那份星芒不碰（主进程直接说「已经装好了」），没装的那次也没有东西可关，都不用问。
+ * 所以开着就不装，只提醒客户自己先退出（yoyo 10-08 定「只做提醒，不强制更新」）。
+ * Mac 上已经装好的那份星芒不碰（主进程直接说「已经装好了」），没装的那次也没有东西可关，都不用看。
  */
 export function checksCodexDesktopBeforeUpdate(os: WindowOs, installed: boolean): boolean {
   return os === 'win' && installed
