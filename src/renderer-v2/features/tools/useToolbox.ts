@@ -143,7 +143,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   // 画出来（loading 保持为真；首页这时只放开「打开」「接着聊」，见 Home 的
   // launchReadyBeforeScan），紧接着在同一个请求号下再读一次真的——它接的是主进程
   // 开窗前就起好的那一轮，不会多扫一遍。
-  const load = useCallback(async (force: boolean, acceptCached: boolean) => {
+  const load = useCallback(async (force: boolean, acceptCached: boolean, recheckRoutes = false) => {
     if (!bridge) return
     // Login completion can retain this callback from the preceding render.
     // Bind each read to the current account at invocation, not closure creation.
@@ -162,7 +162,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     try {
       const api = createToolsApi(bridge)
-      let result = await api.read(force, acceptCached)
+      let result = await api.read(force, acceptCached, recheckRoutes)
       if (result.snapshot?.system.cachedAt) {
         const cached = withLatest(result.snapshot)
         if (isCurrent()) { snapshotRef.current = cached; setSnapshot(cached); setFailures(result.failures) }
@@ -183,7 +183,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       if (isCurrent()) setLoading(false)
     }
   }, [bridge])
-  const refresh = useCallback((force = false) => load(force, false), [load])
+  // recheckRoutes：客户亲手点的「重新检测」，星芒账号的工具线路也跟着查一轮（xm 三线路 5.1.4）。
+  const refresh = useCallback((force = false, options: { recheckRoutes?: boolean } = {}) => load(force, false, options.recheckRoutes === true), [load])
   // A saved model needs a confirmed config read: a failed read cannot be
   // reported as a failed save, and an older account cannot commit the result.
   const refreshSavedConfig = useCallback(async (isRequestCurrent: () => boolean): Promise<boolean> => {

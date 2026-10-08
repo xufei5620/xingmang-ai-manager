@@ -25,7 +25,7 @@ import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, ru
 import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
-import { toolRouteLabel } from './route-label'
+import { toolRouteHijackShownMs, toolRouteHomeTexts, toolRouteLabel, type RelayToolRouteStatus } from './route-label'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 
 export interface HomeProps {
@@ -38,6 +38,8 @@ export interface HomeProps {
   account: AccountProfile | null
   /** 开机恢复上次的登录还没结束（含联不上、等重试）：登录还在，不能叫人「登录后查看」。缺省 = 没在恢复。 */
   accountRestoring?: boolean
+  /** 星芒账号工具线路的状态（xm 三线路）：服务端切换、三条线都连不上、改用了 CF。缺省 = 没有要说的。 */
+  toolRouteStatus?: RelayToolRouteStatus
   /**
    * 当前账号的作用域（App 的 scope）。用量缓存按它认账号：有它时回首页先摆上一次的
    * 用量、后台再刷新；省略 = 每次都先空着等查询回来（旧行为）。
@@ -441,6 +443,18 @@ export function Home(props: HomeProps) {
     return () => window.clearTimeout(timer)
   }, [bootstrapNoticeUntil])
   const bootstrapNoticeShown = bootstrapNoticeUntil === null || bootstrapNoticeClock < bootstrapNoticeUntil
+  // 改用 CF 那句只留半小时：到点重画一次把它收起。
+  const hijackUntil = props.toolRouteStatus?.hijack ? props.toolRouteStatus.hijack.id + toolRouteHijackShownMs : null
+  const [routeClock, setRouteClock] = useState(() => Date.now())
+  useEffect(() => {
+    if (hijackUntil === null) return
+    setRouteClock(Date.now())
+    const remaining = hijackUntil - Date.now()
+    if (remaining <= 0) return
+    const timer = window.setTimeout(() => setRouteClock(Date.now()), remaining)
+    return () => window.clearTimeout(timer)
+  }, [hijackUntil])
+  const routeTexts = toolRouteHomeTexts(props.toolRouteStatus, routeClock)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
   function launchWaitingForAccount(provider: ProviderId): boolean {
     const tool = tools.find((entry) => entry.provider === provider)
@@ -696,6 +710,9 @@ export function Home(props: HomeProps) {
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
+    {routeTexts.quiet && <div className="v2-bootstrap-notice" role="status" data-testid="home-route-server-switching"><span className="v2-dot" /><span>{routeTexts.quiet}</span></div>}
+    {routeTexts.outage && <div role="alert" className="v2-callout is-bad" data-testid="home-route-outage"><span>{routeTexts.outage}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
+    {routeTexts.hijack && <div role="status" className="v2-callout" data-testid="home-route-hijack"><span>{routeTexts.hijack}</span></div>}
     {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到（{configFailure.message.replace(/[。.\s]+$/, '')}）。工具列表、安装和卸载照常可用；点工具行的「重新配置」可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.supportsBilling !== false && dollars !== null && dollars < 5 && !subscription && <div role="status" className="v2-callout is-bad" data-testid="home-low-balance"><Zap size={18} /><span>{lowBalanceText(dollars)}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
     {props.supportsBilling !== false && subscriptionNotice && <div role="status" className="v2-callout is-bad" data-testid="home-subscription-warning"><Zap size={18} /><span>{subscriptionNotice}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>去续费</Button></div>}

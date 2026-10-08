@@ -204,7 +204,8 @@ function settledRouteLine(settings: AppSettingsV2, siteId: 'solov' | 'solov-api'
   const preference = settings.relayEndpointIds?.[siteId] ?? 'auto'
   if (preference !== settings.activeRelayEndpointIds?.[siteId]) return null
   if (preference !== 'auto') return preference
-  const route = settings.relayRouteLines?.[siteId]
+  // 星芒账号的工具配置跟的是工具线路（xm 三线路），它可以和管理工具自己走的那条不一样；没有这一项的老主进程照旧。
+  const route = siteId === 'solov' && settings.relayToolRouteLines ? settings.relayToolRouteLines.solov : settings.relayRouteLines?.[siteId]
   return route?.settled ? route.line : null
 }
 

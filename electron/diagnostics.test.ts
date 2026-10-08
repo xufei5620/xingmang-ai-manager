@@ -343,6 +343,17 @@ describe('diagnostics', () => {
       expect(item?.details).not.toHaveProperty('routeLine')
     })
 
+    // xm 三线路：工具配置跟的是工具线路，和管理工具自己走的那条可以不一样，比的是前者。
+    it('compares against the tool line when it differs from the line the app uses', async () => {
+      const input = onLine('direct', true, primarySite.providerBaseUrls.codex)
+      input.toolRoute = { site: primarySite, route: { line: 'primary', automatic: true, settled: true, primarySite } }
+
+      const item = codexItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: '默认线路' } })
+      expect(item?.details).not.toHaveProperty('currentRouteLine')
+    })
+
     it('does not compare when the run is not told which line the app is on', async () => {
       const input = onLine('direct', true, primarySite.providerBaseUrls.codex)
       delete input.relayRoute

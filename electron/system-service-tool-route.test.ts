@@ -2,10 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AppSettingsStore } from './app-settings'
+import { AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { ProviderId } from './catalog'
 import { inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
-import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls, type RelayEndpointId } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, relayProviderBaseUrls, type RelayEndpointId } from './relay-sites'
 import type { RunningToolsReport } from './running-tools'
 import { createSystemService, type SystemServiceOptions, type ToolRouteFollowRequest } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
@@ -32,6 +32,8 @@ async function fixture(options: {
   siteId?: string
   report?: RunningToolsReport
   log?: ReturnType<typeof vi.fn>
+  /** xm 三线路：line 是工具线路，管理工具自己走的应用线路另给（appLine）。 */
+  appLine?: RelayEndpointId
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-tool-route-'))
   temporaryDirectories.push(root)
@@ -43,6 +45,10 @@ async function fixture(options: {
     if (options.owned !== false) await ownership.write(provider, inspectProviderConfig(provider, roots, primary), 'account', owner, 2)
   }
   const line: { current: RelayEndpointId } = { current: 'direct' }
+  const toolStatus: { current: RelayToolRouteStatus | undefined } = { current: undefined }
+  function applicationLines() {
+    return createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: options.appLine ?? 'direct', settled: true } })).lines()
+  }
   const timers: Timer[] = []
   const clock = { now: 1_000_000_000_000 }
   const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
@@ -53,7 +59,12 @@ async function fixture(options: {
     providerRoots: roots,
     getExternalClientAccountId: () => owner,
     ...(options.siteId ? { getRelaySiteId: () => options.siteId as string } : {}),
-    relayEndpointRouting: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: line.current, settled: true } })),
+    ...(options.appLine
+      ? {
+          relayEndpointRouting: createToolRouteRoutingSnapshot({}, () => applicationLines(), () => line.current),
+          relayToolRouting: { applicationLines, status: () => toolStatus.current },
+        }
+      : { relayEndpointRouting: createRelayEndpointRoutingSnapshot({}, () => ({ solov: { line: line.current, settled: true } })) }),
     relayFetch,
     resolveCliInstallation: async () => null,
     inspectCodexDesktopForModelCatalog: async () => ({ installed: false, version: null }),
@@ -79,7 +90,7 @@ async function fixture(options: {
   function overwrite(content: string, provider: ProviderId = 'codex') {
     fs.writeFileSync(providerConfigPaths(provider, roots)[provider === 'gemini' ? 1 : 0], content)
   }
-  return { root, roots, service, follow, read, overwrite, ownership, line, timers, clock, relayFetch, followed }
+  return { root, roots, service, follow, read, overwrite, ownership, line, timers, clock, relayFetch, followed, toolStatus }
 }
 
 describe('tool route follow', () => {
@@ -222,5 +233,38 @@ describe('tool route follow', () => {
     await f.follow({ reason: 'route-changed', fault: true })
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
     expect(f.service.getConfig(false).providers.codex.relayRouteState).toBe('restart')
+  })
+})
+
+// xm 三线路：工具配置跟工具线路，设置快照里 relayRouteLines 照旧是管理工具自己那条。
+describe('tool line separate from the app line', () => {
+  it('moves the tools to the tool line while the app stays on its own line', async () => {
+    const f = await fixture({ appLine: 'direct' })
+    f.line.current = 'primary'
+    // 配置本来就写在 CF：工具线路也是 CF，不用迁，期望地址就是 CF。
+    expect(await f.follow({ reason: 'route-changed' })).toEqual({ rewritten: [] })
+    expect(f.service.getConfig(false).providers.codex.baseUrl).toBe(primary.codex)
+    f.line.current = 'direct'
+    expect(await f.follow({ reason: 'route-changed' })).toEqual({ rewritten: ['codex'] })
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe(direct.codex)
+  })
+
+  it('reports the app line, the tool line and the tool line status in the settings snapshot', async () => {
+    const f = await fixture({ appLine: 'direct' })
+    f.line.current = 'primary'
+    let settings = f.service.readStoredConfig()
+    expect(settings.relayRouteLines?.solov).toEqual({ line: 'direct', settled: true })
+    expect(settings.relayToolRouteLines).toEqual({ solov: { line: 'primary', settled: true } })
+    expect(settings).not.toHaveProperty('relayToolRouteStatus')
+    f.toolStatus.current = { serverSwitching: true }
+    settings = await f.service.updateStoredConfig({ version: 2, toolRouteRestartHints: false })
+    expect(settings.relayToolRouteStatus).toEqual({ serverSwitching: true })
+    // 只读快照不落盘。
+    expect(fs.readFileSync(path.join(f.root, 'settings.json'), 'utf8')).not.toMatch(/relayToolRoute|relayRouteLines/)
+  })
+
+  it('keeps the old snapshot when no tool line is wired', async () => {
+    const f = await fixture()
+    expect(f.service.readStoredConfig()).not.toHaveProperty('relayToolRouteLines')
   })
 })

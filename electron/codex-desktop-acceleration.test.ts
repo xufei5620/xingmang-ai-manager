@@ -5,6 +5,7 @@ import {
   codexDesktopNeedsAccelerationOnlyAtStartup,
   createCodexDesktopAccelerationCoordinator,
 } from './codex-desktop-acceleration'
+import { relayProviderBaseUrlMatches, relayProviderBaseUrls } from './relay-sites'
 
 const scope = 'xm-account:7'
 
@@ -438,5 +439,16 @@ describe('codexDesktopNeedsAccelerationOnlyAtStartup', () => {
     expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: undefined })).toBe(false)
     expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, matchesRelay: false })).toBe(false)
     expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexProviderShadowed: true })).toBe(false)
+  })
+
+  // xm 三线路：工具线路和应用线路不一样时（Codex 写在 CF、管理工具走洛杉矶，或者反过来），main.ts 拿应用线路的
+  // 地址去比，照样认作本站的配置，这条判断的结果不变（C14 本期不动）。
+  it('gives the same answer whichever xm line Codex is on and whichever line the app uses', () => {
+    for (const tool of ['direct', 'primary'] as const) {
+      for (const appLine of ['direct', 'primary'] as const) {
+        const matchesRelay = relayProviderBaseUrlMatches('codex', relayProviderBaseUrls('solov', tool).codex, relayProviderBaseUrls('solov', appLine).codex)
+        expect(codexDesktopNeedsAccelerationOnlyAtStartup({ matchesRelay, codexAuthMode: 'apikey', codexProviderShadowed: false })).toBe(true)
+      }
+    }
   })
 })

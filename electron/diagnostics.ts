@@ -190,6 +190,15 @@ export interface DiagnosticsDependencies {
    */
   relayRoute?: DiagnosticsRelayRoute
   /**
+   * xm 三线路：各工具「连接设置」那几项、「电脑里另外设过的工具地址或密钥」比的是写进工具配置的那条线路
+   * （工具线路），它可以和「星芒 AI 网络」用的那条（应用线路）不一样。缺省 = 和 relaySite、relayRoute
+   * 同一份（旧行为，历史账号也一直是这样）。
+   */
+  toolRoute?: {
+    site: RelaySite
+    route?: Pick<DiagnosticsRelayRoute, 'line' | 'automatic' | 'settled' | 'primarySite'>
+  }
+  /**
    * 加速开着没有。开着时星芒自己的服务按加速规则直接连（acceleration-clash-config.ts
    * 的 relayDirectHosts），「星芒 AI 网络」一项顺带说一句，免得用户以为这项量的是加速线路。
    * 缺省 = 不提（旧行为）。
@@ -2081,7 +2090,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectProvider = dependencies.inspectProvider
     ?? ((provider, roots) => inspectProviderConfig(provider, roots))
   const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
-  const accountBaseUrls = environmentAccountBaseUrls(relaySite, dependencies.relayRoute)
+  const toolSite = dependencies.toolRoute?.site ?? relaySite
+  const toolRoute = dependencies.toolRoute ? dependencies.toolRoute.route : dependencies.relayRoute
+  const accountBaseUrls = environmentAccountBaseUrls(toolSite, toolRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
@@ -2424,8 +2435,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       run: () => {
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
         // 「自动」还没定下来时不比：那时工具配置本来就不跟着迁。
-        const route = dependencies.relayRoute
-        const current = route?.settled ? { siteId: relaySite.id, line: route.line, baseUrl: relaySite.providerBaseUrls[provider] } : undefined
+        const current = toolRoute?.settled ? { siteId: toolSite.id, line: toolRoute.line, baseUrl: toolSite.providerBaseUrls[provider] } : undefined
         return providerOutcome(provider, inspection, displayRoots, current)
       },
     })),
