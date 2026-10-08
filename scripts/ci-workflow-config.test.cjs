@@ -1667,6 +1667,27 @@ test('a main-process call settles in tasks of its own, so a collection mid-task 
   }
 })
 
+// What took #530 twice and #942 once: the fixture leaves the legacy direct
+// line unanswered, so about thirty seconds in the route settles on the primary
+// line, the renderer re-reads its settings and checks the account's keys once
+// more, and 稍后继续 greys out for a few hundred milliseconds. Playwright checks
+// a button can be clicked and then sends the mouse events; when the button
+// greys out in between, the browser drops the click and click() still
+// resolves, leaving the guide over the shell for the rest of the wait.
+test('the realm smoke clicks 稍后继续 until the start guide has really closed', () => {
+  const realmSmoke = fs.readFileSync(path.join(root, 'e2e/realm-account-smoke.mjs'), 'utf8')
+  assert.doesNotMatch(realmSmoke, /getByTestId\('guide-pause'\)\.click\(/,
+    'a single click on 稍后继续 is lost whenever the button greys out under it')
+
+  const start = realmSmoke.indexOf('async function pauseStartGuide(')
+  const end = realmSmoke.indexOf('async function loginWithUi(')
+  assert.ok(start >= 0 && end > start, 'the realm smoke must close the start guide through pauseStartGuide')
+  const pauseStartGuide = realmSmoke.slice(start, end)
+  assert.match(pauseStartGuide, /while \(await pause\.count\(\)\)/, 'it must click again while the guide is still there')
+  assert.match(pauseStartGuide, /state: 'detached'/, 'it must wait for the guide to go before deciding the click landed')
+  assert.match(realmSmoke.slice(end), /await pauseStartGuide\(page\)/, 'every UI login must close the guide through it')
+})
+
 // A React render crash or an unhandled rejection inside a fixture leaves the
 // page standing with whatever it had already committed, so a suite that only
 // asserts on the elements it touches stays green through it. Every browser
