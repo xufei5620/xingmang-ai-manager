@@ -1,15 +1,18 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildClaudeNativeLayout,
+  buildClaudeRetainedFiles,
   buildClaudeRetainedVersionFilesCommand,
   buildClaudeRetainedVersionFilesReason,
   isClaudeVersionFileName,
   uninstallVerifiedClaudeNativeInstallation,
 } from './claude-native-uninstall'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
+import { captureUninstallLeftovers, removeUninstallLeftovers } from './uninstall-leftovers'
 
 const temporaryDirectories: string[] = []
 const posixHost = process.platform !== 'win32'
@@ -290,6 +293,64 @@ describe('Claude Code native uninstall', () => {
     expect(fs.readFileSync(settings, 'utf8')).toBe('{}')
   })
 
+  it.runIf(process.platform === 'win32')('reports the claude.exe an open Claude Code still runs from, and deletes it once closed', async () => {
+    const home = temporaryHome()
+    const bin = path.join(home, '.local', 'bin')
+    const versions = path.join(home, '.local', 'share', 'claude', 'versions')
+    const command = path.join(bin, 'claude.exe')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.mkdirSync(versions, { recursive: true })
+    fs.writeFileSync(path.join(versions, '2.1.3'), 'claude')
+    // A real program started from claude.exe, as when the user left Claude Code
+    // open: Windows lets the uninstall rename the image but not delete it.
+    fs.copyFileSync(process.execPath, command)
+    const running = spawn(command, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+    const ended = new Promise<void>((resolve) => {
+      running.once('exit', () => resolve())
+      running.once('error', () => resolve())
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        running.once('spawn', resolve)
+        running.once('error', reject)
+      })
+
+      const result = await uninstallVerifiedClaudeNativeInstallation({
+        homeDirectory: home,
+        installDirectory: bin,
+        platform: 'win32',
+      })
+
+      expect(exists(command)).toBe(false)
+      expect(result.removedVersionFiles).toEqual([path.join(versions, '2.1.3')])
+      expect(result.retainedVersionFiles).toEqual([])
+      expect(result.retainedQuarantineFiles).toHaveLength(1)
+      const [renamed] = result.retainedQuarantineFiles
+      // Compared by name only: the uninstall reports the directory's native
+      // realpath, which expands the runner's 8.3 short temp path.
+      expect(path.basename(renamed)).toMatch(/^\.claude\.exe-.+\.removing$/)
+      expect(fs.readdirSync(bin)).toEqual([path.basename(renamed)])
+      expect(exists(renamed)).toBe(true)
+
+      const options = { platform: 'win32' as const, ownerUid: undefined }
+      const leftovers = captureUninstallLeftovers(result.retainedQuarantineFiles, options)
+      expect(leftovers.map((leftover) => leftover.kind)).toEqual(['pinned'])
+      const whileOpen = await removeUninstallLeftovers(leftovers, options)
+      expect(whileOpen.removed).toBe(0)
+      expect(whileOpen.kept.map((entry) => entry.reason)).toEqual(['delete-failed'])
+      expect(exists(renamed)).toBe(true)
+
+      running.kill()
+      await ended
+      const afterClose = await removeUninstallLeftovers(whileOpen.kept.map((entry) => entry.leftover), options)
+      expect(afterClose).toEqual({ removed: 1, reused: 0, kept: [] })
+      expect(exists(renamed)).toBe(false)
+    } finally {
+      running.kill()
+      await ended
+    }
+  })
+
   it('recognizes only installer-produced version names', () => {
     expect(isClaudeVersionFileName('2.1.3', 'darwin')).toBe(true)
     expect(isClaudeVersionFileName('2.1.3-beta.1', 'linux')).toBe(true)
@@ -313,6 +374,38 @@ describe('Claude Code native uninstall', () => {
       .toBe(`rm -f '/Users/o'"'"'neil/.local/share/claude/versions/1.9.0'`)
     expect(buildClaudeRetainedVersionFilesCommand(["C:\\Users\\o'neil\\.local\\share\\claude\\versions\\1.9.0"], 'win32'))
       .toBe(`Remove-Item -LiteralPath 'C:\\Users\\o''neil\\.local\\share\\claude\\versions\\1.9.0' -Force`)
+  })
+
+  it('reports the renamed command entry on Windows only, where it means Claude Code is still open', () => {
+    const result = {
+      removedVersionFiles: [],
+      retainedVersionFiles: ['/home/a/.local/share/claude/versions/2.1.3'],
+      retainedQuarantineFiles: ['/home/a/.local/bin/.claude-0f0e0d0c-0000-4000-8000-000000000000.removing'],
+    }
+    expect(buildClaudeRetainedFiles(result, 'win32')).toEqual({
+      commandFiles: result.retainedQuarantineFiles,
+      versionFiles: result.retainedVersionFiles,
+    })
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(buildClaudeRetainedFiles(result, platform)).toEqual({
+        commandFiles: [],
+        versionFiles: result.retainedVersionFiles,
+      })
+    }
+  })
+
+  it('asks the user to close Claude Code first when the renamed claude.exe could not be deleted', () => {
+    const renamed = 'C:\\Users\\a\\.local\\bin\\.claude.exe-0f0e0d0c-0000-4000-8000-000000000000.removing'
+    const version = 'C:\\Users\\a\\.local\\share\\claude\\versions\\2.1.3'
+    expect(buildClaudeRetainedVersionFilesReason([], 'win32', [renamed])).toBe(
+      'Claude Code 已卸载，但还有 1 个程序文件没能删掉，多半是 Claude Code 还开着。先关掉所有 Claude Code 窗口，再清理这些文件；你的 Claude Code 设置和会话记录不受影响。',
+    )
+    const both = buildClaudeRetainedVersionFilesReason([version], 'win32', [renamed])
+    expect(both).toContain('还有 2 个程序文件没能删掉')
+    expect(both).not.toContain('.removing')
+    expect(buildClaudeRetainedVersionFilesCommand([renamed, version], 'win32')).toBe(
+      `Remove-Item -LiteralPath '${renamed}' -Force; Remove-Item -LiteralPath '${version}' -Force`,
+    )
   })
 
   it('explains retained version files without touching settings', () => {

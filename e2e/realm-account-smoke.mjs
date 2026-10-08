@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
-import { collectedPromiseAttempts, collectedPromiseBackoffFor, fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { collectedPromiseAttempts, collectedPromiseBackoffFor, fixtureReadyTimeoutMs, mainProcessCallInOwnTask } from './fixture-readiness.mjs'
 import { createSmokeRuntime, debuggerReleaseBudgetMs, whenOnlyDebuggerHoldsProcess } from './smoke-runtime.mjs'
 
 // Run after npm run compile. Every network transport is replaced before the
@@ -271,6 +271,11 @@ async function prepareSandbox() {
 // a window, so replaying one changes nothing; the single evaluation that drives
 // the quit lifecycle stays out of it and is bounded without a retry.
 //
+// Every call routed through here now starts and settles in tasks of its own
+// (mainProcessCallInOwnTask), which is what stops the collection: the third
+// start of #934 and #939 lost all four replays below to it. The replays stay as
+// the last line, so a collected line on one of these calls means something new.
+//
 // The replays back off rather than repeating on a fixed interval: what collects
 // the wrapper is the main process being stalled, and a stall long enough to take
 // one attempt is long enough to take three that follow 500ms apart. Run #236
@@ -283,7 +288,7 @@ async function evaluateInMainProcess(label, body, argument) {
   for (let attempt = 1; attempt <= collectedPromiseAttempts; attempt += 1) {
     try {
       return await withDeadline(`${label} (attempt ${attempt}/${collectedPromiseAttempts})`, stepBudgetMs,
-        () => application.evaluate(body, argument))
+        () => application.evaluate(mainProcessCallInOwnTask, { source: String(body), argument }))
     }
     catch (error) {
       if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
