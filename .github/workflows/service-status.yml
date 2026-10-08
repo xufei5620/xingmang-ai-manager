@@ -30,7 +30,7 @@ on:
         type: string
         required: false
       rollout:
-        description: 分批放量（留空不改；写「0.2.11 0」表示只给自己点「检查更新」的人，写「0.2.11 20」表示先给两成电脑，none 表示全部放开）
+        description: 分批放量（留空不改；写「0.2.11 20」表示先给两成电脑，none 表示全部放开）
         type: string
         required: false
       minimum_version:
