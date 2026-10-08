@@ -5,7 +5,10 @@ import {
   cliProcessProbeRoots,
   describeRunningTools,
   inspectRunningTools,
+  describeToolRouteRestartHint,
   offersCodexDesktopRestart,
+  offersToolRouteDesktopRestart,
+  toolRouteRestartNeeds,
   type RunningToolsProbeDependencies,
   type RunningToolsReport,
 } from './running-tools'
@@ -184,5 +187,46 @@ describe('offersCodexDesktopRestart', () => {
     expect(offersCodexDesktopRestart(report({ codexDesktopRunning: true, canRestartCodexDesktop: false }))).toBe(false)
     expect(offersCodexDesktopRestart(report({ codexDesktopRunning: null }))).toBe(false)
     expect(offersCodexDesktopRestart(undefined)).toBe(false)
+  })
+})
+
+describe('tool route restart hint', () => {
+  it('names only tools that need a restart and leaves Claude Code out', () => {
+    expect(toolRouteRestartNeeds(['claude'], report({ running: ['claude'] }), { geminiLaunched: false, platform: 'win32' })).toEqual({})
+    expect(toolRouteRestartNeeds(['codex', 'gemini', 'grok'], report({ running: ['codex', 'grok'], codexDesktopRunning: true }), { geminiLaunched: true, platform: 'win32' }))
+      .toEqual({ codex: { cli: true, desktop: 'win32', canRestartDesktop: true }, gemini: 'launched', grok: 'running' })
+    expect(toolRouteRestartNeeds(['gemini', 'grok'], report({ unknown: ['gemini', 'grok'] }), { geminiLaunched: false, platform: 'linux' }))
+      .toEqual({ gemini: 'unknown', grok: 'unknown' })
+    expect(toolRouteRestartNeeds(['gemini', 'grok'], report(), { geminiLaunched: false, platform: 'linux' })).toEqual({})
+    // 桌面端只在 Windows 和 Mac 上说怎么退出。
+    expect(toolRouteRestartNeeds(['codex'], report({ codexDesktopRunning: true }), { geminiLaunched: false, platform: 'linux' }).codex?.desktop).toBeNull()
+  })
+
+  it('always mentions editor plugins once Codex moved, even when nothing is known to be open', () => {
+    expect(describeToolRouteRestartHint({ id: 1, codex: { cli: false, desktop: null, canRestartDesktop: false } }))
+      .toEqual(['如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。'])
+  })
+
+  it('uses the approved sentence for each case', () => {
+    expect(describeToolRouteRestartHint({ id: 1, codex: { cli: true, desktop: 'darwin', canRestartDesktop: false }, gemini: 'unknown', grok: 'unknown' })).toEqual([
+      'Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。',
+      'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要按 Command + Q 完全退出再打开。',
+      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+      '如果 Gemini 还开着，要关掉再打开才会走新线路。',
+      '如果 Grok 还开着，要退出再打开才会走新线路。',
+    ])
+    expect(describeToolRouteRestartHint({ id: 1, codex: { cli: false, desktop: 'win32', canRestartDesktop: true }, gemini: 'launched', grok: 'running' })).toEqual([
+      'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。',
+      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+      '从星芒打开的 Gemini 窗口要关掉再打开，才会走新线路。',
+      'Grok 还开着，要退出再打开才会走新线路。',
+    ])
+  })
+
+  it('offers to restart the desktop app only when it is open and can be restarted', () => {
+    expect(offersToolRouteDesktopRestart({ id: 1, codex: { cli: false, desktop: 'win32', canRestartDesktop: true } })).toBe(true)
+    expect(offersToolRouteDesktopRestart({ id: 1, codex: { cli: false, desktop: 'darwin', canRestartDesktop: false } })).toBe(false)
+    expect(offersToolRouteDesktopRestart({ id: 1, codex: { cli: true, desktop: null, canRestartDesktop: true } })).toBe(false)
+    expect(offersToolRouteDesktopRestart(null)).toBe(false)
   })
 })

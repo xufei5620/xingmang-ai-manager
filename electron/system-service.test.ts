@@ -724,7 +724,7 @@ describe('createSystemService', () => {
     const log = vi.fn()
     const f = await automaticRouteFixture({ runtimeLog: { log } })
     await f.save()
-    expect(log).toHaveBeenCalledWith('info', 'config', 'route.followed', '工具配置已换到当前连接线路', { provider: 'codex', from: 'primary', to: 'direct' })
+    expect(log).toHaveBeenCalledWith('info', 'config', 'route.followed', '工具配置已换到当前连接线路', { provider: 'codex', from: 'primary', to: 'direct', kind: 'tool', mode: 'merge', readback: true })
     expect(JSON.stringify(log.mock.calls)).not.toContain('solov.cc')
   })
 

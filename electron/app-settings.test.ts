@@ -566,6 +566,19 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
   })
 
+  it('keeps restart hints on by default and persists only an explicit opt-out', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('toolRouteRestartHints')
+    await updateAppSettings(filePath, { version: 2, toolRouteRestartHints: false })
+    expect(readAppSettings(filePath).toolRouteRestartHints).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).toolRouteRestartHints).toBe(false)
+    await updateAppSettings(filePath, { version: 2, toolRouteRestartHints: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('toolRouteRestartHints')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), toolRouteRestartHints: 'no' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('toolRouteRestartHints')
+  })
+
   it('drops a malformed CLI version preference instead of failing the whole read', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings(), alwaysInstallLatestCli: 'yes' }), 'utf8')

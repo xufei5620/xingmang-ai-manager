@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import type { ExternalClientInstallProgress } from './external-client-contract'
-import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
+import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
 import { isInstallCancelledError } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
@@ -1358,5 +1358,42 @@ describe('macOS external client signature checks', () => {
     expect(f.onMacVerificationFailed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       tool: 'opencode', command: 'spctl', code: failure.code, exitCode: failure.exitCode, output: failure.stderr,
     }))
+  })
+})
+
+describe('external client still running check', () => {
+  it('asks Windows only for processes of that one client and compares full paths', async () => {
+    const f = fixture()
+    const client = candidate('claudeDesktop').path
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify([client.toUpperCase()])))
+    await expect(f.runtime.stillRunning('claudeDesktop', client)).resolves.toBe(true)
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify(['C:\\Other\\Claude.exe'])))
+    await expect(f.runtime.stillRunning('claudeDesktop', client)).resolves.toBe(false)
+    f.execute.mockImplementation(async (spec) => commandResult(spec, '[]'))
+    await expect(f.runtime.stillRunning('claudeDesktop', client)).resolves.toBe(false)
+    expect(f.execute.mock.calls.every(([spec]) => spec.executable === powershell)).toBe(true)
+  })
+
+  it('says it cannot tell when the check fails or the platform has no check', async () => {
+    const f = fixture()
+    f.execute.mockImplementation(async () => { throw new Error('denied') })
+    await expect(f.runtime.stillRunning('claudeDesktop', candidate('claudeDesktop').path)).resolves.toBeNull()
+    await expect(fixture({ platform: 'linux' }).runtime.stillRunning('claudeDesktop', '/opt/claude')).resolves.toBeNull()
+  })
+
+  it('looks under the app bundle on macOS', async () => {
+    const f = fixture({ platform: 'darwin' })
+    f.execute.mockImplementation(async (spec) => commandResult(spec, '/Applications/Claude.app/Contents/MacOS/Claude\n/usr/bin/login\n'))
+    await expect(f.runtime.stillRunning('claudeDesktop', '/Applications/Claude.app')).resolves.toBe(true)
+    await expect(f.runtime.stillRunning('workbuddy', '/Applications/WorkBuddy.app')).resolves.toBe(false)
+    expect(f.execute.mock.calls.every(([spec]) => spec.executable === '/bin/ps')).toBe(true)
+  })
+
+  it('names the process with a fixed client name, never the user supplied path', () => {
+    for (const tool of ['claudeDesktop', 'workbuddy', 'opencode'] as const) {
+      const script = windowsExternalClientProcessScript(tool)
+      expect(script).toMatch(/Get-Process -Name [A-Za-z]+ /)
+      expect(script).not.toContain('Users')
+    }
   })
 })

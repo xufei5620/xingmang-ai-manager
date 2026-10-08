@@ -3551,6 +3551,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseSettingsUpdate (settings:save)', () => {
+    it('accepts the restart hint switch and rejects anything but a boolean', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      await handler(trustedEvent(), { version: 2, toolRouteRestartHints: false })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, toolRouteRestartHints: false })
+      vi.mocked(service.updateStoredConfig).mockClear()
+      await expect(handler(trustedEvent(), { version: 2, toolRouteRestartHints: 'off' })).rejects.toThrow('换线路提醒设置')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it.each([
       { solov: 'primary' as const },
       { solov: 'direct' as const },
