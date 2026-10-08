@@ -154,8 +154,9 @@ async function main() {
       // Without this the failure says only that the bridge is missing; these
       // are the facts that tell which link of the chain broke.
       evidence.platformBridge = await evaluateInMainProcess('platform bridge diagnosis', ({ BrowserWindow }) => {
-        const fs = require('node:fs')
-        const path = require('node:path')
+        // Playwright evaluates this without a CommonJS require in scope.
+        const fs = process.getBuiltinModule('node:fs')
+        const path = process.getBuiltinModule('node:path')
         return BrowserWindow.getAllWindows().map((window) => ({
           title: window.getTitle(),
           hasParent: window.getParentWindow() !== null,
