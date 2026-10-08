@@ -81,6 +81,8 @@ function bootFixture(config) {
     blocked.push({ origin, route })
     throw new Error('Network unavailable in isolated realm fixture')
   }
+  // 星芒账号默认走直连，直连连不上才悄悄退回默认线路（yoyo 10-8）：两条线路后面是同一个站，照同一套答。
+  const xmOrigins = ['https://xm-direct.solov.cc', 'https://xm.solov.cc']
   const serveRequest = async (input, init) => {
     const raw = typeof input === 'string' ? input : input.url ?? String(input)
     const url = new URL(raw)
@@ -90,7 +92,7 @@ function bootFixture(config) {
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : {}
     const xm = (data, cookie) => reply(raw, { success: true, message: '', data }, cookie)
     const api = (data) => reply(raw, { code: 0, data })
-    if (url.origin === 'https://xm.solov.cc') {
+    if (xmOrigins.includes(url.origin)) {
       if (headers.get('authorization')?.includes('fixture-api')) throw new Error('Cross-domain bearer leak')
       if (route === '/api/status') return xm({ system_name: 'Fixture NewAPI', version: 'fixture', setup: true,
         quota_per_unit: 500000, quota_display_type: 'USD', usd_exchange_rate: 1,
@@ -133,7 +135,7 @@ function bootFixture(config) {
       const reveal = route.match(/^\/api\/v1\/keys\/(\d+)$/)
       if (reveal && method === 'GET') return api(keys.api.find((key) => key.id === Number(reveal[1])))
     }
-    if (['https://xm.solov.cc', 'https://api.solov.cc'].includes(url.origin) && route === '/v1/models') {
+    if ([...xmOrigins, 'https://api.solov.cc'].includes(url.origin) && route === '/v1/models') {
       return reply(raw, { object: 'list', data: ['gpt-5.6-sol', 'gemini-3.7-flash', 'gpt-image-2'].map((id) => ({ id, object: 'model' })) })
     }
     return deny(url.origin, route)
@@ -492,7 +494,7 @@ async function stop() {
 }
 
 async function assertCustomerUi(page) {
-  assert.doesNotMatch(await page.locator('body').innerText(), /new[ -]?api|sub2api|xm\.solov\.cc|api\.solov\.cc/i)
+  assert.doesNotMatch(await page.locator('body').innerText(), /new[ -]?api|sub2api|xm(?:-direct)?\.solov\.cc|api\.solov\.cc/i)
   customerUiScans++
   recordPass('platform-details-hidden')
 }
@@ -612,7 +614,8 @@ async function main() {
     beginStage('sub2api explicit UI login')
     await loginWithUi(page, 'solov-api')
     const explicitLoginCalls = loginCallOrigins(await readFixtureStats())
-    assert.deepEqual(explicitLoginCalls.map((call) => call.origin), ['https://xm.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc'])
+    // 星芒账号那次走的是直连（这台电脑上还没有结论时开机就定在直连）。
+    assert.deepEqual(explicitLoginCalls.map((call) => call.origin), ['https://xm-direct.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc'])
     // Both realms have now accepted the same identifier and the same password,
     // each one contacted only after it was picked by hand.
     recordPass('dual-realm-login')
@@ -630,7 +633,7 @@ async function main() {
     assert.equal((await readFixtureStats()).calls.some((call) => call.route === '/api/reset_password'), false)
     await evaluateInRenderer(page, 'password recovery on the official site', () => window.xingmang.sendPasswordResetCode('same@example.test', 'solov'))
     assert.equal((await readFixtureStats()).calls
-      .filter((call) => call.route === '/api/reset_password' && call.origin === 'https://xm.solov.cc').length, 1)
+      .filter((call) => call.route === '/api/reset_password' && call.origin === 'https://xm-direct.solov.cc').length, 1)
     recordPass('source-bound-recovery')
     await expect.poll(() => evaluateInRenderer(canvas, 'latest canvas realm event', () => window.__realmEvents.at(-1)),
       { timeout: fixtureReadyTimeoutMs }).toMatchObject({ siteId: 'solov-api', userId: 7 })

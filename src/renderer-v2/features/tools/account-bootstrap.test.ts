@@ -12,12 +12,12 @@ import {
   accountKeyChangePending,
   accountRoutesPending,
   bootstrapAccountTools,
+  bootstrapOnlyFollowedRoute,
   configurationFailure,
   configurationFailureMessages,
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
-  relayFallbackActive,
-  routeDeferredMessage,
+  sessionChangeKeepsBootstrap,
   skippedNamedProviders,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
@@ -795,14 +795,15 @@ describe('explicit applied connection routes on restore', () => {
   }
   function fixture() {
     const current = routedConfig()
-    const stopped: RunningToolsReport = { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true }
+    // 桥上问得出 Codex 开着，这一轮也不问：开着照样改（#941），线路的事不提示（yoyo 10-8）。
+    const open: RunningToolsReport = { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
     const api = {
       getAccountSession: vi.fn(async () => ({ authenticated: true, siteId: 'solov' as const, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
       syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
       scanSystem: vi.fn(async () => system(['codex'])),
       getConfig: vi.fn(async () => structuredClone(current)),
       getSettings: vi.fn(async () => applied),
-      inspectRunningTools: vi.fn(async () => stopped),
+      inspectRunningTools: vi.fn(async () => open),
       configureManagedCliKeys: vi.fn(async () => {
         current.providers.codex.actualBaseUrl = current.providers.codex.baseUrl
         return { configured: ['codex' as ProviderId], failed: [] }
@@ -856,7 +857,7 @@ describe('explicit applied connection routes on restore', () => {
     expect(accountBootstrapPlan(system(['codex']), routedConfig(), { ...applied, officialProviders: ['codex'] }, 'restore', null).targets).toEqual([])
   })
 
-  it('uses ordinary automatic configure after the running check and holds launch while the scan is pending', async () => {
+  it('writes a route change through ordinary automatic configure and holds launch while the scan is pending', async () => {
     const { current, api } = fixture()
     const progress: AccountBootstrapProgress[] = []
     api.scanSystem.mockImplementation(async () => {
@@ -864,77 +865,50 @@ describe('explicit applied connection routes on restore', () => {
       return system(['codex'])
     })
     const result = await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, null)
-    expect(api.inspectRunningTools).toHaveBeenCalledWith(['codex'])
     expect(api.configureManagedCliKeys).toHaveBeenCalledWith({ providers: ['codex'], preferredModels: { codex: 'kept-model' } })
-    expect(api.inspectRunningTools.mock.invocationCallOrder[0]).toBeLessThan(api.configureManagedCliKeys.mock.invocationCallOrder[0])
     expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
-    expect(result).toMatchObject({ configured: ['codex'], failed: [] })
-    expect(result).not.toHaveProperty('routeDeferred')
+    expect(result).toMatchObject({ configured: ['codex'], failed: [], routeFollowed: ['codex'] })
   })
 
-  it.each([
-    { running: ['codex' as ProviderId], unknown: [], codexDesktopRunning: false },
-    { running: [], unknown: ['codex' as ProviderId], codexDesktopRunning: false },
-    { running: [], unknown: [], codexDesktopRunning: true },
-    { running: [], unknown: [], codexDesktopRunning: null },
-  ])('defers a route change when the tool may still be running: %j', async (report) => {
+  // #941：以前开着的工具先不改，客户不关工具、不点「重新同步」，它就一直停在原来那条线路上。
+  it('follows the line while the tool is open without asking which tools are open', async () => {
     const { current, api } = fixture()
-    api.inspectRunningTools.mockResolvedValue({ ...report, canRestartCodexDesktop: true })
     const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('关闭') })])
-    expect(result.routeDeferred).toEqual(['codex'])
+    expect(api.inspectRunningTools).not.toHaveBeenCalled()
+    expect(current.providers.codex.actualBaseUrl).toBe(direct.codex)
+    expect(result).toMatchObject({ configured: ['codex'], failed: [], routeFollowed: ['codex'] })
+    expect(describeAccountBootstrapResult('restore', result).message).toContain('跟着换了连接线路：Codex CLI')
   })
 
-  it('tells a Mac user to quit the Codex desktop app with Command + Q when only it holds the route back', async () => {
+  it('rejects a reported success that did not move the route with the ordinary address wording', async () => {
     const { current, api } = fixture()
-    api.inspectRunningTools.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
-    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(result.failed).toEqual([{ provider: 'codex', message: 'Codex 桌面端还开着，连接线路暂未改动；只关窗口不算，要在它的窗口里按 Command + Q 完全退出，再点「重新同步」' }])
-    expect(result.networkBlocked).toBe(false)
-  })
-
-  const desktopDeferred = 'Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
-  const cliDeferred = 'Codex CLI 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
-  it.each([
-    ['the desktop app when it runs where it can be restarted', { running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }, desktopDeferred],
-    ['the desktop app when a Mac cannot tell whether it runs', { running: [], unknown: [], codexDesktopRunning: null, canRestartCodexDesktop: false }, desktopDeferred],
-    ['the CLI when it runs next to the Mac desktop app', { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }, cliDeferred],
-    ['the CLI when it cannot be told apart', { running: [], unknown: ['codex'], codexDesktopRunning: false, canRestartCodexDesktop: false }, cliDeferred],
-    ['the CLI when process inspection failed', null, cliDeferred],
-    ['the CLI when the running-tools capability is missing', undefined, cliDeferred],
-  ] as Array<[string, RunningToolsReport | null | undefined, string]>)('keeps the closing wording and names %s', (_name, report, message) => {
-    expect(routeDeferredMessage('codex', report)).toBe(message)
-  })
-
-  it('leaves the deferral wording of the other tools alone', () => {
-    expect(routeDeferredMessage('claude', { running: ['claude'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false }))
-      .toBe('Claude Code 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步')
-  })
-
-  it('keeps the old route when process inspection fails and rejects a reported success that did not migrate it', async () => {
-    const { current, api } = fixture()
-    api.inspectRunningTools.mockRejectedValueOnce(new Error('process access denied'))
-    const deferred = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(deferred.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
     api.configureManagedCliKeys.mockImplementation(async () => ({ configured: ['codex' as ProviderId], failed: [] }))
-    const unverified = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
     expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(unverified.configured).toEqual([])
-    expect(unverified.failed).toEqual([expect.objectContaining({ provider: 'codex', message: expect.stringContaining('线路') })])
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'codex', message: configurationFailureMessages.relayMismatch }])
+    expect(result).not.toHaveProperty('routeFollowed')
   })
 
-  it('does not write a route when the running-tools capability is missing', async () => {
+  it('does not count a round as following the line when no route changed', async () => {
     const { current, api } = fixture()
-    const { inspectRunningTools: _unused, ...withoutInspection } = api
-    const result = await bootstrapAccountTools(withoutInspection, 17, undefined, 'restore', undefined, null)
-    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(current.providers.codex.actualBaseUrl).toBe(primary.codex)
-    expect(result.failed).toEqual([expect.objectContaining({ provider: 'codex' })])
+    current.providers.codex.actualBaseUrl = direct.codex
+    api.getConfig.mockImplementation(async () => structuredClone(current))
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
+    expect(api.configureManagedCliKeys).toHaveBeenCalled()
+    expect(result.configured).toEqual(['codex'])
+    expect(result).not.toHaveProperty('routeFollowed')
+    expect(bootstrapOnlyFollowedRoute(result)).toBe(false)
+  })
+
+  it('says a round only followed the line when every tool it wrote just changed its line', () => {
+    const configured: ProviderId[] = ['claude', 'codex']
+    expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['claude', 'codex'] })).toBe(true)
+    // 有一个是真写了 Key（新装的、换了分组的），首页照常说「已完成…」。
+    expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['codex'] })).toBe(false)
+    expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['claude', 'codex'], regrouped: ['claude'] })).toBe(false)
+    expect(bootstrapOnlyFollowedRoute({ configured })).toBe(false)
+    expect(bootstrapOnlyFollowedRoute({ configured: [], routeFollowed: ['codex'] })).toBe(false)
   })
 })
 
@@ -982,20 +956,6 @@ describe('automatic connection route', () => {
   it('treats a pinned line as settled even without the live route lines', () => {
     const pinned: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
     expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), pinned, memoryStorage())).toBe(true)
-  })
-
-  it('reports a fallback only while auto runs, has settled, and settled on the default line of the account site', () => {
-    const fellBack: AppSettingsV2 = { ...automatic, relayRouteLines: { ...automatic.relayRouteLines!, solov: { line: 'primary', settled: true } } }
-    expect(relayFallbackActive(fellBack)).toBe(true)
-    // 存了别的选项、还没重启时，跑的照旧是「自动」。
-    expect(relayFallbackActive({ ...fellBack, relayEndpointIds: { solov: 'direct' } })).toBe(true)
-    expect(relayFallbackActive(automatic)).toBe(false)
-    expect(relayFallbackActive({ ...fellBack, relayRouteLines: { ...fellBack.relayRouteLines!, solov: { line: 'primary', settled: false } } })).toBe(false)
-    expect(relayFallbackActive({ ...fellBack, activeRelayEndpointIds: { solov: 'primary', 'solov-api': 'auto' } })).toBe(false)
-    // 看的是登着的这个账号的站：历史账号那边还没定下来。
-    expect(relayFallbackActive({ ...fellBack, relaySiteId: 'solov-api' })).toBe(false)
-    expect(relayFallbackActive({ ...fellBack, relaySiteId: 'solov-api', relayRouteLines: { ...fellBack.relayRouteLines!, 'solov-api': { line: 'primary', settled: true } } })).toBe(true)
-    expect(relayFallbackActive(null)).toBe(false)
   })
 })
 
@@ -1119,5 +1079,27 @@ describe('account bootstrap configuration preflight', () => {
     await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
     expect(getConfig).toHaveBeenCalledTimes(3)
     expect(configureManagedCliKeys).not.toHaveBeenCalled()
+  })
+})
+
+describe('session changes while an account bootstrap runs', () => {
+  const member = { userId: 7, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 }
+
+  it('keeps the bootstrap when the event names the account it runs for', () => {
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov', account: member })).toBe(true)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, account: member })).toBe(true)
+    expect(sessionChangeKeepsBootstrap('api-account:7', { authenticated: true, siteId: 'solov-api', realmId: 'api-account', account: member })).toBe(true)
+  })
+
+  it('drops the bootstrap after a logout or a switch to another account or site', () => {
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: false, account: null })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: false, siteId: 'solov', account: member })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov', account: { ...member, userId: 18 } })).toBe(false)
+    expect(sessionChangeKeepsBootstrap('xm-account:7', { authenticated: true, siteId: 'solov-api', realmId: 'api-account', account: member })).toBe(false)
+  })
+
+  it('has nothing to keep when no bootstrap is running', () => {
+    expect(sessionChangeKeepsBootstrap(undefined, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
+    expect(sessionChangeKeepsBootstrap(null, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
   })
 })

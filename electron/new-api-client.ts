@@ -36,6 +36,12 @@ const defaultMaxResponseBytes = 512 * 1024
 // separate from the 512 KB cap used by authenticated/business endpoints.
 const noticeMaxResponseBytes = 4 * 1024 * 1024
 const noticeMaxContentLength = 4 * 1024 * 1024
+// 公告比别的接口大得多（服务端压过以后仍有约 400 KB），直连下行只有几十 KB/s 的客户 10 秒下不完：
+// 给它单独一个更长的时限，让它慢慢下完（#941 第 4 节）。
+const noticeTimeoutMs = 60_000
+// 定时那一路（跟着每分钟的余额刷新）还没读到过公告时，隔这么久才再读一次：以前没读下来的每分钟
+// 都从头全量下一遍，慢的网络上每次下到一半超时，一分钟后再来（#941 第 4 节）。
+const noticeRetryIntervalMs = 10 * 60 * 1_000
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 // 退出登录时顺手告诉服务端「这台设备不用了」。这一下只是尽力而为：联不上、
 // 超时、服务报错都不影响本机退出，所以等得比普通请求短得多，也不需要读多大的应答。
@@ -2543,6 +2549,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return request
   }
   let lastNotice: string | null = null
+  // 上一次去读公告是什么时候（读成没读成都算），没读成的原因，和正在读的那一次。
+  let noticeReadAt: number | null = null
+  let noticeFailure: unknown = null
+  let noticeInFlight: Promise<string> | null = null
 
   let session: InternalSession | null = null
   let ownerGeneration = 0
@@ -2723,7 +2733,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const readNoticeText = async (): Promise<string> => {
     const raw = await performRequest(
-      ctx,
+      { ...ctx, timeoutMs: Math.max(ctx.timeoutMs, noticeTimeoutMs) },
       '/api/notice',
       { method: 'GET', maxResponseBytes: noticeMaxResponseBytes },
       '公告读取',
@@ -2734,12 +2744,41 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return data.trim()
   }
 
+  // 同一时刻只下一份：打开公告和定时那一路撞在一起时共用这一次。
+  const fetchNoticeText = (): Promise<string> => {
+    noticeInFlight ??= (async () => {
+      try {
+        const text = await readNoticeText()
+        lastNotice = text
+        noticeFailure = null
+        return text
+      } catch (error) {
+        noticeFailure = error
+        throw error
+      } finally {
+        noticeReadAt = Date.now()
+        noticeInFlight = null
+      }
+    })()
+    return noticeInFlight
+  }
+
   // `cached` is the renderer's periodic check that follows each balance
   // refresh: it must not add requests of its own, so it reuses the last
-  // /api/notice text and the timeline that refresh just stored.
+  // /api/notice text and the timeline that refresh just stored. With no text
+  // yet (the last read failed), it reads again at most every
+  // noticeRetryIntervalMs and repeats the last failure in between.
+  const readNotice = async (mode?: RelayNoticeReadMode): Promise<string> => {
+    if (mode !== 'cached') return fetchNoticeText()
+    if (lastNotice !== null) return lastNotice
+    if (noticeInFlight) return noticeInFlight
+    const since = noticeReadAt === null ? null : Date.now() - noticeReadAt
+    if (since !== null && since >= 0 && since < noticeRetryIntervalMs && noticeFailure !== null) throw noticeFailure
+    return fetchNoticeText()
+  }
+
   const getNotice = async (mode?: RelayNoticeReadMode): Promise<RelayNotice | null> => {
-    const text = mode === 'cached' && lastNotice !== null ? lastNotice : await readNoticeText()
-    lastNotice = text
+    const text = await readNotice(mode)
     if (!timeline || Date.now() - timeline.fetchedAt >= timelineStaleMs) {
       // The timeline is an addition; its failure must never hide the system
       // notice or show up as an announcement error.

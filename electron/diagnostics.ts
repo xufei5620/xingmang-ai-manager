@@ -48,8 +48,12 @@ import {
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
-import { relayLineFailureAnswer, relayLineFailureReason } from './relay-line-fetch'
-import { relayApiProbeBaseUrl, relayEndpointForUrl, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite, type RelayEndpointId, type RelayRouteLines, type RelaySite } from './relay-sites'
+import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
+import { relayRouteFailureThreshold, relayRouteRecoveryMs, type RelayRouteChange } from './relay-route-controller'
+import {
+  relayApiProbeBaseUrl, relayEndpointForUrl, relayProviderBaseUrlEquals, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite,
+  type RelayEndpointId, type RelayRouteLines, type RelaySite,
+} from './relay-sites'
 import { findReparseComponent, readSafeUtf8File, type ReparseComponent } from './safe-local-data'
 import { parseShellStartupExports, type ShellStartupDialect, type ShellStartupExport } from './shell-startup-exports'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -364,6 +368,8 @@ export interface DiagnosticsRelayRoute {
   /** 同一个站默认线路上的那一份，退回时查它。 */
   primarySite: RelaySite
   reportDirectFailure(reason: string): void
+  /** 「自动」最近一次换线路（relay-route-controller.ts 的 lastChange），详情里说给客户和客服听。 */
+  lastChange?: RelayRouteChange | null
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
@@ -1430,6 +1436,16 @@ function relayLineFailure(probe: RelayStatusProbe): string | null {
 }
 
 /**
+ * 要不要报给线路那边、叫它马上查一轮健康检查（#941 第 3 节）：同 relay-line-fetch.ts 的口径，加上直连那
+ * 几秒里一个字都没回来也算——状态接口只回几百字节，等不到它就是这会儿不通，不是慢。报上去也只是叫线路
+ * 那边连着查几次，换不换由它定。
+ */
+function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
+  if (probe.kind === 'answered') return true
+  return reportedRelayLineFailure(probe.error) !== null || probe.reason === 'timeout'
+}
+
+/**
  * 「星芒 AI 网络」查通时那句结论（直连适配方案第六节第 3 条原话）。fellBack：选的是「自动」，
  * 直连这会儿连不上，用的是默认线路（这次当场退回的，或者之前就已经退回的）。
  */
@@ -1545,7 +1561,47 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
   return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
-function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
+// 这两条线路在星芒里就叫这两个名字（设置里的「只用直连」「只用默认线路」、网络那一项的结论都这么叫）。
+// 下面几处只写进导出的检查报告，客服看得懂；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
+const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '默认线路', direct: '直连' }
+
+/** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
+interface ProviderRelayLine {
+  siteId: string
+  line: RelayEndpointId
+  baseUrl: string
+}
+
+// 只认每条线路自己的地址：写着旧地址（别名）的配置说不上走的是哪条，下次保存会改成线路自己的地址。
+function providerRouteLine(siteId: string, provider: ProviderId, actual: string): RelayEndpointId | null {
+  const endpoint = relaySiteEndpointChoices(siteId)
+    .find((choice) => relayProviderBaseUrlEquals(actual, resolveRelaySite(siteId, choice.id).providerBaseUrls[provider]))
+  return endpoint?.id ?? null
+}
+
+/**
+ * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
+ * 换到哪条，不带地址。时间按这台电脑的时区说。
+ */
+export function describeRelayRouteChange(change: RelayRouteChange): string {
+  const at = new Date(change.at)
+  const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  const reason = change.reason === 'recovered'
+    ? `直连连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回直连`
+    : change.reason === 'health-failed'
+      ? `直连连着 ${relayRouteFailureThreshold} 次没连上，改走默认线路`
+      : '查到直连能连上，走直连'
+  return `${time}，${reason}`
+}
+
+// 连同引起那一轮检查的错误码一起只进导出的报告，客服拿它对服务端的日志。
+function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Record<string, string> {
+  const change = route?.lastChange
+  if (!change) return {}
+  return { lastRouteChange: describeRelayRouteChange(change), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
+}
+
+function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots, current?: ProviderRelayLine): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = {
     exists: inspection.exists,
     hasApiKey: inspection.hasApiKey,
@@ -1560,6 +1616,12 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     details[`file${index + 1}`] = pathForDisplay(file.path, roots)
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
+    // 工具走的线路和星芒这会儿走的对不上（#941 第 2 节）：线路换了以后写失败的、客户自己改过配置所以没跟着
+    // 改的。两条线路连的是同一个账号，工具照样能用，所以不算要留意的事（yoyo 10-8：线路的事不要太多提示），
+    // 只在导出的报告里写清两边各是哪条；星芒下次跟着线路改配置时会改过来。
+    const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
+    if (line) details.routeLine = relayLineNames[line]
+    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
@@ -2361,7 +2423,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: `${cliCatalog[provider].name} 连接设置`,
       run: () => {
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
-        return providerOutcome(provider, inspection, displayRoots)
+        // 「自动」还没定下来时不比：那时工具配置本来就不跟着迁。
+        const route = dependencies.relayRoute
+        const current = route?.settled ? { siteId: relaySite.id, line: route.line, baseUrl: relaySite.providerBaseUrls[provider] } : undefined
+        return providerOutcome(provider, inspection, displayRoots, current)
       },
     })),
     {
@@ -2378,7 +2443,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       timeoutOutcome: () => relayAnswered ? undefined : {
         state: 'fail',
         summary: networkFailureMessages.timeout,
-        details: { endpoint: relayStatusProbeUrl(relaySite), reason: 'timeout', siteId: relaySite.id },
+        details: { endpoint: relayStatusProbeUrl(relaySite), reason: 'timeout', siteId: relaySite.id, ...relayRouteChangeDetails(dependencies.relayRoute) },
       },
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
@@ -2419,7 +2484,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         let fellBack = false
         const directFailure = route && directFirst ? relayLineFailure(probe) : null
         if (route && directFailure) {
-          route.reportDirectFailure(directFailure)
+          if (reportsRelayLineFailure(probe)) route.reportDirectFailure(directFailure)
           // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
           relayAnswered = false
           const retry = await probeStatus(route.primarySite, signal).catch(() => null)
@@ -2443,7 +2508,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           })
           // 带上查的是哪个站：检查页据此认出「换一条线路」救不救得回来（第四十三批 B）。
           // 新界面的「查看详情」不摆这个键（diagnostic-details.ts）。
-          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id } }
+          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id, ...relayRouteChangeDetails(route) } }
         }
         const { response, body } = probe
         // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
@@ -2460,7 +2525,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           return {
             state: 'fail',
             summary: networkFailureMessages.intercepted,
-            details: { endpoint, reason: 'intercepted', status: response.status },
+            details: { endpoint, reason: 'intercepted', status: response.status, ...relayRouteChangeDetails(route) },
           }
         }
         if (!response.ok) {
@@ -2472,7 +2537,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           return {
             state: 'fail',
             summary: `网络能连通，但星芒 AI 返回 HTTP ${response.status}，多半是服务端暂时的问题，请稍后再试。`,
-            details: { endpoint, status: response.status },
+            details: { endpoint, status: response.status, ...relayRouteChangeDetails(route) },
           }
         }
         // 这一次请求已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
@@ -2484,7 +2549,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             state: 'warn',
             summary: `能连上星芒服务，但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
               + `可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`,
-            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
+            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000), ...relayRouteChangeDetails(route) },
           }
         }
         const accelerating = await dependencies.inspectAccelerationActive?.().catch(() => false) ?? false
@@ -2498,6 +2563,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             ...(accelerating ? { route: 'direct' } : {}),
             ...(line ? { line } : {}),
             ...(fellBack ? { fellBack: true } : {}),
+            ...relayRouteChangeDetails(route),
           },
         }
       },

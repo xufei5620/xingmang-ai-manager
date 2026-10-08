@@ -2779,6 +2779,27 @@ test('Key bootstrap progress locks the guide until the account operation settles
   } finally { await page.close() }
 })
 
+// 主进程登录完要把手上的事忙完才发「会话变了」，常常晚于界面开跑的那一轮登录同步；说的还是
+// 同一个账号，那一轮不能作废，否则引导页一直停在「正在同步账号专属 Key」、按钮全灰。
+test('the session event that trails a login keeps the login Key sync and unlocks the guide', async () => {
+  const page = await open('guest=1&bootstrapPending=1')
+  try {
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('start-guide').getByText('正在同步账号专属 Key').waitFor()
+    await page.evaluate(async () => window.v2Test.emit('onAccountSessionChanged', await window.xingmang.getAccountSession()))
+    await page.evaluate(() => window.v2Test.releaseBootstrap())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-busy') === 'false')
+    await page.getByTestId('guide-pause').click()
+    await page.getByRole('button', { name: '切换账号', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('installing a new CLI while signed in writes only that provider Key', async () => {
   const page = await open()
   try {
@@ -3470,42 +3491,62 @@ async function assertToolsOnTheirExpectedLine(page, line) {
   }
 }
 
+// 页面带 ?bootstrapPending 时每一轮同步 Key 都先扣着：开机那一轮放开让它做完。
+async function releaseStartupBootstrap(page) {
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+  await page.evaluate(() => window.v2Test.releaseBootstrap())
+  await settleStartupBootstrap(page)
+}
+
+// 「自动」换了线路、工具跟着改配置的那一轮（yoyo 10-8：线路的事不要太多提示），页面要带 ?bootstrapPending：同步 Key
+// 扣着的时候首页不摆进度；放开以后这一轮写完、首页照结果画完，也不说「已完成…」，中间一下都没出过同步横幅。
+// 做没做完看运行日志里那一行，光看配置改没改，横幅可能还没画。
+async function changeRouteQuietly(page, line) {
+  assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0)
+  await page.evaluate((next) => {
+    window.routeRoundSyncsBefore = window.v2Test.calls.filter((entry) => entry.method === 'syncManagedCliKeys').length
+    window.followedRouteRounds = () => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError'
+      && entry.args[0]?.context === 'account-bootstrap' && String(entry.args[0]?.message).includes('跟着换了连接线路')).length
+    window.followedRouteRoundsBefore = window.followedRouteRounds()
+    window.bootstrapNoticeSeen = false
+    new MutationObserver(() => { if (document.querySelector('.v2-bootstrap-notice')) window.bootstrapNoticeSeen = true })
+      .observe(document.body, { childList: true, subtree: true })
+    window.v2Test.setRelayRoute({ line: next, settled: true })
+    window.v2Test.emit('onRelayRouteChanged', undefined)
+  }, line)
+  await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'syncManagedCliKeys').length > window.routeRoundSyncsBefore)
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0, '同步 Key 扣着的时候首页不摆进度')
+  await page.evaluate(() => window.v2Test.releaseBootstrap())
+  await page.waitForFunction(() => window.followedRouteRounds() > window.followedRouteRoundsBefore)
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  assert.equal(await page.evaluate(() => window.bootstrapNoticeSeen), false, '跟着线路改的那一轮首页一下都没出同步横幅')
+  assert.equal(await page.locator('.v2-bootstrap-notice').count(), 0)
+}
+
 test('auto leaves the tools alone until its check settles, then moves the ones Xingmang configured onto that line', async () => {
-  const page = await open('allInstalled=1&autoRelay=pending')
+  const page = await open('allInstalled=1&autoRelay=pending&bootstrapPending=1')
   try {
-    await settleStartupBootstrap(page)
+    await releaseStartupBootstrap(page)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '没查出线路以前不迁')
     await assertToolsOnTheirExpectedLine(page, 'https://xm.solov.cc')
-    await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'direct', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
-    await expect.poll(async () => (await page.evaluate(async () => (await window.xingmang.getConfig()).providers.grok.actualBaseUrl))).toBe('https://xm-direct.solov.cc/v1')
+    await changeRouteQuietly(page, 'direct')
     await assertToolsOnTheirExpectedLine(page, 'https://xm-direct.solov.cc')
-    // 改走的是直连，不是退回：首页不说退回那句。
-    assert.equal(await page.getByTestId('home-relay-fallback').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
-test('when auto falls back while tools are open, home says so once and the rescan moves them after they quit', async () => {
-  const page = await open('allInstalled=1&autoRelay=direct&runningTools=1')
+// #941：「自动」换了线路，开着的工具也照样跟着改好配置，下次打开就走新线路。yoyo 10-8：线路的事不要太多提示，
+// 所以不问开没开，首页不摆进度、不说「已完成…」，也没有「要关掉重开」那句。
+test('when auto changes the line while tools are open, they quietly follow it', async () => {
+  const page = await open('autoRelay=direct&runningTools=1&bootstrapPending=1')
   try {
-    await settleStartupBootstrap(page)
-    await assertToolsOnTheirExpectedLine(page, 'https://xm-direct.solov.cc')
-    await page.evaluate(() => { window.v2Test.setRelayRoute({ line: 'primary', settled: true }); window.v2Test.emit('onRelayRouteChanged', undefined) })
-    const notice = page.getByTestId('home-relay-fallback')
-    await notice.getByText('直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换', { exact: true }).waitFor()
-    // 上面那句已经说了，横幅里不再逐个工具说一遍。
-    assert.equal(await page.getByText('连接线路暂未改动').count(), 0)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false, '开着的工具先不改')
-    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'inspectRunningTools').length)
-    assert.ok(before > 0)
-    await page.screenshot({ path: path.join(artifacts, 'home-relay-fallback.png'), fullPage: true })
-    await page.evaluate(() => window.v2Test.setToolsRunning(false))
-    await page.getByTestId('home-rescan').click()
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
-    await notice.waitFor({ state: 'detached' })
-    await expect.poll(async () => (await page.evaluate(async () => (await window.xingmang.getConfig()).providers.grok.actualBaseUrl))).toBe('https://xm.solov.cc/v1')
-    await assertToolsOnTheirExpectedLine(page, 'https://xm.solov.cc')
+    await releaseStartupBootstrap(page)
+    await changeRouteQuietly(page, 'primary')
+    const providers = await page.evaluate(async () => (await window.xingmang.getConfig()).providers)
+    for (const provider of ['claude', 'codex']) assert.equal(new URL(providers[provider].actualBaseUrl).origin, 'https://xm.solov.cc', provider)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'inspectRunningTools')), false, '不再问开没开')
+    assert.equal(await page.getByText('连接线路').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

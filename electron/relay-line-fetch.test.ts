@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createRelayLineFetch,
   createRelayObservedFetch,
-  relayDirectSlowResponseMs,
   relayLineFailureAnswer,
   relayLineFailureReason,
+  reportedRelayLineFailure,
   type RelayLineRouter,
 } from './relay-line-fetch'
 import type { RelayEndpointId, RelayRouteSiteId } from './relay-sites'
@@ -215,19 +215,57 @@ describe('createRelayLineFetch', () => {
     expect(proxyBase).toHaveBeenCalledTimes(1)
     expect(proxyOff.reports).toEqual([])
 
-    for (const abortMeansUnreachable of [false, true]) {
-      const { router, reports } = fakeRouter()
-      const caller = new AbortController()
-      const base = vi.fn<typeof fetch>(async () => {
-        caller.abort()
-        throw new DOMException('aborted', 'AbortError')
-      })
-      await expect(createRelayLineFetch(router, base, { abortMeansUnreachable })('https://xm.solov.cc/api/user/self', { signal: caller.signal }))
-        .rejects.toThrow('aborted')
-      expect(base).toHaveBeenCalledTimes(1)
-      // 账号请求只会因为等太久而中止，那正说明直连不通；AI 对话中止多半是客户点了「停止」。
-      expect(reports).toEqual(abortMeansUnreachable ? [['solov', 'timeout']] : [])
-    }
+    // 客户点了「停止」：说不上直连有没有毛病，不报（#941 第 3 节）。
+    const { router, reports } = fakeRouter()
+    const caller = new AbortController()
+    const base = vi.fn<typeof fetch>(async () => {
+      caller.abort()
+      throw new DOMException('aborted', 'AbortError')
+    })
+    await expect(createRelayLineFetch(router, base)('https://xm.solov.cc/v1/chat/completions', { method: 'POST', body: '{}', signal: caller.signal }))
+      .rejects.toThrow('aborted')
+    expect(base).toHaveBeenCalledTimes(1)
+    expect(reports).toEqual([])
+  })
+
+  // 账号请求等到自己的时限（10 秒）还没拿到回应头就放弃：直连被丢包时就是这样，Chromium 自己要等
+  // 二十秒到两分钟才报连接超时，早过了那个时限。叫线路那边查一轮，换不换由它定。
+  it('asks for a line check when an account request gives up before any answer, and stays silent once a reply started', async () => {
+    const { router, reports } = fakeRouter()
+    const caller = new AbortController()
+    const base = vi.fn<typeof fetch>(async () => {
+      caller.abort()
+      throw new DOMException('aborted', 'AbortError')
+    })
+    const accountFetch = createRelayLineFetch(router, base, { abortMeansNoAnswer: true })
+    await expect(accountFetch('https://xm.solov.cc/api/user/self', { signal: caller.signal })).rejects.toThrow('aborted')
+    expect(reports).toEqual([['solov', 'no-answer']])
+
+    // 回应头来了、正文读到一半到了时限：那是回应大、读得慢，不报。
+    const reading = new AbortController()
+    base.mockImplementationOnce(async () => cutReply(() => reading.abort()))
+    const response = await accountFetch('https://xm.solov.cc/api/log/self', { signal: reading.signal })
+    await expect(response.text()).rejects.toThrow('terminated')
+    expect(reports).toEqual([['solov', 'no-answer']])
+
+    // 公告照旧一个字不报。
+    const notice = new AbortController()
+    base.mockImplementationOnce(async () => {
+      notice.abort()
+      throw new DOMException('aborted', 'AbortError')
+    })
+    await expect(accountFetch('https://xm.solov.cc/api/notice', { signal: notice.signal })).rejects.toThrow('aborted')
+    expect(reports).toEqual([['solov', 'no-answer']])
+  })
+
+  it('resends a read that ran out of time on direct and asks for a line check, because no answer ever came', async () => {
+    const { router, reports } = fakeRouter()
+    const base = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'))
+      .mockResolvedValueOnce(json(200))
+    expect((await createRelayLineFetch(router, base)('https://xm.solov.cc/api/user/self')).status).toBe(200)
+    expect(sentUrls(base)).toEqual(['https://xm-direct.solov.cc/api/user/self', 'https://xm.solov.cc/api/user/self'])
+    expect(reports).toEqual([['solov', 'no-answer']])
   })
 
   it('reports a reply cut midway without resending it, unless the caller stopped it', async () => {
@@ -238,14 +276,28 @@ describe('createRelayLineFetch', () => {
     expect(cutBase).toHaveBeenCalledTimes(1)
     expect(cut.reports).toEqual([['solov', 'body']])
 
-    // 客户点了「停止」：不算直连的毛病；账号请求只会因为等太久而中止，算。
-    for (const abortMeansUnreachable of [false, true]) {
+    // 客户点了「停止」、账号请求读一个大回应读到超时：都不算直连的毛病。
+    const { router, reports } = fakeRouter()
+    const caller = new AbortController()
+    const base = vi.fn<typeof fetch>(async () => cutReply(() => caller.abort()))
+    const response = await createRelayLineFetch(router, base)('https://xm.solov.cc/api/user/self', { signal: caller.signal })
+    await expect(response.text()).rejects.toThrow('terminated')
+    expect(reports).toEqual([])
+  })
+
+  it('never reports the notice, however its download goes', async () => {
+    const failures: Array<() => Promise<Response>> = [
+      () => Promise.reject(networkError('ERR_CONNECTION_RESET')),
+      () => Promise.reject(new DOMException('timed out', 'TimeoutError')),
+      () => Promise.resolve(page(502)),
+      () => Promise.resolve(cutReply()),
+    ]
+    for (const failure of failures) {
       const { router, reports } = fakeRouter()
-      const caller = new AbortController()
-      const base = vi.fn<typeof fetch>(async () => cutReply(() => caller.abort()))
-      const response = await createRelayLineFetch(router, base, { abortMeansUnreachable })('https://xm.solov.cc/api/user/self', { signal: caller.signal })
-      await expect(response.text()).rejects.toThrow('terminated')
-      expect(reports).toEqual(abortMeansUnreachable ? [['solov', 'body']] : [])
+      const base = vi.fn<typeof fetch>().mockImplementationOnce(failure).mockResolvedValueOnce(json(200, { data: '' }))
+      const response = await createRelayLineFetch(router, base)('https://xm.solov.cc/api/notice')
+      await response.text().catch(() => undefined)
+      expect(reports).toEqual([])
     }
   })
 
@@ -282,21 +334,20 @@ describe('createRelayLineFetch', () => {
     expect(listeners.size).toBe(0)
   })
 
-  it('asks the line check about a slow read without cutting it', async () => {
+  it('lets a slow read finish on direct without telling the line check', async () => {
     vi.useFakeTimers()
     const { router, reports } = fakeRouter()
     let answer: (response: Response) => void = () => undefined
     const base = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { answer = resolve }))
-    const pending = createRelayLineFetch(router, base)('https://xm.solov.cc/api/user/self')
+    const pending = createRelayLineFetch(router, base, { abortMeansNoAnswer: true })('https://xm.solov.cc/api/user/self')
 
-    await vi.advanceTimersByTimeAsync(relayDirectSlowResponseMs - 1)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(reports).toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(reports).toEqual([['solov', 'slow']])
     answer(json(200))
 
     expect((await pending).status).toBe(200)
     expect(base).toHaveBeenCalledTimes(1)
+    expect(reports).toEqual([])
   })
 
   it('never resends a streamed body and never reroutes a pinned line', async () => {
@@ -338,7 +389,11 @@ describe('createRelayObservedFetch', () => {
 
     expect(sentUrls(base)).toEqual(Array(4).fill('https://xm-direct.solov.cc/v1/models').map((url, index) => index === 2 ? 'https://xm-direct.solov.cc/v1/countTokens' : url))
     expect(reports).toEqual([['solov', 'ERR_CONNECTION_REFUSED'], ['solov', 'http-502']])
-    expect(log).toHaveBeenCalledWith('warn', 'relay.line.blocked', expect.any(String), { siteId: 'solov', method: 'GET', path: '/v1/countTokens' })
+    // 查模型查到时限还没拿到回应头：同账号请求，叫线路那边查一轮。
+    base.mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'))
+    await expect(observed('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('timed out')
+    expect(reports.at(-1)).toEqual(['solov', 'no-answer'])
+    expect(log).toHaveBeenCalledWith('warn', 'relay.line.blocked', expect.any(String), { siteId: 'solov', line: 'direct', method: 'GET', path: '/v1/countTokens' })
   })
 
   it('reports a refused tunnel, a page someone else answered with and a reply cut midway', async () => {
@@ -357,13 +412,16 @@ describe('createRelayObservedFetch', () => {
     expect(reports).toEqual([['solov', 'ERR_TUNNEL_CONNECTION_FAILED'], ['solov', 'intercepted'], ['solov', 'body']])
   })
 
-  it('stays silent for the default line, a pinned site, a proxy that is not running and a caller abort', async () => {
+  it('stays silent for the default line, a pinned site, a proxy that is not running, a caller abort and a reply the caller stopped', async () => {
     const auto = fakeRouter()
     const base = vi.fn<typeof fetch>().mockRejectedValue(networkError('ERR_CONNECTION_REFUSED'))
     const observed = createRelayObservedFetch(auto.router, base)
     await expect(observed('https://xm.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    // 调用方自己到了时限就中止：这一次不报，由它自己说查不出模型。
     const caller = new AbortController()
     caller.abort()
+    base.mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'))
+    await expect(observed('https://xm-direct.solov.cc/v1/models', { signal: caller.signal })).rejects.toThrow('timed out')
     await expect(observed('https://xm-direct.solov.cc/v1/models', { signal: caller.signal })).rejects.toThrow('fetch failed')
     base.mockRejectedValueOnce(networkError('ERR_PROXY_CONNECTION_FAILED'))
     await expect(observed('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
@@ -386,6 +444,21 @@ describe('relayLineFailureAnswer', () => {
     expect(relayLineFailureAnswer(page(404))).toBeNull()
     expect(relayLineFailureAnswer(json(503))).toBeNull()
     expect(relayLineFailureAnswer(cutReply())).toBeNull()
+  })
+})
+
+describe('reportedRelayLineFailure', () => {
+  it('reports only failures to reach the line, never a request that was slow or stopped', () => {
+    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT',
+      'ERR_CERT_AUTHORITY_INVALID', 'ERR_SSL_PROTOCOL_ERROR', 'ERR_TUNNEL_CONNECTION_FAILED', 'ERR_UNSAFE_REDIRECT', 'ERR_INTERNET_DISCONNECTED']) {
+      expect(reportedRelayLineFailure(networkError(code))).toBe(code)
+    }
+    expect(reportedRelayLineFailure(Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }))).toBe('ETIMEDOUT')
+    expect(reportedRelayLineFailure(new Error('self signed certificate in certificate chain'))).toBe('tls')
+    expect(reportedRelayLineFailure(new DOMException('timed out', 'TimeoutError'))).toBeNull()
+    expect(reportedRelayLineFailure(new DOMException('aborted', 'AbortError'))).toBeNull()
+    expect(reportedRelayLineFailure(networkError('ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
+    expect(reportedRelayLineFailure(new Error('余额不足'))).toBeNull()
   })
 })
 

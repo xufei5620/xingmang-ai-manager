@@ -71,7 +71,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, relayFallbackActive, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, sessionChangeKeepsBootstrap, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -104,6 +104,8 @@ interface AccountBootstrapView extends AccountBootstrapProgress {
   /** result 落下来的时刻，首页「已完成…」那句据此到点收起（已知12）。 */
   finishedAt?: number
   error?: string
+  /** 跟着连接线路悄悄改工具配置的那一轮（followRelayRoute）：首页不摆进度，出了错照常说。 */
+  quiet?: boolean
 }
 
 /**
@@ -398,7 +400,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     })
     return () => { current = false }
   }, [app, bootAttempt, noteStartupCheck])
-  const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId) => {
+  const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId, quiet = false) => {
     if (!settings || !Number.isSafeInteger(userId) || userId < 1) return
     const bootstrapScope = accountScope({ siteId: accountSite, account: { userId } as AccountSessionState['account'] })
     const attemptKey = `${bootstrapScope}:${mode}:${onlyProviders?.join(',') ?? 'all'}`
@@ -409,7 +411,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const epoch = ++bootstrapEpoch.current
     const updateProgress = (progress: AccountBootstrapProgress) => {
       if (!mounted.current || epoch !== bootstrapEpoch.current) return
-      setAccountBootstrap({ ...progress, scope: bootstrapScope })
+      setAccountBootstrap({ ...progress, scope: bootstrapScope, ...(quiet ? { quiet } : {}) })
     }
     updateProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 5 })
     // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
@@ -664,7 +666,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   /**
    * 「自动」那条线路查出了结论、退回默认线路或切回直连（直连适配第二步）：设置里的线路跟着
    * 重读，另外三个客户端重新检测一遍（检测时跟着换，第四十三批 A）。工具配置还停在另一条线路
-   * 上的，照开机那一档迁过去，开着的先不改、首页提示；没有要迁的就不去同步 Key。
+   * 上的，照开机那一档迁过去，开着的也改（#941）；没有要迁的就不去同步 Key。这一轮首页不摆进度、
+   * 只换了线路也不说「已完成…」，出了错照常说（yoyo 10-8：线路的事不要太多提示）。
    */
   const followRelayRoute = useCallback(async () => {
     const [next, config] = await Promise.all([app.readSettings(), native.getConfig()]).catch(() => [null, null] as const)
@@ -672,9 +675,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setSettings(next)
     void toolbox.refreshExternal(true).catch(() => undefined)
     if (session.authenticated && session.account && accountRoutesPending(config, next)) {
-      await runAccountBootstrap(session.account.userId, 'restore', true)
+      await runAccountBootstrap(session.account.userId, 'restore', true, undefined, siteId, true)
     }
-  }, [app, native, runAccountBootstrap, session.account, session.authenticated, toolbox.refreshExternal])
+  }, [app, native, runAccountBootstrap, session.account, session.authenticated, siteId, toolbox.refreshExternal])
   useEffect(() => {
     if (boot !== 'ready') return
     return native.onRelayRouteChanged?.(() => { void followRelayRoute() })
@@ -742,8 +745,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     sessionEvents.current++
     accountEpoch.current++
     cancelPendingLaunchDialogs()
-    bootstrapEpoch.current++
-    bootstrapInFlight.current = null
+    if (!sessionChangeKeepsBootstrap(bootstrapInFlight.current?.scope, next)) {
+      bootstrapEpoch.current++
+      bootstrapInFlight.current = null
+    }
     setSession(next); setAccountReadError(null); setUnread(false); setConfigTool(null); setExternalClient(null); setPaymentReturn(undefined)
     balanceStore.setScope(next.authenticated ? accountScope(next) : null)
     if (restoring) {
@@ -1621,13 +1626,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               </Suspense>
             </div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
-              relayFallback={session.authenticated && relayFallbackActive(settings) && (Boolean(accountBootstrap?.scope === scope && accountBootstrap.result?.routeDeferred?.length)
-                || toolbox.externalClients.some((client) => client.running && client.routePending))}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => {
                 refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
-                // 上一轮有工具开着、连接线路先没改：退出工具后点这里就是要它跟着换（首页那句提示这么说的）。
-                if (session.account && accountBootstrap?.scope === scope && accountBootstrap.result?.routeDeferred?.length) void runAccountBootstrap(session.account.userId, 'restore', true)
               }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}

@@ -6,7 +6,7 @@ import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import type { AccountBootstrapResult } from './account-bootstrap'
+import { configurationFailureMessages, type AccountBootstrapResult } from './account-bootstrap'
 
 const cliStatus: Record<string, unknown> = {
   installed: true, version: '1.2.3', path: 'C:\\fixture\\bin', installDirectory: 'C:\\fixture',
@@ -620,65 +620,44 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     })).toBeNull()
   })
 
-  // 直连适配第六节第 4 条：「自动」退回默认线路、还有工具开着没迁时，上方说一句总的，横幅里不再逐个工具说。
-  const fallbackNotice = '直连这会儿连不上，星芒已改走默认线路；工具要完全退出后点「重新检测」才会跟着换'
-  const codexDeferred = { provider: 'codex' as const, message: 'Codex CLI 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步' }
-
-  it('says once that the tools follow the default line after they quit, instead of naming each tool', () => {
-    const markup = render({}, undefined, {
-      relayFallback: true,
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [codexDeferred], routeDeferred: ['codex'] }),
-      },
-      onBootstrapRetry: () => undefined,
-    })
-    expect(markup).toContain('data-testid="home-relay-fallback"')
-    expect(markup).toContain(fallbackNotice)
-    expect(markup).not.toContain('连接线路暂未改动')
-    // 只剩开着的工具没迁时，横幅没有别的要说，也不给「重新同步」。
-    expect(markup).not.toContain('>重新同步<')
+  // yoyo 10-8：线路的事不要太多提示。跟着连接线路改工具配置的那一轮首页不摆进度、只换了线路也不说「已完成…」，
+  // 出了错照常说；首页也不再有切线路的黄条和「要重开」那句。
+  const followedRoute = (overrides: Partial<AccountBootstrapResult> = {}) => ({
+    phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', quiet: true,
+    result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'], ...overrides }),
   })
 
-  it('keeps the other failures in the banner next to the fallback notice', () => {
+  it('shows no progress while it quietly moves the tools to the current line', () => {
+    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在为 1 个已安装工具写入 Key', percent: 65, scope: 'scope', quiet: true } })
+    expect(markup).not.toContain('正在为 1 个已安装工具写入 Key')
+    expect(markup).not.toContain('v2-bootstrap-notice')
+  })
+
+  it('still says when the quiet round did not finish', () => {
     const markup = render({}, undefined, {
-      relayFallback: true,
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [codexDeferred, { provider: 'claude', message: '当前分组未返回可用模型' }], routeDeferred: ['codex'] }),
-      },
+      bootstrap: { phase: 'syncing', label: '正在同步账号专属 Key', percent: 5, scope: 'scope', quiet: true, error: '星芒账号已变化，已停止本次 Key 配置' },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain(fallbackNotice)
-    expect(markup).toContain('当前分组未返回可用模型')
-    expect(markup).not.toContain('连接线路暂未改动')
+    expect(markup).toContain('role="alert"')
     expect(markup).toContain('>重新同步<')
   })
 
-  it('lets the all-done line go when only the tools waiting to follow the fallback are left', () => {
-    const markup = render({}, undefined, {
-      relayFallback: true,
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt: Date.now() - 60_000,
-        result: bootstrapResult({ configured: ['claude'], failed: [codexDeferred], routeDeferred: ['codex'] }),
-      },
-      onBootstrapRetry: () => undefined,
-    })
-    expect(markup).toContain(fallbackNotice)
-    expect(markup).not.toContain('已完成 1 组工具的 Key 配置。')
+  it('does not announce a round that only moved the tools to the current line', () => {
+    expect(render({}, undefined, { bootstrap: followedRoute() })).not.toContain('v2-bootstrap-notice')
+    // 开机那一轮不是悄悄的那一轮，只换了线路也一样不说。
+    expect(render({}, undefined, { bootstrap: { ...followedRoute(), quiet: undefined } })).not.toContain('v2-bootstrap-notice')
+    // 同一轮里真写了 Key 的照常说。
+    expect(render({}, undefined, { bootstrap: followedRoute({ configured: ['claude', 'codex'] }) })).toContain('已完成 2 组工具的 Key 配置。')
   })
 
-  it('names each deferred tool as before when no fallback is going on', () => {
+  it('still shows the failures of a round that moved the tools, without a word about the line', () => {
     const markup = render({}, undefined, {
-      bootstrap: {
-        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
-        result: bootstrapResult({ failed: [codexDeferred], routeDeferred: ['codex'] }),
-      },
+      bootstrap: followedRoute({ configured: [], routeFollowed: undefined, failed: [{ provider: 'codex', message: configurationFailureMessages.relayMismatch }] }),
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).not.toContain(fallbackNotice)
-    expect(markup).not.toContain('home-relay-fallback')
-    expect(markup).toContain('连接线路暂未改动')
+    expect(markup).toContain(configurationFailureMessages.relayMismatch)
+    expect(markup).toContain('>重新同步<')
+    expect(markup).not.toContain('连接线路')
   })
 })
 

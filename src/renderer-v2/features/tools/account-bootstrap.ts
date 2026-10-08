@@ -1,12 +1,12 @@
-import { accountSiteId, type AccountSiteId } from '../../account-context'
+import { accountScope, accountSiteId, type AccountSiteId } from '../../account-context'
 import {
   providerIds,
+  type AccountSessionState,
   type AppConfigSummary,
   type AppSettingsV2,
   type ProviderId,
   type RelayEndpointId,
   type RendererLogLevel,
-  type RunningToolsReport,
   type SystemSnapshot,
   type XingmangApi,
 } from '../../../../electron/ipc-contract'
@@ -125,11 +125,10 @@ export interface AccountBootstrapResult {
   /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
   regrouped?: ProviderId[]
   /**
-   * 这一轮因为工具开着、连接线路先没改的工具（failed 里各有一句说明）；缺省 = 没有。
-   * 「自动」退回默认线路时首页改说一句总的（直连适配第六节第 4 条），不再逐个工具说一遍；
-   * 首页「重新检测」也据此再迁一次。
+   * 这一轮跟着连接线路改了配置的工具，开没开都算（#941）。只换了线路的那几个首页不说「已完成…」
+   * （bootstrapOnlyFollowedRoute），运行日志照记。缺省 = 这一轮没改线路。
    */
-  routeDeferred?: ProviderId[]
+  routeFollowed?: ProviderId[]
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -140,26 +139,32 @@ export type AccountBootstrapBridge = Pick<
   | 'getSettings'
   | 'configureManagedCliKeys'
   | 'getAccountSession'
-> & Partial<Pick<XingmangApi, 'inspectRunningTools'>>
+>
 
 function nameOf(provider: ProviderId) {
   return tools.find((tool) => tool.id === provider)?.name ?? provider
 }
 
 /**
- * 换线路先不迁时说清在等谁。Codex CLI 和 Codex 桌面端共用一份配置，只是桌面端开着
- * 也要等；那时还说「Codex CLI」，只用桌面端的人会去找命令行窗口。Mac 上只关窗口
- * 桌面端还在后台跑，不说 Command + Q 就会一直卡在「重新同步」上（第四十三批 C）。
- * 什么时候等由调用方定，这里只挑说法。
+ * 这一轮写好的全是跟着连接线路换个地址的：Key 没换、客户也没点什么，首页就不说「已完成…」（yoyo 10-8：
+ * 线路的事不要太多提示）。换了分组的不算，那是 Key 真换了。
  */
-export function routeDeferredMessage(provider: ProviderId, running: RunningToolsReport | null | undefined) {
-  if (provider !== 'codex' || !running || running.running.includes(provider) || running.unknown.includes(provider)) {
-    return `${nameOf(provider)} 可能仍在运行，连接线路暂未改动；请关闭工具后重新同步`
-  }
-  if (running.codexDesktopRunning === true && !running.canRestartCodexDesktop) {
-    return 'Codex 桌面端还开着，连接线路暂未改动；只关窗口不算，要在它的窗口里按 Command + Q 完全退出，再点「重新同步」'
-  }
-  return 'Codex 桌面端可能仍在运行，连接线路暂未改动；请关闭工具后重新同步'
+export function bootstrapOnlyFollowedRoute(result: Pick<AccountBootstrapResult, 'configured' | 'routeFollowed' | 'regrouped'>): boolean {
+  return result.configured.length > 0
+    && result.configured.every((provider) => result.routeFollowed?.includes(provider) && !result.regrouped?.includes(provider))
+}
+
+/**
+ * 主进程说「会话变了」时，正在跑的那一轮 Key 同步还算不算数：还是同一个账号就接着算，换了账号、
+ * 退出登录才作废。登录成功后主进程要把手上的事忙完才发这一条，常常晚于界面已经开跑的那一轮登录同步；
+ * 以前一律作废，那一轮的结果被扔掉，引导页一直停在「正在同步账号专属 Key」、按钮全灰，要等别的事
+ * 碰巧再跑一轮才解开。
+ */
+export function sessionChangeKeepsBootstrap(
+  inFlightScope: string | null | undefined,
+  next: Pick<AccountSessionState, 'authenticated' | 'account' | 'siteId' | 'realmId'>,
+): boolean {
+  return Boolean(inFlightScope && next.authenticated && next.account && accountScope(next) === inFlightScope)
 }
 
 function installedState(system: SystemSnapshot, provider: ProviderId) {
@@ -196,17 +201,6 @@ function settledRouteLine(settings: AppSettingsV2, siteId: 'solov' | 'solov-api'
   if (preference !== 'auto') return preference
   const route = settings.relayRouteLines?.[siteId]
   return route?.settled ? route.line : null
-}
-
-/**
- * 「自动」查出直连连不上、星芒已经改走默认线路（直连适配第六节第 4 条）。看的是这次运行生效的
- * 那一档：存了别的选项、还没重启时，跑的照旧是「自动」。
- */
-export function relayFallbackActive(settings: AppSettingsV2 | null | undefined): boolean {
-  const siteId = settings?.relaySiteId ?? 'solov'
-  if (!settings || (siteId !== 'solov' && siteId !== 'solov-api')) return false
-  const route = settings.relayRouteLines?.[siteId]
-  return settings.activeRelayEndpointIds?.[siteId] === 'auto' && route?.settled === true && route.line === 'primary'
 }
 
 /** Alias recognition restores identity; only an applied, settled line permits migration. */
@@ -368,7 +362,6 @@ export function accountBootstrapPlan(
 export const configurationFailureMessages = {
   missingKey: '配置文件里没有检测到密钥',
   relayMismatch: '服务地址尚未与当前账号匹配',
-  routeMismatch: '连接线路尚未更新，请关闭工具后重新同步',
   missingModel: '默认模型尚未写入配置',
   geminiAuthMode: 'Gemini 尚未切换到 API Key 模式',
   unconfirmedSource: '配置来源尚未确认属于当前账号',
@@ -448,38 +441,26 @@ export async function bootstrapAccountTools(
     ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
     : planned
 
-  const migrating = plan.targets.filter((provider) => routeChanges.includes(provider))
-  const deferred: Array<{ provider: ProviderId; message: string }> = []
-  if (migrating.length) {
-    const running = await api.inspectRunningTools?.(migrating).catch(() => null)
-    for (const provider of migrating) {
-      if (!running || running.running.includes(provider) || running.unknown.includes(provider)
-        || (provider === 'codex' && running.codexDesktopRunning !== false)) {
-        deferred.push({ provider, message: routeDeferredMessage(provider, running) })
-      }
-    }
-    await assertAccount(api, expectedUserId, expectedSiteId)
-  }
-  const configureTargets = plan.targets.filter((provider) => !deferred.some((entry) => entry.provider === provider))
+  // 换了连接线路的工具开着也照样改（#941）：以前开着的先不改，客户不关工具、不点「重新同步」，它就一直
+  // 停在原来那条线路上。开着的进程重开以后就走新地址；线路的事不在首页提示（yoyo 10-8）。
   let outcome: Awaited<ReturnType<AccountBootstrapBridge['configureManagedCliKeys']>> = {
     configured: [],
-    failed: deferred,
+    failed: [],
   }
-  if (configureTargets.length) {
+  if (plan.targets.length) {
     onProgress({
       phase: 'configuring',
-      label: `正在为 ${configureTargets.length} 个已安装工具写入 Key`,
+      label: `正在为 ${plan.targets.length} 个已安装工具写入 Key`,
       percent: 65,
       ...keyChanges,
     })
     outcome = await api.configureManagedCliKeys({
-      providers: configureTargets,
+      providers: plan.targets,
       preferredModels: plan.preferredModels,
       // 被改动过的配置在主进程那一侧也受「来源未确认就不自动改写」拦着，
       // 用户点名的这一次要说清楚是他自己要求的，才能穿过那道闸。
       ...(mode === 'rewrite' ? { intent: 'explicit' as const } : {}),
     })
-    outcome.failed = [...deferred, ...outcome.failed]
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
@@ -499,9 +480,10 @@ export async function bootstrapAccountTools(
     let problem = outcome.configured.includes(provider)
       ? configurationFailure(verified, provider, storage)
       : '账号 Key 配置未返回成功结果'
+    // 说是写好了、地址却还在原来那条线路上：照「服务地址没对上」说，不另提线路（yoyo 10-8）。
     if (!problem && routeChanges.includes(provider)
       && !sameNativeRelayUrl(verified.providers[provider].actualBaseUrl, config.providers[provider].baseUrl)) {
-      problem = configurationFailureMessages.routeMismatch
+      problem = configurationFailureMessages.relayMismatch
     }
     if (problem) {
       failed.push({ provider, message: problem })
@@ -516,6 +498,7 @@ export async function bootstrapAccountTools(
     )
     if (markerWarning) markerWarnings.push(`${nameOf(provider)}：${markerWarning}`)
   }
+  const followed = configured.filter((provider) => routeChanges.includes(provider))
 
   const readyKeys = synchronized?.ready.map((entry) => entry.provider) ?? []
   // 没装的工具 Key 签不下来，用户在首页什么也做不了，点「重新同步」也还是那句；
@@ -566,7 +549,7 @@ export async function bootstrapAccountTools(
     ...(synchronized?.regrouped?.length
       ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
       : {}),
-    ...(deferred.length ? { routeDeferred: deferred.map((entry) => entry.provider) } : {}),
+    ...(followed.length ? { routeFollowed: followed } : {}),
   }
 }
 
@@ -611,6 +594,7 @@ export function describeAccountBootstrapResult(
     parts.push(`跳过 ${result.skipped.map((entry) => `${nameOf(entry.provider)}（${skipReasonLabels[entry.reason]}）`).join('、')}`)
   }
   if (result.repairedShadowed?.length) parts.push(`顺手修好 ${result.repairedShadowed.map(nameOf).join('、')} 认不出的连接设置`)
+  if (result.routeFollowed?.length) parts.push(`跟着换了连接线路：${result.routeFollowed.map(nameOf).join('、')}`)
   if (result.networkBlocked) parts.push('被网络拦住，联网后会自动补跑')
   return {
     level: result.failed.length || result.networkBlocked ? 'warn' : 'info',
