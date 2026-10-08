@@ -270,6 +270,47 @@ function Get-AppxPackage { @() }
       assert.deepEqual(fresh.errorDetails, { workbuddy: 'verified anew' }, JSON.stringify(changed))
     }
   }],
+  // 打开之前只看要打开的那一个：别的客户端不出来，打开 WorkBuddy 也不去查 AppX。各段用时照样报回来，进运行日志。
+  ['external client inventory before a launch looks at the client being opened alone and says how long each part took', async () => {
+    const mocks = String.raw`
+function Test-Path { param([string]$LiteralPath) return $LiteralPath -like 'Registry::HKEY_CURRENT_USER\*' }
+function Get-ChildItem {
+  param([string]$LiteralPath)
+  [pscustomobject]@{ PSPath='workbuddy-key'; PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}' }
+  [pscustomobject]@{ PSPath='opencode-key'; PSChildName='{d074f30d-5f88-5885-b075-be1348cc7676}' }
+}
+function Get-ItemProperty {
+  param([string]$LiteralPath)
+  if ($LiteralPath -eq 'workbuddy-key') { [pscustomobject]@{ PSChildName='{BFD312E9-1019-4F57-9F44-F86246833B50}'; DisplayName='WorkBuddy'; InstallLocation='C:\Users\Tester\AppData\Local\WorkBuddy'; DisplayIcon=$null; DisplayVersion='1.0.0' } }
+  else { [pscustomobject]@{ PSChildName='{d074f30d-5f88-5885-b075-be1348cc7676}'; DisplayName='OpenCode'; InstallLocation='C:\Users\Tester\AppData\Local\OpenCode'; DisplayIcon=$null; DisplayVersion='2.0.0' } }
+}
+function Get-Item { param([string]$LiteralPath, [switch]$Force) [pscustomobject]@{ Attributes=[System.IO.FileAttributes]::Normal; PSIsContainer=$false; Length=7; LastWriteTimeUtc=[datetime]::UtcNow; CreationTimeUtc=[datetime]::UtcNow } }
+function Get-AuthenticodeSignature { param([string]$LiteralPath) [pscustomobject]@{ Status='Valid'; SignerCertificate=[pscustomobject]@{ Subject='CN=Test' } } }
+function Get-Process { @() }
+function Get-AppxPackage {
+  [pscustomobject]@{ PackageFamilyName='Claude_pzs8sxrjxfjjc'; InstallLocation='C:\Program Files\WindowsApps\Claude_2.110.1.0_x64__pzs8sxrjxfjjc'; Version='2.110.1.0'; Publisher='CN="Anthropic, PBC", O="Anthropic, PBC", C=US' }
+}
+`
+    const inventory = async (only) => JSON.parse((await runEncoded(mocks + windowsExternalClientInventoryScript([], only))).trim())
+    const tools = (data) => data.clients.map((client) => [client.tool, client.version])
+    const everything = await inventory()
+    assert.deepEqual(tools(everything), [['claudeDesktop', '2.110.1.0'], ['workbuddy', '1.0.0'], ['opencode', '2.0.0']])
+    assert.equal(everything.timings.signaturesChecked, 2)
+    const workbuddy = await inventory('workbuddy')
+    // Had AppX been queried, the Claude Desktop the mock above answers with would be in the list.
+    assert.deepEqual(tools(workbuddy), [['workbuddy', '1.0.0']])
+    assert.deepEqual(workbuddy.errors, {})
+    assert.equal(workbuddy.timings.appxMs, undefined)
+    assert.equal(workbuddy.timings.signaturesChecked, 1)
+    const claude = await inventory('claudeDesktop')
+    assert.deepEqual(tools(claude), [['claudeDesktop', '2.110.1.0']])
+    assert.equal(claude.timings.signaturesChecked, 0)
+    for (const data of [everything, workbuddy, claude]) {
+      const sections = ['importMs', 'registryMs', 'processMs', 'clientsMs', 'signatureMs', 'signaturesChecked', 'signaturesReused', ...(data === workbuddy ? [] : ['appxMs'])]
+      assert.deepEqual(Object.keys(data.timings).sort(), [...sections].sort())
+      for (const section of sections) assert.ok(Number.isSafeInteger(data.timings[section]) && data.timings[section] >= 0, `${section}: ${JSON.stringify(data.timings)}`)
+    }
+  }],
 ]
 
 checks.push(['store availability probe answers without throwing', async () => {
@@ -458,7 +499,13 @@ const trustedProbes = [
   ['external client inventory', externalClientSystemCommandTimeoutMs, async () => {
     const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientInventoryScript())], trustedEnv())).trim())
     assert.ok(Array.isArray(parsed.clients))
-    return `${parsed.clients.length} client(s), errors=${JSON.stringify(parsed.errors)}`
+    return `${parsed.clients.length} client(s), errors=${JSON.stringify(parsed.errors)}, timings=${JSON.stringify(parsed.timings)}`
+  }],
+  ['external client inventory before opening WorkBuddy', externalClientSystemCommandTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientInventoryScript([], 'workbuddy'))], trustedEnv())).trim())
+    assert.ok(Array.isArray(parsed.clients))
+    assert.equal(parsed.timings.appxMs, undefined)
+    return `${parsed.clients.length} client(s), errors=${JSON.stringify(parsed.errors)}, timings=${JSON.stringify(parsed.timings)}`
   }],
   ['uninstall desktop account', 90_000, async () => {
     const output = await runPowerShell(['-Command', uninstallAccountProbeScript], trustedEnv())
@@ -975,6 +1022,7 @@ Write-Output ('RECOVERY_CHECKS=' + $script:checks)
 const trustedProbeScripts = [
   ['check page Codex desktop', buildDiagnosticsCodexDesktopProbeScript(), {}],
   ['external client inventory', windowsExternalClientInventoryScript(), {}],
+  ['external client inventory before opening WorkBuddy', windowsExternalClientInventoryScript([], 'workbuddy'), {}],
   ['uninstall desktop account', uninstallAccountProbeScript, {}],
   ['Claude desktop manifest', buildClaudeDesktopManifestInspectionScript(manifestPath, '1.0.0.0', 'x64'), {}],
   ['Claude desktop policy', claudeDesktopPolicyReadScript, {}],
