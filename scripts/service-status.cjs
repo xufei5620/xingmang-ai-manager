@@ -162,6 +162,11 @@ function applyStatusChanges(current, changes, now = new Date()) {
   const minimumVersion = applyMinimumVersion(next.minimumVersion, changes['minimum-version'], publishedVersions)
   if (minimumVersion === undefined) delete next.minimumVersion
   else next.minimumVersion = minimumVersion
+  const toolRouteRewrite = changes['tool-route-rewrite'] ?? 'keep'
+  if (!['keep', 'targeted', 'merge'].includes(toolRouteRewrite)) throw new StatusInputError(`换线路改配置的方式只能是 keep / targeted / merge：${toolRouteRewrite}`)
+  // 缺省就是只改地址（xm 三线路 C9）；只有切回整份重写时才写这个字段，切回来时整个删掉。
+  if (toolRouteRewrite === 'targeted') delete next.toolRouteRewrite
+  else if (toolRouteRewrite === 'merge') next.toolRouteRewrite = 'merge'
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -175,6 +180,7 @@ function describeStatus(status) {
   lines.push(Array.isArray(status.badVersions) && status.badVersions.length ? `撤回的版本：${status.badVersions.join('、')}` : '撤回的版本：无')
   lines.push(isRecord(status.rollout) ? `分批放量：${status.rollout.version} 先给 ${status.rollout.percent}% 的电脑` : '分批放量：无（新版本全部放开）')
   lines.push(typeof status.minimumVersion === 'string' ? `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认）` : '最低版本：无')
+  lines.push(status.toolRouteRewrite === 'merge' ? '换线路时：整份重写工具配置（老办法，只有 0.2.18 及以后的客户端认）' : '换线路时：只改工具配置里的地址')
   return lines
 }
 
@@ -193,7 +199,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--tool-route-rewrite keep|targeted|merge]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const next = applyStatusChanges(parseCurrentStatus(currentText), options)

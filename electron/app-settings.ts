@@ -5,6 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
+import type { ToolRouteRestartHint } from './running-tools'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
   assertSafeDataFile,
@@ -63,6 +64,15 @@ export interface AppSettings {
   readonly activeRelayEndpointIds?: RelayRoutePreferences
   /** IPC runtime snapshot only: the line each site uses right now ('auto' can move during a run). */
   readonly relayRouteLines?: RelayRouteLines
+  /**
+   * 「换线路后提醒我重开工具」。缺省 = 开，和 crashReporting 一样只把客户亲手关掉的 false 落盘。
+   * 关掉以后只在首页标「需重开生效」（xm 三线路 C10）。
+   */
+  toolRouteRestartHints?: boolean
+  /** IPC runtime snapshot only: 连接线路因为连不上换了以后，要客户重开的工具（running-tools.ts）。 */
+  readonly toolRouteRestartHint?: ToolRouteRestartHint
+  /** IPC runtime snapshot only: R6 切回了整份写入的老路；缺省 = 主进程定点改写。 */
+  readonly toolRouteRewrite?: 'merge'
   /**
    * Pinned download-source order. Absent = 'auto' (probe the region, the
    * entire install base's behavior pre-2.4). Unknown values degrade to
@@ -188,6 +198,7 @@ export interface AppSettingsUpdate {
   autoUpdate?: boolean
   hardwareAcceleration?: boolean
   largeText?: boolean
+  toolRouteRestartHints?: boolean
   uiScale?: AppUiScale
   closeBehavior?: AppCloseBehavior
   /** Only the host sets this; true is sticky and false is ignored. */
@@ -373,6 +384,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(value.desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(value.autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(value.toolRouteRestartHints === false ? { toolRouteRestartHints: false as const } : {}),
     ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(optionalBoolean(value.largeText, false) ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
@@ -510,6 +522,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
   const reducedMotion = update.reducedMotion ?? base.reducedMotion
   const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
+  const toolRouteRestartHints = update.toolRouteRestartHints ?? base.toolRouteRestartHints
   const autoUpdate = update.autoUpdate ?? base.autoUpdate
   const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
   const largeText = update.largeText ?? base.largeText
@@ -537,6 +550,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(toolRouteRestartHints === false ? { toolRouteRestartHints: false as const } : {}),
     ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(largeText ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),

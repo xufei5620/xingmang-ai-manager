@@ -1,5 +1,5 @@
 # 改更新目录上的 service-status.json：打开或关闭「服务正在维护」提示、撤回坏版本、
-# 分批放量、最低版本（强制更新）。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
+# 分批放量、最低版本（强制更新）、换线路时怎么改工具配置。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
 # 客户端怎么读见 electron/service-status.ts，一步步的操作见 docs/SERVICE-STATUS.md。
 #
 # 只改这次选了或填了的那几项，其余字段照线上原样保留。凭据与正式发布共用
@@ -37,6 +37,14 @@ on:
         description: 最低版本（留空不改；写 0.2.12 表示低于它的必须先更新，none 取消；不能高于线上正在发的版本）
         type: string
         required: false
+      tool_route_rewrite:
+        description: 换线路时怎么改工具配置（定点只改地址出问题时切回整份重写，0.2.18 起的客户端认）
+        type: choice
+        default: 'keep: 不改'
+        options:
+          - 'keep: 不改'
+          - 'targeted: 只改地址（默认）'
+          - 'merge: 整份重写（老办法）'
 
 permissions:
   contents: read
@@ -138,6 +146,7 @@ jobs:
           ROLLOUT: ${{ inputs.rollout }}
           MINIMUM_VERSION: ${{ inputs.minimum_version }}
           PUBLISHED_VERSIONS: ${{ steps.published.outputs.versions }}
+          TOOL_ROUTE_REWRITE: ${{ inputs.tool_route_rewrite }}
         run: |
           set -euo pipefail
           node scripts/service-status.cjs \
@@ -149,7 +158,8 @@ jobs:
             --bad-versions "$BAD_VERSIONS" \
             --rollout "$ROLLOUT" \
             --minimum-version "$MINIMUM_VERSION" \
-            --published-versions "$PUBLISHED_VERSIONS"
+            --published-versions "$PUBLISHED_VERSIONS" \
+            --tool-route-rewrite "${TOOL_ROUTE_REWRITE%%:*}"
           echo "将要发布："
           cat "$RUNNER_TEMP/service-status.json"
 

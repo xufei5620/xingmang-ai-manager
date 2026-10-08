@@ -119,7 +119,7 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11'), /版本号 空格 百分比/)
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
-  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无'])
+  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址'])
 })
 
 test('a minimum version never goes above what the feed is publishing', () => {
@@ -152,4 +152,25 @@ test('the workflow checks the live manifests before it sets a minimum version', 
   const { UPDATE_MANIFEST_NAMES } = require('./update-release-utils.cjs')
   assert.ok(steps[manifests].run.includes(`for manifest in ${UPDATE_MANIFEST_NAMES.join(' ')}; do`))
   assert.match(steps[manifests].run, /404\) echo "线上没有 \$manifest，跳过这个平台"/)
+})
+
+test('the tool route rewrite switch writes merge, drops the field for targeted and keeps it otherwise', () => {
+  const merged = applyStatusChanges({ badVersions: ['0.2.10'] }, { 'tool-route-rewrite': 'merge' }, now)
+  assert.equal(merged.toolRouteRewrite, 'merge')
+  assert.deepEqual(merged.badVersions, ['0.2.10'])
+  assert.equal(describeStatus(merged)[4], '换线路时：整份重写工具配置（老办法，只有 0.2.18 及以后的客户端认）')
+  assert.equal(applyStatusChanges(merged, { 'tool-route-rewrite': 'keep' }, now).toolRouteRewrite, 'merge')
+  assert.equal(applyStatusChanges(merged, {}, now).toolRouteRewrite, 'merge')
+  assert.equal('toolRouteRewrite' in applyStatusChanges(merged, { 'tool-route-rewrite': 'targeted' }, now), false)
+  assert.throws(() => applyStatusChanges({}, { 'tool-route-rewrite': 'full' }, now), StatusInputError)
+})
+
+test('the workflow offers the tool route rewrite switch and passes only its keyword to the script', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  const input = workflow.on.workflow_dispatch.inputs.tool_route_rewrite
+  assert.equal(input.default, 'keep: 不改')
+  assert.deepEqual(input.options.map((option) => option.split(':')[0]), ['keep', 'targeted', 'merge'])
+  const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
+  assert.equal(build.env.TOOL_ROUTE_REWRITE, '${{ inputs.tool_route_rewrite }}')
+  assert.match(build.run, /--tool-route-rewrite "\$\{TOOL_ROUTE_REWRITE%%:\*\}"/)
 })
