@@ -69,7 +69,7 @@ interface LocatedClient {
   running: boolean
   applicationId?: string
 }
-interface Inspection { clients: LocatedClient[]; errors: Partial<Record<ExternalToolId, string>> }
+interface Inspection { clients: LocatedClient[]; errors: Partial<Record<ExternalToolId, string>>; timings?: ExternalClientInventoryTimings }
 interface InspectionScope {
   /** 只给展示用的检测：可以认之前验过、文件没变的签名（Mac 上只认几分钟内的）。装、打开从不传。 */
   reuseSignatures?: boolean
@@ -78,7 +78,7 @@ interface InspectionScope {
    * 没验过的、上次没通过的照旧现验。装从不传；Mac 上不看它，打开照旧现验。
    */
   reuseVerifiedSignatures?: boolean
-  /** Mac 上只看这一个客户端（打开它之前）。Windows 的清点是一整段脚本，照旧全看。 */
+  /** 只看这一个客户端（打开它之前）：没点的那几家跟这次打开无关，不该让人多等。 */
   only?: ExternalToolId
 }
 /** 判断应用包变没变要看的那几项；fs.Stats 本身就满足。 */
@@ -126,6 +126,12 @@ export interface ExternalClientRuntimeOptions {
    * 首页那一行只说前半句中文（已知3）。同一个客户端内容没变就不再调。
    */
   onDetectionErrorDetail?: (failure: ExternalClientDetectionErrorDetail) => void
+  /**
+   * 每次打开成了，各段花了多久（排队、打开前那次检测和它里面的各段、交出去），只进运行日志：
+   * 客户说「打开还是慢」时，分得清是慢在星芒这边哪一段，还是客户端自己启动慢。没打开成的不调，
+   * 那一次一共多久照旧记在「外部客户端启动」那一行。
+   */
+  onLaunchTiming?: (timing: ExternalClientLaunchTiming) => void
 }
 
 /** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
@@ -141,6 +147,36 @@ export interface ExternalClientDetectionErrorDetail {
   tool: ExternalToolId
   reason: string
   message: string
+}
+
+/** Windows 检测脚本里各段花的毫秒数，和这一次现核、照用了几个签名。 */
+export interface ExternalClientInventoryTimings {
+  /** PowerShell 从起来到退出一共多久；减去下面各段（signatureMs 已算在 clientsMs 里），剩下的多半是它自己启动花的。 */
+  powershellMs?: number
+  /** 导入要用的几个 PowerShell 模块，再读入记住的签名结果（Windows PowerShell 头一回解析 JSON 也要加载组件）。 */
+  importMs?: number
+  /** 读三处卸载信息。 */
+  registryMs?: number
+  /** 看哪些客户端在运行。 */
+  processMs?: number
+  /** 查 Claude Desktop 的 AppX 注册信息；只看 WorkBuddy、OpenCode 时不查，也就没有这一项。 */
+  appxMs?: number
+  /** 逐家核对安装位置和签名，含下面的 signatureMs。 */
+  clientsMs?: number
+  signatureMs?: number
+  signaturesChecked?: number
+  signaturesReused?: number
+}
+
+/** 点「打开」到交给资源管理器（Mac 上是 open）为止，各段花的毫秒数。 */
+export interface ExternalClientLaunchTiming extends ExternalClientInventoryTimings {
+  tool: ExternalToolId
+  /** 排在别的安装、卸载、打开后面等了多久。 */
+  queueWaitMs: number
+  /** 打开前那次检测一共多久：Windows 上是 powershellMs 加上星芒自己再核一遍路径。 */
+  inventoryMs: number
+  /** 交给资源管理器（Mac 上是 open）用了多久。 */
+  launchMs: number
 }
 
 /** spctl 或 codesign 没放行时的那几项；output 是它们写在标准错误里的原话。 */
@@ -268,6 +304,17 @@ function scriptErrorDetails(value: unknown): Partial<Record<ExternalToolId, stri
   }
   return details
 }
+const scriptTimingKeys = ['importMs', 'registryMs', 'processMs', 'appxMs', 'clientsMs', 'signatureMs', 'signaturesChecked', 'signaturesReused'] as const
+/** 检测脚本报的各段用时，只进运行日志：只留认识的那几项里的非负整数，格式不对同样当没有。 */
+function scriptTimings(value: unknown): ExternalClientInventoryTimings {
+  const timings: ExternalClientInventoryTimings = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return timings
+  for (const key of scriptTimingKeys) {
+    const entry = (value as Record<string, unknown>)[key]
+    if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0) timings[key] = entry
+  }
+  return timings
+}
 /** spctl 退出码 3 是 Gatekeeper 拒绝；codesign 1 是核对没过，3 是签名完好但不满足钉住的要求（团队、包名）。 */
 function macSignatureRefused(error: unknown): boolean {
   if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.signal) return false
@@ -343,11 +390,41 @@ ConvertTo-Json -InputObject @($paths) -Compress
 `
 }
 
-export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = []): string {
+/** 打开 WorkBuddy、OpenCode 之前只看它自己，用不着 Appx：导入它、查 AppX 注册信息都要花时间。 */
+export function windowsExternalClientInventoryModulesFor(only?: ExternalToolId): readonly string[] {
+  return only === undefined || only === 'claudeDesktop' ? windowsExternalClientInventoryModules
+    : windowsExternalClientInventoryModules.filter((name) => name !== 'Appx')
+}
+
+// Claude Desktop's MSIX install, registered for the current user only.
+const windowsClaudeAppxInventory = String.raw`
+try {
+  foreach ($package in @(Get-AppxPackage -Name Claude)) {
+    if ($package.PackageFamilyName -ceq 'Claude_pzs8sxrjxfjjc') {
+      $exe = Join-Path $package.InstallLocation 'app\Claude.exe'
+      $clients.Add([pscustomobject]@{ tool='claudeDesktop'; path=$exe; version=[string]$package.Version; running=($processes -contains $exe); family=[string]$package.PackageFamilyName; publisher=[string]$package.Publisher; installLocation=[string]$package.InstallLocation; applicationId='Claude_pzs8sxrjxfjjc!Claude' })
+    }
+  }
+} catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'; $errorDetails.claudeDesktop = [string]$_.Exception.Message }
+$timings['appxMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
+`.trim()
+
+/**
+ * `only` is the client about to be opened: the script then reads every uninstall
+ * key as before (that is how it finds the client and its registered version) but
+ * locates, stamps and verifies that client alone, and queries AppX only for Claude
+ * Desktop. Every check on the client being opened is unchanged.
+ *
+ * `timings` reports, per section, the milliseconds the script spent, for the
+ * runtime log alone (see onLaunchTiming).
+ */
+export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = [], only?: ExternalToolId): string {
+  if (only !== undefined && !isExternalToolId(only)) throw new Error('未知客户端')
   const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject, version }) => ({ path: file, stamp, status, subject, version }))), 'utf8').toString('base64')
   return String.raw`
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModules)}
+${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModulesFor(only))}
 $ErrorActionPreference = 'Stop'
 $knownSignatures = @{}
 # Windows PowerShell 5.1 emits a JSON array as one pipeline object; assigning it
@@ -356,6 +433,10 @@ $knownList = ConvertFrom-Json ([System.Text.Encoding]::UTF8.GetString([Convert]:
 foreach ($entry in $knownList) {
   if ($entry -and $entry.path) { $knownSignatures[[string]$entry.path] = $entry }
 }
+# The first ConvertFrom-Json loads its serializer on Windows PowerShell 5.1, so it
+# is counted with the imports rather than as reading the registry.
+$timings = [ordered]@{ importMs = [int]$clock.ElapsedMilliseconds }
+$clock.Restart()
 $clients = [System.Collections.Generic.List[object]]::new()
 $errors = @{}
 # The screen gets only the Chinese sentence in $errors; what PowerShell said, most
@@ -416,20 +497,19 @@ foreach ($root in $roots) {
     if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=$root; reason=[string]$_.Exception.Message }) }
   }
 }
+$timings['registryMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
 $processes = @(Get-Process -Name WorkBuddy,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })
+$timings['processMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
 $products = @(
   @{ tool='workbuddy'; code='BFD312E9-1019-4F57-9F44-F86246833B50'; name='^WorkBuddy(?:\s|$)'; exe='WorkBuddy.exe' },
   @{ tool='claudeDesktop'; code='AnthropicClaude'; name='^Claude$'; exe='Claude.exe' },
   @{ tool='opencode'; code='d074f30d-5f88-5885-b075-be1348cc7676'; name='^OpenCode$'; exe='OpenCode.exe' }
-)
-try {
-  foreach ($package in @(Get-AppxPackage -Name Claude)) {
-    if ($package.PackageFamilyName -ceq 'Claude_pzs8sxrjxfjjc') {
-      $exe = Join-Path $package.InstallLocation 'app\Claude.exe'
-      $clients.Add([pscustomobject]@{ tool='claudeDesktop'; path=$exe; version=[string]$package.Version; running=($processes -contains $exe); family=[string]$package.PackageFamilyName; publisher=[string]$package.Publisher; installLocation=[string]$package.InstallLocation; applicationId='Claude_pzs8sxrjxfjjc!Claude' })
-    }
-  }
-} catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'; $errorDetails.claudeDesktop = [string]$_.Exception.Message }
+)${only === undefined ? '' : `
+$products = @($products | Where-Object { $_.tool -ceq '${only}' })`}
+${only === undefined || only === 'claudeDesktop' ? windowsClaudeAppxInventory : ''}
+$signatureClock = [System.Diagnostics.Stopwatch]::new()
+$signaturesChecked = 0
+$signaturesReused = 0
 foreach ($product in $products) {
   if ($registryIncomplete -and !$errors.ContainsKey($product.tool)) {
     $errors[$product.tool] = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
@@ -451,8 +531,11 @@ foreach ($product in $products) {
         if ($known -and [string]$known.stamp -ceq $stamp -and [string]$known.version -ceq [string]$entry.DisplayVersion) {
           $signatureStatus = [string]$known.status
           $signatureSubject = [string]$known.subject
+          $signaturesReused++
         } else {
-          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          $signaturesChecked++
+          $signatureClock.Start()
+          try { $signature = Get-AuthenticodeSignature -LiteralPath $exe } finally { $signatureClock.Stop() }
           $signatureStatus = [string]$signature.Status
           $signatureSubject = [string]$signature.SignerCertificate.Subject
         }
@@ -461,7 +544,11 @@ foreach ($product in $products) {
     }
   }
 }
-@{ clients=@($clients.ToArray()); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures.ToArray()) } | ConvertTo-Json -Depth 5 -Compress
+$timings['clientsMs'] = [int]$clock.ElapsedMilliseconds
+$timings['signatureMs'] = [int]$signatureClock.ElapsedMilliseconds
+$timings['signaturesChecked'] = $signaturesChecked
+$timings['signaturesReused'] = $signaturesReused
+@{ clients=@($clients.ToArray()); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures.ToArray()); timings=$timings } | ConvertTo-Json -Depth 5 -Compress
 `.trim()
 }
 
@@ -575,7 +662,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   async function inspectWindows(scope: InspectionScope): Promise<Inspection> {
     const remembered = [...knownSignatures.values()]
     const script = windowsExternalClientInventoryScript(scope.reuseSignatures === true ? remembered
-      : scope.reuseVerifiedSignatures === true ? remembered.filter((entry) => entry.status === 'Valid') : [])
+      : scope.reuseVerifiedSignatures === true ? remembered.filter((entry) => entry.status === 'Valid') : [], scope.only)
     const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, systemOptions())
     const data = record(JSON.parse(cleanCommandOutput(result.stdout).trim()) as unknown)
     if (!Array.isArray(data.clients)) throw new Error('客户端安装检测未返回有效列表')
@@ -618,8 +705,9 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     }
     for (const client of clients) delete errors[client.tool]
     // 原话只配脚本自己说的那句：这一行最后报的要是这边核对路径、签名时另起的错，它就对不上了。
-    for (const tool of tools) noteDetectionErrorDetail(tool, errors[tool] === scriptErrors[tool] ? errors[tool] : undefined, details[tool])
-    return { clients, errors }
+    // 打开前只看了一家，没看的那几家不算「这次没有原话」，免得下一轮检测把同一句再记一遍。
+    for (const tool of scope.only ? [scope.only] : tools) noteDetectionErrorDetail(tool, errors[tool] === scriptErrors[tool] ? errors[tool] : undefined, details[tool])
+    return { clients, errors, timings: { powershellMs: result.durationMs, ...scriptTimings(data.timings) } }
   }
 
   /** 包目录、Info.plist、主程序三处的身份和时间；主程序名不像样或读不到时给 null，那一次就现验。 */
@@ -899,10 +987,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   }
   function launch(tool: ExternalToolId): Promise<void> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
+    const requestedAt = now()
     const launched = queue.enqueue(`external-client:launch:${tool}`, async () => {
-      // 只现验要打开的这一个（Mac）：没点的那几家跟这次打开无关，不该让人多等它们的签名核对。
+      const startedAt = now()
+      // 只看要打开的这一个：没点的那几家跟这次打开无关，不该让人多等它们的检测和签名核对。
       // Windows 上验过并且通过、文件和版本都没变的不再现验（已知68，理由见 windowsExternalClientInventoryScript 上面）。
       const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32' })
+      const inspectedAt = now()
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       if (platform === 'win32') {
@@ -916,6 +1007,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (runningAsRoot()) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
+      try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }
+      catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
     })
     // 打开之后「正在运行」就变了，下一次检测得重新盘点。
     void launched.then(invalidateScan, invalidateScan)
