@@ -157,8 +157,9 @@ const SETTINGS_QUERY = `query ($zoneTag: string) {
   }
 }`
 
+// Cloudflare 把可用字段写成 dimensions_userAgent 这样，前缀是字段所在的分组。
 function hasField(fields, name) {
-  return fields.some((field) => typeof field === 'string' && (field === name || field.endsWith(`.${name}`)))
+  return fields.some((field) => typeof field === 'string' && (field === name || field.endsWith(`_${name}`) || field.endsWith(`.${name}`)))
 }
 
 // 套餐不同，能查多久以前、一次能查多长、能按哪些字段分组都不一样（免费版尤其短），

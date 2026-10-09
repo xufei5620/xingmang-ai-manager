@@ -38,7 +38,8 @@ function settings(overrides = {}) {
     maxDuration: 86400,
     notOlderThan: 8 * 86400,
     maxPageSize: 10000,
-    availableFields: ['count', 'avg.sampleInterval', 'dimensions.userAgent', 'dimensions.clientIP', 'dimensions.clientRequestPath'],
+    // The shape a live zone reported on 2026-10-09.
+    availableFields: ['avg_sampleInterval', 'count', 'dimensions_clientIP', 'dimensions_clientRequestPath', 'dimensions_userAgent', 'dimensions_userAgentBrowser'],
     ...overrides,
   }
 }
@@ -184,7 +185,7 @@ test('a piece that fills a whole page is split in half until every group fits', 
 
 test('without client addresses the report falls back to request counts', async () => {
   const cloudflare = createCloudflare({
-    limits: settings({ availableFields: ['count', 'dimensions.userAgent'] }),
+    limits: settings({ availableFields: ['count', 'dimensions_userAgent', 'dimensions_userAgentOS'] }),
     groups: () => [{ count: 9, avg: { sampleInterval: 4 }, dimensions: { userAgent: windows15 } }],
   })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
@@ -195,7 +196,7 @@ test('without client addresses the report falls back to request counts', async (
 })
 
 test('a plan that cannot group by user agent stops with a plain explanation', async () => {
-  const cloudflare = createCloudflare({ limits: settings({ availableFields: ['count', 'dimensions.clientIP'] }) })
+  const cloudflare = createCloudflare({ limits: settings({ availableFields: ['count', 'dimensions_clientIP', 'dimensions_userAgentBrowser'] }) })
   await assert.rejects(collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl }), /不能按 User-Agent 分组/)
   assert.equal(cloudflare.calls.length, 2)
 })
