@@ -188,11 +188,14 @@ Actions → **update-feed-stats** → **Run workflow**，「统计最近几天�
 - 0.2.18 起 Windows 走直连线路的电脑从 `xm-direct.solov.cc` 读，那部分只在服务端日志里，这里看不到。
 - 同一个网络出口下的几台电脑算一台，换过网络的电脑会算成几台。
 - Cloudflare 只留最近一段时间的统计，填的天数比它留的多时只统计它留着的那段，Summary 页上会写明。
+- 请求多的时候 Cloudflare 会抽样记录（2026-10-09 第一次跑，7 天里最多每 3 次记 1 次），Summary 页上会写明；占比很小的几行只能粗看。
 
 **令牌**：仓库 Secrets 里的 `CLOUDFLARE_ANALYTICS_TOKEN`（Settings → Secrets and variables → Actions → Repository secrets，
-不在 release 环境里）。运行报「令牌被 Cloudflare 拒绝」就是过期或被删了，在 Cloudflare 右上角头像 → My Profile → API Tokens →
-Create Token → Create Custom Token 重建：Permissions 两行 Zone｜Analytics｜Read 和 Zone｜Zone｜Read，Zone Resources 选
-Include｜Specific zone｜shenfengwl.fun，建好把那串粘进这个 secret。只有 Analytics 一行时令牌看不到域名，运行会报「令牌看不到 shenfengwl.fun」。
+不在 release 环境里）。shenfengwl.fun 在放更新桶 `xingmang-updates-new` 的那个 Cloudflare 账号里，**不在 solov.cc 那个账号**，
+令牌要在那边建。运行报「令牌被 Cloudflare 拒绝」就是过期或被删了，重建：右上角头像 → 我的个人资料 → API 令牌 →
+创建令牌 → 最下面「创建自定义令牌」，权限两行「区域｜区域｜读取」和「区域｜Analytics｜读取」，区域资源选
+「包括｜特定区域｜shenfengwl.fun」，摘要里只有这一个域名、两项读取才对。建好把那串粘进这个 secret。别从现成模板改，
+模板会多带一堆权限；也别去改已有的令牌。只有 Analytics 一行时令牌看不到域名，运行会报「令牌看不到 shenfengwl.fun」。
 
 ## 文件长什么样
 

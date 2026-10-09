@@ -3,15 +3,11 @@
 # 开头和 docs/SERVICE-STATUS.md「看各版本有多少人在用」）。结果写在这次运行的摘要页里。
 # 仓库公开，运行页谁都能看，所以摘要页只有占比，没有台数。
 #
-# 只读：令牌是仓库 Secrets 里的 CLOUDFLARE_ANALYTICS_TOKEN（只有 Analytics 读权限，
+# 只读：令牌是仓库 Secrets 里的 CLOUDFLARE_ANALYTICS_TOKEN（只有 Zone Analytics 和 Zone 两项读权限，
 # 限 shenfengwl.fun），不用 release 环境，所以不用批准，也碰不到发布凭据和更新目录。
 name: update-feed-stats
 
 on:
-  # TEMPORARY: one real run from this branch before merge; removed in the next commit.
-  push:
-    branches: [claude/rollback-runbook-version-stats-pdehhc]
-    paths: [.github/workflows/update-feed-stats.yml, scripts/update-feed-stats.cjs]
   workflow_dispatch:
     inputs:
       days:
@@ -33,20 +29,12 @@ jobs:
         with:
           node-version: 22
 
-      # TEMPORARY: which DNS and edge serve the update feed (no addresses printed); removed before merge.
-      - name: Diagnose which Cloudflare zone serves the update feed
-        if: github.event_name == 'push'
-        run: |
-          for name in shenfengwl.fun solov.cc; do echo "NS $name: $(dig +short NS "$name" | sort | tr '\n' ' ')"; done
-          echo "CNAME updatesnew.shenfengwl.fun: $(dig +short CNAME updatesnew.shenfengwl.fun)"
-          curl -sS -o /dev/null -D - --max-time 20 https://updatesnew.shenfengwl.fun/xingmang-manager/service-status.json | grep -iE '^(HTTP/|server:|cf-cache-status:|content-type:)' || true
-
       # 脚本只用 Node 自带的模块，不用 npm ci。来源 IP 只在脚本内存里去重，
       # 日志和摘要页里只有按版本汇总的占比。
       - name: Count clients per version from the status file requests
         env:
           CLOUDFLARE_ANALYTICS_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
-          DAYS: ${{ inputs.days || '7' }}
+          DAYS: ${{ inputs.days }}
         run: |
           set -euo pipefail
           node scripts/update-feed-stats.cjs --days "$DAYS" | tee -a "$GITHUB_STEP_SUMMARY"
