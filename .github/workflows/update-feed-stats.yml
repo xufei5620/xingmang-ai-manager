@@ -1,0 +1,40 @@
+# 看各版本的星芒各占多少电脑：按客户端读 service-status.json 时带的版本号，
+# 从 Cloudflare 的访问统计里数（怎么数、哪些看不到见 scripts/update-feed-stats.cjs
+# 开头和 docs/SERVICE-STATUS.md「看各版本有多少人在用」）。结果写在这次运行的摘要页里。
+# 仓库公开，运行页谁都能看，所以摘要页只有占比，没有台数。
+#
+# 只读：令牌是仓库 Secrets 里的 CLOUDFLARE_ANALYTICS_TOKEN（只有 Zone Analytics 和 Zone 两项读权限，
+# 限 shenfengwl.fun），不用 release 环境，所以不用批准，也碰不到发布凭据和更新目录。
+name: update-feed-stats
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 统计最近几天（1~31；Cloudflare 留得更短时按它留的算）
+        type: string
+        default: '7'
+
+permissions:
+  contents: read
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # 脚本只用 Node 自带的模块，不用 npm ci。来源 IP 只在脚本内存里去重，
+      # 日志和摘要页里只有按版本汇总的占比。
+      - name: Count clients per version from the status file requests
+        env:
+          CLOUDFLARE_ANALYTICS_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
+          DAYS: ${{ inputs.days }}
+        run: |
+          set -euo pipefail
+          node scripts/update-feed-stats.cjs --days "$DAYS" | tee -a "$GITHUB_STEP_SUMMARY"
