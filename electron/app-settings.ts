@@ -3,8 +3,9 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
+import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
+import type { ToolRouteRestartHint } from './running-tools'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
   assertSafeDataFile,
@@ -13,6 +14,16 @@ import {
   removeSafeDataFile,
   renameWithTransientRetry,
 } from './safe-local-data'
+
+/** 工具线路要给客户看的状态（xm 三线路 5.1.5、C20，main.ts 从 tool-route-controller.ts 整理出来）。 */
+export interface RelayToolRouteStatus {
+  /** 服务端说洛杉矶线路正在整体切换，这边先不改配置：首页安静显示一行。 */
+  readonly serverSwitching?: true
+  /** 所有候选线路都不通，这回该提示（同一原因 24 小时一次）；恢复以后不再给。appReachable = 管理工具自己能连上。 */
+  readonly outage?: { readonly id: number; readonly reason: 'reset' | 'certificate' | 'dns' | 'unreachable'; readonly appReachable: boolean }
+  /** 判成劫持、已经改用 CF 线路（每台电脑 7 天最多一次）；出来以后半小时内给界面。 */
+  readonly hijack?: { readonly id: number }
+}
 
 export type AppTheme = 'light' | 'dark'
 export type AppUiSkin = 'dawn' | 'obsidian' | 'mist' | 'aurora'
@@ -63,6 +74,22 @@ export interface AppSettings {
   readonly activeRelayEndpointIds?: RelayRoutePreferences
   /** IPC runtime snapshot only: the line each site uses right now ('auto' can move during a run). */
   readonly relayRouteLines?: RelayRouteLines
+  /**
+   * IPC runtime snapshot only: 星芒账号写进工具配置的那条线路（xm 三线路的工具线路，tool-route-controller.ts），
+   * 可以和上面管理工具自己用的那条不一样。一直是定下来的。不落盘，也不做回显核对。
+   */
+  readonly relayToolRouteLines?: { readonly solov: Readonly<RelayRouteLine> }
+  /** IPC runtime snapshot only: 工具线路这会儿要给客户看的状态。 */
+  readonly relayToolRouteStatus?: RelayToolRouteStatus
+  /**
+   * 「换线路后提醒我重开工具」。缺省 = 开，和 crashReporting 一样只把客户亲手关掉的 false 落盘。
+   * 关掉以后只在首页标「需重开生效」（xm 三线路 C10）。
+   */
+  toolRouteRestartHints?: boolean
+  /** IPC runtime snapshot only: 连接线路因为连不上换了以后，要客户重开的工具（running-tools.ts）。 */
+  readonly toolRouteRestartHint?: ToolRouteRestartHint
+  /** IPC runtime snapshot only: R6 切回了整份写入的老路；缺省 = 主进程定点改写。 */
+  readonly toolRouteRewrite?: 'merge'
   /**
    * Pinned download-source order. Absent = 'auto' (probe the region, the
    * entire install base's behavior pre-2.4). Unknown values degrade to
@@ -188,6 +215,7 @@ export interface AppSettingsUpdate {
   autoUpdate?: boolean
   hardwareAcceleration?: boolean
   largeText?: boolean
+  toolRouteRestartHints?: boolean
   uiScale?: AppUiScale
   closeBehavior?: AppCloseBehavior
   /** Only the host sets this; true is sticky and false is ignored. */
@@ -373,6 +401,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(value.desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(value.autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(value.toolRouteRestartHints === false ? { toolRouteRestartHints: false as const } : {}),
     ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(optionalBoolean(value.largeText, false) ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
@@ -510,6 +539,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
   const reducedMotion = update.reducedMotion ?? base.reducedMotion
   const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
+  const toolRouteRestartHints = update.toolRouteRestartHints ?? base.toolRouteRestartHints
   const autoUpdate = update.autoUpdate ?? base.autoUpdate
   const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
   const largeText = update.largeText ?? base.largeText
@@ -537,6 +567,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(toolRouteRestartHints === false ? { toolRouteRestartHints: false as const } : {}),
     ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(largeText ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),

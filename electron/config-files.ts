@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
-import { relayProviderBaseUrlMatches, relaySites } from './relay-sites'
+import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
+import { readEnvLineValue, readJsonString, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, type StringValueEdit } from './tool-route-rewrite'
 import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
 import { isCodexConfigBroken } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
@@ -124,6 +125,17 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   configurationOwnership?: 'account' | 'manual' | 'unknown' | 'missing' | 'changed'
   /** Exact current-account cache match for display; never grants automatic write consent. */
   configurationAccountMatched?: boolean
+  /**
+   * 配置里实际写的是星芒账号（solov）的哪条线路（xm 三线路 C12）：按地址逐字比，落在退役别名上的、
+   * 本站以外的地址都算 other。首页据此标「线路：洛杉矶 / CF / 其他地址」。只给星芒账号、只在配置
+   * 里有地址时才有；缺省 = 不标（历史账号照旧不标）。
+   */
+  relayLine?: 'direct' | 'primary' | 'other'
+  /**
+   * 换线路时自动改写的状态（xm 三线路 C9、C10）：restart = 改了以后要重开才生效；managed-elsewhere
+   * = 24 小时内被别的软件改回两次，星芒不再自动改它。缺省 = 没什么要说的。
+   */
+  relayRouteState?: 'restart' | 'managed-elsewhere'
   /**
    * 这份配置看起来是 CC Switch 写的（cc-switch-leftover.ts）：`proxy` = 它的本地代理
    * 接管占位，`provider` = 装过它且配置里有别处的连接。只是线索，不代表来源已确认，
@@ -275,6 +287,16 @@ function requireConfigText(
   label: string,
   maximumBytes = MAX_NATIVE_CONFIG_BYTES,
 ): string | null {
+  const content = requireRawConfigText(filePath, label, maximumBytes)
+  return content === null ? null : withoutByteOrderMark(content)
+}
+
+/** 同 requireConfigText，但字节顺序标记照原样留着：定点改写要逐字节写回去。 */
+function requireRawConfigText(
+  filePath: string,
+  label: string,
+  maximumBytes = MAX_NATIVE_CONFIG_BYTES,
+): string | null {
   let info: fs.Stats
   try {
     info = fs.lstatSync(filePath)
@@ -285,7 +307,7 @@ function requireConfigText(
   if (!info.isFile() || info.nlink !== 1 || info.isSymbolicLink()) {
     throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
   }
-  return withoutByteOrderMark(readBoundedUtf8FileSync(filePath, maximumBytes, label))
+  return readBoundedUtf8FileSync(filePath, maximumBytes, label)
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -2932,6 +2954,9 @@ export function executeFilePlans(
   plans: FilePlan[],
   hooks: NativeConfigWriteHooks,
   providerRoot: string,
+  // discard：提交成功以后把这次的 .bak 删掉，不进每个文件 5 份的轮换。换线路的定点改写
+  // 来回切几次就会把客户自己保存时留下的备份挤掉，那几份才是有用的（原件另由调用方留一份）。
+  backupRetention: 'rotate' | 'discard' = 'rotate',
 ): NativeConfigSaveResult {
   const prepared = prepareFilePlans(plans, providerRoot)
   const committed: PreparedFilePlan[] = []
@@ -2985,6 +3010,18 @@ export function executeFilePlans(
   }
 
   // 必须在全部提交成功后清理：回滚依赖本次 backupPath，提前删除会破坏恢复链路。
+  if (backupRetention === 'discard') {
+    for (const plan of prepared) {
+      if (!plan.backupPath) continue
+      try {
+        assertSafeConfigPath(plan.backupPath, providerRoot, 'file')
+        removeIfPresent(plan.backupPath)
+      } catch {
+        // 删不掉只是多留一份备份，不影响已经写成的配置。
+      }
+    }
+    return { backups: [], files: prepared.map((plan) => plan.path) }
+  }
   for (const plan of prepared) pruneBackups(plan.path, providerRoot)
 
   return {
@@ -3045,6 +3082,112 @@ export function saveProviderConfig(
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   return executeFilePlans(plans, hooks, providerRoot)
+}
+
+/**
+ * 换线路时定点改写的打算。rewrite = 要改，from 是改之前的地址；其余都是一个字不动：
+ * on-target 已经在目标线路上；not-on-site 写的不是本站的线路（客户自己填的别的地址）；
+ * unlocated 在文件里找不到要改的那一处（Codex 用的是保留名、Grok 默认模型那张表不在、
+ * 写法认不出）；missing 配置文件不在。
+ */
+export type ProviderRoutePlan =
+  | { status: 'rewrite'; from: string; file: string; original: string; content: string }
+  | { status: 'on-target' | 'not-on-site' | 'unlocated' | 'missing' }
+
+export type ProviderRouteRewrite = Extract<ProviderRoutePlan, { status: 'rewrite' }>
+
+interface ProviderRouteLocation {
+  file: string
+  current: string | null
+  edits: StringValueEdit[]
+  rewrite(content: string, edits: readonly StringValueEdit[]): string | null
+}
+
+function locateProviderRoute(provider: ProviderId, paths: string[], text: string, target: string, siteId: string): ProviderRouteLocation | 'unlocated' {
+  switch (provider) {
+    case 'codex': {
+      // 按 model_provider 找表，不写死 XingmangAI：老版本写过 OpenAI，客户也可能起了自己的名字。
+      // 保留名那张表 Codex 根本不读，改了也白改，交给开机修复（permitsShadowedCodexRepair）那条路。
+      const name = readTomlString(text, ['model_provider'])
+      if (!name || reservedCodexProviders.has(name.trim())) return 'unlocated'
+      const keyPath = ['model_providers', name, 'base_url']
+      return { file: paths[0], current: readTomlString(text, keyPath), edits: [{ path: keyPath, value: target }], rewrite: rewriteTomlStrings }
+    }
+    case 'claude': {
+      const keyPath = ['env', 'ANTHROPIC_BASE_URL']
+      return { file: paths[0], current: readJsonString(text, keyPath), edits: [{ path: keyPath, value: target }], rewrite: rewriteJsonStrings }
+    }
+    case 'gemini':
+      return {
+        file: paths[1],
+        current: readEnvLineValue(text, 'GOOGLE_GEMINI_BASE_URL'),
+        edits: [{ path: ['GOOGLE_GEMINI_BASE_URL'], value: target }],
+        rewrite: (content, edits) => rewriteEnvValue(content, edits[0].path[0], edits[0].value),
+      }
+    case 'grok': {
+      // 默认模型那张表按 [models].default 找（同 createMergePlans），"grok" 只是新模板里的名字。
+      const name = readTomlString(text, ['models', 'default'])
+      if (!name) return 'unlocated'
+      const keyPath = ['model', name, 'base_url']
+      const edits: StringValueEdit[] = [{ path: keyPath, value: target }]
+      // 出图那条地址只在它本来就指着本站某条线路时跟着换，客户指去别处的不碰。
+      const xai = readTomlString(text, ['endpoints', 'xai_api_base_url'])
+      if (xai !== null && !relayProviderBaseUrlEquals(xai, target) && relaySiteEndpointIdForBaseUrl(siteId, provider, xai) !== null) {
+        edits.push({ path: ['endpoints', 'xai_api_base_url'], value: target })
+      }
+      return { file: paths[0], current: readTomlString(text, keyPath), edits, rewrite: rewriteTomlStrings }
+    }
+  }
+}
+
+/**
+ * 换线路时只把工具配置里的地址换到 target（工具线路上这个工具的地址），文件其余字节原样
+ * （xm 三线路 C9）。不查模型、不碰 Key、不整份合并。要改的地址必须本来就是本站某条线路（含
+ * 退役别名），别的地址不碰。这里只算出要写成什么，写由 applyProviderRouteFollow 做。
+ */
+export function planProviderRouteFollow(
+  provider: ProviderId,
+  siteId: string,
+  target: string,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): ProviderRoutePlan {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  const paths = providerConfigPaths(provider, roots)
+  for (const filePath of paths) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const file = provider === 'gemini' ? paths[1] : paths[0]
+  const original = requireRawConfigText(file, '工具配置')
+  if (original === null) return { status: 'missing' }
+  const location = locateProviderRoute(provider, paths, withoutByteOrderMark(original), target, siteId)
+  if (location === 'unlocated' || location.current === null) return { status: 'unlocated' }
+  const from = location.current
+  const baseOnTarget = relayProviderBaseUrlEquals(from, target)
+  if (baseOnTarget && location.edits.length === 1) return { status: 'on-target' }
+  if (!baseOnTarget && relaySiteEndpointIdForBaseUrl(siteId, provider, from) === null) return { status: 'not-on-site' }
+  const content = location.rewrite(original, baseOnTarget ? location.edits.slice(1) : location.edits)
+  if (content === null) return { status: 'unlocated' }
+  return { status: 'rewrite', from, file: location.file, original, content }
+}
+
+/**
+ * 照 planProviderRouteFollow 算好的写下去。照旧走两阶段提交（I9），这次的 .bak 写成就删，不挤占
+ * 客户自己保存时留下的备份；替换前再读一遍原文，被别的程序改过就整个放弃，留给下一次重试。
+ */
+export function applyProviderRouteFollow(
+  provider: ProviderId,
+  plan: ProviderRouteRewrite,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): void {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  if (!providerConfigPaths(provider, roots).includes(plan.file)) throw new Error('工具配置路径不对，已拒绝写入')
+  assertSafeConfigPath(plan.file, providerRoot, 'file')
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  executeFilePlans([{ path: plan.file, content: plan.content }], {
+    beforeReplace: () => {
+      if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error('工具配置在改线路时被别的程序改了，这次先不改')
+    },
+  }, providerRoot, 'discard')
 }
 
 // 模板改进只在「保存配置」那几条路上落盘，而老客户开机走的是恢复账号、一个字不写，

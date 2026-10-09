@@ -436,6 +436,72 @@ describe('createRelayObservedFetch', () => {
   })
 })
 
+describe('createRelayObservedFetch with the tool line', () => {
+  function toolLine(line: RelayEndpointId, automatic = true) {
+    const reports: string[] = []
+    return { reports, observer: { route: () => ({ line, automatic }), reportFailure: (trigger: string) => { reports.push(trigger) } } }
+  }
+
+  it('reports failures on whichever line the account tools use, to the tool line only', async () => {
+    const app = fakeRouter('direct')
+    const onCf = toolLine('primary')
+    const base = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_CONNECTION_RESET'))
+      .mockResolvedValueOnce(page(502))
+      .mockResolvedValueOnce(cutReply())
+    const observed = createRelayObservedFetch(app.router, base, { toolLine: onCf.observer })
+
+    await expect(observed('https://xm.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect((await observed('https://xm.solov.cc/v1/models')).status).toBe(502)
+    await expect((await observed('https://xm.solov.cc/v1/chat/completions', { method: 'POST', body: '{}' })).text()).rejects.toThrow('terminated')
+
+    expect(sentUrls(base)).toEqual(['https://xm.solov.cc/v1/models', 'https://xm.solov.cc/v1/models', 'https://xm.solov.cc/v1/chat/completions'])
+    expect(onCf.reports).toEqual(['check:ERR_CONNECTION_RESET', 'check:http-502', 'check:body'])
+    expect(app.reports).toEqual([])
+  })
+
+  it('leaves another line, a pinned choice and the legacy site where they were', async () => {
+    const app = fakeRouter('direct')
+    const onDirect = toolLine('direct')
+    const base = vi.fn<typeof fetch>().mockRejectedValue(networkError('ERR_CONNECTION_REFUSED'))
+    const observed = createRelayObservedFetch(app.router, base, { toolLine: onDirect.observer })
+    // 不在工具线路上的地址（客户手填的另一条）只发不报。
+    await expect(observed('https://xm.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect(onDirect.reports).toEqual([])
+    await expect(observed('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect(onDirect.reports).toEqual(['check:ERR_CONNECTION_REFUSED'])
+
+    const pinned = toolLine('direct', false)
+    await expect(createRelayObservedFetch(app.router, base, { toolLine: pinned.observer })('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect(pinned.reports).toEqual([])
+
+    // 历史账号照旧报给应用线路。
+    await expect(observed('https://api-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect(app.reports).toEqual([['solov-api', 'ERR_CONNECTION_REFUSED']])
+    expect(onDirect.reports).toEqual(['check:ERR_CONNECTION_REFUSED'])
+  })
+})
+
+describe('createRelayLineFetch and the tool line', () => {
+  it('only ever sends the app requests to the Los Angeles or Cloudflare origin', async () => {
+    const sent = new Set<string>()
+    for (const line of ['direct', 'primary'] as const) {
+      for (const automatic of [true, false]) {
+        const { router } = fakeRouter(line, automatic)
+        const base = vi.fn<typeof fetch>()
+          .mockRejectedValueOnce(networkError('ERR_CONNECTION_RESET'))
+          .mockImplementation(async () => json(200))
+        const routed = createRelayLineFetch(router, base)
+        await routed('https://xm.solov.cc/api/user/self').catch(() => undefined)
+        await routed('https://xm.solov.cc/api/notice')
+        await routed('https://xm.solov.cc/v1/images/generations', { method: 'POST', body: '{}' })
+        for (const url of sentUrls(base)) sent.add(new URL(url).origin)
+      }
+    }
+    expect([...sent].sort()).toEqual(['https://xm-direct.solov.cc', 'https://xm.solov.cc'])
+  })
+})
+
 describe('relayLineFailureAnswer', () => {
   it('names the answers another line could avoid and leaves the service\'s own answers and an allowlist 404 alone', () => {
     expect(relayLineFailureAnswer(page(502))).toBe('http-502')

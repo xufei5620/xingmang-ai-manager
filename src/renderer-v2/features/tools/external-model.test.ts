@@ -77,6 +77,12 @@ describe('external client lifecycle presentation', () => {
     expect(present({ installed: true, running: false, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true }).detail)
       .toBe('v2.0 · gpt-5.4')
   })
+
+  it('says the route will move by itself once the client quits when the main process rechecks it', () => {
+    // xm 三线路 C11：星芒账号的那几行，关掉客户端后星芒自己会换，不用再点「重新检测」。
+    expect(present({ installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true, routeRecheck: true }).detail)
+      .toBe('v2.0 · 运行中 · 还开着，完全退出后会自动换到当前线路')
+  })
 })
 
 describe('visibleExternalClients', () => {

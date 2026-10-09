@@ -1,3 +1,4 @@
+import { describeToolRouteRestartHint, offersToolRouteDesktopRestart, toolRouteRestartHintTitle, type ToolRouteRestartHint } from '../../../../electron/running-tools'
 import type { AppSettingsV2, InstalledRelease, PlatformCapabilities, ProviderId, SettingsSaveIssue, UnexpectedExitNotice, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import { tools } from '../../registry/tools'
@@ -11,12 +12,12 @@ import { firstProblemAnchor } from './row-focus'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'
 /**
  * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
  * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -26,6 +27,7 @@ export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 
 export type StartupNoticeAction = { label: string; page: PageId; section?: string } | { label: string; login: true } | { label: string; dismiss: true }
   | { label: string; displayCompat: 'keep' | 'restore' } | { label: string; relaunch: true }
   | { label: string; crashReporting: 'keep' | 'off' } | { label: string; supportFailure: SupportFailure }
+  | { label: string; restartCodexDesktop: true }
 
 export interface StartupNotice {
   id: StartupCheckId
@@ -300,6 +302,25 @@ export function claudeDesktopRepairedNotice(
     title: 'Claude Desktop 的设置已经改好了',
     body: `之前版本保存的设置可能让 Claude Desktop 发消息没有回复，星芒已经改回你当时选的那一个型号，别的设置都没动。Claude Desktop 现在开着的话，完全退出再重新打开就好（${quit}）。`,
     action: { label: '知道了', dismiss: true },
+  }
+}
+
+/**
+ * 连接线路因为连不上换了，开着的工具要重开才走新线路（xm 三线路 C10，主进程 followToolRoutes 定的
+ * 要说哪几样、24 小时一次）。一样一句；Codex 桌面端在 Windows 上开着时给现成的「帮我重开」，别的
+ * 只能客户自己重开，关掉叉就行。
+ */
+export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotice | null {
+  const items = describeToolRouteRestartHint(hint)
+  if (!items.length) return null
+  return {
+    id: 'route-restart',
+    failure: false,
+    tone: 'neutral',
+    title: toolRouteRestartHintTitle,
+    body: '',
+    items,
+    ...(offersToolRouteDesktopRestart(hint) ? { action: { label: '帮我重开', restartCodexDesktop: true as const } } : {}),
   }
 }
 

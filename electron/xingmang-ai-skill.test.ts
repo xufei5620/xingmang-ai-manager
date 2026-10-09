@@ -22,6 +22,7 @@ import {
   assertBundledXingmangAiSkill,
   buildXingmangAiSkillConfig,
   clearXingmangAiSkillSecrets,
+  followXingmangAiSkillRoute,
   describeImageMcpWarnings,
   parseXingmangAiSkillConfig,
   publicXingmangAiSkillConfig,
@@ -867,5 +868,45 @@ describe('describeImageMcpWarnings', () => {
 
   it('falls back to a generic sentence when no tool is named', () => {
     expect(describeImageMcpWarnings(['写入失败'])).toContain('星芒画图还没装进 AI 工具')
+  })
+})
+
+describe('followXingmangAiSkillRoute', () => {
+  const directOrigin = 'https://xm-direct.solov.cc'
+  async function writeSkillConfig(userHome: string, content: string): Promise<string> {
+    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+    await mkdir(directory, { recursive: true })
+    const file = path.join(directory, XINGMANG_AI_CONFIG_FILE)
+    await writeFile(file, content)
+    return file
+  }
+
+  it('moves only the address of a config holding a key of the current account', async () => {
+    const userHome = await temporaryHome()
+    const content = `{\n  "baseUrl": "${XINGMANG_AI_DEFAULT_BASE_URL}",\n  "group": "图片模型-中转/订阅",\n  "keyId": 7\n}\n`
+    const file = await writeSkillConfig(userHome, content)
+    expect(await followXingmangAiSkillRoute({ userHome, siteId: 'solov', baseUrl: directOrigin, ownedKeyIds: new Set([7]) })).toBe(1)
+    expect(await readFile(file, 'utf8')).toBe(content.replace(XINGMANG_AI_DEFAULT_BASE_URL, directOrigin))
+    // 已经在这条线路上：不再写。
+    expect(await followXingmangAiSkillRoute({ userHome, siteId: 'solov', baseUrl: directOrigin, ownedKeyIds: new Set([7]) })).toBe(0)
+  })
+
+  it('fills in a missing address for an owned config', async () => {
+    const userHome = await temporaryHome()
+    const file = await writeSkillConfig(userHome, JSON.stringify({ group: '图片模型-中转/订阅', codexKeyId: 8 }))
+    expect(await followXingmangAiSkillRoute({ userHome, siteId: 'solov', baseUrl: directOrigin, ownedKeyIds: new Set([8]) })).toBe(1)
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readFile(file, 'utf8'))).baseUrl).toBe(directOrigin)
+  })
+
+  it('leaves another account or another address alone', async () => {
+    const userHome = await temporaryHome()
+    const foreign = JSON.stringify({ baseUrl: XINGMANG_AI_DEFAULT_BASE_URL, group: '图片模型-中转/订阅', keyId: 7 })
+    const file = await writeSkillConfig(userHome, foreign)
+    expect(await followXingmangAiSkillRoute({ userHome, siteId: 'solov', baseUrl: directOrigin, ownedKeyIds: new Set([9]) })).toBe(0)
+    expect(await readFile(file, 'utf8')).toBe(foreign)
+    const elsewhere = JSON.stringify({ baseUrl: 'https://images.example.com', group: '图片模型-中转/订阅', keyId: 7 })
+    await writeFile(file, elsewhere)
+    expect(await followXingmangAiSkillRoute({ userHome, siteId: 'solov', baseUrl: directOrigin, ownedKeyIds: new Set([7]) })).toBe(0)
+    expect(await readFile(file, 'utf8')).toBe(elsewhere)
   })
 })

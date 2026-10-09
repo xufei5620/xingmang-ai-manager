@@ -284,6 +284,8 @@ export interface IpcRegistrationOptions {
   onRendererError?(error: RendererErrorPayload): void
   replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
   onSystemSnapshot?(snapshot: SystemSnapshot): void
+  /** 客户点了首页的「重新检测」（system:scan 带 recheckRoutes）：叫工具线路马上查一轮。 */
+  onRouteRecheckRequested?(): void
   /**
    * 开机拉起时的安静期（login-launch.ts）。期间工具检测、启动时检查更新、账号 Key
    * 初始化都等它结束再做；首页那次读取只回上次落盘的结果、不起真扫描。缺省 = 不等。
@@ -403,9 +405,10 @@ export function parseUpdateInstallOptions(value: unknown): UpdateInstallOptions 
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {
   if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached')
-    || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')) throw new Error('检测参数格式错误')
-  return value.acceptCached === true ? { acceptCached: true } : {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached' && key !== 'recheckRoutes')
+    || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')
+    || (value.recheckRoutes !== undefined && typeof value.recheckRoutes !== 'boolean')) throw new Error('检测参数格式错误')
+  return { ...(value.acceptCached === true ? { acceptCached: true } : {}), ...(value.recheckRoutes === true ? { recheckRoutes: true } : {}) }
 }
 
 export function parseExternalClientScanOptions(value: unknown): ExternalClientScanOptions {
@@ -495,6 +498,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   const autoUpdate = optionalBoolean(value.autoUpdate, '自动更新设置')
   const hardwareAcceleration = optionalBoolean(value.hardwareAcceleration, '显卡加速显示设置')
   const largeText = optionalBoolean(value.largeText, '大字设置')
+  const toolRouteRestartHints = optionalBoolean(value.toolRouteRestartHints, '换线路提醒设置')
   const windowState = value.windowState === null ? null : parseWindowState(value.windowState)
   if (value.windowState !== undefined && windowState === undefined) throw new Error('窗口位置格式错误')
   return {
@@ -523,6 +527,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(autoUpdate !== undefined ? { autoUpdate } : {}),
     ...(hardwareAcceleration !== undefined ? { hardwareAcceleration } : {}),
     ...(largeText !== undefined ? { largeText } : {}),
+    ...(toolRouteRestartHints !== undefined ? { toolRouteRestartHints } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -2071,6 +2076,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       throw new Error('更新检查参数格式错误')
     }
     const scanOptions = parseSystemScanOptions(input)
+    if (scanOptions.recheckRoutes) options.onRouteRecheckRequested?.()
     // 上次的结果只用来先把首页画出来：不进托盘、不记「检测完成」，真结果回来再说。
     const quiet = options.startupQuiet?.active() === true
     const cached = scanOptions.acceptCached && forceRefresh !== true
@@ -2340,8 +2346,26 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:fill-template-defaults', async (_event, retry: unknown): Promise<ToolTemplateFillResult> => {
     if (retry !== undefined && typeof retry !== 'boolean') throw new Error('补设置参数格式错误')
     if (!service.fillToolTemplateDefaults) return { filled: [] }
+    // 开机对账（xm 三线路 C9）：账号恢复以后，星芒账号工具配置还停在别的线路上的（上次没迁成、
+    // 0.2.17 留下的），先定点改到当前线路，再补模板缺省项。补做那几回不用再对：失败有自己的重试。
+    if (retry !== true) await service.followToolRoutes?.({ reason: 'startup' }).catch(() => undefined)
     const context = await readBackupAccountContext()
     return service.fillToolTemplateDefaults((provider) => { options.backupStore.create(provider, 'pre-save', undefined, context) }, retry === true)
+  })
+  // 换线路定点改写要的两件账号上的事：迁移前原件的备份带上账号信息，生图技能认当前账号签发过的 Key。
+  service.bindToolRouteAccount?.({
+    backup: async (provider) => {
+      options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
+    },
+    ownedKeyIds: async () => {
+      const account = accountService.getSessionState().account
+      if (!account || !options.managedCliKeys) return new Set<number>()
+      try {
+        return new Set((await options.managedCliKeys.read(account.userId)).map((entry) => entry.id))
+      } catch {
+        return new Set<number>()
+      }
+    },
   })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
@@ -4083,6 +4107,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   }
 
   return () => {
+    service.bindToolRouteAccount?.(null)
     feedbackPreviews.clear()
     sensitiveClipboard.dispose()
     unsubscribeUpdates()

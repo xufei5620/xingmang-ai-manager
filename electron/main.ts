@@ -134,10 +134,16 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { createRelayEndpointRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
 import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
 import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
 import { createPaymentWindowController } from './payment-window'
+import { createRouteStatusReader } from './route-status-file'
+import { environmentProxyCandidates, probeToolPathDirect, probeToolPathThroughFetch } from './tool-path-probe'
+import { createToolRouteController, createToolRouteStateStore } from './tool-route-controller'
+import { createToolRouteProbe } from './tool-route-probe'
+import { createToolRouteStatusBoard } from './tool-route-status'
+import { readWindowsProxyScopes } from './stale-proxy-environment'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   clearableEnvironmentOverrides,
@@ -148,6 +154,7 @@ import {
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
+  type DiagnosticsDependencies,
   type DiagnosticsRelayRoute,
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
@@ -1126,11 +1133,13 @@ if (!hasSingleInstanceLock) {
     // 换线路：先用上次存下的结论，开机后在后台查一次，直连连不上改走默认线路，好了再切回来
     // （relay-route-controller.ts）。查线路走的是星芒自己连站点那条路（relayFetch，下面才建）。
     const relayPreferences = resolveRelayRoutePreferences(settingsStore.read().relayEndpointIds)
+    const relayRouteConclusions = createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json'))
     const relayRouteController = createRelayRouteController({
       preferences: relayPreferences,
-      ...createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json')),
+      ...relayRouteConclusions,
       probe: (siteId, line) => probeRelayLineHealth(relayFetch, relayStatusProbeUrl(requireRelaySite(siteId, line))),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+      // xm 三线路：日志里分得出是管理工具自己这套（应用线路）还是写进工具配置那套（工具线路）。
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, { kind: 'app', ...detail }),
     })
     const relayRouting = createRelayEndpointRoutingSnapshot(relayPreferences, () => relayRouteController.lines())
     // 客服要从日志看出这次走的是哪条：只记线路 id，不记地址。
@@ -1167,12 +1176,19 @@ if (!hasSingleInstanceLock) {
     // 系统代理的会话。同样是内存分区，只用来探那一下。
     const systemProxySession = session.fromPartition('xingmang-system-proxy')
     let systemProxyMode: Promise<void> | null = null
-    const systemProxyFetch: typeof fetch = (input, init) => {
+    function ensureSystemProxyMode(): Promise<void> {
       systemProxyMode ??= systemProxySession.setProxy({ mode: 'system' }).catch((error: unknown) => {
         systemProxyMode = null
         throw error
       })
-      return systemProxyMode.then(() => systemProxySession.fetch(input instanceof URL ? input.href : input, init))
+      return systemProxyMode
+    }
+    const systemProxyFetch: typeof fetch = (input, init) => (
+      ensureSystemProxyMode().then(() => systemProxySession.fetch(input instanceof URL ? input.href : input, init))
+    )
+    // 工具线路探测问「系统代理对星芒这个地址生不生效」（PAC、绕过列表都算在内），问的是同一个会话。
+    function resolveSystemProxy(url: string): Promise<string> {
+      return ensureSystemProxyMode().then(() => systemProxySession.resolveProxy(url))
     }
     // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
     // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连，
@@ -1213,14 +1229,102 @@ if (!hasSingleInstanceLock) {
     const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
     const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansNoAnswer: true, log: logRelayLine })
     const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansNoAnswer: true, log: logRelayLine })
-    const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, { log: logRelayLine })
+
+    // ---- xm 三线路：星芒账号的工具线路（写进各 AI 工具配置的那条，tool-route-controller.ts） ----
+    // 管理工具自己的请求照旧走上面的应用线路；工具线路照 AI 工具自己的网络路径探（Node 的 TLS、系统代理、
+    // HTTPS_PROXY），两套可以不一样。历史账号没有工具线路，照旧跟应用线路（createToolRouteRoutingSnapshot）。
+    // 线路状态文件只经应用线路、按 origin 显式去读，读不到不算线路失败（需求 7.3）。
+    const routeStatusReader = createRouteStatusReader({
+      fetch: relayFetch,
+      lines: () => relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct'],
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    // 环境变量里的代理：Windows 上读当前账号、整台电脑那两份要起一次 PowerShell，所以不跟定时探测一起读，
+    // 只在开机、唤醒、网络恢复、点「重新检测」、准备降级时重读，平时用上次的结果（计划第 5 节第 7 条）。
+    let toolEnvironmentProxies: Promise<readonly string[]> | null = null
+    function readToolEnvironmentProxies(): Promise<readonly string[]> {
+      toolEnvironmentProxies ??= (process.platform === 'win32'
+        ? readWindowsProxyScopes().catch(() => ({ user: {}, machine: {} }))
+        : Promise.resolve({ user: {}, machine: {} })
+      ).then((scopes) => environmentProxyCandidates({ process: process.env, ...scopes }))
+      return toolEnvironmentProxies
+    }
+    // 每个环境变量代理一个内存分区（不落盘）；候选最多六个（三份环境 × 两个变量），超了清掉重记。
+    // 分区名只增不复用：拿 size 起名的话，删掉一个以后新代理会落到别的代理正在用的分区上，把它的规则改掉。
+    const toolProxySessions = new Map<string, { target: Electron.Session; ready: Promise<void> }>()
+    let toolProxyPartitions = 0
+    function toolProxyFetch(proxy: string): typeof fetch {
+      let entry = toolProxySessions.get(proxy)
+      if (!entry) {
+        if (toolProxySessions.size >= 6) toolProxySessions.clear()
+        const target = session.fromPartition(`xingmang-tool-proxy-${toolProxyPartitions++}`)
+        const created = { target, ready: target.setProxy({ proxyRules: proxy }) }
+        created.ready.catch(() => { if (toolProxySessions.get(proxy) === created) toolProxySessions.delete(proxy) })
+        toolProxySessions.set(proxy, created)
+        entry = created
+      }
+      const { target, ready } = entry
+      return (input, init) => ready.then(() => target.fetch(input instanceof URL ? input.href : input, init))
+    }
+    // 开发构建可以把工具线路的各个计时缩短 60 倍（需求 5.8，给 V14 这种 24 小时的测试用），打包版不认。
+    const toolRouteTimeScale = !app.isPackaged && process.env.XINGMANG_TOOL_ROUTE_FAST === '1' ? 60 : 1
+    const toolRouteClockStart = Date.now()
+    const toolRouteController = createToolRouteController({
+      preference: relayPreferences.solov,
+      ...createToolRouteStateStore(path.join(managerDataDirectory, 'tool-route-state.json')),
+      readLegacyConclusions: () => relayRouteConclusions.readConclusions(),
+      // Linux 本期只测无代理路径（需求 5.1.1）。
+      probe: createToolRouteProbe({
+        direct: (origin) => probeToolPathDirect(origin),
+        ...(process.platform === 'linux' ? {} : {
+          systemProxyActive: async (origin: string) => parseChromiumProxyResult(await resolveSystemProxy(origin)) !== null,
+          throughSystemProxy: (origin: string) => probeToolPathThroughFetch(systemProxyFetch, origin),
+          environmentProxies: readToolEnvironmentProxies,
+          throughProxy: (proxy: string, origin: string) => probeToolPathThroughFetch(toolProxyFetch(proxy), origin),
+        }),
+      }),
+      readStatus: ({ fresh }) => {
+        // 不走缓存读状态文件 = 准备降级或者碰上认不出的地址：环境变量代理也一起重读。
+        if (fresh) toolEnvironmentProxies = null
+        return routeStatusReader.read({ fresh })
+      },
+      notify: (notice) => toolRouteStatusBoard.notice(notice),
+      ...(toolRouteTimeScale === 1 ? {} : {
+        now: () => toolRouteClockStart + (Date.now() - toolRouteClockStart) * toolRouteTimeScale,
+        schedule: (callback: () => void, delayMs: number) => {
+          const timer = setTimeout(callback, delayMs / toolRouteTimeScale)
+          timer.unref?.()
+          return () => clearTimeout(timer)
+        },
+      }),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    const toolRouteStatusBoard = createToolRouteStatusBoard({
+      appReachable: () => probeRelayLineHealth(relayFetch, relayStatusProbeUrl(relayRouting.resolve('solov'))),
+      // 只有星芒账号看得到这几样；历史账号、没登录时叫界面重读会白白多一轮外部客户端检测。
+      changed: () => { if (readAccountSiteId() === 'solov') notifyRelayRouteChanged() },
+    })
+    // 写进工具配置、给工具自检对账用的线路：星芒账号读工具线路，历史账号照旧读应用线路。
+    const toolRouting = createToolRouteRoutingSnapshot(relayPreferences, () => relayRouteController.lines(), () => toolRouteController.line())
+    runtimeLog.log('info', 'config', 'relay.route.active', '本次运行写进工具配置的线路', { kind: 'tool', lines: { solov: toolRouteController.line() } })
+    // 写配置前查模型、工具自检：星芒账号在工具线路上没走通报给工具线路，历史账号照旧报直连给应用线路。
+    const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, {
+      log: logRelayLine,
+      toolLine: {
+        route: () => ({ line: toolRouteController.line(), automatic: relayPreferences.solov === 'auto' }),
+        reportFailure: (trigger) => toolRouteController.reportFailure(trigger),
+      },
+    })
     // 「自动」换了线路：界面重读设置、把工具迁过去（App.tsx，开着的也迁）。窗口还没建好时不用叫，
     // 首屏读设置时读到的就是新线路。
-    const unsubscribeRelayRoute = relayRouteController.subscribe(() => {
+    function notifyRelayRouteChanged(): void {
       if (!managedMainWindow || managedMainWindow.isDestroyed()) return
       if (managedMainWindow.webContents.isDestroyed()) return
       managedMainWindow.webContents.send(ipcEventChannels.onRelayRouteChanged, undefined)
-    })
+    }
+    const unsubscribeRelayRoute = relayRouteController.subscribe(() => notifyRelayRouteChanged())
+    // R6：换线路时工具配置怎么改，跟着服务状态文件（下面 serviceStatusMonitor 读到才改）；缺省定点只改地址。
+    let toolRouteRewriteMode: 'targeted' | 'merge' = 'targeted'
     relayRouteController.start()
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
@@ -1364,8 +1468,16 @@ if (!hasSingleInstanceLock) {
       externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
-      relayEndpointRouting: relayRouting,
+      relayEndpointRouting: toolRouting,
+      relayToolRouting: {
+        applicationLines: () => relayRouting.lines(),
+        // 历史账号没有工具线路，也就没有这几样提示。
+        status: () => readAccountSiteId() === 'solov' ? toolRouteStatusBoard.status(toolRouteController.snapshot()) : undefined,
+      },
       getExternalClientAccountId: () => readExternalClientAccountId(),
+      getToolRouteRewriteMode: () => toolRouteRewriteMode,
+      // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
+      onToolRouteFollowed: () => notifyRelayRouteChanged(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
       sweepInstallLeftovers,
@@ -1420,6 +1532,35 @@ if (!hasSingleInstanceLock) {
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
       prepareCodexDesktopAcceleration: async () => { await codexDesktopAcceleration.ensureConnected() },
     })
+    // 星芒账号的工具线路换了：主进程把四个工具配置里的地址定点改过去（xm 三线路 C9）。历史账号照旧
+    // 由界面收到应用线路那声以后走同步 Key。只有因为连不上换的（没通、劫持、服务端整体故障）才可能提示
+    // 重开（C10）。服务端切换、三线全挂这些状态变了也叫界面重读设置。
+    let toolRouteLine = toolRouteController.line()
+    const unsubscribeToolRoutes = toolRouteController.subscribe((snapshot) => {
+      toolRouteStatusBoard.update(snapshot)
+      const lineChanged = snapshot.line !== toolRouteLine
+      if (lineChanged) {
+        toolRouteLine = snapshot.line
+        void systemService.followToolRoutes?.({ reason: 'route-changed', fault: snapshot.lastChange?.reason !== 'recovered' })
+      }
+      if (lineChanged || readAccountSiteId() === 'solov') notifyRelayRouteChanged()
+    })
+    toolRouteController.start()
+    // 唤醒、网络恢复都马上查一轮工具线路（需求 5.1.4）。加速那边的 resume 监听只在有加速时注册，不能挂在
+    // 它上面。网络恢复没有现成的事件，隔 15 秒看一眼 net.isOnline()（只读本机状态，不出网）。
+    function recheckToolRoute(trigger: 'resume' | 'network' | 'manual'): void {
+      toolEnvironmentProxies = null
+      toolRouteController.recheck(trigger)
+    }
+    const onToolRouteResume = () => recheckToolRoute('resume')
+    powerMonitor.on('resume', onToolRouteResume)
+    let toolRouteOnline = net.isOnline()
+    const toolRouteOnlineTimer = setInterval(() => {
+      const online = net.isOnline()
+      if (online && !toolRouteOnline) recheckToolRoute('network')
+      toolRouteOnline = online
+    }, 15_000)
+    toolRouteOnlineTimer.unref?.()
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
       ...rootedOptions.sessions,
@@ -1462,6 +1603,15 @@ if (!hasSingleInstanceLock) {
     })
     let latestDiagnostics: DiagnosticsReport | null = null
     // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。
+    // 各工具「连接设置」、电脑里另外设过的工具地址比的是工具线路（xm 三线路）；历史账号两套是同一套，不另给。
+    function diagnosticsToolRoute(siteId: string | undefined): DiagnosticsDependencies['toolRoute'] {
+      const site = toolRouting.resolve(siteId)
+      if (site.id !== 'solov') return undefined
+      return {
+        site,
+        route: { line: toolRouting.lines().solov.line, settled: true, automatic: toolRouting.preferences.solov === 'auto', primarySite: requireRelaySite('solov') },
+      }
+    }
     function diagnosticsRelayRoute(siteId: string | undefined): DiagnosticsRelayRoute | undefined {
       const site = relayRouting.resolve(siteId)
       if (site.id !== 'solov' && site.id !== 'solov-api') return undefined
@@ -1480,7 +1630,7 @@ if (!hasSingleInstanceLock) {
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
     function codexProbeContext() {
-      const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
+      const site = toolRouting.resolve(systemService.readStoredConfig().relaySiteId)
       const inspection = inspectProviderConfig(
         'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
       )
@@ -1543,6 +1693,7 @@ if (!hasSingleInstanceLock) {
           // effect only after restart, matching the live account clients.
           relaySite: relayRouting.resolve(systemService.readStoredConfig().relaySiteId),
           relayRoute: diagnosticsRelayRoute(systemService.readStoredConfig().relaySiteId),
+          toolRoute: diagnosticsToolRoute(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
           // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
           // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
@@ -1564,8 +1715,11 @@ if (!hasSingleInstanceLock) {
         if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
         if (kind === 'set-aside-home-agents-md') return setAsideHomeProjectInstructions(codexContext.userHome)
         const siteId = systemService.readStoredConfig().relaySiteId
-        // 和检查页那一项同一套「指向当前账号」：「自动」走直连时指着默认线路的不删。
-        const accountBaseUrls = environmentAccountBaseUrls(relayRouting.resolve(siteId), diagnosticsRelayRoute(siteId))
+        // 和检查页那一项同一套「指向当前账号」：「自动」走直连时指着默认线路的不删。星芒账号按工具线路认。
+        const toolRoute = diagnosticsToolRoute(siteId)
+        const accountBaseUrls = toolRoute
+          ? environmentAccountBaseUrls(toolRoute.site, toolRoute.route)
+          : environmentAccountBaseUrls(relayRouting.resolve(siteId), diagnosticsRelayRoute(siteId))
         return clearUserProviderOverrides({
           names: clearableEnvironmentOverrides(process.env, accountBaseUrls, codexContext.userHome),
         })
@@ -1574,7 +1728,7 @@ if (!hasSingleInstanceLock) {
       // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
       // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
       checkConnection: async (provider: ProviderId) => {
-        const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
+        const site = toolRouting.resolve(systemService.readStoredConfig().relaySiteId)
         const result = await runConnectionCheck({
           provider,
           site,
@@ -1870,8 +2024,10 @@ if (!hasSingleInstanceLock) {
         }),
         onChange: (status) => {
           updaterService.setServiceStatus(status)
+          toolRouteRewriteMode = status?.toolRouteRewrite === 'merge' ? 'merge' : 'targeted'
           runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
             maintenance: Boolean(status?.maintenance),
+            toolRouteRewrite: toolRouteRewriteMode,
           })
         },
       })
@@ -1934,7 +2090,8 @@ if (!hasSingleInstanceLock) {
     // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
     // checkConnection），否则换过站的用户会被告知一份好配置「没指向当前账号」。
     runtimeLog.attachEnvironmentDescriber(async () => {
-      const site = relayRouting.resolve(systemService.readStoredConfig().relaySiteId)
+      // 「配置指向哪」对的是写进工具配置的那条（工具线路）。
+      const site = toolRouting.resolve(systemService.readStoredConfig().relaySiteId)
       return buildFeedbackEnvironmentLines({
         clis: latestTraySystem?.clis ?? null,
         readConfig: (provider) => inspectProviderConfig(
@@ -3187,6 +3344,7 @@ if (!hasSingleInstanceLock) {
       },
       takeExternalDeepLink: (sender) => managedMainWindow?.webContents === sender ? deepLinkInbox.take() : null,
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
+      onRouteRecheckRequested: () => recheckToolRoute('manual'),
       startupQuiet,
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
       onAccountSubscription: (subscription) => { latestTraySubscription = subscription; applicationTray?.updateSnapshot() },
@@ -3224,7 +3382,13 @@ if (!hasSingleInstanceLock) {
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
       unsubscribeRelayRoute()
+      unsubscribeToolRoutes()
+      systemService.disposeToolRoutes?.()
       relayRouteController.dispose()
+      // 退出时偏稳：工具线路只停计时器，不做回升（需求 5.1.6）。
+      toolRouteController.dispose()
+      powerMonitor.off('resume', onToolRouteResume)
+      clearInterval(toolRouteOnlineTimer)
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
@@ -3683,6 +3847,8 @@ if (!hasSingleInstanceLock) {
       paymentWindow.destroy()
       canvasController.dispose()
     })
+    // 客户回到星芒窗口：等着外部客户端退出再换线路的，看一眼退了没有（xm 三线路 C11）。
+    mainWindow.on('focus', () => systemService.recheckPendingExternalRoutes?.())
     if (focusWhenWindowIsReady) {
       mainWindow.once('ready-to-show', () => {
         focusWhenWindowIsReady = false

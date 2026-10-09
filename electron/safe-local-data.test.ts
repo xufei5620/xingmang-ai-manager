@@ -13,6 +13,7 @@ import {
   renameWithTransientRetrySync,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 
@@ -34,7 +35,7 @@ describe('safe local data files', () => {
     expect(() => assertNoReparseComponents(os.tmpdir(), '临时目录')).not.toThrow()
   })
 
-  it('reports the same first redirected component that the assertion rejects', () => {
+  it.runIf(canCreateSymbolicLink)('reports the same first redirected component that the assertion rejects', () => {
     const directory = temporaryDirectory()
     const target = path.join(directory, 'moved-home')
     const symbolicLink = path.join(directory, 'home')
@@ -52,7 +53,7 @@ describe('safe local data files', () => {
     expect(findReparseComponent(path.join(directory, 'not-yet', 'created'))).toBeNull()
   })
 
-  it('reports a dangling link without a target instead of throwing', () => {
+  it.runIf(canCreateSymbolicLink)('reports a dangling link without a target instead of throwing', () => {
     const directory = temporaryDirectory()
     const symbolicLink = path.join(directory, 'gone')
     fs.symlinkSync(path.join(directory, 'missing-target'), symbolicLink)
@@ -60,7 +61,7 @@ describe('safe local data files', () => {
     expect(findReparseComponent(path.join(symbolicLink, 'child'))).toEqual({ component: symbolicLink, target: null })
   })
 
-  it('rejects an arbitrary directory symbolic link', () => {
+  it.runIf(canCreateSymbolicLink)('rejects an arbitrary directory symbolic link', () => {
     const directory = temporaryDirectory()
     const target = path.join(directory, 'target')
     const symbolicLink = path.join(directory, 'link')
@@ -70,7 +71,7 @@ describe('safe local data files', () => {
     expect(() => assertNoReparseComponents(symbolicLink, '临时目录')).toThrow('符号链接')
   })
 
-  it('rejects a broken symbolic link component', () => {
+  it.runIf(canCreateSymbolicLink)('rejects a broken symbolic link component', () => {
     const directory = temporaryDirectory()
     const symbolicLink = path.join(directory, 'broken-link')
     fs.symlinkSync(path.join(directory, 'missing-target'), symbolicLink)

@@ -26,6 +26,8 @@ const startupNoticeRank: Record<StartupCheckId, number> = {
   appearance: 2,
   // 开着的 Claude Desktop 要重开一次才用上改好的设置，比纯告知的「已更新」先说。
   'claude-desktop-repaired': 2,
+  // 换了线路、开着的工具要重开才走新线路：和上面一样是要客户动一下手的。
+  'route-restart': 2,
   updated: 3,
   'template-filled': 3,
 }

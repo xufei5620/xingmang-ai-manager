@@ -6,11 +6,34 @@
 
 | 平台 | 已知失败 | 原因 | Issue |
 |---|---|---|---|
-| **Windows** | **0~9（环境相关）** | 4 个需要 `SeCreateSymbolicLinkPrivilege`（未开发者模式且非管理员时 EPERM）；5 个可能卡 vitest 默认 5s 超时（真实磁盘两阶段提交 + Defender 实时扫描）。开发者模式开启且磁盘不忙的机器可以全绿（2026-08-08 本机 `npm test` 实测 0 失败、vitest 12.7s） | **#40** |
+| **Windows** | **0** | 需要 `SeCreateSymbolicLinkPrivilege` 的 9 条（`safe-local-data` ×4、`runtime-log` ×2、`backups`、`path-identity`、`relocated-folders`）已按能力门控，没有该特权时跳过而非 EPERM 失败；原先那 5 条 5s 超时已随 `test:vitest` 的 `--testTimeout=30000` 消失 | **#40** |
 | **macOS** | 0 | — | — |
 | **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `macos-platform.ts` 的 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对） | #2 已关闭 |
 
-遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）；符号链接类失败开启 Windows 开发者模式即可消除。基线与上表不符请到 **#40** 报告。
+遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）。符号链接那 9 条默认跳过；想在本机真跑，开启 Windows 开发人员模式或以管理员身份运行即可，`electron/symlink-capability.test-support.ts` 会自动探测到。基线与上表不符请到 **#40** 报告。
+
+## Node 版本：本机必须跟 CI 一致（22）
+
+仓库根的 `.nvmrc` 钉的是 **22**，和 `quality` 工作流一致。用别的大版本**可能连测试都跑不完**。
+
+已知一例（2026-10-08 本机实测）：**系统 Node v24.13.0 上，`fs.rmSync(目录, { recursive: true, force: true })`
+删一个「中文名 + 非空」的目录会让进程当场 fail-fast abort**（`0xC0000409` STATUS_STACK_BUFFER_OVERRUN），
+既不抛异常也不返回。表现是 `electron/provider-sessions.test.ts` 的 worker 无声死掉：
+
+```
+Error: [vitest-pool]: Worker forks emitted error.
+Caused by: Error: Worker exited unexpectedly
+ Test Files   (1)          ← 整个文件 43 条一条都没算进去
+```
+
+汇总行会少一个文件（`574 passed | 6 skipped` 但总数 `(581)`），而 vitest 退出码是 1 —— 哪怕 0 个失败。
+
+- 触发条件要三样同时满足：中文名、目录非空、`recursive: true`。`café` 不崩，空的中文目录不崩，
+  `unlink` + `rmdirSync` 不崩；三个盘都崩，不是盘的问题。
+- **产品不受影响**：客户端跑在 Electron 43.6.0 自带的 Node **24.20.0** 上，同一个探测在它上面正常。
+- **CI 不受影响**：固定 Node 22。
+- 解法就是把本机 Node 换成 22。不要去改那条用例——它测的是「工作目录被删掉后还显不显示『接着聊』」，
+  中文目录名正是客户的真实场景。
 
 ## CI 的 Windows 分片：丢导航，不是慢
 

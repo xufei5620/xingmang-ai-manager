@@ -2013,6 +2013,21 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false, { acceptCached: true, path: '/etc' })).rejects.toThrow('检测参数格式错误')
   })
 
+  it('asks for a tool line recheck only when the customer pressed the home rescan', async () => {
+    const service = serviceStub()
+    const onRouteRecheckRequested = vi.fn()
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, { onRouteRecheckRequested })
+    const handler = electronMocks.handlers.get('system:scan')!
+
+    await Promise.resolve(handler(trustedEvent(), true)).catch(() => undefined)
+    expect(onRouteRecheckRequested).not.toHaveBeenCalled()
+    await Promise.resolve(handler(trustedEvent(), true, { recheckRoutes: true })).catch(() => undefined)
+    expect(onRouteRecheckRequested).toHaveBeenCalledTimes(1)
+    expect(service.scanSystem).toHaveBeenLastCalledWith(true)
+    await expect(handler(trustedEvent(), true, { recheckRoutes: 'yes' })).rejects.toThrow('检测参数格式错误')
+    expect(onRouteRecheckRequested).toHaveBeenCalledTimes(1)
+  })
+
   it('holds scans and the startup update check until the login quiet period ends', async () => {
     const service = serviceStub()
     const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }
@@ -3556,6 +3571,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseSettingsUpdate (settings:save)', () => {
+    it('accepts the restart hint switch and rejects anything but a boolean', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      await handler(trustedEvent(), { version: 2, toolRouteRestartHints: false })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, toolRouteRestartHints: false })
+      vi.mocked(service.updateStoredConfig).mockClear()
+      await expect(handler(trustedEvent(), { version: 2, toolRouteRestartHints: 'off' })).rejects.toThrow('换线路提醒设置')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it.each([
       { solov: 'primary' as const },
       { solov: 'direct' as const },

@@ -802,10 +802,12 @@ describe('account key changes before the startup scan finishes', () => {
   })
 })
 
+// 星芒账号默认由主进程定点改地址（xm 三线路 C9），渲染层整份重写只在服务状态切回老办法（R6 merge）时还走，
+// 下面两组钉的就是那条老路；历史账号一直走它。
 describe('explicit applied connection routes on restore', () => {
   const primary = relayProviderBaseUrls('solov', 'primary')
   const direct = relayProviderBaseUrls('solov', 'direct')
-  const applied: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+  const applied: AppSettingsV2 = { ...settings, relaySiteId: 'solov', toolRouteRewrite: 'merge', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
   function routedConfig(provider: ProviderId = 'codex'): AppConfigSummary {
     const current = config()
     current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true,
@@ -939,6 +941,7 @@ describe('automatic connection route', () => {
   const automatic: AppSettingsV2 = {
     ...settings,
     relaySiteId: 'solov',
+    toolRouteRewrite: 'merge',
     activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'auto' },
     relayRouteLines: { solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: false } },
   }
@@ -968,14 +971,42 @@ describe('automatic connection route', () => {
     }
   })
 
+  // xm 三线路：星芒账号的工具配置跟工具线路，和管理工具自己走的那条不一样时照常迁到工具线路。
+  it('moves to the tool line when it differs from the line the app itself uses', () => {
+    const split: AppSettingsV2 = { ...automatic, relayToolRouteLines: { solov: { line: 'primary', settled: true } } }
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(primary.codex, direct.codex), split, 'restore', null).targets).toEqual(['codex'])
+    expect(accountRoutesPending(ownedOn(primary.codex, direct.codex), split, memoryStorage())).toBe(true)
+    // 已经在工具线路上的不动，哪怕管理工具自己走的是另一条。
+    expect(accountRoutesPending(ownedOn(primary.codex, primary.codex), split, memoryStorage())).toBe(false)
+  })
+
   it('has nothing pending once every owned config is on the current line', () => {
     expect(accountRoutesPending(ownedOn(direct.codex, direct.codex), automatic, memoryStorage())).toBe(false)
     expect(accountRoutesPending(config(), automatic, memoryStorage())).toBe(false)
   })
 
   it('treats a pinned line as settled even without the live route lines', () => {
-    const pinned: AppSettingsV2 = { ...settings, relaySiteId: 'solov', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+    const pinned: AppSettingsV2 = { ...settings, relaySiteId: 'solov', toolRouteRewrite: 'merge', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
     expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), pinned, memoryStorage())).toBe(true)
+  })
+
+  it('leaves a xm route change to the main process unless the service status asks for the old merge path', () => {
+    const targeted: AppSettingsV2 = { ...automatic, toolRouteRewrite: undefined }
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(direct.codex, primary.codex), targeted, 'restore', null).targets).toEqual([])
+    expect(accountRoutesPending(ownedOn(direct.codex, primary.codex), targeted, memoryStorage())).toBe(false)
+  })
+
+  it('keeps moving the legacy account site through the renderer as before', () => {
+    const legacyPrimary = relayProviderBaseUrls('solov-api', 'primary')
+    const legacyDirect = relayProviderBaseUrls('solov-api', 'direct')
+    const legacy: AppSettingsV2 = {
+      ...settings,
+      relaySiteId: 'solov-api',
+      activeRelayEndpointIds: { 'solov-api': 'auto' },
+      relayRouteLines: { solov: { line: 'primary', settled: false }, 'solov-api': { line: 'direct', settled: true } },
+    }
+    expect(accountBootstrapPlan(system(['codex']), ownedOn(legacyDirect.codex, legacyPrimary.codex), legacy, 'restore', null).targets).toEqual(['codex'])
+    expect(accountRoutesPending(ownedOn(legacyDirect.codex, legacyPrimary.codex), legacy, memoryStorage())).toBe(true)
   })
 })
 

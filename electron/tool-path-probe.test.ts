@@ -287,7 +287,9 @@ describe('tool-path-probe', () => {
       process: { https_proxy: 'http://user:secret@127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7891' },
       user: { HTTPS_PROXY: '127.0.0.1:7890' },
       machine: { HTTPS_PROXY: 'ftp://127.0.0.1:21', ALL_PROXY: 'not a url ::' },
-    })).toEqual(['http://127.0.0.1:7890', 'socks5://127.0.0.1:7891'])
+    })).toEqual(['socks5://127.0.0.1:7891', 'http://127.0.0.1:7890'])
     expect(environmentProxyCandidates({ process: { HTTPS_PROXY: '  ' } })).toEqual([])
+    // 带用户名密码的测不了，跳过，不拿去掉密码的地址冒充。
+    expect(environmentProxyCandidates({ process: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' } })).toEqual([])
   })
 })

@@ -248,6 +248,17 @@ export function relaySiteEndpointIdForBaseUrl(siteId: unknown, provider: Provide
   return null
 }
 
+/**
+ * 配置里这个地址到底是哪条线路：只认每条线路自己的地址，逐字比（xm 三线路 C12）。落在退役别名上的
+ * 不算那条线路（它实际不走那条线路的中转），和本站以外的地址一样是 other。
+ */
+export function relaySiteExactEndpointIdForBaseUrl(siteId: unknown, provider: ProviderId, value: string): RelayEndpointId | 'other' {
+  for (const endpoint of relaySiteEndpointChoices(siteId)) {
+    if (relayProviderBaseUrlEquals(value, providerUrlsForOrigin(endpoint.origin)[provider])) return endpoint.id
+  }
+  return 'other'
+}
+
 /** Preserve a recognized native route until the user explicitly selects a line. */
 export function relaySiteForProviderBaseUrl(siteId: unknown, provider: ProviderId, value: string): RelaySite | null {
   const normalized = normalizedRelayBaseUrl(value)
@@ -380,6 +391,18 @@ export function createRelayEndpointRoutingSnapshot(
       return current?.settled ? current.line : undefined
     },
   })
+}
+
+/**
+ * 写进工具配置用的线路快照（xm 三线路 5.1.0）：星芒账号读工具线路（tool-route-controller.ts），它一直是
+ * 定下来的；历史账号照旧读应用线路（relay-route-controller.ts），所以它那边一行不变。偏好是同一份。
+ */
+export function createToolRouteRoutingSnapshot(
+  value: RelayRoutePreferences,
+  applicationLines: () => Partial<Record<RelayRouteSiteId, RelayRouteLine>>,
+  toolLine: () => RelayEndpointId,
+): RelayEndpointRoutingSnapshot {
+  return createRelayEndpointRoutingSnapshot(value, () => ({ ...applicationLines(), solov: { line: toolLine(), settled: true } }))
 }
 
 /**

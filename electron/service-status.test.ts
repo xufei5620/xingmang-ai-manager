@@ -61,6 +61,13 @@ describe('locateServiceStatusUrl', () => {
 })
 
 describe('parseServiceStatus', () => {
+  it('switches tool route rewrites back to the merge path only on the literal merge', () => {
+    expect(parseServiceStatus(JSON.stringify({ toolRouteRewrite: 'merge' }), now).toolRouteRewrite).toBe('merge')
+    for (const value of ['targeted', 'MERGE', true, null]) {
+      expect(parseServiceStatus(JSON.stringify({ toolRouteRewrite: value }), now)).not.toHaveProperty('toolRouteRewrite')
+    }
+  })
+
   it('reads an active maintenance notice and its message', () => {
     expect(parseServiceStatus(JSON.stringify({ maintenance: { active: true, message: '  服务升级中，\n预计 22:00 恢复  ' } }), now))
       .toMatchObject({ maintenance: { message: '服务升级中， 预计 22:00 恢复' } })

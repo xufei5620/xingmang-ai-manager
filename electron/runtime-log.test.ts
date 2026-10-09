@@ -11,6 +11,7 @@ import {
   summarizeRuntimeLogFile,
 } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
+import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 
@@ -667,7 +668,7 @@ describe('RuntimeLogStore', () => {
     expect(snapshot.sizeBytes).toBeLessThan(256 * 1024)
   })
 
-  it('keeps entries it could not write, says why, and puts them in the feedback report', async () => {
+  it.runIf(canCreateSymbolicLink)('keeps entries it could not write, says why, and puts them in the feedback report', async () => {
     // 软件数据文件夹被「搬家」：日志目录经过一级链接，写入校验（I8）拒绝它。
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-moved-'))
     temporaryDirectories.push(root)
@@ -699,7 +700,7 @@ describe('RuntimeLogStore', () => {
     expect(cleared.total).toBe(0)
   })
 
-  it('bounds the entries it keeps in memory but still counts every lost one', async () => {
+  it.runIf(canCreateSymbolicLink)('bounds the entries it keeps in memory but still counts every lost one', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-moved-'))
     temporaryDirectories.push(root)
     fs.mkdirSync(path.join(root, 'moved'))

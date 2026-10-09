@@ -116,3 +116,72 @@ export function describeRunningTools(report: RunningToolsReport, goal: RunningTo
 export function offersCodexDesktopRestart(report: RunningToolsReport | null | undefined): boolean {
   return Boolean(report && report.codexDesktopRunning === true && report.canRestartCodexDesktop)
 }
+
+/**
+ * 连接线路因为连不上换了以后，开着的哪几样要客户重开才会走新线路（xm 三线路 C10、C19）。只列要说的：
+ * Claude Code 每次请求都重读配置、codex exec 和生图每次都是新进程，都不用重开，不在这里。
+ */
+export interface ToolRouteRestartHint {
+  /** 这条提示是什么时候出的（毫秒）；渲染层按它只弹一次。 */
+  id: number
+  codex?: {
+    /** Codex 命令行确认开着。 */
+    cli: boolean
+    /** Codex 桌面端确认开着，按哪个系统说怎么退出；不开或看不出来 = null。 */
+    desktop: 'win32' | 'darwin' | null
+    /** 能替客户重开桌面端（只有 Windows）。 */
+    canRestartDesktop: boolean
+  }
+  /** launched = 这次运行里从星芒打开过 Gemini 窗口；unknown = 可能开着。 */
+  gemini?: 'launched' | 'unknown'
+  grok?: 'running' | 'unknown'
+}
+
+export const toolRouteRestartHintTitle = '刚才那条连接线路连不上，已经换到另一条。'
+
+/** 提示正文，一样一句。编辑器插件看不出开没开，换了 Codex 就一律提一句「如果…」。 */
+export function describeToolRouteRestartHint(hint: ToolRouteRestartHint): string[] {
+  const sentences: string[] = []
+  if (hint.codex?.cli) sentences.push('Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。')
+  if (hint.codex?.desktop === 'win32') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。')
+  if (hint.codex?.desktop === 'darwin') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要按 Command + Q 完全退出再打开。')
+  if (hint.codex) sentences.push('如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。')
+  if (hint.gemini === 'launched') sentences.push('从星芒打开的 Gemini 窗口要关掉再打开，才会走新线路。')
+  if (hint.gemini === 'unknown') sentences.push('如果 Gemini 还开着，要关掉再打开才会走新线路。')
+  if (hint.grok === 'running') sentences.push('Grok 还开着，要退出再打开才会走新线路。')
+  if (hint.grok === 'unknown') sentences.push('如果 Grok 还开着，要退出再打开才会走新线路。')
+  return sentences
+}
+
+/**
+ * 改了线路的那几个工具里，哪几个要说一句（C10、C19），说哪一种。Claude Code 每次请求都重读配置，
+ * 不在这里；Gemini 从星芒打开过就按「开着」说，命令行进程看得出看不出都一样。
+ */
+export function toolRouteRestartNeeds(
+  rewritten: readonly ProviderId[],
+  report: RunningToolsReport,
+  options: { geminiLaunched: boolean; platform: NodeJS.Platform },
+): Omit<ToolRouteRestartHint, 'id'> {
+  const needs: Omit<ToolRouteRestartHint, 'id'> = {}
+  if (rewritten.includes('codex')) {
+    needs.codex = {
+      cli: report.running.includes('codex'),
+      desktop: report.codexDesktopRunning === true && (options.platform === 'win32' || options.platform === 'darwin') ? options.platform : null,
+      canRestartDesktop: report.canRestartCodexDesktop,
+    }
+  }
+  if (rewritten.includes('gemini')) {
+    if (options.geminiLaunched) needs.gemini = 'launched'
+    else if (report.running.includes('gemini') || report.unknown.includes('gemini')) needs.gemini = 'unknown'
+  }
+  if (rewritten.includes('grok')) {
+    if (report.running.includes('grok')) needs.grok = 'running'
+    else if (report.unknown.includes('grok')) needs.grok = 'unknown'
+  }
+  return needs
+}
+
+/** 提示里要不要给「帮我重开」：桌面端确认开着，且这台电脑上能替客户重开。 */
+export function offersToolRouteDesktopRestart(hint: ToolRouteRestartHint | null | undefined): boolean {
+  return Boolean(hint?.codex?.desktop && hint.codex.canRestartDesktop)
+}
