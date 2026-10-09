@@ -7,6 +7,7 @@ import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, type ConfigBackupAc
 import type { ProviderId } from './catalog'
 import { providerConfigPaths } from './config-files'
 import { renameWithTransientRetrySync } from './safe-local-data'
+import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 
@@ -516,7 +517,7 @@ describe('ConfigBackupStore', () => {
     expect(fs.readFileSync(path.join(path.dirname(configPath), rollbackName!), 'utf8')).toBe('current-config')
   })
 
-  it('rejects a broken symbolic link introduced during restore commit', () => {
+  it.runIf(canCreateSymbolicLink)('rejects a broken symbolic link introduced during restore commit', () => {
     const { home, userData } = fixture()
     const providerRoots = fixtureProviderRoots(home)
     const [configPath] = providerConfigPaths('codex', providerRoots)
