@@ -169,7 +169,10 @@ async function readDatasetLimits(client, zoneTag) {
   if (!isRecord(settings)) throw new StatsError('Cloudflare 没告诉这个域名的统计能查多久，没法往下查')
   if (settings.enabled === false) throw new StatsError('这个域名的套餐不提供按请求分组的统计，版本分布查不了')
   const fields = Array.isArray(settings.availableFields) ? settings.availableFields : null
-  if (fields && !hasField(fields, 'userAgent')) throw new StatsError('这个域名的套餐不能按 User-Agent 分组，版本分布查不了')
+  if (fields && !hasField(fields, 'userAgent')) {
+    // 字段名是 Cloudflare 的统计口径，不含任何访问数据；列出来才知道这个套餐还能按什么分。
+    throw new StatsError(`这个域名的套餐不能按 User-Agent 分组，版本分布查不了。这个套餐能用的字段：${fields.filter((field) => typeof field === 'string').join(', ').slice(0, 3000)}`)
+  }
   if (!Number.isSafeInteger(settings.notOlderThan) || settings.notOlderThan <= 0) throw new StatsError('Cloudflare 没告诉这个域名的统计能查多久以前')
   const maxDuration = Number.isSafeInteger(settings.maxDuration) && settings.maxDuration > 0 ? settings.maxDuration : DEFAULT_MAX_DURATION_SECONDS
   const pageSize = Number.isSafeInteger(settings.maxPageSize) && settings.maxPageSize > 0 ? Math.min(settings.maxPageSize, DEFAULT_PAGE_SIZE) : DEFAULT_PAGE_SIZE
