@@ -284,6 +284,8 @@ export interface IpcRegistrationOptions {
   onRendererError?(error: RendererErrorPayload): void
   replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
   onSystemSnapshot?(snapshot: SystemSnapshot): void
+  /** 客户点了首页的「重新检测」（system:scan 带 recheckRoutes）：叫工具线路马上查一轮。 */
+  onRouteRecheckRequested?(): void
   /**
    * 开机拉起时的安静期（login-launch.ts）。期间工具检测、启动时检查更新、账号 Key
    * 初始化都等它结束再做；首页那次读取只回上次落盘的结果、不起真扫描。缺省 = 不等。
@@ -403,9 +405,10 @@ export function parseUpdateInstallOptions(value: unknown): UpdateInstallOptions 
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {
   if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached')
-    || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')) throw new Error('检测参数格式错误')
-  return value.acceptCached === true ? { acceptCached: true } : {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached' && key !== 'recheckRoutes')
+    || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')
+    || (value.recheckRoutes !== undefined && typeof value.recheckRoutes !== 'boolean')) throw new Error('检测参数格式错误')
+  return { ...(value.acceptCached === true ? { acceptCached: true } : {}), ...(value.recheckRoutes === true ? { recheckRoutes: true } : {}) }
 }
 
 export function parseExternalClientScanOptions(value: unknown): ExternalClientScanOptions {
@@ -2073,6 +2076,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       throw new Error('更新检查参数格式错误')
     }
     const scanOptions = parseSystemScanOptions(input)
+    if (scanOptions.recheckRoutes) options.onRouteRecheckRequested?.()
     // 上次的结果只用来先把首页画出来：不进托盘、不记「检测完成」，真结果回来再说。
     const quiet = options.startupQuiet?.active() === true
     const cached = scanOptions.acceptCached && forceRefresh !== true

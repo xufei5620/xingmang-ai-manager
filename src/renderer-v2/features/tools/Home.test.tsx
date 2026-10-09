@@ -128,6 +128,26 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
   })
 })
 
+describe('renderer-v2 home tool line status', () => {
+  it('shows nothing about the tool line while it is fine', () => {
+    const markup = render({})
+    expect(markup).not.toContain('home-route-')
+  })
+
+  it('shows a quiet line while the server is switching and the outage with a rescan button', () => {
+    const markup = render({}, undefined, { toolRouteStatus: { serverSwitching: true, outage: { id: 1, reason: 'reset', appReachable: true } } })
+    expect(markup).toContain('data-testid="home-route-server-switching"')
+    expect(markup).toContain('服务端正在切换线路，稍等几分钟')
+    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒管理工具能连上，但 AI 工具会连不上。.*重新检测/)
+  })
+
+  it('says once that the Cloudflare line is in use after a hijack', () => {
+    const markup = render({}, undefined, { toolRouteStatus: { hijack: { id: Date.now() } } })
+    expect(markup).toContain('data-testid="home-route-hijack"')
+    expect(markup).toContain('已为你改用 CF 线路，不影响使用。')
+  })
+})
+
 describe('renderer-v2 home install cancellation', () => {
   it('offers 取消 on the row whose install can still be stopped', () => {
     const markup = render({ claude: { label: '正在安装', log: [], cancellable: true } })

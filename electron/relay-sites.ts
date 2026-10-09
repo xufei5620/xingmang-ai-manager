@@ -394,6 +394,18 @@ export function createRelayEndpointRoutingSnapshot(
 }
 
 /**
+ * 写进工具配置用的线路快照（xm 三线路 5.1.0）：星芒账号读工具线路（tool-route-controller.ts），它一直是
+ * 定下来的；历史账号照旧读应用线路（relay-route-controller.ts），所以它那边一行不变。偏好是同一份。
+ */
+export function createToolRouteRoutingSnapshot(
+  value: RelayRoutePreferences,
+  applicationLines: () => Partial<Record<RelayRouteSiteId, RelayRouteLine>>,
+  toolLine: () => RelayEndpointId,
+): RelayEndpointRoutingSnapshot {
+  return createRelayEndpointRoutingSnapshot(value, () => ({ ...applicationLines(), solov: { line: toolLine(), settled: true } }))
+}
+
+/**
  * Retired site ids that older settings files may still name, mapped to the
  * site they always denoted. 'sub2api' was a duplicate registry entry for xm
  * (D-10), never a distinct relay: resolving it here keeps such a file

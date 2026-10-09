@@ -278,37 +278,59 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
   return fetchOnLine
 }
 
+/** 星芒账号的工具线路（xm 三线路 5.2）：写配置前查模型、工具自检在它上面没走通，报给它而不是应用线路。 */
+export interface RelayToolLineObserver {
+  /** 星芒账号这会儿写进工具配置的那条线路，以及是不是「自动」（只有「自动」会换线）。 */
+  route(): { line: RelayEndpointId; automatic: boolean }
+  /** 叫工具线路那边查一轮（tool-route-controller.ts 的 reportFailure），不直接计入连败。 */
+  reportFailure(trigger: string): void
+}
+
 /**
  * 写进工具配置之前查模型、工具自检用的 fetch：查的正是工具会用的那条线路通不通，所以不换地址、
  * 不重发；「自动」的站在直连上连不上时只报给线路那边，由它查过健康检查再决定要不要退回。
+ * 给了 toolLine 时星芒账号改报工具线路：打在工具线路上的（洛杉矶、CF 都算）没走通就报给它；历史账号
+ * 照旧只报直连、报给应用线路。
  */
-export function createRelayObservedFetch(router: RelayLineRouter, base: typeof fetch, options: Pick<RelayLineFetchOptions, 'log'> = {}): typeof fetch {
+export function createRelayObservedFetch(
+  router: RelayLineRouter,
+  base: typeof fetch,
+  options: Pick<RelayLineFetchOptions, 'log'> & { toolLine?: RelayToolLineObserver } = {},
+): typeof fetch {
+  function reporterFor(endpoint: { siteId: RelayRouteSiteId; endpointId: RelayEndpointId }): ((reason: string) => void) | null {
+    const toolLine = options.toolLine
+    if (endpoint.siteId === 'solov' && toolLine) {
+      const route = toolLine.route()
+      if (!route.automatic || route.line !== endpoint.endpointId) return null
+      return (reason) => toolLine.reportFailure(`check:${reason}`)
+    }
+    if (endpoint.endpointId !== 'direct' || !router.route(endpoint.siteId).automatic) return null
+    return (reason) => router.reportDirectFailure(endpoint.siteId, reason)
+  }
   return async (input, init) => {
     const requested = requestUrl(input)
     const endpoint = requested === null ? null : relayEndpointForUrl(requested)
-    if (requested === null || !endpoint || endpoint.endpointId !== 'direct' || !router.route(endpoint.siteId).automatic) {
-      return base(input, init)
-    }
-    const { siteId } = endpoint
+    const report = endpoint ? reporterFor(endpoint) : null
+    if (requested === null || !endpoint || !report) return base(input, init)
     let response: Response
     try {
       response = await base(input, init)
     } catch (error) {
       const reported = init?.signal?.aborted ? null : reportedRelayLineFailure(error) ?? noAnswerFailure(error)
-      if (reported) router.reportDirectFailure(siteId, reported)
+      if (reported) report(reported)
       throw error
     }
     const failure = relayLineFailureAnswer(response)
-    if (failure) router.reportDirectFailure(siteId, failure)
-    else if (blockedByAllowlist(response)) {
+    if (failure) report(failure)
+    else if (endpoint.endpointId === 'direct' && blockedByAllowlist(response)) {
       try {
         options.log?.('warn', 'relay.line.blocked', '直连没放行这个接口', {
-          siteId, line: 'direct', method: (init?.method ?? 'GET').toUpperCase(), path: new URL(requested).pathname,
+          siteId: endpoint.siteId, line: 'direct', method: (init?.method ?? 'GET').toUpperCase(), path: new URL(requested).pathname,
         })
       } catch { /* 记日志失败不影响请求 */ }
     }
     return watchResponseBody(response, () => {
-      if (!init?.signal?.aborted) router.reportDirectFailure(siteId, 'body')
+      if (!init?.signal?.aborted) report('body')
     })
   }
 }

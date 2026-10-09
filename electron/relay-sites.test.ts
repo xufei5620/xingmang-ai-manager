@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { providerBaseUrls, providerIds } from './catalog'
 import {
   createRelayEndpointRoutingSnapshot,
+  createToolRouteRoutingSnapshot,
   defaultRelaySiteId,
   privacyPolicyUrl,
   relayApiProbeBaseUrl,
@@ -323,6 +324,22 @@ describe('relay site registry', () => {
     expect(createRelayEndpointRoutingSnapshot().selection('solov')).toBeUndefined()
     expect(() => routing.require('sub2api')).toThrow('未知中转站点')
     expect(() => routing.require('https://xm-direct.solov.cc')).toThrow('未知中转站点')
+  })
+
+  it('lets the account site follow the tool line while the legacy site keeps the application line', () => {
+    const application = { solov: { line: 'direct' as const, settled: true }, 'solov-api': { line: 'direct' as const, settled: false } }
+    let tool: 'direct' | 'primary' = 'primary'
+    const routing = createToolRouteRoutingSnapshot({}, () => application, () => tool)
+    expect(routing.lines()).toEqual({ solov: { line: 'primary', settled: true }, 'solov-api': { line: 'direct', settled: false } })
+    expect(routing.selection('solov')).toBe('primary')
+    expect(routing.selection('solov-api')).toBeUndefined()
+    expect(routing.require('solov').providerBaseUrls).toEqual(relayProviderBaseUrls('solov', 'primary'))
+    tool = 'direct'
+    application['solov-api'] = { line: 'direct', settled: true }
+    expect(routing.require('solov').providerBaseUrls).toEqual(relayProviderBaseUrls('solov', 'direct'))
+    expect(routing.selection('solov-api')).toBe('direct')
+    // 写死一条的偏好照旧压过线路结论。
+    expect(createToolRouteRoutingSnapshot({ solov: 'primary' }, () => application, () => 'direct').selection('solov')).toBe('primary')
   })
 
   it('reads a missing preference as auto and keeps a choice saved before auto existed as that one line', () => {

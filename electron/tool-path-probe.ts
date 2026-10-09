@@ -409,7 +409,7 @@ function proxyValue(env: Readonly<Record<string, string | undefined>>, name: Sta
 /**
  * 要测哪几个环境变量代理：本进程继承来的、当前账号的、整台电脑的（Windows 的 HKCU\Environment 和系统
  * 环境，用 stale-proxy-environment.ts 的 readWindowsProxyScopes 读）。客户新开的终端读的是后两份，
- * 星芒进程继承来的可能是旧值，所以三份都要。只读，去重，认不出的写法不测。
+ * 星芒进程继承来的可能是旧值，所以三份都要。只读，去重，认不出的写法、带用户名密码的不测。
  */
 export function environmentProxyCandidates(scopes: {
   process: Readonly<Record<string, string | undefined>>
@@ -424,6 +424,8 @@ export function environmentProxyCandidates(scopes: {
       try {
         const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`)
         if (!['http:', 'https:', 'socks:', 'socks4:', 'socks5:'].includes(url.protocol)) continue
+        // 带用户名密码的代理 Chromium 要弹登录框，测不了；只看别的路径（计划第 5 节第 8 条）。
+        if (url.username || url.password) continue
         const normalized = `${url.protocol}//${url.host}`
         if (!found.includes(normalized)) found.push(normalized)
       } catch {
