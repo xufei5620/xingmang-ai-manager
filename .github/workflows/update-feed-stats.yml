@@ -33,6 +33,14 @@ jobs:
         with:
           node-version: 22
 
+      # TEMPORARY: which DNS and edge serve the update feed (no addresses printed); removed before merge.
+      - name: Diagnose which Cloudflare zone serves the update feed
+        if: github.event_name == 'push'
+        run: |
+          for name in shenfengwl.fun solov.cc; do echo "NS $name: $(dig +short NS "$name" | sort | tr '\n' ' ')"; done
+          echo "CNAME updatesnew.shenfengwl.fun: $(dig +short CNAME updatesnew.shenfengwl.fun)"
+          curl -sS -o /dev/null -D - --max-time 20 https://updatesnew.shenfengwl.fun/xingmang-manager/service-status.json | grep -iE '^(HTTP/|server:|cf-cache-status:|content-type:)' || true
+
       # 脚本只用 Node 自带的模块，不用 npm ci。来源 IP 只在脚本内存里去重，
       # 日志和摘要页里只有按版本汇总的占比。
       - name: Count clients per version from the status file requests
