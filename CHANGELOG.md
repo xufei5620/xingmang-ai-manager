@@ -16,6 +16,79 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.18 - 2026-10-09
+
+- `cli-model-defaults.ts`：Claude 默认型号改为 `claude-opus-5-5`，分组里没有时先退回 `claude-opus-5`；新增 `resolveCliModelUpgrade`（上一代默认 → 这一代）。
+- `tool-model-check.ts`：多一种 `upgrade` 结果，只在配置里还是上一代默认、账号已有新型号时给出；问过记进 `settings.json` 的 `offeredModelUpgrades`（只增不减，只有主进程写），记不下来就不问。打开前的提问复用 #520 的换型号对话框。
+- 核对过 Claude Code 2.1.282 的包内代码：2.1.277 不认识 `claude-opus-5-5`；2.1.280 起顶层 `effortLevel` 只作用于老型号，Opus 5.5 用它自己的默认推理强度，而这个默认正好是 medium，所以不另写按型号的设置（第十五批 6）。
+- Windows 上卸官方安装器装的 Claude Code 时，开着的 `~/.local/bin/claude.exe` 改名成 `.claude.exe-<uuid>.removing` 能成、删不掉，
+  `uninstallVerifiedNativeCliFiles` 把它放进 `retainedQuarantineFiles`，但 `system-service.ts` 的 `uninstallNativeClaude` 只取
+  `retainedVersionFiles`，结果卸载报 `uninstalled`、这个文件一直留着，「帮我清理」也管不到（#935 末尾记下的那条）。
+  新增 `buildClaudeRetainedFiles`：只在 win32 把改名后的命令入口一起算进要交给客户清理的文件，走 manual-required、
+  进删除命令和「帮我清理」的记录；`buildClaudeRetainedVersionFilesReason` 多一个可选参数，有这类文件时换成先关窗口的那句说明。
+  Mac 上按规矩留着的改名链接照旧不报。windows-latest 上加了一条用例：从 `claude.exe` 真起一个进程，核对卸载后它被改名留下、
+  进程开着时清理删不掉、关掉后清理删得掉。
+- 首页黄条「星芒画图还没装进 AI 工具：这台电脑还缺运行环境…」和运行环境卡里 Node.js「可选 · 未装」「一般不用单独点」
+  打架（yoyo 10-8 c 条，A014：只装了 Codex 桌面端；一个工具都没装的电脑也挂这条）。`ManagedCliKeySyncSummary` 加可选
+  `imageMcpNeedsNode`：`ipc.ts` 在画图没登记只因为没找到 Node.js 时带上；`account-bootstrap.ts` 把这句从 `warnings`
+  挪到新的 `drawingNeedsNode`；`Home.tsx` 的 `homeBootstrapWarnings` 只在装着（或没检测出来，A4）任一命令行工具时
+  把它放回横幅，正在装的不算，免得装到一半冒出来（装工具会顺带准备 Node.js，装完那一轮同步把画图接上）。Codex
+  桌面端不算：那时 Node.js 一行写「可选」（第二十七批 B），这句不上首页，桌面端里先画不了图。句子本身没改，
+  缺省 = 旧行为。
+- 外部客户端「打开」还是慢（yoyo 2026-10-08 真机反馈）：`external-client-runtime.ts` 的 `launch()` 在 Windows 上也只看要打开的那一个（Mac 上原来就是）。
+  检测脚本照旧读全三处卸载信息（要靠它找到客户端和登记的版本），但只核对、只验签这一家；打开 WorkBuddy、OpenCode 不再导入 Appx、
+  不查 AppX 注册信息。对要打开的那一家，路径、链接、签名和 AppX 身份的检查一条不少。打开前那次检测也不再清掉另外两家
+  「检测失败原话」的去重记录，免得下一轮检测把同一句再记一遍。
+- 新增运行日志 `external-client.launch-timing`（info，进反馈报告）：每次打开成了，记排队等了多久、打开前那次检测多久
+  （其中 PowerShell 整段、导入模块、读卸载信息、看进程、查 AppX、核对和验签各段，现核、照用的签名各几个）、交给资源管理器
+  （Mac 上是 open）多久，用来对上客户说的慢在哪一步；没打开成的不记，那次一共多久照旧在「外部客户端启动」那一行。脚本报回的
+  各段只留认识的那几项里的非负整数，格式不对就当没报；这一行记不下也不影响打开。
+- 安装到 Program Files 以外（比如 `D:\星芒AI管理工具`）时，安装程序把安装目录改成跟 Program Files 下一样只有管理员能改（`build/installer.nsh` 的 `xingmangLockInstallDirectory`，权限串 `XINGMANG_INSTALL_DIRECTORY_SDDL`：属主 Administrators，不再继承上级，SYSTEM/Administrators 完全控制，Users 与两个应用包组只读和运行）。原因：自选目录继承盘根的「已验证的用户可修改」，而以管理员身份跑的升级会执行旧卸载程序、卸载会执行主程序、更新器会执行 `resources\elevate.exe`，谁都能先换掉这些文件，等客户下一次更新点「是」时拿到管理员权限（Codex 逆向报告第 3 条，2026-10-08 核对；0.2.15 起就有）。
+- 收紧在三处做：`customInit`（升级、静默安装时 `$INSTDIR` 已定，赶在模板执行旧卸载程序和解压之前）、目录页离开时（有界面安装，当场建目录并收紧）、`customInstall`（兜底）。只在按整台电脑安装时编进去；Program Files 和网络路径不动。
+- 改权限前先不跟链接地打开目录（`FILE_FLAG_OPEN_REPARSE_POINT`，不许别人同时删、改名），核对最终路径与 `$INSTDIR` 一字不差、它是真文件夹不是重解析点，再经同一个句柄 `SetSecurityInfo`；任何一条不对就不改、照原样安装。不起 icacls 或 PowerShell（I14）。
+- 新增 `scripts/windows-install-directory-acl-smoke.ps1`，接在 `windows-uninstall-smoke.yml` 里：Program Files 安装不变；装进「已验证的用户可修改」的文件夹后目录和主程序、卸载程序、`elevate.exe` 只剩管理员能改；把它还原成老版本留下的宽松权限、放进一个指向外面的联接再按更新器的方式升级，重新收紧，联接后面的文件夹权限不变。
+- `electron/platform/install-system-api.ts`：macOS 的 NativeWindowMac 在 `browser-window-created` 之后才写入构造参数里的标题，按标题认主窗口在 Mac 上永远落空，系统设置桥（`window.xingmangPlatform`）的预加载从未注册。改为在构造返回后的微任务里认窗口（此时页面尚未加载，标题无法被页面改写）。
+- Mac CI 新增 `e2e/renderer-v2-native.mjs` 一步，桥缺失时打印窗口、预加载与主进程输出的现场。
+- 星芒账号冒烟（`e2e/realm-account-smoke.mjs`）偶发红的根因：Electron 43 带的 V8 15.0 对 Playwright 在主进程里等的那个 promise 只弱引用（15.2 起才强引用），主进程按 Node 的规矩要等手上这一轮任务做完才跑微任务，命令落在启动忙的时候，中间一次垃圾回收就把回答收走（#934、#939 第三次启动连丢四次）。`e2e/fixture-readiness.mjs` 新加 `mainProcessCallInOwnTask`：在主进程里另起一轮任务开始、再另起一轮收尾，回答一直挂在 setImmediate 队列上。沙箱里对着忙的主进程，同一句 `app.getPath()` 200 次原来丢 89 次，改后 0 次；冒烟的主进程读数全走它，原来的退避重放留作最后一道。`scripts/ci-workflow-config.test.cjs` 不靠 Electron 复现同一件事（另一个线程经 inspector 发命令、主线程落地后先回收）并钉住改法。
+- 星芒账号冒烟（`e2e/realm-account-smoke.mjs`）另一种偶发红「等不到切换账号」（#530 两次、#942 一次）的根因：夹具不答历史账号的直连线路，程序起来 30 秒出头「自动」改走默认线路，界面重读设置后替刚登录的账号再核对一轮 Key，开始引导的「稍后继续」又灰下去几百毫秒。Playwright 的 click 先确认能点再发鼠标事件，按钮正好在这两步之间变灰时浏览器丢掉点击、click() 照样返回，引导一直盖着。三次失败这一步都在第 29.7 秒前后开始，过的那次在 27.5 秒。冒烟改成点完等引导真的收起、没收起再点（`pauseStartGuide`）；沙箱里注入真实换线 20 次复现 1 次，故意吞掉一次点击时旧写法照 CI 原样红、新写法补点一次就过。`scripts/ci-workflow-config.test.cjs` 钉住不许再只点一次。
+- Windows 默认配置（非管理员 + 开发人员模式关）下 `npm test` 的 9 个失败清零（#40 的 A 类）。`fs.symlinkSync`
+  需要 `SeCreateSymbolicLinkPrivilege`，本机没有时这 9 条在被测代码跑起来之前就 EPERM，报的是机器配置、
+  不是仓库状态。新增 `electron/symlink-capability.test-support.ts` 一次性探测能否创建真符号链接，
+  `safe-local-data`（4 条）、`runtime-log`（2 条）、`backups`、`path-identity`、`relocated-folders`
+  各自的符号链接用例改用 `it.runIf(canCreateSymbolicLink)` 门控。**断言一个字没改**——换联接会改掉被测属性
+  （这些用例验的就是 I8 对符号链接的防护），所以只能整条跳过。
+- 覆盖不会因此静默消失：`electron/symlink-capability.test.ts` 在 `CI` 下断言探测必须为真，runner 一旦失去
+  该特权就当场红，而不是 9 条悄悄变成 skip。门控前已核实 CI 的 windows runner 确有该特权——当时代码里
+  没有任何跳过而 CI 全绿。实现后又把探测临时强制为 true 复跑，9 条如期重新执行并复现原 EPERM，证明门控
+  挂在正确的用例上。
+- `AGENTS.md` 第 3 节与 `docs/TEST-BASELINE.md` 的 Windows 基线从「0~9 个环境相关失败」改为 **0**，
+  并写明跳过不算失败、想在本机真跑该开什么。#40 的 B 类（5 条卡 vitest 默认 5s 超时）此前已随
+  `test:vitest` 的 `--testTimeout=30000` 消失，本次复核 11304 条用例零超时。
+- 新增根目录 `.nvmrc`（22，与 `quality` 工作流一致）。仓库此前既无 `.nvmrc` 也无 `engines`，本机 Node 与 CI、与 Electron 自带的 Node 三者各走各的。实测系统 Node v24.13.0 上 `fs.rmSync(中文名非空目录, { recursive: true, force: true })` 会让进程 fail-fast abort（`0xC0000409`），`provider-sessions.test.ts` 的 worker 因此无声死掉、整个文件 43 条一条都不算，vitest 退出码恒为 1。Electron 43.6.0 自带的 Node 24.20.0 与 CI 的 Node 22 都正常，产品与 CI 均不受影响。现象、触发条件与排查过程记进 `docs/TEST-BASELINE.md`。
+- 新增更新包签名（Ed25519）。`publish-release` 在上传前用 release 环境的 `XINGMANG_UPDATE_SIGNING_KEY` 给 `latest.yml` 每个文件签名（`scripts/update-manifest-signature.cjs`，签「版本号 + url + sha512」，写进 `files[].xingmangSignature`），并确认私钥对得上客户端内置公钥；发布后再对线上清单验一次签。`rollback-release` 对带签名的备份验签，对加签名之前的老备份与 GitHub Release 同版本安装包逐字节核对后补签，找不到安装包时原样退回并告警。
+- 客户端：`updater.ts` 新增 `verifyPackageSignature`，在 SHA-512 对上之后对同一清单项验签，失败按下载失败处理（`UPDATE_SIGNATURE_MISSING` / `UPDATE_SIGNATURE_INVALID` / `UPDATE_SIGNATURE_UNCONFIGURED`）；`main.ts` 只在 Windows 的未签名通道接上（Linux 的 deb 也走未签名通道，但它的两份清单还没签，暂不接）。验签模块 `electron/update-package-signature.ts`：公钥名单 `updateSigningPublicKeys` 可放多把以便换钥匙；缺签名、签名不对、没配公钥一律拒装，不会因为签名缺失放行。macOS 不签，Squirrel.Mac 已按钉住的发布证书验苹果签名。
+- xm 三线路 PR-1（C9、(f)、C10、C11、C12、C19、C17 的 route.followed）：星芒账号（solov）换线路改由主进程 `followToolRoutes` 定点改写工具配置里的那一个地址（`tool-route-rewrite.ts` 字面量替换后整份重解析比对，`config-files.ts` 的 `planProviderRouteFollow` / `applyProviderRouteFollow` 走两阶段提交、本次 .bak 写成即删），不查模型、不碰 Key；写前记 manual、写后用新指纹重记 account 并原样带回模板版本号。历史账号（solov-api）照旧走渲染层 `followRelayRoute` → 整份写入，一行未改。
+- 被外部改回 24 小时内两次标「由其他工具管理」并停手；暂时性失败每 5 分钟重试、最多 12 次；改完 60 秒回看一次。状态存 `tool-route-follow.json`（只存指纹与时间）。
+- 迁移前原件：每个工具第一次定点改写前整套备份一次，进现有「备份」页（`pre-save` 类型，200 份上限内），没有另开子目录和新界面分组。
+- 服务状态文件新增 `toolRouteRewrite: "merge"`（R6），缺省为定点改写；`service-status` 工作流加对应输入。
+- 外部客户端开着时的换线（C11）：只对星芒账号，每 5 分钟和窗口回到前台时（间隔至少 2 分钟）用 `runtime.stillRunning` 轻量看一眼进程，退出后整轮检测一次完成换线；看不出开没开的每 15 分钟整轮检测一次。
+- 零新增 IPC 通道：复用 `network:relay-route-changed`，渲染层要的线路标签、重开提示、R6 模式放进配置摘要与设置快照的只读字段。
+- xm 三线路 PR-2a（C3、C4、C5、C6，新模块，主进程一行没接，行为不变）：`tool-path-probe.ts` 照 AI 工具自己的路子探一条星芒线路（系统解析全部地址、错开 250 毫秒并发连、SNI 用真域名、同一条连接上 `GET /api/status` 要 200 且 `success: true`，10 秒、16KB、不跟重定向、只认 relay-sites.ts 里星芒账号的两个 origin）；证书同时信 Node 自带和系统根证书（系统那份放在一次性的 worker 线程里读，不卡主进程），只靠系统根证书才过的标「安全软件接管」照样算通；「慢但有进展」不计失败。代理路径只给判法和候选代理（`probeToolPathThroughFetch`、`environmentProxyCandidates`），Electron 会话那半留给 PR-2b。
+- `route-failure-classifier.ts`：失败打标签（正常 / 代理接管 / 未知 / 劫持），内置 Cloudflare 公布的地址段和 fake-ip、私网、回环等特殊段；读不到状态文件时一律「未知」，不判劫持。
+- `route-status-file.ts`：读 `/xm-route-status.json`（v1），先当前应用线路再另一条，16KB、不跟重定向、`legit_ips` 逐项校验是 IP 字面量，缓存 10 分钟（读不到也缓存），准备降级时不走缓存重读。服务端还没上线，读不到只禁止新分配香港。
+- `tool-route-controller.ts`：工具线路状态机。L1 → L2（占位，第一批恒不可选、不进 RelayEndpointId）→ L3；连续 3 轮失败（隔 15 秒）或劫持 1 次准备降级，服务端 incident 时从第一次失败起等 5 分钟、只切 CF；挑这一轮通过的最高线路（可往上回）；两次切换隔 5 分钟；冷却期 0 / 1 / 6 / 24 小时按墙钟、跨重启；冷却期满每 2 分钟查、连续 6 次通才回；7 天无失败的开机 30 秒内 3 次通就回；退出不回升；L1/L2 按解析地址去重；三线全挂不改配置只出提示（按原因 24 小时一次），劫持提示 7 天一次。状态另存 `tool-route-state.json`（safe-local-data，8KB，只存线路 id、原因和时间，失败记录最多 16 条），不碰 0.2.17 要读的 `relay-route-lines.json`；升级首启取那份文件里星芒账号的结论，7 天内 `health-failed` 给洛杉矶记一次失败。
+- quality 工作流的 Windows、macOS 跑道各加一步 `e2e/system-ca-smoke.mjs`：现场生成一次性测试根装进跑道机器的系统证书库，要求 Electron 主进程（含 worker 线程）读得到、只信自带根证书时握手失败、加上系统根证书后握手通过，用完删掉。
+- xm 三线路 PR-2b（把 PR-2a 的模块接进主进程）：主进程起一个只管星芒账号（solov）的工具线路控制器（`tool-route-controller.ts`，状态存 `tool-route-state.json`，升级首启读 `relay-route-lines.json` 的旧结论），由它决定写进 AI 工具配置的线路；原来的应用线路控制器（`relay-route-controller.ts`）照旧管管理工具自己的流量、历史账号（solov-api）和更新源，日志分别带 `kind: 'app'` / `kind: 'tool'`。
+- `createToolRouteRoutingSnapshot`：工具相关的路由快照里 solov 取工具线路（恒为已定），solov-api 取应用线路，solov-api 的线路逻辑一行未改。诊断、工具自检、Codex 探测、修复清环境变量、反馈环境描述改用工具线路；反馈上报线路、更新源、启动必需检查仍用应用线路。
+- `tool-route-probe.ts`：一条线路要在无代理、系统代理（对该 origin 生效时，经 `xingmang-tool-proxy-*` 会话）、每个 HTTPS_PROXY / ALL_PROXY 上都通才算通；没有一条线路全通时以无代理路径为准。带用户名密码的代理不测（`environmentProxyCandidates` 跳过）。Linux 只测无代理路径。环境变量代理只在启动、唤醒、网络恢复、手动重新检测和准备降级时重读。
+- 已观察的请求（`createRelayObservedFetch`）对星芒账号只在自动模式、且请求打到工具当前线路时把失败报给工具线路控制器（`check:<原因>`），手动固定线路和历史账号照旧。
+- `tool-route-status.ts`：把控制器的快照与提示整理成设置快照里的只读字段 `relayToolRouteStatus`（服务端切换中 / 三线全挂及原因与管理工具能否连上 / 劫持，劫持提示留半小时），另加只读 `relayToolRouteLines`；不落盘、不加 IPC 通道，复用 `network:relay-route-changed` 让界面重读。
+- `system:scan` 的选项新增 `recheckRoutes`，首页「重新检测」带上它让工具线路控制器手动重测一轮；唤醒和网络恢复（15 秒查一次 `net.isOnline()`）也各触发一轮。
+- 开发时 `XINGMANG_TOOL_ROUTE_FAST=1`（仅未打包）把工具线路的时钟加快 60 倍，方便看降级与回升。
+- xm 三线路 PR-3（C16、C15）：设置选项（`connection-routes.ts`）、「星芒 AI 网络」结论（`relayNetworkPassSummary`）、导出报告里的线路名（`relayLineName`、`describeRelayRouteChange`）、反馈报告「连接线路」（`resolveFeedbackRelayRoute`）都按站点取：solov 用附录 A 的洛杉矶 / CF 说法，solov-api 一字不变（单测钉住）；存储值 `direct` / `primary` 不变。历史账号线路的说明改成自己完整的一句。
+- 反馈报告新增「工具线路」一行（`resolveFeedbackToolRoute`，只有星芒账号）。「星芒 AI 网络」那一项导出的报告加上工具线路的几行（`buildToolRouteReport`）：线路与自动 / 固定、最近一次切换和原因、服务端切换中、三线全挂原因、状态文件读不读得到及 incident 状态和洛杉矶入口代号、两条线路最近一次照工具连法探测的结果；检查页详情不摆，不带地址。
+- C15：线路状态文件说洛杉矶那个域名指向香港入口（`lines.direct.target === 'hkg'`）时，更新与服务状态文件改用包里那份目录（`updateFeedLineFor`）；状态文件读不到照旧。只换下载地址，#944 的验签不受影响。状态文件服务端还没上线，这段现在不生效。
+
 ## 0.2.17 - 2026-10-07
 
 - 按 #941（`docs/DIRECT-ROUTE-RELAY-SUPPLEMENT.md`）第 2～4 节修直连的三处问题，只动 new-api（xm）这一侧的共用逻辑，sub2api 直连
