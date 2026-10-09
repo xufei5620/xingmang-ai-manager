@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createToolRouteStatusBoard, toolRouteHijackNoticeTtlMs } from './tool-route-status'
+import { buildToolRouteReport, createToolRouteStatusBoard, toolRouteHijackNoticeTtlMs } from './tool-route-status'
 import type { ToolRouteSnapshot } from './tool-route-controller'
 
 function snapshot(overrides: Partial<ToolRouteSnapshot> = {}): ToolRouteSnapshot {
@@ -71,5 +71,60 @@ describe('createToolRouteStatusBoard', () => {
     expect(board.status(snapshot({ line: 'primary' }))).toEqual({ hijack: { id: 10_000 } })
     clock += toolRouteHijackNoticeTtlMs
     expect(board.status(snapshot({ line: 'primary' }))).toBeUndefined()
+  })
+})
+
+describe('buildToolRouteReport', () => {
+  // 本地时间 1 月 3 日 08:00，和诊断那边换线时间的测法一样。
+  const at = new Date(2026, 0, 3, 8, 0).getTime()
+
+  it('reports the line, why it last changed and that nothing was read yet', () => {
+    expect(buildToolRouteReport({
+      snapshot: snapshot({ line: 'primary', lastChange: { from: 'direct', to: 'primary', reason: 'failed', trigger: 'check:reset', at } }),
+      lastStatus: null,
+      probes: {},
+    })).toEqual({
+      toolLine: 'CF',
+      toolLineMode: '自动',
+      toolLastChange: '1月3日 08:00，洛杉矶线路没连上，改走 CF 线路',
+      toolLastChangeTrigger: 'check:reset',
+      routeStatusFile: '还没读过',
+    })
+  })
+
+  it('names a recovery, a fixed line, the server switching and an outage', () => {
+    expect(buildToolRouteReport({
+      snapshot: snapshot({ automatic: false, serverSwitching: true, outage: { reason: 'dns', since: at }, lastChange: { from: 'primary', to: 'direct', reason: 'recovered', at } }),
+      lastStatus: { at, status: null },
+      probes: { direct: { ok: false, kind: 'dns', at }, primary: { ok: true, at } },
+    })).toEqual({
+      toolLine: '洛杉矶',
+      toolLineMode: '固定',
+      toolLastChange: '1月3日 08:00，洛杉矶线路恢复稳定，换回洛杉矶线路',
+      toolServerSwitching: '是',
+      toolOutage: 'dns',
+      routeStatusFile: '1月3日 08:00 读不到',
+      toolProbeLosAngeles: '1月3日 08:00 没通（dns）',
+      toolProbeCf: '1月3日 08:00 通',
+    })
+  })
+
+  it('takes only the incident state and the entry code from the status file, never an address', () => {
+    const report = buildToolRouteReport({
+      snapshot: snapshot(),
+      lastStatus: {
+        at,
+        status: {
+          updatedAt: null,
+          incident: { line: 'direct', state: 'switching', since: null },
+          lines: { direct: { target: 'hkg', proxied: false, healthy: true, legitIps: ['192.0.2.10'] } },
+          hkEnabled: false,
+          hkRecommended: false,
+        },
+      },
+      probes: {},
+    })
+    expect(report).toMatchObject({ routeStatusFile: '1月3日 08:00 读得到', routeStatusIncident: 'switching', routeStatusDirectTarget: 'hkg' })
+    expect(JSON.stringify(report)).not.toContain('192.0.2.10')
   })
 })

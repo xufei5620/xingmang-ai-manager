@@ -8,7 +8,9 @@
  * - 劫持：控制器每台电脑 7 天最多叫一次，这里出来以后半小时内给界面（窗口晚开、重载还能看到）。
  */
 import type { RelayToolRouteStatus } from './app-settings'
-import type { ToolRouteNotice, ToolRouteSnapshot } from './tool-route-controller'
+import type { RelayEndpointId } from './relay-sites'
+import type { RouteStatus } from './route-status-file'
+import type { ToolRouteChange, ToolRouteChangeReason, ToolRouteNotice, ToolRouteSnapshot } from './tool-route-controller'
 
 export const toolRouteHijackNoticeTtlMs = 30 * 60_000
 
@@ -69,4 +71,75 @@ export function createToolRouteStatusBoard(options: ToolRouteStatusBoardOptions)
       }
     },
   }
+}
+
+export interface ToolRouteProbeRecord {
+  ok: boolean
+  kind?: string
+  at: number
+}
+
+export interface ToolRouteReportInput {
+  snapshot: ToolRouteSnapshot
+  /** 最近一次读线路状态文件；还没读过给 null。 */
+  lastStatus: { at: number; status: RouteStatus | null } | null
+  /** 两条线路最近一次照工具的连法探测（tool-route-probe.ts）的结果。 */
+  probes: Partial<Record<RelayEndpointId, ToolRouteProbeRecord>>
+}
+
+const reportLineNames: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶', primary: 'CF' }
+// 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法。
+const reportLineTitles: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶线路', primary: ' CF 线路' }
+const reportChangeReasons: Readonly<Record<Exclude<ToolRouteChangeReason, 'recovered'>, string>> = {
+  failed: '没连上',
+  hijack: '的地址被指到了别处',
+  incident: '服务端在处理故障',
+}
+
+// 按这台电脑的时区说，和「星芒 AI 网络」那一项的应用线路换线时间同一个写法。
+function reportTime(at: number): string {
+  const date = new Date(at)
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function describeToolRouteChange(change: ToolRouteChange): string {
+  const from = reportLineTitles[change.from].trimStart()
+  const to = reportLineTitles[change.to]
+  if (change.reason === 'recovered') return `${reportTime(change.at)}，${to.trimStart()}恢复稳定，换回${to}`
+  return `${reportTime(change.at)}，${from}${reportChangeReasons[change.reason]}，改走${to}`
+}
+
+function describeProbe(record: ToolRouteProbeRecord): string {
+  return `${reportTime(record.at)} ${record.ok ? '通' : `没通（${record.kind ?? 'unknown'}）`}`
+}
+
+/**
+ * 「星芒 AI 网络」那一项导出报告里工具线路的几行（xm 三线路 C16）。只进导出的报告（检查页详情不列这些键），
+ * 不带地址：状态文件里只取 incident 状态和洛杉矶那个域名指向哪台入口（lax / hkg 这类代号）。
+ */
+export function buildToolRouteReport(input: ToolRouteReportInput): Record<string, string> {
+  const { snapshot, lastStatus, probes } = input
+  const report: Record<string, string> = {
+    toolLine: reportLineNames[snapshot.line],
+    toolLineMode: snapshot.automatic ? '自动' : '固定',
+  }
+  if (snapshot.lastChange) {
+    report.toolLastChange = describeToolRouteChange(snapshot.lastChange)
+    if (snapshot.lastChange.trigger) report.toolLastChangeTrigger = snapshot.lastChange.trigger
+  }
+  if (snapshot.serverSwitching) report.toolServerSwitching = '是'
+  if (snapshot.outage) report.toolOutage = snapshot.outage.reason
+  if (!lastStatus) report.routeStatusFile = '还没读过'
+  else if (!lastStatus.status) report.routeStatusFile = `${reportTime(lastStatus.at)} 读不到`
+  else {
+    report.routeStatusFile = `${reportTime(lastStatus.at)} 读得到`
+    report.routeStatusIncident = lastStatus.status.incident.state
+    const target = lastStatus.status.lines.direct?.target
+    if (target) report.routeStatusDirectTarget = target
+  }
+  for (const line of ['direct', 'primary'] as const) {
+    const record = probes[line]
+    if (record) report[line === 'direct' ? 'toolProbeLosAngeles' : 'toolProbeCf'] = describeProbe(record)
+  }
+  return report
 }

@@ -6,12 +6,13 @@ import {
   buildFeedbackRuntimeLines,
   pickFeedbackRuntimeSnapshot,
   resolveFeedbackRelayRoute,
+  resolveFeedbackToolRoute,
   type FeedbackRuntimeInput,
   type FeedbackCliConfig,
   type FeedbackCliStatus,
   type FeedbackExternalClient,
 } from './feedback-environment'
-import { createRelayEndpointRoutingSnapshot } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot } from './relay-sites'
 import type { SystemSnapshot } from './system-service'
 
 const installed: FeedbackCliStatus = {
@@ -345,16 +346,28 @@ describe('buildFeedbackRuntimeLines', () => {
 })
 
 describe('resolveFeedbackRelayRoute', () => {
-  // 直连适配方案第六节第 5 条的四句原话。
-  it('names the option the account site runs with, and under auto the line it is on right now', () => {
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('只用直连')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('只用默认线路')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('自动（这次用的是默认线路）')
+  // 星芒账号：xm 三线路附录 A 的四句原话。
+  it('names the option the xingmang account runs with, and under auto the line it is on right now', () => {
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('只用洛杉矶')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('只用 CF')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('自动（这次用的是 CF 线路）')
     let line: 'primary' | 'direct' = 'direct'
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'auto' }, () => ({ solov: { line, settled: true } }))
-    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是直连）')
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是洛杉矶线路）')
     line = 'primary'
-    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是默认线路）')
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是 CF 线路）')
+  })
+
+  // 历史账号：直连适配方案第六节第 5 条的四句原话，一字不变。
+  it('keeps the legacy account on the direct and default line wording', () => {
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ 'solov-api': 'direct' }), 'solov-api')).toBe('只用直连')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ 'solov-api': 'primary' }), 'solov-api')).toBe('只用默认线路')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov-api')).toBe('自动（这次用的是默认线路）')
+    let line: 'primary' | 'direct' = 'direct'
+    const routing = createRelayEndpointRoutingSnapshot({ 'solov-api': 'auto' }, () => ({ 'solov-api': { line, settled: true } }))
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是直连）')
+    line = 'primary'
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是默认线路）')
   })
 
   it('follows the account site, not the other site the settings chose a route for', () => {
@@ -366,8 +379,8 @@ describe('resolveFeedbackRelayRoute', () => {
   it('resolves a missing or retired site id the way the rest of the app does', () => {
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
 
-    expect(resolveFeedbackRelayRoute(routing, null)).toBe('只用直连')
-    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('只用直连')
+    expect(resolveFeedbackRelayRoute(routing, null)).toBe('只用洛杉矶')
+    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('只用洛杉矶')
   })
 
   it('never carries an address into the report', () => {
@@ -379,5 +392,21 @@ describe('resolveFeedbackRelayRoute', () => {
     for (const fragment of ['http', '38.147', 'solov', ':8443']) {
       expect(routes).not.toContain(fragment)
     }
+  })
+})
+
+describe('resolveFeedbackToolRoute', () => {
+  it('names the line written into the tools for the xingmang account only', () => {
+    let line: 'primary' | 'direct' = 'direct'
+    const toolRouting = createToolRouteRoutingSnapshot({ solov: 'auto', 'solov-api': 'direct' }, () => ({}), () => line)
+    expect(resolveFeedbackToolRoute(toolRouting, 'solov')).toBe('洛杉矶')
+    line = 'primary'
+    expect(resolveFeedbackToolRoute(toolRouting, 'solov')).toBe('CF')
+    expect(resolveFeedbackToolRoute(toolRouting, 'solov-api')).toBeNull()
+  })
+
+  it('prints the tool line under the connection line in the report', () => {
+    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'darwin', executionMode: null, relayRoute: '自动（这次用的是 CF 线路）', toolRoute: '洛杉矶', appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
+    expect(lines[lines.indexOf('连接线路: 自动（这次用的是 CF 线路）') + 1]).toBe('工具线路: 洛杉矶')
   })
 })
