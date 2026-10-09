@@ -126,7 +126,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
-import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute, resolveFeedbackToolRoute } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
@@ -138,11 +138,11 @@ import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, pri
 import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
 import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
 import { createPaymentWindowController } from './payment-window'
-import { createRouteStatusReader } from './route-status-file'
+import { createRouteStatusReader, type RouteStatus } from './route-status-file'
 import { environmentProxyCandidates, probeToolPathDirect, probeToolPathThroughFetch } from './tool-path-probe'
-import { createToolRouteController, createToolRouteStateStore } from './tool-route-controller'
+import { createToolRouteController, createToolRouteStateStore, type ToolRouteProbeResult } from './tool-route-controller'
 import { createToolRouteProbe } from './tool-route-probe'
-import { createToolRouteStatusBoard } from './tool-route-status'
+import { buildToolRouteReport, createToolRouteStatusBoard, type ToolRouteProbeRecord } from './tool-route-status'
 import { readWindowsProxyScopes } from './stale-proxy-environment'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
@@ -207,7 +207,7 @@ import { verifyUpdatePackageDigest } from './update-package-digest'
 import { verifyUpdateEntrySignature } from './update-package-signature'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdateRequestGuard } from './update-request-guard'
-import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed } from './update-feed-route'
+import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from './update-feed-route'
 import { createUpdaterService, type UpdateSnapshot } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
@@ -1239,6 +1239,22 @@ if (!hasSingleInstanceLock) {
       lines: () => relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct'],
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // 最近一次读到的状态文件和两条线路最近一次的探测结果：只给检查报告（C16）和更新源（C15）看。
+    let latestRouteStatus: { at: number; status: RouteStatus | null } | null = null
+    function readRouteStatus(options: { fresh: boolean }): Promise<RouteStatus | null> {
+      return routeStatusReader.read(options).then((status) => {
+        latestRouteStatus = { at: Date.now(), status }
+        return status
+      })
+    }
+    const latestToolProbes: Partial<Record<RelayEndpointId, ToolRouteProbeRecord>> = {}
+    function recordToolProbe(probe: (line: RelayEndpointId) => Promise<ToolRouteProbeResult>): (line: RelayEndpointId) => Promise<ToolRouteProbeResult> {
+      return async (line) => {
+        const result = await probe(line)
+        latestToolProbes[line] = { ok: result.ok, ...(result.kind ? { kind: result.kind } : {}), at: Date.now() }
+        return result
+      }
+    }
     // 环境变量里的代理：Windows 上读当前账号、整台电脑那两份要起一次 PowerShell，所以不跟定时探测一起读，
     // 只在开机、唤醒、网络恢复、点「重新检测」、准备降级时重读，平时用上次的结果（计划第 5 节第 7 条）。
     let toolEnvironmentProxies: Promise<readonly string[]> | null = null
@@ -1274,7 +1290,7 @@ if (!hasSingleInstanceLock) {
       ...createToolRouteStateStore(path.join(managerDataDirectory, 'tool-route-state.json')),
       readLegacyConclusions: () => relayRouteConclusions.readConclusions(),
       // Linux 本期只测无代理路径（需求 5.1.1）。
-      probe: createToolRouteProbe({
+      probe: recordToolProbe(createToolRouteProbe({
         direct: (origin) => probeToolPathDirect(origin),
         ...(process.platform === 'linux' ? {} : {
           systemProxyActive: async (origin: string) => parseChromiumProxyResult(await resolveSystemProxy(origin)) !== null,
@@ -1282,11 +1298,11 @@ if (!hasSingleInstanceLock) {
           environmentProxies: readToolEnvironmentProxies,
           throughProxy: (proxy: string, origin: string) => probeToolPathThroughFetch(toolProxyFetch(proxy), origin),
         }),
-      }),
+      })),
       readStatus: ({ fresh }) => {
         // 不走缓存读状态文件 = 准备降级或者碰上认不出的地址：环境变量代理也一起重读。
         if (fresh) toolEnvironmentProxies = null
-        return routeStatusReader.read({ fresh })
+        return readRouteStatus({ fresh })
       },
       notify: (notice) => toolRouteStatusBoard.notice(notice),
       ...(toolRouteTimeScale === 1 ? {} : {
@@ -1610,6 +1626,7 @@ if (!hasSingleInstanceLock) {
       return {
         site,
         route: { line: toolRouting.lines().solov.line, settled: true, automatic: toolRouting.preferences.solov === 'auto', primarySite: requireRelaySite('solov') },
+        report: () => buildToolRouteReport({ snapshot: toolRouteController.snapshot(), lastStatus: latestRouteStatus, probes: latestToolProbes }),
       }
     }
     function diagnosticsRelayRoute(siteId: string | undefined): DiagnosticsRelayRoute | undefined {
@@ -1802,7 +1819,14 @@ if (!hasSingleInstanceLock) {
       autoUpdater.setFeedURL((line === 'direct' ? directUpdateFeed : packagedUpdateFeed()).feed)
       updateFeedLine = line
     }
-    useUpdateFeedLine(relayRouteController.route('solov').line)
+    // 应用线路在洛杉矶、可状态文件说那个域名这会儿指向香港：更新改用包里那份（C15，updateFeedLineFor）。
+    // 状态文件只在这里顺手刷新（10 分钟缓存），读到的下一次检查才用上；读不到照旧。
+    function currentUpdateFeedLine(): RelayEndpointId {
+      const line = relayRouteController.route('solov').line
+      if (directUpdateFeed && line === 'direct') void readRouteStatus({ fresh: false }).catch(() => null)
+      return updateFeedLineFor(line, latestRouteStatus?.status ?? null)
+    }
+    useUpdateFeedLine(currentUpdateFeedLine())
     // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
     // electron-updater returns from verifySignature before the strict verifier
     // above is ever reached. The updater re-checks the manifest digest itself;
@@ -1993,7 +2017,7 @@ if (!hasSingleInstanceLock) {
       },
       feedRoute: directUpdateFeed
         ? {
-            prepare: () => useUpdateFeedLine(relayRouteController.route('solov').line),
+            prepare: () => useUpdateFeedLine(currentUpdateFeedLine()),
             // 「自动」时直连那份没查通：换回包里那份当场再查一次。连不上一类的报给线路那边再查直连；
             // 白名单 404 只是那一个文件的事，下次检查照样先走直连。
             fallBack: (error) => {
@@ -2121,6 +2145,7 @@ if (!hasSingleInstanceLock) {
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
         relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
+        toolRoute: resolveFeedbackToolRoute(toolRouting, systemService.readStoredConfig().relaySiteId),
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
