@@ -1,4 +1,5 @@
 # 首次配置 COS 时导入已发布的 GitHub 安装包；不重建、不重新发布，也不接触 R2 更新源。
+# 勾「只补历史」时只核对 COS 上已有的旧版本安装包，记进下载清单的旧版本（教程下载页撤回时退回用），不上传文件。
 name: sync-published-manager-cos
 
 on:
@@ -9,6 +10,11 @@ on:
         type: string
         required: false
         default: ''
+      history_only:
+        description: 只补历史：只核对 COS 上已有的这一版安装包并记进下载清单的旧版本，不上传、不改当前版本；必须填标签
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -47,4 +53,5 @@ jobs:
           XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
           XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
           MANAGER_RELEASE_TAG: ${{ inputs.tag || '' }}
+          MANAGER_HISTORY_ONLY: ${{ inputs.history_only && 'true' || 'false' }}
         run: node scripts/sync-published-manager-cos.cjs

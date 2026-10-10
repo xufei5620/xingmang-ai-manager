@@ -8,6 +8,7 @@ import {
   probeRelayLineHealth,
   relayRouteFailureProbeGapMs,
   relayRouteFailureRecheckGapMs,
+  relayRouteFirstLaunchPreferDirectMs,
   relayRouteMinSwitchGapMs,
   relayRouteRecheckIntervalMs,
   relayRouteRecoveryMs,
@@ -190,16 +191,34 @@ describe('relay route controller', () => {
     expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
   })
 
-  it('keeps xm on direct at startup without a stored conclusion and stays quiet when direct answers', async () => {
+  // 全新安装开机那一轮两条一起查（#963）；直连查通照旧走直连、不叫订阅方，但要把它存成结论，
+  // 下次开机就不再当全新安装。
+  it('keeps xm on direct at startup without a stored conclusion and stores direct once it answers', async () => {
     const run = harness({ preferences: { solov: 'auto' } })
     run.controller.start()
     await settle()
-    expect(run.probes).toEqual([['solov', 'direct']])
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
     expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
     expect(run.changes).toEqual([])
-    expect(run.writes).toEqual([])
+    expect(run.writes).toEqual([{ lines: { solov: 'direct' }, changes: {} }])
     expect(run.controller.lastChange('solov')).toBeNull()
     expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+  })
+
+  it('treats a machine that stored xm on direct as no longer new on the next launch', async () => {
+    const first = harness({ preferences: { solov: 'auto' } })
+    first.controller.start()
+    await settle()
+    const stored = first.writes.at(-1)?.lines
+
+    const next = harness({ preferences: { solov: 'auto' }, conclusions: stored })
+    next.reachable.direct = false
+    next.controller.start()
+    await settle()
+    // 有了结论就照三次阈值：头一次没通只等下一次，不去查默认线路。
+    expect(next.probes).toEqual([['solov', 'direct']])
+    expect(next.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(next.delays()).toEqual([relayRouteFailureProbeGapMs])
   })
 
   it('stays quiet when the startup check confirms the stored line', async () => {
@@ -236,19 +255,100 @@ describe('relay route controller', () => {
     expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
   })
 
-  it('moves xm without a stored conclusion to the default line the same way once direct fails three checks in a row', async () => {
+  // 全新安装不等那三次：没有结论就没有可横跳的对象，而新用户的注册就在开机后这几十秒里（#963）。
+  it('moves xm without a stored conclusion to the default line as soon as direct fails the first check', async () => {
     const run = harness({ preferences: { solov: 'auto' } })
     run.reachable.direct = false
     run.controller.start()
     await settle()
-    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
-    await failTwiceMore(run)
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
     expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
     expect(run.changes).toEqual([['solov', { line: 'primary', settled: true }]])
-    const change = { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'startup', at: startedAt + 2 * relayRouteFailureProbeGapMs }
+    expect(run.events('relay.route.first-launch')).toEqual([{ siteId: 'solov', line: 'primary', trigger: 'startup' }])
+    const change = { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'first-launch', at: startedAt }
     expect(run.controller.lastChange('solov')).toEqual(change)
     expect(run.writes).toEqual([{ lines: { solov: 'primary' }, changes: { solov: change } }])
     expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  it('settles xm on the default line when it answers and direct has not answered within the wait', async () => {
+    const direct = deferred<boolean>()
+    const probes: RelayEndpointId[] = []
+    const run = harness({
+      preferences: { solov: 'auto' },
+      probe: (_siteId, line) => {
+        probes.push(line)
+        return line === 'direct' ? direct.promise : Promise.resolve(true)
+      },
+    })
+    run.controller.start()
+    await settle()
+    expect(probes).toEqual(['direct', 'primary'])
+    // 默认线路查通了也先等直连一会儿：两条都通时要的是直连。
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.delays()).toEqual([relayRouteFirstLaunchPreferDirectMs])
+    await run.fireTimer()
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
+    expect(run.changes).toEqual([['solov', { line: 'primary', settled: true }]])
+
+    // 直连晚回来了也不切回去，交给切回的规矩（连续 10 分钟查得通）。
+    direct.resolve(true)
+    await settle()
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
+    expect(run.changes).toHaveLength(1)
+    expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  it('keeps xm on direct when both lines answer, whichever answers first', async () => {
+    const direct = deferred<boolean>()
+    const run = harness({
+      preferences: { solov: 'auto' },
+      probe: (_siteId, line) => line === 'direct' ? direct.promise : Promise.resolve(true),
+    })
+    run.controller.start()
+    await settle()
+    direct.resolve(true)
+    await settle()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.changes).toEqual([])
+    // 等的那一下撤掉了，只剩走直连以后隔一阵查一次。
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+  })
+
+  it('changes nothing for a new machine when neither line answers and checks both again on the next round', async () => {
+    const run = harness({ preferences: { solov: 'auto' } })
+    run.reachable.direct = false
+    run.reachable.primary = false
+    run.controller.start()
+    await settle()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.changes).toEqual([])
+    expect(run.writes).toEqual([])
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+
+    run.reachable.primary = true
+    run.probes.length = 0
+    await run.fireTimer()
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
+  })
+
+  // 「不等三次」只给开机那一轮。定下过一条线路之后，这次运行里后面的检查照常守三次阈值——
+  // 否则这台机器就永久失去了防横跳的保护。
+  it('goes back to the three-check rule once the first launch has settled a line', async () => {
+    const run = harness({ preferences: { solov: 'auto' } })
+    run.controller.start()
+    await settle()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+
+    run.reachable.direct = false
+    run.probes.length = 0
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+    await run.fireTimer()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    await failTwiceMore(run)
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'direct'], ['solov', 'direct'], ['solov', 'primary']])
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
   })
 
   it('settles a site with no stored line on the default line after three failed checks', async () => {
@@ -484,13 +584,28 @@ describe('relay route controller', () => {
     })
   })
 
-  it('stores xm on direct with the first conclusion it writes, though xm itself never switched', async () => {
+  it('stores xm on direct once its own check answers, though xm itself never switched', async () => {
     const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' } })
     run.controller.start()
     await settle()
     expect(run.controller.lines()).toEqual({ solov: { line: 'direct', settled: true }, 'solov-api': { line: 'direct', settled: true } })
-    expect(run.writes.map((write) => write.lines)).toEqual([{ solov: 'direct', 'solov-api': 'direct' }])
+    expect(run.writes.map((write) => write.lines)).toEqual([{ 'solov-api': 'direct' }, { solov: 'direct', 'solov-api': 'direct' }])
     expect(run.changes).toEqual([['solov-api', { line: 'direct', settled: true }]])
+  })
+
+  // 开机先定的直连还没查过：历史账号先存结论时不能把它一起存下，否则下次开机就当它查过了。
+  it('does not store the unchecked xm line when the historical site stores its conclusion first', async () => {
+    const solovDirect = deferred<boolean>()
+    const run = harness({
+      preferences: { solov: 'auto', 'solov-api': 'auto' },
+      probe: (siteId, line) => siteId === 'solov' && line === 'direct' ? solovDirect.promise : Promise.resolve(true),
+    })
+    run.controller.start()
+    await settle()
+    expect(run.writes.map((write) => write.lines)).toEqual([{ 'solov-api': 'direct' }])
+    solovDirect.resolve(true)
+    await settle()
+    expect(run.writes.map((write) => write.lines).at(-1)).toEqual({ solov: 'direct', 'solov-api': 'direct' })
   })
 
   it('stores one conclusion after another so an earlier, slower write never overwrites a later one', async () => {
@@ -527,8 +642,21 @@ describe('relay route controller', () => {
     })
     run.controller.start()
     await settle()
-    await failTwiceMore(run)
     expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
+
+    // 有结论的机器照三次阈值数。
+    const stored = harness({
+      preferences: { solov: 'auto' },
+      conclusions: { solov: 'direct' },
+      probe: async (_siteId, line) => {
+        if (line === 'direct') throw new TypeError('fetch failed')
+        return true
+      },
+    })
+    stored.controller.start()
+    await settle()
+    await failTwiceMore(stored)
+    expect(stored.controller.lines().solov).toEqual({ line: 'primary', settled: true })
   })
 
   it('remembers the last change from an earlier run', () => {
