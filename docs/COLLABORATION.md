@@ -242,6 +242,8 @@ Windows 专属的设计不归云端主导（§7.2 ②）；无法在真实平台
 
 **它按 yoyo 触发，不是流水线上的常设关卡。** 云端的 PR 不需要等它，yoyo 觉得需要时会叫它去看。
 
+> 现状（2026-10-10）：Windows 真机测试目前由 Codex 在远程测试电脑上做（界面操作 + SSH）。
+
 **yoyo 保留**
 
 - 发版的两次批准（`release` 环境的 required reviewers 只认他，这是刻意的授权墙，见 `docs/RELEASING.md`）
