@@ -1,0 +1,37 @@
+# 临时：在 GitHub 的 Mac 机器上，用 Electron 主进程里生产同款的 net.fetch 真装一次 Claude Desktop。
+# 核完删掉，不进 main（#968 已合并，这个分支不再开 PR）。
+name: tmp-verify-claude-mac
+
+on:
+  push:
+    branches: [claude/mac-claude-desktop-split-packages-ovjcjk]
+    paths:
+      - .github/workflows/tmp-verify-claude-mac.yml
+      - .github/tmp-verify-claude-mac.cjs
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies with the Electron binary
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile the main process
+        run: npx tsc -p tsconfig.electron.json
+
+      - name: Install Claude Desktop through Electron net.fetch
+        run: npx electron .github/tmp-verify-claude-mac.cjs
