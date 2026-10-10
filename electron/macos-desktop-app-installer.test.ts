@@ -80,6 +80,8 @@ interface FakeProcessOptions {
   existingBundleIdentifier?: string
   minimumSystemVersion?: string
   systemVersion?: string
+  /** What `sysctl -n hw.optional.arm64` prints; unset means the key is missing and sysctl fails, as on an Intel Mac. */
+  hardwareArm64?: string
   rejectExecutable?: string
   /** What the rejected command printed on stderr. */
   rejectStderr?: string
@@ -125,6 +127,10 @@ function fakeProcesses(options: FakeProcessOptions = {}) {
       }))
     }
     if (plan.executable === '/usr/bin/sw_vers') return result(plan, `${options.systemVersion ?? '15.1'}\n`)
+    if (plan.executable === '/usr/sbin/sysctl') {
+      if (options.hardwareArm64 === undefined) throw rejection(plan, 'sysctl: unknown oid \'hw.optional.arm64\'')
+      return result(plan, `${options.hardwareArm64}\n`)
+    }
     if (plan.executable === '/usr/bin/ditto') {
       const [from, to] = plan.argv
       if (options.dittoBreaksWith) {
@@ -417,11 +423,14 @@ describe('macOS desktop app installer', () => {
   })
 })
 
-const claudeVersion = '2.19675.0'
-const claudePackageUrl = `https://downloads.claude.ai/releases/darwin/universal/${claudeVersion}/Claude-5706e5524dba58b23e105c31c358df8ab0a95852.zip`
+const claudeVersion = '2.31226.1'
 const chatgptRoot = 'https://persistent.oaistatic.com/codex-app-prod/'
 const chatgptVersion = '26.930.31730'
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+function claudePackageUrl(architecture = 'arm64', version = claudeVersion): string {
+  return `https://downloads.claude.ai/releases/darwin/${architecture}/${version}/Claude-8576520051724193e9f74fc538f9ce8125e9ddd2.zip`
+}
 
 function chatgptPackageUrl(architecture: string, version = chatgptVersion): string {
   return `${chatgptRoot}ChatGPT-darwin-${architecture}-${version}.zip`
@@ -431,8 +440,11 @@ function sha256Hex(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-/** Shaped like api.anthropic.com's answer on 2026-10-03; `update` overrides fields of its one release. */
-function claudeFeed(update: Record<string, unknown> = {}, currentRelease = claudeVersion): string {
+/**
+ * Shaped like api.anthropic.com's answer on 2026-10-10, which names a package for the chip in
+ * the request path; `update` overrides fields of its one release.
+ */
+function claudeFeed(update: Record<string, unknown> = {}, currentRelease = claudeVersion, architecture = 'arm64'): string {
   return JSON.stringify({
     currentRelease,
     releases: [{
@@ -440,8 +452,8 @@ function claudeFeed(update: Record<string, unknown> = {}, currentRelease = claud
       updateTo: {
         name: `Claude ${claudeVersion}`,
         version: claudeVersion,
-        pub_date: '2026-10-01T17:21:33.978830',
-        url: claudePackageUrl,
+        pub_date: '2026-10-09T18:47:13.771687',
+        url: claudePackageUrl(architecture),
         notes: 'Production Release - No Notes',
         sha256: sha256Hex(archiveBytes),
         size: archiveBytes.byteLength,
@@ -500,12 +512,15 @@ function fakeVendorNetwork(options: VendorNetworkOptions = {}) {
     const url = String(input)
     requested.push(url)
     expect(init?.redirect).toBe('manual')
-    if (url.startsWith('https://api.anthropic.com/')) return new Response(options.claudeFeedBody ?? claudeFeed())
+    if (url.startsWith('https://api.anthropic.com/')) {
+      const architecture = /\/darwin\/(arm64|x64)\/squirrel\//.exec(url)?.[1]
+      return new Response(options.claudeFeedBody ?? claudeFeed({}, claudeVersion, architecture))
+    }
     if (url === `${chatgptRoot}appcast.xml` || url === `${chatgptRoot}appcast-x64.xml`) {
       const architecture = url.endsWith('-x64.xml') ? 'x64' : 'arm64'
       return new Response(options.appcastBody ?? appcast(appcastItem({ build: 12947, version: chatgptVersion, minimum: '13.0', architecture })))
     }
-    if (url === claudePackageUrl || url.startsWith(`${chatgptRoot}ChatGPT-darwin-`)) {
+    if (url.startsWith('https://downloads.claude.ai/releases/darwin/') || url.startsWith(`${chatgptRoot}ChatGPT-darwin-`)) {
       options.onPackageRequest?.()
       init?.signal?.throwIfAborted()
       const body = options.packageBody ?? archiveBytes
@@ -555,19 +570,23 @@ function signingRequirement(plans: MacosDesktopAppProcess[]): string {
 describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
   it('holds each vendor to its own hosts, redirects included', async () => {
     const elsewhere = (async () => redirect('https://example.com/package.zip')) as typeof globalThis.fetch
-    await expect(fetchMacosDesktopResource('claudeDesktop', claudePackageUrl, {}, elsewhere)).rejects.toThrow('example.com')
+    await expect(fetchMacosDesktopResource('claudeDesktop', claudePackageUrl(), {}, elsewhere)).rejects.toThrow('example.com')
     await expect(fetchMacosDesktopResource('codexDesktop', chatgptPackageUrl('arm64'), {}, elsewhere)).rejects.toThrow('example.com')
     const answers = (async () => new Response('x')) as typeof globalThis.fetch
     expect((await fetchMacosDesktopResource('claudeDesktop', 'https://api.anthropic.com/api/desktop/darwin/x64/squirrel/update?device_id=1&os_version=15.1', {}, answers)).status).toBe(200)
+    for (const architecture of ['arm64', 'x64', 'universal']) {
+      expect((await fetchMacosDesktopResource('claudeDesktop', claudePackageUrl(architecture), {}, answers)).status).toBe(200)
+    }
     expect((await fetchMacosDesktopResource('codexDesktop', `${chatgptRoot}appcast-x64.xml`, {}, answers)).status).toBe(200)
     // The update API is one fixed path; the package hosts never carry a query.
     await expect(fetchMacosDesktopResource('claudeDesktop', 'https://api.anthropic.com/v1/messages?device_id=1', {}, answers)).rejects.toThrow('api.anthropic.com')
-    await expect(fetchMacosDesktopResource('claudeDesktop', `${claudePackageUrl}?x=1`, {}, answers)).rejects.toThrow('downloads.claude.ai')
+    await expect(fetchMacosDesktopResource('claudeDesktop', `${claudePackageUrl()}?x=1`, {}, answers)).rejects.toThrow('downloads.claude.ai')
+    await expect(fetchMacosDesktopResource('claudeDesktop', claudePackageUrl('arm64e'), {}, answers)).rejects.toThrow('downloads.claude.ai')
     await expect(fetchMacosDesktopResource('claudeDesktop', 'https://downloads.claude.ai/releases/win32/x64/Claude.exe', {}, answers)).rejects.toThrow('downloads.claude.ai')
     await expect(fetchMacosDesktopResource('codexDesktop', `${chatgptPackageUrl('arm64')}?sig=1`, {}, answers)).rejects.toThrow('persistent.oaistatic.com')
     await expect(fetchMacosDesktopResource('codexDesktop', 'https://persistent.oaistatic.com/other/ChatGPT.zip', {}, answers)).rejects.toThrow('persistent.oaistatic.com')
     // Neither vendor's host counts for the other one.
-    await expect(fetchMacosDesktopResource('codexDesktop', claudePackageUrl, {}, answers)).rejects.toThrow('downloads.claude.ai')
+    await expect(fetchMacosDesktopResource('codexDesktop', claudePackageUrl(), {}, answers)).rejects.toThrow('downloads.claude.ai')
     await expect(fetchMacosDesktopResource('claudeDesktop', chatgptPackageUrl('arm64'), {}, answers)).rejects.toThrow('persistent.oaistatic.com')
   })
 
@@ -582,7 +601,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     expect(`${feedRequest.origin}${feedRequest.pathname}`).toBe('https://api.anthropic.com/api/desktop/darwin/arm64/squirrel/update')
     expect(feedRequest.searchParams.get('os_version')).toBe('15.1')
     expect(feedRequest.searchParams.get('device_id')).toMatch(uuidPattern)
-    expect(f.requested.slice(1)).toEqual([claudePackageUrl])
+    expect(f.requested.slice(1)).toEqual([claudePackageUrl('arm64')])
     // sw_vers is read once, for the feed, and the same answer serves the Info.plist check.
     expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/sw_vers', '/usr/bin/tar', '/usr/bin/plutil', '/usr/bin/codesign', '/usr/sbin/spctl'])
     expect(f.plans[1].argv[0]).toBe('-xf')
@@ -593,7 +612,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     expect(f.progress[0]).toBe(`正在下载 Claude Desktop ${claudeVersion}`)
   })
 
-  it.skipIf(process.platform === 'win32')('asks the Claude feed with a fresh device id every time and the Intel path on an Intel Mac', async () => {
+  it.skipIf(process.platform === 'win32')('asks the Claude feed with a fresh device id every time and installs the Intel package on an Intel Mac', async () => {
     const first = vendorSetup('claudeDesktop')
     const second = vendorSetup('claudeDesktop', {}, { architecture: 'x64' })
     await installMacosDesktopApp(first.options)
@@ -604,8 +623,32 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     expect(secondFeed.pathname).toBe('/api/desktop/darwin/x64/squirrel/update')
     expect(secondFeed.searchParams.get('device_id')).toMatch(uuidPattern)
     expect(secondFeed.searchParams.get('device_id')).not.toBe(firstId)
-    // Both chips get the same universal package.
-    expect(second.requested.slice(1)).toEqual([claudePackageUrl])
+    expect(second.requested.slice(1)).toEqual([claudePackageUrl('x64')])
+    expect(second.plans[0]).toMatchObject({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] })
+
+    // Newer Intel Macs answer 0 instead of lacking the key.
+    const reportsZero = vendorSetup('claudeDesktop', {}, { architecture: 'x64' }, { hardwareArm64: '0' })
+    await installMacosDesktopApp(reportsZero.options)
+    expect(reportsZero.requested.slice(1)).toEqual([claudePackageUrl('x64')])
+  })
+
+  it.skipIf(process.platform === 'win32')('installs the Apple silicon Claude when the Intel build of the toolbox runs under Rosetta', async () => {
+    const f = vendorSetup('claudeDesktop', {}, { architecture: 'x64' }, { hardwareArm64: '1' })
+
+    await installMacosDesktopApp(f.options)
+
+    expect(new URL(f.requested[0]).pathname).toBe('/api/desktop/darwin/arm64/squirrel/update')
+    expect(f.requested.slice(1)).toEqual([claudePackageUrl('arm64')])
+    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/sbin/sysctl', '/usr/bin/sw_vers', '/usr/bin/tar', '/usr/bin/plutil', '/usr/bin/codesign', '/usr/sbin/spctl'])
+  })
+
+  it.skipIf(process.platform === 'win32')('still installs a universal Claude package should the feed go back to offering one', async () => {
+    for (const architecture of ['arm64', 'x64']) {
+      const f = vendorSetup('claudeDesktop', { claudeFeedBody: claudeFeed({ url: claudePackageUrl('universal') }) }, { architecture })
+      const installed = await installMacosDesktopApp(f.options)
+      expect(installed.version).toBe(claudeVersion)
+      expect(f.requested.slice(1)).toEqual([claudePackageUrl('universal')])
+    }
   })
 
   it.skipIf(process.platform === 'win32')('never asks a feed with a system version it could not read', async () => {
@@ -636,12 +679,15 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     }
   })
 
-  it.skipIf(process.platform === 'win32')('refuses a Claude feed that offers anything but the universal zip of its current version', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a Claude feed that offers anything but this chip\'s zip of its current version', async () => {
     const bodies = [
-      claudeFeed({ url: claudePackageUrl.replace(/\.zip$/, '.dmg') }),
-      claudeFeed({ url: claudePackageUrl.replace('downloads.claude.ai', 'downloads.example.com') }),
-      claudeFeed({ url: claudePackageUrl.replace(`/universal/${claudeVersion}/`, '/universal/2.19000.0/') }),
-      claudeFeed({ url: claudePackageUrl.replace('/universal/', '/arm64/') }),
+      claudeFeed({ url: claudePackageUrl().replace(/\.zip$/, '.dmg') }),
+      claudeFeed({ url: claudePackageUrl().replace('downloads.claude.ai', 'downloads.example.com') }),
+      claudeFeed({ url: claudePackageUrl('arm64', '2.19000.0') }),
+      claudeFeed({ url: claudePackageUrl('universal', '2.19000.0') }),
+      // An Apple silicon Mac is not handed the Intel package, nor some other chip's.
+      claudeFeed({ url: claudePackageUrl('x64') }),
+      claudeFeed({ url: claudePackageUrl('arm64e') }),
       claudeFeed({ version: '2.19000.0' }),
       claudeFeed({ sha256: undefined }),
       claudeFeed({ sha256: 'A'.repeat(64) }),
