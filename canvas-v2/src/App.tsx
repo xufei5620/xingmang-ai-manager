@@ -67,6 +67,7 @@ function portGeometryOfCanvasNode(node: CanvasNode, height: number): PortGeometr
     ports: builtinNodeRegistry.resolve(kind)?.ports ?? [],
   }
 }
+import { generationModelChangePatch } from './nodes/generation-composer'
 import { usesMediaBoundLayout } from './nodes/media-bound'
 import { portOffsetY, type PortGeometryNode } from './nodes/port-geometry'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
@@ -83,7 +84,7 @@ import {
   defaultImageResolution,
   imageModelPreset,
 } from './models'
-import { CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
+import { CanvasGenerationComposer, CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 import { canvasNodeLodForZoom, type CanvasNodeLod } from './nodes/node-lod'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetSummary, CanvasGeneratedAsset, CanvasGeneratedVideoAsset, CanvasGroupSummary, CanvasPromptPreset, CanvasRunGraph, CanvasRunRecord, CanvasRunScope, CanvasStoredProjectSummary } from './host'
 import { emptyCanvasAssetPage } from './host'
@@ -148,6 +149,7 @@ import {
   selectCanvasRunNodeIds,
   type CanvasRunPreflight,
 } from './runtime/run-preflight'
+import { createRunProposalClaim } from './runtime/run-proposal-claim'
 import { mergeCanvasRunEvent } from './runtime/run-events'
 import {
   canvasStartupUiPreferences,
@@ -795,6 +797,7 @@ function CanvasWorkspace({
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
   const [runPreflight, setRunPreflight] = useState<CanvasRunPreflight | null>(null)
   const [dramaParseConfirm, setDramaParseConfirm] = useState<{ nodeId: string; tables: DramaParseTables } | null>(null)
+  const runProposalClaimRef = useRef(createRunProposalClaim())
   const [pendingCanvasRun, setPendingCanvasRun] = useState<{ graph: CanvasRunGraph; scope: CanvasRunScope } | null>(null)
   const [runInspectorOpen, setRunInspectorOpen] = useState(false)
   const [resumingTaskIds, setResumingTaskIds] = useState<Set<string>>(() => new Set())
@@ -1910,15 +1913,7 @@ function CanvasWorkspace({
       onPromptCommit: (nodeId, prompt) => markDirtyFrom(nodeId, { prompt }),
       onModelChange: (nodeId, model) => {
         const node = nodes.find((entry) => entry.id === nodeId)
-        const imageOperation = ['image', 'image-generate', 'image-edit'].includes(node?.type ?? '')
-        const preset = imageOperation ? imageModelPreset(model) : null
-        const currentResolution = node?.data.imageResolution ?? defaultImageResolution
-        markDirtyFrom(nodeId, {
-          model,
-          ...(preset && !preset.resolutions.includes(currentResolution)
-            ? { imageResolution: preset.resolutions[0] ?? defaultImageResolution }
-            : {}),
-        })
+        if (node) markDirtyFrom(nodeId, generationModelChangePatch(node.type ?? '', model, node.data))
       },
       onQualityChange: (nodeId, quality) => markDirtyFrom(nodeId, { quality }),
       onImageResolutionChange: (nodeId, imageResolution) => markDirtyFrom(nodeId, { imageResolution }),
@@ -2830,7 +2825,7 @@ function CanvasWorkspace({
 
   const confirmCanvasRun = useCallback(async () => {
     const pending = pendingCanvasRun
-    if (!pending) return
+    if (!pending || !runProposalClaimRef.current(pending)) return
     try {
       const currentGraph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
       if (rejectUnavailableGroups(currentGraph, pending.scope)) { setPendingCanvasRun(null); setRunPreflight(null); return }
@@ -3437,7 +3432,7 @@ function CanvasWorkspace({
         userPromptPresets={userPromptPresets}
       />
       <div
-        className={`canvas-flow${!focusMode && (assetTrayOpen || runInspectorOpen) ? ' has-right-panel' : ''}`}
+        className={`canvas-flow${!focusMode && (assetTrayOpen || runInspectorOpen || nodeInspectorOpen) ? ' has-right-panel' : ''}`}
         onMouseDownCapture={beginCutStroke}
         onDoubleClick={(event) => {
           if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
@@ -3557,6 +3552,7 @@ function CanvasWorkspace({
           <Controls />
         </ReactFlow>
         </CanvasEdgeHandlersProvider>
+        <CanvasGenerationComposer node={selectedNodeIds.length === 1 ? nodes.find((node) => node.id === selectedNodeIds[0]) : undefined} />
         {nodeSearchOpen && (
           <NodeSearchPalette
             nodes={nodes.map((node) => ({

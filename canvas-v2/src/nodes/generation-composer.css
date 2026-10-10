@@ -1,0 +1,94 @@
+/* Dock to the visible canvas, independent of node position and viewport zoom. */
+.canvas-composer-dock {
+  position: absolute;
+  z-index: 8;
+  bottom: 56px;
+  left: 50%;
+  width: min(720px, calc(100% - 32px));
+  min-width: 0;
+  max-height: calc(100% - 80px);
+  overflow: visible;
+  transform: translateX(-50%);
+  gap: var(--space-8);
+}
+.canvas-composer-dock .wf-prompt-editor textarea,
+.canvas-composer-dock .wf-prompt-editor .wf-prompt-highlight {
+  min-height: 86px;
+  max-height: 180px;
+  font-size: var(--text-sm);
+}
+.canvas-composer-dock .wf-composer-footer { flex-wrap: wrap; }
+.canvas-composer-dock .wf-composer-toolbar { flex: 1 1 220px; }
+.canvas-composer-dock .wf-composer-actions { margin-left: auto; }
+.wf-composer-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.wf-composer-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 30px;
+  max-width: 100%;
+  padding: var(--space-4) var(--space-8);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+.wf-composer-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-composer-summary > svg { flex: 0 0 auto; }
+.wf-composer-summary[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.wf-composer-summary:hover,
+.wf-composer-summary[aria-expanded="true"] { background: var(--surface-hover); color: var(--text-primary); }
+.wf-composer-parameters {
+  display: grid;
+  max-height: min(180px, 30vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: var(--space-10);
+  padding: var(--space-4) var(--space-4) var(--space-12);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wf-composer-section-heading {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  gap: var(--space-8);
+  font-size: var(--text-xs);
+}
+.wf-composer-section-heading > span { color: var(--text-muted); }
+.wf-composer-parameters .wf-composer-field { display: grid; gap: var(--space-6); }
+.wf-composer-parameters .wf-composer-field > span { color: var(--text-secondary); font-size: var(--text-xs); }
+.wf-composer-parameters .wf-composer-select { width: 100%; max-width: none; min-height: 32px; }
+.wf-composer-parameters .wf-composer-toggle { grid-column: 1 / -1; }
+.wf-composer-tools { display: flex; flex-wrap: wrap; gap: var(--space-6); padding-bottom: var(--space-8); border-bottom: 1px solid var(--border-subtle); }
+.wf-composer-tools .wf-composer-icon { display: inline-flex; width: auto; height: 32px; gap: var(--space-6); padding: 0 var(--space-8); color: var(--text-secondary); }
+.wf-composer-warning { margin: 0; color: var(--warning); font-size: var(--text-xs); }
+.canvas-composer-dock :is(button, select, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-height: 680px) {
+  .canvas-composer-dock { bottom: 48px; max-height: calc(100% - 64px); }
+  .canvas-composer-dock .wf-prompt-editor textarea,
+  .canvas-composer-dock .wf-prompt-editor .wf-prompt-highlight { min-height: 70px; max-height: 110px; }
+}
+
+.canvas-composer-dock .wf-composer-chips { max-height: 56px; overflow-y: auto; }
+.canvas-composer-dock .wf-mention-menu { top: auto; bottom: calc(100% + 4px); max-height: min(190px, 30vh); }
+
+/* At narrow desktop widths the existing inspector overlays the canvas. Keep
+   the composer in the remaining visible area for every inspector tab. */
+@media (max-width: 1180px) {
+  .canvas-workspace:has(.canvas-inspector) .canvas-composer-dock {
+    left: calc((100% - min(292px, 100vw - 190px)) / 2);
+    width: calc(100% - min(292px, 100vw - 190px) - 32px);
+  }
+}

@@ -1,6 +1,6 @@
-import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
 import { Handle, NodeResizer, NodeToolbar, Position, useConnection, useNodeConnections, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, AlertTriangle, ArrowRight, ArrowUp, BookmarkPlus, CheckCircle2, Circle, Clock3, Download, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, RefreshCw, Trash2, Type, Upload, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowRight, ArrowUp, BookmarkPlus, CheckCircle2, ChevronDown, Circle, Clock3, Download, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, RefreshCw, Trash2, Type, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
@@ -32,7 +32,7 @@ import { promptMentionMime } from '../components/prompt-mentions'
 import { buildCanvasUpstreamReferences, type UpstreamMediaReference } from '../components/upstream-references'
 import { clipDurationForMediaChip, finiteMediaDurationSeconds, mediaAssetAspectRatio, mediaAssetDurationSeconds, mediaAssetSizeLabel, mediaClipDurationChipLabel, mediaHoverTitle, requestedSizeLabel } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
-import { composerFieldLabel, composerPromptPlaceholder, composerToolbarFields } from './generation-composer'
+import { composerFieldLabel, composerPromptPlaceholder, composerToolbarFields, composerParameterSummary } from './generation-composer'
 import { isMediaResultKind, mediaBoundChipKind, mediaBoundChipLabel, usesMediaBoundLayout } from './media-bound'
 import { isMediaSourceKind, portSlotOffsetY } from './port-geometry'
 import type { CanvasNodeLod } from './node-lod'
@@ -506,12 +506,39 @@ function MediaNodeToolbar({
   )
 }
 
+/** The selected node keeps owning its draft and runtime settings. Docking only
+ *  changes where those same controls are rendered, never the workflow schema. */
+export function CanvasGenerationComposer({ node }: { node?: CanvasNode }) {
+  const availability = useContext(CanvasModelAvailabilityContext)
+  const references = useContext(CanvasUpstreamReferencesContext)
+  if (!node || !isMediaResultKind(node.type ?? '')) return null
+  const kind = node.type ?? 'image-generate'
+  const video = kind.startsWith('video')
+  const imageModels = availability.connected ? availableImageModelPresets(availability.imageModels) : [...imageModelPresets]
+  const videoModels = availability.connected ? availableVideoModelPresets(availability.videoModels) : [...videoModelPresets]
+  const selectedModel = node.data.model || (video ? defaultVideoModel : imageModelPresets[0].id)
+  const modelAvailable = !availability.connected || (video ? videoModels : imageModels).some((entry) => entry.id === selectedModel)
+  return <GenerationInfoPanel
+    key={node.id}
+    id={node.id}
+    kind={kind}
+    data={node.data}
+    title={builtinNodeRegistry.require(kind).title}
+    canRun={!node.disabled && node.data.__canvasDisabled !== true}
+    running={node.data.status === 'running' || node.data.status === 'queued'}
+    modelAvailable={modelAvailable}
+    selectedModel={selectedModel}
+    imageModels={imageModels}
+    videoModels={videoModels}
+    references={references.get(node.id) ?? []}
+  />
+}
+
 function GenerationInfoPanel({
   id,
   kind,
   data,
   title,
-  selected,
   canRun,
   running,
   modelAvailable,
@@ -524,7 +551,6 @@ function GenerationInfoPanel({
   kind: NodeKind
   data: WorkflowNodeData
   title: string
-  selected: boolean
   canRun: boolean
   running: boolean
   modelAvailable: boolean
@@ -534,7 +560,18 @@ function GenerationInfoPanel({
   references: readonly UpstreamMediaReference[]
 }) {
   const incoming = useNodeConnections({ id, handleType: 'target' })
-  if (!selected) return null
+  const [expanded, setExpanded] = useState<'parameters' | 'tools' | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const parametersRef = useRef<HTMLButtonElement>(null)
+  const toolsRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!expanded) return
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setExpanded(null)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [expanded])
   const fields = composerToolbarFields(kind, selectedModel)
   const imagePreset = imageModelPreset(selectedModel)
   const videoPreset = videoModelPreset(selectedModel)
@@ -548,8 +585,121 @@ function GenerationInfoPanel({
   }
   const textChips = incoming.filter((connection) => (connection.sourceHandle ?? '').startsWith('out:text'))
   const hasChips = references.length > 0 || textChips.length > 0
+  const summary = composerParameterSummary(kind, selectedModel, data)
+  const parameterId = `composer-parameters-${id}`
+  const toolsId = `composer-tools-${id}`
   return (
-    <NodeToolbar position={Position.Bottom} offset={10} className="wf-composer nodrag nowheel" role="dialog" aria-label={`${title}生成条`}>
+    <div ref={rootRef} className="wf-composer canvas-composer-dock nodrag nowheel" role="region" aria-label={`${title}生成条`}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return
+        if (event.key !== 'Escape' || !expanded || event.defaultPrevented) return
+        event.preventDefault()
+        event.stopPropagation()
+        const trigger = expanded === 'parameters' ? parametersRef : toolsRef
+        setExpanded(null)
+        trigger.current?.focus()
+      }}
+    >
+      {expanded === 'parameters' && <section id={parameterId} className="wf-composer-parameters" aria-label="生成参数">
+        <div className="wf-composer-section-heading"><strong>生成参数</strong><span>修改会保存在当前节点</span></div>
+        {fields.includes('quality') && (
+          <label className="wf-composer-field"><span>画质</span>
+            <select className="wf-composer-select" aria-label="生成画质" title={composerFieldLabel('quality')} value={data.quality || defaultImageQuality} onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
+              {data.quality && !imageQualityOptions.some((entry) => entry.value === data.quality) && <option value={data.quality}>{data.quality === 'auto' ? '自动（费用可能变化）' : `${data.quality}（已保存）`}</option>}
+              {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('imageResolution') && (
+          <label className="wf-composer-field"><span>清晰度</span>
+            <select
+              className="wf-composer-select"
+              aria-label="生成清晰度"
+              title={composerFieldLabel('imageResolution')}
+              value={data.imageResolution ?? defaultImageResolution}
+              onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
+            >
+              {imageResolutionOptions.map((entry) => (
+                <option key={entry.value} value={entry.value} disabled={!imagePreset.resolutions.includes(entry.value)}>
+                  {entry.label}{imagePreset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {fields.includes('size') && !kind.startsWith('video') && (
+          <label className="wf-composer-field"><span>尺寸</span>
+            <select className="wf-composer-select" aria-label="生成尺寸" title={composerFieldLabel('size', kind)} value={data.size || imagePreset.sizes[0] || defaultImageSize} onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
+              {data.size && !imagePreset.sizes.includes(data.size) && <option value={data.size}>{data.size}（已保存）</option>}
+              {imagePreset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('size') && kind.startsWith('video') && (
+          <label className="wf-composer-field"><span>比例</span>
+            <select className="wf-composer-select" aria-label="视频比例" title={composerFieldLabel('size', kind)} value={data.size || videoPreset.defaultSize} onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
+              {data.size && !videoPreset.sizes.includes(data.size) && <option value={data.size}>{data.size}（已保存）</option>}
+              {videoSizeOptions.filter((size) => videoPreset.sizes.includes(size.value)).map((size) => (
+                <option key={size.value} value={size.value}>{size.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {fields.includes('videoMode') && (
+          <label className="wf-composer-field"><span>模式</span>
+            <select className="wf-composer-select" aria-label="MiniMax 生成模式" title={composerFieldLabel('videoMode')} value={textSetting(data, 'videoMode', 'auto')} onChange={(event) => handlers.onSettingsChange(id, { videoMode: event.target.value })}>
+              {videoModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('videoResolution') && (
+          <label className="wf-composer-field"><span>分辨率</span>
+            <select className="wf-composer-select" aria-label="MiniMax 视频分辨率" title={composerFieldLabel('videoResolution')} value={textSetting(data, 'videoResolution', '720p')} onChange={(event) => handlers.onSettingsChange(id, { videoResolution: event.target.value })}>
+              {videoResolutionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('videoAspectRatio') && (
+          <label className="wf-composer-field"><span>比例</span>
+            <select className="wf-composer-select" aria-label="MiniMax 视频比例" title={composerFieldLabel('videoAspectRatio')} value={textSetting(data, 'videoAspectRatio', '16:9')} onChange={(event) => handlers.onSettingsChange(id, { videoAspectRatio: event.target.value })}>
+              {videoAspectRatioOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('seconds') && (
+          <label className="wf-composer-field"><span>时长</span>
+            <select className="wf-composer-select" aria-label="视频时长" title={composerFieldLabel('seconds')} value={data.seconds ?? String(videoPreset.defaultSeconds)} onChange={(event) => handlers.onSecondsChange(id, event.target.value)}>
+              {data.seconds && (Number(data.seconds) < videoPreset.minimumSeconds || Number(data.seconds) > videoPreset.maximumSeconds) && <option value={data.seconds}>{data.seconds} 秒（当前模型不支持）</option>}
+              {Array.from({ length: videoPreset.maximumSeconds - videoPreset.minimumSeconds + 1 }, (_, index) => videoPreset.minimumSeconds + index).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+            </select>
+          </label>
+        )}
+          {fields.includes('promptOptimization') && (
+            <label className="wf-composer-toggle">
+              <input
+                type="checkbox"
+                checked={booleanSetting(data, 'promptOptimization', false)}
+                onChange={(event) => handlers.onSettingsChange(id, { promptOptimization: event.target.checked })}
+              />
+              <span>AI 优化 H3 提示词</span>
+            </label>
+          )}
+      </section>}
+      {expanded === 'tools' && <section id={toolsId} className="wf-composer-tools" aria-label="更多生成工具">
+          <button type="button" className="wf-composer-icon" title="保存为提示词预设" aria-label="保存为提示词预设" onClick={() => handlers.onSavePromptPreset(id)}>
+            <BookmarkPlus size={15} aria-hidden="true" />保存提示词
+          </button>
+          {data.result && (
+            <>
+              <button type="button" className="wf-composer-icon" title="放大预览" aria-label="放大预览" onClick={() => handlers.onPreviewAsset(data.result!)}>
+                <Maximize2 size={15} aria-hidden="true" />预览结果
+              </button>
+              <button type="button" className="wf-composer-icon" title="另存到本机" aria-label="另存素材" onClick={() => handlers.onDownloadAsset(id)}>
+                <Download size={15} aria-hidden="true" />另存素材
+              </button>
+            </>
+          )}
+      </section>}
       <div className="wf-composer-prompt">
         {hasChips && (
           <div className="wf-composer-chips">
@@ -596,14 +746,18 @@ function GenerationInfoPanel({
           value={data.prompt}
           placeholder={composerPromptPlaceholder(kind)}
           references={references}
-          rows={8}
+          rows={3}
           onChange={(prompt) => handlers.onPromptChange(id, prompt)}
           onCommit={(prompt) => handlers.onPromptCommit(id, prompt)}
           onSubmit={submit}
         />
       </div>
+      {(!modelAvailable || editBlocked) && <p className="wf-composer-warning" role="status">{editBlocked
+        ? '当前模型不支持参考图编辑，请选择其他图像模型。'
+        : '当前模型在所选分组中不可用，请选择可用模型或调整生成配置。'}</p>}
       <div className="wf-composer-footer">
         <div className="wf-composer-toolbar">
+        <span className="wf-composer-kind">{kind.startsWith('video') ? <Film size={13} aria-hidden="true" /> : <ImageIcon size={13} aria-hidden="true" />}{kind.startsWith('video') ? '视频' : '图片'}</span>
         {fields.includes('model') && (
           <label className="wf-composer-field">
             <select
@@ -620,102 +774,17 @@ function GenerationInfoPanel({
             </select>
           </label>
         )}
-        {fields.includes('quality') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="生成画质" title={composerFieldLabel('quality')} value={data.quality || defaultImageQuality} onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
-              {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-            </select>
-          </label>
-        )}
-        {fields.includes('imageResolution') && (
-          <label className="wf-composer-field">
-            <select
-              className="wf-composer-select"
-              aria-label="生成清晰度"
-              title={composerFieldLabel('imageResolution')}
-              value={imagePreset.resolutions.includes(data.imageResolution ?? defaultImageResolution) ? (data.imageResolution ?? defaultImageResolution) : imagePreset.resolutions[0]}
-              onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
-            >
-              {imageResolutionOptions.map((entry) => (
-                <option key={entry.value} value={entry.value} disabled={!imagePreset.resolutions.includes(entry.value)}>
-                  {entry.label}{imagePreset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {fields.includes('size') && !kind.startsWith('video') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="生成尺寸" title={composerFieldLabel('size', kind)} value={imagePreset.sizes.includes(data.size || '') ? data.size : (imagePreset.sizes[0] ?? defaultImageSize)} onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
-              {imagePreset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
-            </select>
-          </label>
-        )}
-        {fields.includes('size') && kind.startsWith('video') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="视频比例" title={composerFieldLabel('size', kind)} value={videoPreset.sizes.includes(data.size || '') ? data.size : videoPreset.defaultSize} onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
-              {videoSizeOptions.filter((size) => videoPreset.sizes.includes(size.value)).map((size) => (
-                <option key={size.value} value={size.value}>{size.label}</option>
-              ))}
-            </select>
-          </label>
-        )}
-        {fields.includes('videoMode') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="MiniMax 生成模式" title={composerFieldLabel('videoMode')} value={textSetting(data, 'videoMode', 'auto')} onChange={(event) => handlers.onSettingsChange(id, { videoMode: event.target.value })}>
-              {videoModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-        )}
-        {fields.includes('videoResolution') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="MiniMax 视频分辨率" title={composerFieldLabel('videoResolution')} value={textSetting(data, 'videoResolution', '720p')} onChange={(event) => handlers.onSettingsChange(id, { videoResolution: event.target.value })}>
-              {videoResolutionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-        )}
-        {fields.includes('videoAspectRatio') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="MiniMax 视频比例" title={composerFieldLabel('videoAspectRatio')} value={textSetting(data, 'videoAspectRatio', '16:9')} onChange={(event) => handlers.onSettingsChange(id, { videoAspectRatio: event.target.value })}>
-              {videoAspectRatioOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-        )}
-        {fields.includes('seconds') && (
-          <label className="wf-composer-field">
-            <select className="wf-composer-select" aria-label="视频时长" title={composerFieldLabel('seconds')} value={data.seconds ?? String(defaultVideoSeconds)} onChange={(event) => handlers.onSecondsChange(id, event.target.value)}>
-              {(videoPreset.provider === 'minimax-h3'
-                ? Array.from({ length: videoPreset.maximumSeconds - videoPreset.minimumSeconds + 1 }, (_, index) => videoPreset.minimumSeconds + index)
-                : [5, 10, 15]
-              ).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
-            </select>
-          </label>
-        )}
-          {fields.includes('promptOptimization') && (
-            <label className="wf-composer-toggle">
-              <input
-                type="checkbox"
-                checked={booleanSetting(data, 'promptOptimization', false)}
-                onChange={(event) => handlers.onSettingsChange(id, { promptOptimization: event.target.checked })}
-              />
-              <span>AI 优化 H3 提示词</span>
-            </label>
-          )}
+        <button ref={parametersRef} type="button" className="wf-composer-summary" aria-label={`生成参数：${summary}`}
+          aria-expanded={expanded === 'parameters'} aria-controls={parameterId}
+          title="在输入栏内调整生成参数"
+          onClick={() => setExpanded((current) => current === 'parameters' ? null : 'parameters')}
+        ><span>{summary}</span><ChevronDown size={13} aria-hidden="true" /></button>
         </div>
         <div className="wf-composer-actions">
-          <button type="button" className="wf-composer-icon" title="保存为提示词预设" aria-label="保存为提示词预设" onClick={() => handlers.onSavePromptPreset(id)}>
-            <BookmarkPlus size={15} aria-hidden="true" />
-          </button>
-          {data.result && (
-            <>
-              <button type="button" className="wf-composer-icon" title="放大预览" aria-label="放大预览" onClick={() => handlers.onPreviewAsset(data.result!)}>
-                <Maximize2 size={15} aria-hidden="true" />
-              </button>
-              <button type="button" className="wf-composer-icon" title="另存到本机" aria-label="另存素材" onClick={() => handlers.onDownloadAsset(id)}>
-                <Download size={15} aria-hidden="true" />
-              </button>
-            </>
-          )}
+          <button ref={toolsRef} type="button" className="wf-composer-icon" title="更多生成工具" aria-label="更多生成工具"
+            aria-expanded={expanded === 'tools'} aria-controls={toolsId}
+            onClick={() => setExpanded((current) => current === 'tools' ? null : 'tools')}
+          ><MoreHorizontal size={16} aria-hidden="true" /></button>
           <button
             type="button"
             className="wf-composer-send"
@@ -724,7 +793,7 @@ function GenerationInfoPanel({
                 ? '当前模型不支持参考图编辑，请换用支持编辑的图像模型'
                 : running ? '正在生成' : '重新生成此节点，已完成的上游直接复用。Ctrl+Enter 也可提交'
             }
-            aria-label={running ? '正在生成' : '重新生成'}
+            aria-label={running ? '正在生成' : data.result ? '重新生成' : '生成'}
             disabled={!canRun || running || !modelAvailable || editBlocked}
             onClick={submit}
           >
@@ -732,7 +801,7 @@ function GenerationInfoPanel({
           </button>
         </div>
       </div>
-    </NodeToolbar>
+    </div>
   )
 }
 
@@ -972,21 +1041,6 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             running={nodeRunning}
             locked={locked}
             selected={selected}
-          />
-        ) : !isMediaSourceKind(kind) ? (
-          <GenerationInfoPanel
-            id={id}
-            kind={kind}
-            data={data}
-            title={definition.title}
-            selected={selected}
-            canRun={canRunNode}
-            running={nodeRunning}
-            modelAvailable={mediaModelAvailable}
-            selectedModel={selectedModel}
-            imageModels={imageModels}
-            videoModels={videoModels}
-            references={upstreamReferences}
           />
         ) : null}
         <MediaBoundPreview

@@ -9,6 +9,7 @@ import '../../src/styles/ui-tokens.css'
 import './theme.css'
 import './theme/brand-appearance.css'
 import './styles.css'
+import './nodes/generation-composer.css'
 import { applyCanvasAppearance, initialCanvasAppearance } from './theme/canvas-theme'
 
 const initialAppearance = initialCanvasAppearance(window.location.search)

@@ -9,7 +9,7 @@ function source(relativePath: string): string {
 describe('canvas media input and candidate wiring', () => {
   it('turns a selected generate node into an editable composer, not a read-only card', () => {
     const workflowNodes = source('../nodes/WorkflowNodes.tsx')
-    expect(workflowNodes).toContain('className="wf-composer nodrag nowheel"')
+    expect(workflowNodes).toContain('className="wf-composer canvas-composer-dock nodrag nowheel"')
     expect(workflowNodes).toContain('function MediaDurationChip')
     expect(workflowNodes).toContain('latestAttemptDurationMs')
     expect(workflowNodes).toContain('wf-media-readouts')
@@ -17,7 +17,7 @@ describe('canvas media input and candidate wiring', () => {
     expect(workflowNodes).toContain('mediaClipDurationChipLabel')
     expect(workflowNodes).toContain('clipDurationForMediaChip')
     expect(workflowNodes).not.toContain("generationDurationLabel(durationMs, cached)")
-    expect(workflowNodes).toContain('aria-label={running ? \'正在生成\' : \'重新生成\'}')
+    expect(workflowNodes).toContain('aria-label={running ? \'正在生成\' : data.result ? \'重新生成\' : \'生成\'}')
     expect(workflowNodes).toContain('handlers.onPromptChange(id, prompt)')
     expect(workflowNodes).toContain('handlers.onPromptCommit(id, prompt)')
     expect(workflowNodes).toContain('handlers.onDisconnectIncoming')
@@ -44,6 +44,9 @@ describe('canvas media input and candidate wiring', () => {
     expect(styles).not.toContain('.wf-generation-card')
     expect(workflowNodes).toContain('wf-composer-footer')
     expect(workflowNodes).toContain('composerFieldLabel')
+    expect(source('../App.tsx')).toContain('<CanvasGenerationComposer node={selectedNodeIds.length === 1')
+    expect(workflowNodes).toContain('aria-controls={parameterId}')
+    expect(workflowNodes).toContain('aria-controls={toolsId}')
   })
 
   it('keeps all media inputs on the shared replace and preview path', () => {

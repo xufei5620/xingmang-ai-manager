@@ -1,4 +1,4 @@
-import { imageModelPreset, videoModelPreset } from '../models'
+import { imageModelPreset, videoModelPreset, imageSizeLabel, imageQualityOptions, videoSizeOptions } from '../models'
 
 export type ComposerToolbarField =
   | 'model'
@@ -98,4 +98,71 @@ export function commitGenerationPrompts<T extends { id: string; type?: string; d
     return { ...node, data: { ...node.data, prompt } }
   })
   return changed ? next : nodes as T[]
+}
+
+/** The collapsed row must describe the saved configuration, including an
+ *  unsupported imported value, rather than silently showing another choice. */
+export function composerParameterSummary(kind: string, model: string, data: {
+  quality?: string
+  imageResolution?: string
+  size?: string
+  seconds?: string
+  settings?: Record<string, unknown>
+}): string {
+  if (imageKinds.has(kind)) {
+    const preset = imageModelPreset(model)
+    const resolution = data.imageResolution || '1K'
+    const parts = [preset.resolutions.some((value) => value === resolution) ? resolution : `${resolution}（需调整）`]
+    if (preset.supportsSize) {
+      const size = data.size || preset.sizes[0]
+      parts.unshift(preset.sizes.includes(size) ? imageSizeLabel(size).split(' · ')[0] : `${size}（已保存）`)
+    }
+    if (preset.supportsQuality) {
+      const quality = data.quality || 'low'
+      parts.push(imageQualityOptions.find((option) => option.value === quality)?.label ?? (quality === 'auto' ? '自动画质' : `${quality}（已保存）`))
+    }
+    return parts.join(' · ')
+  }
+  if (videoKinds.has(kind)) {
+    const preset = videoModelPreset(model)
+    const seconds = data.seconds || String(preset.defaultSeconds)
+    if (preset.provider === 'minimax-h3') {
+      const ratio = typeof data.settings?.videoAspectRatio === 'string' ? data.settings.videoAspectRatio : '16:9'
+      const resolution = typeof data.settings?.videoResolution === 'string' ? data.settings.videoResolution : '720p'
+      return [ratio, resolution, `${seconds} 秒`, ...(data.settings?.promptOptimization === true ? ['AI 优化'] : [])].join(' · ')
+    }
+    const size = data.size || preset.defaultSize
+    const ratio = videoSizeOptions.find((option) => option.value === size)?.label.split(' · ')[0] ?? `${size}（需调整）`
+    return `${ratio} · ${seconds} 秒`
+  }
+  return ''
+}
+
+/** Reconcile only model-dependent values. Prompt, references and unrelated
+ *  settings remain intact, and the same patch is used by the persisted graph. */
+export function generationModelChangePatch(kind: string, model: string, data: {
+  imageResolution?: '1K' | '2K' | '4K'
+  size?: string
+  seconds?: string
+}): { model: string; imageResolution?: '1K' | '2K' | '4K'; size?: string; seconds?: string } {
+  if (imageKinds.has(kind)) {
+    const preset = imageModelPreset(model)
+    return {
+      model,
+      ...(!preset.resolutions.includes(data.imageResolution ?? '1K') ? { imageResolution: preset.resolutions[0] } : {}),
+      ...(preset.supportsSize && !preset.sizes.includes(data.size ?? '') ? { size: preset.sizes[0] } : {}),
+      ...(!preset.supportsSize ? { size: '1024x1024' } : {}),
+    }
+  }
+  if (videoKinds.has(kind)) {
+    const preset = videoModelPreset(model)
+    const seconds = Number(data.seconds)
+    return {
+      model,
+      ...(!preset.sizes.includes(data.size ?? '') ? { size: preset.defaultSize } : {}),
+      ...(!Number.isInteger(seconds) || seconds < preset.minimumSeconds || seconds > preset.maximumSeconds
+        ? { seconds: String(preset.defaultSeconds) } : {}),
+    }
+  }
+  return { model }
 }
