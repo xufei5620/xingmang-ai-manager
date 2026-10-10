@@ -20,9 +20,10 @@ const { compareReleaseVersions } = require('./update-release-utils.cjs')
 const API_ORIGIN = 'https://api.cloudflare.com'
 const ZONE_NAME = 'shenfengwl.fun'
 const STATUS_PATH = '/xingmang-manager/service-status.json'
-// 自动更新下的安装包：Windows 是 Setup.exe，Mac 是 zip（dmg 是手动下的）。Linux 还没对外发。
+// 自动更新下的安装包：Windows 是 Setup.exe，Mac 是 zip（dmg 是手动下的）。Mac 发出去的名字带芯片名
+// （scripts/macos-artifact-names.cjs），改名之前发的版本是 electron-builder 原名，两种都认。Linux 还没对外发。
 const INSTALLER_PATH_PATTERN = '/xingmang-manager/XingMang-AI-Manager-%'
-const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,6}\.\d{1,6})-(Setup\.exe|(?:arm64|x64)\.zip)$/
+const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,6}\.\d{1,6})-(Setup\.exe|(?:Apple-Silicon-arm64|Intel-x64|arm64|x64)\.zip)$/
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_DAYS = 31

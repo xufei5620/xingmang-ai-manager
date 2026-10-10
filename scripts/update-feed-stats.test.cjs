@@ -276,12 +276,16 @@ test('with hours, a machine counts at the version of its latest hour, not of the
 
 test('only the installers the updater downloads are recognised, with their version and platform', () => {
   assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-Setup.exe'), { version: '0.2.18', platform: 'windows' })
-  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-arm64.zip'), { version: '0.2.18', platform: 'mac' })
-  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-x64.zip'), { version: '0.2.18', platform: 'mac' })
+  // The released Mac names carry the chip name; versions shipped before the rename kept electron-builder's.
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-Apple-Silicon-arm64.zip'), { version: '0.2.18', platform: 'mac' })
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-Intel-x64.zip'), { version: '0.2.18', platform: 'mac' })
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.14-arm64.zip'), { version: '0.2.14', platform: 'mac' })
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.14-x64.zip'), { version: '0.2.14', platform: 'mac' })
   // The differential download's block maps, hand-downloaded disk images and anything else are not an update download.
   for (const other of [
     '/xingmang-manager/XingMang-AI-Manager-0.2.18-Setup.exe.blockmap',
-    '/xingmang-manager/XingMang-AI-Manager-0.2.18-arm64.dmg',
+    '/xingmang-manager/XingMang-AI-Manager-0.2.18-Apple-Silicon-arm64.dmg',
+    '/xingmang-manager/XingMang-AI-Manager-0.2.18-Apple-Silicon-arm64.zip.blockmap',
     '/xingmang-manager/latest.yml',
     '/xingmang-manager/service-status.json',
     '/other/XingMang-AI-Manager-0.2.18-Setup.exe',
@@ -315,7 +319,7 @@ test('each machine that downloaded the newest installer is followed from its fir
       download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-c', '10'),
       download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-d', '10'),
       download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-d', '09'),
-      download('XingMang-AI-Manager-0.2.18-arm64.zip', 'ip-a', '10'),
+      download('XingMang-AI-Manager-0.2.18-Apple-Silicon-arm64.zip', 'ip-a', '10'),
       // An older version's installer is not the one being followed.
       download('XingMang-AI-Manager-0.2.15-Setup.exe', 'ip-z', '08'),
     ],
@@ -343,7 +347,7 @@ test('the report follows installer downloads by hour and states its scope, still
         return [
           downloadRow('XingMang-AI-Manager-0.2.18-Setup.exe', '203.0.113.7', '2026-10-07T13:00:00Z'),
           downloadRow('XingMang-AI-Manager-0.2.18-Setup.exe', '198.51.100.20', '2026-10-07T13:00:00Z'),
-          downloadRow('XingMang-AI-Manager-0.2.18-arm64.zip', '203.0.113.7', '2026-10-07T13:00:00Z'),
+          downloadRow('XingMang-AI-Manager-0.2.18-Intel-x64.zip', '203.0.113.7', '2026-10-07T13:00:00Z'),
         ]
       }
       return [
