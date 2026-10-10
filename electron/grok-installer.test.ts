@@ -70,6 +70,39 @@ describe('Grok signed binary installer', () => {
     )).toThrow('不受信任的重定向')
   })
 
+  it('accepts the empty url Electron net.fetch reports, but only for an official artifact', () => {
+    expect(() => validateGrokArtifactResponseUrl('', 'https://x.ai/cli/grok-0.2.112-windows-x86_64.exe')).not.toThrow()
+    expect(() => validateGrokArtifactResponseUrl(
+      '',
+      'https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-0.2.112-windows-x86_64.exe',
+    )).not.toThrow()
+    expect(() => validateGrokArtifactResponseUrl('', 'https://evil.example/cli/grok.exe')).toThrow('不受信任的重定向')
+    expect(() => validateGrokArtifactResponseUrl('', 'https://x.ai/cli/grok-0.2.112-windows-x86_64.exe?x=1')).toThrow('不受信任的重定向')
+    expect(() => validateGrokArtifactResponseUrl('', 'https://x.ai:8443/cli/grok-0.2.112-windows-x86_64.exe')).toThrow('不受信任的重定向')
+  })
+
+  it('downloads when the binary response carries no url, as Electron net.fetch answers', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
+    temporaryDirectories.push(directory)
+    const binary = Buffer.alloc(1024 * 1024, 0x5a)
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(new Response('0.2.112\n', { status: 200, headers: { 'Content-Type': 'text/plain' } }))
+      .mockResolvedValueOnce(new Response(binary, {
+        status: 200,
+        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) },
+      }))
+
+    const result = await downloadLatestGrokBinary({
+      fetchImpl,
+      architecture: 'x64',
+      createTemporaryDirectory: async () => directory,
+      verifyBinary: fakeVerification,
+    })
+
+    expect(result).toMatchObject({ version: '0.2.112', size: binary.length })
+    expect(fs.statSync(result.binaryPath).size).toBe(binary.length)
+  })
+
   it('downloads a bounded official binary and verifies it before returning', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
     temporaryDirectories.push(directory)
