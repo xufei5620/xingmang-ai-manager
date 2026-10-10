@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classifyClaudeDesktopInstallFailure } from './claude-desktop-install-failure'
 import {
   buildClaudeDesktopPackageInspectionScript, claudeDesktopMsixEntryUrl, describeClaudeDesktopMsixDownload,
-  installClaudeDesktopFromOfficial, validateClaudeDesktopDownloadUrl, validateClaudeDesktopPackageInspection,
-  windowsPackagePublisherId, type ClaudeDesktopMsixInstallOptions, type ClaudeDesktopMsixProgress,
+  installClaudeDesktopFromBucket, installClaudeDesktopFromOfficial, validateClaudeDesktopDownloadUrl,
+  validateClaudeDesktopPackageInspection, windowsPackagePublisherId, type ClaudeDesktopMsixInstallOptions,
+  type ClaudeDesktopMsixProgress,
 } from './claude-desktop-msix-installer'
 import { claudeAppxProduct } from './codex-desktop-appx'
 import { CommandRunnerError, type CommandSpec, type runCommand } from './command-runner'
+import { desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError } from './desktop-package-bucket'
 import { decodeWindowsPowerShellCommand } from './windows-elevation'
 
 // No real Claude package is downloaded or installed: fetch, PowerShell and the
@@ -425,6 +427,132 @@ describe('Claude Desktop official MSIX installation', () => {
     await expect(installClaudeDesktopFromOfficial(mac.options)).rejects.toThrow('只用于 Windows')
     const ia32 = await fixture({ architecture: 'ia32' })
     await expect(installClaudeDesktopFromOfficial(ia32.options)).rejects.toThrow('处理器架构')
+    expect(mac.fetch).not.toHaveBeenCalled()
+    expect(ia32.fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('Claude Desktop from the Xingmang bucket', () => {
+  const payloadSha256 = createHash('sha256').update(payload).digest('hex')
+
+  function bucketPackageUrl(architecture: 'x64' | 'arm64' = 'x64'): string {
+    return `${desktopPackageBucketOrigin}/xingmang/offline/claude/windows-${architecture}/sha256-${payloadSha256}/Claude-${architecture}.msix`
+  }
+  function bucketIndex(architecture: 'x64' | 'arm64' = 'x64', version = '1.1.2345.0'): string {
+    const url = bucketPackageUrl(architecture)
+    return JSON.stringify({
+      schemaVersion: 1,
+      product: 'claude-desktop',
+      files: [{
+        platformId: `windows-${architecture}`, fileName: `Claude-${architecture}.msix`, version, platform: 'windows', architecture,
+        kind: 'installer', format: 'msix', key: url.slice(desktopPackageBucketOrigin.length + 1), url, size: payload.byteLength,
+        sha256: payloadSha256, type: 'application/vnd.ms-appx', verification: 'windows-authenticode-msix-identity', cosEtag: '"etag"',
+      }],
+    })
+  }
+  async function bucketFixture(overrides: Partial<ClaudeDesktopMsixInstallOptions> = {}, index = bucketIndex()) {
+    const f = await fixture(overrides)
+    f.fetch.mockImplementation(async (input) => (
+      requestUrl(input) === desktopBucketIndexUrl('claude-windows-x64')
+        ? new Response(index, { status: 200, headers: { 'content-type': 'application/json' } })
+        : packageResponse()
+    ))
+    return f
+  }
+  async function bucketFailure(f: Awaited<ReturnType<typeof fixture>>): Promise<unknown> {
+    return installClaudeDesktopFromBucket(f.options).then(() => null, (error: unknown) => error)
+  }
+
+  it('installs the exact bytes the bucket index lists, after the same signature check', async () => {
+    const f = await bucketFixture()
+    await expect(installClaudeDesktopFromBucket(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
+    expect(f.fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([desktopBucketIndexUrl('claude-windows-x64'), bucketPackageUrl()])
+    for (const [, init] of f.fetch.mock.calls) expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+    expect(f.execute).toHaveBeenCalledOnce()
+    expect(f.execute.mock.calls[0][1]).toMatchObject({ trustedPaths: [f.packagePath] })
+    expect(f.installPackage).toHaveBeenCalledExactlyOnceWith(f.packagePath, expect.objectContaining({
+      product: claudeAppxProduct, sha256Base64: createHash('sha256').update(payload).digest('base64'), contentLength: payload.byteLength,
+    }))
+    expect(f.installed[0].equals(payload)).toBe(true)
+    // The customer sees the same wording as the system installer route: no new interface text.
+    const messages = [...new Set(f.progress.map((event) => event.message))]
+    expect(messages).toEqual(['正在下载并安装 Claude Desktop', '正在检查下载下来的安装包是不是完整的官方版', '正在安装 Claude Desktop 1.1.2345.0'])
+    expect(f.progress.some((event) => event.phase === 'downloading' && event.percent === 100)).toBe(true)
+  })
+
+  it('downloads the arm64 package for arm64 computers', async () => {
+    const f = await fixture({ architecture: 'arm64' })
+    f.fetch.mockImplementation(async (input) => (
+      requestUrl(input) === desktopBucketIndexUrl('claude-windows-arm64') ? new Response(bucketIndex('arm64'), { status: 200 }) : packageResponse()
+    ))
+    f.execute.mockImplementation(async (spec) => result(spec, JSON.stringify(inspectionRecord({ architecture: 'arm64' }))))
+    await expect(installClaudeDesktopFromBucket(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
+    expect(requestUrl(f.fetch.mock.calls[1][0])).toBe(bucketPackageUrl('arm64'))
+  })
+
+  it('falls back quietly when the index cannot be read, before making any staging directory', async () => {
+    const f = await bucketFixture()
+    f.fetch.mockImplementation(async () => new Response('missing', { status: 404 }))
+    const failure = await bucketFailure(f)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    expect(f.createTemporaryDirectory).not.toHaveBeenCalled()
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(f.installPackage).not.toHaveBeenCalled()
+  })
+
+  it('falls back and deletes the file when the bytes do not match the index', async () => {
+    const f = await bucketFixture()
+    f.fetch.mockImplementation(async (input) => (
+      requestUrl(input) === desktopBucketIndexUrl('claude-windows-x64') ? new Response(bucketIndex(), { status: 200 }) : packageResponse(Buffer.alloc(payload.byteLength, 0x00))
+    ))
+    const failure = await bucketFailure(f)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    expect((failure as Error).message).toContain('SHA-256')
+    expect(fs.existsSync(f.packagePath)).toBe(false)
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(f.installPackage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['fails the signature check', { hasSignature: false }, '缺少有效的 Anthropic 签名'],
+    ['is a different version than the index lists', { version: '1.1.2346.0' }, '和存储桶清单写的 1.1.2345.0 不一致'],
+  ] as const)('falls back when the package %s', async (_label, extra, message) => {
+    const f = await bucketFixture()
+    f.execute.mockImplementation(async (spec) => result(spec, JSON.stringify(inspectionRecord(extra))))
+    const failure = await bucketFailure(f)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    expect((failure as Error).message).toContain(message)
+    expect(f.installPackage).not.toHaveBeenCalled()
+  })
+
+  it('passes an installer failure on as is, because another download of the same package would not help', async () => {
+    const f = await bucketFixture()
+    f.installPackage.mockRejectedValue(new Error('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。'))
+    const failure = await bucketFailure(f)
+    expect(failure).not.toBeInstanceOf(DesktopBucketUnavailableError)
+    expect((failure as Error).message).toContain('已取消管理员授权')
+  })
+
+  it('passes the customer cancel through instead of falling back', async () => {
+    const during = new AbortController()
+    const onInstallStarting = vi.fn()
+    const f = await bucketFixture({ signal: during.signal, onInstallStarting })
+    f.execute.mockImplementation(async (spec) => {
+      during.abort(new Error('安装已取消。'))
+      return result(spec, JSON.stringify(inspectionRecord()))
+    })
+    const failure = await bucketFailure(f)
+    expect(failure).not.toBeInstanceOf(DesktopBucketUnavailableError)
+    expect((failure as Error).message).toBe('安装已取消。')
+    expect(onInstallStarting).not.toHaveBeenCalled()
+    expect(f.installPackage).not.toHaveBeenCalled()
+  })
+
+  it('falls back without touching the network on other platforms and processors', async () => {
+    const mac = await bucketFixture({ platform: 'darwin' })
+    expect(await bucketFailure(mac)).toBeInstanceOf(DesktopBucketUnavailableError)
+    const ia32 = await bucketFixture({ architecture: 'ia32' })
+    expect(await bucketFailure(ia32)).toBeInstanceOf(DesktopBucketUnavailableError)
     expect(mac.fetch).not.toHaveBeenCalled()
     expect(ia32.fetch).not.toHaveBeenCalled()
   })

@@ -5,6 +5,12 @@ import path from 'node:path'
 import { addWindowsDesktopAppxPackage, claudeAppxProduct } from './codex-desktop-appx'
 import { cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment } from './command-runner'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
+import {
+  DesktopBucketUnavailableError,
+  downloadDesktopBucketPackage,
+  readDesktopBucketPackage,
+  type DesktopBucketPackage,
+} from './desktop-package-bucket'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import {
@@ -231,7 +237,7 @@ export interface ClaudeDesktopMsixInstallOptions {
   packagePublisherId?: string
 }
 
-function reportProgress(options: ClaudeDesktopMsixInstallOptions, event: ClaudeDesktopMsixProgress): void {
+function reportProgress(options: Pick<ClaudeDesktopMsixInstallOptions, 'onProgress'>, event: ClaudeDesktopMsixProgress): void {
   try { options.onProgress?.(event) } catch { /* A disconnected observer cannot alter the installation. */ }
 }
 
@@ -351,7 +357,7 @@ async function inspectClaudeDesktopPackage(
   architecture: 'x64' | 'arm64',
   mode: WindowsCliExecutionMode,
   machinePaths: WindowsMachinePaths,
-  options: ClaudeDesktopMsixInstallOptions,
+  options: Omit<ClaudeDesktopMsixInstallOptions, 'wingetTried'>,
 ): Promise<{ version: string }> {
   const execute = options.runCommand ?? runCommand
   let stdout: string
@@ -381,6 +387,41 @@ async function inspectClaudeDesktopPackage(
   return validateClaudeDesktopPackageInspection(stdout, architecture, options.packagePublisherId)
 }
 
+function createClaudeDesktopTemporaryDirectory(
+  options: Pick<ClaudeDesktopMsixInstallOptions, 'createTemporaryDirectory' | 'env'>,
+  mode: WindowsCliExecutionMode,
+  machinePaths: WindowsMachinePaths,
+): Promise<string> {
+  if (options.createTemporaryDirectory) return options.createTemporaryDirectory(mode)
+  if (mode === 'same-user') return fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-claude-desktop-'))
+  return createTrustedTemporaryDirectory('claude-desktop', {
+    env: trustedCommandEnvironment(options.env, machinePaths, 'win32'),
+    machinePaths,
+  })
+}
+
+/** 下好、核过的安装包交给 Windows 装，官网和存储桶两路共用。 */
+async function installVerifiedClaudeDesktopPackage(
+  packagePath: string,
+  download: { size: number; sha256Base64: string },
+  inspected: { version: string },
+  options: Pick<ClaudeDesktopMsixInstallOptions, 'signal' | 'onInstallStarting' | 'onProgress' | 'installPackage'>,
+): Promise<void> {
+  options.signal?.throwIfAborted()
+  options.onInstallStarting?.()
+  reportProgress(options, { phase: 'installing', percent: null, message: `正在安装 Claude Desktop ${inspected.version}` })
+  await (options.installPackage ?? addWindowsDesktopAppxPackage)(packagePath, {
+    product: claudeAppxProduct,
+    sha256Base64: download.sha256Base64,
+    contentLength: download.size,
+    onElevationRequired: () => reportProgress(options, {
+      phase: 'installing',
+      percent: null,
+      message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
+    }),
+  })
+}
+
 /**
  * 下载、核对、安装 Claude 官网的离线安装包。只负责这一路本身：装没装上由调用方
  * 照旧按本机实际注册的包来认（external-client-runtime.ts 的盘点）。
@@ -397,14 +438,7 @@ export async function installClaudeDesktopFromOfficial(options: ClaudeDesktopMsi
     percent: 0,
     message: describeClaudeDesktopMsixDownload(options.wingetTried, { percent: 0 }),
   })
-  const directory = await (options.createTemporaryDirectory
-    ? options.createTemporaryDirectory(mode)
-    : mode === 'same-user'
-      ? fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-claude-desktop-'))
-      : createTrustedTemporaryDirectory('claude-desktop', {
-        env: trustedCommandEnvironment(options.env, machinePaths, 'win32'),
-        machinePaths,
-      }))
+  const directory = await createClaudeDesktopTemporaryDirectory(options, mode, machinePaths)
   const packagePath = path.join(directory, `Claude-${architecture}.msix`)
   try {
     const download = await downloadClaudeDesktopPackage(architecture, packagePath, options)
@@ -416,23 +450,61 @@ export async function installClaudeDesktopFromOfficial(options: ClaudeDesktopMsi
       await fs.promises.rm(packagePath, { force: true }).catch(() => undefined)
       throw error
     }
-    options.signal?.throwIfAborted()
-    options.onInstallStarting?.()
-    reportProgress(options, { phase: 'installing', percent: null, message: `正在安装 Claude Desktop ${inspected.version}` })
-    await (options.installPackage ?? addWindowsDesktopAppxPackage)(packagePath, {
-      product: claudeAppxProduct,
-      sha256Base64: download.sha256Base64,
-      contentLength: download.size,
-      onElevationRequired: () => reportProgress(options, {
-        phase: 'installing',
-        percent: null,
-        message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
-      }),
-    })
+    await installVerifiedClaudeDesktopPackage(packagePath, download, inspected, options)
     return inspected
   } finally {
     // 同 Codex 桌面端：Add-AppxPackage 装完后可能还攥着文件一会儿，放到后台删。这回没删掉的，
     // 由 install-leftovers.ts 按目录名前缀（xingmang-claude-desktop- / claude-desktop-）以后再清。
     void fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+export type ClaudeDesktopBucketInstallOptions = Omit<ClaudeDesktopMsixInstallOptions, 'wingetTried'>
+
+/**
+ * 第一路：从星芒自己的存储桶下同一个官方 MSIX（国内直连就快），核对和装法同官网那一路。
+ * 读不到清单、下载或核对没过都抛 DesktopBucketUnavailableError，由调用方照旧走系统自带的
+ * 安装组件和官网；客户点的取消原样抛出；下好、核过却装不上时照官网那一路直接抛错。
+ */
+export async function installClaudeDesktopFromBucket(options: ClaudeDesktopBucketInstallOptions): Promise<{ version: string }> {
+  if ((options.platform ?? process.platform) !== 'win32') throw new DesktopBucketUnavailableError('存储桶里的 Claude 离线安装包只用于 Windows')
+  const architecture = options.architecture === 'x64' || options.architecture === 'arm64' ? options.architecture : null
+  if (!architecture) throw new DesktopBucketUnavailableError('存储桶里没有这种处理器架构的 Claude 安装包')
+  const mode = options.windowsExecutionMode ?? 'trusted-only'
+  options.signal?.throwIfAborted()
+  // 和系统自带的安装组件那一路同一句话：不说从哪下，客户看不出换了路。
+  const downloading = '正在下载并安装 Claude Desktop'
+  reportProgress(options, { phase: 'downloading', percent: null, message: downloading })
+  const release: DesktopBucketPackage = await readDesktopBucketPackage(`claude-windows-${architecture}`, options.fetch, options.signal)
+  let directory: string | null = null
+  try {
+    let packagePath: string
+    let download: { size: number; sha256Base64: string }
+    let inspected: { version: string }
+    try {
+      const machinePaths = (options.resolveMachinePaths ?? resolveWindowsMachinePaths)()
+      directory = await createClaudeDesktopTemporaryDirectory(options, mode, machinePaths)
+      packagePath = path.join(directory, `Claude-${architecture}.msix`)
+      reportProgress(options, { phase: 'downloading', percent: 0, message: downloading })
+      download = await downloadDesktopBucketPackage(release, packagePath, {
+        fetch: options.fetch,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
+        onProgress: ({ percent }) => reportProgress(options, { phase: 'downloading', percent, message: downloading }),
+      })
+      reportProgress(options, { phase: 'checking', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' })
+      inspected = await inspectClaudeDesktopPackage(packagePath, architecture, mode, machinePaths, options)
+      if (inspected.version !== release.version) {
+        throw new Error(`安装包版本 ${inspected.version} 和存储桶清单写的 ${release.version} 不一致`)
+      }
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason ?? error
+      if (error instanceof DesktopBucketUnavailableError) throw error
+      throw new DesktopBucketUnavailableError(error instanceof Error ? error.message : String(error), error)
+    }
+    await installVerifiedClaudeDesktopPackage(packagePath, download, inspected, options)
+    return inspected
+  } finally {
+    if (directory) void fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
   }
 }
