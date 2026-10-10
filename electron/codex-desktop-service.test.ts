@@ -1986,7 +1986,10 @@ describe('Codex Desktop install on macOS', () => {
       stdout: spec.executable === '/usr/sbin/sysctl' ? '1\n' : '', stderr: '', outputBytes: 0, durationMs: 1,
     }))
     const installMacosDesktopApp = vi.fn<NonNullable<CodexDesktopServiceOptions['installMacosDesktopApp']>>(async (options) => {
-      options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.930.31730', percent: 40 })
+      // The installer takes the download route itself, and only for the vendor's package.
+      await (options.withVendorDownloadRoute ?? ((operation: () => Promise<void>) => operation()))(async () => {
+        options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.930.31730', percent: 40 })
+      })
       options.onProgress?.({ phase: 'checking', message: '正在检查下载下来的安装包是不是完整的官方版', percent: null })
       await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
       options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
@@ -2022,7 +2025,7 @@ describe('Codex Desktop install on macOS', () => {
     return { service, target, installMacosDesktopApp, executeCommand, downloadFetch, routed, progress }
   }
 
-  it('installs the official package through the shared Mac installer, inside the download route', async () => {
+  it('installs through the shared Mac installer, which takes the download route only for the vendor package', async () => {
     const f = macInstallFixture()
 
     await expect(f.service.installCodexDesktop(f.target))
@@ -2031,7 +2034,14 @@ describe('Codex Desktop install on macOS', () => {
     expect(f.routed).toEqual(['start', 'end'])
     expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
       tool: 'codexDesktop', architecture: 'arm64', userHome: '/Users/tester', fetch: f.downloadFetch, signal: expect.any(AbortSignal),
+      withVendorDownloadRoute: expect.any(Function),
     }))
+    expect(f.installMacosDesktopApp.mock.calls[0][0].bucket).toBeUndefined()
+
+    const onFallback = vi.fn()
+    const bucket = macInstallFixture({ bucketDownloads: { onFallback } })
+    await bucket.service.installCodexDesktop(bucket.target)
+    expect(bucket.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ bucket: { onFallback } }))
     expect(f.progress()).toEqual([
       ['downloading', 40, '正在下载 Codex 桌面端 26.930.31730'],
       ['validating', null, '正在检查下载下来的安装包是不是完整的官方版'],

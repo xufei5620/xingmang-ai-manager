@@ -834,13 +834,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
    */
   async function installOnMac(tool: ExternalToolId, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, signal: AbortSignal): Promise<void> {
     await options.assertDiskSpace?.(`${definitions[tool].name} 安装失败`)
-    const run = () => (options.installMacosDesktopApp ?? installMacosDesktopApp)({
+    await (options.installMacosDesktopApp ?? installMacosDesktopApp)({
       tool, architecture, userHome, environment: options.env ?? process.env, fetch: options.fetch ?? fetch,
       runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024, signal }),
       onProgress: (event) => report(event.phase, event.message, event.percent),
       signal,
+      // Claude Desktop 先从星芒自己的存储桶下（国内直连）；只有问官方那一路接下载线路。
+      ...(options.bucketDownloads ? { bucket: options.bucketDownloads } : {}),
+      ...(options.withDownloadRoute ? { withVendorDownloadRoute: options.withDownloadRoute } : {}),
     })
-    await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
   }
   /**
    * Windows 上 Claude Desktop 的第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。

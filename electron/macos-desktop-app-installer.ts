@@ -3,6 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { readBoundedResponseText } from './bounded-response'
 import { CommandRunnerError, type CommandResult } from './command-runner'
+import {
+  describeDesktopBucketFallback,
+  DesktopBucketUnavailableError,
+  downloadDesktopBucketPackage,
+  readDesktopBucketPackage,
+  type DesktopBucketOptions,
+  type DesktopBucketPackageId,
+} from './desktop-package-bucket'
 import { downloadWithResume } from './download-retry'
 import type { ExternalToolId } from './external-tool-config'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
@@ -45,6 +53,10 @@ import { ensureTrustedDirectory } from './trusted-temp'
  * The quarantine flag is deliberately not set. The Gatekeeper decision it would trigger
  * on first launch is the one step 3 has already made, and keeping it would put the
  * "downloaded from the Internet" prompt in front of an app the toolbox just verified.
+ *
+ * Codex 桌面端和 Claude Desktop 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
+ * yoyo 2026-10-10）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载，解开以后照样过
+ * 第 2、3 步才放进「应用程序」；哪一步没过都删掉，照旧问官方。
  */
 
 export type MacosDesktopArchitecture = 'arm64' | 'x64'
@@ -130,6 +142,13 @@ export interface InstallMacosDesktopAppOptions {
    * 官方原版。只换说法，照样不装、不动它。
    */
   detectionUnfinished?: { message: string, rejectedPaths: readonly string[] }
+  /** 先从星芒自己的存储桶下（只有 Codex 桌面端和 Claude Desktop 有）。缺省 = 不走桶，直接问官方。 */
+  bucket?: DesktopBucketOptions
+  /**
+   * 问官方那一路（版本信息加安装包）包进临时加速线路；存储桶那一路国内直连，不包。缺省直接下。
+   * 调用方别再把整个安装包进线路：那样存储桶那一路也会走加速。
+   */
+  withVendorDownloadRoute?<T>(operation: () => Promise<T>): Promise<T>
 }
 
 export interface MacosDesktopAppInstallResult {
@@ -622,12 +641,125 @@ async function nameTakenError(
   return new MacosDesktopInstallError(macosDesktopNameTakenMessage(source.applicationName), detail)
 }
 
+function runDirectly<T>(operation: () => Promise<T>): Promise<T> {
+  return operation()
+}
+
+/** 存储桶里有这台 Mac 能用的那个官方包时，它在桶里叫什么。Codex 按芯片各一个 zip，Claude 是通用 PKG。 */
+function bucketPackageId(tool: MacosDesktopAppId, architecture: MacosDesktopArchitecture): DesktopBucketPackageId | null {
+  if (tool === 'codexDesktop') return architecture === 'arm64' ? 'codex-macos-arm64' : 'codex-macos-x64'
+  if (tool === 'claudeDesktop') return 'claude-macos-universal'
+  return null
+}
+
+/**
+ * Finds the one bundle with this name in an expanded package. Symlinks are never followed and
+ * the walk stops at the bundle itself, so a package cannot steer the search outside staging;
+ * the limits are the ones scripts/sync-claude-official-cos.cjs uses on the same PKG.
+ */
+async function findExpandedBundle(root: string, bundleName: string): Promise<string> {
+  const found: string[] = []
+  let visited = 0
+  async function walk(directory: string, depth: number): Promise<void> {
+    if (depth > 8 || ++visited > 2048) throw new Error('PKG 展开后的目录太深或太多')
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true })
+    if (entries.length > 2048) throw new Error('PKG 展开后的目录项太多')
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const child = path.posix.join(directory, entry.name)
+      if (entry.name === bundleName) found.push(child)
+      else await walk(child, depth + 1)
+    }
+  }
+  await walk(root, 0)
+  if (found.length !== 1) throw new Error(`PKG 里应当正好有一个 ${bundleName}，实际有 ${found.length} 个`)
+  return found[0]
+}
+
+/**
+ * 存储桶里的 Claude 是官方的通用 PKG。不装它（那要管理员密码，还会跑包里的脚本），只用 pkgutil
+ * 把包里的文件展开到私有暂存目录，pkgutil 展开时不执行包里的任何脚本；找出里面唯一的那个应用，
+ * 挪进 extractDirectory，再交给和官方 zip 同一套核对。
+ */
+async function expandPackageBundle(
+  packagePath: string,
+  workDirectory: string,
+  extractDirectory: string,
+  bundleName: string,
+  runProcess: InstallMacosDesktopAppOptions['runProcess'],
+): Promise<void> {
+  // pkgutil creates the target directory itself and refuses one that already exists.
+  const expanded = path.posix.join(workDirectory, 'expanded')
+  await runProcess({ executable: '/usr/sbin/pkgutil', argv: ['--expand-full', packagePath, expanded], timeoutMs: extractTimeoutMs })
+  await fs.promises.rename(await findExpandedBundle(expanded, bundleName), path.posix.join(extractDirectory, bundleName))
+}
+
+/**
+ * 先从星芒自己的存储桶下同一个官方包，国内直连就快，不接加速线路。解开以后和官方那一路一样核
+ * bundle id、最低系统、Team ID 签名和 Gatekeeper。读不到清单、没下成、对不上、核不过都删掉、
+ * 返回 null，照旧问官方，原因只进日志；客户点的取消原样抛出；盘写满了也照直抛：换一路重下一遍
+ * 也一样写不进去。
+ */
+async function unpackFromBucket(
+  source: MacosDesktopAppSource,
+  architecture: MacosDesktopArchitecture,
+  staging: string,
+  options: InstallMacosDesktopAppOptions,
+  readSystemVersion: () => Promise<string>,
+  report: (phase: MacosDesktopAppInstallProgress['phase'], message: string, percent?: number | null) => void,
+): Promise<{ version: string, bundle: string } | null> {
+  const bucket = options.bucket
+  const id = bucketPackageId(options.tool, architecture)
+  if (!bucket || !id) return null
+  const bundleName = `${source.applicationName}.app`
+  const workDirectory = path.posix.join(staging, 'bucket')
+  try {
+    const release = await readDesktopBucketPackage(id, options.fetch, options.signal)
+    await fs.promises.mkdir(workDirectory, { mode: 0o700 })
+    const pkg = release.contentType !== 'application/zip'
+    const archive = path.posix.join(workDirectory, pkg ? 'package.pkg' : 'package.zip')
+    // 和官方那一路同一句话：客户看不出换了路。
+    const downloading = `正在下载 ${source.name} ${release.version}`
+    report('downloading', downloading, 0)
+    await downloadDesktopBucketPackage(release, archive, {
+      fetch: options.fetch,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.wait ? { resumeOptions: { wait: options.wait } } : {}),
+      onProgress: ({ percent, resuming }) => report(
+        'downloading',
+        resuming ? `网络断了一下，正在接着下载 ${source.name} ${release.version}` : downloading,
+        Math.min(99, percent),
+      ),
+    })
+    report('checking', '正在检查下载下来的安装包是不是完整的官方版')
+    options.signal?.throwIfAborted()
+    const extractDirectory = path.posix.join(workDirectory, 'extract')
+    await fs.promises.mkdir(extractDirectory, { mode: 0o700 })
+    if (pkg) {
+      await expandPackageBundle(archive, workDirectory, extractDirectory, bundleName, options.runProcess)
+    } else {
+      // Same bsdtar extraction as the vendor zip below, with the same guarantees.
+      await options.runProcess({ executable: '/usr/bin/tar', argv: ['-xf', archive, '-C', extractDirectory], timeoutMs: extractTimeoutMs })
+    }
+    const bundle = await verifyExtractedBundle(source, extractDirectory, bundleName, options.runProcess, readSystemVersion)
+    return { version: release.version, bundle }
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    const cause = error instanceof DesktopBucketUnavailableError ? error.cause : error
+    if (isDiskFull(cause)) throw cause
+    await fs.promises.rm(workDirectory, { recursive: true, force: true }).catch(() => undefined)
+    bucket.onFallback?.(describeDesktopBucketFallback(id, error instanceof MacosDesktopInstallError ? error.detail : error))
+    return null
+  }
+}
+
 export async function installMacosDesktopApp(options: InstallMacosDesktopAppOptions): Promise<MacosDesktopAppInstallResult> {
-  const source = sources[options.tool]
+  const listed = sources[options.tool]
   const architecture = options.architecture
-  if (!source || (architecture !== 'arm64' && architecture !== 'x64')) {
+  if (!listed || (architecture !== 'arm64' && architecture !== 'x64')) {
     throw new Error('这个客户端在这台 Mac 上不能一键安装')
   }
+  const source: MacosDesktopAppSource = listed
   const report = (phase: MacosDesktopAppInstallProgress['phase'], message: string, percent: number | null = null) => {
     options.onProgress?.({ phase, message, percent })
   }
@@ -638,21 +770,8 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
   const bundleName = `${source.applicationName}.app`
   let stage: 'download' | 'verify' | 'place' = 'place'
   let staging: string | null = null
-  try {
-    const applications = await resolveApplicationsDirectory(options.userHome, options.systemApplicationsDirectory ?? '/Applications')
-    const destination = path.posix.join(applications, bundleName)
-    // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来、或者没来得及核对的那份。
-    if (await lstatOrNull(destination)) throw await nameTakenError(source, destination, options.runProcess, options.detectionUnfinished)
-    await removeInterruptedCopies(destination)
-    staging = await createStagingDirectory(options.environment)
-
-    let context: MacosDesktopFeedContext = { architecture, systemVersion: null }
-    if (source.feedNeedsSystemVersion) {
-      const version = (await readSystemVersion()).trim()
-      if (!/^\d{1,3}(?:\.\d{1,3}){0,2}$/.test(version)) throw new Error(`读不出这台 Mac 的系统版本：${version.slice(0, 40)}`)
-      context = { architecture, systemVersion: version }
-    }
-    stage = 'download'
+  /** 问官方：版本信息、安装包、解开、核对。存储桶那一路没走通时才走这里。 */
+  async function downloadFromVendor(staging: string, context: MacosDesktopFeedContext): Promise<{ version: string, bundle: string }> {
     const release = source.selectRelease(await fetchFeed(options.tool, source, context, options.fetch, options.signal), context)
     if (!release) {
       throw new MacosDesktopInstallError(macosDesktopInstallFailedMessage(source.name), '官方版本信息里没有这台 Mac 能用的安装包')
@@ -723,12 +842,33 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       timeoutMs: extractTimeoutMs,
     })
     const bundle = await verifyExtractedBundle(source, extractDirectory, bundleName, options.runProcess, readSystemVersion)
+    return { version: release.version, bundle }
+  }
+  try {
+    const applications = await resolveApplicationsDirectory(options.userHome, options.systemApplicationsDirectory ?? '/Applications')
+    const destination = path.posix.join(applications, bundleName)
+    // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来、或者没来得及核对的那份。
+    if (await lstatOrNull(destination)) throw await nameTakenError(source, destination, options.runProcess, options.detectionUnfinished)
+    await removeInterruptedCopies(destination)
+    staging = await createStagingDirectory(options.environment)
+
+    let context: MacosDesktopFeedContext = { architecture, systemVersion: null }
+    if (source.feedNeedsSystemVersion) {
+      const version = (await readSystemVersion()).trim()
+      if (!/^\d{1,3}(?:\.\d{1,3}){0,2}$/.test(version)) throw new Error(`读不出这台 Mac 的系统版本：${version.slice(0, 40)}`)
+      context = { architecture, systemVersion: version }
+    }
+    stage = 'download'
+    const stagingDirectory = staging
+    // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。
+    const unpacked = await unpackFromBucket(source, architecture, stagingDirectory, options, readSystemVersion, report)
+      ?? await (options.withVendorDownloadRoute ?? runDirectly)(() => downloadFromVendor(stagingDirectory, context))
 
     options.signal?.throwIfAborted()
     stage = 'place'
     report('installing', '正在放进「应用程序」')
-    await placeBundle(source, bundle, destination, options.runProcess)
-    return { version: release.version, path: destination }
+    await placeBundle(source, unpacked.bundle, destination, options.runProcess)
+    return { version: unpacked.version, path: destination }
   } catch (error) {
     // 取消不是装失败：原样交回去，让调用方说「已取消」而不是「没下载下来」。
     if (options.signal?.aborted) throw error

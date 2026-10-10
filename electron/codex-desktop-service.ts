@@ -3206,7 +3206,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const architecture = await resolveMacosInstallArchitecture()
     cancellation?.throwIfCancelled()
     const signal = cancellation?.signal
-    const install = () => installMacosApp({
+    const installed = await installMacosApp({
       tool: 'codexDesktop',
       architecture,
       userHome,
@@ -3225,8 +3225,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       ...(detectionUnfinished
         ? { detectionUnfinished: { message: codexDesktopDetectionUnfinishedMessage, rejectedPaths: current?.rejectedPaths ?? [] } }
         : {}),
+      // 先从星芒自己的存储桶下（国内直连）；只有问官方那一路接下载线路。
+      ...(bucketDownloads ? { bucket: bucketDownloads } : {}),
+      withVendorDownloadRoute: withDownloadRoute,
     })
-    const installed = await withDownloadRoute(install)
     sendCodexDesktopInstallProgress(target, {
       phase: 'completed',
       percent: 100,

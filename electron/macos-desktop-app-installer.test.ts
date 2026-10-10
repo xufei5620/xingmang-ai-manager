@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandResult } from './command-runner'
+import { desktopBucketIndexUrl, desktopPackageBucketOrigin } from './desktop-package-bucket'
 import {
   fetchMacosDesktopResource,
   installMacosDesktopApp,
@@ -803,5 +804,206 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
       expect(fs.readdirSync(f.applications)).toEqual([])
       expect(stagingLeftovers(f.home)).toEqual([])
     }
+  })
+})
+
+// Nothing here reaches the real bucket either: its index and package come from the fake
+// below, everything else goes on to the vendor fakes above.
+const bucketBytes = Buffer.alloc(10 * 1024 * 1024, 9)
+const bucketDigest = sha256Hex(bucketBytes)
+const bucketCodexVersion = '26.1003.2'
+const bucketClaudeVersion = '2.31226.1'
+
+function bucketCodexKey(architecture: string): string {
+  return `chatgpt/macos-${architecture}/sha256-${bucketDigest}/ChatGPT-darwin-${architecture}-${bucketCodexVersion}.zip`
+}
+const bucketClaudeKey = `xingmang/offline/claude/macos-pkg-universal/sha256-${bucketDigest}/Claude-universal.pkg`
+
+function bucketCodexIndex(architecture: string): string {
+  const key = bucketCodexKey(architecture)
+  return JSON.stringify({
+    schemaVersion: 1,
+    product: 'chatgpt',
+    platforms: {
+      [`macos-${architecture}`]: {
+        platform: 'macos', architecture, format: 'zip', appVersion: bucketCodexVersion, buildVersion: '2401',
+        artifact: {
+          key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bucketBytes.byteLength, sha256: bucketDigest,
+          contentType: 'application/zip', verification: 'official-https-sha256', cosEtag: '"etag"',
+        },
+      },
+    },
+  })
+}
+
+function bucketClaudeIndex(): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    product: 'claude-desktop',
+    files: [{
+      platformId: 'macos-pkg-universal', fileName: 'Claude-universal.pkg', version: bucketClaudeVersion, platform: 'macos',
+      architecture: 'universal', kind: 'installer', format: 'pkg', key: bucketClaudeKey, url: `${desktopPackageBucketOrigin}/${bucketClaudeKey}`,
+      size: bucketBytes.byteLength, sha256: bucketDigest, type: 'application/vnd.apple.installer+xml',
+      verification: 'macos-installer-signature', cosEtag: '"etag"',
+    }],
+  })
+}
+
+interface BucketOptions {
+  indexStatus?: number
+  packageBody?: Buffer
+  onPackageRequest?: () => void
+  /** Bundles the expanded PKG holds, relative to its root; one Claude.app by default. */
+  pkgBundles?: string[]
+}
+
+function bucketSetup(
+  tool: 'claudeDesktop' | 'codexDesktop',
+  bucketOptions: BucketOptions = {},
+  extra: Partial<InstallMacosDesktopAppOptions> = {},
+  processes: FakeProcessOptions = {},
+) {
+  const f = vendorSetup(tool, {}, extra, processes)
+  const vendorFetch = f.options.fetch
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (!url.startsWith(desktopPackageBucketOrigin)) return vendorFetch(input, init)
+    f.requested.push(url)
+    expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+    if (url === desktopBucketIndexUrl('codex-macos-arm64') || url === desktopBucketIndexUrl('claude-macos-universal')) {
+      const body = url.includes('/chatgpt/') ? bucketCodexIndex(f.options.architecture) : bucketClaudeIndex()
+      return new Response(body, { status: bucketOptions.indexStatus ?? 200, headers: { 'content-type': 'application/json' } })
+    }
+    bucketOptions.onPackageRequest?.()
+    init?.signal?.throwIfAborted()
+    const body = bucketOptions.packageBody ?? bucketBytes
+    const type = url.endsWith('.pkg') ? 'application/vnd.apple.installer+xml' : 'application/zip'
+    return new Response(body, { headers: { 'content-type': type, 'content-length': String(body.byteLength) } })
+  }) as typeof globalThis.fetch
+  const runProcess = f.options.runProcess
+  const routed: string[] = []
+  const fallbacks: string[] = []
+  f.options = {
+    ...f.options,
+    fetch,
+    bucket: { onFallback: (detail) => fallbacks.push(detail) },
+    withVendorDownloadRoute: async (operation) => {
+      routed.push('start')
+      try { return await operation() } finally { routed.push('end') }
+    },
+    runProcess: async (plan) => {
+      if (plan.executable !== '/usr/sbin/pkgutil') return runProcess(plan)
+      f.plans.push(plan)
+      // pkgutil --expand-full lays each component's payload out as plain files.
+      for (const bundle of bucketOptions.pkgBundles ?? ['Claude.pkg/Payload/Claude.app']) {
+        fs.mkdirSync(path.join(plan.argv[2], bundle, 'Contents', 'MacOS'), { recursive: true })
+        fs.writeFileSync(path.join(plan.argv[2], bundle, 'Contents', 'MacOS', 'Claude'), 'binary', { mode: 0o755 })
+      }
+      return result(plan)
+    },
+  }
+  return { ...f, routed, fallbacks }
+}
+
+describe('macOS installer from the Xingmang bucket', () => {
+  it.skipIf(process.platform === 'win32')('installs the Codex desktop app from the bucket, outside the download route, after the same checks', async () => {
+    const f = bucketSetup('codexDesktop')
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketCodexVersion, path: path.posix.join(f.applications, 'ChatGPT.app') })
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-arm64'), `${desktopPackageBucketOrigin}/${bucketCodexKey('arm64')}`])
+    expect(f.routed).toEqual([])
+    expect(f.fallbacks).toEqual([])
+    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/sw_vers', '/usr/bin/tar', '/usr/bin/plutil', '/usr/bin/codesign', '/usr/sbin/spctl'])
+    expect(f.plans[1].argv[1]).toMatch(/\/bucket\/package\.zip$/)
+    expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "2DC432GLL2"')
+    expect(f.progress[0]).toBe(`正在下载 Codex 桌面端 ${bucketCodexVersion}`)
+    expect(f.progress).toContain('正在检查下载下来的安装包是不是完整的官方版')
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('takes the Intel package on an Intel Mac', async () => {
+    const f = bucketSetup('codexDesktop', {}, { architecture: 'x64' })
+    await installMacosDesktopApp(f.options)
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-x64'), `${desktopPackageBucketOrigin}/${bucketCodexKey('x64')}`])
+  })
+
+  it.skipIf(process.platform === 'win32')('expands the Claude PKG without installing it and checks the one app inside like the vendor zip', async () => {
+    const f = bucketSetup('claudeDesktop')
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketClaudeVersion, path: path.posix.join(f.applications, 'Claude.app') })
+    expect(f.requested).toEqual([desktopBucketIndexUrl('claude-macos-universal'), `${desktopPackageBucketOrigin}/${bucketClaudeKey}`])
+    expect(f.routed).toEqual([])
+    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/sw_vers', '/usr/sbin/pkgutil', '/usr/bin/plutil', '/usr/bin/codesign', '/usr/sbin/spctl'])
+    expect(f.plans[1].argv[0]).toBe('--expand-full')
+    expect(f.plans[1].argv[1]).toMatch(/\/bucket\/package\.pkg$/)
+    expect(f.plans.some((plan) => plan.executable === '/usr/sbin/installer')).toBe(false)
+    expect(signingRequirement(f.plans)).toContain('identifier "com.anthropic.claudefordesktop"')
+    expect(fs.readFileSync(path.join(f.applications, 'Claude.app', 'Contents', 'MacOS', 'Claude'), 'utf8')).toBe('binary')
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('asks the vendor inside the download route when the bucket index cannot be read', async () => {
+    const f = bucketSetup('codexDesktop', { indexStatus: 404 })
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: chatgptVersion })
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-arm64'), `${chatgptRoot}appcast.xml`, chatgptPackageUrl('arm64')])
+    expect(f.fallbacks).toEqual(['codex-macos-arm64：存储桶清单返回 HTTP 404'])
+    expect(f.progress.some((message) => /存储桶|404/.test(message))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('asks the vendor when the bucket bytes do not match the index', async () => {
+    const f = bucketSetup('codexDesktop', { packageBody: Buffer.alloc(bucketBytes.byteLength, 1) })
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: chatgptVersion })
+    expect(f.fallbacks).toEqual(['codex-macos-arm64：存储桶的安装包 SHA-256 和清单不一致'])
+    // Only the vendor archive was unpacked.
+    expect(f.plans.filter((plan) => plan.executable === '/usr/bin/tar')).toHaveLength(1)
+  })
+
+  it.skipIf(process.platform === 'win32')('asks the vendor when the bucket app fails the signature check, and installs that one', async () => {
+    const f = bucketSetup('codexDesktop')
+    const runProcess = f.options.runProcess
+    let codesignCalls = 0
+    f.options.runProcess = async (plan) => {
+      if (plan.executable === '/usr/bin/codesign' && codesignCalls++ === 0) {
+        f.plans.push(plan)
+        throw rejection(plan)
+      }
+      return runProcess(plan)
+    }
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: chatgptVersion })
+    expect(f.fallbacks).toEqual(['codex-macos-arm64：签名不是 2DC432GLL2 团队的 Developer ID'])
+    expect(f.plans.filter((plan) => plan.executable === '/usr/bin/codesign')).toHaveLength(2)
+    expect(fs.readdirSync(f.applications)).toEqual(['ChatGPT.app'])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a PKG that holds more than one app of that name', async () => {
+    const f = bucketSetup('claudeDesktop', { pkgBundles: ['Claude.pkg/Payload/Claude.app', 'Extra.pkg/Payload/Claude.app'] })
+    await installMacosDesktopApp(f.options).catch(() => undefined)
+    expect(f.fallbacks).toEqual(['claude-macos-universal：PKG 里应当正好有一个 Claude.app，实际有 2 个'])
+    expect(f.plans.some((plan) => plan.executable === '/usr/bin/codesign' && plan.argv.at(-1)?.includes('/bucket/'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('stops on a cancel during the bucket download without asking the vendor', async () => {
+    const controller = new AbortController()
+    const f = bucketSetup('codexDesktop', { onPackageRequest: () => controller.abort() }, { signal: controller.signal })
+    const error = await installMacosDesktopApp(f.options).then(() => null, (reason: unknown) => reason)
+    expect(error).not.toBeInstanceOf(MacosDesktopInstallError)
+    expect((error as Error).name).toBe('AbortError')
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-arm64'), `${desktopPackageBucketOrigin}/${bucketCodexKey('arm64')}`])
+    expect(f.fallbacks).toEqual([])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('says the disk is full instead of downloading everything again from the vendor', async () => {
+    const f = bucketSetup('codexDesktop', {}, {}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: Write failed: No space left on device' })
+    expect((await failure(installMacosDesktopApp(f.options))).message).toBe(macosDesktopDiskFullMessage('Codex 桌面端'))
+    expect(f.routed).toEqual([])
+    expect(f.fallbacks).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('never asks the bucket for an app it does not carry', async () => {
+    const f = bucketSetup('codexDesktop')
+    const openCode = setup({}, {}, { bucket: f.options.bucket })
+    await installMacosDesktopApp(openCode.options)
+    expect(openCode.requested.some((url) => url.startsWith(desktopPackageBucketOrigin))).toBe(false)
   })
 })

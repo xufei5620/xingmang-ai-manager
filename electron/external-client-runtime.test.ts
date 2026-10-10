@@ -1276,7 +1276,10 @@ describe('macOS external desktop lifecycle', () => {
       throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     })
     const installMacosDesktopApp = vi.fn<NonNullable<ExternalClientRuntimeOptions['installMacosDesktopApp']>>(async (options) => {
-      options.onProgress?.({ phase: 'downloading', message: '正在下载 OpenCode 1.18.34', percent: 40 })
+      // The installer takes the download route itself, and only for the vendor's package.
+      await (options.withVendorDownloadRoute ?? ((operation: () => Promise<void>) => operation()))(async () => {
+        options.onProgress?.({ phase: 'downloading', message: '正在下载 OpenCode 1.18.34', percent: 40 })
+      })
       await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
       options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
       placed = true
@@ -1335,7 +1338,8 @@ describe('macOS external desktop lifecycle', () => {
     expect(status).toMatchObject({ tool: 'opencode', installed: true, version: '1.18.34', path: '/Applications/OpenCode.app' })
     expect(f.assertDiskSpace).toHaveBeenCalledWith('OpenCode 安装失败')
     expect(f.routed).toEqual(['start', 'end'])
-    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'opencode', architecture: 'arm64', userHome: '/Users/tester' }))
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'opencode', architecture: 'arm64', userHome: '/Users/tester', withVendorDownloadRoute: expect.any(Function) }))
+    expect(f.installMacosDesktopApp.mock.calls[0][0].bucket).toBeUndefined()
     expect(progress).toEqual([
       'OpenCode 已加入安装队列', '正在检测 OpenCode', '正在下载 OpenCode 1.18.34', '正在放进「应用程序」',
       '正在验证安装结果', 'OpenCode 安装完成',
@@ -1344,6 +1348,12 @@ describe('macOS external desktop lifecycle', () => {
     expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/codesign', argv: ['--verify'] }, expect.objectContaining({ trustedOnly: false, timeoutMs: 1_000 }))
     for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
     expect(f.execute.mock.calls.some(([spec]) => spec.executable === '/usr/sbin/spctl' && spec.argv.at(-1) === '/Applications/OpenCode.app')).toBe(true)
+  })
+  it('hands the bucket and the download route to the Mac installer, which decides which package each applies to', async () => {
+    const onFallback = vi.fn()
+    const f = macInstallFixture({ bucketDownloads: { onFallback } })
+    await f.runtime.install('opencode')
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ bucket: { onFallback }, withVendorDownloadRoute: expect.any(Function) }))
   })
   it('stops a Mac install at any step when the customer cancels, even while the app is being moved into place', async () => {
     const placing = deferred()
