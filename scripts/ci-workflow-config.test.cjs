@@ -139,7 +139,7 @@ test('browser-backed tests install Chromium first on every job that runs them', 
 
   // Every Windows shard installs it, rather than only the ones whose suites
   // need a browser today: --shard partitions by a hash of each file's path, so
-  // which half holds electron/codex-desktop-cdp.browser.test.ts moves with the
+  // which shard holds electron/codex-desktop-cdp.browser.test.ts moves with the
   // next added or renamed test file.
   const steps = workflow.jobs['windows-test'].steps
   const installIndex = steps.findIndex((step) => step.run === 'npx --no-install playwright install chromium')
@@ -200,7 +200,7 @@ test('the Windows job enables unprivileged symlink creation before security test
   assert.notEqual(enableStepIndex, -1, 'Windows CI must enable Developer Mode')
   assert.notEqual(shardStepIndex(), -1, 'Windows CI must run its test shards')
   // Enabled for every shard for the same reason Chromium is: the symlink
-  // security tests land in whichever --shard half their path hashes into.
+  // security tests land in whichever --shard their path hashes into.
   assert.ok(enableStepIndex < shardStepIndex(), 'Developer Mode must be enabled before tests')
 
   const enableStep = steps[enableStepIndex]
@@ -249,8 +249,8 @@ test('the Windows required job tests and compiles the default renderer v2', () =
 test('splitting the Windows job did not drop a suite it used to run', () => {
   // The split is a wall-clock change and nothing else, so the shards have to
   // add up to exactly what the one job ran. vitest --shard partitions by a
-  // hash of each file's path: the halves reconstitute the unsharded file set,
-  // but only while every half is actually dispatched, which is what the
+  // hash of each file's path: the shards reconstitute the unsharded file set,
+  // but only while every shard is actually dispatched, which is what the
   // exhaustiveness check below is for.
   const scripts = packageJson.scripts
   const shardCommands = windowsShardCommands()
@@ -267,7 +267,7 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:windows'], undefined,
     'test:windows became a duplicate of npm test and must stay deleted')
 
-  for (const [script, count] of [['test:vitest', 2]]) {
+  for (const [script, count] of [['test:vitest', 3]]) {
     for (let index = 1; index <= count; index += 1) {
       assert.ok(shardCommands.includes(`npm run ${script}:${index}`), `the matrix must dispatch ${script}:${index}`)
     }
@@ -275,11 +275,12 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
       `${script} declares a shard the matrix never dispatches`)
   }
 
-  // The vitest halves are the same command plus the flag that selects the
-  // half, so the suite, its serialisation and its 30s timeout cannot drift
+  // The vitest thirds are the same command plus the flag that selects the
+  // third, so the suite, its serialisation and its 30s timeout cannot drift
   // between them.
-  assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
-  assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
+  assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/3')
+  assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/3')
+  assert.equal(scripts['test:vitest:3'], 'npm run test:vitest -- --shard=3/3')
 
   // quality.yml runs test:v2:browser whole nowhere (the release gates still run
   // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
