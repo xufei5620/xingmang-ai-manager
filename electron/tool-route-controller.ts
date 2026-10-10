@@ -190,9 +190,12 @@ export function toolRouteSameEntrance(a: ToolRouteProbeResult, b: ToolRouteProbe
   return left.size === new Set(b.addresses).size && b.addresses.every((address) => left.has(address))
 }
 
+// 「安全软件接管」只给证书错误（需求 5.1.5 第 5 条）。握手做到一半出错（tls：EPROTO、ERR_SSL_*）不是
+// 证书被换了：探测本来就同时信系统根证书，把自己的根证书装进系统的安全软件会算通过。这种多半是网络把
+// 连接搅坏、掐断了，和连接被重置说同一句，不该叫客户去关网页扫描。
 function outageReason(kind: ToolPathFailureKind | undefined): ToolRouteOutageReason {
-  if (kind === 'reset') return 'reset'
-  if (kind === 'certificate' || kind === 'tls') return 'certificate'
+  if (kind === 'reset' || kind === 'tls') return 'reset'
+  if (kind === 'certificate') return 'certificate'
   if (kind === 'dns') return 'dns'
   return 'unreachable'
 }
