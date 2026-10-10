@@ -237,6 +237,17 @@ describe('desktop package bucket addresses', () => {
     await expect(fetchDesktopBucketResource('https://evil.example/chatgpt/latest.json', {}, fetch)).rejects.toThrow('存储桶地址不在允许的范围内')
     expect(fetch).toHaveBeenCalledTimes(1)
   })
+
+  it('works with Electron net.fetch, which leaves response.url empty and throws on a manual redirect', async () => {
+    const target = objectUrl('chatgpt/latest.json')
+    const served = new Response('{}', { status: 200 })
+    Object.defineProperty(served, 'url', { value: '' })
+    await expect(fetchDesktopBucketResource(target, {}, async () => served)).resolves.toBe(served)
+
+    const redirected = vi.fn<typeof globalThis.fetch>(async () => { throw new TypeError('Redirect was cancelled') })
+    const failure = await readDesktopBucketPackage('codex-windows-x64', redirected).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+  })
 })
 
 describe('desktop package bucket index requests', () => {
