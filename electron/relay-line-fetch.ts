@@ -72,6 +72,11 @@ const lineFailureReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline'
 const reportedReasons: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'tls', 'certDate', 'refused', 'proxy', 'intercepted'])
 const connectTimeoutCodes: ReadonlySet<string> = new Set(['ERR_CONNECTION_TIMED_OUT', 'ERR_TIMED_OUT', 'ETIMEDOUT'])
 
+// 发验证码、发重置邮件虽然是 GET，服务端每收到一次就寄一封信、记一个新码，新码顶掉上一封的
+// （new-api-client.ts 给它们标了 idempotent: false，那个标记到不了 fetch 这一层）。照会改动数据的请求办：
+// 线路改了不掐，失败只在证明没送到时重发。不然客户收到两封信，填先到的那封报验证码不对（#963）。
+const mailingPaths: ReadonlySet<string> = new Set(['/api/verification', '/api/reset_password'])
+
 // 公告：下得慢、下不下来都不报给线路那边（#941 第 4 节）。
 const unreportedPaths: ReadonlySet<string> = new Set(['/api/notice'])
 
@@ -206,9 +211,9 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const replayable = !(init?.body instanceof ReadableStream)
     if (!route.automatic || route.line !== 'direct' || !replayable) return asRequested(await base(sent, init), sent, requested)
 
-    const idempotent = isIdempotent(init)
-    const callerSignal = init?.signal ?? undefined
     const path = new URL(requested).pathname
+    const idempotent = isIdempotent(init) && !mailingPaths.has(path)
+    const callerSignal = init?.signal ?? undefined
     const method = (init?.method ?? 'GET').toUpperCase()
     function report(reason: string): void {
       if (!unreportedPaths.has(path)) router.reportDirectFailure(siteId, reason)

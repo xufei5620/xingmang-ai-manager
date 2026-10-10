@@ -407,6 +407,29 @@ test('publishes immutable objects with signed MD5 metadata and public full readb
   assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 1)
 })
 
+test('verifies an already public object in full without ever writing it', async () => {
+  const body = Buffer.from('published installer')
+  const mock = memoryCos()
+  const key = 'xingmang/releases/0.2.15/XingMang-AI-Manager-0.2.15-Setup.exe'
+  const contentType = 'application/vnd.microsoft.portable-executable'
+  const store = createCosStore(config, mock)
+  const input = { contentType, expectedBytes: body.length, expectedSha256: digest(body) }
+  await assert.rejects(store.verifyFile(key, input), /只核对、不上传/)
+  mock.objects.set(key, { body, contentType, sha256: digest(body) })
+  const result = await store.verifyFile(key, input)
+  assert.equal(result.sha256, digest(body))
+  assert.equal(result.url, `${config.publicBaseUrl}/${key}`)
+  assert.ok(mock.calls.some(call => call.method === 'GET'))
+  mock.objects.set(key, { body: Buffer.alloc(body.length, 88), contentType, sha256: digest(body) })
+  await assert.rejects(store.verifyFile(key, input), /SHA256/)
+  const calls = mock.calls.length
+  for (const invalid of [{ ...input, expectedSha256: undefined }, { ...input, expectedBytes: -1 }, { ...input, expectedSha256: 'X'.repeat(64) }]) {
+    await assert.rejects(store.verifyFile(key, invalid), /预期大小和 SHA256/)
+  }
+  assert.equal(mock.calls.length, calls)
+  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 0)
+})
+
 test('checks the preverified local digest before making any upload request', async t => {
   const file = await fixture(t)
   const mock = memoryCos()
