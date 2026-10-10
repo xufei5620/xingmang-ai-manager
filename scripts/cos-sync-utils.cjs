@@ -739,7 +739,19 @@ function createCosStore(configuration, options = {}) {
     return publish(key, hash, async () => body, { ...input, contentType: 'application/json' })
   }
 
-  return { publicUrl, inspect, readJson, publishFile, publishJson }
+  // A read-only counterpart of publishFile for objects that must already be
+  // public: a missing object is a failure here, never a reason to upload.
+  async function verifyFile(key, input) {
+    validateObjectKey(key)
+    if (!Number.isSafeInteger(input.expectedBytes) || input.expectedBytes < 0
+      || typeof input.expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(input.expectedSha256)) {
+      throw new Error('核对 COS 文件必须给出预期大小和 SHA256')
+    }
+    if (!await inspect(key, input)) throw new Error('COS 上没有这个文件；只核对、不上传')
+    return verify(key, { bytes: input.expectedBytes, sha256: input.expectedSha256 }, input)
+  }
+
+  return { publicUrl, inspect, readJson, publishFile, publishJson, verifyFile }
 }
 
 module.exports = {

@@ -1,7 +1,7 @@
 const { performance } = require('node:perf_hooks')
 const { safeSyncFailure } = require('./cos-sync-utils.cjs')
 
-const stages = new Set(['github-release-metadata', 'prepare-temp', 'github-download-location', 'github-download-installer', 'verify-github-installer', 'prepare-manager-plan', 'cos-manager-publication', 'cos-read-latest', 'cos-validate-index', 'cos-publish-file', 'cos-recheck-latest', 'cos-publish-candidate', 'cos-recheck-candidate-state', 'cos-publish-latest', 'cleanup-temp'])
+const stages = new Set(['github-release-metadata', 'prepare-temp', 'github-download-location', 'github-download-installer', 'verify-github-installer', 'prepare-manager-plan', 'cos-manager-publication', 'cos-read-latest', 'cos-validate-index', 'cos-publish-file', 'cos-verify-history-file', 'cos-recheck-latest', 'cos-publish-candidate', 'cos-recheck-candidate-state', 'cos-publish-latest', 'cleanup-temp'])
 const latestStates = new Set(['not-written-by-this-run', 'write-unconfirmed', 'published-and-read-back'])
 const failures = new WeakMap()
 const probeFailures = new WeakMap()
