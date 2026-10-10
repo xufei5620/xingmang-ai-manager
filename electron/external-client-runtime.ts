@@ -5,7 +5,8 @@ import path from 'node:path'
 import {
   buildClaudeDesktopInstallFailureMessage, classifyClaudeDesktopInstallFailure, isPlainClaudeDesktopInstallMessage,
 } from './claude-desktop-install-failure'
-import { describeClaudeDesktopMsixDownload, installClaudeDesktopFromOfficial } from './claude-desktop-msix-installer'
+import { describeClaudeDesktopMsixDownload, installClaudeDesktopFromBucket, installClaudeDesktopFromOfficial } from './claude-desktop-msix-installer'
+import { describeDesktopBucketFallback, DesktopBucketUnavailableError, type DesktopBucketOptions } from './desktop-package-bucket'
 import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
   type CommandErrorCode, type CommandSpec, type RunCommandOptions,
@@ -104,6 +105,12 @@ export interface ExternalClientRuntimeOptions {
   launchProcess?: (plan: LaunchPlan) => Promise<void>
   installWorkBuddyFromOfficial?: typeof installWorkBuddyFromOfficial
   installClaudeDesktopFromOfficial?: typeof installClaudeDesktopFromOfficial
+  installClaudeDesktopFromBucket?: typeof installClaudeDesktopFromBucket
+  /**
+   * 先从星芒自己的腾讯云存储桶下桌面端（国内快、不用加速），桶不行再照旧走系统自带的安装组件和官网
+   * （yoyo 2026-10-10）。缺省 = 不走桶（测试与旧调用方照旧），生产由 system-service 打开。
+   */
+  bucketDownloads?: DesktopBucketOptions
   /** 星芒自己下官方安装包时用的 fetch（Mac 上各家、Windows 上的 Claude Desktop）；system-service 传接好系统代理的那个。 */
   fetch?: typeof fetch
   /** 把星芒自己下官方安装包的那次下载包进临时加速线路（同命令行工具的安装）；缺省直接下。 */
@@ -836,6 +843,39 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     await (options.withDownloadRoute ? options.withDownloadRoute(run) : run())
   }
   /**
+   * Windows 上 Claude Desktop 的第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。
+   * 没打开、读不到、对不上都返回 false，照旧走系统自带的安装组件和官网，原因只进运行日志。下好、核过
+   * 却装不上时照官网那一路的说法抛错：包是好的，换一路重下一遍也一样装不上。
+   */
+  async function installClaudeDesktopFromBucketOnWindows(report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, cancellation: InstallCancellationHandle): Promise<boolean> {
+    const bucket = options.bucketDownloads
+    if (!bucket || (architecture !== 'x64' && architecture !== 'arm64')) return false
+    try {
+      await options.assertDiskSpace?.(`${definitions.claudeDesktop.name} 安装失败`)
+      await (options.installClaudeDesktopFromBucket ?? installClaudeDesktopFromBucket)({
+        architecture, fetch: options.fetch ?? fetch,
+        windowsExecutionMode: options.windowsExecutionMode ?? 'trusted-only', runCommand: execute, env: options.env,
+        resolveMachinePaths, resolvePowerShellExecutable: options.resolvePowerShellExecutable,
+        onProgress: (event) => report(event.phase, event.message, event.percent),
+        // 下载、核对安装包时点取消就停；交给 Windows 装的那一步不停，同官网那一路。
+        signal: cancellation.signal,
+        onInstallStarting: () => cancellation.seal(installSealReason('claudeDesktop')),
+      })
+      return true
+    } catch (error) {
+      if (cancellation.cancelled) throw error
+      if (error instanceof DesktopBucketUnavailableError) {
+        bucket.onFallback?.(describeDesktopBucketFallback(`claude-windows-${architecture}`, error))
+        return false
+      }
+      const detail = error instanceof Error ? error.message : String(error)
+      const message = isPlainClaudeDesktopInstallMessage(detail)
+        ? errorText(error)
+        : buildClaudeDesktopInstallFailureMessage(classifyClaudeDesktopInstallFailure(detail), { wingetTried: false })
+      throw installationError(message, error)
+    }
+  }
+  /**
    * Windows 上 Claude Desktop 的第二路：系统自带的安装组件没装上，或这台电脑根本没有它时，
    * 从 Claude 官网下离线安装包装。两路都没装上时把原因归成客户分得清的一句，原话挂在
    * originalError 上进运行日志。
@@ -902,14 +942,18 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (current.detectionError) throw new Error(`无法确认当前安装状态：${current.detectionError}`)
         if (!current.installSupported) throw new Error(current.installHint || '当前系统不支持一键安装')
         if (platform === 'darwin') await installOnMac(tool, report, cancellation.signal)
-        let officialDownloadNeeded = platform === 'win32' && !winget.executable
+        // Windows 上 Claude Desktop 先从星芒自己的存储桶装；装上了就不再走后面那几路。
+        const bucketInstalled = platform === 'win32' && tool === 'claudeDesktop'
+          && await installClaudeDesktopFromBucketOnWindows(report, cancellation)
+        if (!bucketInstalled) cancellation.throwIfCancelled()
+        let officialDownloadNeeded = platform === 'win32' && !bucketInstalled && !winget.executable
         let sourceFailure: unknown
         let installerStarted = false
         let recentOutput = ''
         // The resolver binds winget to Microsoft's protected AppInstaller package.
         // Its WindowsApps ACL is deliberately handled by that resolver, as in
         // node-runtime/python-runtime; never substitute a PATH/AppExecutionAlias.
-        if (winget.executable) {
+        if (winget.executable && !bucketInstalled) {
           // winget 自己又下载又安装，看不出哪一刻开始动这台电脑；结束它会连同它拉起的安装程序
           // 一起结束（Windows 上取消是结束整个进程树），所以整段都不接受取消。
           cancellation.seal(installSealReason(tool))

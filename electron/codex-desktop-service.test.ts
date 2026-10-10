@@ -65,6 +65,7 @@ import {
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
+  downloadCodexDesktopBucketPackage,
   buildCodexDesktopOfficialPackageSource,
   codexDesktopOfficialDownloadLimitMs,
   codexDesktopSlowDownloadGraceMs,
@@ -82,6 +83,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError } from './desktop-package-bucket'
 import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
 import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -2781,6 +2783,145 @@ describe('Codex Desktop official offline package', () => {
     expect(isInstallCancelledError(error)).toBe(true)
     expect(download.stream.cancelled).toBe(true)
     expect(fs.existsSync(destination)).toBe(false)
+  })
+})
+
+describe('Codex Desktop from the Xingmang bucket', () => {
+  const bytes = Buffer.alloc(10 * 1024 * 1024, 0x43)
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  const indexUrl = desktopBucketIndexUrl('codex-windows-x64')
+
+  function packageUrl(version: string): string {
+    return `${desktopPackageBucketOrigin}/chatgpt/windows-x64/${version}/ChatGPT-x64.msix`
+  }
+  function bucketMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
+    return { name: 'OpenAI.Codex', version, architecture: 'x64', publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B', hasSignature: true, ...overrides }
+  }
+  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer } = {}) {
+    const version = options.version ?? '26.1003.4512.0'
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requested.push(url)
+      expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+      if (url === indexUrl) {
+        const key = `chatgpt/windows-x64/${version}/ChatGPT-x64.msix`
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          product: 'chatgpt',
+          windows: { schemaVersion: 1, buildVersion: version, packageIdentity: 'OpenAI.Codex', storeProductId: '9PLM9XGG6VKS' },
+          platforms: {
+            'windows-x64': {
+              platform: 'windows', architecture: 'x64', format: 'msix', packageVersion: version,
+              artifact: {
+                key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bytes.byteLength, sha256: digest,
+                contentType: 'application/vnd.ms-appx', verification: 'windows-authenticode', cosEtag: '"etag"',
+              },
+            },
+          },
+        }), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === packageUrl(version)) {
+        const body = options.body ?? bytes
+        return new Response(body, { headers: { 'Content-Type': 'application/vnd.ms-appx', 'Content-Length': String(body.byteLength) } })
+      }
+      throw new Error(`unexpected request ${url}`)
+    })
+    return { requested, fetchMock, version }
+  }
+  function bucketDestination(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-bucket-msix-'))
+    temporaryDirectories.push(directory)
+    return path.join(directory, 'ChatGPT-x64.msix')
+  }
+
+  it('downloads the listed package from the bucket and checks it is the signed OpenAI build', async () => {
+    const destination = bucketDestination()
+    const { requested, fetchMock, version } = bucketFetch()
+    const events: string[] = []
+    const inspected: string[] = []
+    const result = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: '26.930.1.0',
+      fetchImplementation: fetchMock,
+      onVersion: (value) => events.push(`version ${value}`),
+      onProgress: (value, progress) => {
+        if (progress.percent === 100) events.push(`downloaded ${value}`)
+      },
+      onValidating: () => events.push('validating'),
+      inspectPackage: async (packagePath) => {
+        inspected.push(packagePath)
+        return bucketMetadata(version)
+      },
+    })
+    expect(requested).toEqual([indexUrl, packageUrl(version)])
+    expect(result).toEqual({
+      status: 'downloaded',
+      version,
+      download: { size: bytes.byteLength, sha256Base64: createHash('sha256').update(bytes).digest('base64') },
+    })
+    expect(events).toEqual([`version ${version}`, `downloaded ${version}`, 'validating'])
+    expect(inspected).toEqual([destination])
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+  })
+
+  it('skips the download when the bucket build is not newer than the installed one', async () => {
+    for (const installedVersion of ['26.1003.4512.0', '26.1004.0.0']) {
+      const { requested, fetchMock } = bucketFetch()
+      await expect(downloadCodexDesktopBucketPackage({
+        architecture: 'x64', destination: bucketDestination(), installedVersion, fetchImplementation: fetchMock,
+      })).resolves.toEqual({ status: 'not-newer', version: '26.1003.4512.0' })
+      expect(requested).toEqual([indexUrl])
+    }
+  })
+
+  it('gives up on this route without downloading when the index cannot be read', async () => {
+    const { requested, fetchMock } = bucketFetch({ indexStatus: 404 })
+    const failure = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, fetchImplementation: fetchMock,
+    }).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    expect((failure as Error).message).toBe('存储桶清单返回 HTTP 404')
+    expect(requested).toEqual([indexUrl])
+  })
+
+  it('deletes the download when its bytes are not the ones the index lists', async () => {
+    const destination = bucketDestination()
+    const inspectPackage = vi.fn(async () => bucketMetadata('26.1003.4512.0'))
+    const { fetchMock } = bucketFetch({ body: Buffer.alloc(bytes.byteLength, 0x00) })
+    await expect(downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination, installedVersion: null, fetchImplementation: fetchMock, inspectPackage,
+    })).rejects.toThrow('SHA-256 和清单不一致')
+    expect(fs.existsSync(destination)).toBe(false)
+    expect(inspectPackage).not.toHaveBeenCalled()
+  })
+
+  it('deletes the download when the package is not the official build or not the listed version', async () => {
+    for (const [metadata, reason] of [
+      [bucketMetadata('26.1003.4512.0', { publisher: 'CN=Someone Else' }), '发布者身份不匹配'],
+      [bucketMetadata('26.1003.4512.0', { hasSignature: false }), '缺少 Appx 签名'],
+      [bucketMetadata('26.1003.4512.0', { architecture: 'arm64' }), '架构 arm64 与本机 x64 不匹配'],
+      [bucketMetadata('26.1003.4513.0'), '与存储桶清单版本 26.1003.4512.0 不一致'],
+    ] as const) {
+      const destination = bucketDestination()
+      const { fetchMock } = bucketFetch()
+      await expect(downloadCodexDesktopBucketPackage({
+        architecture: 'x64', destination, installedVersion: null, fetchImplementation: fetchMock, inspectPackage: async () => metadata,
+      })).rejects.toThrow(reason)
+      expect(fs.existsSync(destination)).toBe(false)
+    }
+  })
+
+  it('reports a cancellation as a cancellation and asks nothing more', async () => {
+    const controller = new AbortController()
+    controller.abort(new InstallCancelledError())
+    const { requested, fetchMock } = bucketFetch()
+    const error = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, fetchImplementation: fetchMock, signal: controller.signal,
+    }).catch((cause: unknown) => cause)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(requested).toEqual([])
   })
 })
 

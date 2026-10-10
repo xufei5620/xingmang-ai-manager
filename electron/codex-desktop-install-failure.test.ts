@@ -127,6 +127,18 @@ describe('Codex Desktop install failure wording', () => {
       .toBe(`微软商店这次没装上（商店那边没说原因），OpenAI 官网的离线安装包也没装上：${samples.blocked[0]}`)
   })
 
+  it('keeps a bucket route that did not work out of the customer sentence and puts it first in the log', () => {
+    const raw = new Error(samples.unreachable[0])
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '连不上微软商店', storeExitCode: null, updating: false, bucketFailure: '存储桶清单返回 HTTP 404',
+    })
+    expect(failure.message).toBe('Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。')
+    expect(failure.message).not.toContain('存储桶')
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(
+      `存储桶这一路没走通（存储桶清单返回 HTTP 404），微软商店这次没装上（连不上微软商店），国内镜像也没装上：${samples.unreachable[0]}`,
+    )
+  })
+
   it('tells a too-old Windows apart from a Windows that refused the install', () => {
     const message = buildCodexDesktopInstallFailureMessage('unsupported', { storeTried: true, updating: false })
     expect(message).toBe('Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。')

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
+import { DesktopBucketUnavailableError } from './desktop-package-bucket'
 import type { ExternalClientInstallProgress } from './external-client-contract'
 import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
@@ -1101,6 +1102,153 @@ describe('Windows Claude Desktop official package route', () => {
     const f = claudeFixture(noWinget)
     f.claudeOfficial.mockResolvedValue({ version: '2.110.1.0' })
     await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('未检测到客户端')
+  })
+})
+
+describe('Windows Claude Desktop bucket route', () => {
+  /** 存储桶那一路装好后，下一次盘点就能看到当前用户注册的 Claude 包。 */
+  function bucketFixture(overrides: ExternalClientRuntimeOptions = {}) {
+    const claudeBucket = vi.fn<NonNullable<ExternalClientRuntimeOptions['installClaudeDesktopFromBucket']>>()
+    const claudeOfficial = vi.fn<NonNullable<ExternalClientRuntimeOptions['installClaudeDesktopFromOfficial']>>()
+    const fallbacks: string[] = []
+    const routed: string[] = []
+    const assertDiskSpace = vi.fn(async (_subject: string) => undefined)
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const f = fixture({
+      installClaudeDesktopFromBucket: claudeBucket, installClaudeDesktopFromOfficial: claudeOfficial, assertDiskSpace, fetch,
+      bucketDownloads: { onFallback: (detail) => fallbacks.push(detail) },
+      withDownloadRoute: async (operation) => { routed.push('start'); try { return await operation() } finally { routed.push('end') } },
+      ...overrides,
+    })
+    claudeBucket.mockImplementation(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载并安装 Claude Desktop', percent: 30 })
+      options.onInstallStarting?.()
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    claudeOfficial.mockImplementation(async () => {
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    const inventoryCommand = f.execute.getMockImplementation()!
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) f.setInventory([appx()])
+      return inventoryCommand(spec, options)
+    })
+    function wingetRan(): boolean {
+      return f.execute.mock.calls.some(([spec]) => spec.executable === winget)
+    }
+    return { ...f, claudeBucket, claudeOfficial, fallbacks, routed, assertDiskSpace, fetch, inventoryCommand, wingetRan }
+  }
+  const noWinget = { resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) }
+
+  it('installs from the bucket first, outside the download route, and skips the other routes', async () => {
+    const f = bucketFixture({ windowsExecutionMode: 'same-user' })
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).resolves.toMatchObject({ installed: true, version: '2.110.1.0' })
+    expect(f.claudeBucket).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      architecture: 'x64', windowsExecutionMode: 'same-user', runCommand: f.execute, fetch: f.fetch, signal: expect.any(AbortSignal),
+    }))
+    expect(f.assertDiskSpace).toHaveBeenCalledWith('Claude Desktop 安装失败')
+    expect(f.routed).toEqual([])
+    expect(f.wingetRan()).toBe(false)
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.fallbacks).toEqual([])
+    expect(progress.map((event) => event.message)).toEqual([
+      'Claude Desktop 已加入安装队列', '正在检测 Claude Desktop', '正在下载并安装 Claude Desktop', '正在验证安装结果', 'Claude Desktop 安装完成',
+    ])
+  })
+
+  it('falls back to the system installer when the bucket is unavailable, and only logs why', async () => {
+    const f = bucketFixture()
+    f.claudeBucket.mockRejectedValue(new DesktopBucketUnavailableError('存储桶清单返回 HTTP 404'))
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).resolves.toMatchObject({ installed: true })
+    expect(f.wingetRan()).toBe(true)
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.fallbacks).toEqual(['claude-windows-x64：存储桶清单返回 HTTP 404'])
+    expect(progress.some((event) => /存储桶|404/.test(event.message))).toBe(false)
+  })
+
+  it('falls back to the Claude website without a system installer', async () => {
+    const f = bucketFixture({ ...noWinget, architecture: 'arm64' })
+    f.claudeBucket.mockRejectedValue(new DesktopBucketUnavailableError('存储桶的安装包 SHA-256 和清单不一致'))
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeBucket).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64', windowsExecutionMode: 'trusted-only' }))
+    expect(f.claudeOfficial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ architecture: 'arm64', wingetTried: false }))
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.fallbacks).toEqual(['claude-windows-arm64：存储桶的安装包 SHA-256 和清单不一致'])
+  })
+
+  it('words a failed installation of a verified bucket package like the website route and does not download again', async () => {
+    const f = bucketFixture()
+    const failure = new Error('管理员安装失败：Add-AppxPackage 0x80073CF9')
+    f.claudeBucket.mockRejectedValue(failure)
+    await expect(f.runtime.install('claudeDesktop')).rejects.toMatchObject({
+      message: 'Claude Desktop 没装上：这台电脑不让装（Windows 拒绝了这次安装）。',
+      originalError: failure,
+    })
+    expect(f.wingetRan()).toBe(false)
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.fallbacks).toEqual([])
+  })
+
+  it('passes a sentence that already says what to do through unchanged', async () => {
+    const f = bucketFixture()
+    f.claudeBucket.mockRejectedValue(new Error('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。'))
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('已取消管理员授权，Claude Desktop 安装未开始。')
+  })
+
+  it('stops the bucket download when the customer cancels and does not try the other routes', async () => {
+    const f = bucketFixture()
+    const downloading = deferred()
+    f.claudeBucket.mockImplementationOnce(async (options) => {
+      downloading.resolve()
+      return untilAborted(options.signal)
+    })
+    const install = f.runtime.install('claudeDesktop')
+    await downloading.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({ cancelled: true, reason: null })
+    const error = await install.catch((cause: unknown) => cause)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(f.wingetRan()).toBe(false)
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.fallbacks).toEqual([])
+  })
+
+  it('refuses to cancel once the bucket package is handed to Windows', async () => {
+    const f = bucketFixture()
+    const installing = deferred()
+    const finish = deferred()
+    f.claudeBucket.mockImplementationOnce(async (options) => {
+      options.onInstallStarting?.()
+      installing.resolve()
+      await finish.promise
+      f.setInventory([appx()])
+      return { version: '2.110.1.0' }
+    })
+    const install = f.runtime.install('claudeDesktop')
+    await installing.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toMatchObject({ cancelled: false })
+    finish.resolve()
+    await expect(install).resolves.toMatchObject({ installed: true })
+  })
+
+  it('stays on the old routes unless the bucket is switched on', async () => {
+    const f = bucketFixture({ bucketDownloads: undefined })
+    await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeBucket).not.toHaveBeenCalled()
+    expect(f.wingetRan()).toBe(true)
+  })
+
+  it('leaves WorkBuddy on its own routes', async () => {
+    const f = bucketFixture()
+    f.execute.mockImplementation(async (spec, options) => {
+      if (spec.executable === winget) f.setInventory([candidate('workbuddy')])
+      return f.inventoryCommand(spec, options)
+    })
+    await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeBucket).not.toHaveBeenCalled()
   })
 })
 

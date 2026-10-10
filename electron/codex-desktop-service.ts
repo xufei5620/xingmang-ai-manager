@@ -56,6 +56,15 @@ import { macosDesktopInstallFailedMessage } from './macos-desktop-install-failur
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
+import {
+  describeDesktopBucketFallback,
+  downloadDesktopBucketPackage,
+  readDesktopBucketPackage,
+  type DesktopBucketDownloadOptions,
+  type DesktopBucketDownloadProgress,
+  type DesktopBucketDownloadResult,
+  type DesktopBucketOptions,
+} from './desktop-package-bucket'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import {
   activateCodexDesktop as activateCodexDesktopDefault,
@@ -1321,6 +1330,67 @@ export async function downloadCodexDesktopOfficialPackage(
   }
 }
 
+export interface CodexDesktopBucketDownloadOptions {
+  architecture: 'x64' | 'arm64'
+  destination: string
+  /** 本机装着的那一版；桶里那一版不比它新就不下。null = 首次安装。 */
+  installedVersion: string | null
+  /** 必填，理由同 CodexDesktopCandidateDownloadOptions.fetchImplementation。 */
+  fetchImplementation: typeof fetch
+  signal?: AbortSignal
+  /** 读到要下的版本、开始下载之前。 */
+  onVersion?: (version: string) => void
+  onProgress?: (version: string, progress: DesktopBucketDownloadProgress) => void
+  onValidating?: () => void
+  /** 测试替身；生产用 inspectCodexDesktopPackageFile。 */
+  inspectPackage?: (packagePath: string) => Promise<CodexDesktopPackageMetadata>
+  resumeOptions?: DesktopBucketDownloadOptions['resumeOptions']
+}
+
+export type CodexDesktopBucketDownloadResult =
+  | { status: 'downloaded'; version: string; download: DesktopBucketDownloadResult }
+  | { status: 'not-newer'; version: string }
+
+/**
+ * 第一路：从星芒自己的存储桶下 OpenAI 官方的离线安装包（scripts/sync-chatgpt-official-cos.cjs
+ * 搬过去、在 GitHub 的 Windows 机器上验过签名的那一份）。清单里的大小和 SHA-256 绑住下载，
+ * 下完再照官网那一路核包身份、发布者、签名，版本还得和清单写的一模一样。读不到清单、没下成、
+ * 没过校验都抛错，由调用方照旧走商店、官网、国内镜像；客户点的取消照旧原样抛出。
+ */
+export async function downloadCodexDesktopBucketPackage(
+  options: CodexDesktopBucketDownloadOptions,
+): Promise<CodexDesktopBucketDownloadResult> {
+  const { architecture, destination, installedVersion, fetchImplementation, signal } = options
+  signal?.throwIfAborted()
+  const release = await readDesktopBucketPackage(`codex-windows-${architecture}`, fetchImplementation, signal)
+  if (installedVersion) {
+    const comparison = compareWindowsPackageVersions(installedVersion, release.version)
+    // 桶是定时从官网同步的，会晚一些：这时多半还是本机这一版，不下，照旧走商店那几路。
+    if (comparison === null || comparison >= 0) return { status: 'not-newer', version: release.version }
+  }
+  options.onVersion?.(release.version)
+  const download = await downloadDesktopBucketPackage(release, destination, {
+    fetch: fetchImplementation,
+    ...(signal ? { signal } : {}),
+    ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
+    onProgress: (progress) => options.onProgress?.(release.version, progress),
+  })
+  try {
+    signal?.throwIfAborted()
+    options.onValidating?.()
+    const metadata = await (options.inspectPackage ?? inspectCodexDesktopPackageFile)(destination)
+    const validationError = codexDesktopPackageValidationError(metadata, release.version, architecture)
+    if (validationError) throw new Error(validationError)
+    if (metadata.version !== release.version) {
+      throw new Error(`安装包版本 ${metadata.version} 与存储桶清单版本 ${release.version} 不一致`)
+    }
+    return { status: 'downloaded', version: metadata.version, download }
+  } catch (error) {
+    await fs.promises.rm(destination, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
 /**
  * The package path is the only outside value in the script, and it only ever
  * appears as a single-quoted PowerShell literal. The manifest's compressed
@@ -2138,6 +2208,8 @@ export interface CodexDesktopInstallAttempt {
   officialFailure?: string | null
   /** 这次装的是官网的离线安装包（已经下好、核过）。缺省 = 国内镜像的。 */
   officialPackage?: boolean
+  /** 第一路（星芒自己的存储桶）没走通的原因，只进日志。缺省 = 没走那一路、走通了或桶里那一版不比本机新。 */
+  bucketFailure?: string | null
 }
 
 type CodexDesktopStoreOutcome = Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing'>
@@ -2215,9 +2287,11 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
     ? `${codexDesktopNoStoreNotice}，`
     : attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），` : ''
   const official = attempt.officialFailure ? `${codexDesktopOfficialPackageFailedNotice}（${attempt.officialFailure}），` : ''
+  // 存储桶那一路没走通不上屏（客户看不出换了路），只记在日志里那句原话的最前面。
+  const bucket = attempt.bucketFailure ? `存储桶这一路没走通（${attempt.bucketFailure}），` : ''
   // 官网的包下好、核过却装不上时不再换国内镜像重下，这时失败的是官网那一份。
   const route = attempt.officialPackage ? 'OpenAI 官网的离线安装包' : '国内镜像'
-  const detail = store || official ? `${store}${official}${route}也没装上：${raw}` : raw
+  const detail = `${bucket}${store || official ? `${store}${official}${route}也没装上：${raw}` : raw}`
   return new CodexDesktopInstallFailure(
     buildCodexDesktopInstallFailureMessage(reason, {
       storeTried: attempt.storeFailure !== null,
@@ -2438,6 +2512,11 @@ export interface CodexDesktopServiceOptions {
   /** 找系统自带的 winget（微软商店那一路用）。缺省 = 校验过包身份与目录的系统解析器。 */
   resolveStoreInstaller?: (signal?: AbortSignal) => Promise<SystemWingetResolution>
   /**
+   * Windows 上先从星芒自己的腾讯云存储桶下 Codex 桌面端（国内快、不用加速），桶不行再照旧走商店、
+   * 官网、国内镜像（yoyo 2026-10-10）。缺省 = 不走桶（测试与旧调用方照旧），生产由 system-service 打开。
+   */
+  bucketDownloads?: DesktopBucketOptions
+  /**
    * 这台电脑有没有微软商店：false 才跳过商店、直接走国内线路；null（没查出来）
    * 照旧先走商店。缺省 = windows-store-app-launch.ts 那条异步探测。
    */
@@ -2528,6 +2607,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     getuid = () => process.getuid?.() ?? -1,
     architecture: processArchitecture = process.arch,
     resolveStoreInstaller = resolveSystemWingetExecutable,
+    bucketDownloads,
     inspectStoreAvailability = (signal?: AbortSignal) => inspectWindowsStoreAvailability(signal ? { signal } : {}),
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
@@ -2914,6 +2994,71 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   }
 
   /**
+   * 第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。桶里那一版不比本机新、
+   * 读不到清单、下载或核对没过，都返回 null，由调用方照旧走商店、官网、国内镜像，原因只进日志。
+   * 下好、核过却装不上时直接抛错，同官网那一路：包是好的，换一路重下一遍也一样装不上。
+   */
+  async function installCodexDesktopFromBucket(
+    target: RendererMessageTarget,
+    attempt: CodexDesktopInstallAttempt,
+    architecture: 'x64' | 'arm64',
+    currentPackage: CodexDesktopPackageEntry | null,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<CodexDesktopInstallResult | null> {
+    if (!bucketDownloads) return null
+    let temporaryDirectory: string | null = null
+    try {
+      let packagePath: string
+      let downloaded: CodexDesktopBucketDownloadResult
+      try {
+        temporaryDirectory = await createInstallTemporaryDirectory('codex-desktop')
+        packagePath = path.join(temporaryDirectory, `ChatGPT-${architecture}.msix`)
+        // 和国内镜像那一路同一句话：对客户来说都是从国内的线路下，看不出换了路。
+        downloaded = await downloadCodexDesktopBucketPackage({
+          architecture,
+          destination: packagePath,
+          installedVersion: currentPackage?.version ?? null,
+          fetchImplementation: downloadFetch,
+          ...(cancellation ? { signal: cancellation.signal } : {}),
+          onVersion: (version) => sendCodexDesktopInstallProgress(target, {
+            phase: 'downloading',
+            percent: 0,
+            message: `正在从国内镜像下载 Codex 桌面端 ${version}（0%）`,
+          }),
+          onProgress: (version, { percent, resuming }) => sendCodexDesktopInstallProgress(target, {
+            phase: 'downloading',
+            percent,
+            message: resuming
+              ? `网络断了一下，正在从国内镜像接着下载 Codex 桌面端 ${version}（已下 ${percent}%）`
+              : `正在从国内镜像下载 Codex 桌面端 ${version}（${percent}%）`,
+          }),
+          onValidating: () => sendCodexDesktopInstallProgress(target, {
+            phase: 'validating',
+            percent: null,
+            message: '正在检查下载下来的安装包是不是完整的官方版',
+          }),
+        })
+      } catch (error) {
+        // 取消之后不再换下一路：那是另一次完整下载。
+        if (isInstallCancelledError(error)) throw error
+        cancellation?.throwIfCancelled()
+        attempt.bucketFailure = (error instanceof Error ? error.message : String(error)) || '下载或校验失败'
+        bucketDownloads.onFallback?.(describeDesktopBucketFallback(`codex-windows-${architecture}`, error))
+        return null
+      }
+      if (downloaded.status === 'not-newer') return null
+      return await installDownloadedCodexDesktopPackage(target, packagePath, {
+        version: downloaded.version,
+        sha256Base64: downloaded.download.sha256Base64,
+        contentLength: downloaded.download.size,
+      }, currentPackage, cancellation)
+    } finally {
+      // 同另外两路：Add-AppxPackage 可能还攥着文件，放到后台删。
+      if (temporaryDirectory) void fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
    * 第二路：商店没走通时，接上星芒下载线路从 OpenAI 官网下离线安装包。没下成或没过
    * 校验就记下原因、返回 null，由调用方换国内镜像；官网那一版不比本机新也返回 null。
    * 下好、核过却装不上时直接抛错：包是好的，换国内镜像重下一遍也一样装不上。
@@ -3133,6 +3278,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (reloadDownloadProxyConfig) {
       await reloadDownloadProxyConfig().catch(() => undefined)
     }
+    // 先从星芒自己的存储桶下；没走通（或桶里不比本机新）才照旧走商店、官网、国内镜像。
+    const bucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, cancellation)
+    if (bucketResult) return bucketResult
+    cancellation?.throwIfCancelled()
     invalidateCodexDesktopManifestCache()
     const manifestBundle = await inspectCodexDesktopManifestBundle()
     cancellation?.throwIfCancelled()

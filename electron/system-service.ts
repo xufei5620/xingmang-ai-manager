@@ -305,6 +305,7 @@ import {
 } from './external-tool-config'
 import { externalClientNames, type ExternalClientConfigResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
+import type { DesktopBucketOptions } from './desktop-package-bucket'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
@@ -3188,11 +3189,16 @@ export function createSystemService(
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   const installCancellations = new InstallCancellationRegistry()
+  // 桌面端（Codex、Claude）先从星芒自己的存储桶下（yoyo 2026-10-10）；桶那一路为什么没走通只进日志。
+  const desktopBucketDownloads: DesktopBucketOptions = {
+    onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
+  }
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
     fetch: downloadFetch,
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    bucketDownloads: desktopBucketDownloads,
     assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
     // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
@@ -5795,6 +5801,7 @@ export function createSystemService(
     // 官方包在海外：Mac 上那次下载、Windows 上商店没走通后的官网离线安装包，都和 OpenCode
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    bucketDownloads: desktopBucketDownloads,
     userHome: providerRoots.userHome,
     // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
     activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
