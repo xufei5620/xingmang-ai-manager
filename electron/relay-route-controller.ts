@@ -147,6 +147,8 @@ interface SiteState {
   switchedAt: number | null
   /** 上一次为请求报上来的失败去查是什么时候。 */
   failureCheckedAt: number | null
+  /** 这台电脑以前有没有给这个站存下过结论。没有 = 全新安装，开机那一轮两条一起查。 */
+  everConcluded: boolean
   cancelTimer: (() => void) | null
 }
 
@@ -184,6 +186,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       checking: false,
       switchedAt: null,
       failureCheckedAt: null,
+      everConcluded: concluded !== undefined,
       cancelTimer: null,
     })
   }
@@ -259,6 +262,8 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     state.settled = true
     state.round = null
     state.recovered = 0
+    // 定下过一次就不再是全新安装，后面照常走三次阈值那一套。
+    state.everConcluded = true
     watch(siteId, state)
     if (!changed) return
     const at = now()
@@ -279,7 +284,8 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   function beginRound(siteId: RelayRouteSiteId, state: SiteState, trigger: string): void {
     if (disposed || state.round || state.checking) return
     state.round = { trigger, failures: 0 }
-    void checkDirect(siteId, state)
+    if (state.everConcluded) void checkDirect(siteId, state)
+    else void checkFirstLaunch(siteId, state)
   }
 
   // 一轮里查一次直连。通了：没定下来的定在直连，走着直连的接着走。没通：连着够 3 次再查默认线路，
@@ -323,6 +329,41 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       return
     }
     settle(siteId, state, 'primary', 'health-failed', round.trigger)
+  }
+
+  // 全新安装（这台电脑还没有给这个站存下过结论）时，直连第一次没查通就直接查默认线路，不等那三次。
+  //
+  // 三次阈值和 15 秒间隔防的是「在两条都能用的线路之间来回横跳」（10-7 线上出过，见文件头）。
+  // 这台电脑还没定过任何线路，没有可横跳的对象，那套等待在这里只剩代价——而新用户的注册恰恰
+  // 就发生在开机后的这几十秒里：请求发往一条从没验证过的线路，连不上就注册失败，原来还要等满
+  // 一分钟才退回（#963）。直连健康时这里和原来一样只查一次，多付的只有直连真坏的那些机器。
+  async function checkFirstLaunch(siteId: RelayRouteSiteId, state: SiteState): Promise<void> {
+    const round = state.round
+    if (!round) return
+    const reachable = await check(state, siteId, 'direct')
+    if (reachable === null || state.round !== round) return
+    if (reachable) {
+      settle(siteId, state, 'direct', 'startup')
+      return
+    }
+    log('info', 'relay.route.check-failed', '直连这次健康检查没通过', {
+      siteId, line: 'direct', failures: 1, trigger: round.trigger,
+    })
+    const primaryReachable = await check(state, siteId, 'primary')
+    if (primaryReachable === null || state.round !== round) return
+    state.round = null
+    if (primaryReachable) {
+      log('info', 'relay.route.first-launch', '这台电脑第一次定线路：直连没连上，不等三次直接定在默认线路', {
+        siteId, line: 'primary', trigger: round.trigger,
+      })
+      settle(siteId, state, 'primary', 'health-failed', round.trigger)
+      return
+    }
+    // 两条都没连上（开机时还没联网那种）：和原来一样不改，过一阵再查。
+    log('warn', 'relay.route.unreachable', '直连和默认线路这会儿都没连上，线路先不改', {
+      siteId, line: state.line, settled: state.settled, trigger: round.trigger,
+    })
+    setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
   }
 
   // 退回默认线路以后查一次直连：连着查通 recoveryStreak 次才切回去，中间一次没通就从头数。

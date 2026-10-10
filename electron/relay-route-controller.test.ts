@@ -236,19 +236,43 @@ describe('relay route controller', () => {
     expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
   })
 
-  it('moves xm without a stored conclusion to the default line the same way once direct fails three checks in a row', async () => {
+  // 全新安装不等那三次：没有结论就没有可横跳的对象，而新用户的注册就在开机后这几十秒里（#963）。
+  it('moves xm without a stored conclusion to the default line as soon as the first direct check fails', async () => {
     const run = harness({ preferences: { solov: 'auto' } })
     run.reachable.direct = false
     run.controller.start()
     await settle()
-    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
-    await failTwiceMore(run)
+
+    // 一次直连 + 一次默认线路，中间没有 15 秒的等待。
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
     expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
     expect(run.changes).toEqual([['solov', { line: 'primary', settled: true }]])
-    const change = { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'startup', at: startedAt + 2 * relayRouteFailureProbeGapMs }
+    expect(run.events('relay.route.first-launch')).toEqual([{ siteId: 'solov', line: 'primary', trigger: 'startup' }])
+    const change = { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'startup', at: startedAt }
     expect(run.controller.lastChange('solov')).toEqual(change)
     expect(run.writes).toEqual([{ lines: { solov: 'primary' }, changes: { solov: change } }])
     expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  // 「不等三次」只给开机那一轮。定下过一条线路之后，这次运行里后面的检查照常守三次阈值——
+  // 否则这台机器就永久失去了防横跳的保护（#963 改动的主要风险就在这里）。
+  it('goes back to the three-check rule once the first launch has settled a line', async () => {
+    const run = harness({ preferences: { solov: 'auto' } })
+    run.controller.start()
+    await settle()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.probes).toEqual([['solov', 'direct']])
+
+    // 定下来以后直连坏了：这一轮要连着三次没通才改走默认线路，和有结论的机器一样。
+    run.reachable.direct = false
+    run.probes.length = 0
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+    await run.fireTimer()
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    await failTwiceMore(run)
+
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'direct'], ['solov', 'direct'], ['solov', 'primary']])
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
   })
 
   it('settles a site with no stored line on the default line after three failed checks', async () => {
@@ -256,8 +280,7 @@ describe('relay route controller', () => {
     run.reachable.direct = false
     run.controller.start()
     await settle()
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
-    await failTwiceMore(run)
+    expect(run.probes).toEqual([['solov-api', 'direct'], ['solov-api', 'primary']])
     expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
     expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
     expect(run.events('relay.route.changed')).toEqual([{
@@ -293,7 +316,7 @@ describe('relay route controller', () => {
     run.reachable.primary = false
     run.controller.start()
     await settle()
-    await failTwiceMore(run)
+    expect(run.probes).toEqual([['solov-api', 'direct'], ['solov-api', 'primary']])
     expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
     expect(run.changes).toEqual([])
     expect(run.writes).toEqual([])
@@ -527,7 +550,7 @@ describe('relay route controller', () => {
     })
     run.controller.start()
     await settle()
-    await failTwiceMore(run)
+    // 抛错算没查通；全新安装不等三次（没有 failTwiceMore），一次就去查默认线路并定下来。
     expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
   })
 
