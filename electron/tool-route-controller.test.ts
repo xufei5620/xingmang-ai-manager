@@ -331,6 +331,23 @@ describe('tool route controller', () => {
     expect(run.snapshots.at(-1)?.outage).toBeNull()
   })
 
+  it('blames security software only for a certificate failure, not for a handshake the network broke', async () => {
+    async function outageFor(kind: ToolRouteProbeResult['kind']) {
+      const run = harness()
+      run.results.direct = fail(kind)
+      run.results.primary = fail(kind, [cloudflare])
+      run.controller.start()
+      await settle()
+      await run.fireUntil(() => run.notices.length > 0)
+      return { outage: run.controller.snapshot().outage?.reason, notices: run.notices }
+    }
+
+    // The probe already trusts the system roots, so software that installed its own root passes; a
+    // handshake that dies half way (EPROTO, ERR_SSL_*) is the network, the same as a reset.
+    expect(await outageFor('tls')).toEqual({ outage: 'reset', notices: [{ kind: 'outage', reason: 'reset' }] })
+    expect(await outageFor('certificate')).toEqual({ outage: 'certificate', notices: [{ kind: 'outage', reason: 'certificate' }] })
+  })
+
   it('holds a second switch until five minutes after the previous one', async () => {
     const run = harness({ stored: { line: 'primary', failures: { direct: [startedAt - hourMs] }, notices: {} } })
     run.controller.start()
