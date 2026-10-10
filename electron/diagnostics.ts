@@ -49,7 +49,7 @@ import {
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
-import { relayRouteFailureThreshold, relayRouteRecoveryMs, type RelayRouteChange } from './relay-route-controller'
+import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, type RelayRouteChange } from './relay-route-controller'
 import {
   relayApiProbeBaseUrl, relayEndpointForUrl, relayProviderBaseUrlEquals, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite,
   type RelayEndpointId, type RelayRouteLines, type RelaySite,
@@ -1618,7 +1618,9 @@ export function describeRelayRouteChange(change: RelayRouteChange, siteId: strin
   const reason = change.reason === 'recovered'
     ? `${direct}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${direct}`
     : change.reason === 'health-failed'
-      ? `${direct}连着 ${relayRouteFailureThreshold} 次没连上，改走${primary}`
+      ? change.trigger === firstLaunchTrigger
+        ? `第一次开机查到${direct}没连上，改走${primary}`
+        : `${direct}连着 ${relayRouteFailureThreshold} 次没连上，改走${primary}`
       : `查到${direct}能连上，走${direct}`
   return `${time}，${reason}`
 }

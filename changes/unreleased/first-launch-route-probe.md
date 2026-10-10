@@ -1,11 +1,12 @@
 ## 用户
 
-- 新装星芒、第一次注册账号时连不上的，现在不用再等：以前软件开机直接定在洛杉矶线路、没先确认这台电脑连不连得上，连不上的人注册会失败，还要等约一分钟软件才改走 CF 线路。现在第一次开机只要洛杉矶一次没连上，就立刻改走 CF，注册不再卡在这一分钟里。连得上洛杉矶的电脑和以前完全一样。
+- 新装星芒、第一次注册账号时有时连不上的问题修好了：以前软件一打开就认定走洛杉矶线路，这台电脑连不上洛杉矶的话，注册会失败，要等约一分钟才改走 CF 线路。现在第一次打开时两条线路一起查，洛杉矶连不上就马上改走 CF。连得上洛杉矶的电脑照旧走洛杉矶。
+- 修好发验证码、发重置密码邮件时偶尔一下收到两封信、填先到的那封却说验证码不对的问题。
 
 ## 开发
 
-- `relay-route-controller.ts`：这台电脑还没有给某个站存下过结论时（全新安装），开机那一轮直连第一次健康检查没通过就直接查默认线路，不等 `relayRouteFailureThreshold` 那三次、也不等中间两段 `relayRouteFailureProbeGapMs`。最坏退回时间从约 60 秒降到一次检查超时。
-- 为什么这样不削弱防横跳：三次阈值和 15 秒间隔防的是「在两条都能用的线路之间来回切」（2026-10-07 线上，见文件头注释）。**全新安装的电脑还没定过任何线路，没有可横跳的对象**，那套等待在开机第一轮只剩代价——而新用户的注册恰恰发生在这几十秒里（#963）。`SiteState` 新增 `everConcluded`，`settle()` 里置为 true，所以**只有开机那一轮**走这条捷径，定下线路之后这次运行里后面的检查照常走三次阈值；新增用例 `goes back to the three-check rule once the first launch has settled a line` 钉住这一点。
-- 直连健康的机器行为完全不变，仍然只探一次：捷径只在直连那一次没通过时才多查一次默认线路。曾试过开机并发探两条，因为会让直连健康的大多数机器白付一次请求而放弃。
-- 原来钉「全新安装也等三次」的四条用例改为断言新行为；`moves to the default line only after direct fails three health checks in a row and the default line answers`（带 `conclusions: { solov: 'direct' }`）原样保留，三次阈值的覆盖仍在。
-- 没有改注册请求本身的重试：注册和发验证码会发邮件，`new-api-client.ts` 的 `mayReplayOffProxy` 只允许「可证明从未到达服务端」的失败重放，这条界线不动（0.2.15 修过「一下收到两封邮件」）。
+- `relay-route-controller.ts`（#963）：星芒账号（solov）在这台电脑上还没存下过结论时，开机那一轮走 `checkFirstLaunch`：直连、默认线路两条健康检查一起查；直连查通就定直连，直连没通、或默认线路已查通而直连 `relayRouteFirstLaunchPreferDirectMs`（1.5 秒）内还没回，就定默认线路，不等 `relayRouteFailureThreshold` 那三次。两条都通时定直连，不看谁先回；直连晚回来的结果丢掉，交给切回规矩。两条都不通时不改，下一轮照样两条一起查。不经 `check()`：它的 `checking` 标记一次只记一个。
+- 防横跳只在开机那一轮让路：`SiteState.firstLaunch` 在 `settle()` 里清掉，之后照三次阈值；开机先定的直连查通了也存成结论（以前线路没变就不存，下次开机又会当成全新安装）；没查过的那条直连不随别的站一起存下。
+- 历史账号（solov-api）不变，照旧先走默认线路、连查三次。
+- 全新安装那次改走默认线路记 `trigger: 'first-launch'`，检查报告写「第一次开机查到洛杉矶线路没连上，改走 CF 线路」，不说「连着 3 次」。`RelayRouteChangeReason` 没加新值（落盘格式不变）。
+- `relay-line-fetch.ts`：`/api/verification`、`/api/reset_password` 这两个 GET 每发一次服务端就寄一封信，`new-api-client.ts` 的 `idempotent: false` 传不到 fetch 这一层，以前在直连上失败（连接被重置、网关网页）或等回话时线路改了都会被掐掉改走默认线路再发一次。现在照写请求办：线路改了不掐，只在证明没送到时重发。
