@@ -91,6 +91,8 @@ interface MacosDesktopAppSource {
   allowsUrl(url: URL): boolean
   /** 同名的旧版官方应用：名字被它占着时换这句话说，它不是冒牌货，只是旧了。 */
   legacyApplication?: { bundleIdentifiers: readonly string[], message: string }
+  /** 按这台 Mac 的芯片挑包：工具箱的 x64 版靠 Rosetta 跑在 Apple 芯片上时也装 arm64 那个。 */
+  packageForHardware?: boolean
 }
 
 export interface MacosDesktopAppProcess {
@@ -195,7 +197,9 @@ function allowsOpenCodeUrl(url: URL): boolean {
  * Claude 的 Mac 版和官方客户端一样问它自己的更新接口（Squirrel.Mac 的 JSON）。接口要一个
  * device_id：每次装都现编一个随机 UUID，不存、不复用，认不出是哪台 Mac。os_version 要带上：
  * 不带时它给的是 macOS 12 那一路的旧版（2026-10-03 实测，不带给 1.46388.4，带 13.0 以上给
- * 2.19675.0）。两种芯片拿到的是同一个通用包。
+ * 2.19675.0）。以前两种芯片拿到的是同一个通用包；2026-10-10 再问，arm64 和 x64 各给一个
+ * 自己芯片的包（2.31226.1，releases/darwin/arm64/… 和 releases/darwin/x64/…，大小、SHA-256
+ * 各不相同），连 macOS 12 那一路的旧版也一样。
  */
 function claudeFeedUrl(context: MacosDesktopFeedContext): string {
   const url = new URL(`https://api.anthropic.com/api/desktop/darwin/${context.architecture}/squirrel/update`)
@@ -203,15 +207,19 @@ function claudeFeedUrl(context: MacosDesktopFeedContext): string {
   return url.href
 }
 
-/** 只认当前版本那一条，地址必须是那个版本的通用 zip，大小和 SHA-256 都得写着。 */
-function selectClaudeRelease(feed: unknown): MacosDesktopRelease | null {
+/**
+ * 只认当前版本那一条，地址必须是那个版本、这台 Mac 芯片的 zip（官方哪天改回通用包，通用 zip
+ * 也认），大小和 SHA-256 都得写着。另一种芯片的包不认：arm64 的在 Intel 上跑不了，x64 的在
+ * Apple 芯片上得靠 Rosetta。
+ */
+function selectClaudeRelease(feed: unknown, context: MacosDesktopFeedContext): MacosDesktopRelease | null {
   if (!isRecord(feed) || typeof feed.currentRelease !== 'string' || !Array.isArray(feed.releases)) return null
   const version = feed.currentRelease
   if (!/^\d{1,4}\.\d{1,6}\.\d{1,6}$/.test(version)) return null
   const entries = feed.releases.filter((entry) => isRecord(entry) && entry.version === version)
   const update: unknown = entries.length === 1 && isRecord(entries[0]) ? entries[0].updateTo : null
   if (!isRecord(update) || update.version !== version) return null
-  const packagePattern = new RegExp(`^https://downloads\\.claude\\.ai/releases/darwin/universal/${version.split('.').join('\\.')}/Claude-[0-9a-f]{40}\\.zip$`)
+  const packagePattern = new RegExp(`^https://downloads\\.claude\\.ai/releases/darwin/(?:${context.architecture}|universal)/${version.split('.').join('\\.')}/Claude-[0-9a-f]{40}\\.zip$`)
   if (typeof update.url !== 'string' || !packagePattern.test(update.url)) return null
   if (typeof update.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(update.sha256)) return null
   if (typeof update.size !== 'number' || !Number.isSafeInteger(update.size) || update.size <= 0) return null
@@ -221,7 +229,7 @@ function selectClaudeRelease(feed: unknown): MacosDesktopRelease | null {
 /** The feed is a fixed API path that carries a query; the package host serves no query at all. */
 function allowsClaudeUrl(url: URL): boolean {
   if (url.hostname === 'api.anthropic.com') return /^\/api\/desktop\/darwin\/(?:arm64|x64)\/squirrel\/update$/.test(url.pathname)
-  return url.hostname === 'downloads.claude.ai' && url.pathname.startsWith('/releases/darwin/universal/') && !url.search
+  return url.hostname === 'downloads.claude.ai' && /^\/releases\/darwin\/(?:arm64|x64|universal)\//.test(url.pathname) && !url.search
 }
 
 const chatgptPackageRoot = 'https://persistent.oaistatic.com/codex-app-prod/'
@@ -299,7 +307,9 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
   // feed's size and SHA-256, it unpacks to exactly Claude.app (universal x86_64 + arm64), bundle
   // com.anthropic.claudefordesktop with LSMinimumSystemVersion 13.0, signed "Developer ID
   // Application: Anthropic PBC (Q6L2SF6YDW)" and notarized; the pinned requirement and
-  // Gatekeeper both accept it.
+  // Gatekeeper both accept it. Checked again 2026-10-10 on GitHub macOS 15 runners after the feed
+  // split by chip: 2.31226.1 for arm64 and for x64 each unpacks to exactly Claude.app (thin arm64,
+  // thin x86_64, no LSRequiresNativeExecution), same bundle, team, minimum system and notarization.
   claudeDesktop: {
     name: 'Claude Desktop',
     applicationName: 'Claude',
@@ -309,12 +319,14 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
     feedFormat: 'json',
     feedNeedsSystemVersion: true,
     archiveFormat: 'zip',
-    // 2.19675.0 is 379 MB.
+    // 2.19675.0 universal was 379 MB; 2.31226.1 is 271 MB on Apple silicon and 279 MB on Intel.
     maximumArchiveBytes: 1536 * 1024 * 1024,
     selectRelease: selectClaudeRelease,
     allowsUrl: allowsClaudeUrl,
+    // 以前给通用包时，工具箱的 x64 版在 Apple 芯片上装出来的也是原生的 Claude；包按芯片分开以后照旧。
+    packageForHardware: true,
   },
-  // Checked the same day and way with 26.930.31730 for both architectures: both appcasts and
+  // Checked 2026-10-03 the same way with 26.930.31730 for both architectures: both appcasts and
   // zips come straight from persistent.oaistatic.com, each zip matches its appcast length and
   // unpacks to exactly ChatGPT.app (thin arm64, thin x86_64), bundle com.openai.codex with
   // LSMinimumSystemVersion 13.0, signed "Developer ID Application: OpenAI OpCo, LLC
@@ -472,6 +484,25 @@ export function isMacosVersionBelow(current: string, minimum: string): boolean {
     if (difference !== 0) return difference < 0
   }
   return false
+}
+
+/**
+ * 工具箱的 x64 版在 Apple 芯片上靠 Rosetta 也能跑，这时 process.arch 是 x64，这台 Mac 却是
+ * Apple 芯片（codex-desktop-service.ts 的 resolveMacosInstallArchitecture 是同一个判断）。
+ */
+async function resolveHardwareArchitecture(
+  architecture: MacosDesktopArchitecture,
+  runProcess: InstallMacosDesktopAppOptions['runProcess'],
+): Promise<MacosDesktopArchitecture> {
+  if (architecture === 'arm64') return 'arm64'
+  try {
+    const result = await runProcess({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'], timeoutMs: probeTimeoutMs })
+    if (result.stdout.trim() === '1') return 'arm64'
+  } catch {
+    // Only a "1" proves Apple silicon. Intel Macs report 0 or lack the key,
+    // in which case sysctl exits non-zero; both mean the x64 package.
+  }
+  return 'x64'
 }
 
 function rejectedByCheck(error: unknown): boolean {
@@ -646,11 +677,12 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     await removeInterruptedCopies(destination)
     staging = await createStagingDirectory(options.environment)
 
-    let context: MacosDesktopFeedContext = { architecture, systemVersion: null }
+    const packageArchitecture = source.packageForHardware ? await resolveHardwareArchitecture(architecture, options.runProcess) : architecture
+    let context: MacosDesktopFeedContext = { architecture: packageArchitecture, systemVersion: null }
     if (source.feedNeedsSystemVersion) {
       const version = (await readSystemVersion()).trim()
       if (!/^\d{1,3}(?:\.\d{1,3}){0,2}$/.test(version)) throw new Error(`读不出这台 Mac 的系统版本：${version.slice(0, 40)}`)
-      context = { architecture, systemVersion: version }
+      context = { architecture: packageArchitecture, systemVersion: version }
     }
     stage = 'download'
     const release = source.selectRelease(await fetchFeed(options.tool, source, context, options.fetch, options.signal), context)
