@@ -1,6 +1,8 @@
 # 本地 AI 执行手册
 
 > 这份文件是**贴给本地 AI（Claude Code / Codex）的操作指令**。
+>
+> 2026-10-10 起 Claude·win（本地 Windows 上的 Claude Code）不再写功能代码，按 yoyo 触发做真机验证、找问题、提 issue，不走下面「领任务 → 写代码 → 提 PR」这套流程，分工见 [`COLLABORATION.md`](./COLLABORATION.md) §7。
 
 ---
 
