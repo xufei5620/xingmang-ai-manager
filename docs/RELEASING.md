@@ -496,7 +496,7 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 另外要知道的：
 
 - 0.2.18 起的 Windows 客户端只装带发布者签名的包（第 5 节「更新包签名」）。退回到加签名之前发的版本（0.2.15 及更早）时，`rollback-release` 拿 GitHub Release 上同版本的 `Setup.exe` 逐字节对上才补签；Release 上没有那个安装包就原样退回，这些客户端会停在被撤回的版本上等修好版。
-- 安装教程页的下载（腾讯云 COS）不跟着撤回和退回，也不许往回换版本（`docs/COS-SYNC.md`「本次范围」）：坏版本同步过去以后，新客户照样会下到它，直到修好版发出去、`cos-sync` 跑完。
+- 安装教程页的下载（腾讯云 COS）跟着撤回名单走（#961）：撤回或回退以后点一次教程站的 `sites`（步骤见 `docs/SERVICE-STATUS.md`「坏版本回退」），新客户会拿到上一个没被撤回的版本；COS 下载清单只记最近 3 个旧版本，一个都不能给时下载页显示「准备中」。不点的话要等下一次定时运行，最长约 12 小时。
 - 0.2.18 起 Windows 走直连时从 `xm-direct.solov.cc` 读更新清单和状态文件，改完要两边都核对（`docs/SERVICE-STATUS.md`「它在哪」）。
 
 手工发布时：
