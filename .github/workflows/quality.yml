@@ -93,13 +93,26 @@ jobs:
           # of that is per-file environment setup rather than assertions, so
           # splitting by file count — which is what --shard does — splits the
           # time with it. Its electron/ suites load the Electron binary, so
-          # these two shards install it first (`electron`, see the steps).
+          # these shards install it first (`electron`, see the steps).
+          #
+          # Cut in three on 2026-10-09. Two halves had grown into the budget:
+          # on #955 a half ran 897.94s against the 900s here, passed every one
+          # of its 6329 tests, and was then killed mid-teardown — a red run
+          # that said nothing about the code. The three-lines PRs and #954 had
+          # each added suites to the same two runners. Following what the
+          # browser shards below settled on, the fix is another runner rather
+          # than a bigger number: a third should land near 10 minutes, and when
+          # one nears 15, deal to a fourth instead of raising this.
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15
             electron: true
           - shard: vitest-2
             command: npm run test:vitest:2
+            timeout: 15
+            electron: true
+          - shard: vitest-3
+            command: npm run test:vitest:3
             timeout: 15
             electron: true
           # The node --test half of `npm test`: the build and release script
