@@ -107,6 +107,31 @@ test('only latest or a regular v0.x.x tag can be selected without a repository o
   assert.throws(() => parseArguments(['--tag', TAG], { MANAGER_RELEASE_TAG: TAG }))
 })
 
+test('history-only imports name an exact older tag and pass the mode on to the publisher', async (t) => {
+  assert.deepEqual(parseArguments([], { MANAGER_RELEASE_TAG: TAG, MANAGER_HISTORY_ONLY: 'false' }), { tag: TAG })
+  assert.deepEqual(parseArguments([], { MANAGER_RELEASE_TAG: TAG, MANAGER_HISTORY_ONLY: 'true' }), { tag: TAG, historyOnly: true })
+  assert.deepEqual(parseArguments(['--history-only', '--tag', TAG], {}), { tag: TAG, historyOnly: true })
+  assert.deepEqual(parseArguments(['--tag', TAG, '--history-only'], {}), { tag: TAG, historyOnly: true })
+  for (const [argv, env] of [
+    [['--history-only'], {}],
+    [[], { MANAGER_HISTORY_ONLY: 'true' }],
+    [[], { MANAGER_RELEASE_TAG: TAG, MANAGER_HISTORY_ONLY: 'yes' }],
+    [['--history-only', '--history-only', '--tag', TAG], {}],
+    [['--history-only'], { MANAGER_RELEASE_TAG: TAG, MANAGER_HISTORY_ONLY: 'true' }],
+  ]) {
+    assert.throws(() => parseArguments(argv, env))
+  }
+  const latest = fixture(t)
+  await assert.rejects(syncPublishedManagerRelease({ ...latest.options, tag: undefined, historyOnly: true }), /必须指定/)
+  assert.equal(latest.calls.length, 0)
+  const local = fixture(t, publishedRelease(['windows']))
+  const passed = []
+  local.options.sync = async (options) => { passed.push(options); return { version: '0.2.18', files: [] } }
+  await syncPublishedManagerRelease({ ...local.options, historyOnly: true })
+  await syncPublishedManagerRelease(local.options)
+  assert.deepEqual(passed.map((options) => [options.installersOnly, options.historyOnly]), [[true, true], [true, undefined]])
+})
+
 test('the release and every selected installer must belong to the requested repository and published tag', () => {
   assert.equal(validatePublishedRelease(publishedRelease().value, TAG).assets.length, 5)
   for (const mutate of [
@@ -336,6 +361,10 @@ test('the manual import workflow stays owner-main gated, read-only and serialize
   const upload = steps.find((step) => step.env?.COS_SECRET_KEY)
   assert.equal(upload.run, 'node scripts/sync-published-manager-cos.cjs')
   assert.equal(upload.env.MANAGER_RELEASE_TAG, "${{ inputs.tag || '' }}")
+  assert.equal(upload.env.MANAGER_HISTORY_ONLY, "${{ inputs.history_only && 'true' || 'false' }}")
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['tag', 'history_only'])
+  assert.equal(workflow.on.workflow_dispatch.inputs.history_only.type, 'boolean')
+  assert.equal(workflow.on.workflow_dispatch.inputs.history_only.default, false)
   assert.equal(steps.filter((step) => step.env?.COS_SECRET_KEY).length, 1)
   assert.doesNotMatch(source, /R2_|GH_TOKEN|release create|release upload|contents: write/)
   for (const step of steps.filter((entry) => entry.uses)) assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/)

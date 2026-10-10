@@ -10,7 +10,9 @@ const { createCosStore } = require('./cos-sync-utils.cjs')
 const { safeManagerSyncFailure } = require('./cos-manager-sync-diagnostics.cjs')
 const {
   LATEST_KEY,
+  MAX_HISTORY_VERSIONS,
   buildAllowedArtifacts,
+  buildManagerHistoryIndex,
   buildManagerIndex,
   buildManagerReleasePlan,
   parseArguments,
@@ -83,6 +85,17 @@ function memoryStore({ previous = null, secondRead = undefined, thirdRead = unde
         url: `${PUBLIC_BASE}${key.split('/').map(encodeURIComponent).join('/')}`,
         bytes: buffer.length,
         sha256: corruptResult ? '0'.repeat(64) : digest(buffer, 'sha256'),
+        contentType: options.contentType,
+      }
+    },
+    async verifyFile(key, options) {
+      events.push({ kind: 'verify', key, options })
+      if (key === failKey) throw new Error('mock missing object')
+      return {
+        key,
+        url: `${PUBLIC_BASE}${key.split('/').map(encodeURIComponent).join('/')}`,
+        bytes: options.expectedBytes,
+        sha256: corruptResult ? '0'.repeat(64) : options.expectedSha256,
         contentType: options.contentType,
       }
     },
@@ -476,4 +489,131 @@ test('the release store may spend two hours on one installer and its retries rea
     assert.deepEqual(retry.failure, { code: 'operation-failed' })
   }
   assert.doesNotMatch(JSON.stringify(events), /PRIVATE|signed upload|filePath|https:/)
+})
+
+function keepInstallersOnly(local) {
+  for (const file of buildAllowedArtifacts(local.version).values()) {
+    if (file.kind !== 'installer' && fs.existsSync(path.join(local.directory, file.fileName))) {
+      fs.unlinkSync(path.join(local.directory, file.fileName))
+    }
+  }
+  return local
+}
+
+async function upgrade(t, previous, version, platforms = ['windows', 'macos']) {
+  const local = fixture(t, { version, platforms })
+  return buildManagerIndex(await buildManagerReleasePlan(local.directory, version), previous, PUBLIC_BASE)
+}
+
+function historyVersions(index) {
+  return [...new Set((index.history || []).map((file) => file.version))]
+}
+
+test('each upgrade keeps the replaced installers as history, three versions at most', async (t) => {
+  let index = await upgrade(t, null, '0.2.13')
+  assert.equal(Object.hasOwn(index, 'history'), false)
+  index = await upgrade(t, index, '0.2.14')
+  assert.deepEqual(historyVersions(index), ['0.2.13'])
+  // Update archives, block maps and updater manifests never become history.
+  assert.deepEqual(index.history.map((file) => file.fileName).sort(), [...buildAllowedArtifacts('0.2.13').values()]
+    .filter((file) => file.kind === 'installer' && file.platform !== 'linux').map((file) => file.fileName).sort())
+  for (const version of ['0.2.15', '0.2.16']) index = await upgrade(t, index, version)
+  assert.deepEqual(historyVersions(index), ['0.2.15', '0.2.14', '0.2.13'])
+  index = await upgrade(t, index, '0.2.17')
+  assert.equal(MAX_HISTORY_VERSIONS, 3)
+  assert.deepEqual(historyVersions(index), ['0.2.16', '0.2.15', '0.2.14'])
+  assert.ok(index.files.every((file) => file.version === '0.2.17'))
+  assert.deepEqual(validateManagerIndex(index, PUBLIC_BASE), index)
+})
+
+test('a platform supplement moves only that platform into history and keeps the rest offered', async (t) => {
+  const previous = await upgrade(t, null, VERSION)
+  const windows = await upgrade(t, previous, '0.2.14', ['windows'])
+  assert.deepEqual(windows.history.map((file) => file.fileName), [`XingMang-AI-Manager-${VERSION}-Setup.exe`])
+  assert.ok(windows.files.filter((file) => file.platform === 'macos').every((file) => file.version === VERSION))
+  const both = await upgrade(t, windows, '0.2.14', ['macos'])
+  assert.deepEqual(both.history.map((file) => file.platform).sort(), ['macos', 'macos', 'windows'])
+  assert.ok(both.files.every((file) => file.version === '0.2.14'))
+  const again = await upgrade(t, both, '0.2.14', ['macos'])
+  assert.deepEqual(again, both)
+})
+
+test('existing history entries must be valid older installers before anything is uploaded', async (t) => {
+  const previous = await upgrade(t, await upgrade(t, null, VERSION), '0.2.14')
+  const local = fixture(t, { version: '0.2.15' })
+  const current = previous.files.find((file) => file.kind === 'installer')
+  for (const mutate of [
+    (value) => { value.history = 'not a list' },
+    (value) => { value.history[0].url = 'https://evil.invalid/setup.exe' },
+    (value) => { value.history[0].sha256 = 'invalid' },
+    (value) => { value.history.push(structuredClone(value.history[0])) },
+    (value) => { value.history.push(structuredClone(current)) },
+    (value) => { value.history.push(value.files.find((file) => file.kind === 'blockmap')) },
+    (value) => {
+      for (const version of ['0.2.10', '0.2.11', '0.2.12']) {
+        const fileName = `XingMang-AI-Manager-${version}-Setup.exe`
+        const key = `xingmang/releases/${version}/${fileName}`
+        value.history.push({ ...value.history[0], fileName, version, key, url: `${PUBLIC_BASE}${key}` })
+      }
+    },
+  ]) {
+    const altered = structuredClone(previous)
+    mutate(altered)
+    const store = memoryStore({ previous: altered })
+    await assert.rejects(syncManagerRelease(optionsFor(local, store)), /无效|历史/)
+    assert.equal(store.events.length, 0)
+  }
+})
+
+test('history-only mode reads every installer back and records an older release without changing the offered files', async (t) => {
+  const previous = await upgrade(t, null, '0.2.18')
+  const local = keepInstallersOnly(fixture(t, { version: '0.2.15', platforms: ['windows', 'macos'] }))
+  const store = memoryStore({ previous })
+  const index = await syncManagerRelease({ ...optionsFor(local, store), installersOnly: true, historyOnly: true })
+  assert.equal(store.events.filter((event) => event.kind === 'file').length, 0)
+  const verified = store.events.filter((event) => event.kind === 'verify')
+  assert.equal(verified.length, 3)
+  for (const event of verified) {
+    assert.match(event.key, /^xingmang\/releases\/0\.2\.15\//)
+    assert.equal(event.options.expectedSha256, digest(fs.readFileSync(path.join(local.directory, path.basename(event.key))), 'sha256'))
+  }
+  assert.equal(index.version, '0.2.18')
+  assert.deepEqual(index.files, previous.files)
+  assert.deepEqual(historyVersions(index), ['0.2.15'])
+  assert.ok(index.history.every((file) => file.kind === 'installer'))
+  assert.match(store.events.at(-2).key, /^xingmang\/releases\/0\.2\.18\/indexes\/[a-f0-9]{64}\.json$/)
+  assert.deepEqual(store.pointer(), index)
+  const repeated = memoryStore({ previous: index })
+  assert.deepEqual(await syncManagerRelease({ ...optionsFor(local, repeated), installersOnly: true, historyOnly: true }), index)
+})
+
+test('history-only mode never uploads and leaves the pointer alone when a check fails', async (t) => {
+  const previous = await upgrade(t, null, '0.2.18')
+  const local = keepInstallersOnly(fixture(t, { version: '0.2.15', platforms: ['windows'] }))
+  for (const settings of [{ failKey: 'xingmang/releases/0.2.15/XingMang-AI-Manager-0.2.15-Setup.exe' }, { corruptResult: true }]) {
+    const store = memoryStore({ previous, ...settings })
+    await assert.rejects(syncManagerRelease({ ...optionsFor(local, store), installersOnly: true, historyOnly: true }), /mock missing object|核对回读/)
+    assert.ok(store.events.every((event) => event.kind === 'verify'))
+    assert.equal(store.pointer(), previous)
+  }
+})
+
+test('history-only mode refuses a missing index, a current or newer version and a full release directory', async (t) => {
+  const local = keepInstallersOnly(fixture(t, { version: '0.2.15', platforms: ['windows'] }))
+  const missing = memoryStore()
+  await assert.rejects(syncManagerRelease({ ...optionsFor(local, missing), installersOnly: true, historyOnly: true }), /还没有星芒下载清单/)
+  const same = memoryStore({ previous: await upgrade(t, null, '0.2.15') })
+  await assert.rejects(syncManagerRelease({ ...optionsFor(local, same), installersOnly: true, historyOnly: true }), /只能补/)
+  await assert.rejects(syncManagerRelease({ ...optionsFor(fixture(t, { version: '0.2.15' }), memoryStore()), historyOnly: true }), /只能核对已发布的安装包/)
+  await assert.rejects(syncManagerRelease({ ...optionsFor(local, memoryStore()), installersOnly: true, historyOnly: 'true' }), /模式无效/)
+  for (const store of [missing, same]) assert.ok(store.events.every((event) => event.kind !== 'json'))
+})
+
+test('a backfill older than every retained version or with different recorded bytes is refused', async (t) => {
+  let index = await upgrade(t, null, '0.2.13')
+  for (const version of ['0.2.14', '0.2.15', '0.2.16', '0.2.17']) index = await upgrade(t, index, version)
+  const oldest = await buildManagerReleasePlan(keepInstallersOnly(fixture(t, { version: '0.2.12', platforms: ['windows'] })).directory, '0.2.12', { installersOnly: true })
+  assert.throws(() => buildManagerHistoryIndex(oldest, index, PUBLIC_BASE), /挤掉/)
+  const recorded = await buildManagerReleasePlan(keepInstallersOnly(fixture(t, { version: '0.2.15', platforms: ['windows'], payload: 'rebuilt' })).directory, '0.2.15', { installersOnly: true })
+  assert.throws(() => buildManagerHistoryIndex(recorded, index, PUBLIC_BASE), /内容不一致/)
 })
