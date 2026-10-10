@@ -197,6 +197,47 @@ describe('createRelayLineFetch', () => {
     expect(blocked.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
   })
 
+  // 这两个 GET 每发一次服务端就寄一封信（#963）：和写请求一样，只在证明没送到时重发，线路改了也不掐。
+  it('treats the GETs that send an email like writes', async () => {
+    for (const path of ['/api/verification?email=user%40example.com', '/api/reset_password?email=user%40example.com']) {
+      async function get(failure: Error | Response) {
+        const { router, reports } = fakeRouter()
+        const base = vi.fn<typeof fetch>()
+        if (failure instanceof Error) base.mockRejectedValueOnce(failure)
+        else base.mockResolvedValueOnce(failure)
+        base.mockResolvedValueOnce(json(200))
+        const outcome = await createRelayLineFetch(router, base)(`https://xm.solov.cc${path}`, { method: 'GET' })
+          .then((response) => response.status, (error: unknown) => error)
+        return { outcome, sent: sentUrls(base), reports }
+      }
+      const unsent = await get(networkError('ERR_CONNECTION_REFUSED'))
+      expect(unsent.outcome).toBe(200)
+      expect(unsent.sent).toEqual([`https://xm-direct.solov.cc${path}`, `https://xm.solov.cc${path}`])
+      for (const failure of [networkError('ERR_CONNECTION_RESET'), networkError('ERR_TIMED_OUT')]) {
+        const result = await get(failure)
+        expect(result.outcome).toBeInstanceOf(TypeError)
+        expect(result.sent).toEqual([`https://xm-direct.solov.cc${path}`])
+        expect(result.reports).toHaveLength(1)
+      }
+      const gateway = await get(page(504))
+      expect(gateway.outcome).toBe(504)
+      expect(gateway.sent).toHaveLength(1)
+      expect(gateway.reports).toEqual([['solov', 'http-504']])
+
+      // 线路在它等回话时改走默认线路：不掐、不重发，照旧在直连上等回来。
+      const { router, moveTo, listeners } = fakeRouter()
+      let answer: (response: Response) => void = () => undefined
+      const base = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { answer = resolve }))
+      const pending = createRelayLineFetch(router, base)(`https://xm.solov.cc${path}`)
+      await vi.waitFor(() => expect(base).toHaveBeenCalledTimes(1))
+      expect(listeners.size).toBe(0)
+      moveTo('primary')
+      answer(json(200))
+      expect((await pending).status).toBe(200)
+      expect(sentUrls(base)).toEqual([`https://xm-direct.solov.cc${path}`])
+    }
+  })
+
   it('falls back when the proxy refuses the direct address or a portal redirects it', async () => {
     for (const code of ['ERR_TUNNEL_CONNECTION_FAILED', 'ERR_UNSAFE_REDIRECT']) {
       const { router, reports } = fakeRouter()

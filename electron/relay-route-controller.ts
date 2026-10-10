@@ -8,9 +8,11 @@
  * 改不改线路只看健康检查（probeRelayLineHealth）。请求慢、超时不算直连坏了：10-7 线上有客户
  * 直连下行只有几十 KB/s，公告下到一半超时就被当成直连坏了，在两条线路之间来回切。
  *
- * - 开机不等检查结果：先用上次存下的结论。没有结论时星芒账号直接走直连、算定下来，工具配置一开始
- *   就写直连地址（yoyo 10-8「xm 站点这边全部走直连」）；历史账号先走默认线路（这时不算定下来，
- *   工具配置不跟着迁）。后台再查。
+ * - 开机不等检查结果：先用上次存下的结论。没有结论时星芒账号先走直连（yoyo 10-8「xm 站点这边全部
+ *   走直连」），开机那一轮两条一起查，直连没通就马上改走默认线路，不等下面那三次（#963：新用户开机
+ *   就注册，没查过的线路连不上就注册失败）；查出的结论存下来，下次开机就照下面的规矩。星芒账号写进
+ *   工具配置的线路另由 tool-route-controller.ts 定，不看这里。历史账号先走默认线路（这时不算定下来，
+ *   工具配置不跟着迁），后台再查。
  * - 走直连时隔一阵查一次。星芒自己的请求在直连上连不上（relay-line-fetch.ts 说了哪些算）就马上
  *   查，不等下一次；报上来的只叫这里去查，改不改照样看查的结果。
  * - 直连连续 3 次没查通、默认线路查通了才改走默认线路；两条都不通（比如开机时还没联网）就不改，
@@ -59,12 +61,17 @@ export const relayRouteFailureRecheckGapMs = 30_000
 // 不该跟醒来这一次连成「一直查得通」。
 const recoveryStreak = relayRouteRecoveryMs / relayRouteRecoveryProbeIntervalMs + 1
 
-// 「自动」的站这台电脑上还没有结论时，开机先走哪条。星芒账号直接定在直连：直连连不上照样按下面的
-// 规矩悄悄退回默认线路，好了再切回来。历史账号（sub2api）这次不动，照旧先走默认线路、查出结论再迁。
+// 「自动」的站这台电脑上还没有结论时，开机先走哪条。星芒账号直接定在直连：开机那一轮两条一起查
+// （checkFirstLaunch），直连没通就马上退回默认线路，好了再按下面的规矩切回来。历史账号（sub2api）
+// 这次不动，照旧先走默认线路、查出结论再迁。
 const unconcludedStart: Readonly<Record<RelayRouteSiteId, RelayRouteLine>> = {
   solov: { line: 'direct', settled: true },
   'solov-api': { line: 'primary', settled: false },
 }
+
+// 全新安装开机那一轮（checkFirstLaunch）从开查算起，默认线路已经查通的话，直连最多等这么久。直连被
+// 丢包时它的健康检查要等满 probeTimeoutMs 才算没通，新用户这会儿正在填注册（#963）。
+export const relayRouteFirstLaunchPreferDirectMs = 1_500
 
 // 健康检查那个接口只回几 KB，平时一秒内就回；给足时间，直连下行只有几十 KB/s 时也查得完。
 const probeTimeoutMs = 10_000
@@ -147,10 +154,18 @@ interface SiteState {
   switchedAt: number | null
   /** 上一次为请求报上来的失败去查是什么时候。 */
   failureCheckedAt: number | null
+  /**
+   * 星芒账号在这台电脑上还没有存下过结论（全新安装），线路是开机先定的、没查过：开机那一轮走
+   * checkFirstLaunch，也不把这条没查过的线路存成结论。定下来一次就是 false。
+   */
+  firstLaunch: boolean
   cancelTimer: (() => void) | null
 }
 
 const triggerPattern = /^[A-Za-z0-9_.:-]{1,64}$/
+
+/** 全新安装开机那一轮直连没通、改走默认线路时记的 trigger：检查报告据此不说「连着 3 次」。 */
+export const firstLaunchTrigger = 'first-launch'
 
 function scheduleTimeout(callback: () => void, delayMs: number): () => void {
   const timer = setTimeout(callback, delayMs)
@@ -184,6 +199,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       checking: false,
       switchedAt: null,
       failureCheckedAt: null,
+      firstLaunch: siteId === 'solov' && concluded === undefined,
       cancelTimer: null,
     })
   }
@@ -202,7 +218,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   function persist(): void {
     const lines = { ...conclusions.lines }
     for (const [siteId, state] of states) {
-      if (state.settled) lines[siteId] = state.line
+      if (state.settled && !state.firstLaunch) lines[siteId] = state.line
     }
     conclusions = { lines, changes: conclusions.changes }
     const snapshot: RelayRouteConclusions = { lines: { ...lines }, changes: { ...conclusions.changes } }
@@ -255,12 +271,20 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   function settle(siteId: RelayRouteSiteId, state: SiteState, line: RelayEndpointId, reason: RelayRouteChangeReason, trigger?: string): void {
     const from = state.line
     const changed = from !== line || !state.settled
+    const firstConclusion = state.firstLaunch
     state.line = line
     state.settled = true
     state.round = null
     state.recovered = 0
+    // 定下过一次就不再是全新安装，后面照常走三次阈值那一套。
+    state.firstLaunch = false
     watch(siteId, state)
-    if (!changed) return
+    if (!changed) {
+      // 开机先定的直连查通了：线路没变，但这是这台电脑第一次查过的结论，要存下来。不存的话下次开机
+      // 又当全新安装，直连哪次开机慢一下就会被打回默认线路至少 10 分钟（10-7 来回切的老问题）。
+      if (firstConclusion) persist()
+      return
+    }
     const at = now()
     state.switchedAt = at
     const changes = { ...conclusions.changes }
@@ -279,7 +303,8 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   function beginRound(siteId: RelayRouteSiteId, state: SiteState, trigger: string): void {
     if (disposed || state.round || state.checking) return
     state.round = { trigger, failures: 0 }
-    void checkDirect(siteId, state)
+    if (state.firstLaunch) void checkFirstLaunch(siteId, state)
+    else void checkDirect(siteId, state)
   }
 
   // 一轮里查一次直连。通了：没定下来的定在直连，走着直连的接着走。没通：连着够 3 次再查默认线路，
@@ -323,6 +348,65 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       return
     }
     settle(siteId, state, 'primary', 'health-failed', round.trigger)
+  }
+
+  // 全新安装（星芒账号在这台电脑上还没有存下过结论）开机那一轮：两条一起查，直连查通就定直连；直连
+  // 没通、或者默认线路已经查通而直连等了 relayRouteFirstLaunchPreferDirectMs 还没回，就定默认线路。
+  //
+  // 三次阈值和 15 秒间隔防的是「在两条都能用的线路之间来回横跳」（10-7 线上出过，见文件头）。
+  // 这台电脑还没定过任何线路，没有可横跳的对象，那套等待在这里只剩代价——而新用户的注册恰恰
+  // 就发生在开机后的这几十秒里：请求发往一条从没验证过的线路，连不上就注册失败，原来还要等满
+  // 一分钟才退回（#963）。两条都通时定直连，不看谁先回：谁先回每次开机可能不一样。
+  //
+  // 两个检查一起查，不经 check()：它那个 checking 标记一次只记一个，两个一起查会互相清掉。直连晚回来的
+  // 结果不要了，不在开机几秒里再切一次，交给退回以后的切回规矩。健康检查只读，两条一起查没有副作用。
+  async function checkFirstLaunch(siteId: RelayRouteSiteId, state: SiteState): Promise<void> {
+    const round = state.round
+    if (!round) return
+    function probeLine(line: RelayEndpointId): Promise<boolean> {
+      try {
+        return dependencies.probe(siteId, line).then((reachable) => reachable === true, () => false)
+      } catch {
+        return Promise.resolve(false)
+      }
+    }
+    state.checking = true
+    let line: RelayEndpointId | null
+    try {
+      const direct = probeLine('direct')
+      const primary = probeLine('primary')
+      let cancelWait: () => void = () => undefined
+      const waited = new Promise<'waited'>((resolve) => {
+        cancelWait = schedule(() => resolve('waited'), relayRouteFirstLaunchPreferDirectMs)
+      })
+      // 先等直连；默认线路查通了还没等到直连，就只再等到 relayRouteFirstLaunchPreferDirectMs。
+      const primaryReady = primary.then(async (reachable) => reachable ? waited : new Promise<never>(() => undefined))
+      const first = await Promise.race([direct, primaryReady])
+      cancelWait()
+      if (first === true) line = 'direct'
+      else if (first === 'waited') line = 'primary'
+      else line = await primary ? 'primary' : null
+    } finally {
+      state.checking = false
+    }
+    if (disposed || state.round !== round) return
+    if (line === 'direct') {
+      settle(siteId, state, 'direct', 'startup')
+      return
+    }
+    state.round = null
+    if (line === 'primary') {
+      log('info', 'relay.route.first-launch', '这台电脑第一次定线路：直连没连上，不等三次直接定在默认线路', {
+        siteId, line: 'primary', trigger: round.trigger,
+      })
+      settle(siteId, state, 'primary', 'health-failed', firstLaunchTrigger)
+      return
+    }
+    // 两条都没连上（开机时还没联网那种）：和原来一样不改，过一阵再查；还是全新安装，下一轮照样两条一起查。
+    log('warn', 'relay.route.unreachable', '直连和默认线路这会儿都没连上，线路先不改', {
+      siteId, line: state.line, settled: state.settled, trigger: round.trigger,
+    })
+    setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
   }
 
   // 退回默认线路以后查一次直连：连着查通 recoveryStreak 次才切回去，中间一次没通就从头数。

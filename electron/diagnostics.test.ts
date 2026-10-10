@@ -1013,6 +1013,9 @@ describe('diagnostics', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
       expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at }, 'solov')).toBe('1月3日 08:00，查到洛杉矶线路能连上，走洛杉矶线路')
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', at }, 'solov')).toBe('1月3日 08:00，洛杉矶线路连着 3 次没连上，改走 CF 线路')
+      // 全新安装开机那一轮只查一次就改了，不能说成「连着 3 次」（#963）。
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'first-launch', at }, 'solov'))
+        .toBe('1月3日 08:00，第一次开机查到洛杉矶线路没连上，改走 CF 线路')
       expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at }, 'solov')).toBe('1月3日 08:00，洛杉矶线路连着 10 分钟都能连上，换回洛杉矶线路')
     })
   })
