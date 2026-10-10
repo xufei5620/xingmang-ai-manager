@@ -855,6 +855,29 @@ interface BucketOptions {
   onPackageRequest?: () => void
   /** Bundles the expanded PKG holds, relative to its root; one Claude.app by default. */
   pkgBundles?: string[]
+  /** What pkgutil --check-signature prints; Anthropic's notarized installer by default. */
+  pkgSignature?: string
+}
+
+function installerSignature(signer = 'Developer ID Installer: Anthropic PBC (Q6L2SF6YDW)', status = 'signed by a developer certificate issued by Apple for distribution'): string {
+  return [
+    'Package "package.pkg":',
+    `   Status: ${status}`,
+    '   Notarization: trusted by the Apple notary service',
+    '   Signed with a trusted timestamp on: 2026-10-01 10:00:00 +0000',
+    '   Certificate Chain:',
+    `    1. ${signer}`,
+    '       Expires: 2030-01-01 00:00:00 +0000',
+    '       SHA256 Fingerprint:',
+    '           12 34 56 78',
+    '       ------------------------------------------------------------------------',
+    '    2. Developer ID Certification Authority',
+    '       Expires: 2031-09-17 00:00:00 +0000',
+    '       ------------------------------------------------------------------------',
+    '    3. Apple Root CA',
+    '       Expires: 2035-02-09 21:40:36 +0000',
+    '',
+  ].join('\n')
 }
 
 function bucketSetup(
@@ -894,6 +917,7 @@ function bucketSetup(
     runProcess: async (plan) => {
       if (plan.executable !== '/usr/sbin/pkgutil') return runProcess(plan)
       f.plans.push(plan)
+      if (plan.argv[0] === '--check-signature') return result(plan, bucketOptions.pkgSignature ?? installerSignature())
       // pkgutil --expand-full lays each component's payload out as plain files.
       for (const bundle of bucketOptions.pkgBundles ?? ['Claude.pkg/Payload/Claude.app']) {
         fs.mkdirSync(path.join(plan.argv[2], bundle, 'Contents', 'MacOS'), { recursive: true })
@@ -931,9 +955,11 @@ describe('macOS installer from the Xingmang bucket', () => {
     await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketClaudeVersion, path: path.posix.join(f.applications, 'Claude.app') })
     expect(f.requested).toEqual([desktopBucketIndexUrl('claude-macos-universal'), `${desktopPackageBucketOrigin}/${bucketClaudeKey}`])
     expect(f.routed).toEqual([])
-    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/sw_vers', '/usr/sbin/pkgutil', '/usr/bin/plutil', '/usr/bin/codesign', '/usr/sbin/spctl'])
-    expect(f.plans[1].argv[0]).toBe('--expand-full')
-    expect(f.plans[1].argv[1]).toMatch(/\/bucket\/package\.pkg$/)
+    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/sw_vers', '/usr/sbin/pkgutil', '/usr/sbin/pkgutil', '/usr/bin/plutil', '/usr/bin/codesign', '/usr/sbin/spctl'])
+    // The installer signature is checked before pkgutil parses the payload.
+    expect(f.plans[1].argv).toEqual(['--check-signature', expect.stringMatching(/\/bucket\/package\.pkg$/)])
+    expect(f.plans[2].argv[0]).toBe('--expand-full')
+    expect(f.plans[2].argv[1]).toBe(f.plans[1].argv[1])
     expect(f.plans.some((plan) => plan.executable === '/usr/sbin/installer')).toBe(false)
     expect(signingRequirement(f.plans)).toContain('identifier "com.anthropic.claudefordesktop"')
     expect(fs.readFileSync(path.join(f.applications, 'Claude.app', 'Contents', 'MacOS', 'Claude'), 'utf8')).toBe('binary')
@@ -973,6 +999,44 @@ describe('macOS installer from the Xingmang bucket', () => {
     expect(f.plans.filter((plan) => plan.executable === '/usr/bin/codesign')).toHaveLength(2)
     expect(fs.readdirSync(f.applications)).toEqual(['ChatGPT.app'])
     expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('accepts the installer signature when macOS itself trusts the certificate', async () => {
+    const f = bucketSetup('claudeDesktop', { pkgSignature: installerSignature(undefined, 'signed by a certificate trusted by macOS') })
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: bucketClaudeVersion })
+    expect(f.fallbacks).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('asks the vendor without expanding a PKG that Anthropic did not sign', async () => {
+    const signatures = [
+      installerSignature('Developer ID Installer: Someone Else (ABCDE12345)'),
+      installerSignature(undefined, 'signed by untrusted certificate'),
+      installerSignature().replace('    3. Apple Root CA\n', ''),
+      'Package "package.pkg":\n   Status: no signature\n',
+    ]
+    for (const pkgSignature of signatures) {
+      const f = bucketSetup('claudeDesktop', { pkgSignature })
+      await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ path: path.posix.join(f.applications, 'Claude.app') })
+      expect(f.fallbacks).toEqual(['claude-macos-universal：PKG 不是官方签名的安装包'])
+      expect(f.plans.some((plan) => plan.argv[0] === '--expand-full')).toBe(false)
+      expect(f.routed).toEqual(['start', 'end'])
+      expect(stagingLeftovers(f.home)).toEqual([])
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('asks the vendor when pkgutil cannot check the PKG signature at all', async () => {
+    const f = bucketSetup('claudeDesktop')
+    const runProcess = f.options.runProcess
+    f.options.runProcess = async (plan) => {
+      if (plan.executable === '/usr/sbin/pkgutil' && plan.argv[0] === '--check-signature') {
+        f.plans.push(plan)
+        throw rejection(plan)
+      }
+      return runProcess(plan)
+    }
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ path: path.posix.join(f.applications, 'Claude.app') })
+    expect(f.fallbacks).toHaveLength(1)
+    expect(f.plans.some((plan) => plan.argv[0] === '--expand-full')).toBe(false)
   })
 
   it.skipIf(process.platform === 'win32')('refuses a PKG that holds more than one app of that name', async () => {

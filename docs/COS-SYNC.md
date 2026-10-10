@@ -208,9 +208,9 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 星芒在 Windows、Mac 上一键安装或更新 Codex 桌面端、Claude Desktop 时，先读 `chatgpt/latest.json` 或 `xingmang/offline/claude/latest.json`，从这个桶下同一个官方包；没走通才照旧走原来的路（Windows：Codex 是微软商店、OpenAI 官网、国内镜像，Claude 是系统自带的安装组件、Claude 官网；Mac：问官方的更新信息）。代码在 `electron/desktop-package-bucket.ts`。
 
 - 桶的地址写死在代码里，设置、环境变量、清单内容都改不了它。清单只指对象路径：路径必须和同步脚本写的样子一模一样，下载地址必须正好是桶地址加这个路径，跳转一律不跟。
-- 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG，用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、`windows.buildVersion` 等于包版本。
+- 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG：先用 `pkgutil --check-signature` 核安装包签名是 Anthropic 的 Developer ID Installer，再用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、`windows.buildVersion` 等于包版本。
 - 下载按清单的大小和 SHA-256 核对，下完再照官方那一路核包身份、发布者、签名（Windows 另要求包版本和清单一致；Mac 照旧核 bundle id、最低系统、Team ID 签名和 Gatekeeper）。
-- 读不到清单、清单对不上、下得太慢（照当时的速度还要 10 分钟以上）、包对不上或核不过，都悄悄换回原来的路，客户看不出换了路，原因只写进运行日志（`desktop-bucket.fallback`）。客户点取消就停；Mac 上盘写满了照直说。下好、核过的包交给系统装却没装上时，照官方那一路报错，不再重下。
+- 读不到清单、清单对不上、下得太慢（照当时的速度还要 10 分钟以上）、包对不上或核不过，都悄悄换回原来的路，客户看不出换了路，原因只写进运行日志（`desktop-bucket.fallback`）。下好、核过的包交给 Windows 却没装上时，也照旧走后面几路：商店、系统自带的安装组件和它不一定是同一种装法。客户点取消就停；取消了授权、Mac 上盘写满了照直说。
 - 桶那一路国内直连，不接下载加速线路；只有退回官方那几路时才照旧接。
 - Codex 更新时，桶里那一版不比本机新（桶是定时同步的，会晚一些）就不下，照旧走商店那几路。
 

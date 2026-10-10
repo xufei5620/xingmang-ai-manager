@@ -55,8 +55,8 @@ import { ensureTrustedDirectory } from './trusted-temp'
  * "downloaded from the Internet" prompt in front of an app the toolbox just verified.
  *
  * Codex 桌面端和 Claude Desktop 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
- * yoyo 2026-10-10）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载，解开以后照样过
- * 第 2、3 步才放进「应用程序」；哪一步没过都删掉，照旧问官方。
+ * yoyo 2026-10-10）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
+ * 还要先核安装包签名），解开以后照样过第 2、3 步才放进「应用程序」；哪一步没过都删掉，照旧问官方。
  */
 
 export type MacosDesktopArchitecture = 'arm64' | 'x64'
@@ -89,6 +89,8 @@ interface MacosDesktopAppSource {
   bundleIdentifier: string
   /** Apple Developer team that signs the official build. */
   teamIdentifier: string
+  /** 存储桶里给的是 PKG 时，pkgutil --check-signature 证书链第一张必须是这张。没有就不认 PKG。 */
+  installerSigner?: string
   feedUrl(context: MacosDesktopFeedContext): string
   /** json 先解析再交给 selectRelease，xml 原样交过去。 */
   feedFormat: 'json' | 'xml'
@@ -324,6 +326,7 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
     applicationName: 'Claude',
     bundleIdentifier: 'com.anthropic.claudefordesktop',
     teamIdentifier: 'Q6L2SF6YDW',
+    installerSigner: 'Developer ID Installer: Anthropic PBC (Q6L2SF6YDW)',
     feedUrl: claudeFeedUrl,
     feedFormat: 'json',
     feedNeedsSystemVersion: true,
@@ -676,18 +679,43 @@ async function findExpandedBundle(root: string, bundleName: string): Promise<str
   return found[0]
 }
 
+const installerSignatureStatuses: ReadonlySet<string> = new Set([
+  'signed by a certificate trusted by macOS',
+  'signed by a developer certificate issued by Apple for distribution',
+])
+
 /**
- * 存储桶里的 Claude 是官方的通用 PKG。不装它（那要管理员密码，还会跑包里的脚本），只用 pkgutil
- * 把包里的文件展开到私有暂存目录，pkgutil 展开时不执行包里的任何脚本；找出里面唯一的那个应用，
- * 挪进 extractDirectory，再交给和官方 zip 同一套核对。
+ * Reads `pkgutil --check-signature`. The status line is pkgutil's own trust verdict, and the
+ * chain must be exactly the vendor's Developer ID Installer certificate under Apple's Developer
+ * ID CA and root: the check scripts/sync-claude-official-cos.cjs makes before uploading.
+ */
+function hasPinnedInstallerSignature(text: string, signer: string): boolean {
+  const status = /^\s*Status:\s*([^\r\n]+)$/m.exec(text)?.[1]
+  const chain = [...text.matchAll(/^\s*\d+\.\s*([^\r\n]+)$/gm)].map((match) => match[1])
+  return status !== undefined && installerSignatureStatuses.has(status)
+    && chain.length === 3 && chain[0] === signer
+    && chain[1] === 'Developer ID Certification Authority' && chain[2] === 'Apple Root CA'
+}
+
+/**
+ * 存储桶里的 Claude 是官方的通用 PKG。不装它（那要管理员密码，还会跑包里的脚本），先核安装包签名，
+ * 再用 pkgutil 把包里的文件展开到私有暂存目录，pkgutil 展开时不执行包里的任何脚本；找出里面唯一的
+ * 那个应用，挪进 extractDirectory，再交给和官方 zip 同一套核对。
  */
 async function expandPackageBundle(
+  source: MacosDesktopAppSource,
   packagePath: string,
   workDirectory: string,
   extractDirectory: string,
-  bundleName: string,
   runProcess: InstallMacosDesktopAppOptions['runProcess'],
 ): Promise<void> {
+  if (!source.installerSigner) throw new Error(`存储桶里的 ${source.name} 不该是 PKG`)
+  // pkgutil has to parse the whole archive to expand it, and how it treats hostile entries is
+  // not documented. The bucket index binds only the digest, and whoever could rewrite the
+  // package could rewrite the index too, so a package the vendor did not sign stops here.
+  const signature = await runProcess({ executable: '/usr/sbin/pkgutil', argv: ['--check-signature', packagePath], timeoutMs: probeTimeoutMs })
+  if (!hasPinnedInstallerSignature(signature.stdout, source.installerSigner)) throw new Error('PKG 不是官方签名的安装包')
+  const bundleName = `${source.applicationName}.app`
   // pkgutil creates the target directory itself and refuses one that already exists.
   const expanded = path.posix.join(workDirectory, 'expanded')
   await runProcess({ executable: '/usr/sbin/pkgutil', argv: ['--expand-full', packagePath, expanded], timeoutMs: extractTimeoutMs })
@@ -736,7 +764,7 @@ async function unpackFromBucket(
     const extractDirectory = path.posix.join(workDirectory, 'extract')
     await fs.promises.mkdir(extractDirectory, { mode: 0o700 })
     if (pkg) {
-      await expandPackageBundle(archive, workDirectory, extractDirectory, bundleName, options.runProcess)
+      await expandPackageBundle(source, archive, workDirectory, extractDirectory, options.runProcess)
     } else {
       // Same bsdtar extraction as the vendor zip below, with the same guarantees.
       await options.runProcess({ executable: '/usr/bin/tar', argv: ['-xf', archive, '-C', extractDirectory], timeoutMs: extractTimeoutMs })

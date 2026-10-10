@@ -847,7 +847,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   /**
    * Windows 上 Claude Desktop 的第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。
    * 没打开、读不到、对不上都返回 false，照旧走系统自带的安装组件和官网，原因只进运行日志。下好、核过
-   * 却装不上时照官网那一路的说法抛错：包是好的，换一路重下一遍也一样装不上。
+   * 却没装上时也返回 false：系统自带的安装组件不一定和它是同一种装法，后面几路照存储桶上线前那样走一遍。
+   * 只有客户自己取消、取消了授权、盘满了这几样原样交出：换一路也救不了。
    */
   async function installClaudeDesktopFromBucketOnWindows(report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, cancellation: InstallCancellationHandle): Promise<boolean> {
     const bucket = options.bucketDownloads
@@ -866,15 +867,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       return true
     } catch (error) {
       if (cancellation.cancelled) throw error
-      if (error instanceof DesktopBucketUnavailableError) {
-        bucket.onFallback?.(describeDesktopBucketFallback(`claude-windows-${architecture}`, error))
-        return false
+      if (!(error instanceof DesktopBucketUnavailableError) && isPlainClaudeDesktopInstallMessage(errorText(error))) {
+        throw installationError(errorText(error), error)
       }
-      const detail = error instanceof Error ? error.message : String(error)
-      const message = isPlainClaudeDesktopInstallMessage(detail)
-        ? errorText(error)
-        : buildClaudeDesktopInstallFailureMessage(classifyClaudeDesktopInstallFailure(detail), { wingetTried: false })
-      throw installationError(message, error)
+      // 交给 Windows 装的那一步封存了取消；换下一路下载时又能取消了。
+      cancellation.unseal()
+      bucket.onFallback?.(describeDesktopBucketFallback(`claude-windows-${architecture}`, error))
+      return false
     }
   }
   /**

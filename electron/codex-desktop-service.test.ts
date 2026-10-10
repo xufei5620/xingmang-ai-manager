@@ -66,6 +66,7 @@ import {
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopBucketPackage,
+  shouldContinueAfterCodexDesktopBucketInstall,
   buildCodexDesktopOfficialPackageSource,
   codexDesktopOfficialDownloadLimitMs,
   codexDesktopSlowDownloadGraceMs,
@@ -2932,6 +2933,19 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     }).catch((cause: unknown) => cause)
     expect(isInstallCancelledError(error)).toBe(true)
     expect(requested).toEqual([])
+  })
+
+  it('goes on to the Store and the other routes when Windows refuses the verified bucket package', () => {
+    // The Store does not sideload, so a machine that blocks sideloading may still get Codex from it.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'))).toBe(true)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('安装命令完成后仍未检测到 Codex 桌面端'))).toBe(true)
+    expect(shouldContinueAfterCodexDesktopBucketInstall('spawn failed')).toBe(true)
+  })
+
+  it('stops after the bucket package when another route cannot help either', () => {
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new InstallCancelledError())).toBe(false)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('已取消管理员授权，Codex 桌面端安装未开始。'))).toBe(false)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Codex 桌面端安装失败：磁盘空间不足'))).toBe(false)
   })
 })
 

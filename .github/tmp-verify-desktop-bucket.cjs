@@ -2,7 +2,7 @@
 
 // 临时核对脚本：在 GitHub 的 Mac、Windows 机器上用真网络、真签名核对跑一遍存储桶那一路。
 // 不许退回官方那一路：退回就算失败。Windows 上不真装（只核对到交给 Windows 之前）。
-// 开 PR 前删掉，不进 main。
+// 开 PR 前删掉，不进 main。第二次跑：审查后 Claude 的 PKG 先核安装包签名再展开，签名对不上也会退回、算失败。
 
 const fs = require('node:fs')
 const os = require('node:os')

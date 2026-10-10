@@ -7,9 +7,11 @@
   原因只进运行日志（`desktop-bucket.fallback`），界面文字沿用原来那几句，没有新增。
 - Windows：Codex（`downloadCodexDesktopBucketPackage`，排在微软商店前面；桶里那一版不比本机新就跳过）、
   Claude（`installClaudeDesktopFromBucket`，排在 winget 前面）下完照旧核包身份、发布者、签名，
-  且包版本必须和清单一致，装法与官网那一路共用。下好、核过却装不上时照官网那一路报错，不再换路重下。
-- Mac：Codex 用桶里按芯片的 zip，Claude 用通用 PKG（`pkgutil --expand-full` 只展开、不安装，
-  找出唯一的 Claude.app），解开后照旧核 bundle id、最低系统、Team ID 签名和 Gatekeeper。
+  且包版本必须和清单一致，装法与官网那一路共用。下好、核过却没装上时也照旧走后面几路（商店、winget
+  和侧载不一定是同一种装法）；只有客户取消、取消了授权、盘满了照直报。
+- Mac：Codex 用桶里按芯片的 zip，Claude 用通用 PKG（先 `pkgutil --check-signature` 核安装包签名是
+  Anthropic 的 Developer ID Installer，再 `pkgutil --expand-full` 只展开、不安装，找出唯一的 Claude.app），
+  解开后照旧核 bundle id、最低系统、Team ID 签名和 Gatekeeper。
   `installMacosDesktopApp` 新增 `bucket` 与 `withVendorDownloadRoute`：调用方不再把整个安装包进
   加速线路，只有问官方那一路接线路，桶那一路国内直连。
 - `docs/COS-SYNC.md` 写清客户端认清单里的哪些字段；同步脚本改这些字段会让客户端全部退回原来的路。

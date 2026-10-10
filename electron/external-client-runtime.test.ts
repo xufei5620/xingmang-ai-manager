@@ -1180,23 +1180,43 @@ describe('Windows Claude Desktop bucket route', () => {
     expect(f.fallbacks).toEqual(['claude-windows-arm64：存储桶的安装包 SHA-256 和清单不一致'])
   })
 
-  it('words a failed installation of a verified bucket package like the website route and does not download again', async () => {
+  it('tries the system installer when Windows refuses the verified bucket package, and only logs why', async () => {
     const f = bucketFixture()
-    const failure = new Error('管理员安装失败：Add-AppxPackage 0x80073CF9')
-    f.claudeBucket.mockRejectedValue(failure)
-    await expect(f.runtime.install('claudeDesktop')).rejects.toMatchObject({
-      message: 'Claude Desktop 没装上：这台电脑不让装（Windows 拒绝了这次安装）。',
-      originalError: failure,
+    f.claudeBucket.mockImplementationOnce(async (options) => {
+      options.onInstallStarting?.()
+      throw new Error('管理员安装失败：Add-AppxPackage 0x80073CF9')
     })
-    expect(f.wingetRan()).toBe(false)
-    expect(f.claudeOfficial).not.toHaveBeenCalled()
-    expect(f.fallbacks).toEqual([])
+    const progress: ExternalClientInstallProgress[] = []
+    await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).resolves.toMatchObject({ installed: true })
+    expect(f.wingetRan()).toBe(true)
+    expect(f.fallbacks).toEqual(['claude-windows-x64：管理员安装失败：Add-AppxPackage 0x80073CF9'])
+    expect(progress.some((event) => /存储桶|0x80073CF9/.test(event.message))).toBe(false)
   })
 
-  it('passes a sentence that already says what to do through unchanged', async () => {
+  it('accepts a cancel again on the website download after Windows refused the bucket package', async () => {
+    const f = bucketFixture(noWinget)
+    f.claudeBucket.mockImplementationOnce(async (options) => {
+      options.onInstallStarting?.()
+      throw new Error('管理员安装失败：Add-AppxPackage 0x80073CF9')
+    })
+    const downloading = deferred()
+    f.claudeOfficial.mockImplementationOnce(async (options) => {
+      downloading.resolve()
+      return untilAborted(options.signal)
+    })
+    const install = f.runtime.install('claudeDesktop')
+    await downloading.promise
+    expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({ cancelled: true, reason: null })
+    expect(isInstallCancelledError(await install.catch((cause: unknown) => cause))).toBe(true)
+  })
+
+  it('passes a sentence that already says what to do through unchanged and tries nothing else', async () => {
     const f = bucketFixture()
     f.claudeBucket.mockRejectedValue(new Error('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。'))
     await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('已取消管理员授权，Claude Desktop 安装未开始。')
+    expect(f.wingetRan()).toBe(false)
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.fallbacks).toEqual([])
   })
 
   it('stops the bucket download when the customer cancels and does not try the other routes', async () => {

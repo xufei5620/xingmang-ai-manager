@@ -2304,6 +2304,16 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
 }
 
 /**
+ * 存储桶的包下好、核过，交给 Windows 却没装上以后，要不要照旧走商店、官网、国内镜像。商店和侧载
+ * 是两种装法，这台电脑不让侧载时商店往往还装得上，所以默认接着走，同存储桶上线前一样。客户自己
+ * 取消、取消了授权、盘满了这几样，换一路也救不了，原样交出。
+ */
+export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown): boolean {
+  if (isInstallCancelledError(error)) return false
+  return !isPlainCodexDesktopInstallMessage(error instanceof Error ? error.message : String(error))
+}
+
+/**
  * Mac 上装不成时的那句话。macos-desktop-app-installer.ts 抛的已经是大白话，磁盘不够、
  * 别重复点这类本来就是写给客户看的也原样交出；其余一律说「没装好」，原话进 detail。
  * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「去微软商店装」。
@@ -2996,7 +3006,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   /**
    * 第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。桶里那一版不比本机新、
    * 读不到清单、下载或核对没过，都返回 null，由调用方照旧走商店、官网、国内镜像，原因只进日志。
-   * 下好、核过却装不上时直接抛错，同官网那一路：包是好的，换一路重下一遍也一样装不上。
+   * 下好、核过却没装上时多半也返回 null，见 shouldContinueAfterCodexDesktopBucketInstall。
    */
   async function installCodexDesktopFromBucket(
     target: RendererMessageTarget,
@@ -3047,11 +3057,20 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         return null
       }
       if (downloaded.status === 'not-newer') return null
-      return await installDownloadedCodexDesktopPackage(target, packagePath, {
-        version: downloaded.version,
-        sha256Base64: downloaded.download.sha256Base64,
-        contentLength: downloaded.download.size,
-      }, currentPackage, cancellation)
+      try {
+        return await installDownloadedCodexDesktopPackage(target, packagePath, {
+          version: downloaded.version,
+          sha256Base64: downloaded.download.sha256Base64,
+          contentLength: downloaded.download.size,
+        }, currentPackage, cancellation)
+      } catch (error) {
+        if (!shouldContinueAfterCodexDesktopBucketInstall(error)) throw error
+        // 交给 Windows 装的那一步封存了取消；换下一路时又能取消了。
+        cancellation?.unseal()
+        attempt.bucketFailure = (error instanceof Error ? error.message : String(error)) || '安装没有完成'
+        bucketDownloads.onFallback?.(describeDesktopBucketFallback(`codex-windows-${architecture}`, error))
+        return null
+      }
     } finally {
       // 同另外两路：Add-AppxPackage 可能还攥着文件，放到后台删。
       if (temporaryDirectory) void fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
