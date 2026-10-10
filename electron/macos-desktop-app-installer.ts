@@ -307,7 +307,9 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
   // feed's size and SHA-256, it unpacks to exactly Claude.app (universal x86_64 + arm64), bundle
   // com.anthropic.claudefordesktop with LSMinimumSystemVersion 13.0, signed "Developer ID
   // Application: Anthropic PBC (Q6L2SF6YDW)" and notarized; the pinned requirement and
-  // Gatekeeper both accept it.
+  // Gatekeeper both accept it. Checked again 2026-10-10 on GitHub macOS 15 runners after the feed
+  // split by chip: 2.31226.1 for arm64 and for x64 each unpacks to exactly Claude.app (thin arm64,
+  // thin x86_64, no LSRequiresNativeExecution), same bundle, team, minimum system and notarization.
   claudeDesktop: {
     name: 'Claude Desktop',
     applicationName: 'Claude',
@@ -317,14 +319,14 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
     feedFormat: 'json',
     feedNeedsSystemVersion: true,
     archiveFormat: 'zip',
-    // 2.19675.0 is 379 MB.
+    // 2.19675.0 universal was 379 MB; 2.31226.1 is 271 MB on Apple silicon and 279 MB on Intel.
     maximumArchiveBytes: 1536 * 1024 * 1024,
     selectRelease: selectClaudeRelease,
     allowsUrl: allowsClaudeUrl,
     // 以前给通用包时，工具箱的 x64 版在 Apple 芯片上装出来的也是原生的 Claude；包按芯片分开以后照旧。
     packageForHardware: true,
   },
-  // Checked the same day and way with 26.930.31730 for both architectures: both appcasts and
+  // Checked 2026-10-03 the same way with 26.930.31730 for both architectures: both appcasts and
   // zips come straight from persistent.oaistatic.com, each zip matches its appcast length and
   // unpacks to exactly ChatGPT.app (thin arm64, thin x86_64), bundle com.openai.codex with
   // LSMinimumSystemVersion 13.0, signed "Developer ID Application: OpenAI OpCo, LLC
