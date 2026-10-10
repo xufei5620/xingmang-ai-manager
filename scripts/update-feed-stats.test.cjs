@@ -8,6 +8,7 @@ const {
   aggregateStats,
   classifyUserAgent,
   collectUpdateFeedStats,
+  networkOf,
   parseDays,
   parseInstallerPath,
   planWindow,
@@ -274,6 +275,24 @@ test('with hours, a machine counts at the version of its latest hour, not of the
   })
 })
 
+test('an IPv6 client counts by its /64 network, the way an IPv4 client counts by its public address', () => {
+  assert.equal(networkOf('203.0.113.7'), '203.0.113.7')
+  assert.equal(networkOf('2001:db8:1234:5678:a:b:c:d'), '2001:db8:1234:5678::/64')
+  assert.equal(networkOf('2001:0db8:0001::abcd'), '2001:db8:1:0::/64')
+  assert.equal(networkOf('2001:db8::'), '2001:db8:0:0::/64')
+  assert.equal(networkOf('::ffff:198.51.100.2'), '198.51.100.2')
+  // Privacy extensions rotate the interface half: the same computer, still one machine, and the follow-up still joins.
+  const pieces = [{
+    rows: [
+      statusRead(mac15, '2001:db8:1234:5678:1111:2222:3333:4444', '09'),
+      statusRead(mac18, '2001:db8:1234:5678:5555:6666:7777:8888', '12'),
+    ],
+  }]
+  assert.deepEqual(Object.fromEntries(aggregateStats(pieces, true).machines), { '0.2.18': { windows: 0, mac: 1, linux: 0, other: 0 } })
+  const summary = summarizeInstallerDownloads(pieces, [{ rows: [download('XingMang-AI-Manager-0.2.18-Apple-Silicon-arm64.zip', '2001:db8:1234:5678:9999::1', '10')] }])
+  assert.deepEqual(summary.outcomes.mac, { installed: 1, pending: 0, gone: 0 })
+})
+
 test('only the installers the updater downloads are recognised, with their version and platform', () => {
   assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-Setup.exe'), { version: '0.2.18', platform: 'windows' })
   // The released Mac names carry the chip name; versions shipped before the rename kept electron-builder's.
@@ -379,7 +398,8 @@ test('the report follows installer downloads by hour and states its scope, still
   assert.match(report, /\| 之后以 0\.2\.18 读过状态文件（装上了） \| 0\.0% \| 100\.0% \|/)
   assert.match(report, /\| 之后还以旧版本读状态文件（还没装上） \| 50\.0% \| 0\.0% \|/)
   assert.match(report, /\| 之后在这里没再出现 \| 50\.0% \| 0\.0% \|/)
-  assert.match(report, /下过的电脑不到 20 台，比例只能粗看/)
+  assert.match(report, /Windows 下过的电脑不到 20 台，这一列只能粗看/)
+  assert.match(report, /Mac 下过的电脑不到 20 台，这一列只能粗看/)
   assert.match(report, /\| 0\.2\.18 \| 0\.0% \| 33\.3% \| 0\.0% \| \*\*33\.3%\*\* \|/)
   assert.doesNotMatch(report, /203\.0\.113|198\.51\.100/)
   assert.doesNotMatch(report, /\| (?:1|2|3|4) \|/)

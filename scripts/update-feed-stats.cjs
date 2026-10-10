@@ -295,6 +295,24 @@ function classifyUserAgent(userAgent) {
   return match ? { version: match[1], platform: platformOf(userAgent) } : null
 }
 
+// 一台电脑的 IPv6 临时地址隔一阵就换（系统的隐私扩展），同一台前后两次请求的地址常常不同；
+// 网段前 64 位在同一个网络里不变。所以 IPv6 按 /64 网段算一个出口，和 IPv4 一个公网地址算一个出口
+// 是同样的口径：同一个出口后面的几台电脑算一台。
+function networkOf(address) {
+  if (typeof address !== 'string' || !address.includes(':')) return address
+  const mappedIpv4 = /^(?:0{0,4}:){0,5}ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address.replace(/^::/, '0:'))
+  if (mappedIpv4) return mappedIpv4[1]
+  const [head, tail = null] = address.toLowerCase().split('::')
+  const headGroups = head ? head.split(':') : []
+  const tailGroups = tail ? tail.split(':') : []
+  const groups = tail === null ? headGroups : [...headGroups, ...Array(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill('0'), ...tailGroups]
+  return `${groups.slice(0, 4).map((group) => group.replace(/^0+(?=.)/, '')).join(':')}::/64`
+}
+
+function machineKey(platform, address) {
+  return `${platform}\n${networkOf(address)}`
+}
+
 // 有小时就按小时排先后；没有就按所在那一段排（pieces 本来就按时间先后）。
 function readTime(row, piece, index) {
   if (Number.isFinite(row.time)) return row.time
@@ -321,7 +339,7 @@ function aggregateStats(pieces, withIp) {
       }
       requests.set(client.version, (requests.get(client.version) || 0) + row.count)
       if (!withIp) continue
-      const key = `${client.platform}\n${row.clientIP}`
+      const key = machineKey(client.platform, row.clientIP)
       const time = readTime(row, piece, index)
       const previous = latest.get(key)
       if (!previous || time > previous.time || (time === previous.time && compareReleaseVersions(client.version, previous.version) > 0)) {
@@ -357,7 +375,7 @@ function summarizeInstallerDownloads(statusPieces, installerPieces) {
       const installer = parseInstallerPath(row.path)
       if (!installer || !Number.isFinite(row.time)) continue
       sampleInterval = Math.max(sampleInterval, row.sampleInterval)
-      downloads.push({ ...installer, key: `${installer.platform}\n${row.clientIP}`, time: row.time })
+      downloads.push({ ...installer, key: machineKey(installer.platform, row.clientIP), time: row.time })
       if (!version || compareReleaseVersions(installer.version, version) > 0) version = installer.version
     }
   }
@@ -373,7 +391,7 @@ function summarizeInstallerDownloads(statusPieces, installerPieces) {
     for (const row of piece.rows) {
       const client = classifyUserAgent(row.userAgent)
       if (!client || !Number.isFinite(row.time)) continue
-      const key = `${client.platform}\n${row.clientIP}`
+      const key = machineKey(client.platform, row.clientIP)
       const downloaded = downloadedAt.get(key)
       if (downloaded === undefined) continue
       if (compareReleaseVersions(client.version, version) >= 0) {
@@ -471,7 +489,9 @@ function renderInstallerSection(downloads) {
     '- Mac 的更新不走洛杉矶，「没再出现」就是之后没再开星芒。拿 Mac 这一格当「关了没再开」的大概比例，'
       + 'Windows 那一格多出来的，大致就是装好后改走洛杉矶的（推测）。',
   )
-  if (totals.windows + totals.mac < SMALL_SAMPLE) lines.push(`- 下过的电脑不到 ${SMALL_SAMPLE} 台，比例只能粗看。`)
+  for (const [id, label] of columns) {
+    if (totals[id] > 0 && totals[id] < SMALL_SAMPLE) lines.push(`- ${label} 下过的电脑不到 ${SMALL_SAMPLE} 台，这一列只能粗看。`)
+  }
   if (downloads.sampleInterval > 1) lines.push('- Cloudflare 这段时间是抽样记录的，一台电脑只下一次的请求可能漏记，这一节的偏差比上面大。')
   return lines
 }
@@ -500,7 +520,7 @@ function renderReport(stats, window, limits, days, downloads = null) {
   } else if (stats.withIp) {
     const table = renderMachineTable(stats.machines)
     lines.push('按电脑算（每格是占全部电脑的比例）：', '', ...table.lines, '')
-    lines.push('电脑按「来源 IP + 系统」去重，每台只算它这段时间里最后一次读更新状态文件时的版本。同一个网络出口下的几台电脑只算一台，换过网络的电脑会算成几台，比例会有些偏差。')
+    lines.push('电脑按「来源 IP + 系统」去重（IPv6 按 /64 网段），每台只算它这段时间里最后一次读更新状态文件时的版本。同一个网络出口下的几台电脑只算一台，换过网络的电脑会算成几台，比例会有些偏差。')
     lines.push('', 'Windows 一栏里 0.2.18 及以后偏低、更早的版本偏高，原因见下面「口径」。')
     if (table.total < SMALL_SAMPLE) lines.push('', `这段时间读到的电脑不到 ${SMALL_SAMPLE} 台，比例只能粗看。`)
   } else {
@@ -560,6 +580,7 @@ module.exports = {
   classifyUserAgent,
   collectUpdateFeedStats,
   parseDays,
+  networkOf,
   parseInstallerPath,
   planWindow,
   renderReport,
