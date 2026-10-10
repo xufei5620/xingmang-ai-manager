@@ -126,3 +126,29 @@ test('the CAM policy retains only the two previously authorized distribution pre
     'qcs::cos:ap-shanghai:uid/1342302199:xingmang-downloads-1342302199/chatgpt/*',
   ])
 })
+
+test('only a scheduled sync on main reports failures, from a job that can write issues but never sees COS credentials', () => {
+  const gate = "${{ always() && github.event_name == 'schedule' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}"
+  for (const [file, parsed, needs] of [
+    ['sync-claude-official-cos.yml', claudeWorkflow, ['select', 'sync']],
+    ['sync-chatgpt-official-cos.yml', workflow, ['select', 'sync', 'verify-index']],
+  ]) {
+    const alert = parsed.jobs.alert
+    assert.deepEqual(alert.needs, needs, file)
+    // cos-sync-alert.cjs recognizes its own job by this name and leaves it out of the failed jobs.
+    assert.equal(alert.name, undefined)
+    assert.deepEqual(Object.keys(parsed.jobs).filter((id) => id !== 'alert').sort(), [...needs].sort(), `${file} must wait for every other job`)
+    assert.equal(alert.if, gate, file)
+    assert.equal(alert['runs-on'], 'ubuntu-latest')
+    assert.equal(alert.environment, undefined)
+    assert.deepEqual(alert.permissions, { actions: 'read', contents: 'read', issues: 'write' })
+    for (const [id, job] of Object.entries(parsed.jobs)) if (id !== 'alert') assert.equal(job.permissions, undefined, `${file}#${id} keeps the read-only workflow token`)
+    const checkout = alert.steps.find((step) => /actions\/checkout@/.test(step.uses || ''))
+    assert.equal(checkout.with['persist-credentials'], false)
+    for (const step of alert.steps.filter((entry) => entry.uses)) assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+    const report = alert.steps.find((step) => step.run)
+    assert.equal(report.run, 'node scripts/cos-sync-alert.cjs')
+    assert.deepEqual(report.env, { GITHUB_TOKEN: '${{ github.token }}', SYNC_WORKFLOW_FILE: file, SYNC_NEEDS: '${{ toJSON(needs) }}' })
+    assert.doesNotMatch(JSON.stringify(alert), /secrets\.|COS_SECRET|COS_BUCKET/)
+  }
+})

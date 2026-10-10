@@ -39,7 +39,7 @@ Claude Windows 固定 `latest/redirect` 入口使用匿名 GET，仅读取响应
 
 Claude Mac 的这两个浏览器下载入口在 runner 返回 403，并明确带有人机验证标记；同步器不会处理或绕过该验证。Mac 来源改用官方客户端公开 SDK 所使用的正常匿名更新协议：在原生 macOS runner，固定访问 `api.anthropic.com/api/desktop/darwin/<实际架构>/squirrel/update`，携带本次同步器自行生成的临时安装 UUID、已验证种子版本及 `sw_vers` 产品版本。不读取用户设备身份、账号配置或认证 Cookie；UUID 不出现在日志、COS 清单或公开下载页面。
 
-官方更新 JSON 的 `currentRelease` 必须对应唯一 `releases[].updateTo`，其中完整 Universal ZIP 的无查询参数地址、声明大小及 SHA-256 都须通过固定 schema。用该 Mac 发布版本和 release ID 构造两个独立的 DMG/PKG 候选地址；这个格式对应关系来自实际官方下载样本，并非厂商承诺的长期跨格式接口。任何候选不存在、官方元数据或包内版本变化，都停止发布并保留原 latest。ZIP 的 SHA-256 只作元数据溯源，不作为 DMG/PKG 的文件摘要。
+官方更新 JSON 的 `currentRelease` 必须对应唯一 `releases[].updateTo`，其中完整 ZIP 的无查询参数地址、声明大小及 SHA-256 都须通过固定 schema。2026-10-07 起官方 feed 按芯片给更新 ZIP（`darwin/arm64/…`、`darwin/x64/…`，以前是 `darwin/universal/…`），所以 ZIP 地址接受 `universal` 或与本次查询架构一致的那一种，另一种芯片的地址照旧拒绝。通用 DMG/PKG 仍在 `darwin/universal/<版本>/Claude-<release ID>` 下，和分芯片 ZIP 同版本、同 release ID（2026-10-10 runner 实测 2.31226.1；同一位置的分芯片 DMG/PKG 是 404），所以同步的仍是通用包。用该 Mac 发布版本和 release ID 构造两个独立的 DMG/PKG 候选地址；这个格式对应关系来自实际官方下载样本，并非厂商承诺的长期跨格式接口。任何候选不存在、官方元数据或包内版本变化，都停止发布并保留原 latest。ZIP 的 SHA-256 只作元数据溯源，不作为 DMG/PKG 的文件摘要。
 
 当前 `2.19675.0` 的两个候选还分别绑定正常官方浏览器下载后计算的大小和 SHA-256，依据保存在 `claude-mac-confirmed-sources.cjs`。将来官方更新 feed 给出新版本时自动解析新候选，不套用旧版浏览器摘要。DMG/PKG 均完整下载、原生验签后才可上传：固定 `Anthropic PBC`、Team `Q6L2SF6YDW`、Apple 根链和应用标识；PKG 还展开实际 payload，验证其中唯一应用的签名、Info.plist 版本及 Intel/Apple Silicon Mach-O。包壳的 PackageInfo 版本和 URL 中的 universal 字样不能代替这两项验证。
 
@@ -149,6 +149,17 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 ### Claude 桌面备用包
 
 打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。定时与 `all` 覆盖 Windows x64/ARM64 和 Mac 通用 DMG/PKG 四个安装包。也可只重跑 `windows`、`macos`，或精确选择 `windows-x64`、`windows-arm64`、`macos-dmg-universal`、`macos-pkg-universal`；精确选择沿用同一来源、原生验证和完整公共回读流程，平台作业保留索引中的其它已发布平台（包括历史 Linux 条目）。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/claude/latest.json`。沿用现有 `xingmang/*` 的 GetObject、HeadObject、PutObject 权限和 GitHub Secrets，不增加 `claude/*` 授权或创建新密钥。
+
+### 同步失败报警
+
+两条官方离线包定时同步各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
+
+- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个平台。
+- 之后再失败只更新这条 issue 的正文，不另开；下一次定时同步成功就自动留言「恢复正常更新」并关闭。
+- 手动运行（Run workflow）不计数，也不开关 issue；重跑以前的某次定时运行也不改 issue，以最新一次定时同步为准。只有 `alert` 作业自己红（比如 GitHub 接口临时出错）的那次不算同步失败。
+- 看原因：打开 issue 里的运行链接，点红色作业，日志里搜 `stage-failed`，`stage` 是卡在哪一步，`failure.code` 是原因。
+
+报警只用本次运行自带的 `GITHUB_TOKEN`，作业级权限 `actions: read`（读运行记录）和 `issues: write`（开、改、关 issue），不引用 COS 凭据，不接外部服务。
 
 ## 网络不稳时（2026-10-04）
 
