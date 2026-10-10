@@ -398,9 +398,9 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 | 谁 | 定位 | 说明 |
 |---|---|---|
-| **开发者 A（你）+ Win/Mac Claude** | 全产品线 | 有 Windows + macOS 双环境，**平台强相关的验证任务优先派给这边** |
+| **开发者 A（你）+ Win/Mac Claude** | 全产品线 | 有 Windows + macOS 双环境，**平台强相关的验证任务优先派给这边**；Claude·win 自 2026-10-10 起只做真机验证、找问题、提 issue |
 | **开发者 B + Codex** | 全产品线 | 更熟悉现有代码库，**安全边界相关改动优先由这边把关或 review** |
-| **云端 Claude** | 规划 / 架构 / 规范 / Issue 分发，也改业务代码 | 平台专有的验证靠 CI 与本地，见 `COLLABORATION.md` §7 |
+| **云端 Claude** | 主开发：功能设计与实现、定版与合并、跨仓库方案、规范文档 | Windows 专属的设计由能测的人主导、云端审；分工与两条硬要求见 `COLLABORATION.md` §7 |
 
 **因为不再有「各管一摊」的天然隔离，`COLLABORATION.md` 的串行约束变得更关键：**
 
@@ -414,7 +414,7 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 2. **再看冲突**：同一时间同一热点文件只能有一个人
 3. **最后看熟悉度**：安全边界相关（`command-runner` / `windows-elevation` / `trusted-*` / `config-files`）优先 B 主导或 review
 
-任务分发走 GitHub Issue（见 `COLLABORATION.md`），本地 agent 轮询 `gh issue list --label agent:xxx` 认领。
+任务分发走 GitHub Issue（见 `COLLABORATION.md`），本地 agent 轮询 `gh issue list --label env:xxx` 认领。
 
 ---
 
