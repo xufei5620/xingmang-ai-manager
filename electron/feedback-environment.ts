@@ -2,7 +2,7 @@ import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
-import type { RelayEndpointRoutingSnapshot } from './relay-sites'
+import type { RelayEndpointId, RelayEndpointRoutingSnapshot } from './relay-sites'
 import type { CliStatus, DesktopAppStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
 import {
   describeWindowsExecutionProbeFailure,
@@ -188,6 +188,11 @@ export interface FeedbackRuntimeInput {
    * resolveFeedbackRelayRoute 给出；不写地址。缺省时这一行不出。
    */
   relayRoute?: string | null
+  /**
+   * 星芒账号写进 AI 工具配置的那条线路（xm 三线路的工具线路），由 resolveFeedbackToolRoute 给出；
+   * 历史账号没有这一行。
+   */
+  toolRoute?: string | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -269,9 +274,23 @@ export function resolveFeedbackRelayRoute(routing: RelayEndpointRoutingSnapshot,
   const site = routing.resolve(siteId)
   if (site.id !== 'solov' && site.id !== 'solov-api') return null
   const preference = routing.preferences[site.id]
+  // 星芒账号的两条线路叫洛杉矶、CF（xm 三线路附录 A）；历史账号照旧叫直连、默认线路。
+  if (site.id === 'solov') {
+    if (preference === 'direct') return '只用洛杉矶'
+    if (preference === 'primary') return '只用 CF'
+    return routing.lines().solov.line === 'direct' ? '自动（这次用的是洛杉矶线路）' : '自动（这次用的是 CF 线路）'
+  }
   if (preference === 'direct') return '只用直连'
   if (preference === 'primary') return '只用默认线路'
   return routing.lines()[site.id].line === 'direct' ? '自动（这次用的是直连）' : '自动（这次用的是默认线路）'
+}
+
+const feedbackSolovLineNames: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶', primary: 'CF' }
+
+/** 「工具线路」那一行：只有星芒账号有，写的是工具配置这会儿该用的那条（不写地址）。 */
+export function resolveFeedbackToolRoute(toolRouting: RelayEndpointRoutingSnapshot, siteId: string | null | undefined): string | null {
+  if (toolRouting.resolve(siteId).id !== 'solov') return null
+  return feedbackSolovLineNames[toolRouting.lines().solov.line]
 }
 
 /**
@@ -289,6 +308,7 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
   if (input.relayRoute?.trim()) lines.push(`连接线路: ${input.relayRoute.trim()}`)
+  if (input.toolRoute?.trim()) lines.push(`工具线路: ${input.toolRoute.trim()}`)
   if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)

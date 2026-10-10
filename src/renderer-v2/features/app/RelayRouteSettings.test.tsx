@@ -16,8 +16,9 @@ describe('RelayRouteSettings', () => {
   it('shows auto as chosen when nothing is stored, with the approved option names', () => {
     const html = renderToStaticMarkup(<RelayRouteSettings settings={{ activeRelayEndpointIds: { solov: 'auto', 'solov-api': 'auto' } }} saving={false} restarting={false} onChange={() => undefined} onRestart={() => undefined} />)
     expect(html.match(/<option value="auto" selected="">自动（推荐）<\/option>/g)).toHaveLength(2)
-    expect(html).toContain('只用直连')
-    expect(html).toContain('只用默认线路')
+    // 星芒账号叫洛杉矶、CF；历史账号照旧叫直连、默认线路。
+    expect(html).toMatch(/aria-label="星芒账号线路".*只用洛杉矶.*只用 CF.*aria-label="历史账号线路".*只用直连.*只用默认线路/s)
+    expect(html).toContain('自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。')
     expect(html).toContain('自动会先走直连，直连连不上时改走默认线路。保存后重启星芒生效，不会切换账号。')
     expect(html).not.toContain('settings-relay-relaunch')
   })

@@ -2013,6 +2013,21 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false, { acceptCached: true, path: '/etc' })).rejects.toThrow('检测参数格式错误')
   })
 
+  it('asks for a tool line recheck only when the customer pressed the home rescan', async () => {
+    const service = serviceStub()
+    const onRouteRecheckRequested = vi.fn()
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, { onRouteRecheckRequested })
+    const handler = electronMocks.handlers.get('system:scan')!
+
+    await Promise.resolve(handler(trustedEvent(), true)).catch(() => undefined)
+    expect(onRouteRecheckRequested).not.toHaveBeenCalled()
+    await Promise.resolve(handler(trustedEvent(), true, { recheckRoutes: true })).catch(() => undefined)
+    expect(onRouteRecheckRequested).toHaveBeenCalledTimes(1)
+    expect(service.scanSystem).toHaveBeenLastCalledWith(true)
+    await expect(handler(trustedEvent(), true, { recheckRoutes: 'yes' })).rejects.toThrow('检测参数格式错误')
+    expect(onRouteRecheckRequested).toHaveBeenCalledTimes(1)
+  })
+
   it('holds scans and the startup update check until the login quiet period ends', async () => {
     const service = serviceStub()
     const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }

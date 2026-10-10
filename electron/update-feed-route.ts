@@ -4,6 +4,7 @@ import { readBoundedUtf8FileSync } from './bounded-file'
 import { networkFailureCode } from './network-failure'
 import { relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import type { RelayEndpointId } from './relay-sites'
+import type { RouteStatus } from './route-status-file'
 
 const primaryUpdateUrl = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
 const directUpdateUrl = 'https://xm-direct.solov.cc/xingmang-manager/'
@@ -79,6 +80,16 @@ export function packagedUpdateFeed(): DirectUpdateFeed {
     feed: { provider: 'generic', url: primaryUpdateUrl },
     serviceStatusUrl: new URL('service-status.json', primaryUpdateUrl).href,
   }
+}
+
+/**
+ * 更新这次走哪份目录（xm 三线路 C15）：应用线路在洛杉矶时走洛杉矶那份镜像；但线路状态文件说洛杉矶那个域名
+ * 这会儿指向香港入口（target 为 hkg）时改用包里那份——管理工具自己的流量不走香港。状态文件读不到、
+ * 没读过照旧。换的只是下载地址：包里那份和镜像是同一批文件、同一份清单，验签照旧（#944）。
+ */
+export function updateFeedLineFor(appLine: RelayEndpointId, routeStatus: RouteStatus | null): RelayEndpointId {
+  if (appLine === 'direct' && routeStatus?.lines.direct?.target === 'hkg') return 'primary'
+  return appLine
 }
 
 const directFeedFallbackStatuses: ReadonlySet<number> = new Set([404, 502, 503, 504])

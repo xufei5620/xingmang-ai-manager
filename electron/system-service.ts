@@ -5,7 +5,7 @@ import { isIP } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy } from './app-settings'
+import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy, type RelayToolRouteStatus } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
 import type { InstallProgressStage, NodeRuntimeInstallRequest } from './ipc-contract'
 import { redactHomeDirectory } from './startup-log'
@@ -242,7 +242,7 @@ import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
 import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
-  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelaySite } from './relay-sites'
+  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -545,6 +545,8 @@ export interface SystemSnapshot {
 /** 首页那次读取可以先拿上次的结果（见 SystemService.cachedScan）；其余调用方不传。 */
 export interface SystemScanOptions {
   acceptCached?: boolean
+  /** 客户亲手点了首页的「重新检测」：星芒账号的工具线路也马上查一轮（xm 三线路 5.1.4）。 */
+  recheckRoutes?: boolean
 }
 
 /** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
@@ -2600,6 +2602,15 @@ export interface SystemServiceOptions {
   getRelaySiteId?: () => string
   /** Preferences freeze at startup; under "auto" the line itself may move during the run (relay-route-controller.ts). */
   relayEndpointRouting?: RelayEndpointRoutingSnapshot
+  /**
+   * xm 三线路：relayEndpointRouting 给的是工具线路（星芒账号读 tool-route-controller.ts，历史账号照旧读应用线路，
+   * relay-sites.ts 的 createToolRouteRoutingSnapshot）。这里给设置快照里管理工具自己那条线路（relayRouteLines，
+   * 含义不变）和工具线路的状态。缺省 = 两套是同一套（旧行为）。
+   */
+  relayToolRouting?: {
+    applicationLines(): RelayRouteLines
+    status(): RelayToolRouteStatus | undefined
+  }
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
   /**
@@ -3106,6 +3117,7 @@ export function createSystemService(
   }
   function providerRelaySite(provider: ProviderId, current: NativeConfigInspection, removal = false): RelaySite {
     const selected = activeRelaySite()
+    // 星芒账号接了工具线路以后一直是定下来的，「还没定、认得出的旧地址原样留着」只剩历史账号会走（xm 三线路 5.1.0）。
     if (!removal && relayRouting.selection(selected.id) !== undefined) return selected
     return relaySiteForProviderBaseUrl(selected.id, provider, current.actualBaseUrl) ?? selected
   }
@@ -7664,6 +7676,18 @@ export function createSystemService(
     return { relayLine, ...(state ? { relayRouteState: state } : {}) }
   }
 
+  // relayRouteLines 一直是管理工具自己那条（应用线路）；接了工具线路时另给星芒账号写进工具配置的那条和它的状态。
+  function routeLineSnapshotFields(): Pick<AppSettings, 'relayRouteLines' | 'relayToolRouteLines' | 'relayToolRouteStatus'> {
+    const tool = serviceOptions.relayToolRouting
+    if (!tool) return { relayRouteLines: relayRouting.lines() }
+    const status = tool.status()
+    return {
+      relayRouteLines: tool.applicationLines(),
+      relayToolRouteLines: { solov: relayRouting.lines().solov },
+      ...(status ? { relayToolRouteStatus: status } : {}),
+    }
+  }
+
   function toolRouteSnapshotFields(): { toolRouteRestartHint?: ToolRouteRestartHint; toolRouteRewrite?: 'merge' } {
     const hint = currentToolRouteRestartHint()
     return { ...(hint ? { toolRouteRestartHint: hint } : {}), ...(toolRouteRewriteMode() === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}) }
@@ -8018,10 +8042,10 @@ export function createSystemService(
 
   return {
     readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.preferences },
-      relayRouteLines: relayRouting.lines(), ...toolRouteSnapshotFields(),
+      ...routeLineSnapshotFields(), ...toolRouteSnapshotFields(),
       ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
     updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
-      relayRouteLines: relayRouting.lines(), ...toolRouteSnapshotFields() }),
+      ...routeLineSnapshotFields(), ...toolRouteSnapshotFields() }),
     followToolRoutes,
     bindToolRouteAccount: (hooks) => { toolRouteAccount = hooks },
     recheckPendingExternalRoutes,

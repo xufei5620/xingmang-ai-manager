@@ -7,8 +7,10 @@ import {
   locateDirectUpdateFeed,
   packagedUpdateFeed,
   resolveDirectUpdateFeed,
+  updateFeedLineFor,
   type UpdateFeedRouteOptions,
 } from './update-feed-route'
+import type { RouteStatus } from './route-status-file'
 
 const primaryUrl = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
 const directUrl = 'https://xm-direct.solov.cc/xingmang-manager/'
@@ -155,5 +157,28 @@ describe('classifyDirectFeedFailure', () => {
     expect(classifyDirectFeedFailure(new Error('net::ERR_ABORTED'))).toBeNull()
     expect(classifyDirectFeedFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
     expect(classifyDirectFeedFailure(null)).toBeNull()
+  })
+})
+
+describe('updateFeedLineFor', () => {
+  function status(target: string | null): RouteStatus {
+    return {
+      updatedAt: null,
+      incident: { line: null, state: 'none', since: null },
+      lines: { direct: { target, proxied: false, healthy: true, legitIps: [] } },
+      hkEnabled: false,
+      hkRecommended: false,
+    }
+  }
+
+  it('keeps the app line while the status file is unread or the Los Angeles name points at Los Angeles', () => {
+    expect(updateFeedLineFor('direct', null)).toBe('direct')
+    expect(updateFeedLineFor('direct', status('lax'))).toBe('direct')
+    expect(updateFeedLineFor('direct', status(null))).toBe('direct')
+    expect(updateFeedLineFor('primary', status('hkg'))).toBe('primary')
+  })
+
+  it('uses the packaged feed when the Los Angeles name has moved to the Hong Kong entry', () => {
+    expect(updateFeedLineFor('direct', status('hkg'))).toBe('primary')
   })
 })

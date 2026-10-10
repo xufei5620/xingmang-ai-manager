@@ -190,6 +190,21 @@ export interface DiagnosticsDependencies {
    */
   relayRoute?: DiagnosticsRelayRoute
   /**
+   * xm 三线路：各工具「连接设置」那几项、「电脑里另外设过的工具地址或密钥」比的是写进工具配置的那条线路
+   * （工具线路），它可以和「星芒 AI 网络」用的那条（应用线路）不一样。缺省 = 和 relaySite、relayRoute
+   * 同一份（旧行为，历史账号也一直是这样）。
+   */
+  toolRoute?: {
+    site: RelaySite
+    route?: Pick<DiagnosticsRelayRoute, 'line' | 'automatic' | 'settled' | 'primarySite'>
+    /**
+     * 工具线路这会儿的情况（C16）：最近一次切换和原因、线路状态文件读不读得到和 incident、两条线路
+     * 最近一次照工具的连法探测的结果。只写进「星芒 AI 网络」那一项导出的报告，检查页的详情不摆；
+     * 不带地址。
+     */
+    report?(): Record<string, string>
+  }
+  /**
    * 加速开着没有。开着时星芒自己的服务按加速规则直接连（acceleration-clash-config.ts
    * 的 relayDirectHosts），「星芒 AI 网络」一项顺带说一句，免得用户以为这项量的是加速线路。
    * 缺省 = 不提（旧行为）。
@@ -1446,14 +1461,19 @@ function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
 }
 
 /**
- * 「星芒 AI 网络」查通时那句结论（直连适配方案第六节第 3 条原话）。fellBack：选的是「自动」，
- * 直连这会儿连不上，用的是默认线路（这次当场退回的，或者之前就已经退回的）。
+ * 「星芒 AI 网络」查通时那句结论。fellBack：选的是「自动」，直连这会儿连不上，用的是默认线路（这次当场
+ * 退回的，或者之前就已经退回的）。星芒账号说洛杉矶、CF（xm 三线路附录 A）；历史账号照旧是直连适配方案
+ * 第六节第 3 条的原话。
  */
-export function relayNetworkPassSummary(route: { line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
+export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
   if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
-  const summary = route.line === 'direct'
-    ? '能连上星芒服务，用的是直连'
-    : route.fellBack ? '能连上星芒服务。直连这会儿连不上，已自动改走默认线路' : '能连上星芒服务，用的是默认线路'
+  const summary = route.siteId === 'solov'
+    ? route.line === 'direct'
+      ? '能连上星芒服务，用的是洛杉矶线路'
+      : route.fellBack ? '能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路' : '能连上星芒服务，用的是 CF 线路'
+    : route.line === 'direct'
+      ? '能连上星芒服务，用的是直连'
+      : route.fellBack ? '能连上星芒服务。直连这会儿连不上，已自动改走默认线路' : '能连上星芒服务，用的是默认线路'
   return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
 }
 
@@ -1561,9 +1581,15 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
   return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
-// 这两条线路在星芒里就叫这两个名字（设置里的「只用直连」「只用默认线路」、网络那一项的结论都这么叫）。
-// 下面几处只写进导出的检查报告，客服看得懂；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
+// 线路在星芒里就叫这几个名字，和设置里的选项、网络那一项的结论一致：星芒账号叫洛杉矶、CF（xm 三线路），
+// 历史账号叫直连、默认线路。下面几处只写进导出的检查报告，客服看得懂；检查页的详情不摆
+// （diagnostic-details.ts 不列这几个键）。
 const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '默认线路', direct: '直连' }
+const solovLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: 'CF', direct: '洛杉矶' }
+
+function relayLineName(siteId: string, line: RelayEndpointId): string {
+  return siteId === 'solov' ? solovLineNames[line] : relayLineNames[line]
+}
 
 /** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
 interface ProviderRelayLine {
@@ -1583,22 +1609,25 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
  * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
  * 换到哪条，不带地址。时间按这台电脑的时区说。
  */
-export function describeRelayRouteChange(change: RelayRouteChange): string {
+export function describeRelayRouteChange(change: RelayRouteChange, siteId: string): string {
   const at = new Date(change.at)
   const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  const direct = siteId === 'solov' ? '洛杉矶线路' : '直连'
+  // 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法。
+  const primary = siteId === 'solov' ? ' CF 线路' : '默认线路'
   const reason = change.reason === 'recovered'
-    ? `直连连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回直连`
+    ? `${direct}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${direct}`
     : change.reason === 'health-failed'
-      ? `直连连着 ${relayRouteFailureThreshold} 次没连上，改走默认线路`
-      : '查到直连能连上，走直连'
+      ? `${direct}连着 ${relayRouteFailureThreshold} 次没连上，改走${primary}`
+      : `查到${direct}能连上，走${direct}`
   return `${time}，${reason}`
 }
 
 // 连同引起那一轮检查的错误码一起只进导出的报告，客服拿它对服务端的日志。
 function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Record<string, string> {
   const change = route?.lastChange
-  if (!change) return {}
-  return { lastRouteChange: describeRelayRouteChange(change), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
+  if (!route || !change) return {}
+  return { lastRouteChange: describeRelayRouteChange(change, route.primarySite.id), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
 }
 
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots, current?: ProviderRelayLine): CheckOutcome {
@@ -1620,8 +1649,8 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     // 改的。两条线路连的是同一个账号，工具照样能用，所以不算要留意的事（yoyo 10-8：线路的事不要太多提示），
     // 只在导出的报告里写清两边各是哪条；星芒下次跟着线路改配置时会改过来。
     const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
-    if (line) details.routeLine = relayLineNames[line]
-    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
+    if (current && line) details.routeLine = relayLineName(current.siteId, line)
+    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineName(current.siteId, current.line)
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
@@ -2081,7 +2110,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectProvider = dependencies.inspectProvider
     ?? ((provider, roots) => inspectProviderConfig(provider, roots))
   const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
-  const accountBaseUrls = environmentAccountBaseUrls(relaySite, dependencies.relayRoute)
+  const toolSite = dependencies.toolRoute?.site ?? relaySite
+  const toolRoute = dependencies.toolRoute ? dependencies.toolRoute.route : dependencies.relayRoute
+  const accountBaseUrls = environmentAccountBaseUrls(toolSite, toolRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
@@ -2424,8 +2455,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       run: () => {
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
         // 「自动」还没定下来时不比：那时工具配置本来就不跟着迁。
-        const route = dependencies.relayRoute
-        const current = route?.settled ? { siteId: relaySite.id, line: route.line, baseUrl: relaySite.providerBaseUrls[provider] } : undefined
+        const current = toolRoute?.settled ? { siteId: toolSite.id, line: toolRoute.line, baseUrl: toolSite.providerBaseUrls[provider] } : undefined
         return providerOutcome(provider, inspection, displayRoots, current)
       },
     })),
@@ -2476,6 +2506,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           }
         }
         const route = dependencies.relayRoute
+        // 应用线路最近一次换线 + 工具线路那几样：只进导出的报告。
+        function routeDetails(): Record<string, string> {
+          let toolDetails: Record<string, string> = {}
+          try { toolDetails = dependencies.toolRoute?.report?.() ?? {} } catch { toolDetails = {} }
+          return { ...relayRouteChangeDetails(route), ...toolDetails }
+        }
         const directFirst = route?.automatic === true && route.line === 'direct'
         let probe = await probeStatus(relaySite, directFirst
           ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_NETWORK_PROBE_TIMEOUT_MS)])
@@ -2508,7 +2544,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           })
           // 带上查的是哪个站：检查页据此认出「换一条线路」救不救得回来（第四十三批 B）。
           // 新界面的「查看详情」不摆这个键（diagnostic-details.ts）。
-          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id, ...relayRouteChangeDetails(route) } }
+          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason, siteId: relaySite.id, ...routeDetails() } }
         }
         const { response, body } = probe
         // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
@@ -2525,7 +2561,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           return {
             state: 'fail',
             summary: networkFailureMessages.intercepted,
-            details: { endpoint, reason: 'intercepted', status: response.status, ...relayRouteChangeDetails(route) },
+            details: { endpoint, reason: 'intercepted', status: response.status, ...routeDetails() },
           }
         }
         if (!response.ok) {
@@ -2537,7 +2573,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           return {
             state: 'fail',
             summary: `网络能连通，但星芒 AI 返回 HTTP ${response.status}，多半是服务端暂时的问题，请稍后再试。`,
-            details: { endpoint, status: response.status, ...relayRouteChangeDetails(route) },
+            details: { endpoint, status: response.status, ...routeDetails() },
           }
         }
         // 这一次请求已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
@@ -2549,21 +2585,21 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             state: 'warn',
             summary: `能连上星芒服务，但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
               + `可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`,
-            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000), ...relayRouteChangeDetails(route) },
+            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000), ...routeDetails() },
           }
         }
         const accelerating = await dependencies.inspectAccelerationActive?.().catch(() => false) ?? false
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: relayNetworkPassSummary(route && line ? { line, fellBack: fellBack || (route.automatic && route.settled && line === 'primary') } : null, accelerating),
+          summary: relayNetworkPassSummary(route && line ? { siteId: relaySite.id, line, fellBack: fellBack || (route.automatic && route.settled && line === 'primary') } : null, accelerating),
           details: {
             endpoint,
             status: response.status,
             ...(accelerating ? { route: 'direct' } : {}),
             ...(line ? { line } : {}),
             ...(fellBack ? { fellBack: true } : {}),
-            ...relayRouteChangeDetails(route),
+            ...routeDetails(),
           },
         }
       },

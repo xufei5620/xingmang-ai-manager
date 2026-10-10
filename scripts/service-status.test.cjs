@@ -122,6 +122,12 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址'])
 })
 
+test('a zero rollout reads as manual checks only', () => {
+  assert.deepEqual(applyRollout(undefined, '0.2.18 0'), { version: '0.2.18', percent: 0 })
+  const next = applyStatusChanges({}, { rollout: '0.2.18 0' }, now)
+  assert.equal(describeStatus(next)[2], '分批放量：0.2.18 先不自动推，只给自己点「检查更新」的人')
+})
+
 test('a minimum version never goes above what the feed is publishing', () => {
   assert.equal(applyMinimumVersion(undefined, 'v0.2.12', ['0.2.12', '0.2.13']), '0.2.12')
   assert.equal(applyMinimumVersion('0.2.12', '', []), '0.2.12')
