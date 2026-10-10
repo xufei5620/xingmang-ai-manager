@@ -123,10 +123,8 @@ export function buildGrokArtifactUrls(
 }
 
 export function validateGrokArtifactResponseUrl(responseUrl: string, expectedUrl: string): void {
-  let actual: URL
   let expected: URL
   try {
-    actual = new URL(responseUrl)
     expected = new URL(expectedUrl)
   } catch {
     throw new Error('Grok 二进制下载地址格式无效')
@@ -134,16 +132,27 @@ export function validateGrokArtifactResponseUrl(responseUrl: string, expectedUrl
   const expectedRoot = [...allowedArtifactRoots].find((root) => expected.href.startsWith(`${root}/`))
   if (
     !expectedRoot
-    || actual.href !== expected.href
-    || actual.protocol !== 'https:'
-    || actual.port
-    || actual.username
-    || actual.password
-    || actual.search
-    || actual.hash
+    || expected.protocol !== 'https:'
+    || expected.port
+    || expected.username
+    || expected.password
+    || expected.search
+    || expected.hash
   ) {
     throw new Error('Grok 二进制下载发生了不受信任的重定向')
   }
+  // Electron's net.fetch (what production downloads use) builds its Response
+  // without a url, so this is empty on every real Windows install. The request
+  // used `redirect: 'error'`, which undici and Electron both enforce by failing
+  // the fetch, so an answer at all came from the URL we asked for.
+  if (responseUrl === '') return
+  let actual: URL
+  try {
+    actual = new URL(responseUrl)
+  } catch {
+    throw new Error('Grok 二进制下载地址格式无效')
+  }
+  if (actual.href !== expected.href) throw new Error('Grok 二进制下载发生了不受信任的重定向')
 }
 
 function compactError(error: unknown): string {

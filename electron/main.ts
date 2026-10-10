@@ -135,6 +135,7 @@ import {
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
 import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createManualRedirectFetch } from './manual-redirect-fetch'
 import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
 import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
 import { createPaymentWindowController } from './payment-window'
@@ -1470,14 +1471,20 @@ if (!hasSingleInstanceLock) {
     // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
     // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
     // session 一行未动，账号与中转流量不受影响）。
-    const downloadFetch: typeof fetch = (input, init) => {
+    // 各安装包下载自己一跳一跳地跟跳转（redirect: 'manual'，每一跳先核主机），net.fetch 却不把
+    // 跳转交回来，直接报「Redirect was cancelled」，Git、Claude Desktop 因此一次都没下成。
+    // createManualRedirectFetch 把这种请求改走 net.request，跳转照 Node 的 fetch 那样交回去。
+    const downloadFetch: typeof fetch = createManualRedirectFetch((input, init) => {
       const url = input instanceof URL ? input.href : input
       // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
       if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
         return acceleratedDownloadSession.fetch(url, init)
       }
       return net.fetch(url, init)
-    }
+    }, (options) => net.request({
+      ...options,
+      session: downloadAcceleration.currentEndpoint() ? acceleratedDownloadSession : session.defaultSession,
+    }))
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
