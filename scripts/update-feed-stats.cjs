@@ -10,11 +10,19 @@
 //
 // 来源 IP 只在内存里拿来去重；仓库公开，任何输出（日志、Job Summary）里都只有按版本
 // 和系统汇总后的占比，没有 IP，也没有台数。
+//
+// 下过新版安装包的电脑后来怎样：自动更新从同一个目录下安装包，按来源 IP 和系统把
+// 「哪个小时下的」和「之后读状态文件时是哪个版本」对上，分成装上了、还在旧版、没再出现。
+// 0.2.18 起 Windows 走洛杉矶线路时更新和状态文件都改读 xm-direct.solov.cc，Cloudflare
+// 看不到，口径写在报告里。
 const { compareReleaseVersions } = require('./update-release-utils.cjs')
 
 const API_ORIGIN = 'https://api.cloudflare.com'
 const ZONE_NAME = 'shenfengwl.fun'
 const STATUS_PATH = '/xingmang-manager/service-status.json'
+// 自动更新下的安装包：Windows 是 Setup.exe，Mac 是 zip（dmg 是手动下的）。Linux 还没对外发。
+const INSTALLER_PATH_PATTERN = '/xingmang-manager/XingMang-AI-Manager-%'
+const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,6}\.\d{1,6})-(Setup\.exe|(?:arm64|x64)\.zip)$/
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_DAYS = 31
@@ -182,6 +190,8 @@ async function readDatasetLimits(client, zoneTag) {
     maxDurationMs: maxDuration * 1000,
     pageSize,
     withIp: !fields || hasField(fields, 'clientIP'),
+    withHour: !fields || hasField(fields, 'datetimeHour'),
+    withPath: !fields || hasField(fields, 'clientRequestPath'),
   }
 }
 
@@ -201,46 +211,72 @@ function formatApiTime(milliseconds) {
   return new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/, 'Z')
 }
 
-function buildGroupsQuery(pageSize, withIp) {
+function buildGroupsQuery(pageSize, dimensions) {
   return `query ($zoneTag: string, $filter: ZoneHttpRequestsAdaptiveGroupsFilter_InputObject) {
   viewer {
     zones(filter: { zoneTag: $zoneTag }) {
       httpRequestsAdaptiveGroups(limit: ${pageSize}, filter: $filter) {
         count
         avg { sampleInterval }
-        dimensions { userAgent${withIp ? ' clientIP' : ''} }
+        dimensions { ${dimensions.join(' ')} }
       }
     }
   }
 }`
 }
 
-function parseGroupRows(zone, withIp) {
+function parseGroupRows(zone, dimensionNames) {
   const groups = zone.httpRequestsAdaptiveGroups
   if (!Array.isArray(groups)) throw new StatsError('Cloudflare 统计接口返回的分组格式不对')
   return groups.map((group) => {
     const dimensions = isRecord(group) && isRecord(group.dimensions) ? group.dimensions : null
-    if (!dimensions || !Number.isSafeInteger(group.count) || group.count < 0 || typeof dimensions.userAgent !== 'string') {
+    if (!dimensions || !Number.isSafeInteger(group.count) || group.count < 0 || dimensionNames.some((name) => typeof dimensions[name] !== 'string')) {
       throw new StatsError('Cloudflare 统计接口返回的分组格式不对')
     }
-    if (withIp && typeof dimensions.clientIP !== 'string') throw new StatsError('Cloudflare 统计接口返回的分组格式不对')
+    const time = dimensionNames.includes('datetimeHour') ? Date.parse(dimensions.datetimeHour) : null
+    if (Number.isNaN(time)) throw new StatsError('Cloudflare 统计接口返回的分组格式不对')
     const sampleInterval = isRecord(group.avg) && typeof group.avg.sampleInterval === 'number' && group.avg.sampleInterval >= 1 ? group.avg.sampleInterval : 1
-    return { count: group.count, sampleInterval, userAgent: dimensions.userAgent, clientIP: withIp ? dimensions.clientIP : null }
+    return {
+      count: group.count,
+      sampleInterval,
+      userAgent: dimensions.userAgent ?? null,
+      clientIP: dimensions.clientIP ?? null,
+      path: dimensions.clientRequestPath ?? null,
+      time,
+    }
   })
 }
 
-async function queryPiece(client, zoneTag, limits, piece) {
-  const filter = { datetime_geq: formatApiTime(piece.start), datetime_lt: formatApiTime(piece.end), clientRequestPath: STATUS_PATH }
-  const zone = await queryGraphql(client, buildGroupsQuery(limits.pageSize, limits.withIp), { zoneTag, filter })
-  const rows = parseGroupRows(zone, limits.withIp)
+function statusQuery(limits) {
+  return {
+    label: '状态文件',
+    filter: { clientRequestPath: STATUS_PATH },
+    dimensions: ['userAgent', ...(limits.withIp ? ['clientIP'] : []), ...(limits.withIp && limits.withHour ? ['datetimeHour'] : [])],
+  }
+}
+
+// 要对上「哪台电脑下过」，非得有来源 IP、请求路径和小时；套餐给不全就不查这一项。
+function installerQuery(limits) {
+  if (!limits.withIp || !limits.withHour || !limits.withPath) return null
+  return {
+    label: '安装包',
+    filter: { clientRequestPath_like: INSTALLER_PATH_PATTERN, edgeResponseStatus_lt: 400 },
+    dimensions: ['clientRequestPath', 'clientIP', 'datetimeHour'],
+  }
+}
+
+async function queryPiece(client, zoneTag, limits, piece, spec) {
+  const filter = { datetime_geq: formatApiTime(piece.start), datetime_lt: formatApiTime(piece.end), ...spec.filter }
+  const zone = await queryGraphql(client, buildGroupsQuery(limits.pageSize, spec.dimensions), { zoneTag, filter })
+  const rows = parseGroupRows(zone, spec.dimensions)
   if (rows.length < limits.pageSize) return [{ ...piece, rows }]
   // 分组顶到上限说明这一段没取全，对半拆开分别查，保持时间先后。
   const span = piece.end - piece.start
-  if (span <= MIN_WINDOW_MS) throw new StatsError(`${formatApiTime(piece.start)} 起十分钟里状态文件的请求就超过 ${limits.pageSize} 组，不像是星芒客户端，先去 Cloudflare 后台看看`)
+  if (span <= MIN_WINDOW_MS) throw new StatsError(`${formatApiTime(piece.start)} 起十分钟里${spec.label}的请求就超过 ${limits.pageSize} 组，不像是星芒客户端，先去 Cloudflare 后台看看`)
   const middle = piece.start + Math.floor(span / 2 / 60000) * 60000
   return [
-    ...await queryPiece(client, zoneTag, limits, { start: piece.start, end: middle }),
-    ...await queryPiece(client, zoneTag, limits, { start: middle, end: piece.end }),
+    ...await queryPiece(client, zoneTag, limits, { start: piece.start, end: middle }, spec),
+    ...await queryPiece(client, zoneTag, limits, { start: middle, end: piece.end }, spec),
   ]
 }
 
@@ -258,17 +294,23 @@ function classifyUserAgent(userAgent) {
   return match ? { version: match[1], platform: platformOf(userAgent) } : null
 }
 
+// 有小时就按小时排先后；没有就按所在那一段排（pieces 本来就按时间先后）。
+function readTime(row, piece, index) {
+  if (Number.isFinite(row.time)) return row.time
+  return Number.isFinite(piece.start) ? piece.start : index
+}
+
 /**
- * pieces 必须按时间先后排好。每台电脑（来源 IP + 系统）只算它最后出现的那一段里的
- * 版本；同一段里出现两个版本取高的那个（多半是这段时间里升了级）。返回值里没有 IP。
+ * pieces 必须按时间先后排好。每台电脑（来源 IP + 系统）只算它最后出现的那个小时（查不到
+ * 小时就是那一段）里的版本；同一时间里出现两个版本取高的那个（多半是这时候升了级）。
+ * 返回值里没有 IP。
  */
 function aggregateStats(pieces, withIp) {
   const latest = new Map()
   const requests = new Map()
   let unrecognized = 0
   let sampleInterval = 1
-  for (const piece of pieces) {
-    const seen = new Map()
+  pieces.forEach((piece, index) => {
     for (const row of piece.rows) {
       sampleInterval = Math.max(sampleInterval, row.sampleInterval)
       const client = classifyUserAgent(row.userAgent)
@@ -279,11 +321,13 @@ function aggregateStats(pieces, withIp) {
       requests.set(client.version, (requests.get(client.version) || 0) + row.count)
       if (!withIp) continue
       const key = `${client.platform}\n${row.clientIP}`
-      const previous = seen.get(key)
-      if (!previous || compareReleaseVersions(client.version, previous.version) > 0) seen.set(key, client)
+      const time = readTime(row, piece, index)
+      const previous = latest.get(key)
+      if (!previous || time > previous.time || (time === previous.time && compareReleaseVersions(client.version, previous.version) > 0)) {
+        latest.set(key, { ...client, time })
+      }
     }
-    for (const [key, client] of seen) latest.set(key, client)
-  }
+  })
   const machines = new Map()
   for (const client of latest.values()) {
     const counts = machines.get(client.version) || { windows: 0, mac: 0, linux: 0, other: 0 }
@@ -291,6 +335,60 @@ function aggregateStats(pieces, withIp) {
     machines.set(client.version, counts)
   }
   return { withIp, machines, requests, unrecognized, sampleInterval }
+}
+
+function parseInstallerPath(path) {
+  const match = typeof path === 'string' ? INSTALLER_PATH.exec(path) : null
+  return match ? { version: match[1], platform: match[2] === 'Setup.exe' ? 'windows' : 'mac' } : null
+}
+
+/**
+ * 只看这段时间里被下过的最高版本。每台电脑（来源 IP + 系统）从它第一次下那个小时往后看：
+ * 那之后以这个版本（或更高）读过状态文件算装上了；没有，但晚于那个小时还以旧版本读过，算还没装上；
+ * 都没有就是没再出现。返回值里只有各系统的台数，没有 IP。
+ */
+function summarizeInstallerDownloads(statusPieces, installerPieces) {
+  let version = null
+  let sampleInterval = 1
+  const downloads = []
+  for (const piece of installerPieces) {
+    for (const row of piece.rows) {
+      const installer = parseInstallerPath(row.path)
+      if (!installer || !Number.isFinite(row.time)) continue
+      sampleInterval = Math.max(sampleInterval, row.sampleInterval)
+      downloads.push({ ...installer, key: `${installer.platform}\n${row.clientIP}`, time: row.time })
+      if (!version || compareReleaseVersions(installer.version, version) > 0) version = installer.version
+    }
+  }
+  const downloadedAt = new Map()
+  for (const download of downloads) {
+    if (download.version !== version) continue
+    const previous = downloadedAt.get(download.key)
+    if (previous === undefined || download.time < previous) downloadedAt.set(download.key, download.time)
+  }
+  const installed = new Set()
+  const pending = new Set()
+  for (const piece of statusPieces) {
+    for (const row of piece.rows) {
+      const client = classifyUserAgent(row.userAgent)
+      if (!client || !Number.isFinite(row.time)) continue
+      const key = `${client.platform}\n${row.clientIP}`
+      const downloaded = downloadedAt.get(key)
+      if (downloaded === undefined) continue
+      if (compareReleaseVersions(client.version, version) >= 0) {
+        if (row.time >= downloaded) installed.add(key)
+      } else if (row.time > downloaded) {
+        // 和下载同一个小时里的旧版本请求可能发生在下载之前，不算。
+        pending.add(key)
+      }
+    }
+  }
+  const outcomes = { windows: { installed: 0, pending: 0, gone: 0 }, mac: { installed: 0, pending: 0, gone: 0 } }
+  for (const key of downloadedAt.keys()) {
+    const outcome = installed.has(key) ? 'installed' : pending.has(key) ? 'pending' : 'gone'
+    outcomes[key.slice(0, key.indexOf('\n'))][outcome] += 1
+  }
+  return { version, outcomes, sampleInterval }
 }
 
 function formatBeijingTime(milliseconds) {
@@ -337,7 +435,60 @@ function renderRequestTable(requests) {
   return lines
 }
 
-function renderReport(stats, window, limits, days) {
+// 比例是占同一个系统里下过的电脑，不写台数。
+function renderInstallerSection(downloads) {
+  const lines = ['', `### 下过${downloads?.version ? ` ${downloads.version} ` : '新版'}安装包的电脑后来怎样`, '']
+  if (!downloads) {
+    lines.push('这个套餐的 Cloudflare 统计查不到来源 IP、请求路径或小时，这一项没法算。')
+    return lines
+  }
+  if (!downloads.version) {
+    lines.push('这段时间没有电脑从这里下过安装包。')
+    return lines
+  }
+  const columns = [['windows', 'Windows'], ['mac', 'Mac']]
+  const outcomes = [
+    ['installed', `之后以 ${downloads.version} 读过状态文件（装上了）`],
+    ['pending', '之后还以旧版本读状态文件（还没装上）'],
+    ['gone', '之后在这里没再出现'],
+  ]
+  const totals = Object.fromEntries(columns.map(([id]) => [id, outcomes.reduce((sum, [outcome]) => sum + downloads.outcomes[id][outcome], 0)]))
+  lines.push(
+    `只算这段时间里从这里下过 ${downloads.version} 安装包的电脑（Windows 的 Setup.exe、Mac 的 zip，自动更新下的就是这两个），`
+      + '同一台下了几次算一次，从它第一次下的那个小时往后看。每格是占同一个系统里下过的电脑的比例。',
+    '',
+    `| 下完以后 | ${columns.map(([, label]) => label).join(' | ')} |`,
+    `|---|${columns.map(() => '---:').join('|')}|`,
+  )
+  for (const [outcome, label] of outcomes) {
+    lines.push(`| ${label} | ${columns.map(([id]) => formatShare(downloads.outcomes[id][outcome], totals[id])).join(' | ')} |`)
+  }
+  lines.push(
+    '',
+    '- 「还没装上」里分不出装失败和下好了还没重启。0.2.18 以前的版本要客户自己点「重启安装」才装。',
+    '- Windows「没再出现」的，可能是装好后改走洛杉矶线路、从 xm-direct.solov.cc 读了（0.2.18 起），也可能只是关了星芒没再开，这里分不开。',
+    '- Mac 的更新不走洛杉矶，「没再出现」就是之后没再开星芒。拿 Mac 这一格当「关了没再开」的大概比例，'
+      + 'Windows 那一格多出来的，大致就是装好后改走洛杉矶的（推测）。',
+  )
+  if (totals.windows + totals.mac < SMALL_SAMPLE) lines.push(`- 下过的电脑不到 ${SMALL_SAMPLE} 台，比例只能粗看。`)
+  if (downloads.sampleInterval > 1) lines.push('- Cloudflare 这段时间是抽样记录的，一台电脑只下一次的请求可能漏记，这一节的偏差比上面大。')
+  return lines
+}
+
+// 0.2.18 起 Windows 走洛杉矶线路时，更新和状态文件都改读 xm-direct.solov.cc（electron/update-feed-route.ts，
+// 只限 win32），Cloudflare 这边看不到它们。结论要带着这个口径读，所以每次都写在报告里。
+function renderScope(stats) {
+  const lines = ['', '### 口径', '']
+  lines.push('- 数的是 updatesnew.shenfengwl.fun 上 service-status.json 的请求：星芒一打开读一次，开着时每 15 分钟读一次，请求里带着自己的版本号。这段时间一次都没开过星芒的电脑不在里面。')
+  lines.push('- Mac、Linux：各个版本都从这里读（直连那份更新目录只给 Windows），数字可信。')
+  lines.push('- Windows：0.2.18 以前的正式版都从这里读。0.2.18 起走洛杉矶线路的，更新和状态文件都改从 xm-direct.solov.cc 读，只在服务端日志里；走 CF 线路的照常数得到。'
+    + '所以 Windows 一栏 0.2.18 及以后偏低；它们升级前读的那一次还算在旧版本上，旧版本偏高。偏多少这里算不出来，要服务端按同样的办法数 xm-direct 的日志。')
+  lines.push('- 0.2.8、0.2.9 不读更新状态文件。')
+  if (stats.sampleInterval > 1) lines.push(`- Cloudflare 这段时间的统计是抽样的（最多每 ${Math.round(stats.sampleInterval)} 次记 1 次），比例有误差。`)
+  return lines
+}
+
+function renderReport(stats, window, limits, days, downloads = null) {
   const lines = ['## 星芒各版本的占比', '']
   const covered = (window.end - window.start) / (24 * 60 * 60 * 1000)
   lines.push(`统计时段：北京时间 ${formatBeijingTime(window.start)} 至 ${formatBeijingTime(window.end)}（${Number.isInteger(covered) ? covered : covered.toFixed(1)} 天）`)
@@ -349,21 +500,26 @@ function renderReport(stats, window, limits, days) {
     const table = renderMachineTable(stats.machines)
     lines.push('按电脑算（每格是占全部电脑的比例）：', '', ...table.lines, '')
     lines.push('电脑按「来源 IP + 系统」去重，每台只算它这段时间里最后一次读更新状态文件时的版本。同一个网络出口下的几台电脑只算一台，换过网络的电脑会算成几台，比例会有些偏差。')
+    lines.push('', 'Windows 一栏里 0.2.18 及以后偏低、更早的版本偏高，原因见下面「口径」。')
     if (table.total < SMALL_SAMPLE) lines.push('', `这段时间读到的电脑不到 ${SMALL_SAMPLE} 台，比例只能粗看。`)
   } else {
     lines.push('这个套餐的 Cloudflare 统计查不到来源 IP，没法按电脑去重，只有下面按请求算的占比。')
   }
+  lines.push(...renderScope(stats))
+  lines.push(...renderInstallerSection(downloads))
   if (stats.requests.size) {
     lines.push('', '### 按请求算', '', ...renderRequestTable(stats.requests), '')
     lines.push('开着的星芒每 15 分钟读一次，一直不关的电脑分量重，这张表只用来对照。')
   }
   const recognized = [...stats.requests.values()].reduce((sum, count) => sum + count, 0)
   if (stats.unrecognized) lines.push('', `另有 ${formatShare(stats.unrecognized, recognized + stats.unrecognized)} 的请求看不出版本（浏览器直接打开、爬虫等），没算进上面的表。`)
-  lines.push('', '### 这里看不到的', '')
-  lines.push('- 0.2.8、0.2.9 不读更新状态文件。')
-  lines.push('- 0.2.18 起 Windows 走直连线路的电脑从 xm-direct.solov.cc 读，那部分只在服务端日志里。')
-  if (stats.sampleInterval > 1) lines.push(`- Cloudflare 这段时间的统计是抽样的（最多每 ${Math.round(stats.sampleInterval)} 次记 1 次），比例有误差。`)
   return `${lines.join('\n')}\n`
+}
+
+async function queryWindow(client, zoneTag, limits, window, spec) {
+  const pieces = []
+  for (const piece of window.pieces) pieces.push(...await queryPiece(client, zoneTag, limits, piece, spec))
+  return pieces
 }
 
 async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl = fetch }) {
@@ -371,9 +527,10 @@ async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl
   const zoneTag = await resolveZoneId(client)
   const limits = await readDatasetLimits(client, zoneTag)
   const window = planWindow(now, days, limits)
-  const pieces = []
-  for (const piece of window.pieces) pieces.push(...await queryPiece(client, zoneTag, limits, piece))
-  return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days)
+  const pieces = await queryWindow(client, zoneTag, limits, window, statusQuery(limits))
+  const installers = installerQuery(limits)
+  const downloads = installers ? summarizeInstallerDownloads(pieces, await queryWindow(client, zoneTag, limits, window, installers)) : null
+  return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days, downloads)
 }
 
 function parseArguments(argv) {
@@ -402,6 +559,8 @@ module.exports = {
   classifyUserAgent,
   collectUpdateFeedStats,
   parseDays,
+  parseInstallerPath,
   planWindow,
   renderReport,
+  summarizeInstallerDownloads,
 }

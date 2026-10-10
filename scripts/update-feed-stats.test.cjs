@@ -9,7 +9,9 @@ const {
   classifyUserAgent,
   collectUpdateFeedStats,
   parseDays,
+  parseInstallerPath,
   planWindow,
+  summarizeInstallerDownloads,
 } = require('./update-feed-stats.cjs')
 
 const root = path.resolve(__dirname, '..')
@@ -20,12 +22,31 @@ const now = new Date('2026-10-08T12:00:30.000Z')
 // Real Electron default user agents, as the client sends them on the status file request.
 const windows15 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) 星芒AI管理工具/0.2.15 Chrome/150.0.7871.250 Electron/43.6.0 Safari/537.36'
 const windows14 = windows15.replace('/0.2.15 ', '/0.2.14 ')
+const windows18 = windows15.replace('/0.2.15 ', '/0.2.18 ')
 const mac15 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) 星芒AI管理工具/0.2.15 Chrome/150.0.7871.250 Electron/43.6.0 Safari/537.36'
+const mac18 = mac15.replace('/0.2.15 ', '/0.2.18 ')
 const linux15 = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) 星芒AI管理工具/0.2.15 Chrome/150.0.7871.250 Electron/43.6.0 Safari/537.36'
 const browser = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
 
 function row(userAgent, clientIP, count = 4) {
   return { count, avg: { sampleInterval: 1 }, dimensions: { userAgent, clientIP } }
+}
+
+function hourRow(userAgent, clientIP, datetimeHour, count = 4) {
+  return { count, avg: { sampleInterval: 1 }, dimensions: { userAgent, clientIP, datetimeHour } }
+}
+
+function downloadRow(file, clientIP, datetimeHour, count = 3) {
+  return { count, avg: { sampleInterval: 1 }, dimensions: { clientRequestPath: `/xingmang-manager/${file}`, clientIP, datetimeHour } }
+}
+
+// What parseGroupRows hands on, for the pure aggregation tests.
+function statusRead(userAgent, clientIP, hour) {
+  return { count: 4, sampleInterval: 1, userAgent, clientIP, path: null, time: Date.parse(`2026-10-10T${hour}:00:00Z`) }
+}
+
+function download(file, clientIP, hour) {
+  return { count: 3, sampleInterval: 1, userAgent: null, clientIP, path: `/xingmang-manager/${file}`, time: Date.parse(`2026-10-10T${hour}:00:00Z`) }
 }
 
 function jsonResponse(status, body) {
@@ -43,6 +64,10 @@ function settings(overrides = {}) {
     ...overrides,
   }
 }
+
+const hourlySettings = settings({
+  availableFields: ['avg_sampleInterval', 'count', 'dimensions_clientIP', 'dimensions_clientRequestPath', 'dimensions_datetimeHour', 'dimensions_userAgent'],
+})
 
 // A stand-in for api.cloudflare.com: answers the zone lookup, the settings query and
 // the grouped query, and records every call for the assertions.
@@ -228,6 +253,142 @@ test('a GraphQL error from Cloudflare is shown as it was given', async () => {
     return jsonResponse(200, { data: null, errors: [{ message: 'cannot request data older than 691200s' }] })
   }
   await assert.rejects(collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl }), /统计接口拒绝了这次查询：cannot request data older than 691200s/)
+})
+
+test('with hours, a machine counts at the version of its latest hour, not of the last piece it showed up in', () => {
+  const pieces = [{
+    start: Date.parse('2026-10-10T00:00:00Z'),
+    rows: [
+      statusRead(windows15, 'ip-a', '09'),
+      statusRead(windows18, 'ip-a', '10'),
+      // Went back to 0.2.15 later the same day (a rollback, say): the later hour wins over the higher version.
+      statusRead(windows15, 'ip-a', '11'),
+      statusRead(mac15, 'ip-b', '10'),
+      statusRead(mac18, 'ip-b', '10'),
+    ],
+  }]
+  const stats = aggregateStats(pieces, true)
+  assert.deepEqual(Object.fromEntries(stats.machines), {
+    '0.2.15': { windows: 1, mac: 0, linux: 0, other: 0 },
+    '0.2.18': { windows: 0, mac: 1, linux: 0, other: 0 },
+  })
+})
+
+test('only the installers the updater downloads are recognised, with their version and platform', () => {
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-Setup.exe'), { version: '0.2.18', platform: 'windows' })
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-arm64.zip'), { version: '0.2.18', platform: 'mac' })
+  assert.deepEqual(parseInstallerPath('/xingmang-manager/XingMang-AI-Manager-0.2.18-x64.zip'), { version: '0.2.18', platform: 'mac' })
+  // The differential download's block maps, hand-downloaded disk images and anything else are not an update download.
+  for (const other of [
+    '/xingmang-manager/XingMang-AI-Manager-0.2.18-Setup.exe.blockmap',
+    '/xingmang-manager/XingMang-AI-Manager-0.2.18-arm64.dmg',
+    '/xingmang-manager/latest.yml',
+    '/xingmang-manager/service-status.json',
+    '/other/XingMang-AI-Manager-0.2.18-Setup.exe',
+    null,
+  ]) assert.equal(parseInstallerPath(other), null, other)
+})
+
+test('each machine that downloaded the newest installer is followed from its first download hour on', () => {
+  const statusPieces = [{
+    rows: [
+      // installed: read with the new version after downloading.
+      statusRead(windows15, 'ip-a', '09'),
+      statusRead(windows18, 'ip-a', '11'),
+      // gone: its only old-version read is in the download hour, maybe before the download.
+      statusRead(windows15, 'ip-b', '10'),
+      // pending: still on the old version an hour after downloading.
+      statusRead(windows15, 'ip-c', '12'),
+      // pending: first download 09, old version read at 10.
+      statusRead(windows15, 'ip-d', '10'),
+      // A Mac behind ip-a is another machine; it installed within the download hour.
+      statusRead(mac18, 'ip-a', '10'),
+      // Never downloaded anything: not part of this section.
+      statusRead(windows15, 'ip-z', '12'),
+    ],
+  }]
+  const installerPieces = [{
+    rows: [
+      download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-a', '10'),
+      download('XingMang-AI-Manager-0.2.18-Setup.exe.blockmap', 'ip-a', '10'),
+      download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-b', '10'),
+      download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-c', '10'),
+      download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-d', '10'),
+      download('XingMang-AI-Manager-0.2.18-Setup.exe', 'ip-d', '09'),
+      download('XingMang-AI-Manager-0.2.18-arm64.zip', 'ip-a', '10'),
+      // An older version's installer is not the one being followed.
+      download('XingMang-AI-Manager-0.2.15-Setup.exe', 'ip-z', '08'),
+    ],
+  }]
+  const summary = summarizeInstallerDownloads(statusPieces, installerPieces)
+  assert.deepEqual(summary, {
+    version: '0.2.18',
+    outcomes: { windows: { installed: 1, pending: 2, gone: 1 }, mac: { installed: 1, pending: 0, gone: 0 } },
+    sampleInterval: 1,
+  })
+  assert.equal(JSON.stringify(summary).includes('ip-'), false)
+  assert.deepEqual(summarizeInstallerDownloads(statusPieces, []), {
+    version: null,
+    outcomes: { windows: { installed: 0, pending: 0, gone: 0 }, mac: { installed: 0, pending: 0, gone: 0 } },
+    sampleInterval: 1,
+  })
+})
+
+test('the report follows installer downloads by hour and states its scope, still without addresses or counts', async () => {
+  const cloudflare = createCloudflare({
+    limits: hourlySettings,
+    groups: (filter) => {
+      if (filter.datetime_geq !== '2026-10-07T12:00:00Z') return []
+      if (filter.clientRequestPath_like) {
+        return [
+          downloadRow('XingMang-AI-Manager-0.2.18-Setup.exe', '203.0.113.7', '2026-10-07T13:00:00Z'),
+          downloadRow('XingMang-AI-Manager-0.2.18-Setup.exe', '198.51.100.20', '2026-10-07T13:00:00Z'),
+          downloadRow('XingMang-AI-Manager-0.2.18-arm64.zip', '203.0.113.7', '2026-10-07T13:00:00Z'),
+        ]
+      }
+      return [
+        hourRow(windows15, '203.0.113.7', '2026-10-07T12:00:00Z'),
+        hourRow(windows15, '198.51.100.20', '2026-10-07T15:00:00Z'),
+        hourRow(mac15, '203.0.113.7', '2026-10-07T12:00:00Z'),
+        hourRow(mac18, '203.0.113.7', '2026-10-07T14:00:00Z'),
+      ]
+    },
+  })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
+  const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
+  const status = grouped.filter((payload) => payload.variables.filter.clientRequestPath)
+  const installers = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like)
+  assert.equal(status.length, 1)
+  assert.equal(installers.length, 1)
+  assert.match(status[0].query, /dimensions \{ userAgent clientIP datetimeHour \}/)
+  assert.equal(installers[0].variables.filter.clientRequestPath_like, '/xingmang-manager/XingMang-AI-Manager-%')
+  assert.equal(installers[0].variables.filter.edgeResponseStatus_lt, 400)
+  assert.equal(installers[0].variables.filter.datetime_geq, '2026-10-07T12:00:00Z')
+  assert.match(installers[0].query, /dimensions \{ clientRequestPath clientIP datetimeHour \}/)
+
+  assert.match(report, /### 口径/)
+  assert.match(report, /Mac、Linux：各个版本都从这里读/)
+  assert.match(report, /0\.2\.18 起走洛杉矶线路的，更新和状态文件都改从 xm-direct\.solov\.cc 读/)
+  assert.match(report, /Windows 一栏里 0\.2\.18 及以后偏低、更早的版本偏高/)
+  assert.match(report, /### 下过 0\.2\.18 安装包的电脑后来怎样/)
+  assert.match(report, /\| 下完以后 \| Windows \| Mac \|/)
+  assert.match(report, /\| 之后以 0\.2\.18 读过状态文件（装上了） \| 0\.0% \| 100\.0% \|/)
+  assert.match(report, /\| 之后还以旧版本读状态文件（还没装上） \| 50\.0% \| 0\.0% \|/)
+  assert.match(report, /\| 之后在这里没再出现 \| 50\.0% \| 0\.0% \|/)
+  assert.match(report, /下过的电脑不到 20 台，比例只能粗看/)
+  assert.match(report, /\| 0\.2\.18 \| 0\.0% \| 33\.3% \| 0\.0% \| \*\*33\.3%\*\* \|/)
+  assert.doesNotMatch(report, /203\.0\.113|198\.51\.100/)
+  assert.doesNotMatch(report, /\| (?:1|2|3|4) \|/)
+})
+
+test('without hourly groups the installer section says it cannot be worked out and nothing extra is queried', async () => {
+  const cloudflare = createCloudflare({ groups: () => [row(windows15, 'ip-a')] })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
+  const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
+  assert.equal(grouped.length, 1)
+  assert.equal(grouped[0].variables.filter.clientRequestPath, '/xingmang-manager/service-status.json')
+  assert.match(report, /### 下过新版安装包的电脑后来怎样/)
+  assert.match(report, /查不到来源 IP、请求路径或小时，这一项没法算/)
 })
 
 test('the stats workflow only reads, on demand, with the read-only analytics token', () => {
