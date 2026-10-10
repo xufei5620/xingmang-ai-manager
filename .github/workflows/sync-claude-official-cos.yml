@@ -81,3 +81,28 @@ jobs:
           XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
           CLAUDE_SYNC_PLATFORMS: ${{ matrix.platform }}
         run: node scripts/sync-claude-official-cos.cjs
+
+  # 定时同步连续两次失败就开一条 issue 报警（指派给仓库负责人），之后的失败只改这一条，
+  # 下一次定时同步成功就留言并关闭；手动运行不算。只有这个作业能写 issue，它不碰 COS 凭据。
+  alert:
+    needs: [select, sync]
+    if: ${{ always() && github.event_name == 'schedule' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Open, update or close the sync failure alert issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYNC_WORKFLOW_FILE: sync-claude-official-cos.yml
+          SYNC_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/cos-sync-alert.cjs

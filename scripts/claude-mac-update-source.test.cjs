@@ -63,9 +63,10 @@ test('rejects duplicate or absent current releases, version mismatches, and miss
   }
 })
 
-test('accepts only the exact public universal ZIP and rejects deltas, queries, aliases, and unknown locations', () => {
+test('accepts only the exact public ZIP and rejects deltas, queries, aliases, other architectures, and unknown locations', () => {
   const base = metadata().releases[0].updateTo.url
-  for (const url of [base.replace('.zip', '.delta'), base.replace('.zip', '.dmg'), base.replace('universal', 'arm64'),
+  for (const url of [base.replace('.zip', '.delta'), base.replace('.zip', '.dmg'), base.replace('universal', 'x64'),
+    base.replace('universal', 'aarch64'), base.replace('universal', 'Universal'), base.replace('/universal/', '/'),
     base.replace(VERSION, '2.19676.0'), base.replace(RELEASE_ID, RELEASE_ID.toUpperCase()), base.replace('https:', 'http:'),
     base.replace('downloads.claude.ai', 'downloads.claude.ai.evil.test'), base.replace('downloads.claude.ai', 'downloads.claude.ai:443'),
     base.replace('downloads.claude.ai', 'user@downloads.claude.ai'), base.replace('/darwin/', '/darwin%2f'),
@@ -73,6 +74,27 @@ test('accepts only the exact public universal ZIP and rejects deltas, queries, a
     const bad = metadata()
     bad.releases[0].updateTo.url = url
     assert.throws(() => parseMacUpdateMetadata(JSON.stringify(bad), 'arm64'), /固定无 query/)
+  }
+})
+
+test('accepts the per-architecture ZIP of the queried architecture and still derives universal installers from it', async () => {
+  for (const architecture of ['arm64', 'x64']) {
+    const value = metadata()
+    value.releases[0].updateTo.url = value.releases[0].updateTo.url.replace('/universal/', `/${architecture}/`)
+    const release = parseMacUpdateMetadata(JSON.stringify(value), architecture)
+    assert.equal(release.releaseId, RELEASE_ID)
+    assert.equal(release.archiveUrl, value.releases[0].updateTo.url)
+    assert.equal(release.metadataArchitecture, architecture)
+    const other = architecture === 'arm64' ? 'x64' : 'arm64'
+    assert.throws(() => parseMacUpdateMetadata(JSON.stringify(value), other), /架构匹配/)
+    const dependencies = { ...fixture().dependencies, async readRelease() { return release } }
+    const resources = await resolveMacUpdateReleaseCandidates(IDS, dependencies)
+    assert.deepEqual(resources.map((resource) => resource.url), [
+      `https://downloads.claude.ai/releases/darwin/universal/${VERSION}/Claude-${RELEASE_ID}.dmg`,
+      `https://downloads.claude.ai/releases/darwin/universal/${VERSION}/Claude-${RELEASE_ID}.pkg`,
+    ])
+    assert.equal(resources[0].sourceResolution.metadataArchitecture, architecture)
+    await revalidateMacUpdateReleaseCandidates(resources, dependencies)
   }
 })
 

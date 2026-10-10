@@ -55,11 +55,17 @@ function parseMacUpdateMetadata(text, architecture) {
   const payload = matches[0].updateTo
   if (payload.version !== value.currentRelease || !isPackageSize(payload.size) || !isSha256(payload.sha256)
     || typeof payload.url !== 'string' || payload.url.length > 512) throw new Error('Claude Mac 官方完整 ZIP 版本、大小或声明摘要无效')
-  const match = /^https:\/\/downloads\.claude\.ai\/releases\/darwin\/universal\/([0-9]+\.[0-9]+\.[0-9]+)\/Claude-([a-f0-9]{40})\.zip$/.exec(payload.url)
-  if (!match || match[1] !== value.currentRelease || payload.url !== `https://downloads.claude.ai/releases/darwin/universal/${match[1]}/Claude-${match[2]}.zip`) throw new Error('Claude Mac 官方来源不是固定无 query 的完整 Universal ZIP 地址')
+  // Since 2026-10-07 the feed lists a per-architecture update ZIP for each
+  // architecture; the universal DMG/PKG we mirror still live under
+  // darwin/universal with the same version and release ID (checked 2026-10-10).
+  // Accept only universal or the architecture this feed was queried for, so a
+  // feed answer for one architecture can never vouch for the other.
+  const match = /^https:\/\/downloads\.claude\.ai\/releases\/darwin\/(universal|arm64|x64)\/([0-9]+\.[0-9]+\.[0-9]+)\/Claude-([a-f0-9]{40})\.zip$/.exec(payload.url)
+  if (!match || match[1] !== 'universal' && match[1] !== architecture || match[2] !== value.currentRelease
+    || payload.url !== `https://downloads.claude.ai/releases/darwin/${match[1]}/${match[2]}/Claude-${match[3]}.zip`) throw new Error('Claude Mac 官方来源不是固定无 query、架构匹配的完整 ZIP 地址')
   // SHA/size describe the archive declared by this official feed. They must
   // never become the expected checksum or length of a different DMG/PKG asset.
-  return Object.freeze({ version: value.currentRelease, releaseId: match[2], archiveUrl: payload.url,
+  return Object.freeze({ version: value.currentRelease, releaseId: match[3], archiveUrl: payload.url,
     archiveBytes: payload.size, archiveSha256: payload.sha256, metadataArchitecture: architecture })
 }
 
