@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const { test } = require('node:test')
-const { FAILURE_THRESHOLD, RUN_PAGE_SIZE, alertMarker, summarizeNeeds, countPreviousFailures, findAlertIssue, failedJobNames,
+const { FAILURE_THRESHOLD, RUN_PAGE_SIZE, alertMarker, summarizeNeeds, hasNewerFinishedRun, countPreviousFailures, findAlertIssue, failedJobNames,
   formatBeijingTime, buildAlertBody, planAlertAction, createGitHubClient, readAlertEnvironment, runCosSyncAlert } = require('./cos-sync-alert.cjs')
 
 const REPOSITORY = 'xufei5620/xingmang-ai-manager'
@@ -26,14 +26,18 @@ function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function server({ runs = [], issues = [], jobs = [] } = {}) {
+function server({ runs = [], issues = [], jobs = [], jobsByRun = {} } = {}) {
   const calls = []
   async function fetchImpl(url, init) {
     const parsed = new URL(url)
     calls.push({ method: init.method, path: `${parsed.pathname}${parsed.search}`, body: init.body === undefined ? undefined : JSON.parse(init.body), init })
     if (init.method === 'GET' && parsed.pathname === `/repos/${REPOSITORY}/issues`) return json(issues)
     if (init.method === 'GET' && parsed.pathname === `/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/runs`) return json({ total_count: runs.length, workflow_runs: runs })
-    if (init.method === 'GET' && parsed.pathname === `/repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs`) return json({ total_count: jobs.length, jobs })
+    const jobsMatch = /^\/repos\/[^/]+\/[^/]+\/actions\/runs\/([0-9]+)\/jobs$/.exec(parsed.pathname)
+    if (init.method === 'GET' && jobsMatch) {
+      const list = Number(jobsMatch[1]) === RUN_ID ? jobs : jobsByRun[jobsMatch[1]] || failedJobs
+      return json({ total_count: list.length, jobs: list })
+    }
     if (init.method === 'POST' && parsed.pathname === `/repos/${REPOSITORY}/issues`) return json({ number: 77 }, 201)
     if (init.method === 'POST' && /\/issues\/[0-9]+\/comments$/.test(parsed.pathname)) return json({ id: 1 }, 201)
     if (init.method === 'PATCH' && /\/issues\/[0-9]+$/.test(parsed.pathname)) return json({ number: 1 })
@@ -63,22 +67,33 @@ test('a failed or cancelled job makes the run a failure and only a fully green r
   }
 })
 
-test('the streak counts only earlier finished runs and stops at the first one that did not fail', () => {
+test('the streak counts only earlier finished runs and stops at the first one that did not fail', async () => {
+  const always = async () => true
   const runs = [
+    run(RUN_ID + 1, null, '2026-10-10T18:31:00Z', 'queued'),
     run(RUN_ID, null, '2026-10-10T12:52:00Z', 'in_progress'),
     run(31, 'failure', '2026-10-10T06:12:00Z'),
     run(30, 'cancelled', '2026-10-09T22:47:00Z'),
     run(29, 'success', '2026-10-09T13:38:00Z'),
     run(28, 'failure', '2026-10-09T06:28:00Z'),
   ]
-  const streak = countPreviousFailures(runs, RUN_ID)
+  const checked = []
+  const streak = await countPreviousFailures(runs, RUN_ID, async (entry) => { checked.push(entry.id); return true })
   assert.equal(streak.count, 2)
   assert.equal(streak.oldest.id, 30)
   assert.equal(streak.truncated, false)
-  assert.equal(countPreviousFailures([run(RUN_ID, null, 'x', 'in_progress'), run(5, 'skipped', 'x'), run(4, 'failure', 'x')], RUN_ID).count, 0)
-  assert.deepEqual(countPreviousFailures([], RUN_ID), { count: 0, oldest: null, truncated: false })
+  assert.deepEqual(checked, [31, 30])
+  assert.equal((await countPreviousFailures([run(RUN_ID, null, 'x', 'in_progress'), run(5, 'skipped', 'x'), run(4, 'failure', 'x')], RUN_ID, always)).count, 0)
+  assert.deepEqual(await countPreviousFailures([], RUN_ID, always), { count: 0, oldest: null, truncated: false })
   const page = Array.from({ length: RUN_PAGE_SIZE }, (_, index) => run(index + 1, 'failure', '2026-10-01T00:00:00Z'))
-  assert.equal(countPreviousFailures(page, RUN_ID).truncated, true)
+  assert.equal((await countPreviousFailures(page, RUN_ID, always)).truncated, true)
+  // A run that went red only because its alert job failed does not continue the streak.
+  assert.equal((await countPreviousFailures(runs, RUN_ID, async (entry) => entry.id !== 30)).count, 1)
+})
+
+test('a re-run of an older scheduled run defers to any newer run that has finished', () => {
+  assert.equal(hasNewerFinishedRun([run(RUN_ID + 1, 'failure', 'x'), run(RUN_ID, null, 'x', 'in_progress')], RUN_ID), true)
+  assert.equal(hasNewerFinishedRun([run(RUN_ID + 1, null, 'x', 'queued'), run(RUN_ID, null, 'x', 'in_progress'), run(RUN_ID - 1, 'failure', 'x')], RUN_ID), false)
 })
 
 test('only an open bot issue that starts with this workflow marker counts as the alert', () => {
@@ -94,6 +109,7 @@ test('only an open bot issue that starts with this workflow marker counts as the
 
 test('failed job names are limited to finished failures and stripped before they reach Markdown', () => {
   assert.deepEqual(failedJobNames({ jobs: failedJobs }), ['sync (macos, macos-latest)'])
+  assert.deepEqual(failedJobNames({ jobs: [{ name: 'alert', status: 'completed', conclusion: 'failure' }] }), [])
   assert.deepEqual(failedJobNames({ jobs: [{ name: 'sync [x](https://evil.test) `a`', status: 'completed', conclusion: 'cancelled' }] }), ['sync x(httpsevil.test) a'])
   assert.throws(() => failedJobNames({}), /作业列表/)
 })
@@ -195,17 +211,35 @@ test('a continuing failure edits the open alert instead of opening another', asy
   assert.match(writes[0].body.body, /连续失败 \*\*3 次\*\*/)
 })
 
-test('a scheduled success comments on and closes the open alert without reading run history', async () => {
-  const github = server({ issues: [botIssue(41)] })
+test('a scheduled success comments on and closes the open alert', async () => {
+  const github = server({ issues: [botIssue(41)], runs: [run(RUN_ID, null, '2026-10-10T12:52:00Z', 'in_progress'), run(31, 'failure', '2026-10-10T06:12:00Z')] })
   const action = await runCosSyncAlert({ env: env(passedNeeds), fetchImpl: github.fetchImpl, log() {} })
   assert.deepEqual(action, { type: 'close', number: 41 })
   assert.deepEqual(github.calls.map((call) => `${call.method} ${call.path.split('?')[0]}`), [
     `GET /repos/${REPOSITORY}/issues`,
+    `GET /repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/runs`,
     `POST /repos/${REPOSITORY}/issues/41/comments`,
     `PATCH /repos/${REPOSITORY}/issues/41`,
   ])
-  assert.match(github.calls[1].body.body, /恢复正常更新/)
-  assert.deepEqual(github.calls[2].body, { state: 'closed', state_reason: 'completed' })
+  assert.match(github.calls[2].body.body, /恢复正常更新/)
+  assert.deepEqual(github.calls[3].body, { state: 'closed', state_reason: 'completed' })
+})
+
+test('re-running an older scheduled run neither closes nor edits the alert the newest run left', async () => {
+  const runs = [run(RUN_ID + 5, 'failure', '2026-10-11T06:12:00Z'), run(RUN_ID, null, '2026-10-10T12:52:00Z', 'in_progress')]
+  for (const needs of [passedNeeds, failedNeeds]) {
+    const github = server({ issues: [botIssue(41)], runs, jobs: failedJobs })
+    assert.deepEqual(await runCosSyncAlert({ env: env(needs), fetchImpl: github.fetchImpl, log() {} }), { type: 'none' })
+    assert.ok(github.calls.every((call) => call.method === 'GET'))
+  }
+})
+
+test('a previous run that went red only in its alert job does not count toward opening an issue', async () => {
+  const alertOnly = [{ name: 'select', status: 'completed', conclusion: 'success' }, { name: 'sync (macos, macos-latest)', status: 'completed', conclusion: 'success' },
+    { name: 'alert', status: 'completed', conclusion: 'failure' }]
+  const github = server({ jobs: failedJobs, jobsByRun: { 31: alertOnly }, runs: [run(31, 'failure', '2026-10-10T06:12:00Z'), run(30, 'failure', '2026-10-09T22:47:00Z')] })
+  assert.deepEqual(await runCosSyncAlert({ env: env(failedNeeds), fetchImpl: github.fetchImpl, log() {} }), { type: 'none' })
+  assert.ok(github.calls.every((call) => call.method === 'GET'))
 })
 
 test('a success with no alert open and a run whose jobs never ran both leave GitHub untouched', async () => {

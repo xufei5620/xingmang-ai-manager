@@ -5,6 +5,7 @@
 const API_ORIGIN = 'https://api.github.com'
 const SERVER_ORIGIN = 'https://github.com'
 const BOT_LOGIN = 'github-actions[bot]'
+const ALERT_JOB_NAME = 'alert'
 const FAILURE_THRESHOLD = 2
 const RUN_PAGE_SIZE = 50
 const ISSUE_PAGE_SIZE = 100
@@ -56,13 +57,22 @@ function validateRuns(value) {
   return value.workflow_runs
 }
 
+// A re-run keeps its run ID and its schedule event. When a newer scheduled run
+// has already finished, this one is history and must not open or close the
+// alert over what the newest run said.
+function hasNewerFinishedRun(runs, currentRunId) {
+  return runs.some(function (run) { return run.id > currentRunId && run.status === 'completed' })
+}
+
 // Runs come newest first. Only earlier, finished runs count; the first one that
-// did not fail ends the streak, so a skipped or successful run resets it.
-function countPreviousFailures(runs, currentRunId) {
-  const finished = runs.filter(function (run) { return run.id !== currentRunId && run.status === 'completed' })
+// did not fail ends the streak, so a skipped or successful run resets it. A red
+// run counts only when a sync job failed: the alert job's own failure (say a
+// GitHub 5xx) turns the whole run red without the download buttons going stale.
+async function countPreviousFailures(runs, currentRunId, syncFailed) {
+  const earlier = runs.filter(function (run) { return run.id < currentRunId && run.status === 'completed' })
   let count = 0
-  while (count < finished.length && FAILED_CONCLUSIONS.has(finished[count].conclusion)) count += 1
-  return { count, oldest: count ? finished[count - 1] : null, truncated: count === finished.length && runs.length >= RUN_PAGE_SIZE }
+  while (count < earlier.length && FAILED_CONCLUSIONS.has(earlier[count].conclusion) && await syncFailed(earlier[count])) count += 1
+  return { count, oldest: count ? earlier[count - 1] : null, truncated: count === earlier.length && runs.length >= RUN_PAGE_SIZE }
 }
 
 function findAlertIssue(issues, workflowFile) {
@@ -80,7 +90,9 @@ function findAlertIssue(issues, workflowFile) {
 function failedJobNames(value) {
   if (!isRecord(value) || !Array.isArray(value.jobs)) throw new Error('GitHub 返回的作业列表格式无效')
   return value.jobs
-    .filter(function (job) { return isRecord(job) && job.status === 'completed' && FAILED_CONCLUSIONS.has(job.conclusion) && typeof job.name === 'string' })
+    .filter(function (job) {
+      return isRecord(job) && job.status === 'completed' && FAILED_CONCLUSIONS.has(job.conclusion) && typeof job.name === 'string' && job.name !== ALERT_JOB_NAME
+    })
     // Job names come from our own matrix, but they still land in Markdown.
     .map(function (job) { return job.name.replace(/[^A-Za-z0-9 ._(),-]/g, '').trim().slice(0, 80) })
     .filter(Boolean)
@@ -205,20 +217,30 @@ async function runCosSyncAlert({ env = process.env, fetchImpl = fetch, log = con
     return { type: 'none' }
   }
   const client = createGitHubClient({ token: config.token, repository: config.repository, fetchImpl })
+  function readFailedJobs(runId) {
+    return client.request('GET', `/repos/${config.repository}/actions/runs/${runId}/jobs?filter=latest&per_page=100`).then(failedJobNames)
+  }
   const issue = findAlertIssue(await listOpenBotIssues(client, config.repository), config.workflowFile)
+  if (outcome === 'success' && !issue) {
+    log('[cos-sync-alert] 同步成功，没有要关闭的报警')
+    return { type: 'none' }
+  }
+  const runs = validateRuns(await client.request('GET', `/repos/${config.repository}/actions/workflows/${config.workflowFile}/runs?branch=main&event=schedule&per_page=${RUN_PAGE_SIZE}`))
+  if (hasNewerFinishedRun(runs, config.runId)) {
+    log('[cos-sync-alert] 这是旧运行的重跑，报警以最新一次定时同步为准，不改')
+    return { type: 'none' }
+  }
   let streak = 0
   let previous = { count: 0, oldest: null, truncated: false }
-  let current = null
   if (outcome === 'failure') {
-    const runs = validateRuns(await client.request('GET', `/repos/${config.repository}/actions/workflows/${config.workflowFile}/runs?branch=main&event=schedule&per_page=${RUN_PAGE_SIZE}`))
-    previous = countPreviousFailures(runs, config.runId)
-    current = runs.find(function (run) { return run.id === config.runId }) || null
+    previous = await countPreviousFailures(runs, config.runId, async function (run) { return (await readFailedJobs(run.id)).length > 0 })
     streak = previous.count + 1
   }
+  const current = runs.find(function (run) { return run.id === config.runId }) || null
   const action = planAlertAction({ outcome, streak, issue })
   const runUrl = `${SERVER_ORIGIN}/${config.repository}/actions/runs/${config.runId}`
   if (action.type === 'create' || action.type === 'update') {
-    const failedJobs = failedJobNames(await client.request('GET', `/repos/${config.repository}/actions/runs/${config.runId}/jobs?filter=latest&per_page=100`))
+    const failedJobs = await readFailedJobs(config.runId)
     const since = previous.oldest?.created_at || current?.created_at || new Date().toISOString()
     const body = buildAlertBody({ workflowFile: config.workflowFile, product: config.product, streak, truncated: previous.truncated,
       since, runNumber: config.runNumber, runUrl, failedJobs })
@@ -236,7 +258,7 @@ async function runCosSyncAlert({ env = process.env, fetchImpl = fetch, log = con
     await client.request('PATCH', `/repos/${config.repository}/issues/${action.number}`, { state: 'closed', state_reason: 'completed' })
     log(`[cos-sync-alert] 同步已恢复，已关闭 issue #${action.number}`)
   } else {
-    log(outcome === 'failure' ? `[cos-sync-alert] 连续失败 ${streak} 次，未到 ${FAILURE_THRESHOLD} 次，先不开 issue` : '[cos-sync-alert] 同步成功，没有要关闭的报警')
+    log(`[cos-sync-alert] 连续失败 ${streak} 次，未到 ${FAILURE_THRESHOLD} 次，先不开 issue`)
   }
   return action
 }
@@ -248,5 +270,5 @@ if (require.main === module) {
   })
 }
 
-module.exports = { FAILURE_THRESHOLD, RUN_PAGE_SIZE, alertMarker, summarizeNeeds, countPreviousFailures, findAlertIssue, failedJobNames,
+module.exports = { FAILURE_THRESHOLD, RUN_PAGE_SIZE, ALERT_JOB_NAME, alertMarker, summarizeNeeds, hasNewerFinishedRun, countPreviousFailures, findAlertIssue, failedJobNames,
   formatBeijingTime, buildAlertBody, planAlertAction, createGitHubClient, readAlertEnvironment, runCosSyncAlert }

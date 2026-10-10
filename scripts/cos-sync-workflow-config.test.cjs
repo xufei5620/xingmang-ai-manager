@@ -135,6 +135,8 @@ test('only a scheduled sync on main reports failures, from a job that can write 
   ]) {
     const alert = parsed.jobs.alert
     assert.deepEqual(alert.needs, needs, file)
+    // cos-sync-alert.cjs recognizes its own job by this name and leaves it out of the failed jobs.
+    assert.equal(alert.name, undefined)
     assert.deepEqual(Object.keys(parsed.jobs).filter((id) => id !== 'alert').sort(), [...needs].sort(), `${file} must wait for every other job`)
     assert.equal(alert.if, gate, file)
     assert.equal(alert['runs-on'], 'ubuntu-latest')
