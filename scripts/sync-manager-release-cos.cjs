@@ -17,6 +17,9 @@ const { createManagerSyncDiagnostics, safeManagerSyncFailure } = require('./cos-
 const OBJECT_PREFIX = 'xingmang'
 const LATEST_KEY = `${OBJECT_PREFIX}/latest.json`
 const MAX_RELEASE_FILES = 24
+// The tutorial download page offers the newest of these older installers while
+// the current release is withdrawn; three versions survive two withdrawals.
+const MAX_HISTORY_VERSIONS = 3
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable'
 // Release files go up one after another in a job allowed 330 minutes, so one
 // slow installer may use more than the 75 minutes that the 90-minute official
@@ -163,6 +166,43 @@ function publicEntry(file, publicBaseUrl) {
   }
 }
 
+function validateIndexEntry(entry, indexVersion, publicBaseUrl) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('COS 星芒索引文件条目无效')
+  validateManagerVersion(entry.version)
+  const descriptor = buildAllowedArtifacts(entry.version).get(entry.fileName)
+  const key = `${OBJECT_PREFIX}/releases/${entry.version}/${entry.fileName}`
+  if (!descriptor || entry.key !== key || entry.url !== publicObjectUrl(publicBaseUrl, key)
+    || entry.type !== descriptor.type || entry.platform !== descriptor.platform
+    || entry.architecture !== descriptor.architecture || entry.kind !== descriptor.kind
+    || !Number.isSafeInteger(entry.size) || entry.size <= 0 || entry.size > descriptor.maxBytes
+    || typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(entry.sha256)
+    || compareReleaseVersions(entry.version, indexVersion) > 0) {
+    throw new Error('COS 星芒索引包含无效文件地址、版本或摘要，未更新最新指针')
+  }
+  return publicEntry(entry, publicBaseUrl)
+}
+
+// history is optional: indexes written before it existed simply have none.
+function validateManagerHistory(value, files, publicBaseUrl) {
+  if (value.history === undefined) return []
+  if (!Array.isArray(value.history) || value.history.length > MAX_RELEASE_FILES) {
+    throw new Error('COS 星芒历史版本清单格式无效，未更新最新指针')
+  }
+  const seen = new Set(files.map((file) => file.fileName))
+  const history = value.history.map((entry) => {
+    const file = validateIndexEntry(entry, value.version, publicBaseUrl)
+    if (file.kind !== 'installer' || compareReleaseVersions(file.version, value.version) >= 0 || seen.has(file.fileName)) {
+      throw new Error('COS 星芒历史版本清单只能记录比当前版本低、且不重复的安装包，未更新最新指针')
+    }
+    seen.add(file.fileName)
+    return file
+  })
+  if (new Set(history.map((file) => file.version)).size > MAX_HISTORY_VERSIONS) {
+    throw new Error(`COS 星芒历史版本清单超过 ${MAX_HISTORY_VERSIONS} 个版本，未更新最新指针`)
+  }
+  return history
+}
+
 function validateManagerIndex(value, publicBaseUrl) {
   if (value === null) return null
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -173,22 +213,36 @@ function validateManagerIndex(value, publicBaseUrl) {
   validateManagerVersion(value.version)
   const seen = new Set()
   const files = value.files.map((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('COS 星芒索引文件条目无效')
-    validateManagerVersion(entry.version)
-    const descriptor = buildAllowedArtifacts(entry.version).get(entry.fileName)
-    const key = `${OBJECT_PREFIX}/releases/${entry.version}/${entry.fileName}`
-    if (!descriptor || entry.key !== key || entry.url !== publicObjectUrl(publicBaseUrl, key)
-      || entry.type !== descriptor.type || entry.platform !== descriptor.platform
-      || entry.architecture !== descriptor.architecture || entry.kind !== descriptor.kind
-      || !Number.isSafeInteger(entry.size) || entry.size <= 0 || entry.size > descriptor.maxBytes
-      || typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(entry.sha256)
-      || compareReleaseVersions(entry.version, value.version) > 0 || seen.has(entry.fileName)) {
-      throw new Error('COS 星芒索引包含无效文件地址、版本或摘要，未更新最新指针')
-    }
-    seen.add(entry.fileName)
-    return publicEntry(entry, publicBaseUrl)
+    const file = validateIndexEntry(entry, value.version, publicBaseUrl)
+    if (seen.has(file.fileName)) throw new Error('COS 星芒索引包含无效文件地址、版本或摘要，未更新最新指针')
+    seen.add(file.fileName)
+    return file
   })
-  return { schemaVersion: 1, product: 'xingmang-ai-manager', version: value.version, files }
+  return withHistory({ schemaVersion: 1, product: 'xingmang-ai-manager', version: value.version, files },
+    validateManagerHistory(value, files, publicBaseUrl))
+}
+
+function withHistory(index, history) {
+  return history.length ? { ...index, history } : index
+}
+
+// Installers that left the current files stay listed, newest version first, so
+// a withdrawn release can fall back to them. Entries point at the immutable
+// release objects already published; nothing is recomputed or copied.
+function retainHistory(version, files, candidates) {
+  const current = new Set(files.map((file) => file.fileName))
+  const retained = new Map()
+  for (const file of candidates) {
+    if (file.kind !== 'installer' || compareReleaseVersions(file.version, version) >= 0
+      || current.has(file.fileName) || retained.has(file.fileName)) continue
+    retained.set(file.fileName, file)
+  }
+  const versions = [...new Set([...retained.values()].map((file) => file.version))]
+    .sort((left, right) => compareReleaseVersions(right, left))
+    .slice(0, MAX_HISTORY_VERSIONS)
+  return [...retained.values()]
+    .filter((file) => versions.includes(file.version))
+    .sort((left, right) => compareReleaseVersions(right.version, left.version) || left.fileName.localeCompare(right.fileName, 'en'))
 }
 
 function buildManagerIndex(plan, previous, publicBaseUrl) {
@@ -209,12 +263,35 @@ function buildManagerIndex(plan, previous, publicBaseUrl) {
     }
     files.set(entry.fileName, entry)
   }
-  return {
-    schemaVersion: 1,
-    product: 'xingmang-ai-manager',
-    version: plan.version,
-    files: [...files.values()].sort((left, right) => left.fileName.localeCompare(right.fileName, 'en')),
+  const current = [...files.values()].sort((left, right) => left.fileName.localeCompare(right.fileName, 'en'))
+  const replaced = (existing?.files || []).filter((file) => !kept.includes(file))
+  return withHistory({ schemaVersion: 1, product: 'xingmang-ai-manager', version: plan.version, files: current },
+    retainHistory(plan.version, current, [...replaced, ...(existing?.history || [])]))
+}
+
+// Adds an older, already published release to history only. The current
+// version and files stay exactly as they are, and every installer has to be on
+// COS already with the bytes verified from its GitHub Release.
+function buildManagerHistoryIndex(plan, previous, publicBaseUrl) {
+  const existing = validateManagerIndex(previous, publicBaseUrl)
+  if (!existing) throw new Error('COS 还没有星芒下载清单，不能只补历史版本')
+  if (compareReleaseVersions(plan.version, existing.version) >= 0) {
+    throw new Error(`只能补比 COS 当前版本 ${existing.version} 低的版本，${plan.version} 请走正常同步`)
   }
+  const incoming = plan.files.map((file) => publicEntry(file, publicBaseUrl))
+  const listed = new Map([...existing.files, ...(existing.history || [])].map((file) => [file.fileName, file]))
+  for (const entry of incoming) {
+    const old = listed.get(entry.fileName)
+    if (old && (old.size !== entry.size || old.sha256 !== entry.sha256 || old.type !== entry.type)) {
+      throw new Error(`COS 下载清单已记录 ${entry.fileName}，内容不一致，未更新最新指针`)
+    }
+  }
+  const history = retainHistory(existing.version, existing.files, [...(existing.history || []), ...incoming])
+  const kept = new Set([...existing.files, ...history].map((file) => file.fileName))
+  if (incoming.some((entry) => !kept.has(entry.fileName))) {
+    throw new Error(`${plan.version} 比下载清单保留的 ${MAX_HISTORY_VERSIONS} 个旧版本都旧，补进去也会被挤掉`)
+  }
+  return withHistory({ schemaVersion: 1, product: 'xingmang-ai-manager', version: existing.version, files: existing.files }, history)
 }
 
 async function syncManagerRelease(options) {
@@ -222,29 +299,37 @@ async function syncManagerRelease(options) {
   let latestState = 'not-written-by-this-run'
   const stage = createManagerSyncDiagnostics(options.onDiagnostic, function () { return latestState })
   const { config, plan, store } = await stage('prepare-manager-plan', { version: options.version }, async function () {
+    if (options.historyOnly !== undefined && typeof options.historyOnly !== 'boolean') throw new Error('星芒只补历史模式无效')
+    if (options.historyOnly === true && options.installersOnly !== true) throw new Error('只补历史只能核对已发布的安装包')
     const config = options.config || utilities.readCosConfiguration(options.env || process.env)
     const plan = await buildManagerReleasePlan(options.directory, options.version, { utilities, installersOnly: options.installersOnly })
     return { config, plan, store: options.store || utilities.createCosStore(config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS }) }
   })
+  const historyOnly = options.historyOnly === true
+  const buildIndex = historyOnly ? buildManagerHistoryIndex : buildManagerIndex
   const previous = await stage('cos-read-latest', { version: plan.version }, function (report) { return store.readJson(LATEST_KEY, { onRetry: report.retry }) })
-  await stage('cos-validate-index', { version: plan.version }, function () { return buildManagerIndex(plan, previous, config.publicBaseUrl) })
+  await stage('cos-validate-index', { version: plan.version }, function () { return buildIndex(plan, previous, config.publicBaseUrl) })
   // The updater manifests belong beside their relative payloads. The root
   // pointer is an independent JSON index with absolute URLs and is touched
   // only after every immutable object has passed a full public readback.
   const ordered = [...plan.files].sort((left, right) => Number(left.kind === 'manifest') - Number(right.kind === 'manifest'))
   for (const file of ordered) {
-    await stage('cos-publish-file', { version: plan.version, platform: file.platform, architecture: file.architecture }, async function (report) {
-      const published = await store.publishFile(file.key, file.path, {
+    const context = { version: plan.version, platform: file.platform, architecture: file.architecture }
+    await stage(historyOnly ? 'cos-verify-history-file' : 'cos-publish-file', context, async function (report) {
+      const input = {
         contentType: file.type,
-        cacheControl: IMMUTABLE_CACHE_CONTROL,
         expectedBytes: file.size,
         expectedSha256: file.sha256,
         onProgress: report.transfer,
         onRetry: report.retry,
-      })
+      }
+      // History only ever points at objects that are already public, so this
+      // mode reads them back in full and never writes a release object.
+      const published = historyOnly ? await store.verifyFile(file.key, input)
+        : await store.publishFile(file.key, file.path, { ...input, cacheControl: IMMUTABLE_CACHE_CONTROL })
       if (published.bytes !== file.size || published.sha256 !== file.sha256 || published.contentType !== file.type
         || published.url !== publicObjectUrl(config.publicBaseUrl, file.key)) {
-        throw new Error(`COS 上传回读与已验证产物不一致：${file.fileName}，未更新最新指针`)
+        throw new Error(`COS ${historyOnly ? '核对' : '上传'}回读与已验证产物不一致：${file.fileName}，未更新最新指针`)
       }
     })
   }
@@ -252,14 +337,14 @@ async function syncManagerRelease(options) {
   // cannot silently discard another successfully published platform.
   const index = await stage('cos-recheck-latest', { version: plan.version }, async function (report) {
     const current = await store.readJson(LATEST_KEY, { onRetry: report.retry })
-    return buildManagerIndex(plan, current, config.publicBaseUrl)
+    return buildIndex(plan, current, config.publicBaseUrl)
   })
   const candidateDigest = createHash('sha256').update(JSON.stringify(index)).digest('hex')
-  const candidateKey = `${OBJECT_PREFIX}/releases/${plan.version}/indexes/${candidateDigest}.json`
+  const candidateKey = `${OBJECT_PREFIX}/releases/${index.version}/indexes/${candidateDigest}.json`
   await stage('cos-publish-candidate', { version: plan.version }, function (report) { return store.publishJson(candidateKey, index, { cacheControl: IMMUTABLE_CACHE_CONTROL, onRetry: report.retry }) })
   await stage('cos-recheck-candidate-state', { version: plan.version }, async function (report) {
     const beforeSwitch = await store.readJson(LATEST_KEY, { onRetry: report.retry })
-    if (JSON.stringify(buildManagerIndex(plan, beforeSwitch, config.publicBaseUrl)) !== JSON.stringify(index)) {
+    if (JSON.stringify(buildIndex(plan, beforeSwitch, config.publicBaseUrl)) !== JSON.stringify(index)) {
       throw new Error('COS 平台索引在候选清单核验期间发生变更，请重跑同步；未覆盖最新指针')
     }
   })
@@ -302,7 +387,9 @@ if (require.main === module) {
 
 module.exports = {
   LATEST_KEY,
+  MAX_HISTORY_VERSIONS,
   buildAllowedArtifacts,
+  buildManagerHistoryIndex,
   buildManagerIndex,
   buildManagerReleasePlan,
   parseArguments,

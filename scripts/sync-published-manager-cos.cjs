@@ -143,6 +143,9 @@ async function resolveAssetDownloadUrl(asset, options = {}) {
 
 async function syncPublishedManagerRelease(options = {}) {
   const tag = options.tag || undefined
+  // Recording history needs the exact older release, never whatever is latest.
+  if (options.historyOnly !== undefined && typeof options.historyOnly !== 'boolean') throw new Error('只补历史模式无效')
+  if (options.historyOnly === true && !tag) throw new Error('只补历史必须指定 v0.x.x 版本标签')
   const utilities = options.utilities || require('./cos-sync-utils.cjs')
   let latestState = 'not-written-by-this-run'
   const stage = createManagerSyncDiagnostics(options.onDiagnostic, function () { return latestState })
@@ -188,6 +191,7 @@ async function syncPublishedManagerRelease(options = {}) {
     return await stage('cos-manager-publication', { version: release.version }, async function () {
       const result = await synchronize({
         ...options.syncOptions, directory, version: release.version, installersOnly: true, utilities: anchoredUtilities,
+        ...(options.historyOnly === true ? { historyOnly: true } : {}),
         ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
       })
       latestState = 'published-and-read-back'
@@ -212,17 +216,29 @@ async function syncPublishedManagerRelease(options = {}) {
 }
 
 function parseArguments(argv, env = process.env) {
+  const usage = '用法：sync-published-manager-cos.cjs [--tag v0.x.x] [--history-only]'
   let tag = env.MANAGER_RELEASE_TAG || undefined
-  if (argv.length) {
-    if (argv.length !== 2 || argv[0] !== '--tag' || tag) throw new Error('用法：sync-published-manager-cos.cjs [--tag v0.x.x]')
-    tag = argv[1]
+  if (![undefined, '', 'true', 'false'].includes(env.MANAGER_HISTORY_ONLY)) throw new Error(usage)
+  let historyOnly = env.MANAGER_HISTORY_ONLY === 'true'
+  const rest = argv.filter((arg) => arg !== '--history-only')
+  if (argv.length - rest.length > Number(!historyOnly)) throw new Error(usage)
+  if (rest.length < argv.length) historyOnly = true
+  if (rest.length) {
+    if (rest.length !== 2 || rest[0] !== '--tag' || tag) throw new Error(usage)
+    tag = rest[1]
   }
   if (tag) validateTag(tag)
-  return { tag }
+  if (historyOnly && !tag) throw new Error('只补历史必须指定 v0.x.x 版本标签')
+  return { tag, ...(historyOnly ? { historyOnly } : {}) }
 }
 
 async function main(argv) {
-  const result = await syncPublishedManagerRelease({ ...parseArguments(argv), onDiagnostic: function (event) { console.log(`[manager-sync] ${JSON.stringify(event)}`) } })
+  const options = parseArguments(argv)
+  const result = await syncPublishedManagerRelease({ ...options, onDiagnostic: function (event) { console.log(`[manager-sync] ${JSON.stringify(event)}`) } })
+  if (options.historyOnly) {
+    console.log(`已核对 ${options.tag} 的安装包与 COS 上的文件一致，记进了下载清单的旧版本；没有上传文件，当前版本仍是 ${result.version}`)
+    return
+  }
   console.log(`已将 GitHub 正式版本 ${result.version} 的安装包导入 COS，未重新发布版本或修改客户端更新源`)
 }
 
