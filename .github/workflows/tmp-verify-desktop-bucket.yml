@@ -1,0 +1,39 @@
+# 临时：在 GitHub 的 Mac、Windows 机器上用真网络从星芒存储桶下一次 Codex、Claude 桌面端，
+# 核对线上清单格式、下载校验、签名核对都走得通。开 PR 前删掉，不进 main。
+name: tmp-verify-desktop-bucket
+
+on:
+  push:
+    branches: [claude/desktop-apps-download-from-cos-0skv8v]
+    paths:
+      - .github/workflows/tmp-verify-desktop-bucket.yml
+      - .github/tmp-verify-desktop-bucket.cjs
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies without the Electron binary
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Compile the main process
+        run: npx tsc -p tsconfig.electron.json
+
+      - name: Download from the bucket the way the toolbox does
+        run: node .github/tmp-verify-desktop-bucket.cjs
