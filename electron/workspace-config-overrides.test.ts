@@ -9,6 +9,8 @@ import {
   codexProjectOverrideKeys,
   describeOverride,
   displayOverrideFile,
+  geminiFolderTrust,
+  geminiFolderTrustEnabled,
   geminiSettingsOverrideKeys,
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
@@ -99,6 +101,66 @@ describe('geminiSettingsOverrideKeys', () => {
   it('ignores the same login method and unrelated settings', () => {
     expect(geminiSettingsOverrideKeys(JSON.stringify({ security: { auth: { selectedType: 'gemini-api-key' } } }), relayAccount)).toEqual([])
     expect(geminiSettingsOverrideKeys(JSON.stringify({ ui: { theme: 'dark' } }), relayAccount)).toEqual([])
+  })
+})
+
+describe('geminiFolderTrust', () => {
+  // 取值和比法照 Gemini CLI 0.62.0 core/src/utils/trust.ts 的 isPathTrusted。
+  it('trusts a folder and everything below a TRUST_FOLDER rule', () => {
+    const text = JSON.stringify({ '/Users/alex/work': 'TRUST_FOLDER' })
+    expect(geminiFolderTrust(text, '/Users/alex/work', 'darwin')).toBe(true)
+    expect(geminiFolderTrust(text, '/Users/alex/work/app', 'darwin')).toBe(true)
+    expect(geminiFolderTrust(text, '/Users/alex/other', 'darwin')).toBeNull()
+    expect(geminiFolderTrust(text, '/Users/alex/workshop', 'darwin')).toBeNull()
+  })
+
+  it('lets a TRUST_PARENT rule cover the parent folder and its other children', () => {
+    const text = JSON.stringify({ '/home/alex/work/app': 'TRUST_PARENT' })
+    expect(geminiFolderTrust(text, '/home/alex/work', 'linux')).toBe(true)
+    expect(geminiFolderTrust(text, '/home/alex/work/site', 'linux')).toBe(true)
+    expect(geminiFolderTrust(text, '/home/alex', 'linux')).toBeNull()
+  })
+
+  it('follows the longest matching rule, so a distrusted subfolder stays distrusted', () => {
+    const text = JSON.stringify({ '/home/alex/work': 'TRUST_FOLDER', '/home/alex/work/app': 'DO_NOT_TRUST' })
+    expect(geminiFolderTrust(text, '/home/alex/work/app/src', 'linux')).toBe(false)
+    expect(geminiFolderTrust(text, '/home/alex/work/site', 'linux')).toBe(true)
+    const trustedInside = JSON.stringify({ '/home/alex': 'DO_NOT_TRUST', '/home/alex/work': 'TRUST_FOLDER' })
+    expect(geminiFolderTrust(trustedInside, '/home/alex/work/app', 'linux')).toBe(true)
+  })
+
+  it('matches the lower-case, forward-slash key Gemini writes on Windows', () => {
+    const text = JSON.stringify({ 'c:/users/peaker/work/app': 'DO_NOT_TRUST' })
+    expect(geminiFolderTrust(text, 'C:\\Users\\peaker\\work\\app', 'win32')).toBe(false)
+    expect(geminiFolderTrust(text, 'D:\\Users\\peaker\\work\\app', 'win32')).toBeNull()
+  })
+
+  it('compares case-insensitively on macOS and case-sensitively on Linux', () => {
+    const text = JSON.stringify({ '/users/alex/app': 'DO_NOT_TRUST' })
+    expect(geminiFolderTrust(text, '/Users/alex/app', 'darwin')).toBe(false)
+    expect(geminiFolderTrust(text, '/Users/alex/app', 'linux')).toBeNull()
+  })
+
+  it('lets the later of two spellings of the same folder win, as Gemini does', () => {
+    const text = '{ "c:/users/peaker/app": "DO_NOT_TRUST", "C:\\\\Users\\\\peaker\\\\app": "TRUST_FOLDER" }'
+    expect(geminiFolderTrust(text, 'C:\\Users\\peaker\\app', 'win32')).toBe(true)
+  })
+
+  it('reads comments like Gemini but treats a file it would reject as unknown', () => {
+    expect(geminiFolderTrust('// mine\n{ "/home/alex/app": "DO_NOT_TRUST" }', '/home/alex/app', 'linux')).toBe(false)
+    expect(geminiFolderTrust('{ "/home/alex/app": "DO_NOT_TRUST", }', '/home/alex/app', 'linux')).toBeNull()
+    expect(geminiFolderTrust(JSON.stringify({ '/home/alex/app': 'NEVER' }), '/home/alex/app', 'linux')).toBeNull()
+    expect(geminiFolderTrust('[]', '/home/alex/app', 'linux')).toBeNull()
+    expect(geminiFolderTrust('', '/home/alex/app', 'linux')).toBeNull()
+  })
+})
+
+describe('geminiFolderTrustEnabled', () => {
+  it('is on unless the user settings turn it off', () => {
+    expect(geminiFolderTrustEnabled(JSON.stringify({ security: { folderTrust: { enabled: false } } }))).toBe(false)
+    expect(geminiFolderTrustEnabled(JSON.stringify({ security: { folderTrust: { enabled: true } } }))).toBe(true)
+    expect(geminiFolderTrustEnabled(JSON.stringify({ security: { auth: { selectedType: 'gemini-api-key' } } }))).toBe(true)
+    expect(geminiFolderTrustEnabled('not json')).toBe(true)
   })
 })
 
@@ -240,6 +302,26 @@ describe('inspectWorkspaceConfigOverrides', () => {
     expect(inspectWorkspaceConfigOverrides('gemini', workspace, context)).toEqual([
       { provider: 'gemini', scope: 'project', file: path.join(workspace, '.gemini', 'settings.json'), keys: ['security.auth.selectedType'], severity: 'blocking' },
     ])
+  })
+
+  it('reports a folder the user told Gemini not to trust as affecting only a self-opened terminal', () => {
+    // 不信任时项目里的 .env 与 settings.json Gemini 都不读，只剩这一条。
+    write(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [workspace]: 'DO_NOT_TRUST' }))
+    write(path.join(workspace, '.gemini', 'settings.json'), JSON.stringify({ security: { auth: { selectedType: 'vertex-ai' } } }))
+    write(path.join(home, 'work', '.env'), 'OTHER=1\n')
+    expect(inspectWorkspaceConfigOverrides('gemini', workspace, context)).toEqual([
+      { provider: 'gemini', scope: 'project', file: path.join(home, '.gemini', 'trustedFolders.json'), keys: [], severity: 'blocking', launchUnaffected: true },
+    ])
+  })
+
+  it('says nothing about trust for a trusted or never-asked folder, or with folder trust turned off', () => {
+    write(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [path.join(home, 'work')]: 'TRUST_FOLDER' }))
+    expect(inspectWorkspaceConfigOverrides('gemini', workspace, context)).toEqual([])
+    write(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [path.join(home, 'elsewhere')]: 'DO_NOT_TRUST' }))
+    expect(inspectWorkspaceConfigOverrides('gemini', workspace, context)).toEqual([])
+    write(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [workspace]: 'DO_NOT_TRUST' }))
+    write(path.join(home, '.gemini', 'settings.json'), JSON.stringify({ security: { folderTrust: { enabled: false } } }))
+    expect(inspectWorkspaceConfigOverrides('gemini', workspace, context)).toEqual([])
   })
 
   it('never inspects Grok, whose project config cannot change the endpoint or key', () => {

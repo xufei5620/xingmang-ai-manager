@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
 import { codexPluginCatalogNetworkMessage } from './codex-plugin-catalog'
+import { codexPluginCatalogBucketIndexUrl } from './codex-plugin-catalog-bucket'
 import { providerIds } from './catalog'
 import { gitLinuxInstallCommand } from './git-runtime'
 import type { ProviderId } from './catalog'
@@ -1590,6 +1591,31 @@ describe('Codex official plugin catalog', () => {
     expect(release).toHaveBeenCalledTimes(1)
     await expect(service.ensureMarketplace('codex')).rejects.toThrow(codexPluginCatalogNetworkMessage)
     expect(fetchCalls).toHaveLength(2)
+  })
+
+  it('asks the bucket first without a line and only borrows one for GitHub', async () => {
+    const fetchCalls: string[] = []
+    const events: string[] = []
+    const service = new ProviderExtensionService({
+      homeDirectory: fs.realpathSync(temporaryDirectory()),
+      invoke: async () => '[]',
+      downloadFetch: async (input) => {
+        fetchCalls.push(String(input))
+        events.push(`fetch:${String(input) === codexPluginCatalogBucketIndexUrl() ? 'bucket' : 'github'}`)
+        if (String(input) === codexPluginCatalogBucketIndexUrl()) return new Response('<Error/>', { status: 404 })
+        throw new TypeError('fetch failed')
+      },
+      acquireDownloadAcceleration: async () => {
+        events.push('acquire')
+        return { endpoint: null, accelerated: false, release: async () => { events.push('release') } }
+      },
+      codexCatalogBucket: { onFallback: (detail) => events.push(`fallback:${detail}`) },
+    })
+
+    await expect(service.ensureMarketplace('codex')).rejects.toThrow(codexPluginCatalogNetworkMessage)
+
+    expect(fetchCalls[0]).toBe(codexPluginCatalogBucketIndexUrl())
+    expect(events).toEqual(['fetch:bucket', expect.stringMatching(/^fallback:codex-plugin-catalog：.*HTTP 404/), 'acquire', 'fetch:github', 'release'])
   })
 
   it('does not touch the network when the catalog is already there', async () => {

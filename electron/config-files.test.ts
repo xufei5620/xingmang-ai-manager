@@ -23,6 +23,8 @@ import {
   codexChatGptAuthSnapshotName,
   applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
+  codexDaemonAutoStartSetting,
+  inspectCodexDaemonAutoStart,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogPath,
   codexModelCatalogTargetUsable,
@@ -1290,6 +1292,40 @@ describe('native CLI configuration files', () => {
     const scalar: Record<string, unknown> = { features: 'off', windows: 'x' }
     applyCodexRelayMachineDefaults(scalar, 'win32')
     expect(scalar).toEqual({ features: 'off', windows: 'x' })
+  })
+
+  // 照 rust-v0.160.1 features/src/lib.rs 的 from_sources：[features] 在先，profile 选中的那张盖过它。
+  it('reads whether the Codex background server starts on its own', () => {
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: false } })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: true } })).toBe('on')
+    expect(codexDaemonAutoStartSetting({})).toBe('default')
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: 'false' } })).toBe('default')
+    expect(codexDaemonAutoStartSetting({ features: 'off' })).toBe('default')
+    const withProfile = {
+      profile: 'work',
+      features: { daemon_auto_start: false },
+      profiles: { work: { features: { daemon_auto_start: true } }, home: { features: { daemon_auto_start: false } } },
+    }
+    expect(codexDaemonAutoStartSetting(withProfile)).toBe('on')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'home' })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'missing' })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'work', profiles: { work: { model: 'x' } } })).toBe('off')
+  })
+
+  it('inspects the Codex background server setting on disk without touching the file', () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    expect(inspectCodexDaemonAutoStart(roots)).toBeNull()
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, '[features]\ndaemon_auto_start = true\n', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBe('on')
+    fs.writeFileSync(configPath, 'model = "x"\n', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBe('default')
+    fs.writeFileSync(configPath, '[features', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBeNull()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('[features')
   })
 
   it('writes the Codex sleep and sandbox defaults on both a fresh install and an existing config', () => {

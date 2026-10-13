@@ -1093,8 +1093,8 @@ async function linuxTrustedRealPath(candidate: string): Promise<string | null> {
  * Linux counterpart of the win32 block in runCommand: resolve the executable from the
  * trusted PATH only, require it, every path argument and every trustedPaths entry to
  * pass the Linux predicate, and spawn the canonical paths that passed. Without this,
- * trustedOnly on Linux would only swap the environment, which is the gap the macOS
- * rules file still records for darwin.
+ * trustedOnly on Linux would only swap the environment. darwin has no counterpart yet
+ * and refuses the flag at the top of runCommand instead.
  *
  * The canonical binary keeps the name it was found by as argv[0]. Multi-call binaries
  * (busybox, the uutils coreutils Ubuntu now ships, dash behind /bin/sh) choose what to
@@ -1158,6 +1158,19 @@ export async function runCommand(
   const maxOutputBytes = positiveInteger(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes')
   const killGraceMs = positiveInteger(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS, 'killGraceMs', true)
   if (options.signal?.aborted) throw immediateError('ABORTED', spec, options)
+  // Neither trusted block below runs on darwin, so trustedOnly there would only swap the
+  // environment: the executable, path arguments and trustedPaths would go unchecked, a
+  // weaker guarantee than the flag promises (#56). No darwin caller passes it, so the
+  // first one fails here at once instead of degrading in silence. Lift this only
+  // together with a darwin counterpart of resolveTrustedLinuxSpec.
+  if (options.trustedOnly && process.platform === 'darwin') {
+    throw immediateError(
+      'UNSAFE_COMMAND',
+      spec,
+      options,
+      `这台 Mac 上还不能按受信任方式执行命令，已阻止执行：${spec.executable}`,
+    )
+  }
 
   const machinePaths = options.trustedOnly && process.platform === 'win32'
     ? options.machinePaths ?? resolveWindowsMachinePaths()

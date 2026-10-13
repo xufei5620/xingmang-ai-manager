@@ -36,6 +36,7 @@ import {
   type LinuxRendererSandboxVerdict,
 } from './linux-renderer-sandbox'
 import {
+  canvasNotificationText,
   canvasSaveFileName,
   parseCanvasAssetQuery,
   parseCanvasAssetId,
@@ -134,8 +135,9 @@ const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
 const maximumTitleLength = 200
 const maximumBodyLength = 2_000
-const defaultCanvasSaveFileName = 'xingmang-canvas-export.txt'
+const canvasNotificationIntervalMs = 5_000
 const defaultCanvasProjectFileName = 'xingmang-project.xingcanvas'
+const canvasProjectFileFilter = { name: '星芒画布项目', extensions: ['xingcanvas'] }
 
 export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
@@ -184,6 +186,10 @@ export interface CanvasWindowController {
 
 function senderUrlOf(event: IpcMainInvokeEvent): string {
   return event.senderFrame?.url ?? event.sender.getURL()
+}
+
+function withCanvasProjectExtension(fileName: string): string {
+  return fileName.toLowerCase().endsWith('.xingcanvas') ? fileName : `${fileName}.xingcanvas`
 }
 
 /**
@@ -289,6 +295,7 @@ export function createCanvasWindowController(
   const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
   const generationAdmission = new CanvasGenerationAdmission()
+  let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
 
   function assertCanvasAccountId(userId: number | null): number | null {
     if (userId !== null && (!Number.isSafeInteger(userId) || userId <= 0)) {
@@ -470,13 +477,17 @@ export function createCanvasWindowController(
   })
 
   registerCanvasHandler(canvasHostSaveFileChannel, async (event, suggestedNameInput, contentInput) => {
-    const suggestedName = canvasSaveFileName(suggestedNameInput, '保存文件名', defaultCanvasSaveFileName)
+    const suggestedName = canvasSaveFileName(suggestedNameInput, '保存文件名', defaultCanvasProjectFileName)
     const content = requiredCanvasText(contentInput, '保存内容', maximumSavedFileBytes)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    // The canvas also chooses the content, so a free extension would let a
+    // poisoned build propose `readme.cmd` with a script body and have the user
+    // save something that runs on a double-click. The canvas only ever saves
+    // its own project file here, so the proposal is pinned to that type.
     const dialogOptions: SaveDialogOptions = {
       title: '画布：保存文件',
-      defaultPath: suggestedName,
-      filters: [{ name: '所有文件', extensions: ['*'] }],
+      defaultPath: withCanvasProjectExtension(suggestedName),
+      filters: [canvasProjectFileFilter],
     }
     const result = parentWindow
       ? await dialog.showSaveDialog(parentWindow, dialogOptions)
@@ -503,9 +514,14 @@ export function createCanvasWindowController(
   })
 
   registerCanvasHandler(canvasHostNotifyChannel, (_event, titleInput, bodyInput) => {
-    const title = requiredCanvasString(titleInput, '通知标题', maximumTitleLength)
-    const body = bodyInput === undefined ? '' : requiredCanvasString(bodyInput, '通知内容', maximumBodyLength)
+    const title = canvasNotificationText(requiredCanvasString(titleInput, '通知标题', maximumTitleLength))
+    const body = bodyInput === undefined ? '' : canvasNotificationText(requiredCanvasString(bodyInput, '通知内容', maximumBodyLength))
     if (!Notification.isSupported()) return false
+    // A system notification is shown under this app's name, so an unthrottled
+    // canvas could bury the desktop in text that reads as coming from us.
+    const now = Date.now()
+    if (!title || now - lastCanvasNotificationAt < canvasNotificationIntervalMs) return false
+    lastCanvasNotificationAt = now
     new Notification({ title, body }).show()
     return true
   })
@@ -944,14 +960,17 @@ export function createCanvasWindowController(
     const { graph, scope } = parseCanvasStartRunInput(input)
     const userId = authenticatedCanvasUserId()
     const projectId = activeProjectId(event.sender.id, userId)
-    const handle = await options.canvasRuns.start({
+    // A run is paid generation just like the three direct channels, so its
+    // start counts against the same per-window frequency limit; otherwise a
+    // poisoned canvas could keep submitting runs and drain the balance.
+    const handle = await generationAdmission.run(event.sender.id, () => options.canvasRuns.start({
       userId,
       ownerId: event.sender.id,
       ...(projectId ? { projectId } : {}),
       graphRevision: computeCanvasGraphRevision(graph),
       graph,
       scope,
-    })
+    }))
     try {
       assertCanvasUserUnchanged(userId)
     } catch (error) {
@@ -990,10 +1009,9 @@ export function createCanvasWindowController(
     assertCanvasUserUnchanged(userId)
     const projectContent = buildCanvasProjectPackage(workflowContent, sources)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
-    const defaultPath = suggestedName.toLowerCase().endsWith('.xingcanvas') ? suggestedName : `${suggestedName}.xingcanvas`
     const dialogOptions: SaveDialogOptions = {
-      title: '画布：导出项目', defaultPath,
-      filters: [{ name: '星芒画布项目', extensions: ['xingcanvas'] }],
+      title: '画布：导出项目', defaultPath: withCanvasProjectExtension(suggestedName),
+      filters: [canvasProjectFileFilter],
     }
     const result = parentWindow ? await dialog.showSaveDialog(parentWindow, dialogOptions) : await dialog.showSaveDialog(dialogOptions)
     if (result.canceled || !result.filePath) return null
