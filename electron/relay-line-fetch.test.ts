@@ -8,6 +8,7 @@ import {
   type RelayLineRouter,
 } from './relay-line-fetch'
 import type { RelayEndpointId, RelayRouteSiteId } from './relay-sites'
+import { requestDiagnosticsOf } from './request-diagnostics'
 
 function fakeRouter(line: RelayEndpointId = 'direct', automatic = true) {
   const state = { line, automatic }
@@ -391,6 +392,43 @@ describe('createRelayLineFetch', () => {
     expect(reports).toEqual([])
   })
 
+  // 客户说登不上时，日志要记得出这一次实际走的哪条线路（三线路 7b）：退回默认线路重发的记默认线路。
+  it('marks every answer and failure with the line that actually carried it', async () => {
+    const login = { method: 'POST', body: '{}' }
+    const onDirect = fakeRouter()
+    const answered = await createRelayLineFetch(onDirect.router, vi.fn<typeof fetch>(async () => json(401)))('https://xm.solov.cc/api/user/login', login)
+    expect(requestDiagnosticsOf(answered)).toEqual({ line: 'direct' })
+
+    const unsent = fakeRouter()
+    const unsentBase = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
+      .mockResolvedValueOnce(json(200))
+    expect(requestDiagnosticsOf(await createRelayLineFetch(unsent.router, unsentBase)('https://xm.solov.cc/api/user/login', login)))
+      .toEqual({ line: 'primary' })
+
+    const cut = fakeRouter()
+    const cutFailure = await createRelayLineFetch(cut.router, vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_CONNECTION_RESET')))(
+      'https://xm.solov.cc/api/user/login', login,
+    ).catch((error: unknown) => error)
+    expect(requestDiagnosticsOf(cutFailure)).toEqual({ line: 'direct' })
+
+    const bothDown = fakeRouter()
+    const bothBase = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
+      .mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED'))
+    const bothFailure = await createRelayLineFetch(bothDown.router, bothBase)('https://xm.solov.cc/api/status').catch((error: unknown) => error)
+    expect(requestDiagnosticsOf(bothFailure)).toEqual({ line: 'primary' })
+
+    const pinned = fakeRouter('primary', false)
+    const pinnedFailure = await createRelayLineFetch(pinned.router, vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED')))(
+      'https://xm.solov.cc/api/status',
+    ).catch((error: unknown) => error)
+    expect(requestDiagnosticsOf(pinnedFailure)).toEqual({ line: 'primary' })
+
+    const elsewhere = await createRelayLineFetch(onDirect.router, vi.fn<typeof fetch>(async () => json(200)))('https://example.test/api/status')
+    expect(requestDiagnosticsOf(elsewhere)).toBeNull()
+  })
+
   it('never resends a streamed body and never reroutes a pinned line', async () => {
     const streamed = fakeRouter()
     const streamBase = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
@@ -474,6 +512,23 @@ describe('createRelayObservedFetch', () => {
     const pinned = fakeRouter('direct', false)
     await expect(createRelayObservedFetch(pinned.router, base)('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
     expect(pinned.reports).toEqual([])
+  })
+})
+
+describe('createRelayObservedFetch line marks', () => {
+  it('marks answers and failures with the line the address belongs to, whether or not it reports them', async () => {
+    for (const automatic of [true, false]) {
+      const { router } = fakeRouter('direct', automatic)
+      const base = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(json(401))
+        .mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED'))
+        .mockResolvedValueOnce(json(200))
+      const observed = createRelayObservedFetch(router, base)
+      expect(requestDiagnosticsOf(await observed('https://xm.solov.cc/v1/models'))).toEqual({ line: 'primary' })
+      expect(requestDiagnosticsOf(await observed('https://xm-direct.solov.cc/v1/models').catch((error: unknown) => error)))
+        .toEqual({ line: 'direct' })
+      expect(requestDiagnosticsOf(await observed('https://example.test/v1/models'))).toBeNull()
+    }
   })
 })
 
