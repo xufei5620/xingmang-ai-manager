@@ -2142,17 +2142,31 @@ export function trustClaudeWorkspaceInRootConfigText(
   return { content: jsonContent(parsed), changed }
 }
 
+// Gemini CLI 0.62.0 (core/src/utils/paths.ts normalizePath) lower-cases every
+// trustedFolders.json key on win32 and darwin, both when it records an answer
+// and when it reads the file back, and of two keys that fold to the same folder
+// the later one wins. normalizeWorkspacePathKey already folds Windows-shaped
+// paths; a POSIX path on macOS has to be folded here too, or the
+// "/users/alex/app": "DO_NOT_TRUST" Gemini wrote is missed and the
+// "/Users/alex/app": "TRUST_FOLDER" appended after it overrides that answer.
+function geminiTrustedFolderKey(value: string, platform: NodeJS.Platform): string {
+  const key = normalizeWorkspacePathKey(value)
+  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
+}
+
 export function trustGeminiWorkspaceInTrustedFoldersText(
   content: string | null,
   workspace: string,
+  platform: NodeJS.Platform = process.platform,
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
   if (!trimmedWorkspace) throw new Error('Gemini CLI 工作目录不能为空')
   const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI trustedFolders.json')
-  const existing = matchingWorkspaceKey(parsed, trimmedWorkspace)
+  const wanted = geminiTrustedFolderKey(trimmedWorkspace, platform)
+  const answered = Object.keys(parsed).some((key) => geminiTrustedFolderKey(key, platform) === wanted)
   // A folder the user already answered for keeps its answer, including
   // DO_NOT_TRUST. Only a folder Gemini has never asked about gets filled in.
-  if (existing !== null) return { content: geminiJsonContent(content, parsed), changed: false }
+  if (answered) return { content: geminiJsonContent(content, parsed), changed: false }
   parsed[trimmedWorkspace] = 'TRUST_FOLDER'
   return { content: geminiJsonContent(content, parsed), changed: true }
 }
