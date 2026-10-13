@@ -196,8 +196,12 @@ describe('openCodexStartupTunnel', () => {
     local.client.write('more')
     await waitFor(() => Buffer.concat(sockets[0].sent).toString('utf8') === 'client-hellomore')
 
+    // The last reply bytes must still reach Codex when the server closes right after sending them.
+    sockets[0].receive(new TextEncoder().encode('-bye').buffer)
     sockets[0].remoteClose()
     await waitFor(() => local.ended())
+    expect(local.received()).toBe('server-hello-bye')
+    expect(sockets[0].closed).toBe(true)
   })
 
   it('falls through to the next line when one fails before opening', async () => {
@@ -324,12 +328,17 @@ describe('createCodexDesktopStartupRouteCoordinator', () => {
     // The ticket is a bearer credential: it reaches the tunnel and nothing else.
     expect(JSON.stringify(f.log.mock.calls)).not.toContain(ticket)
 
+    expect(f.openTunnel).toHaveBeenCalledWith(expect.objectContaining({ maxConnections: 7 }))
+
     if (route.kind !== 'tunnel') throw new Error('expected a tunnel route')
+    // An activation error does not prove Codex never started with the
+    // argument, so the fallback adds acceleration and leaves the tunnel up.
+    await route.fallback(new Error('激活超时'))
+    expect(f.tunnelClose).not.toHaveBeenCalled()
+    expect(f.ensureAccelerated).toHaveBeenCalledTimes(1)
+    expect(f.log).toHaveBeenCalledWith('info', 'codex-desktop.startup-route.fallback', expect.any(String), { cause: '激活超时' })
     route.release()
     expect(f.tunnelClose).toHaveBeenCalledTimes(1)
-    await route.fallback()
-    expect(f.tunnelClose).toHaveBeenCalledTimes(2)
-    expect(f.ensureAccelerated).toHaveBeenCalledTimes(1)
   })
 
   it('puts the line that passed the preflight first', async () => {

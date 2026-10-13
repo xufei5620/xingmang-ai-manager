@@ -41,10 +41,11 @@ export type CodexDesktopStartupRoute =
   /** 不带启动参数：加速连上了、用户自己有路，或者判断不了。 */
   | { kind: 'none' }
   /**
-   * 代取：开关请求指到本机通道。release 关掉通道；带参数启动没成、只能照普通方式打开时，
-   * fallback 关掉通道并补连加速，中文不至于因此丢掉。
+   * 代取：开关请求指到本机通道。release 关掉通道（确定没有 Codex 拉起来时用）；带参数启动报错、只能照
+   * 普通方式再打开一次时，fallback 补连加速，通道留着到期自己关：报错不等于没拉起来（激活超时之前
+   * 进程可能已经带着参数起来了），这时关通道反而会把它弄成英文。
    */
-  | { kind: 'tunnel'; hostResolverRules: string; release(): void; fallback(): Promise<void> }
+  | { kind: 'tunnel'; hostResolverRules: string; release(): void; fallback(cause?: unknown): Promise<void> }
   /** 立刻失败：开关请求指到没人听的本机端口。 */
   | { kind: 'fast-fail'; hostResolverRules: string }
 
@@ -220,6 +221,17 @@ export function openCodexStartupTunnel(options: CodexStartupTunnelOptions): Prom
     }
     closers.add(finish)
 
+    // 服务器那头正常关了：本机这边先把已经写下去的字节送完再关，别把最后一段回应丢掉。
+    function finishAfterFlush(): void {
+      if (finished) return
+      if (remote) detachSocket(remote)
+      remote = null
+      local.end()
+      const timer = setTimeout(finish, 1_000)
+      timer.unref?.()
+      local.once('close', () => clearTimeout(timer))
+    }
+
     function withinBudget(length: number): boolean {
       bytes += length
       if (bytes <= maxBytes) return true
@@ -257,7 +269,7 @@ export function openCodexStartupTunnel(options: CodexStartupTunnelOptions): Prom
         dial(index + 1)
       }
       socket.onclose = () => {
-        if (opened) { finish(); return }
+        if (opened) { finishAfterFlush(); return }
         detachSocket(socket)
         dial(index + 1)
       }
@@ -266,9 +278,10 @@ export function openCodexStartupTunnel(options: CodexStartupTunnelOptions): Prom
     local.setNoDelay(true)
     local.setTimeout(idleTimeoutMs, finish)
     local.on('data', (chunk: Buffer) => {
+      if (finished) return
       if (!withinBudget(chunk.length)) return
-      if (opened && remote) {
-        remote.send(chunk)
+      if (opened) {
+        remote?.send(chunk)
         return
       }
       pendingBytes += chunk.length
@@ -332,9 +345,9 @@ const certificateFailureCodes: ReadonlySet<string> = new Set([
 
 /**
  * 这台电脑现在能不能直接连上 ab.chatgpt.com：只做一次 TLS 握手，不发任何请求。DNS 被污染、握手
- * 被重置、等不到回应，都算连不上。
+ * 被重置、等不到回应，都算连不上。等得比一般握手久一些：慢但通的梯子要算「连得上」，不然会被弄成英文。
  */
-export function probeCodexStartupHostDirect(timeoutMs = 3_000): Promise<boolean> {
+export function probeCodexStartupHostDirect(timeoutMs = 5_000): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false
     const socket = tls.connect({ host: codexStartupConfigHost, port: 443, servername: codexStartupConfigHost })
@@ -457,6 +470,8 @@ export function createCodexDesktopStartupRouteCoordinator(
         ticket: ticket.ticket,
         connect: options.connect,
         lifetimeMs: ticket.expiresInSeconds * 1_000,
+        // 服务端一张票最多开 8 条通道，预检已经用掉一条。
+        maxConnections: 7,
       })
     } catch (error) {
       log('warn', 'codex-desktop.startup-route.unavailable', 'Codex 中文启动通道在本机开不起来，改走加速', { reason: 'listen', ...failureDetail(error) })
@@ -467,9 +482,8 @@ export function createCodexDesktopStartupRouteCoordinator(
       kind: 'tunnel',
       hostResolverRules: buildCodexStartupHostResolverRules(tunnel.port),
       release: () => tunnel.close(),
-      fallback: async () => {
-        tunnel.close()
-        log('info', 'codex-desktop.startup-route.fallback', '带启动参数打开 Codex 没成，改为照旧连加速')
+      fallback: async (cause) => {
+        log('info', 'codex-desktop.startup-route.fallback', '带启动参数打开 Codex 没成，补连加速', cause === undefined ? undefined : failureDetail(cause))
         await accelerate()
       },
     }

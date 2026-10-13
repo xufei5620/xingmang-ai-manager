@@ -3951,8 +3951,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         console.warn(`[codex-launch] 增强启动不可用，回退普通启动：${message}`)
         cdpPort = null
         cdpActivationProcessId = null
-        // 普通打开带不上启动参数：通道用不上了，补连加速，中文不因为这一下丢掉。
-        if (startupRoute.kind === 'tunnel') await startupRoute.fallback()
+        // 下面的普通打开带不上启动参数：补连加速，中文不因为这一下丢掉（报错之前进程可能已经带着参数
+        // 起来了，所以通道留着，到期自己关）。
+        if (startupRoute.kind === 'tunnel') await startupRoute.fallback(error)
         try {
           await launchFresh()
         } catch (fallbackError) {
@@ -3991,7 +3992,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       cdpPort = null
       cdpActivationProcessId = null
       // 这一路同样带不上启动参数，理由同上。
-      if (startupRoute.kind === 'tunnel') await startupRoute.fallback()
+      if (startupRoute.kind === 'tunnel') await startupRoute.fallback('没等到 Codex 窗口，改从开始菜单那一路再开一次')
       try {
         await launchWithExplorer()
         startedProcesses = await waitForCodexDesktopSessionProcesses(
