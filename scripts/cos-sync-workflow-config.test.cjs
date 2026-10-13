@@ -10,6 +10,7 @@ const source = fs.readFileSync(workflowPath, 'utf8')
 const workflow = YAML.parse(source)
 const job = workflow.jobs.sync
 const claudeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-claude-official-cos.yml'), 'utf8'))
+const pluginsWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-codex-plugins-cos.yml'), 'utf8'))
 
 test('Claude backup packages support official native runners and independent manual platform selection', () => {
   assert.deepEqual(Object.keys(claudeWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
@@ -132,6 +133,7 @@ test('only a scheduled sync on main reports failures, from a job that can write 
   for (const [file, parsed, needs] of [
     ['sync-claude-official-cos.yml', claudeWorkflow, ['select', 'sync']],
     ['sync-chatgpt-official-cos.yml', workflow, ['select', 'sync', 'verify-index']],
+    ['sync-codex-plugins-cos.yml', pluginsWorkflow, ['sync']],
   ]) {
     const alert = parsed.jobs.alert
     assert.deepEqual(alert.needs, needs, file)
@@ -150,5 +152,35 @@ test('only a scheduled sync on main reports failures, from a job that can write 
     assert.equal(report.run, 'node scripts/cos-sync-alert.cjs')
     assert.deepEqual(report.env, { GITHUB_TOKEN: '${{ github.token }}', SYNC_WORKFLOW_FILE: file, SYNC_NEEDS: '${{ toJSON(needs) }}' })
     assert.doesNotMatch(JSON.stringify(alert), /secrets\.|COS_SECRET|COS_BUCKET/)
+  }
+})
+
+test('the Codex plugin catalog sync runs on a timer or by hand, only on main with the opt-in, one run at a time', () => {
+  assert.deepEqual(Object.keys(pluginsWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
+  assert.equal(pluginsWorkflow.on.schedule.length, 1)
+  assert.equal(pluginsWorkflow.on.schedule[0].cron, '47 */6 * * *')
+  assert.equal(pluginsWorkflow.on.workflow_dispatch, null)
+  assert.deepEqual(pluginsWorkflow.permissions, { contents: 'read' })
+  assert.deepEqual(pluginsWorkflow.concurrency, { group: 'cos-codex-plugins-publish', 'cancel-in-progress': false })
+  const sync = pluginsWorkflow.jobs.sync
+  assert.equal(sync.if, "${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}")
+  assert.equal(sync.environment, 'cos-sync')
+  assert.equal(sync['runs-on'], 'ubuntu-latest')
+  assert.equal(sync.permissions, undefined)
+  assert.equal(sync.env, undefined)
+})
+
+test('the Codex plugin catalog upload credentials and read-only token stay in the one sync step', () => {
+  const sync = pluginsWorkflow.jobs.sync
+  const steps = sync.steps.filter((step) => Object.keys(step.env || {}).some((key) => key.startsWith('COS_SECRET_') || key === 'GITHUB_TOKEN'))
+  assert.equal(steps.length, 1)
+  assert.equal(steps[0].run, 'node scripts/sync-codex-plugins-cos.cjs')
+  assert.equal(steps[0].env.COS_SECRET_ID, '${{ secrets.COS_SECRET_ID }}')
+  assert.equal(steps[0].env.COS_SECRET_KEY, '${{ secrets.COS_SECRET_KEY }}')
+  assert.equal(steps[0].env.GITHUB_TOKEN, '${{ github.token }}')
+  assert.doesNotMatch(steps[0].run, /inputs\.|secrets\.|\$\{\{/)
+  for (const step of sync.steps.filter((entry) => entry.uses)) {
+    assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+    assert.equal(step.env, undefined)
   }
 })

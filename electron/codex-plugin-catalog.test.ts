@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -12,6 +13,8 @@ import {
   inspectCodexPluginCatalog,
   parseCodexPluginCatalogTar,
 } from './codex-plugin-catalog'
+import { codexPluginCatalogBucketIndexUrl } from './codex-plugin-catalog-bucket'
+import { desktopPackageBucketOrigin } from './desktop-package-bucket'
 
 const temporaryDirectories: string[] = []
 const commit = '1dc19589aa0d3f1c2b4e5f60718293a4b5c6d7e8'
@@ -547,5 +550,97 @@ describe('ensureCodexPluginCatalog', () => {
     await expect(ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog()) }))
       .rejects.toThrow('符号链接')
     expect(fs.readdirSync(elsewhere)).toEqual([])
+  })
+})
+
+describe('ensureCodexPluginCatalog from the Xingmang bucket', () => {
+  // The bucket copy is the archive GitHub serves for one commit; random padding keeps it above
+  // the smallest size the bucket index may describe.
+  const bucketCommit = commit
+  const padding = { name: 'openai-plugins-1dc1958/plugins/demo/assets/noise.txt', data: randomBytes(80 * 1024).toString('base64') }
+
+  function bucketFetch(archive: Buffer, options: { indexStatus?: number; commit?: string } = {}): { fetch: typeof fetch; calls: string[] } {
+    const calls: string[] = []
+    const sha = createHash('sha256').update(archive).digest('hex')
+    const indexCommit = options.commit ?? bucketCommit
+    const key = `xingmang/offline/codex-plugins/sha256-${sha}/openai-plugins-${indexCommit}.tar.gz`
+    const fetch: typeof globalThis.fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (url === codexPluginCatalogBucketIndexUrl()) {
+        if (options.indexStatus) return new Response('<Error/>', { status: options.indexStatus })
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          product: 'codex-plugin-catalog',
+          generatedAt: '2026-10-13T16:00:00.000Z',
+          source: { repository: 'openai/plugins', ref: 'main', commit: indexCommit, url: `https://codeload.github.com/openai/plugins/tar.gz/${indexCommit}` },
+          artifact: { key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: archive.length, sha256: sha, contentType: 'application/gzip',
+            verification: 'github-commit-archive-manifests', cosEtag: '"etag"' },
+        }), { status: 200 })
+      }
+      if (url === `${desktopPackageBucketOrigin}/${key}`) {
+        return new Response(new Uint8Array(archive), { status: 200, headers: { 'content-type': 'application/gzip', 'content-length': String(archive.length) } })
+      }
+      if (url === CODEX_PLUGIN_CATALOG_URL) return new Response(new Uint8Array(gzipCatalog()), { status: 200 })
+      throw new Error(`unexpected request ${url}`)
+    }
+    return { fetch, calls }
+  }
+
+  it('installs the bucket copy without going to GitHub or borrowing a download line', async () => {
+    const codexHome = temporaryCodexHome()
+    const { fetch, calls } = bucketFetch(gzipCatalog([padding]))
+    const acquireGitHubRoute = vi.fn(async () => ({ release: async () => undefined }))
+    const onFallback = vi.fn()
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch, bucket: { onFallback }, acquireGitHubRoute })).resolves.toBe('downloaded')
+
+    expect(calls).toHaveLength(2)
+    expect(calls).not.toContain(CODEX_PLUGIN_CATALOG_URL)
+    expect(acquireGitHubRoute).not.toHaveBeenCalled()
+    expect(onFallback).not.toHaveBeenCalled()
+    expect(fs.readFileSync(codexPluginCatalogPaths(codexHome).shaFile, 'utf8')).toBe(`${bucketCommit}\n`)
+    expect(fs.readFileSync(path.join(codexPluginCatalogPaths(codexHome).directory, 'plugins/demo/assets/noise.txt'), 'utf8')).toBe(padding.data)
+    expect(inspectCodexPluginCatalog(codexHome).present).toBe(true)
+  })
+
+  it.each([
+    ['the bucket has no catalog yet', () => bucketFetch(gzipCatalog([padding]), { indexStatus: 404 }), /HTTP 404/],
+    ['the archive carries another commit than the index', () => bucketFetch(gzipCatalog([padding]), { commit: '2ab19589aa0d3f1c2b4e5f60718293a4b5c6d7e9' }), /提交号对不上/],
+    ['the archive breaks the catalog rules', () => bucketFetch(zlib.gzipSync(tar(catalogEntries([
+      padding, { name: 'openai-plugins-1dc1958/../outside.txt', data: 'x' },
+    ])))), /不完整/],
+  ])('falls back to GitHub with a borrowed line when %s', async (_name, serve, detail) => {
+    const codexHome = temporaryCodexHome()
+    const { fetch, calls } = serve()
+    const release = vi.fn(async () => undefined)
+    const acquireGitHubRoute = vi.fn(async () => ({ release }))
+    const onFallback = vi.fn()
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch, bucket: { onFallback }, acquireGitHubRoute })).resolves.toBe('downloaded')
+
+    expect(calls[0]).toBe(codexPluginCatalogBucketIndexUrl())
+    expect(calls.at(-1)).toBe(CODEX_PLUGIN_CATALOG_URL)
+    expect(onFallback).toHaveBeenCalledTimes(1)
+    expect(onFallback.mock.calls[0][0]).toMatch(/^codex-plugin-catalog：/)
+    expect(onFallback.mock.calls[0][0]).toMatch(detail)
+    expect(acquireGitHubRoute).toHaveBeenCalledTimes(1)
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(fs.existsSync(path.join(codexPluginCatalogPaths(codexHome).directory, 'outside.txt'))).toBe(false)
+    expect(inspectCodexPluginCatalog(codexHome).present).toBe(true)
+  })
+
+  it('still downloads from GitHub when no line can be borrowed, and returns the line even when GitHub fails', async () => {
+    const codexHome = temporaryCodexHome()
+    const { fetch } = bucketFetch(gzipCatalog([padding]), { indexStatus: 404 })
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch, bucket: {}, acquireGitHubRoute: async () => { throw new Error('no line') } }))
+      .resolves.toBe('downloaded')
+
+    const offline = temporaryCodexHome()
+    const release = vi.fn(async () => undefined)
+    const failing: typeof globalThis.fetch = async () => { throw new TypeError('fetch failed') }
+    await expect(ensureCodexPluginCatalog({ codexHome: offline, fetch: failing, bucket: {}, acquireGitHubRoute: async () => ({ release }) }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(release).toHaveBeenCalledTimes(1)
   })
 })

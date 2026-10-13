@@ -204,8 +204,9 @@ describe('desktop package bucket indexes', () => {
 })
 
 describe('desktop package bucket addresses', () => {
-  it('accepts only object paths under the two synced folders on the fixed bucket host', () => {
-    for (const key of ['chatgpt/latest.json', `chatgpt/windows-x64/${windowsVersion}/ChatGPT-x64.msix`, 'xingmang/offline/claude/latest.json']) {
+  it('accepts only object paths under the synced folders on the fixed bucket host', () => {
+    for (const key of ['chatgpt/latest.json', `chatgpt/windows-x64/${windowsVersion}/ChatGPT-x64.msix`, 'xingmang/offline/claude/latest.json',
+      'xingmang/offline/codex-plugins/latest.json']) {
       expect(validateDesktopBucketUrl(objectUrl(key)).href).toBe(objectUrl(key))
     }
     for (const value of [
@@ -215,6 +216,7 @@ describe('desktop package bucket addresses', () => {
       `${objectUrl('chatgpt/latest.json')}?versionId=1`,
       `${objectUrl('chatgpt/latest.json')}#top`,
       objectUrl('xingmang/stable/latest.json'),
+      objectUrl('xingmang/offline/other/latest.json'),
       objectUrl('chatgpt/%2e%2e/secret.json'),
       objectUrl('chatgpt/a b.json'),
       'https://xingmang-downloads-1342302199.cos.ap-beijing.myqcloud.com/chatgpt/latest.json',
