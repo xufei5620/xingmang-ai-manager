@@ -1,3 +1,4 @@
+import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { BusinessPage } from '../src/renderer-v2/pages-business'
 import { Shell } from '../src/renderer-v2/features/shell/Shell'
@@ -18,6 +19,10 @@ declare global {
     // 支付回调只发一次：订阅次数是 R-B6 的直接观测点，重订一次就是一次丢单窗口。
     paymentTerminalSubscriptions: () => { added: number; live: number }
     rerenderFixture: () => void
+    // 后台把充值活动撤了：之后读到的充值信息不带折扣，试算按原价。
+    endTopupPromotion: () => void
+    // 外壳切走 / 切回个人中心（App.tsx 的 active）；不调就不传，同旧夹具。
+    setPageActive: (active: boolean) => void
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     failNextRead: (read: 'profile' | 'subscriptions') => void
     // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
@@ -45,8 +50,13 @@ const fail = query.get('fail')
 const empty = query.has('empty')
 
 // 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
+let topupPromotionEnded = false
+window.endTopupPromotion = () => { topupPromotionEnded = true }
+function topupPromotionRunning(): boolean {
+  return query.has('topupBonus') && !topupPromotionEnded
+}
 function fixtureTopupDiscounts(): Record<string, number> {
-  return query.has('topupBonus') ? { 20: 0.8 } : {}
+  return topupPromotionRunning() ? { 20: 0.8 } : {}
 }
 const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
@@ -686,7 +696,7 @@ const apiMethods = {
     input: Parameters<V2Bridge['quoteAccountTopupAmount']>[0],
   ) => ({
     amount: input.amount,
-    payableAmount: query.has('topupBonus') && input.amount === 20 ? 16 : input.amount,
+    payableAmount: topupPromotionRunning() && input.amount === 20 ? 16 : input.amount,
   }),
   createAccountTopupPayment: async (
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
@@ -1229,6 +1239,7 @@ if (query.has('system')) {
 const root = createRoot(document.getElementById('root')!)
 // 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
 let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'gemini' | 'grok'; sequence: number } | null = null
+let pageActive: boolean | undefined
 const renderFixture = (paymentReturn?: {
   sequence: number
   order: string | null
@@ -1268,6 +1279,7 @@ const renderFixture = (paymentReturn?: {
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}
+          active={pageActive}
         />
       </BalanceTierProvider>
     </Shell>
@@ -1280,6 +1292,11 @@ window.addEventListener('test-payment-return', () =>
 // 真实环境里余额 store 每 30 秒 publish 一次，整棵树跟着重渲染；夹具用一次
 // root.render 复现同一件事，不动任何页面状态。
 window.rerenderFixture = () => renderFixture()
+// 切走、切回各自提交一次：两次挨着的 render 会被 React 并成一次，页面就从没「藏起来」过。
+window.setPageActive = (active) => {
+  pageActive = active
+  flushSync(() => renderFixture())
+}
 window.addEventListener('test-tool-config-confirmed', (event) => {
   const provider = (event as CustomEvent<'claude' | 'codex' | 'gemini' | 'grok'>).detail
   toolConfigConfirmed = { provider, sequence: (toolConfigConfirmed?.sequence ?? 0) + 1 }

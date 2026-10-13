@@ -88,6 +88,7 @@ export function BusinessPage({
         onSubscriptionActivated={onSubscriptionActivated}
         onSubscriptionPurchased={onSubscriptionPurchased}
         onOpenHelp={actions.openHelp}
+        active={actions.active}
       />
     )
   if (page === 'sessions')
